@@ -2,6 +2,77 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-14 Message Pure Foundation Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|tungstenite|websocket'
+```
+
+Result: passed. Rust tests: 55 local tests after this slice, including 6
+focused `message_contract` tests. Structure check reported no undocumented Rust
+files over 1200 lines; the largest new message source file is
+`message/attachment.rs` at 328 lines and `tests/message_contract.rs` is 268
+lines. Dependency audit remained unchanged: only the approved
+`rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
+present. No OpenSSL/native-tls, Rustls, HTTP, WebSocket, or platform service
+dependency was added.
+
+System-test verification in `awiki-system-test`:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest tests_v2/core/test_output_contracts_cli.py -q
+
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/core/test_basic_commands.py \
+  tests_v2/core/test_output_contracts_cli.py \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_query_rejects_unsafe_sql_and_supports_table_output \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+  tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+  tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+  tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+  tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+  tests_v2/runtime/test_runtime_cli.py \
+  tests_v2/update \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: passed. Focused core output selector: 2 passed. Accepted-scope
+regression selector: 37 passed.
+
+Scope:
+
+- Pure Go `internal/message/wire.go` request builders for inbox, direct
+  history, and mark-read RPC params.
+- Direct text payload shape and message-type-to-content-type mapping needed by
+  later signed direct sends.
+- Pure attachment create-slot, commit-object, download-ticket params,
+  attachment manifest construction, manifest JSON encoding, and message-content
+  attachment selection.
+- DID document attachment service selection from local JSON values, including
+  profile/security-profile filtering and priority ordering.
+- WebSocket HTTP/cache fallback warning text normalization.
+
+Boundary note: RFC9421 origin-proof signing, private-key/auth context loading,
+`authsdk` session refresh, HTTP transport, WebSocket proxy transport, local
+cache mutation, secure direct E2EE, and group mutation RPC execution remain
+deferred. The local ANP Rust SDK exposes proof helpers, but proof signing needs
+a separate auth/proof slice so optimization and dependency decisions are not
+mixed into this pure foundation translation.
+
 ## 2026-05-14 Site Dry-Run CLI Slice
 
 Local Rust verification in `awiki-cli-rs2`:

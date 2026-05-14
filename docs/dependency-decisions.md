@@ -19,10 +19,18 @@ Required review questions before adding a dependency:
    commands/tests that prove the choice?
 
 Undocumented native/system linkage is a completion blocker.
-For TLS specifically, Rustls is the preferred baseline. OpenSSL is not the
-preferred fallback just because it can be bundled or vendored; bundled OpenSSL
-is still a native exception and requires evidence that Rustls cannot preserve
-the required Go protocol behavior.
+
+### TLS Policy
+
+TLS dependencies must be Rustls-first. Use Rustls-backed client stacks for
+HTTP/WebSocket/service integrations whenever they can preserve the Go CLI's
+observable protocol behavior. Do not choose OpenSSL or `native-tls` by default,
+and do not treat bundled OpenSSL as the preferred portability fallback. Bundled
+OpenSSL is still native C dependency surface, so it is allowed only as a
+documented exception after Rustls-compatible options fail a parity requirement.
+That exception must include the failed Rustls evidence, the exact Go behavior
+being preserved, dependency-tree output, and the system tests that cover the
+choice.
 
 ## Initial Decisions
 
@@ -45,6 +53,7 @@ the required Go protocol behavior.
 | Page dry-run CLI slice | Add no HTTP/TLS dependency for `page create/list/get/update/rename/delete --dry-run`; use static plan builders and local markdown-file reads only. | Go dry-run page contracts expose `/content/rpc` request metadata without making network calls. Real page CRUD requires active identity auth, DID-auth JWT refresh, and content RPC over HTTP, so it belongs in the shared authsdk + Rustls HTTP slice rather than this CLI-contract translation. | `crates/awiki-cli/tests/page_contract.rs` passed. Dependency tree unchanged. |
 | Msg dry-run CLI slice | Add no HTTP/TLS, WebSocket, or E2EE execution dependency for `msg send/attachment download/inbox/history/mark-read/secure ... --dry-run`; use static plan builders and local text-file reads only. | Go dry-run contracts expose service intent without executing message RPC, WebSocket proxy transport, attachment transfer, or secure direct E2EE. Those paths require authsdk/session, message-service clients, Rustls HTTP/WS dependency selection, and E2EE provider decisions, so they should not be hidden inside this CLI-boundary translation. | `crates/awiki-cli/tests/msg_contract.rs` passed. Dependency tree unchanged except the existing approved bundled SQLite path; no OpenSSL/native-tls or HTTP/TLS crate was added. |
 | Site dry-run CLI slice | Add no HTTP/TLS dependency for `site root/page ... --dry-run`; use static plan builders and local markdown-file reads only. | Go dry-run site contracts expose `/site/rpc` request metadata without making network calls. Real tenant site RPC requires active identity auth, DID-auth JWT refresh, and service RPC over HTTP, so it belongs in the shared authsdk + Rustls HTTP slice rather than this CLI-contract translation. | `crates/awiki-cli/tests/site_contract.rs` passed. Dependency tree unchanged except the existing approved bundled SQLite path; no OpenSSL/native-tls or HTTP/TLS crate was added. |
+| Message pure foundation slice | Add no dependency for message request builders, attachment manifest/selection, DID-document service selection, or fallback warning text. | These helpers are pure JSON/value transformations and validation logic in Go. Porting them before real transport reduces risk for the later message-service slice while staying within the no-new-dependency lane. RFC9421 origin-proof signing is deferred even though the local ANP Rust SDK exposes helpers, because signing requires auth/private-key integration and belongs with authsdk/session parity. | `crates/awiki-cli/tests/message_contract.rs` passed. Dependency tree unchanged except the existing approved bundled SQLite path; no OpenSSL/native-tls, HTTP/TLS, WebSocket, or new crypto dependency was added. |
 
 ## Known Deferred Decisions
 
@@ -58,6 +67,7 @@ the required Go protocol behavior.
 | npm registry update fetch | Translate `internal/update.fetchFromRegistry*` using the shared Rustls HTTP decision, then add cache writeback with Go-compatible file permissions. | Must preserve npmjs/npmmirror fallback, 3-second timeout, npm metadata JSON mapping, stale-cache fallback, and no OpenSSL/native-tls path. |
 | Mail RPC client | Translate `internal/mail/client.go` after the shared authsdk/session and Rustls HTTP stack are selected. | Must preserve DID-auth JWT refresh, bearer scope behavior, JSON-RPC error mapping, CA bundle handling, and local mail-service system tests without adding OpenSSL/native-tls. |
 | Message RPC, WebSocket, attachment, and secure direct clients | Translate `internal/message/service.go`, direct/group message client paths, attachment transfer, and secure direct E2EE execution after the shared authsdk/session, Rustls HTTP/WS stack, and E2EE provider decisions are selected. | Must preserve message RPC status/error mapping, runtime-mode transport behavior, local cache writes, attachment manifest/upload/download semantics, secure outbox retry/drop behavior, and no OpenSSL/native-tls or bundled OpenSSL path without a separate documented exception. |
+| RFC9421 origin-proof signing | Translate `internal/message/proof.go` after auth/private-key material and ANP Rust proof API integration are handled in a dedicated slice. | Must preserve `anp-rfc9421-origin-proof-v1`, `contentDigest`, `signatureInput`, `signature`, verification-method selection, signed request canonicalization, and focused proof tests without adding OpenSSL/native-tls. |
 | Platform service-manager integration | Decide whether to translate Go listener service control with a cross-platform Rust crate, direct per-platform code, or a no-platform-dependency supervisor strategy. | Must compare native/platform dependencies, service behavior parity, and `AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1` behavior before adoption. Do not mix this choice into unrelated runtime config translation. |
 
 ## Mail Slice Notes
