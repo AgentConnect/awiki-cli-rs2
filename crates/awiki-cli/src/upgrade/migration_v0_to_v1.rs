@@ -140,6 +140,43 @@ pub fn apply_workspace_v0_to_v1_config_optional(
     Ok(())
 }
 
+pub fn apply_workspace_v0_to_v1_legacy_imports(
+    context: &Context,
+) -> Result<identity::types::ImportResult, MigrationError> {
+    apply_workspace_v0_to_v1_legacy_imports_optional(Some(context))
+}
+
+pub fn apply_workspace_v0_to_v1_legacy_imports_optional(
+    context: Option<&Context>,
+) -> Result<identity::types::ImportResult, MigrationError> {
+    let context = context.ok_or_else(|| {
+        MigrationError::Message("workspace upgrade requires a resolved config".to_string())
+    })?;
+    let inspection = context.inspection.as_ref().ok_or_else(|| {
+        MigrationError::Message("workspace upgrade inspection is required".to_string())
+    })?;
+    let detection = &inspection.detection;
+    let mut imported_legacy = identity::types::ImportResult::default();
+
+    if !detection.has_workspace && detection.has_legacy {
+        let manager = identity::Manager::new(context.resolved.paths.clone());
+        let legacy_scan = manager.scan_legacy()?;
+        if legacy_scan.has_legacy {
+            imported_legacy = manager.import_all_legacy()?;
+        }
+
+        let legacy_db = store::scan_legacy_database(&context.resolved.paths)?;
+        if legacy_db.exists {
+            let mut db = store::open(&context.resolved.paths)?;
+            store::ensure_schema(&db)?;
+            let owners = legacy_owner_lookup(&manager);
+            store::import_legacy_database(&mut db, &context.resolved.paths, &owners)?;
+        }
+    }
+
+    Ok(imported_legacy)
+}
+
 pub fn validate_workspace_v0_to_v1(context: &Context) -> Result<(), MigrationError> {
     validate_workspace_v0_to_v1_optional(Some(context))
 }
@@ -274,6 +311,15 @@ fn expect_sqlite_no_rows(
         return Err(SQLiteHealthError::ForeignKeyViolations { query });
     }
     Ok(())
+}
+
+fn legacy_owner_lookup(manager: &identity::Manager) -> store::LegacyOwnerLookup {
+    let entries = manager
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|summary| (summary.identity_name, summary.did, summary.is_default));
+    store::LegacyOwnerLookup::from_entries(entries)
 }
 
 #[cfg(test)]

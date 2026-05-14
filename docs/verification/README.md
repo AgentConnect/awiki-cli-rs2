@@ -2281,6 +2281,64 @@ introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
 service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
 policy remains Rustls-first and unchanged.
 
+## 2026-05-15 Workspace v0->v1 Legacy Local Import Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_import_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli upgrade::migration_v0_to_v1 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededImportsLegacyWorkspace|TestLoadLegacySettingsRejectsSplitServiceURLs|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added `apply_workspace_v0_to_v1_legacy_imports` for the local legacy import
+  branch of Go `workspaceV0ToV1Migration.Apply`.
+- Preserved the Go guard: import runs only when inspection reports no existing
+  workspace and some legacy state exists.
+- Preserved Go import order: scan/import legacy identities first, then scan the
+  legacy SQLite database, open the target store, ensure target schema, build
+  owner lookup from imported identities, and import legacy rows.
+- Covered both no-op guards: existing workspace skips local imports, and
+  `has_legacy=false` skips local imports even when legacy fixtures are present.
+- Covered the order-sensitive pre-v6 success path: a schema v5 legacy SQLite
+  message imports only after the preceding legacy identity import provides the
+  owner DID needed by the store importer.
+- Preserved the missing-context and missing-inspection errors used by the
+  split Rust helper surface.
+- Covered the pre-v6 owner guard from the store importer:
+  `unsupported legacy sqlite schema version: legacy schema < 6 requires at
+  least one imported identity so owner_did can be inferred`.
+- Kept the helper separate from full migration execution so it can be wired
+  into `WorkspaceMigration.Apply` later with lock/backup/journal/meta evidence.
+
+Boundary note: this slice still does not wire v0->v1 `Apply` into the default
+Migration implementation, does not call `ensureTargetStoreSchema` after local
+imports, does not refresh resolved config after import, does not call k1->e1
+DID replacement RPC, and does not enable full `UpgradeIfNeeded` phase
+execution.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses existing identity import helpers and the already-approved
+`rusqlite + bundled` SQLite import path. It does not introduce HTTP/TLS,
+OpenSSL, `native-tls`, WebSocket, authsdk session, platform service-manager,
+filesystem-copy, file-lock, or new SQLite dependencies. TLS policy remains
+Rustls-first and unchanged. The dependency audit showed no OpenSSL or
+`native-tls`; it only reported existing Rustls/ring and approved bundled
+SQLite build surfaces.
+
 ## 2026-05-14 Workspace SQLite Migration Helpers Slice
 
 Local Rust and Go reference verification:

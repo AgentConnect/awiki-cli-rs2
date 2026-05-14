@@ -1,4 +1,5 @@
 use awiki_cli::{config, store, upgrade};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -460,6 +461,192 @@ fn workspace_v0_to_v1_config_apply_keeps_go_guard_and_split_settings_error() {
     );
 }
 
+#[test]
+fn workspace_v0_to_v1_legacy_imports_identity_and_sqlite_when_no_workspace() {
+    let workspace = TempDir::new("workspace-v0-v1-legacy-import").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    seed_flat_legacy_identity(&resolved, "legacy", "did:wba:example.test:user:e1_legacy");
+    seed_current_legacy_db_message(
+        &resolved,
+        "legacy-msg",
+        "did:wba:example.test:user:e1_legacy",
+        "legacy",
+    );
+    let context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = false;
+        detection.has_legacy = true;
+        detection.legacy_identity_exists = true;
+        detection.legacy_database_exists = true;
+    });
+
+    let imported =
+        upgrade::apply_workspace_v0_to_v1_legacy_imports(&context).expect("import legacy state");
+
+    assert_eq!(imported.imported.len(), 1);
+    assert_eq!(imported.imported[0].identity_name, "legacy");
+    let manager = awiki_cli::identity::Manager::new(resolved.paths.clone());
+    let identities = manager.list().expect("list imported identities");
+    assert_eq!(identities.len(), 1);
+    assert_eq!(identities[0].did, "did:wba:example.test:user:e1_legacy");
+    let target = store::open_read_only(&resolved.paths.database_file).expect("open target db");
+    assert_eq!(
+        store::current_schema_version(&target).expect("schema version"),
+        store::SCHEMA_VERSION
+    );
+    let (owner_did, content): (String, String) = target
+        .query_row(
+            "SELECT owner_did, content FROM messages WHERE msg_id = ?1",
+            ["legacy-msg"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("imported legacy message");
+    assert_eq!(owner_did, "did:wba:example.test:user:e1_legacy");
+    assert_eq!(content, "legacy hello");
+    assert!(
+        !Path::new(&resolved.paths.config_file).exists(),
+        "legacy import helper must not refresh or write config"
+    );
+}
+
+#[test]
+fn workspace_v0_to_v1_legacy_imports_skip_when_workspace_exists() {
+    let workspace = TempDir::new("workspace-v0-v1-legacy-skip-workspace").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    seed_flat_legacy_identity(&resolved, "legacy", "did:wba:example.test:user:e1_legacy");
+    seed_current_legacy_db_message(
+        &resolved,
+        "legacy-msg",
+        "did:wba:example.test:user:e1_legacy",
+        "legacy",
+    );
+    let context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = true;
+        detection.has_legacy = true;
+        detection.legacy_identity_exists = true;
+        detection.legacy_database_exists = true;
+    });
+
+    let imported =
+        upgrade::apply_workspace_v0_to_v1_legacy_imports(&context).expect("skip legacy import");
+
+    assert!(imported.imported.is_empty());
+    assert!(
+        !Path::new(&resolved.paths.identity_dir)
+            .join("index.json")
+            .exists(),
+        "workspace guard must skip identity import"
+    );
+    assert!(
+        !Path::new(&resolved.paths.database_file).exists(),
+        "workspace guard must skip sqlite import"
+    );
+}
+
+#[test]
+fn workspace_v0_to_v1_legacy_imports_skip_when_no_legacy_detected() {
+    let workspace = TempDir::new("workspace-v0-v1-legacy-skip-empty").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    seed_flat_legacy_identity(&resolved, "legacy", "did:wba:example.test:user:e1_legacy");
+    seed_current_legacy_db_message(
+        &resolved,
+        "legacy-msg",
+        "did:wba:example.test:user:e1_legacy",
+        "legacy",
+    );
+    let context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = false;
+        detection.has_legacy = false;
+        detection.legacy_identity_exists = true;
+        detection.legacy_database_exists = true;
+    });
+
+    let imported =
+        upgrade::apply_workspace_v0_to_v1_legacy_imports(&context).expect("skip legacy import");
+
+    assert!(imported.imported.is_empty());
+    assert!(
+        !Path::new(&resolved.paths.identity_dir)
+            .join("index.json")
+            .exists(),
+        "legacy guard must skip identity import"
+    );
+    assert!(
+        !Path::new(&resolved.paths.database_file).exists(),
+        "legacy guard must skip sqlite import"
+    );
+}
+
+#[test]
+fn workspace_v0_to_v1_legacy_imports_pre_v6_sqlite_after_identity_import() {
+    let workspace = TempDir::new("workspace-v0-v1-legacy-pre-v6-success").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    seed_flat_legacy_identity(&resolved, "legacy", "did:wba:example.test:user:e1_legacy");
+    seed_v5_legacy_db_message(&resolved, "legacy-v5-msg", "legacy");
+    let context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = false;
+        detection.has_legacy = true;
+        detection.legacy_identity_exists = true;
+        detection.legacy_database_exists = true;
+    });
+
+    let imported =
+        upgrade::apply_workspace_v0_to_v1_legacy_imports(&context).expect("import legacy v5 state");
+
+    assert_eq!(imported.imported.len(), 1);
+    let target = store::open_read_only(&resolved.paths.database_file).expect("open target db");
+    let (owner_did, content): (String, String) = target
+        .query_row(
+            "SELECT owner_did, content FROM messages WHERE msg_id = ?1",
+            ["legacy-v5-msg"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("imported legacy v5 message");
+    assert_eq!(owner_did, "did:wba:example.test:user:e1_legacy");
+    assert_eq!(content, "legacy v5 hello");
+}
+
+#[test]
+fn workspace_v0_to_v1_legacy_imports_propagate_pre_v6_owner_error() {
+    let workspace = TempDir::new("workspace-v0-v1-legacy-pre-v6").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    seed_empty_legacy_db_with_version(&resolved, 5);
+    let context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = false;
+        detection.has_legacy = true;
+        detection.legacy_database_exists = true;
+    });
+
+    let err = upgrade::apply_workspace_v0_to_v1_legacy_imports(&context)
+        .expect_err("pre-v6 import without identity should fail");
+
+    assert_eq!(
+        err.to_string(),
+        "unsupported legacy sqlite schema version: legacy schema < 6 requires at least one imported identity so owner_did can be inferred"
+    );
+}
+
+#[test]
+fn workspace_v0_to_v1_legacy_imports_keep_go_guards() {
+    let missing = upgrade::apply_workspace_v0_to_v1_legacy_imports_optional(None)
+        .expect_err("missing context should match Go guard");
+    assert_eq!(
+        missing.to_string(),
+        "workspace upgrade requires a resolved config"
+    );
+
+    let workspace =
+        TempDir::new("workspace-v0-v1-legacy-missing-inspection").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let context = upgrade::new_context(&resolved, "1.2.3");
+
+    let missing_inspection = upgrade::apply_workspace_v0_to_v1_legacy_imports(&context)
+        .expect_err("missing inspection should fail");
+    assert_eq!(
+        missing_inspection.to_string(),
+        "workspace upgrade inspection is required"
+    );
+}
+
 fn test_resolved(root: &Path) -> config::Resolved {
     config::Resolved {
         paths: config::Paths {
@@ -542,6 +729,112 @@ fn context_with_detection(
         ..Default::default()
     });
     context
+}
+
+fn seed_flat_legacy_identity(resolved: &config::Resolved, name: &str, did: &str) {
+    std::fs::create_dir_all(&resolved.paths.legacy_credentials_dir)
+        .expect("create legacy credentials dir");
+    std::fs::write(
+        Path::new(&resolved.paths.legacy_credentials_dir).join(format!("{name}.json")),
+        serde_json::to_vec_pretty(&json!({
+            "did": did,
+            "unique_id": did.rsplit(':').next().unwrap_or(did),
+            "name": "Legacy User",
+            "handle": name,
+            "jwt_token": "legacy-token",
+            "private_key_pem": "private",
+            "public_key_pem": "public",
+            "did_document": {"id": did}
+        }))
+        .expect("legacy identity json"),
+    )
+    .expect("write legacy identity");
+}
+
+fn seed_current_legacy_db_message(
+    resolved: &config::Resolved,
+    msg_id: &str,
+    owner_did: &str,
+    credential_name: &str,
+) {
+    let legacy_db = legacy_db_path(resolved);
+    std::fs::create_dir_all(legacy_db.parent().unwrap()).expect("create legacy db dir");
+    let mut legacy_paths = resolved.paths.clone();
+    legacy_paths.database_file = path_string(&legacy_db);
+    {
+        let db = store::open(&legacy_paths).expect("open legacy db");
+        store::ensure_schema(&db).expect("ensure legacy schema");
+        db.execute(
+            r#"
+INSERT INTO messages (
+    msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    content_type, content, stored_at, credential_name
+) VALUES (?1, ?2, ?3, 0, ?4, ?2, 'text', ?5, ?6, ?7)
+"#,
+            rusqlite::params![
+                msg_id,
+                owner_did,
+                format!("dm:{owner_did}:did:wba:example.test:user:e1_peer"),
+                "did:wba:example.test:user:e1_peer",
+                "legacy hello",
+                "2026-01-01T00:00:00Z",
+                credential_name,
+            ],
+        )
+        .expect("insert legacy message");
+    }
+}
+
+fn seed_empty_legacy_db_with_version(resolved: &config::Resolved, schema_version: i64) {
+    let legacy_db = legacy_db_path(resolved);
+    std::fs::create_dir_all(legacy_db.parent().unwrap()).expect("create legacy db dir");
+    let db = rusqlite::Connection::open(legacy_db).expect("open legacy db");
+    db.pragma_update(None, "user_version", schema_version)
+        .expect("set legacy schema version");
+}
+
+fn seed_v5_legacy_db_message(resolved: &config::Resolved, msg_id: &str, credential_name: &str) {
+    let legacy_db = legacy_db_path(resolved);
+    std::fs::create_dir_all(legacy_db.parent().unwrap()).expect("create legacy db dir");
+    let db = rusqlite::Connection::open(legacy_db).expect("open legacy db");
+    db.execute_batch(
+        r#"
+CREATE TABLE messages (
+    msg_id TEXT NOT NULL,
+    owner_did TEXT NOT NULL DEFAULT '',
+    thread_id TEXT NOT NULL DEFAULT '',
+    sender_did TEXT,
+    receiver_did TEXT,
+    content TEXT,
+    stored_at TEXT NOT NULL,
+    credential_name TEXT NOT NULL DEFAULT ''
+);
+"#,
+    )
+    .expect("create v5 messages table");
+    db.pragma_update(None, "user_version", 5)
+        .expect("set legacy schema version");
+    db.execute(
+        r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, sender_did, receiver_did, content, stored_at, credential_name)
+VALUES (?1, '', '', ?2, '', ?3, ?4, ?5)
+"#,
+        rusqlite::params![
+            msg_id,
+            "did:wba:example.test:user:e1_peer",
+            "legacy v5 hello",
+            "2026-01-01T00:00:00Z",
+            credential_name,
+        ],
+    )
+    .expect("insert v5 legacy message");
+}
+
+fn legacy_db_path(resolved: &config::Resolved) -> PathBuf {
+    Path::new(&resolved.paths.legacy_data_dir)
+        .join("database")
+        .join("awiki.db")
 }
 
 fn assert_contains(haystack: &str, needle: &str) {
