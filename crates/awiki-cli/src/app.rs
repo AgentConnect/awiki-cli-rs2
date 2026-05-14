@@ -3,6 +3,7 @@ use crate::cli::{self, ParsedCommand};
 use crate::cmdmeta;
 use crate::config::{self, Overrides, Resolved};
 use crate::docs;
+use crate::identity::{self, IdentityError, Manager};
 use crate::output::{self, ErrorEnvelope, ExitError, Format, IdentityMeta, Meta, SuccessEnvelope};
 use crate::store::{self, StoreError};
 use serde_json::{json, Value};
@@ -282,30 +283,114 @@ impl App {
 
     pub fn run_id_create(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("id create"));
-        }
         let name = command.flags.get("name").cloned().unwrap_or_default();
+        if name.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "id create requires --name.",
+                "Usage: awiki-cli id create --name \"Alice\" [--identity alice]",
+            ));
+        }
         let identity_name = command
             .flags
             .get("identity")
             .filter(|value| !value.trim().is_empty())
             .cloned()
-            .unwrap_or_else(|| slugify(&name));
-        self.render_success(
-            "awiki-cli id create",
-            &resolved,
-            json!({
-                "plan": {
-                    "action": "create_identity",
-                    "identity_name": identity_name,
-                    "display_name": name,
-                    "writes": ["index.json", "identity.json", "auth.json", "did_document.json", "key-1-private.pem", "key-1-public.pem", "e2ee-signing-private.pem", "e2ee-agreement-private.pem"],
-                }
-            }),
-            "Dry run: local DID identity creation planned",
-            Vec::new(),
-        )
+            .unwrap_or_default();
+        let manager = self.identity_manager(&resolved);
+        if self.globals.dry_run {
+            let existing = manager.list().unwrap_or_default();
+            let alias = identity::choose_default_identity_name(&identity_name, &existing, &name);
+            return self.render_identity_result(
+                "awiki-cli id create",
+                &resolved,
+                identity::CommandResult {
+                    data: json!({
+                        "plan": {
+                            "action": "create_identity",
+                            "identity_name": alias,
+                            "display_name": name,
+                            "writes": ["index.json", "identity.json", "auth.json", "did_document.json", "key-1-private.pem", "key-1-public.pem", "e2ee-signing-private.pem", "e2ee-agreement-private.pem"],
+                        }
+                    }),
+                    summary: "Dry run: local DID identity creation planned".to_string(),
+                    warnings: Vec::new(),
+                },
+            );
+        }
+        let result = identity::create_identity(&resolved, &manager, &name, &identity_name)
+            .map_err(identity_exit)?;
+        self.render_identity_result("awiki-cli id create", &resolved, result)
+    }
+
+    pub fn run_id_list(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let result =
+            identity::list_identities(&self.identity_manager(&resolved)).map_err(identity_exit)?;
+        self.render_identity_result("awiki-cli id list", &resolved, result)
+    }
+
+    pub fn run_id_current(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let result =
+            identity::current_identity(&self.identity_manager(&resolved)).map_err(identity_exit)?;
+        self.render_identity_result("awiki-cli id current", &resolved, result)
+    }
+
+    pub fn run_id_use(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        if command.args.len() != 1 {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "id use requires exactly one identity name.",
+                "Usage: awiki-cli id use <identity>",
+            ));
+        }
+        let manager = self.identity_manager(&resolved);
+        let result = if self.globals.dry_run {
+            identity::use_plan(&command.args[0])
+        } else {
+            identity::switch_default_identity(&manager, &command.args[0]).map_err(identity_exit)?
+        };
+        self.render_identity_result("awiki-cli id use", &resolved, result)
+    }
+
+    pub fn run_id_status(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let result =
+            identity::identity_status(&self.identity_manager(&resolved)).map_err(identity_exit)?;
+        self.render_identity_result("awiki-cli id status", &resolved, result)
+    }
+
+    pub fn run_id_import_v1(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let name = command.flags.get("name").cloned().unwrap_or_default();
+        let import_all = command
+            .flags
+            .get("all")
+            .is_some_and(|value| value == "true");
+        if self.globals.dry_run {
+            return self.render_identity_result(
+                "awiki-cli id import-v1",
+                &resolved,
+                identity::CommandResult {
+                    data: json!({
+                        "plan": {
+                            "action": "import_v1_identities",
+                            "name": name,
+                            "all": import_all,
+                        }
+                    }),
+                    summary: "Dry run: v1 credential import planned".to_string(),
+                    warnings: Vec::new(),
+                },
+            );
+        }
+        let result = identity::import_v1(&self.identity_manager(&resolved), &name, import_all)
+            .map_err(identity_exit)?;
+        self.render_identity_result("awiki-cli id import-v1", &resolved, result)
     }
 
     pub fn run_id_refresh_token(&self) -> Result<(), ExitError> {
@@ -313,13 +398,9 @@ impl App {
         if !self.globals.dry_run {
             return Err(not_implemented_side_effect("id refresh-token"));
         }
-        self.render_success(
-            "awiki-cli id refresh-token",
-            &resolved,
-            json!({ "plan": { "action": "refresh_token", "identity": self.globals.identity, "writes": ["auth.json"] } }),
-            "Dry run: token refresh planned",
-            Vec::new(),
-        )
+        let result =
+            identity::refresh_token_plan(&self.identity_manager(&resolved), &self.globals.identity);
+        self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
     }
 
     pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -549,6 +630,25 @@ impl App {
         store::open(&resolved.paths).map_err(|err| store_exit(err, hint))
     }
 
+    fn identity_manager(&self, resolved: &Resolved) -> Manager {
+        Manager::new(resolved.paths.clone())
+    }
+
+    fn render_identity_result(
+        &self,
+        command: &str,
+        resolved: &Resolved,
+        result: identity::CommandResult,
+    ) -> Result<(), ExitError> {
+        self.render_success(
+            command,
+            resolved,
+            identity::sanitize_public_value(result.data),
+            &result.summary,
+            result.warnings,
+        )
+    }
+
     fn render_success(
         &self,
         command: &str,
@@ -744,17 +844,6 @@ fn parse_optional_bool(command: &ParsedCommand, name: &str) -> Result<Option<boo
         .transpose()
 }
 
-fn slugify(value: &str) -> String {
-    value
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
-}
-
 fn not_implemented_side_effect(command: &str) -> ExitError {
     ExitError::new(
         "not_implemented",
@@ -762,6 +851,49 @@ fn not_implemented_side_effect(command: &str) -> ExitError {
         format!("{command} requires non-dry-run implementation in a later port slice."),
         "Use --dry-run for this first Rust parity slice.",
     )
+}
+
+fn identity_exit(err: IdentityError) -> ExitError {
+    match err {
+        IdentityError::InvalidInput(message) => ExitError::new(
+            "invalid_argument",
+            2,
+            message,
+            "Run `awiki-cli id list` to inspect available identities.",
+        ),
+        IdentityError::NotFound(message)
+        | IdentityError::LegacyNotFound(message)
+        | IdentityError::NoDefaultIdentity(message) => ExitError::new(
+            "not_found",
+            5,
+            message,
+            "Run `awiki-cli id list` to inspect available identities.",
+        ),
+        IdentityError::Conflict(message) => ExitError::new(
+            "conflict",
+            1,
+            message,
+            "Use a different --identity value if the alias is already occupied.",
+        ),
+        IdentityError::Io(err) => ExitError::new(
+            "internal_error",
+            1,
+            err.to_string(),
+            "Run `awiki-cli doctor` to inspect the local identity store.",
+        ),
+        IdentityError::Json(err) => ExitError::new(
+            "internal_error",
+            1,
+            err.to_string(),
+            "Run `awiki-cli doctor` to inspect the local identity store.",
+        ),
+        IdentityError::Internal(message) => ExitError::new(
+            "internal_error",
+            1,
+            message,
+            "Run `awiki-cli doctor` to inspect configuration and storage paths.",
+        ),
+    }
 }
 
 fn internal_io(err: std::io::Error) -> ExitError {

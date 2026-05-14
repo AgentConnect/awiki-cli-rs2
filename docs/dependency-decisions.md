@@ -24,10 +24,11 @@ Undocumented native/system linkage is a completion blocker.
 
 | Area | Decision | Rationale | Verification |
 | --- | --- | --- | --- |
-| ANP SDK | Use workspace-local `../anp/rust` path dependency when ANP-backed CLI modules are implemented. | User requested the local Rust ANP SDK; CLI parity may require SDK changes. The first core CLI slice intentionally does not link ANP yet. | `cargo metadata`, `cargo test --workspace`, and focused `anp/rust` tests when SDK changes occur. |
+| ANP SDK | Use workspace-local `../anp/rust` as a path dependency with `default-features = false` for the identity slice. | User requested the local Rust ANP SDK. `id create` needs Go-compatible e1 DID/key material, but the CLI should not pull network or MLS features until those modules are translated. | `cargo +1.79.0 test -p awiki-cli --locked`; 7 identity `awiki-system-test` selectors; dependency tree audit. No OpenSSL/native-tls path was present. |
 | SQLite | Use `rusqlite = 0.32.1` with the `bundled` feature for the current store/debug lane. | The user explicitly approved trying `rusqlite + bundled` on 2026-05-14 because compiling SQLite into the binary also solves runtime compatibility. This is a documented exception to the pure Rust preference: it avoids host SQLite at runtime, but it compiles bundled C SQLite through `libsqlite3-sys`. | Temporary probe `/tmp/awiki_rusqlite_probe`: `CARGO_HOME=/tmp/awiki_sqlite_cargo_home cargo +1.79.0 run` and `cargo +1.79.0 run --locked` passed PRAGMA `user_version`, `sqlite_master`, tables, partial unique indexes, views, `ON CONFLICT`, and `ROW_NUMBER() OVER (...)`. Dependency tree shows `rusqlite -> libsqlite3-sys` plus `cc/pkg-config/vcpkg`, and no OpenSSL/native-tls. |
 | SSL/TLS | Prefer Rustls-based TLS stacks, for example `reqwest` with `rustls-tls`, and avoid OpenSSL/native-tls. | User explicitly called out SSL/system dependency constraints; Rustls avoids OpenSSL package and ABI drift across Linux/macOS/Windows. | Dependency-tree review, cargo feature audit, and system tests for service-backed HTTP/WebSocket flows. |
 | Crypto | Prefer pure Rust crypto crates unless Go parity or ANP protocol compatibility requires otherwise. | Identity, DID proofs, direct E2EE, and group E2EE must be portable and reproducible without relying on platform crypto libraries. | Golden proof/signature tests against Go behavior and relevant ANP SDK tests. |
+| Cargo 1.79 compatibility pins | Pin `time = "=0.3.36"` in the workspace and keep `base64ct` locked to `1.6.0`. | Newer `time` and `base64ct` releases require Cargo edition2024 support, which is incompatible with the current Rust/Cargo 1.79 validation lane. This is a toolchain compatibility pin, not a behavior optimization. | `cargo +1.79.0 test -p awiki-cli --locked` after lockfile update. |
 | CLI core slice dependencies | Keep non-storage dependencies minimal: `anyhow`, `serde`, `serde_json`, `sha2`; add `rusqlite + bundled` only for the store/debug lane. | Current local cargo mirror/toolchain has network and Cargo 1.79 compatibility constraints. Storage is the first documented bundled-native exception; other lanes still need explicit dependency review. | `cargo +1.79.0 test -p awiki-cli --locked`, `cargo +1.79.0 run --bin xtask --locked -- check-structure`, dependency tree audit, and focused core/debug `awiki-system-test` run. |
 
 ## Known Deferred Decisions
@@ -37,6 +38,22 @@ Undocumented native/system linkage is a completion blocker.
 | Full YAML config parsing | Choose a parser that preserves Go YAML behavior without introducing unnecessary native dependencies. | Go config fixture parity tests, environment override tests, and dependency-tree review. |
 | SQLite crate/backend | Current accepted lane is `rusqlite + bundled` for exact SQLite behavior and runtime portability. Keep pure Rust alternatives recorded for later optimization review, not mixed into this parity translation. | Exact schema/migration parity, query behavior parity, no host SQLite dependency, and system-test debug/store evidence. |
 | HTTP/WebSocket client stack | Select Rustls-based HTTP/WebSocket crates for service integrations. | Feature audit showing no OpenSSL/native-tls path and service-backed system tests. |
+
+## ANP Identity Slice Notes
+
+2026-05-14:
+
+- Added `anp = { path = "../anp/rust", default-features = false }` for local
+  identity creation.
+- The CLI calls `anp::authentication::create_did_wba_document` with e1 DID
+  profile, user path segment, generated challenge, and an ANP message service
+  entry matching the Go `BuildAgentANPMessageService` profile/security values.
+- Default ANP SDK features are intentionally disabled for this slice so the CLI
+  does not pull `reqwest`, Rustls, MLS, or the ANP SDK's optional `rusqlite`
+  path until the corresponding Go modules are translated.
+- Verification: `cargo +1.79.0 test -p awiki-cli --locked`, full local build,
+  structure check, dependency tree audit, and 7 focused `tests_v2/id`
+  system-test selectors passed.
 
 ## SQLite Pure Rust Trial Log
 

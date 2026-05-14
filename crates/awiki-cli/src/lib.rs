@@ -4,6 +4,7 @@ pub mod cli;
 pub mod cmdmeta;
 pub mod config;
 pub mod docs;
+pub mod identity;
 pub mod output;
 pub mod store;
 
