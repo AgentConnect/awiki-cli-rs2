@@ -1,10 +1,9 @@
 use crate::config::{self, Resolved};
 use serde::Serialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::Path;
 
+pub mod listener;
 pub mod openclaw_routes;
 
 const OPENCLAW_HOOK_TOKEN_ENV: &str = "OPENCLAW_HOOK_TOKEN";
@@ -93,34 +92,18 @@ pub fn runtime_value(resolved: &Resolved) -> Value {
 }
 
 pub fn listener_status(resolved: &Resolved, installed: bool, running: bool) -> Value {
-    let runtime = resolve(resolved);
-    let state_dir = Path::new(&resolved.paths.state_dir);
-    let logs_dir = Path::new(&resolved.paths.logs_dir);
-    let service_name = listener_service_name(&resolved.paths.workspace_home_dir);
-    let mut warnings = Vec::new();
-    if runtime.listener.enabled && !installed {
-        warnings.push("listener service is not installed".to_string());
+    match listener::status_for(resolved, installed, running) {
+        Ok(status) => listener::to_value(status),
+        Err(err) => json!({
+            "mode": resolve(resolved).mode,
+            "installed": installed,
+            "running": running,
+            "service_platform": "rust-local",
+            "bridge_available": false,
+            "host_notify": {},
+            "warnings": [format!("listener status unavailable: {err}")],
+        }),
     }
-    if runtime.listener.enabled && !running {
-        warnings.push("listener service is not running".to_string());
-    }
-    if !runtime.listener.enabled {
-        warnings.push("listener is disabled by configuration".to_string());
-    }
-    json!({
-        "mode": runtime.mode,
-        "installed": installed,
-        "running": running,
-        "pid_file": state_dir.join("listener.pid").to_string_lossy(),
-        "socket_path": runtime.socket_path,
-        "log_file": logs_dir.join("listener.log").to_string_lossy(),
-        "status_file": state_dir.join("listener.status.json").to_string_lossy(),
-        "service_name": service_name,
-        "service_platform": "rust-local",
-        "bridge_available": false,
-        "host_notify": listener_host_notify(resolved),
-        "warnings": warnings,
-    })
 }
 
 pub fn current_listener_status(resolved: &Resolved) -> Value {
@@ -232,20 +215,6 @@ pub fn validate_openclaw_hook_url(value: &str) -> anyhow::Result<()> {
     anyhow::bail!("runtime.host_notify.openclaw.hook_url must use a loopback host")
 }
 
-fn listener_host_notify(resolved: &Resolved) -> Value {
-    let runtime = resolve(resolved);
-    let settings = effective_openclaw_settings(resolved);
-    json!({
-        "enabled": runtime.host_notify.enabled,
-        "sink": runtime.host_notify.sink,
-        "file_path": runtime.host_notify.file_path,
-        "hook_url": settings.hook_url,
-        "agent_id": resolved.host_notify_openclaw_agent_id,
-        "hook_name": resolved.host_notify_openclaw_hook_name,
-        "notify_url": resolved.host_notify_hermes_notify_url,
-    })
-}
-
 #[derive(Debug)]
 struct OpenClawSettings {
     hook_url: String,
@@ -338,15 +307,10 @@ fn read_listener_state_bool(resolved: &Resolved, key: &str) -> bool {
 }
 
 fn listener_state_path(resolved: &Resolved) -> String {
-    Path::new(&resolved.paths.state_dir)
+    std::path::Path::new(&resolved.paths.state_dir)
         .join("listener.local-state.json")
         .to_string_lossy()
         .into_owned()
-}
-
-fn listener_service_name(workspace: &str) -> String {
-    let digest = Sha256::digest(workspace.as_bytes());
-    format!("awiki-cli-listener-{}", &format!("{digest:x}")[..12])
 }
 
 fn normalize_runtime_mode(value: &str) -> String {

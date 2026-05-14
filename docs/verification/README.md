@@ -105,6 +105,66 @@ approved `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite
 path. No OpenSSL/native-tls, new HTTP client, WebSocket, or platform service
 dependency was introduced.
 
+## 2026-05-14 Listener Status Files And Saved Status Merge Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli listener --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestSessionWarnings|TestHasDisconnectedSessions|TestMergeSavedRuntimeStatus' -count=1
+cd ../awiki-system-test && \
+  AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  uv run --no-sync pytest \
+    tests_v2/runtime/test_runtime_cli.py::test_runtime_listener_config_set_requires_flags_and_supports_dry_run \
+    tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_config_commands_work \
+    -q
+```
+
+Result: passed. Rust listener helper tests, focused and full runtime contract
+tests, full `awiki-cli` crate tests, structure check, build, Go listener helper
+tests, dependency audit, and two runtime system-test selectors all passed.
+
+Scope:
+
+- Go `internal/runtime/listener/types.go`: local listener `Status`,
+  `SessionStatus`, and `HostNotifyStatus` JSON shape.
+- Go `internal/runtime/listener/files.go`: `listener.pid`,
+  `listener.status.json`, and `listener.expected-boot-id` helpers, including
+  Unix `0600` writes for helper-owned files.
+- Go `internal/runtime/listener/status_helpers.go`: disconnected-session
+  warning text and disconnected-session detection.
+- Narrow Go `internal/runtime/listener/manager.go`: saved runtime status merge
+  behavior, including PID mismatch skip, saved sessions/boot/start metadata,
+  saved host-notify last error, and running-only host-notify override.
+- Rust `runtime listener status` now merges saved `listener.status.json` data
+  into the public CLI envelope.
+
+Structure note: the listener status/files implementation lives in
+`crates/awiki-cli/src/runtime/listener.rs` instead of expanding
+`runtime/mod.rs`; changed files remain below the default 1200-line source
+limit. No file-size exception is needed.
+
+Boundary note: this slice does not translate Go `listener/service.go`,
+`server.go`, `wsclient.go`, `host_notify.go`, or platform `sysproc_*` code.
+Listener lifecycle commands continue to use the existing Rust local-state
+facade rather than adding systemd/launchd/Windows-service dependencies.
+No HTTP/TLS, WebSocket, authsdk session, OpenSSL, `native-tls`, or platform
+service-manager dependency was added.
+
+Dependency audit showed only the existing Rustls/ring update path and the
+approved `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite
+path. No OpenSSL/native-tls, new HTTP client, WebSocket, or platform service
+dependency was introduced.
+
 ## 2026-05-14 CLI Error Hint Slice
 
 Local Rust and Go reference verification:
