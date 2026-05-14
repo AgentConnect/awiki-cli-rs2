@@ -5,8 +5,10 @@ use super::{
     DEFAULT_HOST_NOTIFY_ENABLED, DEFAULT_LISTENER_AUTO_INSTALL, DEFAULT_LISTENER_AUTO_START,
     DEFAULT_LISTENER_ENABLED,
 };
-use std::fs;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> {
     let config = FileConfig {
@@ -233,7 +235,7 @@ fn update_file_config(
     mutate: impl FnOnce(&mut FileConfig) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     if let Some(parent) = Path::new(path).parent() {
-        fs::create_dir_all(parent)?;
+        create_config_dir(parent)?;
     }
     let (mut config, _, error) = read_file_config(path);
     if !error.is_empty() {
@@ -245,11 +247,121 @@ fn update_file_config(
 }
 
 fn write_raw_file_config(path: &str, config: &FileConfig) -> anyhow::Result<()> {
-    if let Some(parent) = Path::new(path).parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, render_file_config(config))?;
+    write_atomic_file(
+        Path::new(path),
+        render_file_config(config).as_bytes(),
+        0o600,
+    )
+}
+
+fn write_atomic_file(path: &Path, content: &[u8], mode: u32) -> anyhow::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    create_config_dir(parent)?;
+    let (mut temp_file, temp_path) = create_temp_config_file(parent)?;
+    let mut cleanup = TempCleanup::new(temp_path.clone());
+
+    temp_file
+        .write_all(content)
+        .map_err(|err| anyhow::anyhow!("write temp config file: {err}"))?;
+    temp_file
+        .sync_all()
+        .map_err(|err| anyhow::anyhow!("sync temp config file: {err}"))?;
+    drop(temp_file);
+    set_file_mode(&temp_path, mode)?;
+    fs::rename(&temp_path, path).map_err(|err| anyhow::anyhow!("replace config file: {err}"))?;
+    cleanup.keep();
+    sync_directory(parent)?;
     Ok(())
+}
+
+fn create_config_dir(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(path).map_err(|err| anyhow::anyhow!("create config dir: {err}"))?;
+    set_dir_mode(path, 0o700)
+}
+
+fn create_temp_config_file(parent: &Path) -> anyhow::Result<(File, PathBuf)> {
+    for attempt in 0..100 {
+        let path = parent.join(temp_config_name(attempt));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(anyhow::anyhow!("create temp config file: {err}")),
+        }
+    }
+    anyhow::bail!("create temp config file: too many temporary name collisions")
+}
+
+fn temp_config_name(attempt: u32) -> String {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(".config-{}-{}-{attempt}.tmp", std::process::id(), nonce)
+}
+
+#[cfg(unix)]
+fn set_dir_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|err| anyhow::anyhow!("chmod config dir: {err}"))
+}
+
+#[cfg(not(unix))]
+fn set_dir_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_file_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|err| anyhow::anyhow!("chmod temp config file: {err}"))
+}
+
+#[cfg(not(unix))]
+fn set_file_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sync_directory(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_directory(path: &Path) -> anyhow::Result<()> {
+    File::open(path)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|err| anyhow::anyhow!("sync config dir: {err}"))
+}
+
+struct TempCleanup {
+    path: PathBuf,
+    cleanup: bool,
+}
+
+impl TempCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            cleanup: true,
+        }
+    }
+
+    fn keep(&mut self) {
+        self.cleanup = false;
+    }
+}
+
+impl Drop for TempCleanup {
+    fn drop(&mut self) {
+        if self.cleanup {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
 }
 
 fn render_file_config(config: &FileConfig) -> String {

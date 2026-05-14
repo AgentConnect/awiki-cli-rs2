@@ -1094,7 +1094,7 @@ Result: passed for the focused helper tests plus existing core/runtime contract
 tests. The full `awiki-cli` crate suite reported 82 tests passing after this
 slice. Structure check reported no undocumented Rust files over 1200 lines;
 after the follow-up file split, `config/mod.rs` is 829 lines,
-`config/write.rs` is 344 lines, and `tests/config_writer_contract.rs` is 227
+`config/write.rs` is 453 lines, and `tests/config_writer_contract.rs` is 264
 lines. Dependency audit remained unchanged: only the approved
 `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
 present, with no OpenSSL/native-tls/HTTP/TLS client path.
@@ -1105,6 +1105,13 @@ trimming, runtime/listener field writes, DID-domain normalization, host-notify
 enabled false persistence, `webhook` alias normalization, OpenClaw hook/token
 writes, Hermes notify/deliver/secret writes, one-shot Hermes host-notify setup,
 and legacy webhook double-write behavior.
+
+The same test file also covers the Go-style durable write path: config writes
+use a same-directory `.config-*.tmp` temporary file, leave no temp file after a
+successful replacement, create a missing config directory, and on Unix produce
+`0600` config files plus `0700` newly-created config directories. The writer
+uses standard-library file sync and parent-directory sync on Unix, with the same
+intentional Windows parent-directory sync no-op as Go `internal/durablefs`.
 
 System verification in `awiki-system-test`:
 
@@ -1141,7 +1148,8 @@ Scope:
   CLI validation, for example host-notify sink validation remains at the CLI
   boundary and the helper maps only the legacy `webhook` alias.
 
-Boundary note: this slice does not claim full Go `writeAtomicFile` parity,
-`yaml.v3` parser/serializer parity, Hermes CLI command wiring, Hermes bridge
-management, listener refresh orchestration, or platform service-manager
-behavior. Those remain separate config/runtime parity slices.
+Boundary note: this slice does not claim full `yaml.v3` parser/serializer
+parity, Hermes CLI command wiring, Hermes bridge management, listener refresh
+orchestration, or platform service-manager behavior. Windows replacement
+behavior still needs Windows CI/manual evidence before the durable writer is
+claimed as cross-platform runtime complete.

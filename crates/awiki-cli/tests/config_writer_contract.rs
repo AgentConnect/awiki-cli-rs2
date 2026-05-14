@@ -3,6 +3,43 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn config_writer_uses_go_style_tempfile_permissions_and_cleanup() {
+    let temp = TempDir::new("config-writer-durable").expect("temp dir");
+    let paths = test_paths(&temp.path().join("nested"));
+
+    config::update_active_identity(&paths, "alice").expect("write config");
+
+    let config_path = Path::new(&paths.config_file);
+    assert!(config_path.exists(), "config file should exist");
+    assert!(
+        std::fs::read_dir(config_path.parent().unwrap())
+            .expect("read config dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .all(|name| !name.starts_with(".config-") || !name.ends_with(".tmp")),
+        "successful config writes must not leave Go-style temp files behind"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let file_mode = std::fs::metadata(config_path)
+            .expect("config metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600, "config file mode should match Go");
+
+        let dir_mode = std::fs::metadata(config_path.parent().unwrap())
+            .expect("config dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "config dir mode should match Go");
+    }
+}
+
+#[test]
 fn config_writer_updates_schema_version_and_preserves_existing_values() {
     let temp = TempDir::new("config-writer-schema").expect("temp dir");
     let paths = test_paths(temp.path());
