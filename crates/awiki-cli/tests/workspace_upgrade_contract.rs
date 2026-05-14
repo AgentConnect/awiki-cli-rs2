@@ -477,6 +477,54 @@ fn workspace_upgrade_if_needed_defers_real_migration_execution_boundary() {
         err.to_string(),
         "workspace migration execution is not implemented from 0 to 3"
     );
+    let paths = upgrade::resolve_paths(&resolved);
+    assert!(
+        Path::new(&paths.lock_path).exists(),
+        "lock anchor should be created before deferring real migration execution"
+    );
+    let lock = read_upgrade_lock_metadata(Path::new(&paths.lock_path));
+    assert_eq!(lock["lock_scheme"], "os_file_lock_v1");
+    assert_eq!(lock["app_version"], "1.2.3");
+
+    let guard = upgrade::acquire_file_lock(&paths.lock_path, "1.2.4")
+        .expect("upgrade_if_needed should release the OS lock on return");
+    guard.release().expect("release lock");
+}
+
+#[test]
+fn workspace_upgrade_if_needed_rejects_concurrent_lock_before_migration_like_go() {
+    let workspace = TempDir::new("workspace-upgrade-if-needed-lock-held").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+    upgrade::save_journal(
+        &paths.journal_path,
+        &upgrade::Journal {
+            upgrade_id: "upgrade-race".to_string(),
+            from_version: 1,
+            to_version: 2,
+            current_step: "workspace_1_to_2_remove_legacy_skill_and_listener".to_string(),
+            phase: "checking".to_string(),
+            backup_dir: "backup-race".to_string(),
+            started_at: "2026-05-15T00:00:00Z".to_string(),
+            app_version: "1.2.3".to_string(),
+        },
+    )
+    .expect("save stale journal");
+
+    let guard =
+        upgrade::acquire_file_lock(&paths.lock_path, "preflight").expect("pre-acquire lock");
+    let err = upgrade::upgrade_if_needed(&resolved, "1.2.5")
+        .expect_err("held upgrade lock should reject migration execution");
+    assert_eq!(
+        err.to_string(),
+        format!("workspace upgrade is already running: {}", paths.lock_path)
+    );
+    assert!(
+        Path::new(&paths.journal_path).exists(),
+        "journal should not be cleared when migration execution is blocked on the lock"
+    );
+    guard.release().expect("release preflight lock");
 }
 
 #[test]

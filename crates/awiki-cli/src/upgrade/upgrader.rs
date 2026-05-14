@@ -1,5 +1,6 @@
 use super::detect::{inspect, InspectError};
 use super::journal::{clear_journal, JournalError};
+use super::lock::{acquire_file_lock, LockError};
 use super::meta::{load_meta, MetaError};
 use super::migration_v0_to_v1;
 use super::migration_v1_to_v2;
@@ -100,6 +101,7 @@ pub enum UpgradeError {
     ContextRequired,
     Inspect(InspectError),
     Journal(JournalError),
+    Lock(LockError),
     Plan(UpgraderError),
     NewerThanSupported {
         current_version: i64,
@@ -117,6 +119,7 @@ impl fmt::Display for UpgradeError {
             Self::ContextRequired => f.write_str("upgrade context is required"),
             Self::Inspect(err) => write!(f, "{err}"),
             Self::Journal(err) => write!(f, "{err}"),
+            Self::Lock(err) => write!(f, "{err}"),
             Self::Plan(err) => write!(f, "{err}"),
             Self::NewerThanSupported {
                 current_version,
@@ -147,6 +150,12 @@ impl From<InspectError> for UpgradeError {
 impl From<JournalError> for UpgradeError {
     fn from(value: JournalError) -> Self {
         Self::Journal(value)
+    }
+}
+
+impl From<LockError> for UpgradeError {
+    fn from(value: LockError) -> Self {
+        Self::Lock(value)
     }
 }
 
@@ -230,11 +239,7 @@ impl Upgrader {
 
     pub fn upgrade_if_needed(&self, context: &mut Context) -> Result<(), UpgradeError> {
         let inspection = inspect(&context.resolved, &context.app_version)?;
-        context.current_meta = inspection.meta.clone();
-        let current_version = inspection.detection.current_version;
-        let empty = inspection.detection.empty;
-        let has_journal = inspection.journal.is_some();
-        context.inspection = Some(inspection);
+        let (current_version, empty, has_journal) = capture_inspection(context, inspection);
 
         if current_version > self.latest_version {
             return Err(UpgradeError::NewerThanSupported {
@@ -242,6 +247,18 @@ impl Upgrader {
                 latest_version: self.latest_version,
             });
         }
+
+        if empty || current_version == self.latest_version {
+            if has_journal {
+                clear_journal(&context.paths.journal_path)?;
+            }
+            return Ok(());
+        }
+
+        let _lock = acquire_file_lock(&context.paths.lock_path, &context.app_version)?;
+
+        let inspection = inspect(&context.resolved, &context.app_version)?;
+        let (current_version, empty, has_journal) = capture_inspection(context, inspection);
 
         if empty || current_version == self.latest_version {
             if has_journal {
@@ -292,6 +309,15 @@ impl Upgrader {
         }
         Ok(plan)
     }
+}
+
+fn capture_inspection(context: &mut Context, inspection: Inspection) -> (i64, bool, bool) {
+    let current_version = inspection.detection.current_version;
+    let empty = inspection.detection.empty;
+    let has_journal = inspection.journal.is_some();
+    context.current_meta = inspection.meta.clone();
+    context.inspection = Some(inspection);
+    (current_version, empty, has_journal)
 }
 
 pub fn new_default_upgrader() -> Upgrader {

@@ -2,6 +2,51 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Workspace UpgradeIfNeeded Lock Pre-Migration Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract workspace_upgrade_if_needed --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestAcquireFileLock' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Advanced the Go `UpgradeIfNeeded` translation past the initial
+  no-op/current-version preflight and into the pre-migration lock boundary.
+- Reused the translated `AcquireFileLock` helper before any real migration
+  execution, matching Go's lock-before-backup/migration ordering.
+- Preserved lock-held failure text:
+  `workspace upgrade is already running: <path>`.
+- Preserved stale-journal clearing for empty/latest workspaces before the lock.
+- Added lock-inside second `inspect`/current-meta refresh before planning real
+  migration execution.
+- Verified the lock anchor is written before deferred real migration execution
+  and the OS lock is released when the function returns with the current
+  deferred execution error.
+
+Boundary note: this slice still returns the existing deferred execution error
+when a real migration plan is required. It does not implement backup
+creation/reuse, journal phase writes, migration-loop `is_done`/`apply`/
+`validate`, meta stamping after each migration, rollback, v0->v1 default apply
+wiring, or v2->v3 k1->e1 DID replacement.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses existing upgrade modules and the already documented direct file-lock FFI.
+It does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk
+session, platform service-manager, filesystem-copy, file-lock crate, or new
+SQLite dependencies. TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-15 Workspace v1->v2 Legacy Cleanup Slice
 
 Local Rust and Go reference verification:
