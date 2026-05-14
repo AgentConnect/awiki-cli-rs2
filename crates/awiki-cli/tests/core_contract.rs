@@ -91,6 +91,126 @@ fn config_show_reports_resolved_configuration_snapshot() {
 }
 
 #[test]
+fn config_set_did_domain_matches_go_contract() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let dry_run = awiki_cmd_with_workspace(
+        &[
+            "--dry-run",
+            "config",
+            "set",
+            "--did-domain",
+            "Tenant.Example.",
+        ],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_success(&dry_run);
+    let envelope = success_json(&dry_run);
+    assert_eq!(envelope["command"], "awiki-cli config set");
+    assert_eq!(envelope["summary"], "Dry run: DID domain update planned");
+    assert_eq!(envelope["meta"]["dry_run"], true);
+    assert_eq!(envelope["data"]["plan"]["action"], "config_set_did_domain");
+    assert_eq!(envelope["data"]["plan"]["did_domain"], "tenant.example");
+    assert_eq!(
+        envelope["data"]["plan"]["config_file"],
+        workspace
+            .path()
+            .join("config.yaml")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert!(
+        !workspace.path().join("config.yaml").exists(),
+        "dry-run config set must not write config.yaml"
+    );
+
+    let update = awiki_cmd_with_workspace(
+        &["config", "set", "--did-domain", " Tenant.Example. "],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_success(&update);
+    let envelope = success_json(&update);
+    assert_eq!(envelope["summary"], "DID domain updated");
+    assert_eq!(envelope["data"]["did_domain"], "tenant.example");
+    assert_eq!(
+        envelope["data"]["config_file"],
+        workspace
+            .path()
+            .join("config.yaml")
+            .to_string_lossy()
+            .as_ref()
+    );
+    let config_text = std::fs::read_to_string(workspace.path().join("config.yaml"))
+        .expect("config.yaml should be written");
+    assert!(
+        config_text.contains("  did_domain: tenant.example"),
+        "config.yaml should contain normalized did_domain, got {config_text:?}"
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "config set must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("runtime")
+            .join("listener.service.pid")
+            .exists(),
+        "config set must not create listener pid artifacts"
+    );
+}
+
+#[test]
+fn config_set_validates_did_domain_like_go() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let missing = awiki_cmd_with_workspace(&["config", "set"], workspace.path().to_str().unwrap());
+    assert_code(&missing, 2);
+    let envelope = error_json(&missing);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "config set requires --did-domain",
+    );
+
+    let url_like = awiki_cmd_with_workspace(
+        &["config", "set", "--did-domain", "https://tenant.example"],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_code(&url_like, 2);
+    let envelope = error_json(&url_like);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(&envelope["error"]["message"], "bare domain");
+    assert_contains(&envelope["error"]["hint"], "tenant.example");
+
+    let with_path = awiki_cmd_with_workspace(
+        &["config", "set", "--did-domain", "tenant.example/path"],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_code(&with_path, 2);
+    let envelope = error_json(&with_path);
+    assert_contains(&envelope["error"]["message"], "path, query, or fragment");
+
+    let go_accepted_host_shapes = awiki_cmd_with_workspace(
+        &[
+            "--dry-run",
+            "config",
+            "set",
+            "--did-domain",
+            "Tenant..Example",
+        ],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_success(&go_accepted_host_shapes);
+    let envelope = success_json(&go_accepted_host_shapes);
+    assert_eq!(envelope["data"]["plan"]["did_domain"], "tenant..example");
+}
+
+#[test]
 fn docs_list_and_topic_lookup_preserve_go_topic_contracts() {
     let list_output = awiki_cmd(&["docs"]);
     assert_success(&list_output);

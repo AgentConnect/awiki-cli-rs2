@@ -478,6 +478,15 @@ pub fn update_runtime_settings(paths: &Paths, mode: &str, socket_path: &str) -> 
     })
 }
 
+pub fn update_did_domain(paths: &Paths, value: &str) -> anyhow::Result<String> {
+    let normalized = normalize_did_domain(value)?;
+    update_file_config(&paths.config_file, |config| {
+        config.services.did_domain = normalized.clone();
+        Ok(())
+    })?;
+    Ok(normalized)
+}
+
 pub fn update_runtime_listener_settings(
     paths: &Paths,
     enabled: Option<bool>,
@@ -963,6 +972,30 @@ pub fn derive_anp_service_endpoint(service_base_url: &str) -> String {
 
 pub fn derive_anp_service_did(service_base_url: &str) -> String {
     format!("did:wba:{}", service_host_from_base_url(service_base_url))
+}
+
+pub fn normalize_did_domain(raw: &str) -> anyhow::Result<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    let normalized = normalized.trim_end_matches('.').to_string();
+    if normalized.is_empty() {
+        anyhow::bail!("did_domain is required");
+    }
+    if normalized.contains("://") {
+        anyhow::bail!("did_domain must be a bare domain without a URL scheme");
+    }
+    if normalized.contains(['/', '?', '#']) {
+        anyhow::bail!("did_domain must not include a path, query, or fragment");
+    }
+    if normalized.contains(':') {
+        anyhow::bail!("did_domain must not include a port");
+    }
+    if normalized.chars().any(char::is_whitespace) {
+        anyhow::bail!("did_domain must not contain whitespace");
+    }
+    if normalized.contains('@') || normalized.contains('%') {
+        anyhow::bail!("did_domain must be a bare domain");
+    }
+    Ok(normalized)
 }
 
 pub fn normalize_base_url(base_url: &str) -> String {

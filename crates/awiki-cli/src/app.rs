@@ -132,6 +132,53 @@ impl App {
         )
     }
 
+    pub fn run_config_set(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let Some(raw_did_domain) = command.flags.get("did-domain") else {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "config set requires --did-domain.",
+                "Use --did-domain <domain>.",
+            ));
+        };
+        let did_domain = config::normalize_did_domain(raw_did_domain).map_err(|err| {
+            ExitError::new(
+                "invalid_argument",
+                2,
+                err.to_string(),
+                "Use a bare domain such as tenant.example.",
+            )
+        })?;
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli config set",
+                &resolved,
+                json!({
+                    "plan": {
+                        "action": "config_set_did_domain",
+                        "did_domain": did_domain,
+                        "config_file": resolved.paths.config_file,
+                    }
+                }),
+                "Dry run: DID domain update planned",
+                Vec::new(),
+            );
+        }
+        config::update_did_domain(&resolved.paths, &did_domain).map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        self.render_success(
+            "awiki-cli config set",
+            &resolved,
+            json!({
+                "did_domain": resolved.did_domain,
+                "config_file": resolved.paths.config_file,
+            }),
+            "DID domain updated",
+            Vec::new(),
+        )
+    }
+
     pub fn run_doctor(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let checks = doctor_checks(&resolved);
