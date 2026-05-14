@@ -336,6 +336,144 @@ fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
 }
 
 #[test]
+fn workspace_upgrade_if_needed_skips_empty_workspace_and_captures_inspection_like_go() {
+    let workspace = TempDir::new("workspace-upgrade-if-needed-empty").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let mut context = upgrade::new_context(&resolved, "1.0.0");
+    upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect("empty workspace upgrade should be a no-op");
+
+    let paths = upgrade::resolve_paths(&resolved);
+    assert!(!Path::new(&paths.meta_path).exists());
+    assert!(!Path::new(&paths.journal_path).exists());
+    assert_eq!(context.current_meta, None);
+    let inspection = context.inspection.expect("inspection captured");
+    assert_eq!(inspection.detection.current_version, 3);
+    assert_eq!(inspection.detection.current_version_source, "default_empty");
+    assert!(inspection.detection.empty);
+}
+
+#[test]
+fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like_go() {
+    let empty_workspace =
+        TempDir::new("workspace-upgrade-if-needed-empty-journal").expect("temp workspace");
+    let empty_resolved = test_resolved(empty_workspace.path());
+    let empty_paths = upgrade::resolve_paths(&empty_resolved);
+    upgrade::save_journal(
+        &empty_paths.journal_path,
+        &upgrade::Journal {
+            upgrade_id: "upgrade-empty".to_string(),
+            from_version: 0,
+            to_version: 1,
+            current_step: "workspace_0_to_1_bootstrap_local_state_upgrade".to_string(),
+            phase: "checking".to_string(),
+            backup_dir: "backup-empty".to_string(),
+            started_at: "2026-05-14T00:00:00Z".to_string(),
+            app_version: "1.0.0".to_string(),
+        },
+    )
+    .expect("save empty journal");
+    upgrade::upgrade_if_needed(&empty_resolved, "1.0.0").expect("empty workspace clears journal");
+    assert!(!Path::new(&empty_paths.journal_path).exists());
+    assert!(!Path::new(&empty_paths.meta_path).exists());
+
+    let latest_workspace =
+        TempDir::new("workspace-upgrade-if-needed-latest-journal").expect("temp workspace");
+    let latest_resolved = test_resolved(latest_workspace.path());
+    std::fs::create_dir_all(latest_workspace.path().join("identities")).expect("create ids");
+    std::fs::write(
+        latest_workspace.path().join("config.yaml"),
+        "schema_version: 1\n",
+    )
+    .expect("write config");
+    let latest_paths = upgrade::resolve_paths(&latest_resolved);
+    upgrade::save_meta(
+        &latest_paths.meta_path,
+        &upgrade::Meta {
+            workspace_schema_version: 3,
+            app_version: "1.2.3".to_string(),
+            updated_at: "2026-05-14T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save latest meta");
+    upgrade::save_journal(
+        &latest_paths.journal_path,
+        &upgrade::Journal {
+            upgrade_id: "upgrade-latest".to_string(),
+            from_version: 2,
+            to_version: 3,
+            current_step: "workspace_2_to_3_replace_existing_k1_handle_dids".to_string(),
+            phase: "validating".to_string(),
+            backup_dir: "backup-latest".to_string(),
+            started_at: "2026-05-14T00:01:00Z".to_string(),
+            app_version: "1.2.3".to_string(),
+        },
+    )
+    .expect("save latest journal");
+    let mut latest_context = upgrade::new_context(&latest_resolved, "1.2.4");
+    upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut latest_context)
+        .expect("latest workspace clears journal");
+    assert!(!Path::new(&latest_paths.journal_path).exists());
+    let meta = upgrade::load_meta(&latest_paths.meta_path)
+        .expect("load latest meta")
+        .expect("meta remains");
+    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(
+        latest_context
+            .current_meta
+            .expect("current meta captured before no-op")
+            .workspace_schema_version,
+        3
+    );
+}
+
+#[test]
+fn workspace_upgrade_if_needed_reports_newer_workspace_like_go() {
+    let workspace = TempDir::new("workspace-upgrade-if-needed-newer").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    upgrade::save_meta(
+        &paths.meta_path,
+        &upgrade::Meta {
+            workspace_schema_version: 4,
+            app_version: "9.9.9".to_string(),
+            updated_at: "2026-05-14T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save newer meta");
+
+    let err = upgrade::upgrade_if_needed(&resolved, "1.2.3")
+        .expect_err("newer schema should be rejected");
+    assert_eq!(
+        err.to_string(),
+        "workspace schema version 4 is newer than supported 3"
+    );
+}
+
+#[test]
+fn workspace_upgrade_if_needed_defers_real_migration_execution_boundary() {
+    let workspace = TempDir::new("workspace-upgrade-if-needed-deferred").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    std::fs::write(workspace.path().join("config.yaml"), "schema_version: 1\n")
+        .expect("write config");
+
+    let err = upgrade::upgrade_if_needed(&resolved, "1.2.3")
+        .expect_err("legacy/current-version-zero migration remains deferred");
+    assert_eq!(
+        err.to_string(),
+        "workspace migration execution is not implemented from 0 to 3"
+    );
+}
+
+#[test]
 fn workspace_upgrade_file_lock_leaves_persistent_metadata() {
     let temp = TempDir::new("workspace-upgrade-lock-metadata").expect("temp dir");
     let lock_path = temp.path().join("upgrade").join("upgrade.lock");

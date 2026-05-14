@@ -2134,3 +2134,53 @@ upgrade meta/path types. It does not introduce HTTP/TLS, OpenSSL,
 `native-tls`, WebSocket, authsdk session, platform service-manager,
 filesystem-copy, file-lock, or new SQLite dependencies. TLS policy remains
 Rustls-first and unchanged.
+
+## 2026-05-14 Workspace UpgradeIfNeeded No-Op/Current Preflight Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli upgrade::upgrader --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract workspace_upgrade_if_needed --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestAcquireFileLock|TestLoadLegacySettingsRejectsSplitServiceURLs' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Extended `crates/awiki-cli/src/upgrade/upgrader.rs` with public
+  `upgrade_if_needed`, `Upgrader::upgrade_if_needed`, and
+  `Upgrader::upgrade_context_if_needed`.
+- Preserved Go's `"upgrade context is required"` error through the explicit
+  optional-context method used by tests. The normal Rust convenience function
+  takes a non-null `config::Resolved` reference.
+- Preserved the first Go `Inspect`/current-meta capture boundary before
+  deciding whether work is needed.
+- Preserved Go's newer-than-supported error:
+  `"workspace schema version N is newer than supported 3"`.
+- Preserved Go's empty-workspace no-op behavior: no meta file is created and a
+  stale journal is cleared.
+- Preserved Go's already-current behavior: if meta reports the latest workspace
+  schema version, a stale journal is cleared and meta is left unchanged.
+- Added an explicit deferred-execution error when a real migration plan would
+  be needed so the partial orchestration cannot silently skip migration work.
+
+Boundary note: this slice intentionally stops before the second inspect under
+lock, lock acquisition, backup reuse/creation, journal phase execution,
+migration `Apply`/`Validate`, meta stamping after each migration, identity
+replacement RPC, legacy SQLite import, rollback, and cleanup. Those remain
+dedicated migration-execution slices.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses existing inspect/meta/journal/planner helpers and does not introduce
+HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
+service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
+policy remains Rustls-first and unchanged.

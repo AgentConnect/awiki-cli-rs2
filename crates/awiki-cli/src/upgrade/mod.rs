@@ -18,5 +18,6 @@ pub use settings::{
 };
 pub use types::{Detection, Inspection, Journal, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
 pub use upgrader::{
-    new_context, new_default_upgrader, Context, Migration, MigrationError, Upgrader, UpgraderError,
+    new_context, new_default_upgrader, upgrade_if_needed, Context, Migration, MigrationError,
+    UpgradeError, Upgrader, UpgraderError,
 };

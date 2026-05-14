@@ -1,3 +1,5 @@
+use super::detect::{inspect, InspectError};
+use super::journal::{clear_journal, JournalError};
 use super::meta::{load_meta, MetaError};
 use super::resolve_paths;
 use super::types::{Inspection, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
@@ -26,6 +28,14 @@ pub fn new_context(resolved: &config::Resolved, app_version: &str) -> Context {
         current_meta: None,
         warnings: Vec::new(),
     }
+}
+
+pub fn upgrade_if_needed(
+    resolved: &config::Resolved,
+    app_version: &str,
+) -> Result<(), UpgradeError> {
+    let mut context = new_context(resolved, app_version);
+    new_default_upgrader().upgrade_if_needed(&mut context)
 }
 
 pub trait Migration: fmt::Debug {
@@ -84,6 +94,67 @@ impl fmt::Display for UpgraderError {
 impl std::error::Error for UpgraderError {}
 
 #[derive(Debug)]
+pub enum UpgradeError {
+    ContextRequired,
+    Inspect(InspectError),
+    Journal(JournalError),
+    Plan(UpgraderError),
+    NewerThanSupported {
+        current_version: i64,
+        latest_version: i64,
+    },
+    ExecutionDeferred {
+        current_version: i64,
+        latest_version: i64,
+    },
+}
+
+impl fmt::Display for UpgradeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ContextRequired => f.write_str("upgrade context is required"),
+            Self::Inspect(err) => write!(f, "{err}"),
+            Self::Journal(err) => write!(f, "{err}"),
+            Self::Plan(err) => write!(f, "{err}"),
+            Self::NewerThanSupported {
+                current_version,
+                latest_version,
+            } => write!(
+                f,
+                "workspace schema version {current_version} is newer than supported {latest_version}"
+            ),
+            Self::ExecutionDeferred {
+                current_version,
+                latest_version,
+            } => write!(
+                f,
+                "workspace migration execution is not implemented from {current_version} to {latest_version}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for UpgradeError {}
+
+impl From<InspectError> for UpgradeError {
+    fn from(value: InspectError) -> Self {
+        Self::Inspect(value)
+    }
+}
+
+impl From<JournalError> for UpgradeError {
+    fn from(value: JournalError) -> Self {
+        Self::Journal(value)
+    }
+}
+
+impl From<UpgraderError> for UpgradeError {
+    fn from(value: UpgraderError) -> Self {
+        Self::Plan(value)
+    }
+}
+
+#[derive(Debug)]
 pub enum MigrationError {
     Meta(MetaError),
     ExecutionDeferred { name: &'static str },
@@ -119,6 +190,48 @@ pub struct Upgrader {
 impl Upgrader {
     pub fn latest_version(&self) -> i64 {
         self.latest_version
+    }
+
+    pub fn upgrade_context_if_needed(
+        &self,
+        context: Option<&mut Context>,
+    ) -> Result<(), UpgradeError> {
+        let context = context.ok_or(UpgradeError::ContextRequired)?;
+        self.upgrade_if_needed(context)
+    }
+
+    pub fn upgrade_if_needed(&self, context: &mut Context) -> Result<(), UpgradeError> {
+        let inspection = inspect(&context.resolved, &context.app_version)?;
+        context.current_meta = inspection.meta.clone();
+        let current_version = inspection.detection.current_version;
+        let empty = inspection.detection.empty;
+        let has_journal = inspection.journal.is_some();
+        context.inspection = Some(inspection);
+
+        if current_version > self.latest_version {
+            return Err(UpgradeError::NewerThanSupported {
+                current_version,
+                latest_version: self.latest_version,
+            });
+        }
+
+        if empty || current_version == self.latest_version {
+            if has_journal {
+                clear_journal(&context.paths.journal_path)?;
+            }
+            return Ok(());
+        }
+
+        let plan = self.plan(current_version, self.latest_version)?;
+        if plan.is_empty() {
+            clear_journal(&context.paths.journal_path)?;
+            return Ok(());
+        }
+
+        Err(UpgradeError::ExecutionDeferred {
+            current_version,
+            latest_version: self.latest_version,
+        })
     }
 
     pub fn plan(
@@ -276,5 +389,14 @@ mod tests {
             err.to_string(),
             "workspace migration 0 has unexpected target 2"
         );
+    }
+
+    #[test]
+    fn upgrade_context_if_needed_requires_context_like_go() {
+        let upgrader = new_default_upgrader();
+        let err = upgrader
+            .upgrade_context_if_needed(None)
+            .expect_err("missing context should fail");
+        assert_eq!(err.to_string(), "upgrade context is required");
     }
 }
