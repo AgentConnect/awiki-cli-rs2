@@ -17,6 +17,7 @@ mod mail_handlers;
 mod msg_handlers;
 mod page_handlers;
 mod runtime_handlers;
+mod site_handlers;
 mod update_handlers;
 
 #[derive(Debug, Clone)]

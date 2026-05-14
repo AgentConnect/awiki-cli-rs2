@@ -2,6 +2,81 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-14 Site Dry-Run CLI Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test site_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls'
+```
+
+Result: passed. Rust tests: 49 local tests after this slice, including 5
+focused `site_contract` tests. Structure check reported no undocumented Rust
+files over 1200 lines; `app.rs` is 877 lines and the new
+`app/site_handlers.rs` is 286 lines. Dependency audit remained unchanged: only
+the approved `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled
+SQLite path was present. No OpenSSL/native-tls, Rustls, HTTP, WebSocket, or
+platform service dependency was added.
+
+Scope:
+
+- `site root get/set` and `site page list/get/create/update/rename/delete`
+  command catalog entries and parser dispatch.
+- Go dry-run plan shapes from `internal/cli/site.go`, including `/site/rpc`
+  metadata, RPC method names, request fields, domain/slug trim behavior, and
+  markdown-file byte counting.
+- Go CLI boundary behavior for required flags, explicit body-source
+  requirements, markdown source conflicts, local file-read errors, and
+  non-dry-run deferral.
+
+Accepted-scope system verification:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest tests_v2/core/test_output_contracts_cli.py -q
+```
+
+Result: `2 passed in 0.11s`.
+
+Broader accepted-scope regression verification:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/core/test_basic_commands.py \
+  tests_v2/core/test_output_contracts_cli.py \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_query_rejects_unsafe_sql_and_supports_table_output \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+  tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+  tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+  tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+  tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+  tests_v2/runtime/test_runtime_cli.py \
+  tests_v2/update \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: `37 passed in 1.83s`.
+
+Boundary note: non-dry-run tenant site RPC and full `internal/site/service.go`
+remain deferred. Those require shared authsdk/session plus Rustls HTTP client
+translation and service-backed tests. OpenSSL bundled is not the preferred TLS
+fallback and would require a separate documented exception.
+
 ## 2026-05-14 Msg Dry-Run CLI Slice
 
 Local Rust verification in `awiki-cli-rs2`:
