@@ -11,6 +11,8 @@ pub mod message;
 pub mod output;
 pub mod runtime;
 pub mod store;
+pub mod traceutil;
+pub mod transportcfg;
 pub mod update;
 
 pub use app::execute;

@@ -2,6 +2,55 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-14 Trace/Transport Foundation Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test traceutil_contract --test transportcfg_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+```
+
+Go reference verification:
+
+```bash
+cd ../awiki-cli
+go test ./internal/traceutil ./internal/transportcfg
+```
+
+Result: passed. Focused Rust contract tests: 9 passed. Full Rust package
+verification: 118 local tests passed. Go reference tests for both source
+packages passed. Structure check reported no undocumented Rust files over 1200
+lines; current slice files are `traceutil.rs` 298 lines,
+`transportcfg.rs` 320 lines, `traceutil_contract.rs` 123 lines, and
+`transportcfg_contract.rs` 128 lines. Build passed. Dependency audit showed
+only the existing Rustls/ring update path and approved `rusqlite + bundled`
+SQLite path; this slice added no dependency and did not introduce OpenSSL,
+`native-tls`, `reqwest`, `hyper`, or WebSocket crates.
+
+Scope:
+
+- Go `internal/traceutil/trace.go` pure timing trace helpers:
+  `AWIKI_CLI_TRACE_TIMING`, run/phase/fallback capture, pretty Chinese output,
+  known label humanization, and duration formatting.
+- Go `internal/transportcfg/config.go` pure resolver behavior:
+  bridge/HTTP/profile default durations, environment variable names, Go-style
+  positive duration/int fallback, and profile timeout fallback.
+
+Boundary note: Go `transportcfg.NewHTTPClient` is not translated in this
+foundation slice. It requires a shared Rustls-first HTTP client decision for
+TLS roots, custom CA bundle, HTTP/2, response-header timeout, idle pooling, and
+TLS 1.2 minimum behavior. This slice adds no dependency; OpenSSL,
+`native-tls`, and bundled OpenSSL remain disallowed as first-choice TLS paths.
+
+No `awiki-system-test` selector is required for this internal-only foundation
+slice because no new public CLI/service path is wired to these modules yet.
+
 ## 2026-05-14 Message Signed Wire Params Slice
 
 Local Rust verification in `awiki-cli-rs2`:
