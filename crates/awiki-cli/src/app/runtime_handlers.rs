@@ -324,10 +324,11 @@ impl App {
 
     pub fn run_runtime_host_notify_config_show(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        let host_notify = runtime::host_notify_config_view(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime host-notify config show",
             &resolved,
-            json!({ "host_notify": runtime::host_notify_config_view(&resolved) }),
+            json!({ "host_notify": host_notify }),
             "Host notify config loaded",
             Vec::new(),
         )
@@ -370,11 +371,12 @@ impl App {
         config::update_host_notify_sink(&resolved.paths, &normalized_sink)
             .map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
+        let host_notify = runtime::host_notify_config_view(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime host-notify config set",
             &resolved,
             json!({
-                "host_notify": runtime::host_notify_config_view(&resolved),
+                "host_notify": host_notify,
                 "listener": runtime::current_listener_status(&resolved),
             }),
             "Host notify config updated",
@@ -418,6 +420,7 @@ impl App {
             .map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
         let openclaw = runtime::host_notify_config_view(&resolved)
+            .map_err(internal_anyhow)?
             .get("openclaw")
             .cloned()
             .unwrap_or_else(|| json!({}));
@@ -485,6 +488,113 @@ impl App {
             Vec::new(),
         )
     }
+
+    pub fn run_runtime_host_notify_openclaw_route_add(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let route = resolve_openclaw_route_from_flags(command)?;
+        let route_registry_path = runtime::openclaw_routes::routes_path(&resolved.paths);
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli runtime host-notify openclaw route add",
+                &resolved,
+                json!({
+                    "plan": {
+                        "action": "host_notify_openclaw_route_add",
+                        "route": route,
+                        "route_registry_path": route_registry_path,
+                    }
+                }),
+                "Dry run: OpenClaw route add planned",
+                Vec::new(),
+            );
+        }
+
+        let (route, added, routes) =
+            runtime::openclaw_routes::add_route(&resolved.paths, route).map_err(internal_anyhow)?;
+        let mut warnings = Vec::new();
+        if added {
+            warnings.push(
+                "OpenClaw route confirmation webhook is deferred in this Rust port slice."
+                    .to_string(),
+            );
+        }
+        let summary = if added {
+            "OpenClaw route added"
+        } else {
+            "OpenClaw route already exists"
+        };
+        self.render_success(
+            "awiki-cli runtime host-notify openclaw route add",
+            &resolved,
+            json!({
+                "route": route,
+                "routes": routes,
+                "route_registry_path": route_registry_path,
+            }),
+            summary,
+            warnings,
+        )
+    }
+
+    pub fn run_runtime_host_notify_openclaw_route_list(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let routes =
+            runtime::openclaw_routes::load_routes(&resolved.paths).map_err(internal_anyhow)?;
+        self.render_success(
+            "awiki-cli runtime host-notify openclaw route list",
+            &resolved,
+            json!({ "routes": routes }),
+            "OpenClaw routes loaded",
+            Vec::new(),
+        )
+    }
+
+    pub fn run_runtime_host_notify_openclaw_route_remove(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let route = resolve_openclaw_route_from_flags(command)?;
+        let route_registry_path = runtime::openclaw_routes::routes_path(&resolved.paths);
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli runtime host-notify openclaw route remove",
+                &resolved,
+                json!({
+                    "plan": {
+                        "action": "host_notify_openclaw_route_remove",
+                        "route": route,
+                        "route_registry_path": route_registry_path,
+                    }
+                }),
+                "Dry run: OpenClaw route remove planned",
+                Vec::new(),
+            );
+        }
+
+        let (route, removed, routes) =
+            runtime::openclaw_routes::remove_route(&resolved.paths, route)
+                .map_err(internal_anyhow)?;
+        let summary = if removed {
+            "OpenClaw route removed"
+        } else {
+            "OpenClaw route not found"
+        };
+        self.render_success(
+            "awiki-cli runtime host-notify openclaw route remove",
+            &resolved,
+            json!({
+                "route": route,
+                "routes": routes,
+                "route_registry_path": route_registry_path,
+            }),
+            summary,
+            Vec::new(),
+        )
+    }
 }
 
 fn listener_config_snapshot(resolved: &Resolved) -> Value {
@@ -534,4 +644,30 @@ fn parse_optional_bool(command: &ParsedCommand, name: &str) -> Result<Option<boo
             })
         })
         .transpose()
+}
+
+fn resolve_openclaw_route_from_flags(
+    command: &ParsedCommand,
+) -> Result<runtime::openclaw_routes::Route, ExitError> {
+    runtime::openclaw_routes::resolve_route_input(
+        command
+            .flags
+            .get("channel")
+            .map(String::as_str)
+            .unwrap_or(""),
+        command.flags.get("to").map(String::as_str).unwrap_or(""),
+        command
+            .flags
+            .get("session-key")
+            .map(String::as_str)
+            .unwrap_or(""),
+    )
+    .map_err(|err| {
+        ExitError::new(
+            "invalid_argument",
+            2,
+            err.to_string(),
+            "Use --channel and --to, or use --session-key.",
+        )
+    })
 }

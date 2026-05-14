@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 
+pub mod openclaw_routes;
+
 const OPENCLAW_HOOK_TOKEN_ENV: &str = "OPENCLAW_HOOK_TOKEN";
 const OPENCLAW_GATEWAY_PORT_ENV: &str = "OPENCLAW_GATEWAY_PORT";
 const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
@@ -177,14 +179,15 @@ pub fn uninstall_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     Ok(listener_status(resolved, false, false))
 }
 
-pub fn host_notify_config_view(resolved: &Resolved) -> Value {
+pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
     let settings = effective_openclaw_settings(resolved);
-    json!({
+    let routes = openclaw_routes::load_routes(&resolved.paths)?;
+    Ok(json!({
         "enabled": resolved.host_notify_enabled,
         "sink": resolved.host_notify_sink,
         "file_path": resolved.host_notify_file_path,
-        "route_registry_path": openclaw_routes_path(resolved),
-        "routes": [],
+        "route_registry_path": openclaw_routes::routes_path(&resolved.paths),
+        "routes": routes,
         "openclaw": {
             "hook_url": settings.hook_url,
             "hook_url_source": settings.hook_url_source,
@@ -203,7 +206,7 @@ pub fn host_notify_config_view(resolved: &Resolved) -> Value {
             "secret_env_fallback": "AWIKI_HOST_NOTIFY_HERMES_SECRET",
             "secret_env_legacy": "AWIKI_WEBHOOK_SECRET",
         }
-    })
+    }))
 }
 
 pub fn validate_openclaw_hook_url(value: &str) -> anyhow::Result<()> {
@@ -337,13 +340,6 @@ fn read_listener_state_bool(resolved: &Resolved, key: &str) -> bool {
 fn listener_state_path(resolved: &Resolved) -> String {
     Path::new(&resolved.paths.state_dir)
         .join("listener.local-state.json")
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn openclaw_routes_path(resolved: &Resolved) -> String {
-    Path::new(&resolved.paths.state_dir)
-        .join("openclaw.host-notify.routes.json")
         .to_string_lossy()
         .into_owned()
 }

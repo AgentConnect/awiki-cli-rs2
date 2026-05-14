@@ -49,6 +49,62 @@ cross-platform runtime parity claims.
 No dependency was added. Cargo manifests and lockfile were unchanged; TLS and
 SQLite dependency decisions remain unchanged.
 
+## 2026-05-14 OpenClaw Route Registry Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli openclaw_routes --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/runtime/openclawnotify -run 'TestResolveRouteInput|TestAddAndRemoveRoutePersistRegistry|TestLoadRoutesMissingFileReturnsEmpty' -count=1
+cd ../awiki-cli && go test ./internal/cli -run TestRuntimeDryRunPlansCoverStableActions -count=1
+cd ../awiki-system-test && \
+  AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  uv run --no-sync pytest \
+    tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_config_commands_work \
+    tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_validates_inputs_and_supports_dry_run \
+    -q
+```
+
+Result: passed. Rust route helper tests, full runtime contract tests, full
+`awiki-cli` crate tests, structure check, build, Go route registry tests, Go CLI
+dry-run tests, and two existing runtime host-notify system-test selectors all
+passed.
+
+Scope:
+
+- Go `internal/runtime/openclawnotify/routes.go` local route registry behavior:
+  `RoutesPath`, `ResolveRouteInput`, `ParseSessionKey`, `NormalizeRoute`,
+  `LoadRoutes`, `AddRoute`, `RemoveRoute`, and `WriteRoutes`.
+- Go `internal/cli/runtime_host_notify_routes.go` route `add/list/remove`
+  local CLI boundary and stable dry-run plan shapes.
+- Rust `host_notify_config_view.routes` now loads the persisted route registry
+  instead of returning a hard-coded empty list.
+
+Structure note: the route registry was added as
+`crates/awiki-cli/src/runtime/openclaw_routes.rs` rather than expanding
+`runtime/mod.rs`. The changed Rust source and test files remain below the
+default 1200-line source limit; no file-size exception is needed.
+
+Boundary note: Go non-dry-run route add sends one OpenClaw confirmation
+webhook after persisting a new route. This slice intentionally does not
+translate `internal/runtime/openclawnotify/webhook.go`; Rust records a warning
+on new route add and defers confirmation sending to a future Rustls-first HTTP
+client slice. No HTTP/TLS, WebSocket, OpenSSL, `native-tls`, or bundled OpenSSL
+dependency was added.
+
+Dependency audit showed only the existing Rustls/ring update path and the
+approved `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite
+path. No OpenSSL/native-tls, new HTTP client, WebSocket, or platform service
+dependency was introduced.
+
 ## 2026-05-14 CLI Error Hint Slice
 
 Local Rust and Go reference verification:

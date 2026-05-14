@@ -162,6 +162,15 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "runtime.host-notify.openclaw.clear-token" => {
             app.run_runtime_host_notify_openclaw_clear_token()
         }
+        "runtime.host-notify.openclaw.route.add" => {
+            app.run_runtime_host_notify_openclaw_route_add(command)
+        }
+        "runtime.host-notify.openclaw.route.list" => {
+            app.run_runtime_host_notify_openclaw_route_list()
+        }
+        "runtime.host-notify.openclaw.route.remove" => {
+            app.run_runtime_host_notify_openclaw_route_remove(command)
+        }
         "debug.db.query" => app.run_debug_db_query(command),
         "debug.db.import-v1" => app.run_debug_db_import_v1(command),
         other => Err(stub_error(other)),
@@ -270,6 +279,15 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         }
         ["runtime", "host-notify", "openclaw", "clear-token", ..] => {
             "runtime.host-notify.openclaw.clear-token"
+        }
+        ["runtime", "host-notify", "openclaw", "route", "add", ..] => {
+            "runtime.host-notify.openclaw.route.add"
+        }
+        ["runtime", "host-notify", "openclaw", "route", "list", ..] => {
+            "runtime.host-notify.openclaw.route.list"
+        }
+        ["runtime", "host-notify", "openclaw", "route", "remove", ..] => {
+            "runtime.host-notify.openclaw.route.remove"
         }
         ["debug", "db", "query", ..] => "debug.db.query",
         ["debug", "db", "import-v1", ..] => "debug.db.import-v1",

@@ -158,6 +158,201 @@ fn host_notify_openclaw_config_redacts_token() {
 }
 
 #[test]
+fn host_notify_openclaw_routes_round_trip_and_config_view() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let dry_add = awiki_cmd_with_workspace(
+        &[
+            "--dry-run",
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "route",
+            "add",
+            "--channel",
+            " FeiShu ",
+            "--to",
+            " chat-1 ",
+        ],
+        workspace.path(),
+    );
+    assert_success(&dry_add);
+    let envelope = success_json(&dry_add);
+    assert_eq!(envelope["summary"], "Dry run: OpenClaw route add planned");
+    assert_eq!(
+        envelope["data"]["plan"]["action"],
+        "host_notify_openclaw_route_add"
+    );
+    assert_eq!(envelope["data"]["plan"]["route"]["channel"], "feishu");
+    assert_eq!(envelope["data"]["plan"]["route"]["to"], "chat-1");
+    assert!(envelope["data"]["plan"]["route_registry_path"]
+        .as_str()
+        .expect("route registry path")
+        .ends_with("runtime/openclaw.host-notify.routes.json"));
+
+    let add = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "route",
+            "add",
+            "--session-key",
+            "agent:main:telegram:direct:123456",
+        ],
+        workspace.path(),
+    );
+    assert_success(&add);
+    let envelope = success_json(&add);
+    assert_eq!(envelope["summary"], "OpenClaw route added");
+    assert_eq!(envelope["data"]["route"]["channel"], "telegram");
+    assert_eq!(envelope["data"]["route"]["to"], "123456");
+    assert_eq!(
+        envelope["data"]["routes"].as_array().expect("routes").len(),
+        1
+    );
+    assert!(envelope["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap_or_default()
+            .contains("confirmation webhook is deferred")));
+
+    let duplicate = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "route",
+            "add",
+            "--channel",
+            "Telegram",
+            "--to",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    assert_success(&duplicate);
+    let envelope = success_json(&duplicate);
+    assert_eq!(envelope["summary"], "OpenClaw route already exists");
+    assert_eq!(
+        envelope["data"]["routes"].as_array().expect("routes").len(),
+        1
+    );
+
+    let list = awiki_cmd_with_workspace(
+        &["runtime", "host-notify", "openclaw", "route", "list"],
+        workspace.path(),
+    );
+    assert_success(&list);
+    let envelope = success_json(&list);
+    assert_eq!(envelope["summary"], "OpenClaw routes loaded");
+    assert_eq!(envelope["data"]["routes"][0]["channel"], "telegram");
+    assert_eq!(envelope["data"]["routes"][0]["to"], "123456");
+
+    let show = awiki_cmd_with_workspace(
+        &["runtime", "host-notify", "config", "show"],
+        workspace.path(),
+    );
+    assert_success(&show);
+    let envelope = success_json(&show);
+    assert_eq!(
+        envelope["data"]["host_notify"]["routes"][0]["channel"],
+        "telegram"
+    );
+
+    let dry_remove = awiki_cmd_with_workspace(
+        &[
+            "--dry-run",
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "route",
+            "remove",
+            "--channel",
+            "telegram",
+            "--to",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    assert_success(&dry_remove);
+    let envelope = success_json(&dry_remove);
+    assert_eq!(
+        envelope["summary"],
+        "Dry run: OpenClaw route remove planned"
+    );
+    assert_eq!(
+        envelope["data"]["plan"]["action"],
+        "host_notify_openclaw_route_remove"
+    );
+
+    let remove = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "route",
+            "remove",
+            "--channel",
+            "telegram",
+            "--to",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    assert_success(&remove);
+    let envelope = success_json(&remove);
+    assert_eq!(envelope["summary"], "OpenClaw route removed");
+    assert!(envelope["data"]["routes"]
+        .as_array()
+        .expect("routes")
+        .is_empty());
+}
+
+#[test]
+fn host_notify_openclaw_route_validation_matches_go_contract() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let missing = awiki_cmd_with_workspace(
+        &["runtime", "host-notify", "openclaw", "route", "add"],
+        workspace.path(),
+    );
+    assert_code(&missing, 2);
+    let envelope = error_json(&missing);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "route requires either --session-key or both --channel and --to",
+    );
+
+    let conflict = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "route",
+            "add",
+            "--channel",
+            "feishu",
+            "--to",
+            "chat-1",
+            "--session-key",
+            "agent:main:telegram:direct:123456",
+        ],
+        workspace.path(),
+    );
+    assert_code(&conflict, 2);
+    let envelope = error_json(&conflict);
+    assert_contains(
+        &envelope["error"]["message"],
+        "provide either --session-key or --channel/--to, not both",
+    );
+}
+
+#[test]
 fn host_notify_validation_and_dry_run_plans_match_go_contracts() {
     let workspace = TempDir::new().expect("temp workspace");
 
