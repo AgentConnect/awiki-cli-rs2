@@ -1093,7 +1093,8 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-s
 Result: passed for the focused helper tests plus existing core/runtime contract
 tests. The full `awiki-cli` crate suite reported 82 tests passing after this
 slice. Structure check reported no undocumented Rust files over 1200 lines;
-`config/mod.rs` is 1155 lines and `tests/config_writer_contract.rs` is 227
+after the follow-up file split, `config/mod.rs` is 829 lines,
+`config/write.rs` is 344 lines, and `tests/config_writer_contract.rs` is 227
 lines. Dependency audit remained unchanged: only the approved
 `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
 present, with no OpenSSL/native-tls/HTTP/TLS client path.
