@@ -6,6 +6,7 @@ mod lock;
 mod meta;
 mod settings;
 mod types;
+mod upgrader;
 
 pub use backup::{backup_sqlite_database, create_backup, BackupError};
 pub use detect::{detect, inspect, resolve_paths, InspectError};
@@ -16,3 +17,6 @@ pub use settings::{
     load_legacy_settings, parse_legacy_settings, LegacySettingsError, NormalizedLegacySettings,
 };
 pub use types::{Detection, Inspection, Journal, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
+pub use upgrader::{
+    new_context, new_default_upgrader, Context, Migration, MigrationError, Upgrader, UpgraderError,
+};

@@ -2080,3 +2080,57 @@ uses the existing fsutil module, existing store open path, and already-approved
 HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
 service-manager, or file-lock dependencies. TLS policy remains Rustls-first and
 unchanged.
+
+## 2026-05-14 Workspace Upgrade Upgrader Plan Skeleton Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli upgrade::upgrader --locked
+cargo +1.79.0 test -p awiki-cli workspace_upgrade_default_upgrader_plan_matches_go_migration_chain --locked
+cargo +1.79.0 test -p awiki-cli workspace_upgrade_plan_errors_match_go_messages --locked
+cargo +1.79.0 test -p awiki-cli workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestAcquireFileLock|TestLoadLegacySettingsRejectsSplitServiceURLs|TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+Result: passed. Go has no standalone unit test for `Upgrader.Plan`; source
+parity is checked against `internal/upgrade/types.go`, `upgrader.go`, and the
+three migration identity methods in `migration_v0_to_v1.go`.
+
+Scope:
+
+- Added `crates/awiki-cli/src/upgrade/upgrader.rs` for the planning boundary in
+  Go `internal/upgrade/types.go` and `internal/upgrade/upgrader.go`.
+- Added a Rust `Context` matching the Go execution context fields:
+  resolved config, upgrade paths, app version, inspection, backup dir, current
+  meta, and warnings.
+- Added a `Migration` trait with Go-equivalent `from`, `to`, `name`,
+  `is_done`, `apply`, and `validate` methods.
+- Added `new_default_upgrader` with the Go 0->1, 1->2, and 2->3 migration
+  names and `LATEST_WORKSPACE_SCHEMA_VERSION` target.
+- Preserved Go `Plan` behavior: same-version no-op, newer-than-target error,
+  missing contiguous migration error, unexpected target error, and ordered
+  contiguous migration output.
+- Preserved Go migration `IsDone` semantics for this skeleton by reading
+  workspace meta and comparing `workspace_schema_version >= migration.to`.
+
+Boundary note: this slice does not implement `UpgradeIfNeeded`, journal phase
+execution, lock acquisition, backup orchestration, migration `Apply`/`Validate`,
+identity replacement RPC, legacy SQLite import, rollback, or cleanup. The
+default migration `apply` and `validate` methods intentionally return an
+explicit deferred-execution error until those file-level migration slices are
+translated.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses `std::collections::BTreeMap`, existing `config::Resolved`, and existing
+upgrade meta/path types. It does not introduce HTTP/TLS, OpenSSL,
+`native-tls`, WebSocket, authsdk session, platform service-manager,
+filesystem-copy, file-lock, or new SQLite dependencies. TLS policy remains
+Rustls-first and unchanged.

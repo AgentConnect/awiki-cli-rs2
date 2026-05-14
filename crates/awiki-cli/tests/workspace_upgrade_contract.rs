@@ -225,6 +225,117 @@ fn workspace_upgrade_load_legacy_settings_wraps_io_and_parse_errors_like_go() {
 }
 
 #[test]
+fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
+    let upgrader = upgrade::new_default_upgrader();
+    assert_eq!(upgrader.latest_version(), 3);
+
+    let plan = upgrader.plan(0, 3).expect("default 0 to latest plan");
+    let steps: Vec<(i64, i64, &str)> = plan
+        .iter()
+        .map(|migration| (migration.from(), migration.to(), migration.name()))
+        .collect();
+    assert_eq!(
+        steps,
+        vec![
+            (0, 1, "workspace_0_to_1_bootstrap_local_state_upgrade"),
+            (1, 2, "workspace_1_to_2_remove_legacy_skill_and_listener"),
+            (2, 3, "workspace_2_to_3_replace_existing_k1_handle_dids"),
+        ]
+    );
+
+    let partial = upgrader.plan(1, 3).expect("partial plan");
+    assert_eq!(
+        partial
+            .iter()
+            .map(|migration| migration.name())
+            .collect::<Vec<_>>(),
+        vec![
+            "workspace_1_to_2_remove_legacy_skill_and_listener",
+            "workspace_2_to_3_replace_existing_k1_handle_dids",
+        ]
+    );
+    assert!(upgrader.plan(3, 3).expect("no-op current plan").is_empty());
+}
+
+#[test]
+fn workspace_upgrade_plan_errors_match_go_messages() {
+    let upgrader = upgrade::new_default_upgrader();
+    let newer = upgrader
+        .plan(4, 3)
+        .expect_err("newer source version should fail");
+    assert_eq!(
+        newer.to_string(),
+        "workspace schema version 4 is newer than target 3"
+    );
+
+    let missing = upgrader
+        .plan(3, 4)
+        .expect_err("missing migration should fail");
+    assert_eq!(missing.to_string(), "missing workspace migration 3 -> 4");
+}
+
+#[test]
+fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
+    let workspace = TempDir::new("workspace-upgrade-context").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let mut context = upgrade::new_context(&resolved, "1.2.3");
+    let paths = upgrade::resolve_paths(&resolved);
+    assert_eq!(context.paths, paths);
+    assert_eq!(context.app_version, "1.2.3");
+    assert!(context.inspection.is_none());
+    assert_eq!(context.backup_dir, "");
+    assert_eq!(context.current_meta, None);
+    assert!(context.warnings.is_empty());
+
+    let upgrader = upgrade::new_default_upgrader();
+    let plan = upgrader.plan(0, 3).expect("default plan");
+    assert_eq!(
+        plan[0].is_done(&context).expect("missing meta is not done"),
+        false
+    );
+
+    upgrade::save_meta(
+        &paths.meta_path,
+        &upgrade::Meta {
+            workspace_schema_version: 1,
+            app_version: "1.2.3".to_string(),
+            updated_at: "2026-05-14T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save meta");
+    assert_eq!(
+        plan[0]
+            .is_done(&context)
+            .expect("meta version 1 completes first migration"),
+        true
+    );
+    assert_eq!(
+        plan[1]
+            .is_done(&context)
+            .expect("meta version 1 does not complete second migration"),
+        false
+    );
+
+    let apply_err = plan[0]
+        .apply(&mut context)
+        .expect_err("migration execution remains deferred in this slice");
+    assert_eq!(
+        apply_err.to_string(),
+        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+    );
+    let validate_err = plan[0]
+        .validate(&context)
+        .expect_err("migration validation remains deferred in this slice");
+    assert_eq!(
+        validate_err.to_string(),
+        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+    );
+}
+
+#[test]
 fn workspace_upgrade_file_lock_leaves_persistent_metadata() {
     let temp = TempDir::new("workspace-upgrade-lock-metadata").expect("temp dir");
     let lock_path = temp.path().join("upgrade").join("upgrade.lock");
