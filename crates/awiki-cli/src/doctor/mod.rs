@@ -3,6 +3,7 @@ use crate::config::Resolved;
 use crate::identity::{IdentityError, Manager};
 use crate::runtime;
 use crate::store;
+use crate::upgrade;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
@@ -422,20 +423,49 @@ fn anp_mls_check(resolved: &Resolved) -> Check {
 }
 
 fn workspace_upgrade_check(resolved: &Resolved) -> Check {
-    let workspace_exists = Path::new(&resolved.paths.workspace_home_dir).exists();
+    let inspection = match upgrade::inspect(resolved, crate::buildinfo::VERSION) {
+        Ok(inspection) => inspection,
+        Err(err) => {
+            let paths = upgrade::resolve_paths(resolved);
+            return check(
+                "workspace_upgrade",
+                "error",
+                "Workspace upgrade state inspection failed",
+                Some(json!({
+                    "meta_path": paths.meta_path,
+                    "journal_path": paths.journal_path,
+                    "error": err.to_string(),
+                })),
+            );
+        }
+    };
+    let mut status = "ok";
+    let mut summary = "Workspace upgrade metadata is up to date";
+    if inspection.journal.is_some() {
+        status = "warn";
+        summary = "Workspace upgrade journal indicates an interrupted upgrade";
+    } else if inspection
+        .meta
+        .as_ref()
+        .is_some_and(|meta| !meta.warnings.is_empty())
+    {
+        status = "warn";
+        summary = "Workspace upgrade completed with migration warnings";
+    } else if inspection.detection.current_version < inspection.detection.latest_version {
+        status = "warn";
+        summary = "Workspace data still needs to be upgraded";
+    } else if inspection.detection.current_version_source == "legacy_detector" {
+        status = "warn";
+        summary = "Workspace upgrade metadata has not been initialized yet";
+    }
     check(
         "workspace_upgrade",
-        "ok",
-        "Workspace upgrade metadata is up to date",
+        status,
+        summary,
         Some(json!({
-            "meta": Value::Null,
-            "journal": Value::Null,
-            "detection": {
-                "current_version": store::SCHEMA_VERSION,
-                "latest_version": store::SCHEMA_VERSION,
-                "current_version_source": if workspace_exists { "rust_local_detector" } else { "missing_workspace" },
-                "has_workspace": workspace_exists,
-            },
+            "meta": inspection.meta,
+            "journal": inspection.journal,
+            "detection": inspection.detection,
         })),
     )
 }

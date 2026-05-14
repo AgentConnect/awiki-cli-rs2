@@ -15,5 +15,6 @@ pub mod store;
 pub mod traceutil;
 pub mod transportcfg;
 pub mod update;
+pub mod upgrade;
 
 pub use app::execute;

@@ -50,6 +50,20 @@ fn doctor_empty_workspace_reports_go_check_names_and_counts() {
     let sqlite = check_by_name(&envelope, "sqlite");
     assert_eq!(sqlite["details"]["contact_handle_bindings_exists"], false);
     assert_eq!(sqlite["details"]["contact_handle_bindings_count"], 0);
+    let workspace_upgrade = check_by_name(&envelope, "workspace_upgrade");
+    assert_eq!(
+        workspace_upgrade["details"]["detection"]["current_version"],
+        3
+    );
+    assert_eq!(
+        workspace_upgrade["details"]["detection"]["current_version_source"],
+        "default_empty"
+    );
+    assert_eq!(workspace_upgrade["details"]["detection"]["empty"], true);
+    assert_eq!(
+        workspace_upgrade["details"]["detection"]["has_workspace"],
+        false
+    );
 }
 
 #[test]

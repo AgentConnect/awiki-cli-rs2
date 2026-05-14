@@ -1828,3 +1828,63 @@ expanding this file further.
 No dependency was added. The slice continues to use the previously approved
 `rusqlite + bundled` SQLite lane and does not introduce HTTP/TLS, OpenSSL,
 `native-tls`, or platform service-manager dependencies.
+
+## 2026-05-14 Workspace Upgrade Inspection Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test doctor_contract --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract config_show_reports_resolved_configuration_snapshot --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestLoadLegacySettingsRejectsSplitServiceURLs' -count=1
+```
+
+Result: passed. The focused Rust contract covers empty-workspace detection,
+Go-compatible upgrade path resolution, `Meta`/`Journal` JSON load/save,
+config/index/SQLite/legacy-settings detection, doctor warning precedence, and
+Go zero-value JSON compatibility for partial `Meta`/`Journal` files. It also
+covers `config show` embedding the inspection shape instead of the earlier stub
+snapshot. The focused Go tests remain the reference for empty workspace
+behavior, current-workspace metadata stamping, and legacy settings rejection
+boundaries.
+
+Scope:
+
+- Added `crates/awiki-cli/src/upgrade/{types,meta,journal,detect}.rs` for Go
+  `internal/upgrade/{types,meta,journal,detect}.go` read-only surfaces.
+- Preserved Go workspace schema version `3` separately from the local SQLite
+  schema version `12`.
+- Preserved Go path shape for `upgrade/meta.json`,
+  `upgrade/upgrade_journal.json`, `upgrade/upgrade.lock`, `upgrade/backups`,
+  legacy `config.json`, and legacy `config/settings.json`.
+- Preserved missing meta/journal behavior as `null`, parse/read failures as
+  inspection errors, zero-value defaults for partial JSON files, and pretty JSON
+  save behavior through an atomic local write plus durable parent-directory
+  sync.
+- Reused existing Rust identity index loading, legacy identity scanning,
+  read-only SQLite opening, SQLite `user_version` reading, and legacy database
+  scanning rather than duplicating those subsystems inside doctor or app code.
+- Wired the shared inspection into `doctor` workspace-upgrade checks and
+  `config show` workspace-upgrade snapshots.
+
+Structure note: new Rust files are small and split by Go file responsibility;
+no file-size exception is needed.
+
+Boundary note: this slice does not implement full `UpgradeIfNeeded`, lock file
+ownership, backup/rollback handling, legacy settings migration, identity
+replacement RPC, legacy database import execution, cleanup migrations, or root
+preflight workspace upgrade execution. Those remain dedicated workspace
+migration/auth/service slices.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This slice
+uses existing serde/std helpers, the existing durable directory sync helper, the
+existing identity/store modules, and the already-approved `rusqlite + bundled`
+SQLite lane. It does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket,
+authsdk session, platform service-manager, or file-lock dependencies.

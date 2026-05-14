@@ -98,6 +98,18 @@ fn config_show_reports_resolved_configuration_snapshot() {
         ],
     );
     assert_has_keys(&envelope["data"]["database"], &["database_file", "exists"]);
+    assert_has_keys(
+        &envelope["data"]["workspace_upgrade"],
+        &["paths", "detection"],
+    );
+    assert_eq!(
+        envelope["data"]["workspace_upgrade"]["detection"]["latest_version"],
+        3
+    );
+    assert_ne!(
+        envelope["data"]["workspace_upgrade"]["detection"]["current_version"],
+        "dev"
+    );
 }
 
 #[test]

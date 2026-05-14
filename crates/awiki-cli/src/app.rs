@@ -7,6 +7,7 @@ use crate::doctor;
 use crate::identity::{self, IdentityError, Manager};
 use crate::output::{self, ErrorEnvelope, ExitError, Format, IdentityMeta, Meta, SuccessEnvelope};
 use crate::store::{self, StoreError};
+use crate::upgrade;
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, Write};
@@ -707,13 +708,18 @@ fn database_snapshot(resolved: &Resolved) -> Value {
 }
 
 fn workspace_upgrade_snapshot(resolved: &Resolved) -> Value {
-    json!({
-        "current_version": crate::buildinfo::VERSION,
-        "workspace": resolved.paths.workspace_home_dir,
-        "detection": { "has_workspace": Path::new(&resolved.paths.workspace_home_dir).exists(), "has_legacy": false },
-        "actions": [],
-        "warnings": [],
-    })
+    upgrade::inspect(resolved, crate::buildinfo::VERSION)
+        .map(|inspection| serde_json::to_value(inspection).unwrap_or_else(|_| json!({})))
+        .unwrap_or_else(|err| {
+            let paths = upgrade::resolve_paths(resolved);
+            json!({
+                "paths": paths,
+                "meta": Value::Null,
+                "journal": Value::Null,
+                "detection": upgrade::detect(resolved, None),
+                "error": err.to_string(),
+            })
+        })
 }
 
 fn init_dirs(resolved: &Resolved) -> Vec<String> {
