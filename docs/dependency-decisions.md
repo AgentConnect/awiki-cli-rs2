@@ -38,6 +38,13 @@ Rustls features. Do not add `openssl`, `native-tls`, or OpenSSL
 build only changes how OpenSSL is delivered; it does not satisfy the project's
 Rust-native TLS preference.
 
+Implementation rule: bundled OpenSSL must not be used as the first answer to
+runtime portability. It is not equivalent to a Rustls-backed stack because it
+still adds an OpenSSL native C dependency to the build and security update
+surface. For every new HTTPS, WebSocket, mail, authsdk, runtime bridge, or
+service-client lane, start with `rustls` or a crate configured for Rustls and
+only consider OpenSSL after recording a concrete Rustls parity failure.
+
 2026-05-14 user clarification: for all future TLS lanes, `rustls` is the
 recommended implementation path. Do not prioritize bundled OpenSSL for
 portability; bundled OpenSSL may only be introduced as a documented exception
