@@ -299,3 +299,78 @@ Boundary note: non-dry-run DID replacement and group RPC/lifecycle behavior
 remain deferred translation tasks. They require authsdk/message-service/store
 rebind work and should be implemented in dedicated slices with service-backed
 system tests.
+
+## 2026-05-14 Group Non-E2EE Dry-Run Lifecycle Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls'
+```
+
+Result: passed. Rust tests: 31 local tests after this slice. Structure check
+reported no undocumented Rust files over 1200 lines. Dependency audit remained
+unchanged: only the approved `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg`
+bundled SQLite path was present.
+
+`group_contract` now covers the non-E2EE `internal/cli/group.go` dry-run surface
+beyond create/update:
+
+- `group get` and alias `group show` with canonical command path and
+  `action: group.show`.
+- `group join`, `group add`, `group remove` and alias `group kick`, and
+  `group leave` request plans with Go PascalCase fields.
+- Membership mutation `member_handle` completion for bare handles and no
+  completion for explicit DID values.
+- `group list`, `group members`, and `group messages` default/explicit limit
+  behavior, including `Cursor` and `Skip: 0` in message-list plans.
+- Schema children and alias metadata for the added non-E2EE group commands.
+
+Go parity probes:
+
+```bash
+AWIKI_CLI_WORKSPACE_HOME_DIR="$(mktemp -d)" \
+  go run ./cmd/awiki-cli group show --dry-run --group did:wba:awiki.ai:groups:demo:e1_group
+AWIKI_CLI_WORKSPACE_HOME_DIR="$(mktemp -d)" \
+  go run ./cmd/awiki-cli group kick --dry-run --group did:wba:awiki.ai:groups:demo:e1_group --member bob
+```
+
+Result: Rust alias command paths and plans matched the observed Go behavior:
+`show` renders command `awiki-cli group get`, and `kick` renders command
+`awiki-cli group remove` with `action: group.kick`.
+
+System verification in `awiki-system-test`:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/core/test_basic_commands.py \
+  tests_v2/core/test_output_contracts_cli.py \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_query_rejects_unsafe_sql_and_supports_table_output \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+  tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+  tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+  tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+  tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+  tests_v2/runtime/test_runtime_cli.py \
+  tests_v2/update \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: `37 passed in 1.83s`.
+
+Boundary note: this slice still does not implement non-dry-run group RPC, group
+attachments, or `group e2ee ...`. Those remain dedicated service-backed and
+MLS/provider translation tasks.

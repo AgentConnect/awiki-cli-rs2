@@ -114,7 +114,201 @@ fn group_create_and_update_dry_run_match_go_policy_contracts() {
 }
 
 #[test]
-fn group_schema_exposes_create_and_update_children() {
+fn group_lifecycle_dry_run_plans_match_go_contracts() {
+    let workspace = TempDir::new().expect("workspace");
+    let group = "did:wba:awiki.ai:groups:demo:e1_group";
+
+    let get = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "get",
+            "--dry-run",
+            "--group",
+            group,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(get["summary"], "Dry run: group show planned");
+    assert_eq!(get["data"]["plan"]["action"], "group.show");
+    assert_eq!(get["data"]["plan"]["group"], group);
+
+    let show = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "show",
+            "--dry-run",
+            "--group",
+            group,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(show["data"]["plan"]["action"], "group.show");
+
+    let join = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "bob",
+            "group",
+            "join",
+            "--dry-run",
+            "--group",
+            group,
+            "--reason",
+            "joinable group",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(join["summary"], "Dry run: group join planned");
+    let join_request = &join["data"]["plan"]["request"];
+    assert_eq!(join_request["IdentityName"], "bob");
+    assert_eq!(join_request["Group"], group);
+    assert_eq!(join_request["ReasonText"], "joinable group");
+
+    let add = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "add",
+            "--dry-run",
+            "--group",
+            group,
+            "--member",
+            "bob",
+            "--e2ee",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(add["summary"], "Dry run: group membership change planned");
+    assert_eq!(add["data"]["plan"]["action"], "group.add");
+    assert_eq!(add["data"]["plan"]["member_handle"], "bob.awiki.ai");
+    let add_request = &add["data"]["plan"]["request"];
+    assert_eq!(add_request["Member"], "bob");
+    assert_eq!(add_request["Role"], "member");
+    assert_eq!(add_request["ReasonText"], "");
+    assert_eq!(add_request["E2EE"], true);
+    assert_eq!(add_request["LeaveRequestID"], "");
+
+    let remove = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "remove",
+            "--dry-run",
+            "--group",
+            group,
+            "--member",
+            "bob",
+            "--reason",
+            "cleanup",
+            "--e2ee",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(remove["data"]["plan"]["action"], "group.kick");
+    let remove_request = &remove["data"]["plan"]["request"];
+    assert_eq!(remove_request["ReasonText"], "cleanup");
+    assert_eq!(remove_request["E2EE"], true);
+
+    let kick = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "kick",
+            "--dry-run",
+            "--group",
+            group,
+            "--member",
+            "did:wba:awiki.ai:user:bob:e1",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(kick["data"]["plan"]["action"], "group.kick");
+    assert_eq!(kick["data"]["plan"]["member_handle"], Value::Null);
+
+    let leave = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "bob",
+            "group",
+            "leave",
+            "--dry-run",
+            "--group",
+            group,
+            "--reason",
+            "done",
+            "--e2ee",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(leave["summary"], "Dry run: group leave planned");
+    let leave_request = &leave["data"]["plan"]["request"];
+    assert_eq!(leave_request["ReasonText"], "done");
+    assert_eq!(leave_request["E2EE"], true);
+
+    let list = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "list",
+            "--dry-run",
+            "--limit",
+            "25",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(list["summary"], "Dry run: group list planned");
+    assert_eq!(list["data"]["plan"]["request"]["Limit"], 25);
+
+    let members = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "members",
+            "--dry-run",
+            "--group",
+            group,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(members["summary"], "Dry run: group members planned");
+    assert_eq!(members["data"]["plan"]["action"], "group.list_members");
+    assert_eq!(members["data"]["plan"]["request"]["Limit"], 100);
+
+    let messages = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "messages",
+            "--dry-run",
+            "--group",
+            group,
+            "--limit",
+            "25",
+            "--cursor",
+            "42",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(messages["summary"], "Dry run: group messages planned");
+    let messages_request = &messages["data"]["plan"]["request"];
+    assert_eq!(messages["data"]["plan"]["action"], "group.list_messages");
+    assert_eq!(messages_request["Cursor"], "42");
+    assert_eq!(messages_request["Limit"], 25);
+    assert_eq!(messages_request["Skip"], 0);
+}
+
+#[test]
+fn group_schema_exposes_non_e2ee_group_children() {
     let workspace = TempDir::new().expect("workspace");
     let schema = success_json(&awiki_cmd(&["schema", "group"], workspace.path()));
     let children: Vec<_> = schema["data"]["children"]
@@ -124,12 +318,28 @@ fn group_schema_exposes_create_and_update_children() {
         .map(|child| child["name"].as_str().unwrap())
         .collect();
     assert!(children.contains(&"group.create"));
+    assert!(children.contains(&"group.get"));
+    assert!(children.contains(&"group.join"));
+    assert!(children.contains(&"group.add"));
+    assert!(children.contains(&"group.remove"));
+    assert!(children.contains(&"group.leave"));
     assert!(children.contains(&"group.update"));
+    assert!(children.contains(&"group.list"));
+    assert!(children.contains(&"group.members"));
+    assert!(children.contains(&"group.messages"));
 
     let create = success_json(&awiki_cmd(&["schema", "group", "create"], workspace.path()));
     assert_eq!(create["data"]["command"]["side_effect"], true);
     assert_eq!(create["data"]["command"]["flags"][0]["name"], "name");
     assert_eq!(create["data"]["command"]["flags"][0]["required"], true);
+
+    let get = success_json(&awiki_cmd(&["schema", "group", "get"], workspace.path()));
+    assert_eq!(get["data"]["command"]["aliases"][0], "show");
+    assert_eq!(get["data"]["command"]["outputs"][2], "table");
+
+    let remove = success_json(&awiki_cmd(&["schema", "group", "remove"], workspace.path()));
+    assert_eq!(remove["data"]["command"]["aliases"][0], "kick");
+    assert_eq!(remove["data"]["command"]["side_effect"], true);
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
