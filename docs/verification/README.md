@@ -2,6 +2,51 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Site RPC Wire Contract Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test site_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test site_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/site -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added a split `site` module for the pure Go
+  `internal/site/{types.go,service.go}` RPC contract.
+- Preserved `/site/rpc`, `/user-service/did-auth/rpc`, `get_root`,
+  `set_root`, `list_pages`, `get_page`, `create_page`, `update_page`,
+  `rename_page`, and `delete_page` method names and transport profiles.
+- Preserved live-service domain normalization through the existing
+  Go-equivalent `config::normalize_did_domain` helper, trim-only slug
+  validation, explicit empty body allowance, params, summaries, and
+  identity/root/page/list/rename/delete result shapes.
+- Kept the existing `site` dry-run CLI boundary unchanged: dry-run remains
+  trim-only for domain display and does not apply live bare-domain
+  normalization, while the new site service wire tests cover stricter
+  live-service rules.
+
+Boundary note: this slice does not wire non-dry-run site commands, implement
+`identity.RemoteClient`, bootstrap the auth session, refresh DID-auth JWTs,
+perform HTTP transport, map site service errors into CLI exit codes, or run
+site lifecycle system tests. Those remain in the shared authsdk/session plus
+Rustls HTTP client lane.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; this
+slice does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+`native-tls`, bundled OpenSSL, or ANP SDK network/default features. TLS policy
+remains Rustls-first and unchanged.
+
 ## 2026-05-15 Content RPC Wire Contract Slice
 
 Local Rust and Go reference verification:
