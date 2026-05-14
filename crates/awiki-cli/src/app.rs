@@ -13,6 +13,7 @@ use std::path::Path;
 
 mod mail_handlers;
 mod runtime_handlers;
+mod update_handlers;
 
 #[derive(Debug, Clone)]
 pub struct GlobalOptions {

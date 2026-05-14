@@ -69,6 +69,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
     match command.name.as_str() {
         "status" => app.run_status(),
         "version" => app.run_version(),
+        "upgrade" => app.run_upgrade(),
         "config.show" => app.run_config_show(),
         "config.set" => app.run_config_set(command),
         "doctor" => app.run_doctor(),
@@ -135,6 +136,7 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         [] => "",
         ["status", ..] => "status",
         ["version", ..] => "version",
+        ["upgrade", ..] => "upgrade",
         ["doctor", ..] => "doctor",
         ["docs", ..] => "docs",
         ["schema", ..] => "schema",

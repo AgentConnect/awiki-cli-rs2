@@ -202,3 +202,53 @@ uv run --no-sync pytest \
 ```
 
 Result: `30 passed in 1.24s`.
+
+## 2026-05-14 Update/Upgrade Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd'
+```
+
+Result: passed. Rust tests: 28 passed. Structure check reported no
+undocumented Rust files over 1200 lines. Dependency audit still only showed the
+expected `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite
+path; no OpenSSL/native-tls, HTTP/TLS, or platform service-manager dependency
+was added.
+
+Scope:
+
+- `upgrade` command catalog entry and parser dispatch.
+- Go `upgrade` data shape for current/latest/min-supported version,
+  strict-disabled, dev-build, newer/block flags, metadata source, update check
+  status, upgrade hint, and `upgrade_attempted`.
+- Cache-only update metadata loading from
+  `<workspace>/cache/update/metadata.json`.
+- Env/config controls:
+  `AWIKI_CLI_UPDATE_CACHE_ONLY`, `AWIKI_CLI_UPDATE_CACHE_TTL`,
+  `AWIKI_CLI_DISABLE_STRICT_VERSION`, and
+  `update.disable_strict_version`.
+- Go-compatible dev-build and prerelease version comparison behavior for the
+  verified slice.
+- Go npm packaging surface copied into `package.json`, `scripts/install.js`,
+  and `scripts/run.js`.
+
+System verification in `awiki-system-test`:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest tests_v2/update -q
+```
+
+Result: `5 passed in 0.72s`.
+
+Boundary note: registry fetch/writeback and the root update-policy preflight
+guard remain deferred translation tasks. They require the shared Rustls HTTP
+dependency decision and broader CLI-root parity tests.

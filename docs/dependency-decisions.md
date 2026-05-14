@@ -33,6 +33,8 @@ Undocumented native/system linkage is a completion blocker.
 | Runtime/listener local slice | Do not add platform service-manager dependencies for the current runtime/config slice. Use workspace-local listener state to satisfy the verified CLI contract while the full service-manager translation remains deferred. | Go uses platform service management through a library path. The user asked to avoid platform/system libraries where possible. The current system tests validate command shape, config writes, and listener lifecycle JSON contract; those can be met without linking systemd/launchd/Windows service libraries in this slice. | `crates/awiki-cli/tests/runtime_contract.rs`; `tests_v2/runtime/test_runtime_cli.py` passed. Dependency tree still has no OpenSSL/native-tls path and no new platform service library. |
 | Mail local command slice | Add no HTTP/TLS dependency in the first mail slice. Translate CLI validation/dry-run contracts and local `mail notify` SQLite behavior only. | Non-dry-run mail RPC requires the authsdk/DID-WBA session chain plus an HTTP/TLS client choice. The project constraint says to avoid system SSL; that dependency decision should be made once for authsdk/mail/message service integrations, not hidden inside a dry-run/local-cache mail slice. | `crates/awiki-cli/tests/mail_contract.rs` passed. Dependency tree remains unchanged except the existing bundled SQLite path. |
 | Config set slice | Add no dependency for `config set --did-domain`; use the existing hand-written config parser/writer. | Go behavior is a small config-file mutation with bare-domain normalization. A YAML dependency decision should be made for full config parity later, not introduced for this narrow command. | `crates/awiki-cli/tests/core_contract.rs` passed for dry-run, persistent write, validation, and side-effect checks. Dependency tree unchanged. |
+| Update/upgrade cache-only slice | Add no HTTP/TLS dependency for the first `upgrade` slice. Implement local cache parsing, version policy, and npm command boundary only. | Go `upgrade` normally fetches npm registry metadata over HTTPS, but the current system tests seed local cache and set `AWIKI_CLI_UPDATE_CACHE_ONLY=1`. Deferring network fetch avoids choosing an HTTP/TLS stack before the shared Rustls-based service integration decision. | `crates/awiki-cli/tests/update_contract.rs` and `tests_v2/update` passed. Dependency tree remains unchanged except the existing bundled SQLite path. |
+| npm install script parity | Copy Go `package.json`, `scripts/install.js`, and `scripts/run.js` for the package/install surface. | `awiki-system-test` validates the Node installer against the selected Rust repo. The Go package contract uses Node, curl, tar, and PowerShell on Windows; changing it would not be a Rust port optimization and would break 1:1 packaging behavior. | `tests_v2/update/test_install_script.py` passed with a local mirror archive and fake curl failure. |
 
 ## Known Deferred Decisions
 
@@ -41,6 +43,7 @@ Undocumented native/system linkage is a completion blocker.
 | Full YAML config parsing | Choose a parser that preserves Go YAML behavior without introducing unnecessary native dependencies. | Go config fixture parity tests, environment override tests, and dependency-tree review. |
 | SQLite crate/backend | Current accepted lane is `rusqlite + bundled` for exact SQLite behavior and runtime portability. Keep pure Rust alternatives recorded for later optimization review, not mixed into this parity translation. | Exact schema/migration parity, query behavior parity, no host SQLite dependency, and system-test debug/store evidence. |
 | HTTP/WebSocket client stack | Select Rustls-based HTTP/WebSocket crates for service integrations. | Feature audit showing no OpenSSL/native-tls path and service-backed system tests. |
+| npm registry update fetch | Translate `internal/update.fetchFromRegistry*` using the shared Rustls HTTP decision, then add cache writeback with Go-compatible file permissions. | Must preserve npmjs/npmmirror fallback, 3-second timeout, npm metadata JSON mapping, stale-cache fallback, and no OpenSSL/native-tls path. |
 | Mail RPC client | Translate `internal/mail/client.go` after the shared authsdk/session and Rustls HTTP stack are selected. | Must preserve DID-auth JWT refresh, bearer scope behavior, JSON-RPC error mapping, CA bundle handling, and local mail-service system tests without adding OpenSSL/native-tls. |
 | Platform service-manager integration | Decide whether to translate Go listener service control with a cross-platform Rust crate, direct per-platform code, or a no-platform-dependency supervisor strategy. | Must compare native/platform dependencies, service behavior parity, and `AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1` behavior before adoption. Do not mix this choice into unrelated runtime config translation. |
 
@@ -59,6 +62,25 @@ Undocumented native/system linkage is a completion blocker.
   rows and current `metadata.source_kind = "mail"` rows.
 - Verification: `cargo +1.79.0 test -p awiki-cli --test mail_contract --locked`
   passed; full workspace verification is recorded in `docs/verification/`.
+
+## Update/Upgrade Slice Notes
+
+2026-05-14:
+
+- Added a split `update` module for Go `internal/update/update.go` cache-only
+  decision behavior and `app/update_handlers.rs` for the Go
+  `internal/cli/upgrade.go` command boundary.
+- No HTTP/TLS crate was added. The first slice intentionally covers seeded
+  cache metadata, strict-disable controls, dev-build behavior, semver-like
+  prerelease comparison, and npm install command shape only.
+- Registry fetching and cache writeback are deferred to the shared Rustls HTTP
+  client decision so update, mail, authsdk, and service clients do not each
+  pick ad hoc TLS dependencies.
+- Copied `package.json`, `scripts/install.js`, and `scripts/run.js` from the Go
+  repository to satisfy the npm package/install surface. These scripts keep the
+  Go packaging dependency behavior: Node plus `curl` and `tar`/PowerShell.
+- Verification: `cargo +1.79.0 test -p awiki-cli --locked` and
+  `tests_v2/update` passed.
 
 ## Runtime/Listener Slice Notes
 

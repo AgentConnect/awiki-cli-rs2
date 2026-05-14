@@ -137,6 +137,7 @@ fn default_specs() -> &'static [CommandSpec] {
         cmd!("schema", "schema [command]", "Show the static command contract", "phase1", "schema"),
         cmd!("doctor", "doctor", "Run baseline environment and storage diagnostics", "phase1", "doctor"),
         cmd!("version", "version", "Show build information", "phase1", "version"),
+        CommandSpec { name: "upgrade", use_: "upgrade", short: "Upgrade awiki-cli to the latest supported release", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "upgrade", side_effect: true, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "init", use_: "init", short: "Initialize the awiki-cli workspace and config.yaml", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "init", side_effect: true, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "completion", use_: "completion", short: "Generate shell completion scripts", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.bash", use_: "bash", short: "Generate Bash completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.bash", side_effect: false, outputs: &[], flags: &[] },

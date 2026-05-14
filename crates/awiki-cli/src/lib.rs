@@ -9,5 +9,6 @@ pub mod mail;
 pub mod output;
 pub mod runtime;
 pub mod store;
+pub mod update;
 
 pub use app::execute;

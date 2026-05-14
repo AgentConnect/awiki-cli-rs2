@@ -1,6 +1,9 @@
 use serde::Serialize;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = match option_env!("AWIKI_CLI_VERSION") {
+    Some(version) => version,
+    None => "dev",
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BuildInfo {
