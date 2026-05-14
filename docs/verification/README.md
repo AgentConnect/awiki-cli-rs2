@@ -2,6 +2,49 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Mail Remote Wire Contract Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test mail_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/mail -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added a split `mail::wire` module for Go `internal/mail/client.go` and the
+  remote-method portions of `internal/mail/service.go`.
+- Preserved `/mail/rpc`, `mail.getInbox`, `mail.getMessage`, `mail.markRead`,
+  `mail.getMailbox`, `mail.getAttachment`, and `mail.send` request contracts.
+- Preserved default inbox folder/limit, Go transport profiles, JSON params,
+  validation errors, summary strings, and `ServiceError` display mapping for
+  authsdk RPC and HTTP errors.
+- Kept `mail inbox/read/mark-read/account/send/attachment download` non-dry-run
+  execution at the existing deferred boundary.
+- Native Agent read-only parity review found no blocking mismatch. It noted
+  that `identity_name` correctly remains outside the RPC params, matching Go's
+  service-layer identity resolution before the remote call.
+
+Boundary note: this slice does not implement `NewClient`, HTTP execution,
+DID-auth session construction, JWT refresh, CA bundle handling, attachment file
+writes, or live local mail-service system tests. Those remain in the later
+shared authsdk/session plus Rustls HTTP client lane.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; this
+slice does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+`native-tls`, bundled OpenSSL, or ANP SDK network/default features. TLS policy
+remains Rustls-first and unchanged.
+
 ## 2026-05-15 Local CLI Validation Selector Slice
 
 Local Rust and offline system-test verification:

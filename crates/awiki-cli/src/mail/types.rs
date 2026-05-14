@@ -1,6 +1,8 @@
 use serde_json::{json, Value};
 use std::fmt;
 
+pub const MAIL_RPC_ENDPOINT: &str = "/mail/rpc";
+
 #[derive(Debug, Clone)]
 pub struct CommandResult {
     pub data: Value,
@@ -162,6 +164,50 @@ pub fn attachment_download_plan(
         summary: "Dry run: mail attachment download planned".to_string(),
         warnings: Vec::new(),
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InboxRequest {
+    pub identity_name: String,
+    pub folder: String,
+    pub limit: i64,
+    pub offset: i64,
+    pub unread_only: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReadRequest {
+    pub identity_name: String,
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MarkReadRequest {
+    pub identity_name: String,
+    pub message_ids: Vec<String>,
+    pub is_read: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountRequest {
+    pub identity_name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttachmentRequest {
+    pub identity_name: String,
+    pub message_id: String,
+    pub attachment_index: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SendRequest {
+    pub identity_name: String,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub subject: String,
+    pub body_text: String,
+    pub body_html: String,
 }
 
 fn default_string(value: &str, fallback: &str) -> String {
