@@ -2,6 +2,7 @@ use super::detect::{inspect, InspectError};
 use super::journal::{clear_journal, JournalError};
 use super::meta::{load_meta, MetaError};
 use super::migration_v0_to_v1;
+use super::migration_v1_to_v2;
 use super::resolve_paths;
 use super::types::{Inspection, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
 use crate::{config, identity, store};
@@ -359,13 +360,19 @@ impl Migration for WorkspaceMigration {
             .unwrap_or(false))
     }
 
-    fn apply(&self, _context: &mut Context) -> Result<(), MigrationError> {
+    fn apply(&self, context: &mut Context) -> Result<(), MigrationError> {
+        if self.from == 1 && self.to == 2 {
+            return migration_v1_to_v2::apply_workspace_v1_to_v2_cleanup(context);
+        }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
 
     fn validate(&self, context: &Context) -> Result<(), MigrationError> {
         if self.from == 0 && self.to == 1 {
             return migration_v0_to_v1::validate_workspace_v0_to_v1(context);
+        }
+        if self.from == 1 && self.to == 2 {
+            return Ok(());
         }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }

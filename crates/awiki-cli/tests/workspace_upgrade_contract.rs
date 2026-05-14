@@ -329,12 +329,15 @@ fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
     plan[0]
         .validate(&context)
         .expect("first migration validation is wired");
-    let validate_err = plan[1]
+    plan[1]
         .validate(&context)
-        .expect_err("later migration validation remains deferred in this slice");
+        .expect("second migration validation is Go no-op");
+    let validate_err = plan[2]
+        .validate(&context)
+        .expect_err("k1 replacement validation remains deferred in this slice");
     assert_eq!(
         validate_err.to_string(),
-        "workspace migration execution is not implemented: workspace_1_to_2_remove_legacy_skill_and_listener"
+        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
     );
 }
 

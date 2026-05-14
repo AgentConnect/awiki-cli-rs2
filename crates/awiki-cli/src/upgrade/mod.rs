@@ -5,6 +5,7 @@ mod journal;
 mod lock;
 mod meta;
 mod migration_v0_to_v1;
+mod migration_v1_to_v2;
 mod settings;
 mod types;
 mod upgrader;
@@ -20,6 +21,9 @@ pub use migration_v0_to_v1::{
     apply_workspace_v0_to_v1_local_state, apply_workspace_v0_to_v1_local_state_optional,
     ensure_target_store_schema, refresh_resolved_config, refresh_resolved_config_optional,
     validate_sqlite_health, RefreshResolvedConfigError, SQLiteHealthError,
+};
+pub use migration_v1_to_v2::{
+    apply_workspace_v1_to_v2_cleanup, apply_workspace_v1_to_v2_cleanup_optional,
 };
 pub use settings::{
     load_legacy_settings, parse_legacy_settings, LegacySettingsError, NormalizedLegacySettings,

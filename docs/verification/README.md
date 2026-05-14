@@ -2,6 +2,54 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Workspace v1->v2 Legacy Cleanup Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli migration_v1_to_v2 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededCleansLegacySkillArtifactsForExistingWorkspace|TestUpgradeIfNeededImportsLegacyWorkspace' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added `migration_v1_to_v2.rs` for Go
+  `workspaceV1ToV2Migration.Apply` and `cleanupLegacySkillArtifacts`.
+- Preserved the missing-context guard:
+  `workspace upgrade context is required`.
+- Removes both Go legacy skill install paths under `.openclaw`.
+- Preserves platform artifact gates and command argv for macOS LaunchAgent,
+  Linux `systemctl --user`, and Windows `schtasks`, using test injection so
+  unit tests do not call host service managers.
+- Preserves `OPENCLAW_WORKSPACE`, `XDG_CONFIG_HOME`, and `LOCALAPPDATA`
+  fallback behavior for heartbeat/service paths.
+- Removes the legacy heartbeat section only when the marked section references
+  `awiki-agent-id-message`, preserves unrelated content, and collapses extra
+  blank lines like Go.
+- Wires direct `Migration::apply` for 1->2 and Go's no-op v1->v2
+  `validate`; `UpgradeIfNeeded` still defers real migration phase execution.
+
+Boundary note: this slice does not implement full `UpgradeIfNeeded` phase
+execution, journal phase writes, backup/rollback, meta stamping through the
+migration loop, v0->v1 default apply wiring, or v2->v3 k1->e1 DID replacement.
+The platform service actions remain external command invocations, matching Go;
+no service-manager crate or platform library is linked.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses only standard-library filesystem/process APIs and existing upgrade
+structures. It does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket,
+authsdk session, platform service-manager, filesystem-copy, file-lock, or new
+SQLite dependencies. TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-14 Durablefs Directory Sync Slice
 
 Local Rust and Go reference verification:
