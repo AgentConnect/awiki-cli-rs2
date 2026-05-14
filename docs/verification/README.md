@@ -1031,3 +1031,46 @@ not execute `anp-mls`, call hidden P6 message-service APIs, refresh JWT
 sessions, select HTTP/WebSocket transport, mutate cache, or validate live MLS
 storage/security behavior. Those remain dedicated group-E2EE service/provider
 translation tasks.
+
+## 2026-05-14 Doctor Local Diagnostics Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test doctor_contract --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|tungstenite|websocket'
+```
+
+Result: passed. The focused doctor contract test covers the Go 10-check report
+shape, counts/summary precedence, empty and initialized workspaces, invalid ANP
+service configuration, SQLite contact-handle binding diagnostics, and a fake
+`anp-mls system version --json-in -` compatibility probe with scoped MLS state.
+The full `awiki-cli` crate test suite reported 76 tests passing after this
+slice. Structure check reported no undocumented Rust files over 1200 lines;
+`doctor/mod.rs` is 1002 lines and `tests/doctor_contract.rs` is 271 lines.
+Dependency audit remained unchanged: only the approved
+`rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
+present, with no OpenSSL/native-tls/HTTP/TLS client path.
+
+Scope:
+
+- Go `Report`, `Check`, and `Counts` JSON contract.
+- Go check order: `build`, `config_file`, `environment`, `anp_service`,
+  `runtime`, `identity_store`, `sqlite`, `anp_mls`, `workspace_upgrade`, and
+  `legacy_paths`.
+- Local diagnostics through already translated config, identity, store, runtime,
+  and legacy-scan modules.
+- External `anp-mls` health probe through `std::process::Command`; no Rust
+  dependency was added.
+
+Boundary note: this slice does not implement real platform service-manager
+status, auth/session checks, HTTP/WebSocket transport, MLS provider execution,
+full Go YAML parse-error parity, or full `upgrade.Inspect` meta/journal
+semantics. Those remain separate parity slices.

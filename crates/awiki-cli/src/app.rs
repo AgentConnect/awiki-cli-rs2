@@ -3,6 +3,7 @@ use crate::cli::{self, ParsedCommand};
 use crate::cmdmeta;
 use crate::config::{self, Overrides, Resolved};
 use crate::docs;
+use crate::doctor;
 use crate::identity::{self, IdentityError, Manager};
 use crate::output::{self, ErrorEnvelope, ExitError, Format, IdentityMeta, Meta, SuccessEnvelope};
 use crate::store::{self, StoreError};
@@ -187,20 +188,13 @@ impl App {
 
     pub fn run_doctor(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
-        let checks = doctor_checks(&resolved);
-        let counts = count_checks(&checks);
-        let summary = if counts["error"].as_i64().unwrap_or_default() > 0 {
-            "Doctor found blocking issues"
-        } else if counts["warn"].as_i64().unwrap_or_default() > 0 {
-            "Doctor found warnings"
-        } else {
-            "Doctor completed successfully"
-        };
+        let report = doctor::run(&resolved);
+        let summary = report.summary.clone();
         self.render_success(
             "awiki-cli doctor",
             &resolved,
-            json!({ "checks": checks, "summary": summary, "counts": counts }),
-            summary,
+            serde_json::to_value(report).unwrap_or_else(|_| json!({})),
+            &summary,
             Vec::new(),
         )
     }
@@ -718,35 +712,6 @@ fn workspace_upgrade_snapshot(resolved: &Resolved) -> Value {
         "actions": [],
         "warnings": [],
     })
-}
-
-fn doctor_checks(resolved: &Resolved) -> Vec<Value> {
-    vec![
-        json!({ "name": "build", "status": "ok", "summary": "Build information is available", "details": BuildInfo::current() }),
-        json!({ "name": "config_file", "status": if resolved.config_error.is_empty() { "ok" } else { "error" }, "summary": "config.yaml inspected", "details": { "exists": resolved.config_exists, "path": resolved.paths.config_file, "error": resolved.config_error } }),
-        json!({ "name": "env", "status": "ok", "summary": "Environment compatibility checked", "details": { "env_hits": resolved.env_hits } }),
-        json!({ "name": "sqlite", "status": "ok", "summary": "SQLite path resolved", "details": { "database_file": resolved.paths.database_file } }),
-    ]
-}
-
-fn count_checks(checks: &[Value]) -> Value {
-    let mut ok = 0;
-    let mut warn = 0;
-    let mut error = 0;
-    let mut info = 0;
-    for check in checks {
-        match check
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("info")
-        {
-            "ok" => ok += 1,
-            "warn" => warn += 1,
-            "error" => error += 1,
-            _ => info += 1,
-        }
-    }
-    json!({ "ok": ok, "warn": warn, "error": error, "info": info })
 }
 
 fn init_dirs(resolved: &Resolved) -> Vec<String> {

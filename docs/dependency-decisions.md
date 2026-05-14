@@ -50,6 +50,7 @@ initial solution for portability.
 | Runtime/listener local slice | Do not add platform service-manager dependencies for the current runtime/config slice. Use workspace-local listener state to satisfy the verified CLI contract while the full service-manager translation remains deferred. | Go uses platform service management through a library path. The user asked to avoid platform/system libraries where possible. The current system tests validate command shape, config writes, and listener lifecycle JSON contract; those can be met without linking systemd/launchd/Windows service libraries in this slice. | `crates/awiki-cli/tests/runtime_contract.rs`; `tests_v2/runtime/test_runtime_cli.py` passed. Dependency tree still has no OpenSSL/native-tls path and no new platform service library. |
 | Mail local command slice | Add no HTTP/TLS dependency in the first mail slice. Translate CLI validation/dry-run contracts and local `mail notify` SQLite behavior only. | Non-dry-run mail RPC requires the authsdk/DID-WBA session chain plus an HTTP/TLS client choice. The project constraint says to avoid system SSL; that dependency decision should be made once for authsdk/mail/message service integrations, not hidden inside a dry-run/local-cache mail slice. | `crates/awiki-cli/tests/mail_contract.rs` passed. Dependency tree remains unchanged except the existing bundled SQLite path. |
 | Config set slice | Add no dependency for `config set --did-domain`; use the existing hand-written config parser/writer. | Go behavior is a small config-file mutation with bare-domain normalization. A YAML dependency decision should be made for full config parity later, not introduced for this narrow command. | `crates/awiki-cli/tests/core_contract.rs` passed for dry-run, persistent write, validation, and side-effect checks. Dependency tree unchanged. |
+| Doctor local diagnostics slice | Add no dependency for `internal/doctor/doctor.go`; use existing config/identity/store/runtime modules plus `std::process::Command` for the local `anp-mls system version --json-in -` probe. | Go doctor is a local diagnostic aggregator. Translating its report contract now improves core parity without selecting HTTP/TLS, authsdk session, platform service-manager, or MLS provider crates. The external `anp-mls` check remains a health probe only, not group-E2EE provider execution. | `crates/awiki-cli/tests/doctor_contract.rs` passed. Dependency tree remains unchanged except the existing approved bundled SQLite path; no OpenSSL/native-tls, HTTP/TLS, WebSocket, or platform service-manager dependency was added. |
 | Update/upgrade cache-only slice | Add no HTTP/TLS dependency for the first `upgrade` slice. Implement local cache parsing, version policy, and npm command boundary only. | Go `upgrade` normally fetches npm registry metadata over HTTPS, but the current system tests seed local cache and set `AWIKI_CLI_UPDATE_CACHE_ONLY=1`. Deferring network fetch avoids choosing an HTTP/TLS stack before the shared Rustls-based service integration decision. | `crates/awiki-cli/tests/update_contract.rs` and `tests_v2/update` passed. Dependency tree remains unchanged except the existing bundled SQLite path. |
 | npm install script parity | Copy Go `package.json`, `scripts/install.js`, and `scripts/run.js` for the package/install surface. | `awiki-system-test` validates the Node installer against the selected Rust repo. The Go package contract uses Node, curl, tar, and PowerShell on Windows; changing it would not be a Rust port optimization and would break 1:1 packaging behavior. | `tests_v2/update/test_install_script.py` passed with a local mirror archive and fake curl failure. |
 | Identity/group dry-run CLI slice | Add no dependency for `id replace-did --dry-run` or `group create/update --dry-run`; use static plan builders and existing config resolution. | These commands are currently verified as CLI contract surfaces. Real replace-did and group RPC execution require authsdk/message-service/store-rebind decisions that should not be mixed into dry-run translation. | `crates/awiki-cli/tests/identity_contract.rs`, `crates/awiki-cli/tests/group_contract.rs`, and the two focused `awiki-system-test` selectors passed. Dependency tree unchanged. |
@@ -94,6 +95,21 @@ initial solution for portability.
   rows and current `metadata.source_kind = "mail"` rows.
 - Verification: `cargo +1.79.0 test -p awiki-cli --test mail_contract --locked`
   passed; full workspace verification is recorded in `docs/verification/`.
+
+## Doctor Slice Notes
+
+2026-05-14:
+
+- Added a split `doctor` module for Go `internal/doctor/doctor.go` instead of
+  keeping the diagnostic surface inside `app.rs`.
+- Preserved Go's fixed check order and report shape for `build`,
+  `config_file`, `environment`, `anp_service`, `runtime`, `identity_store`,
+  `sqlite`, `anp_mls`, `workspace_upgrade`, and `legacy_paths`.
+- Added a local `anp-mls` binary resolution/version probe through the standard
+  library only. This does not invoke MLS provider operations, hidden group-E2EE
+  service APIs, HTTP/WebSocket transport, or auth sessions.
+- Current boundary: workspace-upgrade deep meta/journal inspection and full Go
+  YAML parse-error parity remain separate config/upgrade slices.
 
 ## Group Wire Slice Notes
 
