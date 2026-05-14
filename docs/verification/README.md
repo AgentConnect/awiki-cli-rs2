@@ -2,6 +2,58 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Workspace UpgradeIfNeeded Journal Phase Loop Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestUpgradeIfNeededCleansLegacySkillArtifactsForExistingWorkspace|TestAcquireFileLock|TestCreateBackupCopiesWorkspaceState' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Advanced the Go `UpgradeIfNeeded` translation from backup setup into the
+  migration journal phase loop.
+- Reuses the existing journal `upgrade_id` when present; otherwise creates a
+  new Go-style compact timestamp ID.
+- Saves `checking`, `applying`, and `validating` journal phases for each
+  planned migration, with the migration name, version range, backup directory,
+  start time, and app version.
+- Calls migration `is_done`; if the migration is not already complete, saves
+  `applying` and calls `apply`; then saves `validating` and calls `validate`.
+- Stamps `meta.json` after each successful migration with the target schema
+  version, app version, RFC3339-seconds update time, last upgrade ID, backup
+  dir, and accumulated warnings.
+- Updates `Context.current_meta` after each successful migration and clears the
+  journal after the full plan succeeds.
+- Splits `workspace_upgrade_if_needed_*` tests into
+  `workspace_upgrade_if_needed_contract.rs`, keeping all Rust test files under
+  the default 1200-line structure limit.
+
+Boundary note: this slice does not complete all migrations. v0->v1 default
+apply remains deferred at
+`workspace_0_to_1_bootstrap_local_state_upgrade`, and v2->v3 k1->e1 DID
+replacement remains deferred at
+`workspace_2_to_3_replace_existing_k1_handle_dids`. Rollback and
+service-backed identity replacement remain later slices.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+reuses existing upgrade modules, the documented direct file-lock FFI, and the
+already approved `rusqlite + bundled` SQLite backup path. It does not introduce
+HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
+service-manager, filesystem-copy, file-lock crate, or new SQLite dependencies.
+TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-15 Workspace UpgradeIfNeeded Backup Setup Slice
 
 Local Rust and Go reference verification:

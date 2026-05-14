@@ -1,8 +1,8 @@
 use super::backup::{create_backup, BackupError};
 use super::detect::{inspect, InspectError};
-use super::journal::{clear_journal, load_journal, JournalError};
+use super::journal::{clear_journal, load_journal, save_journal, JournalError};
 use super::lock::{acquire_file_lock, LockError};
-use super::meta::{load_meta, MetaError};
+use super::meta::{load_meta, save_meta, MetaError};
 use super::migration_v0_to_v1;
 use super::migration_v1_to_v2;
 use super::resolve_paths;
@@ -10,6 +10,7 @@ use super::types::{Inspection, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
 use crate::{config, identity, store};
 use std::collections::BTreeMap;
 use std::fmt;
+use time::{OffsetDateTime, UtcOffset};
 
 #[derive(Debug, Clone)]
 pub struct Context {
@@ -104,6 +105,8 @@ pub enum UpgradeError {
     Backup(BackupError),
     Journal(JournalError),
     Lock(LockError),
+    Meta(MetaError),
+    Migration(MigrationError),
     Plan(UpgraderError),
     NewerThanSupported {
         current_version: i64,
@@ -123,6 +126,8 @@ impl fmt::Display for UpgradeError {
             Self::Backup(err) => write!(f, "{err}"),
             Self::Journal(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
+            Self::Meta(err) => write!(f, "{err}"),
+            Self::Migration(err) => write!(f, "{err}"),
             Self::Plan(err) => write!(f, "{err}"),
             Self::NewerThanSupported {
                 current_version,
@@ -165,6 +170,18 @@ impl From<BackupError> for UpgradeError {
 impl From<LockError> for UpgradeError {
     fn from(value: LockError) -> Self {
         Self::Lock(value)
+    }
+}
+
+impl From<MetaError> for UpgradeError {
+    fn from(value: MetaError) -> Self {
+        Self::Meta(value)
+    }
+}
+
+impl From<MigrationError> for UpgradeError {
+    fn from(value: MigrationError) -> Self {
+        Self::Migration(value)
     }
 }
 
@@ -292,10 +309,49 @@ impl Upgrader {
             return Ok(());
         }
 
-        Err(UpgradeError::ExecutionDeferred {
-            current_version,
-            latest_version: self.latest_version,
-        })
+        let upgrade_id = journal
+            .as_ref()
+            .filter(|journal| !journal.upgrade_id.is_empty())
+            .map(|journal| journal.upgrade_id.clone())
+            .unwrap_or_else(|| format_time_layout(now_utc()));
+        for migration in plan {
+            let mut journal = super::types::Journal {
+                upgrade_id: upgrade_id.clone(),
+                from_version: migration.from(),
+                to_version: migration.to(),
+                current_step: migration.name().to_string(),
+                phase: "checking".to_string(),
+                backup_dir: context.backup_dir.clone(),
+                started_at: format_rfc3339_seconds(now_utc()),
+                app_version: context.app_version.clone(),
+            };
+            save_journal(&context.paths.journal_path, &journal)?;
+
+            let done = migration.is_done(context)?;
+            if !done {
+                journal.phase = "applying".to_string();
+                save_journal(&context.paths.journal_path, &journal)?;
+                migration.apply(context)?;
+            }
+
+            journal.phase = "validating".to_string();
+            save_journal(&context.paths.journal_path, &journal)?;
+            migration.validate(context)?;
+
+            let meta = Meta {
+                workspace_schema_version: migration.to(),
+                app_version: context.app_version.clone(),
+                updated_at: format_rfc3339_seconds(now_utc()),
+                last_upgrade_id: upgrade_id.clone(),
+                last_backup_dir: context.backup_dir.clone(),
+                warnings: context.warnings.clone(),
+            };
+            save_meta(&context.paths.meta_path, &meta)?;
+            context.current_meta = Some(meta);
+        }
+
+        clear_journal(&context.paths.journal_path)?;
+        Ok(())
     }
 
     pub fn plan(
@@ -337,6 +393,38 @@ fn capture_inspection(context: &mut Context, inspection: Inspection) -> (i64, bo
     context.current_meta = inspection.meta.clone();
     context.inspection = Some(inspection);
     (current_version, empty, has_journal)
+}
+
+fn now_utc() -> OffsetDateTime {
+    OffsetDateTime::now_utc().to_offset(UtcOffset::UTC)
+}
+
+fn format_time_layout(value: OffsetDateTime) -> String {
+    let value = value.to_offset(UtcOffset::UTC);
+    let month: u8 = value.month().into();
+    format!(
+        "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
+        value.year(),
+        month,
+        value.day(),
+        value.hour(),
+        value.minute(),
+        value.second()
+    )
+}
+
+fn format_rfc3339_seconds(value: OffsetDateTime) -> String {
+    let value = value.to_offset(UtcOffset::UTC);
+    let month: u8 = value.month().into();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        value.year(),
+        month,
+        value.day(),
+        value.hour(),
+        value.minute(),
+        value.second()
+    )
 }
 
 pub fn new_default_upgrader() -> Upgrader {
