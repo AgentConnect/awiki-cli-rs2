@@ -883,3 +883,74 @@ Result: `37 passed in 1.84s`.
 Boundary note: this slice does not execute `anp-mls`, call hidden P6
 message-service RPCs, or validate MLS storage/security boundaries. Those remain
 dedicated group-E2EE implementation and focused system-test tasks.
+
+## 2026-05-14 Group Base/Local Wire Builder Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_group_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|tungstenite|websocket'
+```
+
+Result: passed. The full `awiki-cli` crate test suite reported 65 tests
+passing after this slice. Structure check reported no undocumented Rust files
+over 1200 lines; the new `message/group_wire.rs` is 527 lines and
+`tests/message_group_wire_contract.rs` is 402 lines. Dependency audit remained
+unchanged: only the approved `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg`
+bundled SQLite path was present, with no OpenSSL/native-tls/HTTP/TLS client path.
+
+Scope:
+
+- Go `BuildGroupCreateRPCParams` request params, including service target,
+  `group.create` origin proof, display-name validation, default policy,
+  permissions, and E2EE policy security-profile override.
+- Go `BuildGroupGetInfoRPCParams` unsigned base profile request params.
+- Go `BuildGroupJoinRPCParams`, `BuildGroupAddRPCParams`,
+  `BuildGroupRemoveRPCParams`, `BuildGroupLeaveRPCParams`,
+  `BuildGroupUpdateProfileRPCParams`, and `BuildGroupUpdatePolicyRPCParams`
+  signed control params.
+- Go `BuildGroupSendRPCParams` signed group send params, message id generation,
+  message-type content-type mapping, and original text body preservation.
+- Go local `BuildGroupGetRPCParams`, `BuildGroupListRPCParams`,
+  `BuildGroupMembersRPCParams`, and `BuildGroupMessagesRPCParams`, including
+  local profile metadata, default limits, cursor-to-`since_seq`, `skip`
+  omission when zero, and no generated local operation fields.
+
+System verification in `awiki-system-test`:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/core/test_basic_commands.py \
+  tests_v2/core/test_output_contracts_cli.py \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_query_rejects_unsafe_sql_and_supports_table_output \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+  tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+  tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+  tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+  tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+  tests_v2/runtime/test_runtime_cli.py \
+  tests_v2/update \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: `37 passed in 1.83s`.
+
+Boundary note: this slice constructs request params only. It does not execute
+non-dry-run group RPC calls, refresh JWT sessions, select HTTP/WebSocket
+transport, mutate local message cache, upload/download attachments, or run MLS
+group E2EE provider logic. Those remain dedicated authsdk/message-service and
+group-E2EE wire/service slices.

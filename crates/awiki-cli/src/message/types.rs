@@ -161,3 +161,104 @@ pub struct SecureOutboxActionRequest {
     pub identity_name: String,
     pub outbox_id: String,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupCreateRequest {
+    pub identity_name: String,
+    pub name: String,
+    pub description: String,
+    pub discoverability: String,
+    pub admission_mode: String,
+    pub message_security_profile: String,
+    pub e2ee: bool,
+    pub slug: String,
+    pub goal: String,
+    pub rules: String,
+    pub message_prompt: String,
+    pub doc_url: String,
+    pub attachments_allowed: Option<bool>,
+    pub max_members: String,
+    pub member_max_messages: Option<i64>,
+    pub member_max_total_chars: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupGetRequest {
+    pub identity_name: String,
+    pub group: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupInfoRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub include_policy: bool,
+    pub include_member_list: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupJoinRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub reason_text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupMemberRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub role: String,
+    pub reason_text: String,
+    pub e2ee: bool,
+    pub leave_request_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupLeaveRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub reason_text: String,
+    pub e2ee: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupUpdateRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub name: String,
+    pub description: String,
+    pub discoverability: String,
+    pub admission_mode: String,
+    pub slug: String,
+    pub goal: String,
+    pub rules: String,
+    pub message_prompt: String,
+    pub doc_url: String,
+    pub attachments_allowed: Option<bool>,
+    pub max_members: String,
+    pub member_max_messages: Option<i64>,
+    pub member_max_total_chars: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupListRequest {
+    pub identity_name: String,
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupMembersRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupMessagesRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub limit: i64,
+    pub cursor: String,
+    pub skip: i64,
+}

@@ -1,4 +1,5 @@
 mod attachment;
+mod group_wire;
 mod proof;
 mod service_discovery;
 mod types;
@@ -13,6 +14,14 @@ pub use attachment::{
     AttachmentCommitObjectResult, AttachmentCreateSlotResult, AttachmentSelection,
     PreparedAttachment,
 };
+pub use group_wire::{
+    build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_info_rpc_params,
+    build_group_get_rpc_params, build_group_join_rpc_params, build_group_leave_rpc_params,
+    build_group_list_rpc_params, build_group_members_rpc_params, build_group_messages_rpc_params,
+    build_group_remove_rpc_params, build_group_send_rpc_params,
+    build_group_update_policy_rpc_params, build_group_update_profile_rpc_params,
+    GROUP_E2EE_PROFILE, GROUP_E2EE_SECURITY_PROFILE, GROUP_E2EE_TRANSPORT_PROFILE,
+};
 pub use proof::{
     build_origin_proof, load_private_key_material, origin_auth_value,
     verification_method_id_from_document, ORIGIN_PROOF_SCHEME,
@@ -21,8 +30,10 @@ pub use service_discovery::{
     select_attachment_rpc_service_from_document, DiscoveredAttachmentService,
 };
 pub use types::{
-    AttachmentDownloadRequest, HistoryRequest, InboxRequest, MarkReadRequest, MessageError,
-    SecureOutboxActionRequest, SecurePeerRequest, SecureStatusRequest, SendRequest,
+    AttachmentDownloadRequest, GroupCreateRequest, GroupGetRequest, GroupInfoRequest,
+    GroupJoinRequest, GroupLeaveRequest, GroupListRequest, GroupMemberRequest, GroupMembersRequest,
+    GroupMessagesRequest, GroupUpdateRequest, HistoryRequest, InboxRequest, MarkReadRequest,
+    MessageError, SecureOutboxActionRequest, SecurePeerRequest, SecureStatusRequest, SendRequest,
     MESSAGE_RPC_ENDPOINT, MESSAGE_WS_ENDPOINT,
 };
 pub use warnings::{

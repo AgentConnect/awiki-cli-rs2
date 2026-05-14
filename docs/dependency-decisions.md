@@ -49,6 +49,7 @@ choice.
 | npm install script parity | Copy Go `package.json`, `scripts/install.js`, and `scripts/run.js` for the package/install surface. | `awiki-system-test` validates the Node installer against the selected Rust repo. The Go package contract uses Node, curl, tar, and PowerShell on Windows; changing it would not be a Rust port optimization and would break 1:1 packaging behavior. | `tests_v2/update/test_install_script.py` passed with a local mirror archive and fake curl failure. |
 | Identity/group dry-run CLI slice | Add no dependency for `id replace-did --dry-run` or `group create/update --dry-run`; use static plan builders and existing config resolution. | These commands are currently verified as CLI contract surfaces. Real replace-did and group RPC execution require authsdk/message-service/store-rebind decisions that should not be mixed into dry-run translation. | `crates/awiki-cli/tests/identity_contract.rs`, `crates/awiki-cli/tests/group_contract.rs`, and the two focused `awiki-system-test` selectors passed. Dependency tree unchanged. |
 | Group non-E2EE dry-run lifecycle slice | Add no dependency for `group get/join/add/remove/leave/list/members/messages --dry-run`; use static plan builders and existing config resolution. | The Go dry-run contracts do not require network/auth execution. Real group RPC and group E2EE require shared authsdk/message-service/MLS dependency decisions and should stay out of this dry-run slice. | `crates/awiki-cli/tests/group_contract.rs` passed. Dependency tree unchanged. |
+| Group base/local wire builder slice | Add no dependency for `internal/message/group_wire.go` base/local request builders; reuse existing local ANP SDK proof generation and current message helper crates only. | This slice constructs JSON-RPC params and RFC9421 origin-proof auth values but does not execute service calls. Transport, JWT refresh, WebSocket, cache mutation, and MLS provider execution remain deferred to the shared Rustls/authsdk/group-E2EE slices. | `crates/awiki-cli/tests/message_group_wire_contract.rs`, full `cargo +1.79.0 test -p awiki-cli --locked`, `xtask check-structure`, build, dependency audit, and accepted `awiki-system-test` selector set passed. Dependency tree remained limited to the already approved bundled SQLite path; no OpenSSL/native-tls/TLS client path was added. |
 | Group E2EE dry-run CLI slice | Add no dependency for `group e2ee ... --dry-run`; model provider metadata and plans without invoking `anp-mls`. | Go dry-run plans expose the intended MLS/provider orchestration without executing the provider. Real MLS execution should be implemented with the local ANP Rust tooling and focused security/system tests, not hidden inside static CLI plan translation. | `crates/awiki-cli/tests/group_contract.rs` passed. Dependency tree unchanged. |
 | Page dry-run CLI slice | Add no HTTP/TLS dependency for `page create/list/get/update/rename/delete --dry-run`; use static plan builders and local markdown-file reads only. | Go dry-run page contracts expose `/content/rpc` request metadata without making network calls. Real page CRUD requires active identity auth, DID-auth JWT refresh, and content RPC over HTTP, so it belongs in the shared authsdk + Rustls HTTP slice rather than this CLI-contract translation. | `crates/awiki-cli/tests/page_contract.rs` passed. Dependency tree unchanged. |
 | Msg dry-run CLI slice | Add no HTTP/TLS, WebSocket, or E2EE execution dependency for `msg send/attachment download/inbox/history/mark-read/secure ... --dry-run`; use static plan builders and local text-file reads only. | Go dry-run contracts expose service intent without executing message RPC, WebSocket proxy transport, attachment transfer, or secure direct E2EE. Those paths require authsdk/session, message-service clients, Rustls HTTP/WS dependency selection, and E2EE provider decisions, so they should not be hidden inside this CLI-boundary translation. | `crates/awiki-cli/tests/msg_contract.rs` passed. Dependency tree unchanged except the existing approved bundled SQLite path; no OpenSSL/native-tls or HTTP/TLS crate was added. |
@@ -87,6 +88,20 @@ choice.
   rows and current `metadata.source_kind = "mail"` rows.
 - Verification: `cargo +1.79.0 test -p awiki-cli --test mail_contract --locked`
   passed; full workspace verification is recorded in `docs/verification/`.
+
+## Group Wire Slice Notes
+
+2026-05-14:
+
+- Added a split `message::group_wire` module for Go
+  `internal/message/group_wire.go` base/local request construction. E2EE RPC
+  wire builders remain a later split so the default Rust source file size stays
+  well below the 1200-line limit.
+- Reused the existing local ANP Rust SDK origin-proof helper. No HTTP, WebSocket,
+  TLS, authsdk session, cache mutation, MLS, or new dependency was introduced.
+- Preserved Go's request-shape boundaries for signed group control operations,
+  signed group sends, unsigned group info/local reads, policy defaults, and
+  validation messages.
 
 ## Update/Upgrade Slice Notes
 
