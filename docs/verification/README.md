@@ -374,3 +374,77 @@ Result: `37 passed in 1.83s`.
 Boundary note: this slice still does not implement non-dry-run group RPC, group
 attachments, or `group e2ee ...`. Those remain dedicated service-backed and
 MLS/provider translation tasks.
+
+## 2026-05-14 Group E2EE Dry-Run CLI Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls'
+```
+
+Result: passed. Rust tests: 33 local tests after this slice. Structure check
+reported no undocumented Rust files over 1200 lines. Dependency audit remained
+unchanged: only the approved `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg`
+bundled SQLite path was present.
+
+Scope:
+
+- `group e2ee status` dry-run provider diagnostics, profile/security profile,
+  hidden-discovery guard, and MLS data directory.
+- `group e2ee publish-key-package` dry-run plan, including `--purpose`,
+  `--recovery`, `--device`, `--group`, and `--contract-test`.
+- `group e2ee pending` and `group e2ee repair` dry-run plan shape.
+- `group e2ee process-leave-request`, `recover-member`, hidden `update-key`,
+  and hidden `rejoin` dry-run plan shape and schema metadata.
+- `group e2ee` command tree schema children and hidden/side-effect metadata.
+
+Go parity probes:
+
+```bash
+AWIKI_CLI_WORKSPACE_HOME_DIR="$(mktemp -d)" \
+  go run ./cmd/awiki-cli group e2ee status --dry-run --group did:wba:example.com:groups:demo:e1_group
+AWIKI_CLI_WORKSPACE_HOME_DIR="$(mktemp -d)" \
+  go run ./cmd/awiki-cli group e2ee publish-key-package --dry-run --group did:wba:example.com:groups:demo:e1_group --purpose update --device bob-main --contract-test
+AWIKI_CLI_WORKSPACE_HOME_DIR="$(mktemp -d)" \
+  go run ./cmd/awiki-cli group e2ee rejoin --dry-run --group did:wba:example.com:groups:demo:e1_group --member bob
+```
+
+Result: Rust dry-run outputs matched the observed Go command path and plan
+shape for the probed E2EE status, KeyPackage publish, and rejoin commands.
+
+System verification in `awiki-system-test`:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/core/test_basic_commands.py \
+  tests_v2/core/test_output_contracts_cli.py \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_query_rejects_unsafe_sql_and_supports_table_output \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+  tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+  tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+  tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+  tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+  tests_v2/runtime/test_runtime_cli.py \
+  tests_v2/update \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: `37 passed in 1.84s`.
+
+Boundary note: this slice does not execute `anp-mls`, call hidden P6
+message-service RPCs, or validate MLS storage/security boundaries. Those remain
+dedicated group-E2EE implementation and focused system-test tasks.

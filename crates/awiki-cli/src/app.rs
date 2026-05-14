@@ -11,6 +11,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+mod group_e2ee_handlers;
 mod group_handlers;
 mod mail_handlers;
 mod runtime_handlers;

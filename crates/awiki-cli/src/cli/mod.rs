@@ -106,6 +106,14 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "group.list" => app.run_group_list(command),
         "group.members" => app.run_group_members(command),
         "group.messages" => app.run_group_messages(command),
+        "group.e2ee.status" => app.run_group_e2ee_status(command),
+        "group.e2ee.publish-key-package" => app.run_group_e2ee_publish_key_package(command),
+        "group.e2ee.pending" => app.run_group_e2ee_pending(command),
+        "group.e2ee.repair" => app.run_group_e2ee_repair(command),
+        "group.e2ee.update-key" => app.run_group_e2ee_update_key(command),
+        "group.e2ee.rejoin" => app.run_group_e2ee_rejoin(command),
+        "group.e2ee.recover-member" => app.run_group_e2ee_recover_member(command),
+        "group.e2ee.process-leave-request" => app.run_group_e2ee_process_leave_request(command),
         "page.create" => app.run_page_create(command),
         "runtime.status" => app.run_runtime_status(),
         "runtime.apply" => app.run_runtime_apply(),
@@ -184,6 +192,14 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["group", "list", ..] => "group.list",
         ["group", "members", ..] => "group.members",
         ["group", "messages", ..] => "group.messages",
+        ["group", "e2ee", "status", ..] => "group.e2ee.status",
+        ["group", "e2ee", "publish-key-package", ..] => "group.e2ee.publish-key-package",
+        ["group", "e2ee", "pending", ..] => "group.e2ee.pending",
+        ["group", "e2ee", "repair", ..] => "group.e2ee.repair",
+        ["group", "e2ee", "update-key", ..] => "group.e2ee.update-key",
+        ["group", "e2ee", "rejoin", ..] => "group.e2ee.rejoin",
+        ["group", "e2ee", "recover-member", ..] => "group.e2ee.recover-member",
+        ["group", "e2ee", "process-leave-request", ..] => "group.e2ee.process-leave-request",
         ["page", "create", ..] => "page.create",
         ["runtime", "status", ..] => "runtime.status",
         ["runtime", "apply", ..] => "runtime.apply",
@@ -313,6 +329,8 @@ fn is_bool_local_flag(name: &str) -> bool {
             | "is-public"
             | "is-agent"
             | "e2ee"
+            | "recovery"
+            | "contract-test"
             | "attachments-allowed"
     )
 }

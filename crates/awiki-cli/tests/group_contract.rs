@@ -342,6 +342,275 @@ fn group_schema_exposes_non_e2ee_group_children() {
     assert_eq!(remove["data"]["command"]["side_effect"], true);
 }
 
+#[test]
+fn group_e2ee_dry_run_plans_match_go_contracts() {
+    let workspace = TempDir::new().expect("workspace");
+    let group = "did:wba:awiki.ai:groups:demo:e1_group";
+
+    let status = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "status",
+            "--dry-run",
+            "--group",
+            group,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(status["summary"], "Dry run: group e2ee status planned");
+    let status_plan = &status["data"]["plan"];
+    assert_eq!(status_plan["action"], "group.e2ee.status");
+    assert_eq!(status_plan["profile"], "anp.group.e2ee.v1");
+    assert_eq!(status_plan["security_profile"], "group-e2ee");
+    assert_eq!(status_plan["provider"], "exec");
+    assert_eq!(status_plan["binary"], "");
+    assert_eq!(status_plan["discovery_advertised"], false);
+    assert_eq!(status_plan["artifact_mode"], Value::Null);
+    assert!(status_plan["mls_data_dir"]
+        .as_str()
+        .unwrap()
+        .ends_with("/mls"));
+
+    let publish = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "publish-key-package",
+            "--dry-run",
+            "--group",
+            group,
+            "--purpose",
+            "update",
+            "--device",
+            "bob-main",
+            "--contract-test",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(
+        publish["summary"],
+        "Dry run: group e2ee key package publish planned"
+    );
+    let publish_plan = &publish["data"]["plan"];
+    assert_eq!(publish_plan["action"], "group.e2ee.publish_key_package");
+    assert_eq!(publish_plan["purpose"], "update");
+    assert_eq!(publish_plan["recovery"], false);
+    assert_eq!(publish_plan["device"], "bob-main");
+    assert_eq!(publish_plan["contract_test_only"], true);
+
+    let recovery_alias = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "publish-key-package",
+            "--dry-run",
+            "--recovery",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(recovery_alias["data"]["plan"]["purpose"], "recovery");
+    assert_eq!(recovery_alias["data"]["plan"]["recovery"], true);
+
+    let pending = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "pending",
+            "--dry-run",
+            "--group",
+            group,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(pending["summary"], "Dry run: group e2ee pending planned");
+    assert_eq!(pending["data"]["plan"]["action"], "group.e2ee.pending");
+    assert_eq!(pending["data"]["plan"]["provider"], "exec");
+    assert_eq!(pending["data"]["plan"]["group"], group);
+
+    let repair = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "repair",
+            "--dry-run",
+            "--group",
+            group,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(repair["summary"], "Dry run: group e2ee repair planned");
+    assert_eq!(repair["data"]["plan"]["action"], "group.e2ee.repair");
+    assert!(repair["data"]["plan"]["scope"]
+        .as_str()
+        .unwrap()
+        .contains("replay welcome/commit notices"));
+
+    let process_leave = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "process-leave-request",
+            "--dry-run",
+            "--group",
+            group,
+            "--member",
+            "bob",
+            "--leave-request-id",
+            "lr-bob-1",
+            "--reason",
+            "owner remove",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(
+        process_leave["summary"],
+        "Dry run: group e2ee leave request process planned"
+    );
+    let process_plan = &process_leave["data"]["plan"];
+    assert_eq!(process_plan["action"], "group.e2ee.process_leave_request");
+    assert_eq!(process_plan["member"], "bob");
+    assert_eq!(process_plan["leave_request_id"], "lr-bob-1");
+    assert_eq!(process_plan["request"]["LeaveRequestID"], "lr-bob-1");
+    assert_eq!(process_plan["request"]["ReasonText"], "owner remove");
+
+    let recover = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "recover-member",
+            "--dry-run",
+            "--group",
+            group,
+            "--member",
+            "bob",
+            "--device",
+            "bob-main",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(
+        recover["summary"],
+        "Dry run: group e2ee recover-member planned"
+    );
+    assert_eq!(
+        recover["data"]["plan"]["action"],
+        "group.e2ee.recover_member"
+    );
+    assert_eq!(recover["data"]["plan"]["p4_membership_mutate"], false);
+    assert!(recover["data"]["plan"]["orchestration"]
+        .as_array()
+        .unwrap()
+        .contains(&Value::String(
+            "hidden group.e2ee.recover_member".to_string()
+        )));
+
+    let update = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "update-key",
+            "--dry-run",
+            "--group",
+            group,
+            "--member",
+            "bob",
+            "--device",
+            "bob-main",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(update["summary"], "Dry run: group e2ee update-key planned");
+    assert_eq!(update["data"]["plan"]["action"], "group.e2ee.update_key");
+    assert_eq!(update["data"]["plan"]["key_package_purpose"], "update");
+    assert_eq!(update["data"]["plan"]["hidden_awiki_extension"], true);
+    assert_eq!(update["data"]["plan"]["p4_membership_mutate"], false);
+
+    let rejoin = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "e2ee",
+            "rejoin",
+            "--dry-run",
+            "--group",
+            group,
+            "--member",
+            "bob",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(rejoin["summary"], "Dry run: group e2ee rejoin planned");
+    assert_eq!(rejoin["data"]["plan"]["action"], "group.e2ee.rejoin");
+    assert_eq!(
+        rejoin["data"]["plan"]["canonical_command"],
+        "group add --e2ee"
+    );
+    assert_eq!(rejoin["data"]["plan"]["role"], "member");
+    assert_eq!(rejoin["data"]["plan"]["key_package_purpose"], "normal");
+    assert_eq!(rejoin["data"]["plan"]["external_commit"], false);
+    assert_eq!(rejoin["data"]["plan"]["p4_membership_mutate"], true);
+}
+
+#[test]
+fn group_e2ee_schema_exposes_hidden_and_side_effect_contracts() {
+    let workspace = TempDir::new().expect("workspace");
+    let schema = success_json(&awiki_cmd(&["schema", "group", "e2ee"], workspace.path()));
+    let children: Vec<_> = schema["data"]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|child| child["name"].as_str().unwrap())
+        .collect();
+    assert!(children.contains(&"group.e2ee.status"));
+    assert!(children.contains(&"group.e2ee.publish-key-package"));
+    assert!(children.contains(&"group.e2ee.pending"));
+    assert!(children.contains(&"group.e2ee.repair"));
+    assert!(children.contains(&"group.e2ee.update-key"));
+    assert!(children.contains(&"group.e2ee.rejoin"));
+    assert!(children.contains(&"group.e2ee.recover-member"));
+    assert!(children.contains(&"group.e2ee.process-leave-request"));
+
+    let update = success_json(&awiki_cmd(
+        &["schema", "group", "e2ee", "update-key"],
+        workspace.path(),
+    ));
+    assert_eq!(update["data"]["command"]["hidden"], true);
+    assert_eq!(update["data"]["command"]["side_effect"], true);
+
+    let rejoin = success_json(&awiki_cmd(
+        &["schema", "group", "e2ee", "rejoin"],
+        workspace.path(),
+    ));
+    assert_eq!(rejoin["data"]["command"]["hidden"], true);
+    assert_eq!(rejoin["data"]["command"]["flags"][2]["default"], "member");
+
+    let publish = success_json(&awiki_cmd(
+        &["schema", "group", "e2ee", "publish-key-package"],
+        workspace.path(),
+    ));
+    assert_eq!(publish["data"]["command"]["flags"][0]["default"], "default");
+    assert_eq!(publish["data"]["command"]["flags"][1]["default"], "normal");
+    assert_eq!(publish["data"]["command"]["side_effect"], true);
+}
+
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
