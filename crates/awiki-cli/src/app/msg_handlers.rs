@@ -1,6 +1,7 @@
 use super::{not_implemented_side_effect, App};
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
+use crate::identity;
 use crate::output::ExitError;
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -435,20 +436,7 @@ fn insert_completed_handle(
 }
 
 fn complete_bare_handle(target: &str, did_domain: &str) -> String {
-    let handle = target.trim();
-    if handle.is_empty()
-        || handle.contains('.')
-        || handle.starts_with("did:")
-        || handle.contains('@')
-    {
-        return handle.to_string();
-    }
-    let domain = did_domain.trim().trim_end_matches('.').to_ascii_lowercase();
-    if domain.is_empty() {
-        handle.to_string()
-    } else {
-        format!("{}.{}", handle.trim_end_matches('.'), domain)
-    }
+    identity::complete_bare_handle(target, did_domain)
 }
 
 fn read_text_file(command: &ParsedCommand) -> Result<String, ExitError> {

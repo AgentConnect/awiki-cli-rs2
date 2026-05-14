@@ -4,6 +4,161 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn identity_handle_input_helpers_match_go_contract() {
+    let bare = awiki_cli::identity::normalize_handle_input("Alice", "Tenant.Example.")
+        .expect("normalize bare handle");
+    assert_eq!(bare.local_part, "alice");
+    assert_eq!(bare.full_handle, "alice.tenant.example");
+    assert_eq!(bare.effective_domain, "tenant.example");
+    assert!(!bare.explicit_domain);
+
+    let full = awiki_cli::identity::normalize_handle_input("Alice.Other.Example", "tenant.example")
+        .expect("normalize full handle");
+    assert_eq!(full.local_part, "alice");
+    assert_eq!(full.full_handle, "alice.other.example");
+    assert_eq!(full.effective_domain, "other.example");
+    assert!(full.explicit_domain);
+
+    let wba =
+        awiki_cli::identity::normalize_handle_input("wba://Alice.Other.Example", "tenant.example")
+            .expect("normalize wba handle");
+    assert_eq!(wba.full_handle, "alice.other.example");
+    assert!(wba.explicit_domain);
+
+    let did_error =
+        awiki_cli::identity::normalize_handle_input("did:wba:tenant.example:user:alice:e1", "")
+            .expect_err("did input must be rejected");
+    assert!(did_error
+        .to_string()
+        .contains("did values are not supported in handle input"));
+    assert_eq!(
+        awiki_cli::identity::complete_bare_handle("Alice", "Tenant.Example."),
+        "alice.tenant.example"
+    );
+    assert_eq!(
+        awiki_cli::identity::complete_bare_handle("alice.other.example", "tenant.example"),
+        "alice.other.example"
+    );
+    assert_eq!(
+        awiki_cli::identity::complete_bare_handle(" Alice.Other.Example ", "tenant.example"),
+        "Alice.Other.Example"
+    );
+    assert_eq!(
+        awiki_cli::identity::complete_bare_handle("wba://Alice", "tenant.example"),
+        "alice.tenant.example"
+    );
+    assert_eq!(
+        awiki_cli::identity::complete_bare_handle("wba://Alice.Other.Example", "tenant.example"),
+        "wba://Alice.Other.Example"
+    );
+    assert_eq!(
+        awiki_cli::identity::complete_bare_handle("Alice", ""),
+        "Alice"
+    );
+    assert_eq!(
+        awiki_cli::identity::complete_bare_handle("did:wba:tenant.example:user:alice:e1", "x"),
+        "did:wba:tenant.example:user:alice:e1"
+    );
+    assert_eq!(
+        awiki_cli::identity::derive_full_handle_from_did(
+            "Alice",
+            "did:wba:Tenant.Example:profile:e1_alice",
+        ),
+        "alice.tenant.example"
+    );
+    assert_eq!(
+        awiki_cli::identity::derive_full_handle_from_did(
+            "Alice",
+            "did:wba:tenant.example:user:e1_alice",
+        ),
+        ""
+    );
+}
+
+#[test]
+fn identity_load_backfills_full_handle_from_handle_did_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let record = manager
+        .save(awiki_cli::identity::types::SaveInput {
+            identity_name: "alice".to_string(),
+            did: "did:wba:tenant.example:alice:e1_alice".to_string(),
+            unique_id: "e1_alice".to_string(),
+            handle: "alice".to_string(),
+            ..Default::default()
+        })
+        .expect("save identity");
+    let paths = manager.build_paths(&record.dir_name);
+
+    let mut payload = read_json(&paths.identity_path);
+    payload
+        .as_object_mut()
+        .expect("identity payload object")
+        .remove("full_handle");
+    std::fs::write(
+        &paths.identity_path,
+        serde_json::to_vec_pretty(&payload).unwrap(),
+    )
+    .unwrap();
+
+    let mut index = manager.load_index().expect("load index");
+    index
+        .credentials
+        .get_mut("alice")
+        .expect("alice index entry")
+        .full_handle
+        .clear();
+    manager.save_index(index).expect("save index");
+
+    let loaded = manager.load("alice").expect("load identity");
+    assert_eq!(loaded.full_handle, "alice.tenant.example");
+    assert_eq!(
+        read_json(&paths.identity_path)["full_handle"],
+        "alice.tenant.example"
+    );
+    assert_eq!(
+        manager
+            .load_index()
+            .expect("load updated index")
+            .credentials["alice"]
+            .full_handle,
+        "alice.tenant.example"
+    );
+}
+
+#[test]
+fn identity_load_does_not_backfill_full_handle_for_user_did_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let record = manager
+        .save(awiki_cli::identity::types::SaveInput {
+            identity_name: "alice".to_string(),
+            did: "did:wba:tenant.example:user:e1_alice".to_string(),
+            unique_id: "e1_alice".to_string(),
+            handle: "alice".to_string(),
+            ..Default::default()
+        })
+        .expect("save identity");
+    let paths = manager.build_paths(&record.dir_name);
+
+    let payload = read_json(&paths.identity_path);
+    assert!(payload.get("full_handle").is_none());
+
+    let loaded = manager.load("alice").expect("load identity");
+    assert_eq!(loaded.handle, "alice");
+    assert_eq!(loaded.full_handle, "");
+    assert!(read_json(&paths.identity_path).get("full_handle").is_none());
+    assert_eq!(
+        manager
+            .load_index()
+            .expect("load updated index")
+            .credentials["alice"]
+            .full_handle,
+        ""
+    );
+}
+
+#[test]
 fn identity_create_list_current_use_and_status_match_local_contract() {
     let workspace = TempDir::new().expect("workspace");
 
@@ -201,6 +356,31 @@ fn identity_import_v1_flat_legacy_contract() {
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     awiki_cmd_with_home(args, workspace, workspace)
+}
+
+fn identity_manager(workspace: &Path) -> awiki_cli::identity::Manager {
+    awiki_cli::identity::Manager::new(awiki_cli::config::Paths {
+        workspace_home_dir: path_string(workspace),
+        root_dir: path_string(workspace),
+        config_dir: path_string(&workspace.join("config")),
+        data_dir: path_string(&workspace.join("data")),
+        state_dir: path_string(&workspace.join("state")),
+        cache_dir: path_string(&workspace.join("cache")),
+        logs_dir: path_string(&workspace.join("logs")),
+        config_file: path_string(&workspace.join("config").join("config.yaml")),
+        identity_dir: path_string(&workspace.join("identities")),
+        database_file: path_string(&workspace.join("data").join("awiki.db")),
+        legacy_credentials_dir: path_string(&workspace.join("legacy")),
+        legacy_data_dir: path_string(&workspace.join("legacy-data")),
+    })
+}
+
+fn read_json(path: &str) -> Value {
+    serde_json::from_slice(&std::fs::read(path).expect("read JSON file")).expect("parse JSON file")
+}
+
+fn path_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 fn awiki_cmd_with_home(args: &[&str], workspace: &Path, home: &Path) -> Output {

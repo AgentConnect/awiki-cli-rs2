@@ -93,66 +93,6 @@ pub fn did_suffix(did: &str) -> String {
         .to_string()
 }
 
-pub fn stored_handle_fields(handle: &str, full_handle: &str, did: &str) -> (String, String) {
-    let mut local_part = handle.trim().to_ascii_lowercase();
-    if let Some(stripped) = local_part.strip_prefix("wba://") {
-        local_part = stripped.to_string();
-    }
-    if let Some(index) = local_part.find('.') {
-        local_part.truncate(index);
-    }
-    if let Some((full_local, full)) = normalize_full_handle(full_handle, did) {
-        if local_part.is_empty() {
-            local_part = full_local;
-        }
-        return (local_part, full);
-    }
-    if local_part.is_empty() {
-        return (String::new(), String::new());
-    }
-    let full = derive_full_handle_from_did(&local_part, did);
-    (local_part, full)
-}
-
-fn derive_full_handle_from_did(handle: &str, did: &str) -> String {
-    let Some(domain) = handle_domain_from_did(did) else {
-        return String::new();
-    };
-    format!("{}.{}", handle.trim().to_ascii_lowercase(), domain)
-}
-
-fn normalize_full_handle(full_handle: &str, did: &str) -> Option<(String, String)> {
-    let trimmed = full_handle.trim().trim_start_matches("wba://");
-    if trimmed.is_empty() || trimmed.starts_with("did:") {
-        return None;
-    }
-    if let Some(index) = trimmed.find('.') {
-        let local = trimmed[..index].trim().to_ascii_lowercase();
-        let domain = trimmed[index + 1..]
-            .trim()
-            .trim_end_matches('.')
-            .to_ascii_lowercase();
-        if !local.is_empty() && !domain.is_empty() {
-            return Some((local.clone(), format!("{local}.{domain}")));
-        }
-    }
-    let domain = handle_domain_from_did(did)?;
-    let local = trimmed.to_ascii_lowercase();
-    Some((local.clone(), format!("{local}.{domain}")))
-}
-
-fn handle_domain_from_did(did: &str) -> Option<String> {
-    let mut parts = did.trim().split(':');
-    if parts.next()? != "did" || parts.next()? != "wba" {
-        return None;
-    }
-    let domain = parts.next()?.trim().to_ascii_lowercase();
-    if domain.is_empty() {
-        return None;
-    }
-    Some(domain)
-}
-
 fn required_private_key(
     bundle: &anp::authentication::DidDocumentBundle,
     name: &str,

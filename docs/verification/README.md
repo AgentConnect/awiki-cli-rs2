@@ -2,6 +2,91 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-14 Identity Handle Input Helper Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test identity_contract identity_handle_input_helpers_match_go_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract full_handle --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/identity
+cd ../awiki-cli && go test ./internal/message -run TestMessageServiceHelperContracts
+cd ../awiki-system-test && \
+  AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  uv run --no-sync pytest \
+    tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+    tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+    tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+    tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+    tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+    tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+    tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+    tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+    tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+    tests_v2/core/test_output_contracts_cli.py \
+    -q
+```
+
+Result: passed. The focused Rust identity helper contract covers bare handle
+normalization with configured DID domain, full handle normalization, `wba://`
+handle normalization, DID input rejection for handle input, shared bare-handle
+completion pass-through/expansion behavior, and full-handle derivation from
+non-`user` DID path prefixes. The focused `full_handle` run covers Go's
+`Manager.Load` backfill contract: handle-path DIDs persist `full_handle` into
+both identity payload and index, while `user` DIDs do not backfill a full handle.
+Focused Rust `msg` and `group` contracts also passed after those handlers
+switched to the shared identity helper. Full Rust package tests, structure check,
+binary build, Go `internal/identity` reference tests, Go message helper reference
+tests, dependency audit, and the accepted-scope system regression also passed.
+System regression context: `AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=../awiki-cli-rs2`; no external service URLs were required
+for these local/dry-run selectors. Result: 11 passed, failed 0, skipped 0.
+
+Scope:
+
+- Added `crates/awiki-cli/src/identity/handle_input.rs` for Go
+  `internal/identity/handle_input.go`.
+- Preserved Go `NormalizeHandleInput` behavior: trim, lowercase, reject DID
+  values, strip `wba://`, split explicit domains, normalize trailing-dot
+  domains, and require `did_domain` for bare handles.
+- Preserved Go `CompleteBareHandle` behavior: empty input returns empty string,
+  DID values pass through with trimmed spelling, explicit full handles pass
+  through, and bare or `wba://bare` handles expand to canonical full handles.
+- Moved stored handle field derivation out of `identity/did.rs` and into the
+  handle input module so identity store behavior shares the same normalization
+  rules.
+- Preserved Go `Manager.Load` stored-handle backfill side effects for handle-path
+  DIDs: normalized handles/full handles are written back to `identity.json` and
+  `index.json` only when non-empty.
+- Updated `msg` and non-E2EE `group` dry-run handlers to call
+  `identity::complete_bare_handle`, eliminating duplicated local completion
+  logic.
+
+Structure note: changed files remain well below the default 1200-line Rust
+source limit: `identity/handle_input.rs` is 205 lines, `identity/did.rs` is 124
+lines, `identity/store.rs` is 459 lines, `app/msg_handlers.rs` is 515 lines,
+`app/group_handlers.rs` is 438 lines, and `tests/identity_contract.rs` is 456
+lines. No file-size exception is needed.
+
+Boundary note: this is a local helper consolidation and CLI dry-run normalization
+cleanup. It does not implement remote identity register/bind/recover/profile/
+resolve, non-dry-run `id refresh-token`, non-dry-run `id replace-did`, message
+RPC execution, group RPC execution, authsdk session refresh, HTTP/WebSocket
+transport, MLS provider execution, or cache mutation.
+
+No dependency was added. Cargo manifests and lockfile were unchanged, and this
+slice does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, crypto,
+MLS, or platform service-manager dependencies.
+
 ## 2026-05-14 Trace/Transport Foundation Slice
 
 Local Rust verification in `awiki-cli-rs2`:

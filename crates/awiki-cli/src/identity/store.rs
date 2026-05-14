@@ -1,4 +1,4 @@
-use super::did::stored_handle_fields;
+use super::handle_input::stored_handle_fields;
 use super::layout::{
     ensure_dir, file_exists, preferred_dir_name, read_json_value, read_text,
     sanitize_identity_name, write_secure_json, write_secure_text, Manager,
@@ -164,8 +164,8 @@ impl Manager {
             .resolve_entry_name(name, &index)
             .ok_or_else(|| IdentityError::NotFound(format!("identity not found: {name}")))?;
         let paths = self.build_paths(&entry.dir_name);
-        let value = read_json_value(&paths.identity_path)?;
-        let payload: IdentityPayload = serde_json::from_value(value)?;
+        let mut identity_value = read_json_value(&paths.identity_path)?;
+        let payload: IdentityPayload = serde_json::from_value(identity_value.clone())?;
         let auth = read_json_value(&paths.auth_path).unwrap_or(Value::Null);
         let mut record = StoredIdentity {
             identity_name: resolved_name.clone(),
@@ -193,9 +193,16 @@ impl Manager {
             stored_handle_fields(&record.handle, &record.full_handle, &record.did);
         record.handle = handle;
         record.full_handle = full_handle;
-        if entry.handle != record.handle || entry.full_handle != record.full_handle {
-            entry.handle = record.handle.clone();
-            entry.full_handle = record.full_handle.clone();
+        persist_identity_handle_backfill(&paths.identity_path, &mut identity_value, &record)?;
+        if (entry.handle != record.handle && !record.handle.is_empty())
+            || (entry.full_handle != record.full_handle && !record.full_handle.is_empty())
+        {
+            if !record.handle.is_empty() {
+                entry.handle = record.handle.clone();
+            }
+            if !record.full_handle.is_empty() {
+                entry.full_handle = record.full_handle.clone();
+            }
             index.credentials.insert(resolved_name, entry);
             self.save_index(index)?;
         }
@@ -280,6 +287,44 @@ impl Manager {
         summary.user_state = evaluate_identity_summary_user_state(&summary);
         Ok(summary)
     }
+}
+
+fn persist_identity_handle_backfill(
+    identity_path: &str,
+    identity_value: &mut Value,
+    record: &StoredIdentity,
+) -> Result<(), IdentityError> {
+    let Some(payload) = identity_value.as_object_mut() else {
+        return Ok(());
+    };
+    let mut changed = false;
+    if !record.handle.is_empty()
+        && payload
+            .get("handle")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            != record.handle
+    {
+        payload.insert("handle".to_string(), Value::String(record.handle.clone()));
+        changed = true;
+    }
+    if !record.full_handle.is_empty()
+        && payload
+            .get("full_handle")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            != record.full_handle
+    {
+        payload.insert(
+            "full_handle".to_string(),
+            Value::String(record.full_handle.clone()),
+        );
+        changed = true;
+    }
+    if changed {
+        write_secure_json(identity_path, identity_value)?;
+    }
+    Ok(())
 }
 
 pub fn identity_summary_from_record(record: &StoredIdentity) -> IdentitySummary {

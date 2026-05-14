@@ -1,5 +1,6 @@
 use super::{not_implemented_side_effect, App};
 use crate::cli::ParsedCommand;
+use crate::identity;
 use crate::output::ExitError;
 use serde_json::{json, Value};
 
@@ -433,21 +434,5 @@ fn changed(command: &ParsedCommand, name: &str) -> bool {
 }
 
 fn complete_bare_handle(target: &str, did_domain: &str) -> String {
-    let trimmed = target.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.starts_with("did:") {
-        return trimmed.to_string();
-    }
-    let handle = lower.strip_prefix("wba://").unwrap_or(&lower);
-    if handle.contains('.') || handle.is_empty() {
-        return trimmed.to_string();
-    }
-    let domain = did_domain.trim().trim_end_matches('.').to_ascii_lowercase();
-    if domain.is_empty() {
-        return trimmed.to_string();
-    }
-    format!("{handle}.{domain}")
+    identity::complete_bare_handle(target, did_domain)
 }
