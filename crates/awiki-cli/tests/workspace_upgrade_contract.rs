@@ -468,16 +468,18 @@ fn workspace_upgrade_if_needed_reports_newer_workspace_like_go() {
 fn workspace_upgrade_if_needed_defers_real_migration_execution_boundary() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-deferred").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    std::fs::write(workspace.path().join("config.yaml"), "schema_version: 1\n")
-        .expect("write config");
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+    std::fs::write(&paths.legacy_config_file, "{\"legacy\":true}\n").expect("write legacy config");
 
-    let err = upgrade::upgrade_if_needed(&resolved, "1.2.3")
+    let mut context = upgrade::new_context(&resolved, "1.2.3");
+    let err = upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
         .expect_err("legacy/current-version-zero migration remains deferred");
     assert_eq!(
         err.to_string(),
         "workspace migration execution is not implemented from 0 to 3"
     );
-    let paths = upgrade::resolve_paths(&resolved);
     assert!(
         Path::new(&paths.lock_path).exists(),
         "lock anchor should be created before deferring real migration execution"
@@ -489,6 +491,74 @@ fn workspace_upgrade_if_needed_defers_real_migration_execution_boundary() {
     let guard = upgrade::acquire_file_lock(&paths.lock_path, "1.2.4")
         .expect("upgrade_if_needed should release the OS lock on return");
     guard.release().expect("release lock");
+
+    assert!(
+        !context.backup_dir.is_empty(),
+        "backup dir should be captured before migration phase deferral"
+    );
+    let backup = PathBuf::from(&context.backup_dir);
+    assert_eq!(
+        backup.parent(),
+        Some(Path::new(&paths.backup_root)),
+        "backup should be created under the Go backup root"
+    );
+    assert_eq!(
+        std::fs::read_to_string(backup.join("config.yaml.bak")).unwrap(),
+        "schema_version: 1\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(backup.join("config.json.bak")).unwrap(),
+        "{\"legacy\":true}\n"
+    );
+}
+
+#[test]
+fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() {
+    let workspace =
+        TempDir::new("workspace-upgrade-if-needed-reuse-backup").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+    let existing_backup = Path::new(&paths.backup_root).join("existing-backup");
+    std::fs::create_dir_all(&existing_backup).expect("create existing backup");
+    std::fs::write(existing_backup.join("sentinel.txt"), "keep\n").expect("write sentinel");
+    upgrade::save_journal(
+        &paths.journal_path,
+        &upgrade::Journal {
+            upgrade_id: "upgrade-existing".to_string(),
+            from_version: 0,
+            to_version: 1,
+            current_step: "workspace_0_to_1_bootstrap_local_state_upgrade".to_string(),
+            phase: "checking".to_string(),
+            backup_dir: path_string(&existing_backup),
+            started_at: "2026-05-15T00:02:00Z".to_string(),
+            app_version: "1.2.3".to_string(),
+        },
+    )
+    .expect("save journal with backup dir");
+
+    let mut context = upgrade::new_context(&resolved, "1.2.4");
+    let err = upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect_err("real migration still deferred");
+    assert_eq!(
+        err.to_string(),
+        "workspace migration execution is not implemented from 0 to 3"
+    );
+    assert_eq!(context.backup_dir, path_string(&existing_backup));
+    assert_eq!(
+        std::fs::read_to_string(existing_backup.join("sentinel.txt")).unwrap(),
+        "keep\n"
+    );
+    let backup_entries = std::fs::read_dir(&paths.backup_root)
+        .expect("read backup root")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("backup entries");
+    assert_eq!(
+        backup_entries.len(),
+        1,
+        "journal backup dir should be reused without creating a new backup"
+    );
 }
 
 #[test]

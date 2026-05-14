@@ -1,5 +1,6 @@
+use super::backup::{create_backup, BackupError};
 use super::detect::{inspect, InspectError};
-use super::journal::{clear_journal, JournalError};
+use super::journal::{clear_journal, load_journal, JournalError};
 use super::lock::{acquire_file_lock, LockError};
 use super::meta::{load_meta, MetaError};
 use super::migration_v0_to_v1;
@@ -100,6 +101,7 @@ impl std::error::Error for UpgraderError {}
 pub enum UpgradeError {
     ContextRequired,
     Inspect(InspectError),
+    Backup(BackupError),
     Journal(JournalError),
     Lock(LockError),
     Plan(UpgraderError),
@@ -118,6 +120,7 @@ impl fmt::Display for UpgradeError {
         match self {
             Self::ContextRequired => f.write_str("upgrade context is required"),
             Self::Inspect(err) => write!(f, "{err}"),
+            Self::Backup(err) => write!(f, "{err}"),
             Self::Journal(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Plan(err) => write!(f, "{err}"),
@@ -150,6 +153,12 @@ impl From<InspectError> for UpgradeError {
 impl From<JournalError> for UpgradeError {
     fn from(value: JournalError) -> Self {
         Self::Journal(value)
+    }
+}
+
+impl From<BackupError> for UpgradeError {
+    fn from(value: BackupError) -> Self {
+        Self::Backup(value)
     }
 }
 
@@ -266,6 +275,16 @@ impl Upgrader {
             }
             return Ok(());
         }
+
+        let journal = load_journal(&context.paths.journal_path)?;
+        let mut backup_dir = journal
+            .as_ref()
+            .map(|journal| journal.backup_dir.clone())
+            .unwrap_or_default();
+        if backup_dir.is_empty() {
+            backup_dir = create_backup(&context.paths, "")?;
+        }
+        context.backup_dir = backup_dir;
 
         let plan = self.plan(current_version, self.latest_version)?;
         if plan.is_empty() {

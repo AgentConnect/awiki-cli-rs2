@@ -2,6 +2,49 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Workspace UpgradeIfNeeded Backup Setup Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract workspace_upgrade_if_needed --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestAcquireFileLock|TestCreateBackupCopiesWorkspaceState' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Advanced the Go `UpgradeIfNeeded` translation past the lock/reinspect
+  boundary into backup setup.
+- Reloads the journal after the lock-inside second inspect, matching Go's
+  `LoadJournal` call before backup selection.
+- Reuses `journal.backup_dir` when present and records it in
+  `Context.backup_dir`.
+- Creates a new workspace backup with the existing translated backup helper
+  when no journal backup is present, then records the created directory in
+  `Context.backup_dir`.
+- Keeps the current deferred execution error before the journal phase loop, so
+  this slice does not execute migration `is_done`/`apply`/`validate` yet.
+
+Boundary note: this slice does not implement journal phase writes,
+migration-loop `is_done`/`apply`/`validate`, meta stamping after each migration,
+rollback, v0->v1 default apply wiring, or v2->v3 k1->e1 DID replacement.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+reuses existing upgrade modules, the already documented direct file-lock FFI,
+and the already approved `rusqlite + bundled` SQLite backup path. It does not
+introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
+service-manager, filesystem-copy, file-lock crate, or new SQLite dependencies.
+TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-15 Workspace UpgradeIfNeeded Lock Pre-Migration Slice
 
 Local Rust and Go reference verification:
