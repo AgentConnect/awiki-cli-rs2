@@ -2,6 +2,71 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-14 Buildinfo Contract Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli buildinfo --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract version_reports_current_build_info --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract status_reports_phase_version_paths_state_and_config --locked
+cargo +1.79.0 test -p awiki-cli --test doctor_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/buildinfo
+cd ../awiki-system-test && \
+  AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  uv run --no-sync pytest \
+    tests_v2/core/test_basic_commands.py::test_core_query_commands_return_structured_success \
+    tests_v2/core/test_output_contracts_cli.py::test_output_formats_and_jq_filters_follow_cli_contracts \
+    -q
+```
+
+Result: passed. The Rust buildinfo helper now preserves the Go metadata
+defaults for `version`, `commit`, `build_date`, and `cgo_enabled`, returns an
+independent owned snapshot, and renders Rust target names as Go-compatible
+runtime names for visible `goos`/`goarch` fields. The `version` and `status`
+core contracts verify the eight public JSON fields exposed by Go:
+`version`, `commit`, `build_date`, `go_version`, `goos`, `goarch`, `compiler`,
+and `cgo_enabled`. The doctor contract also passed, keeping the build check
+compatible with the translated report shape. The accepted system-test selector
+covered real CLI `status`, `version`, `config show`, `doctor`, representative
+pretty/table/JQ output paths, and reported 2 passed, failed 0, skipped 0, in
+0.37s. System-test configuration context: `AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=../awiki-cli-rs2`; no service URLs or live external
+services were required for these core selectors.
+
+Scope:
+
+- Go `internal/buildinfo/buildinfo.go` metadata constants and `Current()`
+  snapshot behavior.
+- Go `internal/buildinfo/buildinfo_test.go` injected metadata and independent
+  snapshot behavior, adapted to Rust with an injectable constructor.
+- Core CLI `version` and `status` output contracts for buildinfo JSON fields.
+
+Structure note: changed Rust files remain below the default 1200-line source
+limit: `crates/awiki-cli/src/buildinfo.rs` is 174 lines and
+`crates/awiki-cli/tests/core_contract.rs` is 589 lines. No file-size exception
+is needed.
+
+Boundary note: this slice does not implement release pipeline metadata wiring,
+`build.rs`, CI injection, package metadata changes, update policy changes, or
+system-test assertion changes. Future release/packaging work must intentionally
+wire `AWIKI_CLI_VERSION`, `AWIKI_CLI_COMMIT`, `AWIKI_CLI_BUILD_DATE`, and
+`AWIKI_CLI_CGO_ENABLED` equivalents without changing the public JSON field
+surface.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The
+dependency policy remains Rustls-first for TLS: future HTTP/WebSocket/authsdk
+slices must not prefer OpenSSL, `native-tls`, or bundled OpenSSL over
+Rustls-backed options, and any non-Rustls exception must be separately recorded
+with failed Rustls parity evidence.
+
 ## 2026-05-14 Identity Handle Input Helper Slice
 
 Local Rust and Go reference verification:
