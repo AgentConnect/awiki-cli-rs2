@@ -1933,3 +1933,51 @@ No dependency was added. Cargo manifests and lockfile were unchanged. The slice
 uses existing serde JSON support and the existing config base-URL normalizer. It
 does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session,
 platform service-manager, backup, or file-lock dependencies.
+
+## 2026-05-14 Workspace Upgrade File Lock Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestAcquireFileLock' -count=1
+```
+
+Result: passed. The Rust tests mirror the Go `TestAcquireFileLock*` suite:
+persistent metadata, reusable `upgrade.lock` anchor, concurrent OS-lock
+rejection, residual new-format metadata overwrite, corrupt metadata overwrite,
+dead legacy PID ignore, old live legacy PID ignore, and fresh live legacy PID
+rejection without overwriting the legacy metadata.
+
+Scope:
+
+- Added `crates/awiki-cli/src/upgrade/lock.rs` for Go
+  `internal/upgrade/{lock.go,lock_nonwindows.go,lock_windows.go}`.
+- Added the Rust equivalent of Go's private `lockMetadata` JSON shape to
+  `crates/awiki-cli/src/upgrade/types.rs`.
+- Preserved Go's lock order: create parent dir, open/create `upgrade.lock`,
+  acquire the nonblocking OS lock, inspect existing metadata, reject only active
+  fresh legacy locks, write fresh metadata, and leave the file in place after
+  release.
+- Preserved Go's compatibility rules for legacy metadata: ignore empty/corrupt
+  files, ignore `os_file_lock_v1` residual metadata, ignore dead or older than
+  24-hour legacy PIDs, and reject live recent legacy PIDs.
+
+Boundary note: this slice only translates the local file-lock primitive. It does
+not wire the lock into full `UpgradeIfNeeded`, journal phase transitions,
+backup/rollback creation, migration execution, identity replacement RPC, legacy
+SQLite import, or cleanup migrations.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. Unix uses
+direct FFI for `flock` and `kill(0)` to match Go's `syscall` behavior; Windows
+source parity uses direct FFI for `LockFileEx`, `UnlockFileEx`, and
+`OpenProcess`, but Windows runtime behavior still needs a later Windows host
+validation pass. The slice does not introduce HTTP/TLS, OpenSSL, `native-tls`,
+WebSocket, authsdk session, platform service-manager, backup, or file-lock crate
+dependencies. TLS policy remains Rustls-first and unchanged.

@@ -1,5 +1,5 @@
 use awiki_cli::{config, store, upgrade};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -225,6 +225,161 @@ fn workspace_upgrade_load_legacy_settings_wraps_io_and_parse_errors_like_go() {
 }
 
 #[test]
+fn workspace_upgrade_file_lock_leaves_persistent_metadata() {
+    let temp = TempDir::new("workspace-upgrade-lock-metadata").expect("temp dir");
+    let lock_path = temp.path().join("upgrade").join("upgrade.lock");
+    let guard =
+        upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3").expect("acquire lock");
+    let metadata = read_upgrade_lock_metadata(&lock_path);
+    assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
+    assert_eq!(metadata["pid"], std::process::id());
+    assert_eq!(metadata["app_version"], "1.2.3");
+    assert!(metadata["started_at"]
+        .as_str()
+        .unwrap_or_default()
+        .ends_with('Z'));
+    assert!(
+        !metadata["hostname"].as_str().unwrap_or_default().is_empty(),
+        "hostname should be populated"
+    );
+    assert!(
+        !metadata["executable"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "executable should be populated"
+    );
+
+    guard.release().expect("release lock");
+    assert!(
+        lock_path.exists(),
+        "upgrade.lock should remain as persistent OS lock anchor"
+    );
+
+    let guard = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.4")
+        .expect("reacquire lock after release");
+    guard.release().expect("release second lock");
+}
+
+#[test]
+fn workspace_upgrade_file_lock_rejects_concurrent_os_lock() {
+    let temp = TempDir::new("workspace-upgrade-lock-concurrent").expect("temp dir");
+    let lock_path = temp.path().join("upgrade").join("upgrade.lock");
+    let guard =
+        upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3").expect("acquire first lock");
+
+    let err = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+        .expect_err("second lock should fail");
+    assert!(err.is_locked(), "unexpected lock error: {err}");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "workspace upgrade is already running: {}",
+            path_string(&lock_path)
+        )
+    );
+
+    guard.release().expect("release first lock");
+}
+
+#[test]
+fn workspace_upgrade_file_lock_ignores_residual_os_lock_metadata() {
+    let temp = TempDir::new("workspace-upgrade-lock-residual").expect("temp dir");
+    let lock_path = temp.path().join("upgrade").join("upgrade.lock");
+    write_upgrade_lock_metadata(
+        &lock_path,
+        json!({
+            "lock_scheme": "os_file_lock_v1",
+            "pid": missing_pid(),
+            "app_version": "old",
+            "started_at": "20000101T000000Z"
+        }),
+    );
+
+    let guard = upgrade::acquire_file_lock(&path_string(&lock_path), "new").expect("acquire lock");
+    let metadata = read_upgrade_lock_metadata(&lock_path);
+    assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
+    assert_eq!(metadata["app_version"], "new");
+    assert_eq!(metadata["pid"], std::process::id());
+    guard.release().expect("release lock");
+}
+
+#[test]
+fn workspace_upgrade_file_lock_ignores_corrupt_legacy_lock() {
+    let temp = TempDir::new("workspace-upgrade-lock-corrupt").expect("temp dir");
+    let lock_path = temp.path().join("upgrade").join("upgrade.lock");
+    std::fs::create_dir_all(lock_path.parent().expect("lock parent")).expect("create lock dir");
+    std::fs::write(&lock_path, "not-json\n").expect("write corrupt lock");
+
+    let guard =
+        upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3").expect("acquire lock");
+    let metadata = read_upgrade_lock_metadata(&lock_path);
+    assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
+    guard.release().expect("release lock");
+}
+
+#[test]
+fn workspace_upgrade_file_lock_ignores_dead_legacy_pid() {
+    let temp = TempDir::new("workspace-upgrade-lock-dead-pid").expect("temp dir");
+    let lock_path = temp.path().join("upgrade").join("upgrade.lock");
+    write_upgrade_lock_metadata(
+        &lock_path,
+        json!({
+            "pid": missing_pid(),
+            "app_version": "legacy",
+            "started_at": "29991231T235959Z"
+        }),
+    );
+
+    let guard = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+        .expect("dead legacy pid should be ignored");
+    let metadata = read_upgrade_lock_metadata(&lock_path);
+    assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
+    guard.release().expect("release lock");
+}
+
+#[test]
+fn workspace_upgrade_file_lock_ignores_old_legacy_live_pid() {
+    let temp = TempDir::new("workspace-upgrade-lock-old-live").expect("temp dir");
+    let lock_path = temp.path().join("upgrade").join("upgrade.lock");
+    write_upgrade_lock_metadata(
+        &lock_path,
+        json!({
+            "pid": std::process::id(),
+            "app_version": "legacy",
+            "started_at": "20000101T000000Z"
+        }),
+    );
+
+    let guard = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+        .expect("old live legacy lock should be ignored");
+    let metadata = read_upgrade_lock_metadata(&lock_path);
+    assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
+    guard.release().expect("release lock");
+}
+
+#[test]
+fn workspace_upgrade_file_lock_rejects_recent_legacy_live_pid() {
+    let temp = TempDir::new("workspace-upgrade-lock-recent-live").expect("temp dir");
+    let lock_path = temp.path().join("upgrade").join("upgrade.lock");
+    write_upgrade_lock_metadata(
+        &lock_path,
+        json!({
+            "pid": std::process::id(),
+            "app_version": "legacy",
+            "started_at": "29991231T235959Z"
+        }),
+    );
+
+    let err = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+        .expect_err("recent live legacy lock should fail");
+    assert!(err.is_locked(), "unexpected lock error: {err}");
+    let metadata = read_upgrade_lock_metadata(&lock_path);
+    assert_eq!(metadata["lock_scheme"], Value::Null);
+    assert_eq!(metadata["app_version"], "legacy");
+}
+
+#[test]
 fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
     let workspace = TempDir::new("workspace-upgrade-doctor").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
@@ -413,6 +568,50 @@ fn success_json(output: &Output) -> Value {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn write_upgrade_lock_metadata(path: &Path, metadata: Value) {
+    std::fs::create_dir_all(path.parent().expect("lock parent")).expect("create lock dir");
+    let mut raw = serde_json::to_vec_pretty(&metadata).expect("serialize lock metadata");
+    raw.push(b'\n');
+    std::fs::write(path, raw).expect("write lock metadata");
+}
+
+fn read_upgrade_lock_metadata(path: &Path) -> Value {
+    let raw = std::fs::read(path).expect("read lock metadata");
+    serde_json::from_slice(&raw).expect("parse lock metadata")
+}
+
+fn missing_pid() -> i64 {
+    for pid in (2..=999_999_i64).rev() {
+        if !process_alive_for_test(pid) {
+            return pid;
+        }
+    }
+    -1
+}
+
+#[cfg(not(windows))]
+fn process_alive_for_test(pid: i64) -> bool {
+    if pid <= 0 || pid > i32::MAX as i64 {
+        return false;
+    }
+    extern "C" {
+        fn kill(pid: std::os::raw::c_int, sig: std::os::raw::c_int) -> std::os::raw::c_int;
+    }
+    let result = unsafe { kill(pid as std::os::raw::c_int, 0) };
+    if result == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().kind() == std::io::ErrorKind::PermissionDenied
+}
+
+#[cfg(windows)]
+fn process_alive_for_test(pid: i64) -> bool {
+    if pid <= 0 || pid > u32::MAX as i64 {
+        return false;
+    }
+    false
 }
 
 struct TempDir {

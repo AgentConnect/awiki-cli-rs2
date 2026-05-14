@@ -117,3 +117,18 @@ pub struct Journal {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub app_version: String,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct LockMetadata {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub lock_scheme: String,
+    pub pid: i64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub app_version: String,
+    pub started_at: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hostname: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub executable: String,
+}
