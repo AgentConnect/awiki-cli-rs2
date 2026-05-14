@@ -2,6 +2,41 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Local CLI Validation Selector Slice
+
+Local Rust and offline system-test verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run pytest -q tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors tests_v2/multi_tenant/test_awiki_cli_tenant_config.py::test_awiki_cli_derives_anp_service_defaults_from_service_base_url tests_v2/multi_tenant/test_awiki_cli_tenant_config.py::test_awiki_cli_id_create_uses_tenant_did_domain_but_platform_message_service tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_and_attachment_commands_validate_local_arguments tests_v2/id/test_identity_cli.py::test_id_profile_set_rejects_conflicting_body_sources
+```
+
+Result: passed.
+
+Scope:
+
+- Preserves Go `msg attachment download` target validation for missing
+  `--with/--group` and conflicting `--with` plus `--group` before the deferred
+  non-dry-run attachment transfer boundary.
+- Adds `id profile set` to CLI dispatch/schema and preserves the Go
+  `--markdown` plus `--markdown-file` conflict error before resolving service
+  execution.
+- Provides a Go-shaped `id profile set --dry-run` plan for local contract
+  coverage while keeping real `did.profile.update_me` execution deferred to
+  the authsdk/Rustls user-service slice.
+
+No dependency was added. The slice is local CLI validation only and does not
+introduce HTTP/TLS clients, WebSocket crates, OpenSSL, `native-tls`, bundled
+OpenSSL, or new platform/system dependencies. TLS policy remains Rustls-first
+and unchanged.
+
 ## 2026-05-15 Authsdk Local Token Session Slice
 
 Local Rust and Go reference verification:

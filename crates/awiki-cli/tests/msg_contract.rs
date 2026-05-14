@@ -416,6 +416,50 @@ fn msg_validation_errors_match_go_handler_boundary() {
         &envelope["error"]["message"],
         "msg secure drop requires one outbox id.",
     );
+
+    let download_missing_target = awiki_cmd(
+        &[
+            "msg",
+            "attachment",
+            "download",
+            "--message-id",
+            "msg-1",
+            "--output",
+            "out.bin",
+        ],
+        workspace.path(),
+    );
+    assert_code(&download_missing_target, 2);
+    let envelope = error_json(&download_missing_target);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "attachment download requires either --with or --group",
+    );
+
+    let download_target_conflict = awiki_cmd(
+        &[
+            "msg",
+            "attachment",
+            "download",
+            "--with",
+            "bob",
+            "--group",
+            "did:group",
+            "--message-id",
+            "msg-1",
+            "--output",
+            "out.bin",
+        ],
+        workspace.path(),
+    );
+    assert_code(&download_target_conflict, 2);
+    let envelope = error_json(&download_target_conflict);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "attachment download accepts either --with or --group, but not both",
+    );
 }
 
 #[test]

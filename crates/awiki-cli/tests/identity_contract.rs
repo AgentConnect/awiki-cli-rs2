@@ -310,6 +310,67 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         .as_str()
         .unwrap()
         .contains("Dangerous command"));
+
+    let profile_schema = success_json(&awiki_cmd(&["schema", "id", "profile"], workspace.path()));
+    let children: Vec<_> = profile_schema["data"]["children"]
+        .as_array()
+        .expect("profile children should be an array")
+        .iter()
+        .map(|child| child["name"].as_str().unwrap())
+        .collect();
+    assert!(children.contains(&"id.profile.set"));
+
+    let profile_plan = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "id",
+            "profile",
+            "set",
+            "--display-name",
+            "Alice Example",
+            "--bio",
+            "Rust port",
+            "--tags",
+            "rust,port",
+            "--markdown",
+            "inline",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(profile_plan["summary"], "Dry run: profile update planned");
+    assert_eq!(profile_plan["data"]["plan"]["action"], "update_profile");
+    assert_eq!(
+        profile_plan["data"]["plan"]["display_name"],
+        "Alice Example"
+    );
+    assert_eq!(profile_plan["data"]["plan"]["bio"], "Rust port");
+    assert_eq!(profile_plan["data"]["plan"]["tags"], "rust,port");
+    assert_eq!(profile_plan["data"]["plan"]["markdown"], "inline");
+    assert_eq!(profile_plan["data"]["plan"]["markdown_file"], "");
+    assert!(profile_plan["data"]["plan"]["remote_calls"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("did.profile.update_me")));
+
+    let profile_conflict = awiki_cmd(
+        &[
+            "id",
+            "profile",
+            "set",
+            "--markdown",
+            "inline",
+            "--markdown-file",
+            "profile.md",
+        ],
+        workspace.path(),
+    );
+    assert_code(&profile_conflict, 2);
+    let profile_conflict = error_json(&profile_conflict);
+    assert_eq!(profile_conflict["error"]["code"], "invalid_argument");
+    assert!(profile_conflict["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Use either --markdown or --markdown-file"));
 }
 
 #[test]

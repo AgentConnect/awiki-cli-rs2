@@ -474,6 +474,46 @@ impl App {
         self.render_identity_result("awiki-cli id replace-did", &resolved, result)
     }
 
+    pub fn run_id_profile_set(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let display_name = string_flag(command, "display-name");
+        let bio = string_flag(command, "bio");
+        let tags = string_flag(command, "tags");
+        let markdown = string_flag(command, "markdown");
+        let markdown_file = string_flag(command, "markdown-file");
+        if !markdown.trim().is_empty() && !markdown_file.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "Use either --markdown or --markdown-file, not both.",
+                "Choose one profile body source.",
+            ));
+        }
+        let resolved = self.resolve_config()?;
+        if self.globals.dry_run {
+            return self.render_identity_result(
+                "awiki-cli id profile set",
+                &resolved,
+                identity::CommandResult {
+                    data: json!({
+                        "plan": {
+                            "action": "update_profile",
+                            "display_name": display_name,
+                            "bio": bio,
+                            "tags": tags,
+                            "markdown": markdown,
+                            "markdown_file": markdown_file,
+                            "remote_calls": ["did.profile.update_me"],
+                            "local_writes": ["identity.json", "index.json"],
+                        }
+                    }),
+                    summary: "Dry run: profile update planned".to_string(),
+                    warnings: Vec::new(),
+                },
+            );
+        }
+        Err(not_implemented_side_effect("id profile set"))
+    }
+
     pub fn run_debug_db_query(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         if command.args.len() != 1 {
             return Err(ExitError::new(
@@ -672,6 +712,10 @@ fn changed_string_flag(command: &ParsedCommand, name: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn string_flag(command: &ParsedCommand, name: &str) -> String {
+    command.flags.get(name).cloned().unwrap_or_default()
 }
 
 fn identity_status(resolved: &Resolved) -> Value {

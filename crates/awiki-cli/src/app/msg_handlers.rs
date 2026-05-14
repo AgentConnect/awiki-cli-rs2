@@ -122,11 +122,28 @@ impl App {
 
     pub fn run_msg_attachment_download(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["message-id", "output"])?;
+        let with = string_flag(command, "with");
+        let group = string_flag(command, "group");
+        if with.trim().is_empty() && group.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "attachment download requires either --with or --group",
+                "Use --with <handle|did> for direct messages or --group <group_did> for group messages.",
+            ));
+        }
+        if !with.trim().is_empty() && !group.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "attachment download accepts either --with or --group, but not both",
+                "Choose direct attachment download with --with or group attachment download with --group.",
+            ));
+        }
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
             return Err(not_implemented_side_effect("msg attachment download"));
         }
-        let with = string_flag(command, "with");
         let mut plan = Map::new();
         plan.insert(
             "action".to_string(),
@@ -137,10 +154,7 @@ impl App {
             Value::String(self.globals.identity.clone()),
         );
         plan.insert("with".to_string(), Value::String(with.clone()));
-        plan.insert(
-            "group".to_string(),
-            Value::String(string_flag(command, "group")),
-        );
+        plan.insert("group".to_string(), Value::String(group));
         plan.insert(
             "message_id".to_string(),
             Value::String(string_flag(command, "message-id")),
