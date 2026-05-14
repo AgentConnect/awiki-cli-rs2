@@ -134,9 +134,9 @@ pub fn build_mark_read_rpc_params(
 }
 
 pub fn content_type_for_message_type(message_type: &str) -> &'static str {
-    match message_type {
+    match message_type.trim().to_ascii_lowercase().as_str() {
         "attachment_manifest" => attachment_manifest_content_type(),
-        "event" | "json" => "application/json",
+        "event" => "application/json",
         _ => "text/plain",
     }
 }

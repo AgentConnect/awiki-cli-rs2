@@ -75,6 +75,10 @@ fn direct_text_payload_and_message_type_content_match_go_contracts() {
         attachment_manifest_content_type()
     );
     assert_eq!(content_type_for_message_type("event"), "application/json");
+    assert_eq!(content_type_for_message_type(" Event "), "application/json");
+    assert_eq!(content_type_for_message_type("JSON"), "text/plain");
+    assert_eq!(content_type_for_message_type(" json "), "text/plain");
+    assert_eq!(content_type_for_message_type(" text "), "text/plain");
     assert_eq!(content_type_for_message_type("unknown"), "text/plain");
 
     let payload = build_direct_text_payload(

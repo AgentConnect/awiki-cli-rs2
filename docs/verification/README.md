@@ -29,6 +29,9 @@ dependency was added.
 Scope:
 
 - Go `BuildDirectSendRPCParams` signed direct text params.
+- Go `contentTypeForMessageType` normalization: trim/lowercase input,
+  `attachment_manifest` maps to the attachment manifest content type, only
+  `event` maps to `application/json`, and `json` falls back to `text/plain`.
 - Go `BuildDirectAttachmentSendRPCParams` signed direct attachment manifest
   params.
 - Go `BuildGroupAttachmentSendRPCParams` signed group attachment manifest
