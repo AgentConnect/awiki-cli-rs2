@@ -2,6 +2,51 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-14 CLI Error Hint Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli error_hints --locked
+cargo +1.79.0 test -p awiki-cli internal_anyhow --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/cli -run 'TestIsWindowsDirSyncCompatibilityError|TestRuntimeExitRefinesWindowsDirSyncCompatibilityHint|TestConfigCommandExitRefinesWindowsDirSyncCompatibilityHint' -count=1
+```
+
+Result: passed. The Rust helper matches Go's Windows directory-sync
+compatibility detector: it requires `Access is denied` plus one of
+`sync config dir`, `sync route registry dir`, or `sync dir`, and it ignores
+normal permission errors and unrelated parse failures. The `internal_anyhow`
+focused tests prove the refined hint reaches the current Rust workspace/config
+error envelope path while ordinary permission errors keep the existing doctor
+fallback hint.
+
+Scope:
+
+- Go `internal/cli/error_hints.go` `windowsDirSyncCompatibilityHint`.
+- Go `refineWorkspaceWriteHint` and `isWindowsDirSyncCompatibilityError`
+  string-matching behavior.
+- Rust generic workspace/config error hint refinement through `internal_anyhow`.
+
+Structure note: changed Rust files remain below the default 1200-line source
+limit: `crates/awiki-cli/src/app.rs` is 882 lines and
+`crates/awiki-cli/src/app/error_hints.rs` is 72 lines. No file-size exception is
+needed.
+
+Boundary note: this slice does not implement full Go `runtimeExit`,
+`configCommandExit`, workspace-upgrade execution, platform service-manager
+behavior, route registry writes, or Windows-specific system service behavior.
+It only ports the shared hint classifier and wires it into the current Rust
+generic workspace/config error path.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; TLS and
+SQLite dependency decisions remain unchanged.
+
 ## 2026-05-14 Buildinfo Contract Slice
 
 Local Rust and Go reference verification:

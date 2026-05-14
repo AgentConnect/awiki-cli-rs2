@@ -12,6 +12,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
 mod mail_handlers;
@@ -820,12 +821,11 @@ fn internal_io(err: std::io::Error) -> ExitError {
 }
 
 fn internal_anyhow(err: anyhow::Error) -> ExitError {
-    ExitError::new(
-        "internal_error",
-        1,
-        err.to_string(),
+    let hint = error_hints::refine_workspace_write_hint(
+        &err,
         "Run `awiki-cli doctor` to inspect the local workspace state.",
-    )
+    );
+    ExitError::new("internal_error", 1, err.to_string(), hint)
 }
 
 fn store_exit(err: StoreError, hint: &str) -> ExitError {
@@ -849,4 +849,34 @@ fn legacy_owner_lookup(manager: &Manager) -> store::LegacyOwnerLookup {
         .into_iter()
         .map(|summary| (summary.identity_name, summary.did, summary.is_default));
     store::LegacyOwnerLookup::from_entries(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_anyhow_refines_windows_directory_sync_hint() {
+        let err = internal_anyhow(anyhow::anyhow!(
+            r"write config yaml: sync config dir: sync C:\Users\liuzhuocheng\.awiki-cli: Access is denied."
+        ));
+
+        assert_eq!(err.detail.code, "internal_error");
+        assert_eq!(
+            err.detail.hint,
+            error_hints::WINDOWS_DIR_SYNC_COMPATIBILITY_HINT
+        );
+    }
+
+    #[test]
+    fn internal_anyhow_keeps_fallback_for_normal_permission_errors() {
+        let err = internal_anyhow(anyhow::anyhow!(
+            r"create config dir: mkdir C:\Users\liuzhuocheng\.awiki-cli: Access is denied."
+        ));
+
+        assert_eq!(
+            err.detail.hint,
+            "Run `awiki-cli doctor` to inspect the local workspace state."
+        );
+    }
 }
