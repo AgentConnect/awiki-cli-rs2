@@ -14,6 +14,7 @@ use std::path::Path;
 mod group_e2ee_handlers;
 mod group_handlers;
 mod mail_handlers;
+mod msg_handlers;
 mod page_handlers;
 mod runtime_handlers;
 mod update_handlers;
@@ -474,45 +475,6 @@ impl App {
             endpoint_url.as_deref(),
         );
         self.render_identity_result("awiki-cli id replace-did", &resolved, result)
-    }
-
-    pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        let to = command.flags.get("to").cloned().unwrap_or_default();
-        let group = command.flags.get("group").cloned().unwrap_or_default();
-        if to.trim().is_empty() && group.trim().is_empty() {
-            return Err(ExitError::new("invalid_argument", 2, "msg send requires either --to or --group.", "Usage: awiki-cli msg send --to <handle|did> --text \"Hello\" or awiki-cli msg send --group <group_did> --text \"Hello group\""));
-        }
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("msg send"));
-        }
-        let action = if group.trim().is_empty() {
-            "direct.send"
-        } else {
-            "group.send"
-        };
-        let target = if group.trim().is_empty() {
-            json!({ "did": to, "kind": "direct" })
-        } else {
-            json!({ "did": group, "kind": "group" })
-        };
-        self.render_success(
-            "awiki-cli msg send",
-            &resolved,
-            json!({
-                "plan": {
-                    "action": action,
-                    "identity": self.globals.identity,
-                    "target": target,
-                    "message_type": command.flags.get("type").cloned().unwrap_or_else(|| "text".to_string()),
-                    "runtime_mode": resolved.runtime_mode,
-                    "transport": resolved.runtime_mode,
-                    "local_writes": ["messages"],
-                }
-            }),
-            "Dry run: message send planned",
-            Vec::new(),
-        )
     }
 
     pub fn run_debug_db_query(&self, command: &ParsedCommand) -> Result<(), ExitError> {

@@ -89,6 +89,16 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.refresh-token" => app.run_id_refresh_token(),
         "id.replace-did" => app.run_id_replace_did(command),
         "msg.send" => app.run_msg_send(command),
+        "msg.attachment.download" => app.run_msg_attachment_download(command),
+        "msg.inbox" => app.run_msg_inbox(command),
+        "msg.history" => app.run_msg_history(command),
+        "msg.mark-read" => app.run_msg_mark_read(command),
+        "msg.secure.status" => app.run_msg_secure_status(command),
+        "msg.secure.init" => app.run_msg_secure_init(command),
+        "msg.secure.repair" => app.run_msg_secure_repair(command),
+        "msg.secure.failed" => app.run_msg_secure_failed(),
+        "msg.secure.retry" => app.run_msg_secure_retry(command),
+        "msg.secure.drop" => app.run_msg_secure_drop(command),
         "mail.inbox" => app.run_mail_inbox(command),
         "mail.read" => app.run_mail_read(command),
         "mail.mark-read" => app.run_mail_mark_read(command),
@@ -180,6 +190,16 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["id", "refresh-token", ..] => "id.refresh-token",
         ["id", "replace-did", ..] => "id.replace-did",
         ["msg", "send", ..] => "msg.send",
+        ["msg", "attachment", "download", ..] => "msg.attachment.download",
+        ["msg", "inbox", ..] => "msg.inbox",
+        ["msg", "history", ..] => "msg.history",
+        ["msg", "mark-read", ..] => "msg.mark-read",
+        ["msg", "secure", "status", ..] => "msg.secure.status",
+        ["msg", "secure", "init", ..] => "msg.secure.init",
+        ["msg", "secure", "repair", ..] => "msg.secure.repair",
+        ["msg", "secure", "failed", ..] => "msg.secure.failed",
+        ["msg", "secure", "retry", ..] => "msg.secure.retry",
+        ["msg", "secure", "drop", ..] => "msg.secure.drop",
         ["mail", "inbox", ..] => "mail.inbox",
         ["mail", "read", ..] => "mail.read",
         ["mail", "mark-read", ..] => "mail.mark-read",
@@ -336,6 +356,7 @@ fn is_bool_local_flag(name: &str) -> bool {
             | "wait"
             | "secure"
             | "unread"
+            | "mark-read"
             | "is-public"
             | "is-agent"
             | "e2ee"
