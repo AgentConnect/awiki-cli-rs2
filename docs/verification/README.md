@@ -2185,6 +2185,55 @@ HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
 service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
 policy remains Rustls-first and unchanged.
 
+## 2026-05-15 Workspace v0->v1 Validation Wiring Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli upgrade::migration_v0_to_v1 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli upgrade::upgrader --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededImportsLegacyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestLoadLegacySettingsRejectsSplitServiceURLs' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Wired the default 0->1 migration `validate` path to a Rust
+  `validate_workspace_v0_to_v1` helper matching Go
+  `workspaceV0ToV1Migration.Validate`.
+- Preserved Go's required-context guard through the optional Rust test hook:
+  `workspace upgrade requires a resolved config`.
+- Preserved config validation: existing `config.yaml` must have
+  `schema_version` equal to the current config schema version.
+- Preserved SQLite validation: existing target database must have current store
+  schema version and pass `PRAGMA integrity_check` plus
+  `PRAGMA foreign_key_check`.
+- Preserved post-legacy-identity sanity validation: when inspection says no
+  workspace existed but legacy identity existed, at least one imported identity
+  must now be present in the local identity store.
+- Kept 1->2 and 2->3 migration validation deferred.
+
+Boundary note: this slice still does not implement v0->v1 `Apply`, identity
+import, legacy SQLite import, legacy config write/remove, k1->e1 replacement
+RPC, full `UpgradeIfNeeded` phase execution, journal phase writes, lock/backup
+orchestration, meta stamping, rollback, or legacy skill/listener cleanup.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses the existing hand-written config parser, local identity manager, already
+approved `rusqlite + bundled` store path, and SQLite health helper. It does not
+introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
+service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
+policy remains Rustls-first and unchanged.
+
 ## 2026-05-14 Workspace SQLite Migration Helpers Slice
 
 Local Rust and Go reference verification:

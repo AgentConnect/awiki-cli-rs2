@@ -326,12 +326,15 @@ fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
         apply_err.to_string(),
         "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
     );
-    let validate_err = plan[0]
+    plan[0]
         .validate(&context)
-        .expect_err("migration validation remains deferred in this slice");
+        .expect("first migration validation is wired");
+    let validate_err = plan[1]
+        .validate(&context)
+        .expect_err("later migration validation remains deferred in this slice");
     assert_eq!(
         validate_err.to_string(),
-        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+        "workspace migration execution is not implemented: workspace_1_to_2_remove_legacy_skill_and_listener"
     );
 }
 

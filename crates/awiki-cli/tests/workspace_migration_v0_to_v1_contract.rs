@@ -205,6 +205,114 @@ INSERT INTO child (id, parent_id) VALUES (1, 42);
     );
 }
 
+#[test]
+fn workspace_v0_to_v1_validate_accepts_current_config_and_healthy_sqlite() {
+    let workspace = TempDir::new("workspace-v0-v1-validate-current").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    std::fs::write(&resolved.paths.config_file, "schema_version: 1\n").expect("write config");
+    std::fs::create_dir_all(Path::new(&resolved.paths.database_file).parent().unwrap())
+        .expect("create data dir");
+    {
+        let db = store::open(&resolved.paths).expect("open writable db");
+        store::ensure_schema(&db).expect("ensure schema");
+    }
+    let context = upgrade::new_context(&resolved, "1.2.3");
+
+    validate_first_migration(&context).expect("current config and healthy sqlite validate");
+}
+
+#[test]
+fn workspace_v0_to_v1_validate_rejects_wrong_config_schema() {
+    let workspace = TempDir::new("workspace-v0-v1-validate-config").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    std::fs::write(&resolved.paths.config_file, "schema_version: 0\n").expect("write config");
+    let context = upgrade::new_context(&resolved, "1.2.3");
+
+    let err = validate_first_migration(&context).expect_err("wrong schema should fail");
+
+    assert_eq!(err.to_string(), "config schema version = 0, want 1");
+}
+
+#[test]
+fn workspace_v0_to_v1_validate_rejects_wrong_sqlite_schema() {
+    let workspace =
+        TempDir::new("workspace-v0-v1-validate-sqlite-version").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    std::fs::create_dir_all(Path::new(&resolved.paths.database_file).parent().unwrap())
+        .expect("create data dir");
+    {
+        let db = rusqlite::Connection::open(&resolved.paths.database_file).expect("open db");
+        db.pragma_update(None, "user_version", store::SCHEMA_VERSION - 1)
+            .expect("set wrong schema");
+    }
+    let context = upgrade::new_context(&resolved, "1.2.3");
+
+    let err = validate_first_migration(&context).expect_err("wrong sqlite schema should fail");
+
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "sqlite schema version = {}, want {}",
+            store::SCHEMA_VERSION - 1,
+            store::SCHEMA_VERSION
+        )
+    );
+}
+
+#[test]
+fn workspace_v0_to_v1_validate_reuses_sqlite_health_errors() {
+    let workspace = TempDir::new("workspace-v0-v1-validate-sqlite-health").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    std::fs::create_dir_all(Path::new(&resolved.paths.database_file).parent().unwrap())
+        .expect("create data dir");
+    {
+        let db = rusqlite::Connection::open(&resolved.paths.database_file).expect("open db");
+        db.pragma_update(None, "foreign_keys", "OFF")
+            .expect("disable fk");
+        db.execute_batch(
+            r#"
+CREATE TABLE parent (id INTEGER PRIMARY KEY);
+CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+INSERT INTO child (id, parent_id) VALUES (1, 42);
+"#,
+        )
+        .expect("seed fk violation");
+        db.pragma_update(None, "user_version", store::SCHEMA_VERSION)
+            .expect("set current schema");
+    }
+    let context = upgrade::new_context(&resolved, "1.2.3");
+
+    let err = validate_first_migration(&context).expect_err("sqlite health should fail");
+
+    assert_eq!(
+        err.to_string(),
+        "PRAGMA foreign_key_check returned foreign key violations"
+    );
+}
+
+#[test]
+fn workspace_v0_to_v1_validate_requires_imported_identity_after_legacy_detection() {
+    let workspace = TempDir::new("workspace-v0-v1-validate-identity").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let mut context = upgrade::new_context(&resolved, "1.2.3");
+    let mut detection = upgrade::Detection::default();
+    detection.has_workspace = false;
+    detection.legacy_identity_exists = true;
+    context.inspection = Some(upgrade::Inspection {
+        paths: context.paths.clone(),
+        detection,
+        ..Default::default()
+    });
+
+    let err =
+        validate_first_migration(&context).expect_err("missing imported identity should fail");
+
+    assert_eq!(
+        err.to_string(),
+        "expected at least one imported identity after legacy upgrade"
+    );
+}
+
 fn test_resolved(root: &Path) -> config::Resolved {
     config::Resolved {
         paths: config::Paths {
@@ -266,6 +374,12 @@ fn assert_table_exists(connection: &rusqlite::Connection, name: &str) {
         )
         .expect("query sqlite_master");
     assert_eq!(count, 1, "expected sqlite object {name} to exist");
+}
+
+fn validate_first_migration(context: &upgrade::Context) -> Result<(), upgrade::MigrationError> {
+    let upgrader = upgrade::new_default_upgrader();
+    let plan = upgrader.plan(0, 1).expect("v0 to v1 plan");
+    plan[0].validate(context)
 }
 
 struct TempDir {

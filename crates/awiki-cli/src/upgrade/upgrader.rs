@@ -1,9 +1,10 @@
 use super::detect::{inspect, InspectError};
 use super::journal::{clear_journal, JournalError};
 use super::meta::{load_meta, MetaError};
+use super::migration_v0_to_v1;
 use super::resolve_paths;
 use super::types::{Inspection, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
-use crate::config;
+use crate::{config, identity, store};
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -157,6 +158,10 @@ impl From<UpgraderError> for UpgradeError {
 #[derive(Debug)]
 pub enum MigrationError {
     Meta(MetaError),
+    Store(store::StoreError),
+    SQLiteHealth(migration_v0_to_v1::SQLiteHealthError),
+    Identity(identity::IdentityError),
+    Message(String),
     ExecutionDeferred { name: &'static str },
 }
 
@@ -164,6 +169,10 @@ impl fmt::Display for MigrationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Meta(err) => write!(f, "{err}"),
+            Self::Store(err) => write!(f, "{err}"),
+            Self::SQLiteHealth(err) => write!(f, "{err}"),
+            Self::Identity(err) => write!(f, "{err}"),
+            Self::Message(message) => f.write_str(message),
             Self::ExecutionDeferred { name } => {
                 write!(
                     f,
@@ -179,6 +188,24 @@ impl std::error::Error for MigrationError {}
 impl From<MetaError> for MigrationError {
     fn from(value: MetaError) -> Self {
         Self::Meta(value)
+    }
+}
+
+impl From<store::StoreError> for MigrationError {
+    fn from(value: store::StoreError) -> Self {
+        Self::Store(value)
+    }
+}
+
+impl From<migration_v0_to_v1::SQLiteHealthError> for MigrationError {
+    fn from(value: migration_v0_to_v1::SQLiteHealthError) -> Self {
+        Self::SQLiteHealth(value)
+    }
+}
+
+impl From<identity::IdentityError> for MigrationError {
+    fn from(value: identity::IdentityError) -> Self {
+        Self::Identity(value)
     }
 }
 
@@ -336,7 +363,10 @@ impl Migration for WorkspaceMigration {
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
 
-    fn validate(&self, _context: &Context) -> Result<(), MigrationError> {
+    fn validate(&self, context: &Context) -> Result<(), MigrationError> {
+        if self.from == 0 && self.to == 1 {
+            return migration_v0_to_v1::validate_workspace_v0_to_v1(context);
+        }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
 }

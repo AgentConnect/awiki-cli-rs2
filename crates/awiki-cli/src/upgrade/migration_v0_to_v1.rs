@@ -1,5 +1,8 @@
 use crate::config;
+use crate::identity;
 use crate::store;
+use crate::upgrade::fsutil;
+use crate::upgrade::upgrader::{Context, MigrationError};
 use rusqlite::Connection;
 use std::fmt;
 
@@ -83,6 +86,53 @@ pub fn refresh_resolved_config_optional(
 pub fn ensure_target_store_schema(paths: &config::Paths) -> store::StoreResult<()> {
     let connection = store::open(paths)?;
     store::ensure_schema(&connection)
+}
+
+pub fn validate_workspace_v0_to_v1(context: &Context) -> Result<(), MigrationError> {
+    validate_workspace_v0_to_v1_optional(Some(context))
+}
+
+pub fn validate_workspace_v0_to_v1_optional(
+    context: Option<&Context>,
+) -> Result<(), MigrationError> {
+    let context = context.ok_or_else(|| {
+        MigrationError::Message("workspace upgrade requires a resolved config".to_string())
+    })?;
+    if fsutil::file_exists(&context.paths.config_file) {
+        let (file_config, _, error) = config::read_file_config(&context.paths.config_file);
+        if !error.is_empty() {
+            return Err(MigrationError::Message(error));
+        }
+        if file_config.schema_version != config::CONFIG_SCHEMA_VERSION {
+            return Err(MigrationError::Message(format!(
+                "config schema version = {}, want {}",
+                file_config.schema_version,
+                config::CONFIG_SCHEMA_VERSION
+            )));
+        }
+    }
+    if fsutil::file_exists(&context.paths.database_file) {
+        let connection = store::open_read_only(&context.paths.database_file)?;
+        let version = store::current_schema_version(&connection)?;
+        if version != store::SCHEMA_VERSION {
+            return Err(MigrationError::Message(format!(
+                "sqlite schema version = {version}, want {}",
+                store::SCHEMA_VERSION
+            )));
+        }
+        validate_sqlite_health(&connection)?;
+    }
+    if context.inspection.as_ref().is_some_and(|inspection| {
+        !inspection.detection.has_workspace && inspection.detection.legacy_identity_exists
+    }) {
+        let manager = identity::Manager::new(context.resolved.paths.clone());
+        if manager.list()?.is_empty() {
+            return Err(MigrationError::Message(
+                "expected at least one imported identity after legacy upgrade".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn validate_sqlite_health(connection: &Connection) -> Result<(), SQLiteHealthError> {
@@ -192,5 +242,15 @@ mod tests {
         let err = expect_single_sqlite_ok(&connection, "SELECT 1 WHERE 0")
             .expect_err("no rows should fail");
         assert_eq!(err.to_string(), "SELECT 1 WHERE 0 returned no rows");
+    }
+
+    #[test]
+    fn validate_workspace_v0_to_v1_optional_keeps_go_required_guard() {
+        let err = validate_workspace_v0_to_v1_optional(None)
+            .expect_err("missing context should match Go guard");
+        assert_eq!(
+            err.to_string(),
+            "workspace upgrade requires a resolved config"
+        );
     }
 }
