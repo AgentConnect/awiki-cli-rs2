@@ -223,6 +223,31 @@ pub struct GroupLeaveRequest {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupE2eeProcessLeaveRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub leave_request_id: String,
+    pub reason_text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupE2eeRecoverMemberRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupE2eeUpdateKeyRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupUpdateRequest {
     pub identity_name: String,
     pub group: String,

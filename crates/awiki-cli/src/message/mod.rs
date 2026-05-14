@@ -1,4 +1,5 @@
 mod attachment;
+mod group_e2ee_wire;
 mod group_wire;
 mod proof;
 mod service_discovery;
@@ -13,6 +14,17 @@ pub use attachment::{
     build_group_attachment_send_rpc_params, find_attachment_selection, manifest_content_string,
     AttachmentCommitObjectResult, AttachmentCreateSlotResult, AttachmentSelection,
     PreparedAttachment,
+};
+pub use group_e2ee_wire::{
+    build_group_e2ee_add_rpc_params, build_group_e2ee_create_rpc_params,
+    build_group_e2ee_get_key_package_rpc_params,
+    build_group_e2ee_get_recovery_key_package_rpc_params,
+    build_group_e2ee_get_update_key_package_rpc_params, build_group_e2ee_head_rpc_params,
+    build_group_e2ee_leave_request_rpc_params, build_group_e2ee_leave_rpc_params,
+    build_group_e2ee_notice_rpc_params, build_group_e2ee_publish_key_package_rpc_params,
+    build_group_e2ee_recover_member_rpc_params, build_group_e2ee_remove_rpc_params,
+    build_group_e2ee_send_rpc_params, build_group_e2ee_update_member_rpc_params,
+    GROUP_E2EE_CIPHER_CONTENT_TYPE,
 };
 pub use group_wire::{
     build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_info_rpc_params,
@@ -30,7 +42,8 @@ pub use service_discovery::{
     select_attachment_rpc_service_from_document, DiscoveredAttachmentService,
 };
 pub use types::{
-    AttachmentDownloadRequest, GroupCreateRequest, GroupGetRequest, GroupInfoRequest,
+    AttachmentDownloadRequest, GroupCreateRequest, GroupE2eeProcessLeaveRequest,
+    GroupE2eeRecoverMemberRequest, GroupE2eeUpdateKeyRequest, GroupGetRequest, GroupInfoRequest,
     GroupJoinRequest, GroupLeaveRequest, GroupListRequest, GroupMemberRequest, GroupMembersRequest,
     GroupMessagesRequest, GroupUpdateRequest, HistoryRequest, InboxRequest, MarkReadRequest,
     MessageError, SecureOutboxActionRequest, SecurePeerRequest, SecureStatusRequest, SendRequest,

@@ -954,3 +954,80 @@ non-dry-run group RPC calls, refresh JWT sessions, select HTTP/WebSocket
 transport, mutate local message cache, upload/download attachments, or run MLS
 group E2EE provider logic. Those remain dedicated authsdk/message-service and
 group-E2EE wire/service slices.
+
+## 2026-05-14 Group E2EE Wire Builder Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|tungstenite|websocket'
+```
+
+Result: passed. The full `awiki-cli` crate test suite reported 72 tests
+passing after this slice. Structure check reported no undocumented Rust files
+over 1200 lines; `message/group_e2ee_wire.rs` is 845 lines and
+`tests/message_group_e2ee_wire_contract.rs` is 526 lines. Dependency audit
+remained unchanged: only the approved
+`rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
+present, with no OpenSSL/native-tls/HTTP/TLS client path.
+
+Scope:
+
+- Go `BuildGroupE2EECreateRPCParams`, including service target,
+  `group.e2ee.create`, `group-e2ee` security profile, and state-ref propagation.
+- Go `BuildGroupE2EEAddRPCParams`, `BuildGroupE2EERemoveRPCParams`,
+  `BuildGroupE2EELeaveRequestRPCParams`, and `BuildGroupE2EELeaveRPCParams`,
+  including membership commit bodies, reason/request ID handling, actor/subject
+  fields, and hidden control-plane security-profile differences.
+- Go `BuildGroupE2EESendRPCParams`, including
+  `application/anp-group-cipher+json`, caller-provided operation/message IDs,
+  and opaque cipher sanitization.
+- Go KeyPackage request builders:
+  `BuildGroupE2EEPublishKeyPackageRPCParams`,
+  `BuildGroupE2EEGetKeyPackageRPCParams`,
+  `BuildGroupE2EEGetRecoveryKeyPackageRPCParams`, and
+  `BuildGroupE2EEGetUpdateKeyPackageRPCParams`, including transport-protected
+  service targets, device defaults, and public KeyPackage sanitization.
+- Go recovery/update/notice/head builders, including P4-field avoidance,
+  recovery/update key package id selection, nested package purpose defaults,
+  notice limit capping and ID trimming, and head state-ref shape.
+
+System verification in `awiki-system-test`:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/core/test_basic_commands.py \
+  tests_v2/core/test_output_contracts_cli.py \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_query_rejects_unsafe_sql_and_supports_table_output \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+  tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+  tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+  tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+  tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+  tests_v2/runtime/test_runtime_cli.py \
+  tests_v2/update \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: `37 passed in 1.83s`.
+
+Boundary note: this slice constructs hidden E2EE request params only. It does
+not execute `anp-mls`, call hidden P6 message-service APIs, refresh JWT
+sessions, select HTTP/WebSocket transport, mutate cache, or validate live MLS
+storage/security behavior. Those remain dedicated group-E2EE service/provider
+translation tasks.
