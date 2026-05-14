@@ -11,6 +11,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+mod mail_handlers;
 mod runtime_handlers;
 
 #[derive(Debug, Clone)]

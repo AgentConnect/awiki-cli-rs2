@@ -31,6 +31,7 @@ Undocumented native/system linkage is a completion blocker.
 | Cargo 1.79 compatibility pins | Pin `time = "=0.3.36"` in the workspace and keep `base64ct` locked to `1.6.0`. | Newer `time` and `base64ct` releases require Cargo edition2024 support, which is incompatible with the current Rust/Cargo 1.79 validation lane. This is a toolchain compatibility pin, not a behavior optimization. | `cargo +1.79.0 test -p awiki-cli --locked` after lockfile update. |
 | CLI core slice dependencies | Keep non-storage dependencies minimal: `anyhow`, `serde`, `serde_json`, `sha2`; add `rusqlite + bundled` only for the store/debug lane. | Current local cargo mirror/toolchain has network and Cargo 1.79 compatibility constraints. Storage is the first documented bundled-native exception; other lanes still need explicit dependency review. | `cargo +1.79.0 test -p awiki-cli --locked`, `cargo +1.79.0 run --bin xtask --locked -- check-structure`, dependency tree audit, and focused core/debug `awiki-system-test` run. |
 | Runtime/listener local slice | Do not add platform service-manager dependencies for the current runtime/config slice. Use workspace-local listener state to satisfy the verified CLI contract while the full service-manager translation remains deferred. | Go uses platform service management through a library path. The user asked to avoid platform/system libraries where possible. The current system tests validate command shape, config writes, and listener lifecycle JSON contract; those can be met without linking systemd/launchd/Windows service libraries in this slice. | `crates/awiki-cli/tests/runtime_contract.rs`; `tests_v2/runtime/test_runtime_cli.py` passed. Dependency tree still has no OpenSSL/native-tls path and no new platform service library. |
+| Mail local command slice | Add no HTTP/TLS dependency in the first mail slice. Translate CLI validation/dry-run contracts and local `mail notify` SQLite behavior only. | Non-dry-run mail RPC requires the authsdk/DID-WBA session chain plus an HTTP/TLS client choice. The project constraint says to avoid system SSL; that dependency decision should be made once for authsdk/mail/message service integrations, not hidden inside a dry-run/local-cache mail slice. | `crates/awiki-cli/tests/mail_contract.rs` passed. Dependency tree remains unchanged except the existing bundled SQLite path. |
 
 ## Known Deferred Decisions
 
@@ -39,7 +40,24 @@ Undocumented native/system linkage is a completion blocker.
 | Full YAML config parsing | Choose a parser that preserves Go YAML behavior without introducing unnecessary native dependencies. | Go config fixture parity tests, environment override tests, and dependency-tree review. |
 | SQLite crate/backend | Current accepted lane is `rusqlite + bundled` for exact SQLite behavior and runtime portability. Keep pure Rust alternatives recorded for later optimization review, not mixed into this parity translation. | Exact schema/migration parity, query behavior parity, no host SQLite dependency, and system-test debug/store evidence. |
 | HTTP/WebSocket client stack | Select Rustls-based HTTP/WebSocket crates for service integrations. | Feature audit showing no OpenSSL/native-tls path and service-backed system tests. |
+| Mail RPC client | Translate `internal/mail/client.go` after the shared authsdk/session and Rustls HTTP stack are selected. | Must preserve DID-auth JWT refresh, bearer scope behavior, JSON-RPC error mapping, CA bundle handling, and local mail-service system tests without adding OpenSSL/native-tls. |
 | Platform service-manager integration | Decide whether to translate Go listener service control with a cross-platform Rust crate, direct per-platform code, or a no-platform-dependency supervisor strategy. | Must compare native/platform dependencies, service behavior parity, and `AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1` behavior before adoption. Do not mix this choice into unrelated runtime config translation. |
+
+## Mail Slice Notes
+
+2026-05-14:
+
+- Added a split `mail` module for command-plan data and local notification
+  service behavior, plus `app/mail_handlers.rs` for the Go
+  `internal/cli/mail.go` CLI boundary.
+- No new dependency was added. Remote mail RPC remains deferred until the shared
+  authsdk/HTTP client slice chooses a Rustls-based stack and verifies that no
+  OpenSSL/native-tls path is introduced.
+- Implemented local `mail notify` on top of the existing bundled SQLite store.
+  This follows the Go predicate for legacy `content_type = "mail.notification"`
+  rows and current `metadata.source_kind = "mail"` rows.
+- Verification: `cargo +1.79.0 test -p awiki-cli --test mail_contract --locked`
+  passed; full workspace verification is recorded in `docs/verification/`.
 
 ## Runtime/Listener Slice Notes
 

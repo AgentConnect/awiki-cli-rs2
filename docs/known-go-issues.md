@@ -14,3 +14,4 @@ is proven.
 | Area | Go reference | Issue / debt or optimization opportunity | Rust parity decision | Status |
 | --- | --- | --- | --- | --- |
 | Translation process | all Go files/modules | Potential Rust-native optimizations may be discovered while translating. | Record only; do not implement during parity translation unless needed to reproduce Go behavior or meet hard Rust safety/build constraints. | standing_rule |
+| Mail RPC dependency boundary | `internal/mail/client.go`, `internal/mail/service.go`, `internal/authsdk/*` | Non-dry-run mail RPC requires auth session/JWT refresh plus HTTP/TLS dependency selection. Implementing it inside the first mail command slice would mix translation with dependency architecture and SSL policy decisions. | First Rust mail slice preserves CLI validation, dry-run plans, and local `mail notify`; remote RPC is deferred to a dedicated authsdk/mail client slice using a Rustls-reviewed stack. | deferred_translation |

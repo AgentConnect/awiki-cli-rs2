@@ -325,12 +325,27 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
     } else {
         sources.insert("anp_service_did".to_string(), anp_did_source);
     }
-    let (mail_service_url, mail_source) = choose_value(
-        "",
-        false,
-        &file_config.services.mail_service_url,
-        &service_base_url,
-    );
+    let (mail_service_url, mail_source) = if file_config.services.mail_service_url.trim().is_empty()
+    {
+        (
+            service_base_url.clone(),
+            ValueSource {
+                source: "derived_default".to_string(),
+                key: "service_base_url".to_string(),
+                value: service_base_url.clone(),
+            },
+        )
+    } else {
+        let value = file_config.services.mail_service_url.trim().to_string();
+        (
+            value.clone(),
+            ValueSource {
+                source: "config_file".to_string(),
+                key: String::new(),
+                value,
+            },
+        )
+    };
     sources.insert("mail_service_url".to_string(), mail_source);
 
     let host_notify_sink = normalize_host_notify_sink(&file_config.runtime.host_notify.sink);

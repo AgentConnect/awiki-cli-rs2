@@ -13,6 +13,40 @@ pub fn execute_sql(connection: &Connection, statement: &str) -> StoreResult<Vec<
     Ok(vec![json!({ "rows_affected": rows_affected })])
 }
 
+pub fn list_notifications(
+    connection: &Connection,
+    owner_did: &str,
+    limit: i64,
+) -> StoreResult<Vec<Value>> {
+    let limit = if limit <= 0 { 20 } else { limit };
+    let mut statement = connection.prepare(
+        r#"
+SELECT *
+FROM messages
+WHERE owner_did = ?1
+  AND (COALESCE(content_type, '') = 'mail.notification'
+       OR COALESCE(metadata, '') LIKE '%"source_kind":"mail"%')
+ORDER BY COALESCE(sent_at, stored_at) DESC
+LIMIT ?2
+"#,
+    )?;
+    let names = statement
+        .column_names()
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let mut rows = statement.query(rusqlite::params![owner_did.trim(), limit])?;
+    let mut results = Vec::new();
+    while let Some(row) = rows.next()? {
+        let mut object = Map::new();
+        for (index, name) in names.iter().enumerate() {
+            object.insert(name.clone(), value_ref_to_json(row.get_ref(index)?));
+        }
+        results.push(Value::Object(object));
+    }
+    Ok(results)
+}
+
 pub(crate) fn query_rows(connection: &Connection, statement: &str) -> StoreResult<Vec<Value>> {
     let mut statement = connection.prepare(statement)?;
     let names = statement

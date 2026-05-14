@@ -86,6 +86,13 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.import-v1" => app.run_id_import_v1(command),
         "id.refresh-token" => app.run_id_refresh_token(),
         "msg.send" => app.run_msg_send(command),
+        "mail.inbox" => app.run_mail_inbox(command),
+        "mail.read" => app.run_mail_read(command),
+        "mail.mark-read" => app.run_mail_mark_read(command),
+        "mail.account" => app.run_mail_account(),
+        "mail.send" => app.run_mail_send(command),
+        "mail.attachment.download" => app.run_mail_attachment_download(command),
+        "mail.notify" => app.run_mail_notify(command),
         "page.create" => app.run_page_create(command),
         "runtime.status" => app.run_runtime_status(),
         "runtime.apply" => app.run_runtime_apply(),
@@ -144,6 +151,13 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["id", "import-v1", ..] => "id.import-v1",
         ["id", "refresh-token", ..] => "id.refresh-token",
         ["msg", "send", ..] => "msg.send",
+        ["mail", "inbox", ..] => "mail.inbox",
+        ["mail", "read", ..] => "mail.read",
+        ["mail", "mark-read", ..] => "mail.mark-read",
+        ["mail", "account", ..] => "mail.account",
+        ["mail", "send", ..] => "mail.send",
+        ["mail", "attachment", "download", ..] => "mail.attachment.download",
+        ["mail", "notify", ..] => "mail.notify",
         ["page", "create", ..] => "page.create",
         ["runtime", "status", ..] => "runtime.status",
         ["runtime", "apply", ..] => "runtime.apply",
@@ -263,7 +277,7 @@ fn is_id_create_context(words: &[String]) -> bool {
 fn is_bool_local_flag(name: &str) -> bool {
     matches!(
         name,
-        "enabled" | "auto-install" | "auto-start" | "all" | "wait" | "secure"
+        "enabled" | "auto-install" | "auto-start" | "all" | "wait" | "secure" | "unread"
     )
 }
 
