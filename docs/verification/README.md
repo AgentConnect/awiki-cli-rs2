@@ -1215,3 +1215,54 @@ Boundary note: this is a narrow blocking GET helper for npm registry metadata,
 not the shared authsdk/service HTTP or WebSocket client. Broader mail, page,
 site, message, attachment, and group service transports still need dedicated
 Rustls-backed client decisions and service-backed tests.
+
+## 2026-05-14 Store Legacy Import Row-Normalization Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test store_import_contract --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract debug_db_import_v1 --locked
+cd ../awiki-cli && go test ./internal/store
+cd ../awiki-system-test && \
+  AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  uv run --no-sync pytest \
+    tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+    -q
+```
+
+Result: passed for the Rust focused store-import contract tests and the existing
+CLI dry-run/missing-path selector. The Go reference `internal/store` tests
+passed and are the parity source for the three Rust scenarios. The full
+`tests_v2/debug/test_debug_cli.py` file was not accepted for this slice because
+two selectors require non-dry-run `msg send`, which is still deferred to the
+message-service slice.
+
+Scope:
+
+- Replaced the temporary generic table-copy importer with Go `import.go` style
+  per-table row normalization for `messages`, `e2ee_outbox`, `contacts`,
+  `groups`, `group_members`, `relationship_events`, and `e2ee_sessions`.
+- Preserved legacy scan behavior, including direct `.db` path handling,
+  `<legacy_data_dir>/database/awiki.db` fallback, soft missing-file scan, schema
+  version read, and sorted table list.
+- Added a store-layer `LegacyOwnerLookup` input so the CLI can pass identity
+  summaries without creating a Rust module dependency cycle. This preserves Go's
+  `ownerByCredential` and default-owner inference behavior.
+- Preserved Go import guards and defaults: pre-v6 imports require an inferred
+  owner; missing tables are skipped and sorted; invalid rows with missing
+  required keys are skipped where Go skips them; empty thread/content/status
+  fields receive Go-equivalent defaults.
+- Preserved contact handle-binding side effects for imported contacts.
+
+Structure note: `crates/awiki-cli/src/store/import.rs` is currently 1197 lines.
+That is below the default 1200-line Rust source limit and remains a deliberate
+file-level translation of Go `internal/store/import.go`. If the next store slice
+adds more behavior, split helper writers into a sibling store module before
+expanding this file further.
+
+No dependency was added. The slice continues to use the previously approved
+`rusqlite + bundled` SQLite lane and does not introduce HTTP/TLS, OpenSSL,
+`native-tls`, or platform service-manager dependencies.

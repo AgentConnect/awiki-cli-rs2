@@ -540,7 +540,8 @@ impl App {
                 Vec::new(),
             );
         }
-        let report = store::import_legacy_database(&mut db, &paths).map_err(|err| {
+        let owners = legacy_owner_lookup(&self.identity_manager(&resolved));
+        let report = store::import_legacy_database(&mut db, &paths, &owners).map_err(|err| {
             store_exit(
                 err,
                 "Make sure the v1 database exists and identities were imported first.",
@@ -839,4 +840,13 @@ fn store_exit(err: StoreError, hint: &str) -> ExitError {
             ExitError::new("internal_error", 1, err.to_string(), hint)
         }
     }
+}
+
+fn legacy_owner_lookup(manager: &Manager) -> store::LegacyOwnerLookup {
+    let entries = manager
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|summary| (summary.identity_name, summary.did, summary.is_default));
+    store::LegacyOwnerLookup::from_entries(entries)
 }
