@@ -6,6 +6,11 @@ use crate::config::Resolved;
 
 const DEFAULT_METADATA_CACHE_TTL_SECONDS: i64 = 43_200;
 
+#[cfg(test)]
+static TEST_NPM_LATEST_URLS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+#[cfg(test)]
+static TEST_NPM_LATEST_URLS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Metadata {
     pub latest_version: String,
@@ -56,6 +61,7 @@ fn check_inner(resolved: &Resolved, prefer_fresh: bool) -> CheckOutcome {
         ttl_seconds,
         prefer_fresh,
         update_cache_only_enabled(),
+        &npm_latest_urls(),
     ) {
         Ok(metadata) => metadata,
         Err(err) => {
@@ -138,9 +144,35 @@ fn parse_bool(raw: &str) -> bool {
     )
 }
 
+fn npm_latest_urls() -> Vec<String> {
+    #[cfg(test)]
+    {
+        if let Some(urls) = TEST_NPM_LATEST_URLS
+            .lock()
+            .expect("test urls mutex")
+            .clone()
+        {
+            return urls;
+        }
+    }
+    vec![
+        "https://registry.npmjs.org/@awiki%2Fcli/latest".to_string(),
+        "https://registry.npmmirror.com/@awiki/cli/latest".to_string(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::version;
+    use super::{version, TEST_NPM_LATEST_URLS, TEST_NPM_LATEST_URLS_LOCK};
+    use crate::config::{Paths, Resolved};
+    use std::fs;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+    use std::sync::{MutexGuard, PoisonError};
+    use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn compare_versions_handles_numeric_prerelease_segments() {
@@ -155,5 +187,383 @@ mod tests {
         assert!(version::is_dev_version("1.0.0-dev.1"));
         assert!(version::is_dev_version("0.0.0-local"));
         assert!(!version::is_dev_version("1.0.0"));
+    }
+
+    #[test]
+    fn check_fresh_prefers_network_over_fresh_cache_and_writes_cache() {
+        let server = TestServer::new(vec![TestResponse::ok(
+            r#"{"version":"1.0.10","awikiCli":{"minSupportedVersion":"1.0.9"}}"#,
+        )]);
+        let _urls = TestUrls::set(vec![server.url("/latest")]);
+        let temp = TempDir::new();
+        seed_metadata(temp.path(), "1.0.9", "1.0.9", "");
+
+        let outcome = super::check_fresh(&resolved(temp.path()));
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.decision.latest_version, "1.0.10");
+        assert_eq!(outcome.decision.min_supported_version, "1.0.9");
+        assert_eq!(outcome.decision.metadata_source, "network");
+        let cache = fs::read_to_string(metadata_path(temp.path())).expect("cache write");
+        assert!(
+            cache.contains("\"latest_version\": \"1.0.10\""),
+            "cache = {cache}"
+        );
+        assert!(cache.contains("\"source\": \"network\""), "cache = {cache}");
+        assert_eq!(server.paths(), vec!["/latest"]);
+        assert_cache_permissions(temp.path());
+    }
+
+    #[test]
+    fn registry_fetch_falls_back_to_mirror() {
+        let server = TestServer::new(vec![
+            TestResponse::status(503, "unavailable"),
+            TestResponse::ok(r#"{"version":"1.0.9","awikiCli":{"minSupportedVersion":"1.0.8"}}"#),
+        ]);
+        let _urls = TestUrls::set(vec![server.url("/npmjs"), server.url("/npmmirror")]);
+        let temp = TempDir::new();
+
+        let outcome = super::check_fresh(&resolved(temp.path()));
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.decision.latest_version, "1.0.9");
+        assert_eq!(outcome.decision.min_supported_version, "1.0.8");
+        assert_eq!(outcome.decision.metadata_source, "network");
+        assert_eq!(server.paths(), vec!["/npmjs", "/npmmirror"]);
+    }
+
+    #[test]
+    fn registry_fetch_returns_combined_error_when_all_registries_fail() {
+        let server = TestServer::new(vec![
+            TestResponse::status(503, "unavailable"),
+            TestResponse::status(502, "bad gateway"),
+        ]);
+        let _urls = TestUrls::set(vec![server.url("/npmjs"), server.url("/npmmirror")]);
+        let temp = TempDir::new();
+
+        let outcome = super::check_fresh(&resolved(temp.path()));
+
+        let error = outcome.error.expect("combined error");
+        assert!(
+            error.contains(&server.url("/npmjs")),
+            "error should include first registry URL: {error}"
+        );
+        assert!(
+            error.contains(&server.url("/npmmirror")),
+            "error should include mirror registry URL: {error}"
+        );
+    }
+
+    #[test]
+    fn check_fresh_falls_back_to_stale_cache_when_network_fails() {
+        let server = TestServer::new(vec![TestResponse::status(503, "unavailable")]);
+        let _urls = TestUrls::set(vec![server.url("/latest")]);
+        let temp = TempDir::new();
+        seed_metadata(temp.path(), "1.0.10", "1.0.9", "");
+
+        let outcome = super::check_fresh(&resolved(temp.path()));
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.decision.latest_version, "1.0.10");
+        assert_eq!(outcome.decision.min_supported_version, "1.0.9");
+        assert_eq!(outcome.decision.metadata_source, "cache_stale");
+    }
+
+    #[test]
+    fn cache_only_uses_cached_metadata_without_network() {
+        let server = TestServer::new(vec![TestResponse::status(500, "should not be used")]);
+        let _urls = TestUrls::set(vec![server.url("/latest")]);
+        let _env = EnvVar::set("AWIKI_CLI_UPDATE_CACHE_ONLY", "1");
+        let temp = TempDir::new();
+        seed_metadata(temp.path(), "1.0.10", "1.0.9", "");
+
+        let outcome = super::check_fresh(&resolved(temp.path()));
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.decision.latest_version, "1.0.10");
+        assert_eq!(outcome.decision.metadata_source, "cache");
+        assert_eq!(server.paths(), Vec::<String>::new());
+    }
+
+    fn resolved(root: &Path) -> Resolved {
+        let paths = test_paths(root);
+        Resolved {
+            paths,
+            config_schema_version: 1,
+            active_identity: String::new(),
+            runtime_mode: "websocket".to_string(),
+            runtime_socket_path: String::new(),
+            runtime_listener_enabled: true,
+            runtime_listener_auto_install: true,
+            runtime_listener_auto_start: true,
+            host_notify_enabled: true,
+            host_notify_sink: "log".to_string(),
+            host_notify_file_path: String::new(),
+            host_notify_openclaw_hook_url: String::new(),
+            host_notify_openclaw_agent_id: String::new(),
+            host_notify_openclaw_hook_name: String::new(),
+            host_notify_hermes_notify_url: String::new(),
+            host_notify_hermes_deliver: String::new(),
+            output_format: "json".to_string(),
+            no_color: false,
+            service_base_url: "https://awiki.ai".to_string(),
+            did_domain: "awiki.ai".to_string(),
+            anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_string(),
+            anp_service_did: String::new(),
+            mail_service_url: "https://awiki.ai".to_string(),
+            ca_bundle: String::new(),
+            update_disable_strict_version: false,
+            update_metadata_cache_ttl_seconds: 43_200,
+            config_exists: false,
+            config_error: String::new(),
+            env_hits: Vec::new(),
+            sources: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn test_paths(root: &Path) -> Paths {
+        let data_dir = root.join("data");
+        Paths {
+            workspace_home_dir: path_string(root),
+            root_dir: path_string(root),
+            config_dir: path_string(root),
+            data_dir: path_string(&data_dir),
+            state_dir: path_string(&root.join("runtime")),
+            cache_dir: path_string(&root.join("cache")),
+            logs_dir: path_string(&root.join("logs")),
+            config_file: path_string(&root.join("config.yaml")),
+            identity_dir: path_string(&root.join("identities")),
+            database_file: path_string(&data_dir.join("awiki-cli.db")),
+            legacy_credentials_dir: path_string(&root.join("legacy").join("credentials")),
+            legacy_data_dir: path_string(&root.join("legacy").join("data")),
+        }
+    }
+
+    fn path_string(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    fn metadata_path(root: &Path) -> PathBuf {
+        root.join("cache").join("update").join("metadata.json")
+    }
+
+    fn seed_metadata(root: &Path, latest: &str, minimum: &str, retrieved_at: &str) {
+        let path = metadata_path(root);
+        fs::create_dir_all(path.parent().expect("metadata parent")).expect("create cache dir");
+        let raw = format!(
+            r#"{{
+  "latest_version": "{latest}",
+  "min_supported_version": "{minimum}",
+  "retrieved_at": "{retrieved_at}",
+  "source": "network"
+}}"#
+        );
+        fs::write(path, raw).expect("write metadata");
+    }
+
+    #[cfg(unix)]
+    fn assert_cache_permissions(root: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let update_dir = root.join("cache").join("update");
+        let metadata = metadata_path(root);
+        assert_eq!(
+            fs::metadata(&update_dir)
+                .expect("update dir")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&metadata)
+                .expect("metadata file")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(not(unix))]
+    fn assert_cache_permissions(_root: &Path) {}
+
+    struct TestUrls {
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl TestUrls {
+        fn set(urls: Vec<String>) -> Self {
+            let guard = TEST_NPM_LATEST_URLS_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            *TEST_NPM_LATEST_URLS.lock().expect("test urls mutex") = Some(urls);
+            Self { _guard: guard }
+        }
+    }
+
+    impl Drop for TestUrls {
+        fn drop(&mut self) {
+            *TEST_NPM_LATEST_URLS.lock().expect("test urls mutex") = None;
+        }
+    }
+
+    struct EnvVar {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVar {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    pub(super) struct TestResponse {
+        pub(super) status: u16,
+        pub(super) body: String,
+    }
+
+    impl TestResponse {
+        pub(super) fn ok(body: &str) -> Self {
+            Self {
+                status: 200,
+                body: body.to_string(),
+            }
+        }
+
+        pub(super) fn status(status: u16, body: &str) -> Self {
+            Self {
+                status,
+                body: body.to_string(),
+            }
+        }
+    }
+
+    pub(super) struct TestServer {
+        address: String,
+        paths: Arc<Mutex<Vec<String>>>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl TestServer {
+        pub(super) fn new(responses: Vec<TestResponse>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+            let address = format!("http://{}", listener.local_addr().expect("local addr"));
+            let paths = Arc::new(Mutex::new(Vec::new()));
+            let server_paths = paths.clone();
+            let handle = thread::spawn(move || {
+                for response in responses {
+                    let Ok((stream, _)) = listener.accept() else {
+                        break;
+                    };
+                    handle_request(stream, &server_paths, response);
+                }
+            });
+            Self {
+                address,
+                paths,
+                handle: Some(handle),
+            }
+        }
+
+        pub(super) fn url(&self, path: &str) -> String {
+            format!("{}{}", self.address, path)
+        }
+
+        fn paths(&self) -> Vec<String> {
+            self.paths.lock().expect("paths mutex").clone()
+        }
+    }
+
+    impl Drop for TestServer {
+        fn drop(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                if let Some(address) = self.address.strip_prefix("http://") {
+                    if let Ok(mut stream) = TcpStream::connect(address) {
+                        let _ = stream.write_all(
+                            b"GET /__shutdown HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                }
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn handle_request(
+        mut stream: TcpStream,
+        paths: &Arc<Mutex<Vec<String>>>,
+        response: TestResponse,
+    ) {
+        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut request_line = String::new();
+        let _ = reader.read_line(&mut request_line);
+        if let Some(path) = request_line.split_whitespace().nth(1) {
+            paths.lock().expect("paths mutex").push(path.to_string());
+        }
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) if line == "\r\n" || line == "\n" => break,
+                Ok(_) => {}
+            }
+        }
+
+        let reason = if response.status == 200 {
+            "OK"
+        } else {
+            "ERROR"
+        };
+        let raw = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response.status,
+            reason,
+            response.body.len(),
+            response.body
+        );
+        stream.write_all(raw.as_bytes()).expect("write response");
+        let _ = stream.flush();
+    }
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "awiki-cli-rs2-update-unit-{}-{nanos}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }

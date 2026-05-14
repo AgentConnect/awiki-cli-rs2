@@ -19,4 +19,6 @@ sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 anp = { path = "../anp/rust", default-features = false }
 rand = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
 time = { version = "=0.3.36", features = ["formatting", "parsing"] }

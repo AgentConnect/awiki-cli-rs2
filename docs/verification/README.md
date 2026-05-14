@@ -610,9 +610,9 @@ Scope:
 - Side-effect guard that the command does not create runtime socket or pid
   artifacts.
 
-No new dependency was added. Full YAML/config parity remains a later slice,
-including Go `write.go` durable-write mechanics such as temp-file write,
-fsync/chmod, rename, and directory sync.
+No new dependency was added. Full YAML/config parser/serializer parity remains
+a later slice. Go `write.go` durable-write mechanics are covered by the later
+config writer helper/durable-write slice.
 
 Accepted-scope regression verification was rerun after the config-set slice:
 
@@ -1153,3 +1153,65 @@ parity, Hermes CLI command wiring, Hermes bridge management, listener refresh
 orchestration, or platform service-manager behavior. Windows replacement
 behavior still needs Windows CI/manual evidence before the durable writer is
 claimed as cross-platform runtime complete.
+
+## 2026-05-14 Update Registry Fetch/Writeback Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli update --locked
+cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cd ../awiki-cli && go test ./internal/update
+```
+
+Result: passed. The Rust update-focused run covered 9 update module tests plus
+the existing filtered contract tests; `update_contract` reported 3 passed. The
+Go reference `internal/update` tests passed.
+
+Live smoke on this host, using the configured proxy/VPN environment:
+
+```bash
+AWIKI_CLI_WORKSPACE_HOME_DIR=/tmp/awiki-cli-rs2-update-smoke-$$ \
+cargo +1.79.0 run -p awiki-cli --bin awiki-cli --locked -- \
+  upgrade --dry-run --format json
+```
+
+Result: passed. Output included `update_metadata_source: "network"`,
+`update_check_status: "ok"`, `latest_version: "1.0.16"`, and
+`min_supported_version: "1.0.16"`.
+
+Dependency audit:
+
+```bash
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+```
+
+Result: the update slice introduced `rustls`, `rustls-webpki`,
+`rustls-pki-types`, and `webpki-roots`. No OpenSSL, `native-tls`, `reqwest`, or
+`hyper` path was present. The audit also showed the already-approved bundled
+SQLite path (`rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg`) and the
+Rustls crypto provider build path (`ring -> cc`). `ring -> cc` is recorded in
+`docs/dependency-decisions.md` as native build surface for Rustls, not as
+OpenSSL/native-tls or a host TLS dependency.
+
+Scope:
+
+- Go `internal/update.fetchFromRegistry*` registry order and first-success
+  behavior: npmjs first, npmmirror fallback.
+- 3-second connect/read/write timeout on the blocking GET path.
+- HTTP 200-only success, required npm `version`, optional
+  `awikiCli.minSupportedVersion`, and combined all-registry error text.
+- `CheckFresh` prefers network over fresh cache.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY` avoids network and uses cached metadata.
+- Successful network fetch writes `<cache>/update/metadata.json`; on Unix the
+  update cache directory is `0700` and the metadata file is `0600`.
+- Network failure falls back to the cached metadata snapshot with
+  `metadata_source = "cache_stale"` when one is available.
+- `HTTP_PROXY`/`HTTPS_PROXY` and `NO_PROXY` are supported for the narrow update
+  fetch path, including HTTP CONNECT for HTTPS registries.
+
+Boundary note: this is a narrow blocking GET helper for npm registry metadata,
+not the shared authsdk/service HTTP or WebSocket client. Broader mail, page,
+site, message, attachment, and group service transports still need dedicated
+Rustls-backed client decisions and service-backed tests.
