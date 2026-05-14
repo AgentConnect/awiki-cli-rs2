@@ -5,6 +5,7 @@ pub mod buildinfo;
 pub mod cli;
 pub mod cmdmeta;
 pub mod config;
+pub mod content;
 pub mod docs;
 pub mod doctor;
 pub mod durablefs;

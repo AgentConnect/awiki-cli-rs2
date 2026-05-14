@@ -2,6 +2,47 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Content RPC Wire Contract Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test content_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test page_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/content -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added a split `content` module for the pure Go
+  `internal/content/{types.go,service.go}` RPC contract.
+- Preserved `/content/rpc`, `/user-service/did-auth/rpc`, `create`, `list`,
+  `get`, `update`, `rename`, and `delete` method names and transport profiles.
+- Preserved service-level slug/title/update-field/visibility validation,
+  visibility normalization, params, summaries, and identity/page/list result
+  shapes.
+- Kept the existing `page` dry-run CLI boundary unchanged: dry-run remains
+  permissive for raw visibility values and empty update plans, while the new
+  content service wire tests cover the stricter live-service rules.
+
+Boundary note: this slice does not wire non-dry-run page commands, implement
+`identity.RemoteClient`, map content service errors into CLI exit codes, refresh
+DID-auth JWTs, perform HTTP transport, or run content/page lifecycle system
+tests. Those remain in the shared authsdk/session plus Rustls HTTP client lane.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; this
+slice does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+`native-tls`, bundled OpenSSL, or ANP SDK network/default features. TLS policy
+remains Rustls-first and unchanged.
+
 ## 2026-05-15 Authsdk JSON-RPC Wire/Result Slice
 
 Local Rust and Go reference verification:
