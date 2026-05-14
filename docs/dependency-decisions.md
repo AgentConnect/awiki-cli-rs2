@@ -37,6 +37,10 @@ start from a Rustls-backed stack such as `reqwest`/`tokio-tungstenite` configure
 without `native-tls`. Do not add OpenSSL, including bundled OpenSSL, as the
 initial solution for portability.
 
+Bundling OpenSSL only removes a runtime package-install prerequisite; it does
+not make the TLS stack Rust-native. Treat bundled OpenSSL as a last-resort
+native exception, not as the preferred cross-platform answer.
+
 ## Initial Decisions
 
 | Area | Decision | Rationale | Verification |
