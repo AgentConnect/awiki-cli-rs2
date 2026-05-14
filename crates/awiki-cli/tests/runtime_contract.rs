@@ -1,0 +1,320 @@
+use serde_json::Value;
+use std::process::{Command, Output};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[test]
+fn runtime_mode_and_listener_config_round_trip() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let mode_before = awiki_cmd_with_workspace(&["runtime", "mode", "get"], workspace.path());
+    assert_success(&mode_before);
+    let envelope = success_json(&mode_before);
+    assert_eq!(envelope["data"]["runtime"]["mode"], "websocket");
+
+    let set_mode = awiki_cmd_with_workspace(&["runtime", "mode", "set", "http"], workspace.path());
+    assert_success(&set_mode);
+    let envelope = success_json(&set_mode);
+    assert_eq!(envelope["data"]["mode"], "http");
+
+    let listener_config = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "listener",
+            "config",
+            "set",
+            "--enabled=false",
+            "--auto-install=false",
+            "--auto-start=false",
+        ],
+        workspace.path(),
+    );
+    assert_success(&listener_config);
+    let envelope = success_json(&listener_config);
+    assert_eq!(envelope["data"]["listener"]["enabled"], false);
+    assert_eq!(envelope["data"]["listener"]["auto_install"], false);
+    assert_eq!(envelope["data"]["listener"]["auto_start"], false);
+
+    let show =
+        awiki_cmd_with_workspace(&["runtime", "listener", "config", "show"], workspace.path());
+    assert_success(&show);
+    let envelope = success_json(&show);
+    assert_eq!(envelope["data"]["listener"]["enabled"], false);
+}
+
+#[test]
+fn runtime_validation_and_dry_run_plans_match_go_contracts() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let invalid_mode =
+        awiki_cmd_with_workspace(&["runtime", "mode", "set", "invalid"], workspace.path());
+    assert_code(&invalid_mode, 2);
+    let envelope = error_json(&invalid_mode);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(&envelope["error"]["message"], "unsupported runtime mode");
+
+    let invalid_setup =
+        awiki_cmd_with_workspace(&["runtime", "setup", "--mode", "invalid"], workspace.path());
+    assert_code(&invalid_setup, 2);
+    let envelope = error_json(&invalid_setup);
+    assert_contains(
+        &envelope["error"]["message"],
+        "runtime setup requires --mode http|websocket",
+    );
+
+    let setup_plan = awiki_cmd_with_workspace(
+        &["--dry-run", "runtime", "setup", "--mode", "websocket"],
+        workspace.path(),
+    );
+    assert_success(&setup_plan);
+    let envelope = success_json(&setup_plan);
+    assert_eq!(envelope["meta"]["dry_run"], true);
+    assert_eq!(envelope["data"]["plan"]["action"], "runtime_setup");
+
+    let apply_plan = awiki_cmd_with_workspace(&["--dry-run", "runtime", "apply"], workspace.path());
+    assert_success(&apply_plan);
+    let envelope = success_json(&apply_plan);
+    assert_eq!(envelope["meta"]["dry_run"], true);
+    assert_eq!(envelope["data"]["plan"]["action"], "runtime_apply");
+}
+
+#[test]
+fn host_notify_openclaw_config_redacts_token() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let sink = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "config",
+            "set",
+            "--sink",
+            "openclaw",
+        ],
+        workspace.path(),
+    );
+    assert_success(&sink);
+    let envelope = success_json(&sink);
+    assert_eq!(envelope["data"]["host_notify"]["sink"], "openclaw");
+
+    let hook = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "set",
+            "--hook-url",
+            "http://127.0.0.1:18789/hooks/agent",
+        ],
+        workspace.path(),
+    );
+    assert_success(&hook);
+    let envelope = success_json(&hook);
+    assert_eq!(
+        envelope["data"]["openclaw"]["hook_url"],
+        "http://127.0.0.1:18789/hooks/agent"
+    );
+
+    let set_token = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "set-token",
+            "--value",
+            "super-secret-token",
+        ],
+        workspace.path(),
+    );
+    assert_success(&set_token);
+    assert_not_contains(
+        &String::from_utf8_lossy(&set_token.stdout),
+        "super-secret-token",
+    );
+    assert_not_contains(
+        &String::from_utf8_lossy(&set_token.stderr),
+        "super-secret-token",
+    );
+
+    let show = awiki_cmd_with_workspace(
+        &["runtime", "host-notify", "config", "show"],
+        workspace.path(),
+    );
+    assert_success(&show);
+    assert_not_contains(&String::from_utf8_lossy(&show.stdout), "super-secret-token");
+    let envelope = success_json(&show);
+    assert_eq!(
+        envelope["data"]["host_notify"]["openclaw"]["token_configured"],
+        true
+    );
+    assert_eq!(
+        envelope["data"]["host_notify"]["openclaw"]["token_source"],
+        "config_file"
+    );
+    assert!(envelope["data"]["host_notify"]["openclaw"]
+        .as_object()
+        .expect("openclaw object")
+        .get("token")
+        .is_none());
+}
+
+#[test]
+fn host_notify_validation_and_dry_run_plans_match_go_contracts() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let missing_sink = awiki_cmd_with_workspace(
+        &["runtime", "host-notify", "config", "set"],
+        workspace.path(),
+    );
+    assert_code(&missing_sink, 2);
+    let envelope = error_json(&missing_sink);
+    assert_contains(&envelope["error"]["message"], "requires --sink");
+
+    let invalid_sink = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "config",
+            "set",
+            "--sink",
+            "invalid",
+        ],
+        workspace.path(),
+    );
+    assert_code(&invalid_sink, 2);
+    let envelope = error_json(&invalid_sink);
+    assert_contains(
+        &envelope["error"]["message"],
+        "unsupported host notify sink",
+    );
+
+    let dry_run = awiki_cmd_with_workspace(
+        &[
+            "--dry-run",
+            "runtime",
+            "host-notify",
+            "config",
+            "set",
+            "--sink",
+            "openclaw",
+        ],
+        workspace.path(),
+    );
+    assert_success(&dry_run);
+    let envelope = success_json(&dry_run);
+    assert_eq!(envelope["data"]["plan"]["action"], "host_notify_config_set");
+
+    let missing_openclaw = awiki_cmd_with_workspace(
+        &["runtime", "host-notify", "openclaw", "set"],
+        workspace.path(),
+    );
+    assert_code(&missing_openclaw, 2);
+    let envelope = error_json(&missing_openclaw);
+    assert_contains(
+        &envelope["error"]["message"],
+        "requires at least one changed flag",
+    );
+}
+
+fn awiki_cmd_with_workspace(args: &[&str], workspace: &std::path::Path) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT");
+    command.output().expect("run awiki-cli binary")
+}
+
+fn assert_success(output: &Output) {
+    assert_code(output, 0);
+}
+
+fn assert_code(output: &Output, code: i32) {
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn success_json(output: &Output) -> Value {
+    assert_stderr_empty(output);
+    let envelope: Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
+    assert_eq!(envelope["ok"], true);
+    envelope
+}
+
+fn error_json(output: &Output) -> Value {
+    assert_stdout_empty(output);
+    let envelope: Value =
+        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
+    assert_eq!(envelope["ok"], false);
+    envelope
+}
+
+fn assert_stdout_empty(output: &Output) {
+    assert!(
+        output.stdout.is_empty(),
+        "stdout should be empty:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+fn assert_stderr_empty(output: &Output) {
+    assert!(
+        output.stderr.is_empty(),
+        "stderr should be empty:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_contains(value: &Value, needle: &str) {
+    let haystack = value.as_str().expect("value should be a string");
+    assert!(
+        haystack.contains(needle),
+        "{haystack:?} should contain {needle:?}"
+    );
+}
+
+fn assert_not_contains(haystack: &str, needle: &str) {
+    assert!(
+        !haystack.contains(needle),
+        "{haystack:?} should not contain {needle:?}"
+    );
+}
+
+struct TempDir {
+    path: std::path::PathBuf,
+}
+
+impl TempDir {
+    fn new() -> std::io::Result<Self> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-runtime-test-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}

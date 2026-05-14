@@ -30,6 +30,7 @@ Undocumented native/system linkage is a completion blocker.
 | Crypto | Prefer pure Rust crypto crates unless Go parity or ANP protocol compatibility requires otherwise. | Identity, DID proofs, direct E2EE, and group E2EE must be portable and reproducible without relying on platform crypto libraries. | Golden proof/signature tests against Go behavior and relevant ANP SDK tests. |
 | Cargo 1.79 compatibility pins | Pin `time = "=0.3.36"` in the workspace and keep `base64ct` locked to `1.6.0`. | Newer `time` and `base64ct` releases require Cargo edition2024 support, which is incompatible with the current Rust/Cargo 1.79 validation lane. This is a toolchain compatibility pin, not a behavior optimization. | `cargo +1.79.0 test -p awiki-cli --locked` after lockfile update. |
 | CLI core slice dependencies | Keep non-storage dependencies minimal: `anyhow`, `serde`, `serde_json`, `sha2`; add `rusqlite + bundled` only for the store/debug lane. | Current local cargo mirror/toolchain has network and Cargo 1.79 compatibility constraints. Storage is the first documented bundled-native exception; other lanes still need explicit dependency review. | `cargo +1.79.0 test -p awiki-cli --locked`, `cargo +1.79.0 run --bin xtask --locked -- check-structure`, dependency tree audit, and focused core/debug `awiki-system-test` run. |
+| Runtime/listener local slice | Do not add platform service-manager dependencies for the current runtime/config slice. Use workspace-local listener state to satisfy the verified CLI contract while the full service-manager translation remains deferred. | Go uses platform service management through a library path. The user asked to avoid platform/system libraries where possible. The current system tests validate command shape, config writes, and listener lifecycle JSON contract; those can be met without linking systemd/launchd/Windows service libraries in this slice. | `crates/awiki-cli/tests/runtime_contract.rs`; `tests_v2/runtime/test_runtime_cli.py` passed. Dependency tree still has no OpenSSL/native-tls path and no new platform service library. |
 
 ## Known Deferred Decisions
 
@@ -38,6 +39,27 @@ Undocumented native/system linkage is a completion blocker.
 | Full YAML config parsing | Choose a parser that preserves Go YAML behavior without introducing unnecessary native dependencies. | Go config fixture parity tests, environment override tests, and dependency-tree review. |
 | SQLite crate/backend | Current accepted lane is `rusqlite + bundled` for exact SQLite behavior and runtime portability. Keep pure Rust alternatives recorded for later optimization review, not mixed into this parity translation. | Exact schema/migration parity, query behavior parity, no host SQLite dependency, and system-test debug/store evidence. |
 | HTTP/WebSocket client stack | Select Rustls-based HTTP/WebSocket crates for service integrations. | Feature audit showing no OpenSSL/native-tls path and service-backed system tests. |
+| Platform service-manager integration | Decide whether to translate Go listener service control with a cross-platform Rust crate, direct per-platform code, or a no-platform-dependency supervisor strategy. | Must compare native/platform dependencies, service behavior parity, and `AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1` behavior before adoption. Do not mix this choice into unrelated runtime config translation. |
+
+## Runtime/Listener Slice Notes
+
+2026-05-14:
+
+- Added the local/offline runtime slice without adding a new dependency.
+- `runtime status/apply/setup/mode get/set`, listener config/lifecycle, and
+  host-notify/OpenClaw config commands use the existing Rust standard library,
+  `serde_json`, and existing store/config modules.
+- Listener lifecycle commands currently persist a workspace-local
+  `listener.local-state.json` under the runtime state directory. This is a
+  deliberate parity-slice boundary: it preserves the system-tested CLI JSON
+  contract without introducing platform service libraries in the translation
+  pass.
+- Full platform service management is recorded as a later dependency decision.
+  It should be translated in a dedicated slice after evaluating whether Rust
+  can preserve Go behavior without increasing system-library coupling.
+- Verification: `cargo +1.79.0 test -p awiki-cli --locked`,
+  `cargo +1.79.0 run --bin xtask --locked -- check-structure`, and
+  `tests_v2/runtime/test_runtime_cli.py` passed.
 
 ## ANP Identity Slice Notes
 

@@ -19,6 +19,9 @@ const DEFAULT_LISTENER_AUTO_START: bool = true;
 const DEFAULT_HOST_NOTIFY_ENABLED: bool = true;
 const DEFAULT_HOST_NOTIFY_SINK: &str = "log";
 const DEFAULT_HOST_NOTIFY_FILE: &str = "host-notify.events.jsonl";
+const DEFAULT_OPENCLAW_HOOK_URL: &str = "http://127.0.0.1:18789/hooks/agent";
+const DEFAULT_OPENCLAW_AGENT_ID: &str = "main";
+const DEFAULT_OPENCLAW_HOOK_NAME: &str = "AWiki";
 const DEFAULT_HERMES_NOTIFY_URL: &str = "http://127.0.0.1:8765/notify/host-event";
 const DEFAULT_HERMES_DELIVER_TARGET: &str = "feishu";
 pub const CONFIG_SCHEMA_VERSION: i64 = 1;
@@ -80,6 +83,16 @@ pub struct Resolved {
     pub host_notify_sink: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub host_notify_file_path: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_notify_openclaw_hook_url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_notify_openclaw_agent_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_notify_openclaw_hook_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_notify_hermes_notify_url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub host_notify_hermes_deliver: String,
     pub output_format: String,
     pub no_color: bool,
     pub service_base_url: String,
@@ -147,7 +160,23 @@ pub struct HostNotifyConfig {
     #[serde(default)]
     pub file_path: String,
     #[serde(default)]
+    pub openclaw: OpenClawConfig,
+    #[serde(default)]
     pub hermes: HermesConfig,
+    #[serde(default)]
+    pub webhook: LegacyWebhookConfig,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct OpenClawConfig {
+    #[serde(default)]
+    pub hook_url: String,
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub hook_name: String,
+    #[serde(default)]
+    pub token: String,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -156,6 +185,16 @@ pub struct HermesConfig {
     pub notify_url: String,
     #[serde(default)]
     pub deliver: String,
+    #[serde(default)]
+    pub secret: String,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct LegacyWebhookConfig {
+    #[serde(default)]
+    pub notify_url: String,
+    #[serde(default)]
+    pub secret: String,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -294,7 +333,14 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
     );
     sources.insert("mail_service_url".to_string(), mail_source);
 
-    let host_notify_file_path = host_notify_file_path(&paths, &file_config.runtime.host_notify);
+    let host_notify_sink = normalize_host_notify_sink(&file_config.runtime.host_notify.sink);
+    validate_host_notify_sink(&host_notify_sink)?;
+    let host_notify_file_path =
+        host_notify_file_path(&paths, &file_config.runtime.host_notify, &host_notify_sink);
+    let (openclaw_hook_url, openclaw_agent_id, openclaw_hook_name) =
+        resolve_openclaw_fields(&file_config.runtime.host_notify, &host_notify_sink);
+    let (hermes_notify_url, hermes_deliver) =
+        resolve_hermes_fields(&file_config.runtime.host_notify, &host_notify_sink);
 
     Ok(Resolved {
         paths,
@@ -322,11 +368,13 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
             .host_notify
             .enabled
             .unwrap_or(DEFAULT_HOST_NOTIFY_ENABLED),
-        host_notify_sink: default_string(
-            &file_config.runtime.host_notify.sink,
-            DEFAULT_HOST_NOTIFY_SINK,
-        ),
+        host_notify_sink,
         host_notify_file_path,
+        host_notify_openclaw_hook_url: openclaw_hook_url,
+        host_notify_openclaw_agent_id: openclaw_agent_id,
+        host_notify_openclaw_hook_name: openclaw_hook_name,
+        host_notify_hermes_notify_url: hermes_notify_url,
+        host_notify_hermes_deliver: hermes_deliver,
         output_format,
         no_color: file_config.output.no_color.unwrap_or(false),
         service_base_url,
@@ -366,10 +414,18 @@ pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> 
                 enabled: Some(resolved.host_notify_enabled),
                 sink: resolved.host_notify_sink.clone(),
                 file_path: resolved.host_notify_file_path.clone(),
-                hermes: HermesConfig {
-                    notify_url: DEFAULT_HERMES_NOTIFY_URL.to_string(),
-                    deliver: DEFAULT_HERMES_DELIVER_TARGET.to_string(),
+                openclaw: OpenClawConfig {
+                    hook_url: resolved.host_notify_openclaw_hook_url.clone(),
+                    agent_id: resolved.host_notify_openclaw_agent_id.clone(),
+                    hook_name: resolved.host_notify_openclaw_hook_name.clone(),
+                    token: String::new(),
                 },
+                hermes: HermesConfig {
+                    notify_url: resolved.host_notify_hermes_notify_url.clone(),
+                    deliver: resolved.host_notify_hermes_deliver.clone(),
+                    secret: String::new(),
+                },
+                webhook: LegacyWebhookConfig::default(),
             },
         },
         output: OutputConfig {
@@ -386,11 +442,106 @@ pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> 
         },
         update: UpdateConfig::default(),
     };
+    write_raw_file_config(path, &config)
+}
+
+fn write_raw_file_config(path: &str, config: &FileConfig) -> anyhow::Result<()> {
     if let Some(parent) = Path::new(path).parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, render_file_config(&config))?;
+    fs::write(path, render_file_config(config))?;
     Ok(())
+}
+
+pub fn update_runtime_settings(paths: &Paths, mode: &str, socket_path: &str) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        config.runtime.mode = mode.trim().to_ascii_lowercase();
+        if !socket_path.trim().is_empty() {
+            config.runtime.socket_path = socket_path.trim().to_string();
+        }
+        Ok(())
+    })
+}
+
+pub fn update_runtime_listener_settings(
+    paths: &Paths,
+    enabled: Option<bool>,
+    auto_install: Option<bool>,
+    auto_start: Option<bool>,
+) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        if let Some(value) = enabled {
+            config.runtime.listener.enabled = Some(value);
+        }
+        if let Some(value) = auto_install {
+            config.runtime.listener.auto_install = Some(value);
+        }
+        if let Some(value) = auto_start {
+            config.runtime.listener.auto_start = Some(value);
+        }
+        Ok(())
+    })
+}
+
+pub fn update_host_notify_sink(paths: &Paths, sink: &str) -> anyhow::Result<()> {
+    let normalized = normalize_host_notify_sink_for_write(sink)?;
+    update_file_config(&paths.config_file, |config| {
+        config.runtime.host_notify.sink = normalized;
+        config.runtime.host_notify.enabled = Some(true);
+        Ok(())
+    })
+}
+
+pub fn update_openclaw_settings(paths: &Paths, hook_url: Option<&str>) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        if let Some(value) = hook_url {
+            config.runtime.host_notify.openclaw.hook_url = value.trim().to_string();
+        }
+        Ok(())
+    })
+}
+
+pub fn set_openclaw_token(paths: &Paths, token: &str) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        config.runtime.host_notify.openclaw.token = token.to_string();
+        Ok(())
+    })
+}
+
+pub fn clear_openclaw_token(paths: &Paths) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        config.runtime.host_notify.openclaw.token.clear();
+        Ok(())
+    })
+}
+
+pub fn read_openclaw_token(paths: &Paths) -> (String, String) {
+    if paths.config_file.trim().is_empty() {
+        return (String::new(), "unset".to_string());
+    }
+    let (config, _, error) = read_file_config(&paths.config_file);
+    if error.is_empty() {
+        let token = config.runtime.host_notify.openclaw.token.trim();
+        if !token.is_empty() {
+            return (token.to_string(), "config_file".to_string());
+        }
+    }
+    (String::new(), "unset".to_string())
+}
+
+fn update_file_config(
+    path: &str,
+    mutate: impl FnOnce(&mut FileConfig) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if let Some(parent) = Path::new(path).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let (mut config, _, error) = read_file_config(path);
+    if !error.is_empty() {
+        anyhow::bail!(error);
+    }
+    mutate(&mut config)?;
+    write_raw_file_config(path, &config)
 }
 
 fn read_file_config(path: &str) -> (FileConfig, bool, String) {
@@ -420,9 +571,18 @@ fn render_file_config(config: &FileConfig) -> String {
             "    enabled: {}\n",
             "    sink: {}\n",
             "    file_path: {}\n",
+            "    openclaw:\n",
+            "      hook_url: {}\n",
+            "      agent_id: {}\n",
+            "      hook_name: {}\n",
+            "      token: {}\n",
             "    hermes:\n",
             "      notify_url: {}\n",
             "      deliver: {}\n",
+            "      secret: {}\n",
+            "    webhook:\n",
+            "      notify_url: {}\n",
+            "      secret: {}\n",
             "output:\n",
             "  format: {}\n",
             "  no_color: {}\n",
@@ -463,8 +623,15 @@ fn render_file_config(config: &FileConfig) -> String {
             .unwrap_or(DEFAULT_HOST_NOTIFY_ENABLED),
         config.runtime.host_notify.sink,
         config.runtime.host_notify.file_path,
+        config.runtime.host_notify.openclaw.hook_url,
+        config.runtime.host_notify.openclaw.agent_id,
+        config.runtime.host_notify.openclaw.hook_name,
+        config.runtime.host_notify.openclaw.token,
         config.runtime.host_notify.hermes.notify_url,
         config.runtime.host_notify.hermes.deliver,
+        config.runtime.host_notify.hermes.secret,
+        config.runtime.host_notify.webhook.notify_url,
+        config.runtime.host_notify.webhook.secret,
         config.output.format,
         config.output.no_color.unwrap_or(false),
         config.services.service_base_url,
@@ -536,11 +703,32 @@ fn set_config_value(config: &mut FileConfig, path: &[String], value: &str) {
         ["runtime", "host_notify", "file_path"] => {
             config.runtime.host_notify.file_path = value.to_string()
         }
+        ["runtime", "host_notify", "openclaw", "hook_url"] => {
+            config.runtime.host_notify.openclaw.hook_url = value.to_string()
+        }
+        ["runtime", "host_notify", "openclaw", "agent_id"] => {
+            config.runtime.host_notify.openclaw.agent_id = value.to_string()
+        }
+        ["runtime", "host_notify", "openclaw", "hook_name"] => {
+            config.runtime.host_notify.openclaw.hook_name = value.to_string()
+        }
+        ["runtime", "host_notify", "openclaw", "token"] => {
+            config.runtime.host_notify.openclaw.token = value.to_string()
+        }
         ["runtime", "host_notify", "hermes", "notify_url"] => {
             config.runtime.host_notify.hermes.notify_url = value.to_string()
         }
         ["runtime", "host_notify", "hermes", "deliver"] => {
             config.runtime.host_notify.hermes.deliver = value.to_string()
+        }
+        ["runtime", "host_notify", "hermes", "secret"] => {
+            config.runtime.host_notify.hermes.secret = value.to_string()
+        }
+        ["runtime", "host_notify", "webhook", "notify_url"] => {
+            config.runtime.host_notify.webhook.notify_url = value.to_string()
+        }
+        ["runtime", "host_notify", "webhook", "secret"] => {
+            config.runtime.host_notify.webhook.secret = value.to_string()
         }
         ["output", "format"] => config.output.format = value.to_string(),
         ["output", "no_color"] => config.output.no_color = parse_bool(value),
@@ -693,8 +881,8 @@ fn collect_env_hits() -> Vec<EnvHit> {
         .unwrap_or_default()
 }
 
-fn host_notify_file_path(paths: &Paths, config: &HostNotifyConfig) -> String {
-    if config.sink.trim() != "file" {
+fn host_notify_file_path(paths: &Paths, config: &HostNotifyConfig, sink: &str) -> String {
+    if sink != "file" {
         return String::new();
     }
     if !config.file_path.trim().is_empty() {
@@ -704,6 +892,54 @@ fn host_notify_file_path(paths: &Paths, config: &HostNotifyConfig) -> String {
         .join(DEFAULT_HOST_NOTIFY_FILE)
         .to_string_lossy()
         .into_owned()
+}
+
+fn resolve_openclaw_fields(config: &HostNotifyConfig, sink: &str) -> (String, String, String) {
+    if sink != "openclaw" {
+        return (String::new(), String::new(), String::new());
+    }
+    (
+        default_trimmed_string(&config.openclaw.hook_url, DEFAULT_OPENCLAW_HOOK_URL),
+        default_trimmed_string(&config.openclaw.agent_id, DEFAULT_OPENCLAW_AGENT_ID),
+        default_trimmed_string(&config.openclaw.hook_name, DEFAULT_OPENCLAW_HOOK_NAME),
+    )
+}
+
+fn resolve_hermes_fields(config: &HostNotifyConfig, sink: &str) -> (String, String) {
+    if sink != "hermes" {
+        return (String::new(), String::new());
+    }
+    let notify_url = if config.hermes.notify_url.trim().is_empty() {
+        &config.webhook.notify_url
+    } else {
+        &config.hermes.notify_url
+    };
+    (
+        default_trimmed_string(notify_url, DEFAULT_HERMES_NOTIFY_URL),
+        default_string(&config.hermes.deliver, DEFAULT_HERMES_DELIVER_TARGET),
+    )
+}
+
+fn normalize_host_notify_sink(value: &str) -> String {
+    let normalized = default_string(value, DEFAULT_HOST_NOTIFY_SINK);
+    if normalized == "webhook" {
+        "hermes".to_string()
+    } else {
+        normalized
+    }
+}
+
+pub fn normalize_host_notify_sink_for_write(value: &str) -> anyhow::Result<String> {
+    let normalized = normalize_host_notify_sink(value);
+    validate_host_notify_sink(&normalized)?;
+    Ok(normalized)
+}
+
+fn validate_host_notify_sink(value: &str) -> anyhow::Result<()> {
+    match value {
+        "noop" | "log" | "file" | "openclaw" | "hermes" => Ok(()),
+        _ => anyhow::bail!("unsupported host notify sink"),
+    }
 }
 
 pub fn derive_anp_service_endpoint(service_base_url: &str) -> String {
@@ -761,6 +997,14 @@ fn default_string(value: &str, default: &str) -> String {
         default.to_string()
     } else {
         value.trim().to_ascii_lowercase()
+    }
+}
+
+fn default_trimmed_string(value: &str, default: &str) -> String {
+    if value.trim().is_empty() {
+        default.to_string()
+    } else {
+        value.trim().to_string()
     }
 }
 

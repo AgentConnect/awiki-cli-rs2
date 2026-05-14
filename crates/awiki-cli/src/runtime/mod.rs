@@ -1,0 +1,370 @@
+use crate::config::{self, Resolved};
+use serde::Serialize;
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::Path;
+
+const OPENCLAW_HOOK_TOKEN_ENV: &str = "OPENCLAW_HOOK_TOKEN";
+const OPENCLAW_GATEWAY_PORT_ENV: &str = "OPENCLAW_GATEWAY_PORT";
+const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
+const DEFAULT_OPENCLAW_HOOK_PATH: &str = "/hooks/agent";
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeResolved {
+    pub mode: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub socket_path: String,
+    pub listener: ListenerConfig,
+    pub host_notify: HostNotifyConfig,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListenerConfig {
+    pub enabled: bool,
+    pub auto_install: bool,
+    pub auto_start: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostNotifyConfig {
+    pub enabled: bool,
+    pub sink: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub file_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openclaw: Option<OpenClawConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hermes: Option<HermesConfig>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenClawConfig {
+    pub hook_url: String,
+    pub agent_id: String,
+    pub hook_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HermesConfig {
+    pub notify_url: String,
+    pub deliver: String,
+}
+
+pub fn resolve(resolved: &Resolved) -> RuntimeResolved {
+    let mode = normalize_runtime_mode(&resolved.runtime_mode);
+    let sink = resolved.host_notify_sink.to_ascii_lowercase();
+    RuntimeResolved {
+        mode,
+        socket_path: resolved.runtime_socket_path.clone(),
+        listener: ListenerConfig {
+            enabled: resolved.runtime_listener_enabled,
+            auto_install: resolved.runtime_listener_auto_install,
+            auto_start: resolved.runtime_listener_auto_start,
+        },
+        host_notify: HostNotifyConfig {
+            enabled: resolved.host_notify_enabled,
+            sink: sink.clone(),
+            file_path: if sink == "file" {
+                resolved.host_notify_file_path.clone()
+            } else {
+                String::new()
+            },
+            openclaw: (sink == "openclaw").then(|| OpenClawConfig {
+                hook_url: effective_openclaw_settings(resolved).hook_url,
+                agent_id: default_string(&resolved.host_notify_openclaw_agent_id, "main"),
+                hook_name: default_string(&resolved.host_notify_openclaw_hook_name, "AWiki"),
+            }),
+            hermes: (sink == "hermes").then(|| HermesConfig {
+                notify_url: default_string(
+                    &resolved.host_notify_hermes_notify_url,
+                    "http://127.0.0.1:8765/notify/host-event",
+                ),
+                deliver: default_string(&resolved.host_notify_hermes_deliver, "feishu"),
+            }),
+        },
+    }
+}
+
+pub fn runtime_value(resolved: &Resolved) -> Value {
+    serde_json::to_value(resolve(resolved)).unwrap_or_else(|_| json!({}))
+}
+
+pub fn listener_status(resolved: &Resolved, installed: bool, running: bool) -> Value {
+    let runtime = resolve(resolved);
+    let state_dir = Path::new(&resolved.paths.state_dir);
+    let logs_dir = Path::new(&resolved.paths.logs_dir);
+    let service_name = listener_service_name(&resolved.paths.workspace_home_dir);
+    let mut warnings = Vec::new();
+    if runtime.listener.enabled && !installed {
+        warnings.push("listener service is not installed".to_string());
+    }
+    if runtime.listener.enabled && !running {
+        warnings.push("listener service is not running".to_string());
+    }
+    if !runtime.listener.enabled {
+        warnings.push("listener is disabled by configuration".to_string());
+    }
+    json!({
+        "mode": runtime.mode,
+        "installed": installed,
+        "running": running,
+        "pid_file": state_dir.join("listener.pid").to_string_lossy(),
+        "socket_path": runtime.socket_path,
+        "log_file": logs_dir.join("listener.log").to_string_lossy(),
+        "status_file": state_dir.join("listener.status.json").to_string_lossy(),
+        "service_name": service_name,
+        "service_platform": "rust-local",
+        "bridge_available": false,
+        "host_notify": listener_host_notify(resolved),
+        "warnings": warnings,
+    })
+}
+
+pub fn current_listener_status(resolved: &Resolved) -> Value {
+    listener_status(
+        resolved,
+        listener_installed(resolved),
+        listener_running(resolved),
+    )
+}
+
+pub fn apply_runtime_policy(resolved: &Resolved) -> anyhow::Result<Value> {
+    ensure_runtime_dirs(resolved)?;
+    if resolve(resolved).mode == "websocket" && resolved.runtime_listener_enabled {
+        let installed = resolved.runtime_listener_auto_install || listener_installed(resolved);
+        let running = installed && resolved.runtime_listener_auto_start;
+        write_listener_state(resolved, installed, running)?;
+        Ok(listener_status(resolved, installed, running))
+    } else {
+        write_listener_state(resolved, listener_installed(resolved), false)?;
+        Ok(listener_status(
+            resolved,
+            listener_installed(resolved),
+            false,
+        ))
+    }
+}
+
+pub fn install_listener(resolved: &Resolved) -> anyhow::Result<Value> {
+    ensure_runtime_dirs(resolved)?;
+    write_listener_state(resolved, true, false)?;
+    Ok(listener_status(resolved, true, false))
+}
+
+pub fn start_listener(resolved: &Resolved) -> anyhow::Result<Value> {
+    ensure_runtime_dirs(resolved)?;
+    if resolve(resolved).mode != "websocket" {
+        anyhow::bail!("runtime mode must be websocket before starting the listener");
+    }
+    write_listener_state(resolved, true, true)?;
+    Ok(listener_status(resolved, true, true))
+}
+
+pub fn stop_listener(resolved: &Resolved) -> anyhow::Result<Value> {
+    ensure_runtime_dirs(resolved)?;
+    write_listener_state(resolved, listener_installed(resolved), false)?;
+    Ok(listener_status(
+        resolved,
+        listener_installed(resolved),
+        false,
+    ))
+}
+
+pub fn uninstall_listener(resolved: &Resolved) -> anyhow::Result<Value> {
+    ensure_runtime_dirs(resolved)?;
+    write_listener_state(resolved, false, false)?;
+    Ok(listener_status(resolved, false, false))
+}
+
+pub fn host_notify_config_view(resolved: &Resolved) -> Value {
+    let settings = effective_openclaw_settings(resolved);
+    json!({
+        "enabled": resolved.host_notify_enabled,
+        "sink": resolved.host_notify_sink,
+        "file_path": resolved.host_notify_file_path,
+        "route_registry_path": openclaw_routes_path(resolved),
+        "routes": [],
+        "openclaw": {
+            "hook_url": settings.hook_url,
+            "hook_url_source": settings.hook_url_source,
+            "detected_webhook_port": settings.detected_webhook_port,
+            "detected_webhook_source": settings.detected_webhook_source,
+            "detected_webhook_path": settings.detected_webhook_path,
+            "detected_webhook_path_source": settings.detected_webhook_path_source,
+            "token_configured": settings.token_configured,
+            "token_source": settings.token_source,
+        },
+        "hermes": {
+            "notify_url": resolved.host_notify_hermes_notify_url,
+            "deliver": if resolved.host_notify_hermes_deliver.is_empty() { "feishu" } else { &resolved.host_notify_hermes_deliver },
+            "secret_configured": false,
+            "secret_source": "unset",
+            "secret_env_fallback": "AWIKI_HOST_NOTIFY_HERMES_SECRET",
+            "secret_env_legacy": "AWIKI_WEBHOOK_SECRET",
+        }
+    })
+}
+
+pub fn validate_openclaw_hook_url(value: &str) -> anyhow::Result<()> {
+    let trimmed = value.trim();
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        anyhow::bail!("runtime.host_notify.openclaw.hook_url must use http or https");
+    };
+    if scheme != "http" && scheme != "https" {
+        anyhow::bail!("runtime.host_notify.openclaw.hook_url must use http or https");
+    }
+    let host_port = rest.split('/').next().unwrap_or_default();
+    let host = host_port
+        .strip_prefix('[')
+        .and_then(|body| body.split(']').next())
+        .unwrap_or_else(|| host_port.split(':').next().unwrap_or_default())
+        .trim();
+    if host.is_empty() {
+        anyhow::bail!("runtime.host_notify.openclaw.hook_url must include a host");
+    }
+    if host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1" {
+        return Ok(());
+    }
+    anyhow::bail!("runtime.host_notify.openclaw.hook_url must use a loopback host")
+}
+
+fn listener_host_notify(resolved: &Resolved) -> Value {
+    let runtime = resolve(resolved);
+    let settings = effective_openclaw_settings(resolved);
+    json!({
+        "enabled": runtime.host_notify.enabled,
+        "sink": runtime.host_notify.sink,
+        "file_path": runtime.host_notify.file_path,
+        "hook_url": settings.hook_url,
+        "agent_id": resolved.host_notify_openclaw_agent_id,
+        "hook_name": resolved.host_notify_openclaw_hook_name,
+        "notify_url": resolved.host_notify_hermes_notify_url,
+    })
+}
+
+#[derive(Debug)]
+struct OpenClawSettings {
+    hook_url: String,
+    hook_url_source: &'static str,
+    detected_webhook_port: u16,
+    detected_webhook_source: &'static str,
+    detected_webhook_path: &'static str,
+    detected_webhook_path_source: &'static str,
+    token_configured: bool,
+    token_source: String,
+}
+
+fn effective_openclaw_settings(resolved: &Resolved) -> OpenClawSettings {
+    let detected_port = std::env::var(OPENCLAW_GATEWAY_PORT_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u16>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_OPENCLAW_GATEWAY_PORT);
+    let detected_source = if std::env::var(OPENCLAW_GATEWAY_PORT_ENV)
+        .ok()
+        .is_some_and(|value| value.trim().parse::<u16>().is_ok())
+    {
+        "environment"
+    } else {
+        "default"
+    };
+    let configured = resolved.host_notify_openclaw_hook_url.trim();
+    let (hook_url, hook_url_source) = if configured.is_empty() {
+        (
+            format!("http://127.0.0.1:{detected_port}{DEFAULT_OPENCLAW_HOOK_PATH}"),
+            "auto_detected",
+        )
+    } else {
+        (configured.to_string(), "config_file")
+    };
+    let (config_token, config_source) = config::read_openclaw_token(&resolved.paths);
+    let env_token = std::env::var(OPENCLAW_HOOK_TOKEN_ENV)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let token_source = if !config_token.trim().is_empty() {
+        config_source
+    } else if !env_token.is_empty() {
+        "environment".to_string()
+    } else {
+        "unset".to_string()
+    };
+    OpenClawSettings {
+        hook_url,
+        hook_url_source,
+        detected_webhook_port: detected_port,
+        detected_webhook_source: detected_source,
+        detected_webhook_path: DEFAULT_OPENCLAW_HOOK_PATH,
+        detected_webhook_path_source: "default",
+        token_configured: token_source != "unset",
+        token_source,
+    }
+}
+
+fn ensure_runtime_dirs(resolved: &Resolved) -> anyhow::Result<()> {
+    fs::create_dir_all(&resolved.paths.state_dir)?;
+    fs::create_dir_all(&resolved.paths.logs_dir)?;
+    Ok(())
+}
+
+fn write_listener_state(resolved: &Resolved, installed: bool, running: bool) -> anyhow::Result<()> {
+    ensure_runtime_dirs(resolved)?;
+    let state = json!({ "installed": installed, "running": running });
+    fs::write(
+        listener_state_path(resolved),
+        serde_json::to_vec_pretty(&state)?,
+    )?;
+    Ok(())
+}
+
+fn listener_installed(resolved: &Resolved) -> bool {
+    read_listener_state_bool(resolved, "installed")
+}
+
+fn listener_running(resolved: &Resolved) -> bool {
+    read_listener_state_bool(resolved, "running")
+}
+
+fn read_listener_state_bool(resolved: &Resolved, key: &str) -> bool {
+    fs::read(listener_state_path(resolved))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+        .and_then(|value| value.get(key).and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn listener_state_path(resolved: &Resolved) -> String {
+    Path::new(&resolved.paths.state_dir)
+        .join("listener.local-state.json")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn openclaw_routes_path(resolved: &Resolved) -> String {
+    Path::new(&resolved.paths.state_dir)
+        .join("openclaw.host-notify.routes.json")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn listener_service_name(workspace: &str) -> String {
+    let digest = Sha256::digest(workspace.as_bytes());
+    format!("awiki-cli-listener-{}", &format!("{digest:x}")[..12])
+}
+
+fn normalize_runtime_mode(value: &str) -> String {
+    if value.trim().eq_ignore_ascii_case("http") {
+        "http".to_string()
+    } else {
+        "websocket".to_string()
+    }
+}
+
+fn default_string(value: &str, default: &str) -> String {
+    if value.trim().is_empty() {
+        default.to_string()
+    } else {
+        value.trim().to_string()
+    }
+}

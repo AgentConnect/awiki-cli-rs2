@@ -11,6 +11,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+mod runtime_handlers;
+
 #[derive(Debug, Clone)]
 pub struct GlobalOptions {
     pub format: String,
@@ -469,65 +471,6 @@ impl App {
         )
     }
 
-    pub fn run_runtime_status(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        self.render_success(
-            "awiki-cli runtime status",
-            &resolved,
-            json!({ "runtime": runtime_snapshot(&resolved), "listener": listener_snapshot(&resolved) }),
-            "Runtime status loaded",
-            Vec::new(),
-        )
-    }
-
-    pub fn run_runtime_setup(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("runtime setup"));
-        }
-        let mode = command
-            .flags
-            .get("mode")
-            .cloned()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| resolved.runtime_mode.clone());
-        self.render_success(
-            "awiki-cli runtime setup",
-            &resolved,
-            json!({ "plan": { "action": "runtime_setup", "mode": mode, "workspace_home": resolved.paths.workspace_home_dir, "runtime_dir": resolved.paths.state_dir, "database_file": resolved.paths.database_file, "writes": [resolved.paths.config_file, resolved.paths.database_file] } }),
-            "Dry run: runtime setup planned",
-            Vec::new(),
-        )
-    }
-
-    pub fn run_runtime_listener_config_set(
-        &self,
-        command: &ParsedCommand,
-    ) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("runtime listener config set"));
-        }
-        let enabled = parse_optional_bool(command, "enabled")?;
-        let auto_install = parse_optional_bool(command, "auto-install")?;
-        let auto_start = parse_optional_bool(command, "auto-start")?;
-        if enabled.is_none() && auto_install.is_none() && auto_start.is_none() {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "listener config set requires at least one changed flag.",
-                "Use --enabled, --auto-install, or --auto-start.",
-            ));
-        }
-        self.render_success(
-            "awiki-cli runtime listener config set",
-            &resolved,
-            json!({ "plan": { "action": "listener_config_set", "enabled": enabled, "auto_install": auto_install, "auto_start": auto_start, "config_file": resolved.paths.config_file } }),
-            "Dry run: listener config change planned",
-            Vec::new(),
-        )
-    }
-
     pub fn run_debug_db_query(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         if command.args.len() != 1 {
             return Err(ExitError::new(
@@ -790,22 +733,6 @@ fn ensure_sqlite_schema(resolved: &Resolved) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn runtime_snapshot(resolved: &Resolved) -> Value {
-    json!({
-        "mode": resolved.runtime_mode,
-        "socket_path": resolved.runtime_socket_path,
-        "workspace_home": resolved.paths.workspace_home_dir,
-    })
-}
-
-fn listener_snapshot(resolved: &Resolved) -> Value {
-    json!({
-        "enabled": resolved.runtime_listener_enabled,
-        "auto_install": resolved.runtime_listener_auto_install,
-        "auto_start": resolved.runtime_listener_auto_start,
-    })
-}
-
 fn identity_meta_from_resolved(resolved: &Resolved) -> Option<IdentityMeta> {
     if resolved.active_identity.trim().is_empty() {
         return None;
@@ -825,23 +752,6 @@ fn count_identity_dirs(path: &str) -> usize {
                 .count()
         })
         .unwrap_or(0)
-}
-
-fn parse_optional_bool(command: &ParsedCommand, name: &str) -> Result<Option<bool>, ExitError> {
-    command
-        .flags
-        .get(name)
-        .map(|value| {
-            value.parse::<bool>().map_err(|_| {
-                ExitError::new(
-                    "invalid_argument",
-                    2,
-                    format!("{name} must be true or false."),
-                    "Use boolean values true or false.",
-                )
-            })
-        })
-        .transpose()
 }
 
 fn not_implemented_side_effect(command: &str) -> ExitError {

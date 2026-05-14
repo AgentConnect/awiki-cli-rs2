@@ -88,8 +88,29 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "msg.send" => app.run_msg_send(command),
         "page.create" => app.run_page_create(command),
         "runtime.status" => app.run_runtime_status(),
+        "runtime.apply" => app.run_runtime_apply(),
         "runtime.setup" => app.run_runtime_setup(command),
+        "runtime.mode.get" => app.run_runtime_mode_get(),
+        "runtime.mode.set" => app.run_runtime_mode_set(command),
+        "runtime.listener.status" => app.run_runtime_listener_status(),
+        "runtime.listener.install" => app.run_runtime_listener_install(),
+        "runtime.listener.start" => app.run_runtime_listener_start(),
+        "runtime.listener.stop" => app.run_runtime_listener_stop(),
+        "runtime.listener.restart" => app.run_runtime_listener_restart(),
+        "runtime.listener.uninstall" => app.run_runtime_listener_uninstall(),
+        "runtime.listener.config.show" => app.run_runtime_listener_config_show(),
         "runtime.listener.config.set" => app.run_runtime_listener_config_set(command),
+        "runtime.listener.enable" => app.run_runtime_listener_enable(),
+        "runtime.listener.disable" => app.run_runtime_listener_disable(),
+        "runtime.host-notify.config.show" => app.run_runtime_host_notify_config_show(),
+        "runtime.host-notify.config.set" => app.run_runtime_host_notify_config_set(command),
+        "runtime.host-notify.openclaw.set" => app.run_runtime_host_notify_openclaw_set(command),
+        "runtime.host-notify.openclaw.set-token" => {
+            app.run_runtime_host_notify_openclaw_set_token(command)
+        }
+        "runtime.host-notify.openclaw.clear-token" => {
+            app.run_runtime_host_notify_openclaw_clear_token()
+        }
         "debug.db.query" => app.run_debug_db_query(command),
         "debug.db.import-v1" => app.run_debug_db_import_v1(command),
         other => Err(stub_error(other)),
@@ -125,8 +146,29 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["msg", "send", ..] => "msg.send",
         ["page", "create", ..] => "page.create",
         ["runtime", "status", ..] => "runtime.status",
+        ["runtime", "apply", ..] => "runtime.apply",
         ["runtime", "setup", ..] => "runtime.setup",
+        ["runtime", "mode", "get", ..] => "runtime.mode.get",
+        ["runtime", "mode", "set", ..] => "runtime.mode.set",
+        ["runtime", "listener", "status", ..] => "runtime.listener.status",
+        ["runtime", "listener", "install", ..] => "runtime.listener.install",
+        ["runtime", "listener", "start", ..] => "runtime.listener.start",
+        ["runtime", "listener", "stop", ..] => "runtime.listener.stop",
+        ["runtime", "listener", "restart", ..] => "runtime.listener.restart",
+        ["runtime", "listener", "uninstall", ..] => "runtime.listener.uninstall",
+        ["runtime", "listener", "config", "show", ..] => "runtime.listener.config.show",
         ["runtime", "listener", "config", "set", ..] => "runtime.listener.config.set",
+        ["runtime", "listener", "enable", ..] => "runtime.listener.enable",
+        ["runtime", "listener", "disable", ..] => "runtime.listener.disable",
+        ["runtime", "host-notify", "config", "show", ..] => "runtime.host-notify.config.show",
+        ["runtime", "host-notify", "config", "set", ..] => "runtime.host-notify.config.set",
+        ["runtime", "host-notify", "openclaw", "set", ..] => "runtime.host-notify.openclaw.set",
+        ["runtime", "host-notify", "openclaw", "set-token", ..] => {
+            "runtime.host-notify.openclaw.set-token"
+        }
+        ["runtime", "host-notify", "openclaw", "clear-token", ..] => {
+            "runtime.host-notify.openclaw.clear-token"
+        }
         ["debug", "db", "query", ..] => "debug.db.query",
         ["debug", "db", "import-v1", ..] => "debug.db.import-v1",
         [head, ..] => head,
