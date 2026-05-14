@@ -5,6 +5,7 @@ pub mod cmdmeta;
 pub mod config;
 pub mod docs;
 pub mod doctor;
+pub mod durablefs;
 pub mod identity;
 pub mod mail;
 pub mod message;

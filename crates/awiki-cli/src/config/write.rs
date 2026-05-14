@@ -5,6 +5,7 @@ use super::{
     DEFAULT_HOST_NOTIFY_ENABLED, DEFAULT_LISTENER_AUTO_INSTALL, DEFAULT_LISTENER_AUTO_START,
     DEFAULT_LISTENER_ENABLED,
 };
+use crate::durablefs;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -270,7 +271,7 @@ fn write_atomic_file(path: &Path, content: &[u8], mode: u32) -> anyhow::Result<(
     set_file_mode(&temp_path, mode)?;
     fs::rename(&temp_path, path).map_err(|err| anyhow::anyhow!("replace config file: {err}"))?;
     cleanup.keep();
-    sync_directory(parent)?;
+    durablefs::sync_directory(parent).map_err(|err| anyhow::anyhow!("sync config dir: {err}"))?;
     Ok(())
 }
 
@@ -324,18 +325,6 @@ fn set_file_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
 #[cfg(not(unix))]
 fn set_file_mode(_path: &Path, _mode: u32) -> anyhow::Result<()> {
     Ok(())
-}
-
-#[cfg(windows)]
-fn sync_directory(_path: &Path) -> anyhow::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn sync_directory(path: &Path) -> anyhow::Result<()> {
-    File::open(path)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|err| anyhow::anyhow!("sync config dir: {err}"))
 }
 
 struct TempCleanup {

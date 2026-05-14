@@ -2,6 +2,53 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-14 Durablefs Directory Sync Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli durablefs --locked
+cargo +1.79.0 test -p awiki-cli --test config_writer_contract config_writer_uses_go_style_tempfile_permissions_and_cleanup --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/durablefs ./internal/config -run 'TestSyncDirectory|Test.*Durable|Test.*Write|Test.*Config' -count=1
+```
+
+Result: passed. The Rust `durablefs::sync_directory` tests cover the Go
+contract for existing directories and missing-directory platform behavior:
+non-Windows fails on a missing directory, while Windows is compiled as a no-op.
+The focused config writer test proves the durable config write path still
+cleans up temporary files and preserves Go-style Unix permissions while using
+the shared helper. Go reference tests for `internal/durablefs` and focused
+`internal/config` write behavior also passed.
+
+Scope:
+
+- Go `internal/durablefs/syncdir_unix.go` non-Windows directory open + sync.
+- Go `internal/durablefs/syncdir_windows.go` intentional Windows no-op.
+- Existing Rust config writer parent-directory sync call now delegates to the
+  shared `durablefs` helper and preserves the Go `sync config dir` error prefix.
+
+Structure note: changed Rust files remain below the default 1200-line source
+limit: `crates/awiki-cli/src/durablefs.rs` is 76 lines,
+`crates/awiki-cli/src/config/write.rs` is 445 lines, and
+`crates/awiki-cli/tests/config_writer_contract.rs` is 264 lines. No file-size
+exception is needed.
+
+Boundary note: this slice does not implement Go `runtime/openclawnotify` route
+registry writes or `internal/upgrade` filesystem helpers that also call
+`durablefs.SyncDirectory`; those remain later file-level slices. Windows no-op
+behavior is represented with conditional compilation, but Windows runtime
+execution still requires Windows CI or manual evidence before full
+cross-platform runtime parity claims.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; TLS and
+SQLite dependency decisions remain unchanged.
+
 ## 2026-05-14 CLI Error Hint Slice
 
 Local Rust and Go reference verification:
