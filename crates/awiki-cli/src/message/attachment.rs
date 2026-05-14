@@ -1,6 +1,8 @@
 use crate::identity::types::StoredIdentity;
+use crate::message::proof::{build_origin_proof, origin_auth_value};
 use crate::message::types::MessageError;
-use crate::message::wire::message_meta;
+use crate::message::wire::{message_meta, signed_message_meta};
+use crate::message::DirectPayload;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -212,8 +214,72 @@ pub fn build_attachment_manifest(
     Value::Object(manifest)
 }
 
+pub fn build_direct_attachment_send_rpc_params(
+    record: &StoredIdentity,
+    target_did: &str,
+    manifest: Value,
+) -> Result<Value, MessageError> {
+    if target_did.trim().is_empty() {
+        return Err(MessageError::TargetRequired);
+    }
+    build_signed_attachment_send_rpc_params(
+        record,
+        "direct.send",
+        "agent",
+        target_did,
+        "anp.direct.base.v1",
+        manifest,
+    )
+}
+
+pub fn build_group_attachment_send_rpc_params(
+    record: &StoredIdentity,
+    group_did: &str,
+    manifest: Value,
+) -> Result<Value, MessageError> {
+    if group_did.trim().is_empty() {
+        return Err(MessageError::GroupRequired);
+    }
+    build_signed_attachment_send_rpc_params(
+        record,
+        "group.send",
+        "group",
+        group_did,
+        "anp.group.base.v1",
+        manifest,
+    )
+}
+
 pub fn manifest_content_string(manifest: &Value) -> String {
     serde_json::to_string(manifest).unwrap_or_default()
+}
+
+fn build_signed_attachment_send_rpc_params(
+    record: &StoredIdentity,
+    method: &str,
+    target_kind: &str,
+    target_did: &str,
+    profile: &str,
+    manifest: Value,
+) -> Result<Value, MessageError> {
+    let body = json!({ "payload": manifest });
+    let payload = DirectPayload {
+        method: method.to_string(),
+        meta: signed_message_meta(
+            &record.did,
+            target_kind,
+            target_did,
+            profile,
+            attachment_manifest_content_type(),
+        ),
+        body,
+    };
+    let origin_proof = build_origin_proof(record, &payload)?;
+    Ok(json!({
+        "meta": payload.meta,
+        "auth": origin_auth_value(&origin_proof),
+        "body": payload.body,
+    }))
 }
 
 pub fn find_attachment_selection(

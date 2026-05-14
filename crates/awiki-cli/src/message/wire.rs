@@ -1,6 +1,7 @@
 use crate::identity::types::StoredIdentity;
 use crate::message::attachment_manifest_content_type;
 use crate::message::types::{HistoryRequest, InboxRequest, MarkReadRequest, MessageError};
+use crate::message::{build_origin_proof, origin_auth_value};
 use serde_json::{json, Map, Value};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -49,6 +50,26 @@ pub fn build_direct_text_payload(
         }),
         body: json!({ "text": text }),
     })
+}
+
+pub fn build_direct_send_rpc_params(
+    record: &StoredIdentity,
+    target_did: &str,
+    text: &str,
+    message_type: &str,
+) -> Result<Value, MessageError> {
+    let payload = build_direct_text_payload(
+        &record.did,
+        target_did,
+        text,
+        content_type_for_message_type(message_type),
+    )?;
+    let origin_proof = build_origin_proof(record, &payload)?;
+    Ok(json!({
+        "meta": payload.meta,
+        "auth": origin_auth_value(&origin_proof),
+        "body": payload.body,
+    }))
 }
 
 pub fn build_inbox_rpc_params(record: &StoredIdentity, request: InboxRequest) -> Value {
@@ -146,13 +167,36 @@ pub(crate) fn message_meta(sender_did: &str, service_did: &str, profile: &str) -
     })
 }
 
-fn now_rfc3339() -> String {
+pub(crate) fn signed_message_meta(
+    sender_did: &str,
+    target_kind: &str,
+    target_did: &str,
+    profile: &str,
+    content_type: &str,
+) -> Value {
+    json!({
+        "anp_version": "1.0",
+        "profile": profile,
+        "security_profile": "transport-protected",
+        "sender_did": sender_did,
+        "target": {
+            "kind": target_kind,
+            "did": target_did,
+        },
+        "operation_id": format!("op-{}", generate_operation_id()),
+        "message_id": format!("msg-{}", generate_operation_id()),
+        "created_at": now_rfc3339(),
+        "content_type": content_type,
+    })
+}
+
+pub(crate) fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn generate_operation_id() -> String {
+pub(crate) fn generate_operation_id() -> String {
     use rand::RngCore;
     let mut bytes = [0_u8; 8];
     rand::thread_rng().fill_bytes(&mut bytes);

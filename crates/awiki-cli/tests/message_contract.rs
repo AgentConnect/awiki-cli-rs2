@@ -7,13 +7,15 @@ use awiki_cli::identity::types::{GeneratedIdentity, StoredIdentity};
 use awiki_cli::message::{
     attachment_manifest_content_type, build_attachment_create_slot_rpc_params,
     build_attachment_download_ticket_rpc_params, build_attachment_manifest,
-    build_direct_text_payload, build_history_rpc_params, build_inbox_rpc_params,
-    build_mark_read_rpc_params, build_origin_proof, content_type_for_message_type,
-    find_attachment_selection, manifest_content_string, origin_auth_value,
-    select_attachment_rpc_service_from_document, verification_method_id_from_document,
-    websocket_cache_fallback_warning, websocket_http_fallback_warning, AttachmentCreateSlotResult,
-    AttachmentSelection, HistoryRequest, InboxRequest, MarkReadRequest, MessageError,
-    PreparedAttachment, ORIGIN_PROOF_SCHEME,
+    build_direct_attachment_send_rpc_params, build_direct_send_rpc_params,
+    build_direct_text_payload, build_group_attachment_send_rpc_params, build_history_rpc_params,
+    build_inbox_rpc_params, build_mark_read_rpc_params, build_origin_proof,
+    content_type_for_message_type, find_attachment_selection, manifest_content_string,
+    origin_auth_value, select_attachment_rpc_service_from_document,
+    verification_method_id_from_document, websocket_cache_fallback_warning,
+    websocket_http_fallback_warning, AttachmentCreateSlotResult, AttachmentSelection,
+    HistoryRequest, InboxRequest, MarkReadRequest, MessageError, PreparedAttachment,
+    ORIGIN_PROOF_SCHEME,
 };
 use serde_json::{json, Value};
 
@@ -97,6 +99,33 @@ fn direct_text_payload_and_message_type_content_match_go_contracts() {
         .as_str()
         .unwrap()
         .starts_with("msg-"));
+}
+
+#[test]
+fn signed_direct_send_params_include_origin_proof_auth_contract() {
+    let generated =
+        generate_identity("awiki.ai", "", "").expect("generated identity should be valid");
+    let record = generated_record("alice", &generated);
+    let params =
+        build_direct_send_rpc_params(&record, "did:wba:awiki.ai:user:bob:e1_bob", "hello", "text")
+            .expect("direct send params");
+
+    assert_eq!(params["meta"]["profile"], "anp.direct.base.v1");
+    assert_eq!(
+        params["meta"]["target"],
+        json!({ "kind": "agent", "did": "did:wba:awiki.ai:user:bob:e1_bob" })
+    );
+    assert_eq!(params["meta"]["content_type"], "text/plain");
+    assert_eq!(params["body"], json!({ "text": "hello" }));
+    assert_eq!(params["auth"]["scheme"], ORIGIN_PROOF_SCHEME);
+    assert!(params["auth"]["origin_proof"].is_object());
+    assert!(params["auth"].get("sender_proof").is_none());
+    assert_origin_proof_verifies(&params, "direct.send", &record);
+
+    let event =
+        build_direct_send_rpc_params(&record, "did:wba:awiki.ai:user:bob:e1_bob", "{}", "event")
+            .expect("event send params");
+    assert_eq!(event["meta"]["content_type"], "application/json");
 }
 
 #[test]
@@ -213,6 +242,72 @@ fn origin_proof_reports_missing_verification_method_like_go_contract() {
     assert_eq!(
         error.to_string(),
         "identity empty-auth is missing an authentication verification method"
+    );
+}
+
+#[test]
+fn signed_attachment_manifest_params_match_direct_and_group_go_contracts() {
+    let generated =
+        generate_identity("awiki.ai", "", "").expect("generated identity should be valid");
+    let record = generated_record("alice", &generated);
+    let prepared = PreparedAttachment {
+        filename: "hello.txt".to_string(),
+        mime_type: "text/plain".to_string(),
+        size_string: "5".to_string(),
+        digest_b64u: "digest".to_string(),
+        ..PreparedAttachment::default()
+    };
+    let slot = AttachmentCreateSlotResult {
+        attachment_id: "att-1".to_string(),
+        object_uri: "http://127.0.0.1:8080/objects/obj-1".to_string(),
+        ..AttachmentCreateSlotResult::default()
+    };
+    let manifest = build_attachment_manifest(&prepared, &slot, "hello");
+
+    let direct = build_direct_attachment_send_rpc_params(
+        &record,
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        manifest.clone(),
+    )
+    .expect("direct attachment send params");
+    assert_eq!(direct["meta"]["profile"], "anp.direct.base.v1");
+    assert_eq!(
+        direct["meta"]["target"],
+        json!({ "kind": "agent", "did": "did:wba:awiki.ai:user:bob:e1_bob" })
+    );
+    assert_eq!(
+        direct["meta"]["content_type"],
+        attachment_manifest_content_type()
+    );
+    assert_eq!(direct["body"]["payload"], manifest);
+    assert_eq!(direct["auth"]["scheme"], ORIGIN_PROOF_SCHEME);
+    assert_origin_proof_verifies(&direct, "direct.send", &record);
+
+    let group = build_group_attachment_send_rpc_params(
+        &record,
+        "did:wba:awiki.ai:groups:test:e1_group",
+        direct["body"]["payload"].clone(),
+    )
+    .expect("group attachment send params");
+    assert_eq!(group["meta"]["profile"], "anp.group.base.v1");
+    assert_eq!(
+        group["meta"]["target"],
+        json!({ "kind": "group", "did": "did:wba:awiki.ai:groups:test:e1_group" })
+    );
+    assert_eq!(
+        group["meta"]["content_type"],
+        attachment_manifest_content_type()
+    );
+    assert_eq!(group["auth"]["scheme"], ORIGIN_PROOF_SCHEME);
+    assert_origin_proof_verifies(&group, "group.send", &record);
+
+    assert_eq!(
+        build_direct_attachment_send_rpc_params(&record, "", json!({})).unwrap_err(),
+        MessageError::TargetRequired
+    );
+    assert_eq!(
+        build_group_attachment_send_rpc_params(&record, "", json!({})).unwrap_err(),
+        MessageError::GroupRequired
     );
 }
 
@@ -400,4 +495,22 @@ fn assert_has_generated_meta(meta: &Value) {
     assert_eq!(meta["anp_version"], "1.0");
     assert!(meta["operation_id"].as_str().unwrap().starts_with("op-"));
     assert!(!meta["created_at"].as_str().unwrap().is_empty());
+}
+
+fn assert_origin_proof_verifies(params: &Value, method: &str, record: &StoredIdentity) {
+    let origin_proof: anp::proof::Rfc9421OriginProof =
+        serde_json::from_value(params["auth"]["origin_proof"].clone())
+            .expect("origin proof should deserialize");
+    verify_rfc9421_origin_proof(
+        &origin_proof,
+        method,
+        &params["meta"],
+        &params["body"],
+        Rfc9421OriginProofVerificationOptions {
+            did_document: record.did_document.clone(),
+            expected_signer_did: Some(record.did.clone()),
+            ..Rfc9421OriginProofVerificationOptions::default()
+        },
+    )
+    .expect("origin proof verifies");
 }

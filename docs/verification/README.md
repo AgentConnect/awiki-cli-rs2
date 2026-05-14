@@ -2,6 +2,73 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-14 Message Signed Wire Params Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|tungstenite|websocket'
+```
+
+Result: passed. Rust tests: 59 local tests after this slice. Focused
+`message_contract` now has 10 tests, including signed direct send params,
+signed direct attachment manifest params, signed group attachment manifest
+params, and DID-document verification of each origin proof. Structure check
+reported no undocumented Rust files over 1200 lines; `message/wire.rs` is 204
+lines, `message/attachment.rs` is 394 lines, and `tests/message_contract.rs`
+is 516 lines. Dependency audit remained unchanged: only the approved
+`rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
+present. No OpenSSL/native-tls, Rustls, HTTP, WebSocket, or platform service
+dependency was added.
+
+Scope:
+
+- Go `BuildDirectSendRPCParams` signed direct text params.
+- Go `BuildDirectAttachmentSendRPCParams` signed direct attachment manifest
+  params.
+- Go `BuildGroupAttachmentSendRPCParams` signed group attachment manifest
+  params.
+- Auth wrapper uses `anp-rfc9421-origin-proof-v1` and `origin_proof`, omits
+  `sender_proof`, and verifies through the local ANP Rust SDK.
+
+Boundary note: this slice still does not implement `authsdk` session/JWT
+refresh, HTTP transport, WebSocket proxy transport, attachment transfer
+execution, local cache mutation, secure direct E2EE, or group mutation RPC
+execution. It adds no new dependency and keeps TLS/HTTP dependency selection
+deferred to the shared Rustls service-client slice.
+
+Accepted-scope system regression:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/core/test_basic_commands.py \
+  tests_v2/core/test_output_contracts_cli.py \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_query_rejects_unsafe_sql_and_supports_table_output \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+  tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+  tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+  tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+  tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+  tests_v2/runtime/test_runtime_cli.py \
+  tests_v2/update \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: passed, 37 tests. This regression selector covers the existing public
+CLI surface; the signed wire builders are verified by Rust contract tests
+because they are not yet wired into service-backed CLI execution.
+
 ## 2026-05-14 Message RFC9421 Origin-Proof Slice
 
 Local Rust verification in `awiki-cli-rs2`:
@@ -16,7 +83,7 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-s
 ```
 
 Result: passed. Rust tests: 57 local tests after this slice. Focused
-`message_contract` now has 8 tests, including RFC9421 origin-proof generation,
+`message_contract` has 8 tests, including RFC9421 origin-proof generation,
 Go-compatible verification-method selection, `anp-rfc9421-origin-proof-v1`
 auth shape, canonical request digest comparison, and DID-document verification
 through the local ANP Rust SDK. Structure check reported no undocumented Rust
