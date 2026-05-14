@@ -420,7 +420,7 @@ pub fn snapshot(resolved: &Resolved) -> Value {
     serde_json::to_value(resolved).unwrap_or_else(|_| json!({}))
 }
 
-fn read_file_config(path: &str) -> (FileConfig, bool, String) {
+pub(crate) fn read_file_config(path: &str) -> (FileConfig, bool, String) {
     match fs::read_to_string(path) {
         Ok(raw) => (parse_file_config(&raw), true, String::new()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {

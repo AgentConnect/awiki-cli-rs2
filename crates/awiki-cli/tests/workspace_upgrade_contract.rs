@@ -225,6 +225,111 @@ fn workspace_upgrade_load_legacy_settings_wraps_io_and_parse_errors_like_go() {
 }
 
 #[test]
+fn workspace_upgrade_refresh_resolved_config_syncs_mail_service_url_from_config() {
+    let workspace = TempDir::new("workspace-upgrade-refresh-mail").expect("temp workspace");
+    let mut resolved = test_resolved(workspace.path());
+    resolved.service_base_url = "https://stale.example".to_string();
+    resolved.mail_service_url = "https://stale-mail.example".to_string();
+    resolved.anp_service_endpoint.clear();
+    resolved.anp_service_did.clear();
+    std::fs::write(
+        &resolved.paths.config_file,
+        concat!(
+            "runtime:\n",
+            "  mode: http\n",
+            "  socket_path: /tmp/awiki.sock\n",
+            "output:\n",
+            "  format: table\n",
+            "  no_color: true\n",
+            "services:\n",
+            "  service_base_url: https://api.example///\n",
+            "  did_domain: tenant.example\n",
+            "  mail_service_url: https://mail.example///\n",
+            "  anp_service_endpoint: https://api.example/anp-im/rpc\n",
+            "  anp_service_did: did:wba:api.example\n",
+            "  ca_bundle: /tmp/ca.pem\n",
+        ),
+    )
+    .expect("write config");
+
+    let refreshed = upgrade::refresh_resolved_config(&resolved).expect("refresh resolved");
+
+    assert!(refreshed.config_exists);
+    assert_eq!(refreshed.config_schema_version, 0);
+    assert_eq!(refreshed.runtime_mode, "http");
+    assert_eq!(refreshed.runtime_socket_path, "/tmp/awiki.sock");
+    assert_eq!(refreshed.output_format, "table");
+    assert!(refreshed.no_color);
+    assert_eq!(refreshed.service_base_url, "https://api.example");
+    assert_eq!(refreshed.did_domain, "tenant.example");
+    assert_eq!(refreshed.mail_service_url, "https://mail.example");
+    assert_eq!(
+        refreshed.anp_service_endpoint,
+        "https://api.example/anp-im/rpc"
+    );
+    assert_eq!(refreshed.anp_service_did, "did:wba:api.example");
+    assert_eq!(refreshed.ca_bundle, "/tmp/ca.pem");
+}
+
+#[test]
+fn workspace_upgrade_refresh_resolved_config_derives_mail_service_url_from_service_base_url() {
+    let workspace = TempDir::new("workspace-upgrade-refresh-mail-derived").expect("temp workspace");
+    let mut resolved = test_resolved(workspace.path());
+    resolved.mail_service_url.clear();
+    resolved.anp_service_endpoint.clear();
+    resolved.anp_service_did.clear();
+    std::fs::write(
+        &resolved.paths.config_file,
+        "services:\n  service_base_url: https://awiki.info///\n",
+    )
+    .expect("write config");
+
+    let refreshed = upgrade::refresh_resolved_config(&resolved).expect("refresh resolved");
+
+    assert_eq!(refreshed.service_base_url, "https://awiki.info");
+    assert_eq!(refreshed.mail_service_url, "https://awiki.info");
+    assert_eq!(
+        refreshed.anp_service_endpoint,
+        "https://awiki.info/anp-im/rpc"
+    );
+    assert_eq!(refreshed.anp_service_did, "did:wba:awiki.info");
+}
+
+#[test]
+fn workspace_upgrade_refresh_resolved_config_preserves_current_mail_when_config_omits_mail() {
+    let workspace =
+        TempDir::new("workspace-upgrade-refresh-mail-preserve").expect("temp workspace");
+    let mut resolved = test_resolved(workspace.path());
+    resolved.mail_service_url = "https://mail.current.example".to_string();
+    std::fs::write(
+        &resolved.paths.config_file,
+        "services:\n  service_base_url: https://api.changed.example///\n",
+    )
+    .expect("write config");
+
+    let refreshed = upgrade::refresh_resolved_config(&resolved).expect("refresh resolved");
+
+    assert_eq!(refreshed.service_base_url, "https://api.changed.example");
+    assert_eq!(refreshed.mail_service_url, "https://mail.current.example");
+}
+
+#[test]
+fn workspace_upgrade_refresh_resolved_config_keeps_go_required_and_missing_config_boundaries() {
+    let workspace = TempDir::new("workspace-upgrade-refresh-missing").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+
+    let required = upgrade::refresh_resolved_config_optional(None)
+        .expect_err("missing resolved config should fail");
+    assert_eq!(required.to_string(), "resolved config is required");
+
+    let refreshed = upgrade::refresh_resolved_config(&resolved).expect("missing config is ok");
+    assert!(!refreshed.config_exists);
+    assert_eq!(refreshed.config_schema_version, 0);
+    assert_eq!(refreshed.service_base_url, resolved.service_base_url);
+    assert_eq!(refreshed.mail_service_url, resolved.mail_service_url);
+}
+
+#[test]
 fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
     let upgrader = upgrade::new_default_upgrader();
     assert_eq!(upgrader.latest_version(), 3);

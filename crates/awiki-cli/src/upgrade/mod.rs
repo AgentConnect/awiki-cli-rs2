@@ -4,6 +4,7 @@ mod fsutil;
 mod journal;
 mod lock;
 mod meta;
+mod migration_v0_to_v1;
 mod settings;
 mod types;
 mod upgrader;
@@ -13,6 +14,9 @@ pub use detect::{detect, inspect, resolve_paths, InspectError};
 pub use journal::{clear_journal, load_journal, save_journal, JournalError};
 pub use lock::{acquire_file_lock, LockError, UpgradeLockGuard};
 pub use meta::{load_meta, save_meta, MetaError};
+pub use migration_v0_to_v1::{
+    refresh_resolved_config, refresh_resolved_config_optional, RefreshResolvedConfigError,
+};
 pub use settings::{
     load_legacy_settings, parse_legacy_settings, LegacySettingsError, NormalizedLegacySettings,
 };

@@ -2184,3 +2184,52 @@ uses existing inspect/meta/journal/planner helpers and does not introduce
 HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
 service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
 policy remains Rustls-first and unchanged.
+
+## 2026-05-14 Workspace Refresh Resolved Config Helper Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract workspace_upgrade_refresh_resolved_config --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestRefreshResolvedConfigSyncsMailServiceURLFromConfig|TestRefreshResolvedConfigDerivesMailServiceURLFromServiceBaseURL' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added `crates/awiki-cli/src/upgrade/migration_v0_to_v1.rs` for the first
+  pure helper from Go `internal/upgrade/migration_v0_to_v1.go`.
+- Translated `refreshResolvedConfig` as `refresh_resolved_config` plus an
+  optional-context test hook preserving Go's `"resolved config is required"`
+  error.
+- Preserved Go's config-file refresh behavior for config existence,
+  `schema_version`, runtime mode/socket path, output format/no-color,
+  service base URL, DID domain, ANP endpoint/DID, mail service URL, and CA
+  bundle.
+- Preserved Go's mail URL rules: explicit `services.mail_service_url` is
+  normalized and copied from config; when config omits it, mail service URL is
+  derived from `service_base_url` only if the current resolved mail URL is
+  empty.
+- Exposed the existing hand-written `config::read_file_config` as crate-local
+  so upgrade helpers can reuse the same parser without adding a YAML
+  dependency.
+
+Boundary note: this slice does not implement v0->v1 `Apply`, config file
+migration, legacy config removal, identity import, legacy SQLite import,
+target-store schema enforcement, SQLite health validation, k1->e1 DID
+replacement RPC, or `UpgradeIfNeeded` phase execution. Those remain separate
+file-level migration slices.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses existing config parsing and URL derivation helpers. It does not introduce
+HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
+service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
+policy remains Rustls-first and unchanged.
