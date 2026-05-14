@@ -468,12 +468,31 @@ fn write_raw_file_config(path: &str, config: &FileConfig) -> anyhow::Result<()> 
     Ok(())
 }
 
+pub fn ensure_config_schema_version(path: &str) -> anyhow::Result<()> {
+    let (mut config, exists, error) = read_file_config(path);
+    if !error.is_empty() {
+        anyhow::bail!(error);
+    }
+    if !exists {
+        return Ok(());
+    }
+    config.schema_version = CONFIG_SCHEMA_VERSION;
+    write_raw_file_config(path, &config)
+}
+
 pub fn update_runtime_settings(paths: &Paths, mode: &str, socket_path: &str) -> anyhow::Result<()> {
     update_file_config(&paths.config_file, |config| {
-        config.runtime.mode = mode.trim().to_ascii_lowercase();
-        if !socket_path.trim().is_empty() {
-            config.runtime.socket_path = socket_path.trim().to_string();
+        config.runtime.mode = mode.to_string();
+        if !socket_path.is_empty() {
+            config.runtime.socket_path = socket_path.to_string();
         }
+        Ok(())
+    })
+}
+
+pub fn update_active_identity(paths: &Paths, identity_name: &str) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        config.identity.active = identity_name.trim().to_string();
         Ok(())
     })
 }
@@ -508,10 +527,20 @@ pub fn update_runtime_listener_settings(
 }
 
 pub fn update_host_notify_sink(paths: &Paths, sink: &str) -> anyhow::Result<()> {
-    let normalized = normalize_host_notify_sink_for_write(sink)?;
+    let mut normalized = sink.trim().to_ascii_lowercase();
+    if normalized == "webhook" {
+        normalized = "hermes".to_string();
+    }
     update_file_config(&paths.config_file, |config| {
         config.runtime.host_notify.sink = normalized;
         config.runtime.host_notify.enabled = Some(true);
+        Ok(())
+    })
+}
+
+pub fn update_host_notify_enabled(paths: &Paths, enabled: bool) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        config.runtime.host_notify.enabled = Some(enabled);
         Ok(())
     })
 }
@@ -520,6 +549,47 @@ pub fn update_openclaw_settings(paths: &Paths, hook_url: Option<&str>) -> anyhow
     update_file_config(&paths.config_file, |config| {
         if let Some(value) = hook_url {
             config.runtime.host_notify.openclaw.hook_url = value.trim().to_string();
+        }
+        Ok(())
+    })
+}
+
+pub fn update_hermes_settings(
+    paths: &Paths,
+    notify_url: Option<&str>,
+    deliver: Option<&str>,
+) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        if let Some(value) = notify_url {
+            let value = value.trim().to_string();
+            config.runtime.host_notify.hermes.notify_url = value.clone();
+            config.runtime.host_notify.webhook.notify_url = value;
+        }
+        if let Some(value) = deliver {
+            config.runtime.host_notify.hermes.deliver = value.trim().to_ascii_lowercase();
+        }
+        Ok(())
+    })
+}
+
+pub fn configure_hermes_host_notify(
+    paths: &Paths,
+    notify_url: &str,
+    secret: Option<&str>,
+    deliver: &str,
+    enabled: bool,
+) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        let notify_url = notify_url.trim().to_string();
+        config.runtime.host_notify.enabled = Some(enabled);
+        config.runtime.host_notify.sink = "hermes".to_string();
+        config.runtime.host_notify.hermes.notify_url = notify_url.clone();
+        config.runtime.host_notify.hermes.deliver = deliver.trim().to_ascii_lowercase();
+        config.runtime.host_notify.webhook.notify_url = notify_url;
+        if let Some(value) = secret {
+            let value = value.trim().to_string();
+            config.runtime.host_notify.hermes.secret = value.clone();
+            config.runtime.host_notify.webhook.secret = value;
         }
         Ok(())
     })
@@ -535,6 +605,22 @@ pub fn set_openclaw_token(paths: &Paths, token: &str) -> anyhow::Result<()> {
 pub fn clear_openclaw_token(paths: &Paths) -> anyhow::Result<()> {
     update_file_config(&paths.config_file, |config| {
         config.runtime.host_notify.openclaw.token.clear();
+        Ok(())
+    })
+}
+
+pub fn set_hermes_secret(paths: &Paths, secret: &str) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        config.runtime.host_notify.hermes.secret = secret.to_string();
+        config.runtime.host_notify.webhook.secret = secret.to_string();
+        Ok(())
+    })
+}
+
+pub fn clear_hermes_secret(paths: &Paths) -> anyhow::Result<()> {
+    update_file_config(&paths.config_file, |config| {
+        config.runtime.host_notify.hermes.secret.clear();
+        config.runtime.host_notify.webhook.secret.clear();
         Ok(())
     })
 }
@@ -565,6 +651,7 @@ fn update_file_config(
         anyhow::bail!(error);
     }
     mutate(&mut config)?;
+    config.schema_version = CONFIG_SCHEMA_VERSION;
     write_raw_file_config(path, &config)
 }
 
@@ -621,7 +708,7 @@ fn render_file_config(config: &FileConfig) -> String {
             "  disable_strict_version: {}\n",
             "  metadata_cache_ttl_seconds: {}\n"
         ),
-        config.schema_version,
+        CONFIG_SCHEMA_VERSION,
         config.identity.active,
         config.runtime.mode,
         config.runtime.socket_path,

@@ -1074,3 +1074,73 @@ Boundary note: this slice does not implement real platform service-manager
 status, auth/session checks, HTTP/WebSocket transport, MLS provider execution,
 full Go YAML parse-error parity, or full `upgrade.Inspect` meta/journal
 semantics. Those remain separate parity slices.
+
+## 2026-05-14 Config Writer Helper Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test config_writer_contract --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|tungstenite|websocket'
+```
+
+Result: passed for the focused helper tests plus existing core/runtime contract
+tests. The full `awiki-cli` crate suite reported 82 tests passing after this
+slice. Structure check reported no undocumented Rust files over 1200 lines;
+`config/mod.rs` is 1155 lines and `tests/config_writer_contract.rs` is 227
+lines. Dependency audit remained unchanged: only the approved
+`rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
+present, with no OpenSSL/native-tls/HTTP/TLS client path.
+
+The helper contract test covers Go `internal/config/write.go` behavior for
+schema-version stamping, missing-config no-op schema upgrades, active identity
+trimming, runtime/listener field writes, DID-domain normalization, host-notify
+enabled false persistence, `webhook` alias normalization, OpenClaw hook/token
+writes, Hermes notify/deliver/secret writes, one-shot Hermes host-notify setup,
+and legacy webhook double-write behavior.
+
+System verification in `awiki-system-test`:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/core/test_basic_commands.py \
+  tests_v2/core/test_output_contracts_cli.py \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_query_rejects_unsafe_sql_and_supports_table_output \
+  tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_supports_dry_run_and_missing_path_errors \
+  tests_v2/id/test_identity_cli.py::test_id_create_list_current_use_and_status \
+  tests_v2/id/test_identity_cli.py::test_id_create_and_use_support_dry_run_and_argument_validation \
+  tests_v2/id/test_identity_cli.py::test_id_use_unknown_identity_returns_not_found \
+  tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_imports_flat_legacy_identity \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities \
+  tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout \
+  tests_v2/runtime/test_runtime_cli.py \
+  tests_v2/update \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: `37 passed in 1.84s`.
+
+Scope:
+
+- Helper-level config mutators only.
+- No new crate dependency.
+- Existing direct-helper boundaries are preserved where Go helpers differ from
+  CLI validation, for example host-notify sink validation remains at the CLI
+  boundary and the helper maps only the legacy `webhook` alias.
+
+Boundary note: this slice does not claim full Go `writeAtomicFile` parity,
+`yaml.v3` parser/serializer parity, Hermes CLI command wiring, Hermes bridge
+management, listener refresh orchestration, or platform service-manager
+behavior. Those remain separate config/runtime parity slices.
