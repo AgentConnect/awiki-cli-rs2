@@ -2030,3 +2030,53 @@ uses standard library filesystem APIs, serde JSON, and the existing `durablefs`
 helper. It does not introduce filesystem-copy crates, HTTP/TLS, OpenSSL,
 `native-tls`, WebSocket, authsdk session, platform service-manager, backup
 runtime execution, or file-lock dependencies.
+
+## 2026-05-14 Workspace Upgrade Backup Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli backup --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestAcquireFileLock|TestLoadLegacySettingsRejectsSplitServiceURLs|TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+Result: passed. The Rust backup tests cover fixed backup IDs, Go backup file
+names, absent input skipping, identity tree copying, meta/journal/config copies,
+SQLite `.bak` generation via `VACUUM INTO`, destination replacement, and
+single-quote escaping in the destination path. Go has no direct unit test for
+private backup helpers, so focused Go upgrade tests remain reference coverage
+for existing callers and local invariants.
+
+Scope:
+
+- Added `crates/awiki-cli/src/upgrade/backup.rs` for Go
+  `internal/upgrade/backup.go`.
+- Used existing `upgrade::Paths` as the Rust input boundary because Go
+  `CreateBackup` only reads `uc.Paths` fields for backup assembly. A full
+  upgrader `Context` wrapper remains a later execution slice.
+- Preserved Go backup names: `config.yaml.bak`, `config.json.bak`,
+  `identities/`, `awiki-cli.db.bak`, `meta.json.bak`, and
+  `upgrade_journal.json.bak`.
+- Preserved Go's skip-missing-input behavior and final sync of the parent of
+  the backup directory.
+- Preserved Go SQLite backup behavior: create destination parent, remove an
+  existing destination, open source through the normal writable store path,
+  escape single quotes by doubling them, and execute `VACUUM INTO`.
+
+Boundary note: this slice does not wire backup execution into
+`UpgradeIfNeeded`, journal phase transitions, rollback, migration application,
+identity replacement RPC, legacy SQLite import, or cleanup migrations.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses the existing fsutil module, existing store open path, and already-approved
+`rusqlite + bundled` SQLite lane. It does not introduce filesystem-copy crates,
+HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
+service-manager, or file-lock dependencies. TLS policy remains Rustls-first and
+unchanged.

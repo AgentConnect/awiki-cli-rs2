@@ -1,3 +1,4 @@
+mod backup;
 mod detect;
 mod fsutil;
 mod journal;
@@ -6,6 +7,7 @@ mod meta;
 mod settings;
 mod types;
 
+pub use backup::{backup_sqlite_database, create_backup, BackupError};
 pub use detect::{detect, inspect, resolve_paths, InspectError};
 pub use journal::{clear_journal, load_journal, save_journal, JournalError};
 pub use lock::{acquire_file_lock, LockError, UpgradeLockGuard};

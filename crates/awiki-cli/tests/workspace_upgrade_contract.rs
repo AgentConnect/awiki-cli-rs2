@@ -472,6 +472,156 @@ fn config_show_embeds_upgrade_inspection_instead_of_stub_snapshot() {
     assert!(upgrade.get("actions").is_none());
 }
 
+#[test]
+fn workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup() {
+    let workspace = TempDir::new("workspace-upgrade-backup").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+    std::fs::write(&paths.legacy_config_file, "{\"legacy\":true}\n").expect("write legacy config");
+    std::fs::create_dir_all(Path::new(&paths.identity_dir).join("alice"))
+        .expect("create identity dir");
+    std::fs::write(
+        Path::new(&paths.identity_dir)
+            .join("alice")
+            .join("identity.json"),
+        "{\"name\":\"alice\"}\n",
+    )
+    .expect("write identity");
+    upgrade::save_meta(
+        &paths.meta_path,
+        &upgrade::Meta {
+            workspace_schema_version: 3,
+            app_version: "1.2.3".to_string(),
+            updated_at: "2026-05-14T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save meta");
+    upgrade::save_journal(
+        &paths.journal_path,
+        &upgrade::Journal {
+            upgrade_id: "upgrade-1".to_string(),
+            from_version: 0,
+            to_version: 3,
+            current_step: "backup".to_string(),
+            phase: "running".to_string(),
+            backup_dir: String::new(),
+            started_at: "2026-05-14T00:01:00Z".to_string(),
+            app_version: "1.2.3".to_string(),
+        },
+    )
+    .expect("save journal");
+    let db = store::open(&resolved.paths).expect("open db");
+    store::ensure_schema(&db).expect("ensure schema");
+    db.execute(
+        "INSERT INTO messages(msg_id, owner_did, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
+        rusqlite::params![
+            "msg-1",
+            "did:owner:alice",
+            "thread-1",
+            "hello",
+            "2026-05-14T00:00:00Z",
+            "alice"
+        ],
+    )
+    .expect("insert db row");
+    drop(db);
+
+    let backup_dir = upgrade::create_backup(&paths, "fixed'backup").expect("create backup");
+    let backup = PathBuf::from(&backup_dir);
+    assert_eq!(backup, Path::new(&paths.backup_root).join("fixed'backup"));
+    assert_eq!(
+        std::fs::read_to_string(backup.join("config.yaml.bak")).unwrap(),
+        "schema_version: 1\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(backup.join("config.json.bak")).unwrap(),
+        "{\"legacy\":true}\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            backup
+                .join("identities")
+                .join("alice")
+                .join("identity.json")
+        )
+        .unwrap(),
+        "{\"name\":\"alice\"}\n"
+    );
+    assert!(backup.join("meta.json.bak").is_file());
+    assert!(backup.join("upgrade_journal.json.bak").is_file());
+    let backup_db =
+        rusqlite::Connection::open(backup.join("awiki-cli.db.bak")).expect("open sqlite backup");
+    let count: i64 = backup_db
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE msg_id = 'msg-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query sqlite backup");
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn workspace_upgrade_create_backup_skips_absent_inputs_without_placeholders() {
+    let workspace = TempDir::new("workspace-upgrade-backup-sparse").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+
+    let backup_dir = upgrade::create_backup(&paths, "sparse").expect("create sparse backup");
+    let backup = PathBuf::from(&backup_dir);
+    assert!(backup.join("config.yaml.bak").is_file());
+    assert!(!backup.join("config.json.bak").exists());
+    assert!(!backup.join("identities").exists());
+    assert!(!backup.join("awiki-cli.db.bak").exists());
+    assert!(!backup.join("meta.json.bak").exists());
+    assert!(!backup.join("upgrade_journal.json.bak").exists());
+}
+
+#[test]
+fn workspace_upgrade_backup_sqlite_replaces_existing_destination_and_escapes_path() {
+    let temp = TempDir::new("workspace-upgrade-sqlite-backup").expect("temp dir");
+    let db_path = temp.path().join("source.db");
+    let paths = config::Paths {
+        database_file: path_string(&db_path),
+        ..test_resolved(temp.path()).paths
+    };
+    let db = store::open(&paths).expect("open source db");
+    store::ensure_schema(&db).expect("ensure schema");
+    db.execute(
+        "INSERT INTO messages(msg_id, owner_did, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
+        rusqlite::params![
+            "msg-2",
+            "did:owner:bob",
+            "thread-2",
+            "hello",
+            "2026-05-14T00:00:00Z",
+            "bob"
+        ],
+    )
+    .expect("insert source row");
+    drop(db);
+    let backup_path = temp.path().join("out").join("backup's.db");
+    std::fs::create_dir_all(backup_path.parent().expect("backup parent")).expect("create parent");
+    std::fs::write(&backup_path, "stale").expect("write stale destination");
+
+    upgrade::backup_sqlite_database(&path_string(&db_path), &path_string(&backup_path))
+        .expect("backup sqlite database");
+    let backup = rusqlite::Connection::open(&backup_path).expect("open backup db");
+    let count: i64 = backup
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE msg_id = 'msg-2'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query backup row");
+    assert_eq!(count, 1);
+}
+
 fn test_resolved(root: &Path) -> config::Resolved {
     config::Resolved {
         paths: config::Paths {
