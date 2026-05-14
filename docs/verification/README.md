@@ -252,3 +252,50 @@ Result: `5 passed in 0.72s`.
 Boundary note: registry fetch/writeback and the root update-policy preflight
 guard remain deferred translation tasks. They require the shared Rustls HTTP
 dependency decision and broader CLI-root parity tests.
+
+## 2026-05-14 Identity/Group Dry-Run CLI Slice
+
+Local Rust verification in `awiki-cli-rs2`:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test identity_contract --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls'
+```
+
+Result: passed. Rust tests: 30 local tests after this slice. Structure check
+reported no undocumented Rust files over 1200 lines. Dependency audit still
+only showed the expected `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg`
+bundled SQLite path; no OpenSSL/native-tls, HTTP/TLS, or platform
+service-manager dependency was added.
+
+Scope:
+
+- Public `id replace-did` command catalog entry, parser dispatch, dangerous
+  short text, side-effect flag, and Go dry-run plan/warning shape.
+- `group create` and `group update` command catalog entries plus dry-run
+  plans with Go PascalCase request fields.
+- Go pointer semantics for group dry-run policy fields: absent bool/int flags
+  render as JSON null; explicitly changed flags render concrete bool/int values.
+
+System verification in `awiki-system-test`:
+
+```bash
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run --no-sync pytest \
+  tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: `2 passed in 0.14s`.
+
+Boundary note: non-dry-run DID replacement and group RPC/lifecycle behavior
+remain deferred translation tasks. They require authsdk/message-service/store
+rebind work and should be implemented in dedicated slices with service-backed
+system tests.

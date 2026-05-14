@@ -11,6 +11,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+mod group_handlers;
 mod mail_handlers;
 mod runtime_handlers;
 mod update_handlers;
@@ -454,6 +455,25 @@ impl App {
         self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
     }
 
+    pub fn run_id_replace_did(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        if !self.globals.dry_run {
+            return Err(not_implemented_side_effect("id replace-did"));
+        }
+        let is_public = optional_bool_flag(command, "is-public")?;
+        let is_agent = optional_bool_flag(command, "is-agent")?;
+        let role = changed_string_flag(command, "role");
+        let endpoint_url = changed_string_flag(command, "endpoint-url");
+        let result = identity::replace_did_plan(
+            &self.globals.identity,
+            is_public,
+            is_agent,
+            role.as_deref(),
+            endpoint_url.as_deref(),
+        );
+        self.render_identity_result("awiki-cli id replace-did", &resolved, result)
+    }
+
     pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let to = command.flags.get("to").cloned().unwrap_or_default();
@@ -685,6 +705,37 @@ impl App {
             let _ = writeln!(io::stderr(), "{}", err.detail.message);
         }
         err.exit_code
+    }
+}
+
+fn optional_bool_flag(command: &ParsedCommand, name: &str) -> Result<Option<bool>, ExitError> {
+    if !command.changed_flags.iter().any(|flag| flag == name) {
+        return Ok(None);
+    }
+    let value = command
+        .flags
+        .get(name)
+        .map(String::as_str)
+        .unwrap_or("false")
+        .trim()
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "true" | "1" | "yes" | "on" => Ok(Some(true)),
+        "false" | "0" | "no" | "off" => Ok(Some(false)),
+        _ => Err(ExitError::new(
+            "invalid_argument",
+            2,
+            format!("--{name} must be a boolean."),
+            "Use true or false.",
+        )),
+    }
+}
+
+fn changed_string_flag(command: &ParsedCommand, name: &str) -> Option<String> {
+    if command.changed_flags.iter().any(|flag| flag == name) {
+        Some(command.flags.get(name).cloned().unwrap_or_default())
+    } else {
+        None
     }
 }
 

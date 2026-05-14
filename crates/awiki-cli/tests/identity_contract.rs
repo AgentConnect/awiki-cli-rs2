@@ -107,6 +107,54 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         .as_array()
         .unwrap()
         .contains(&json!("auth.json")));
+
+    let schema = success_json(&awiki_cmd(
+        &["schema", "id", "replace-did"],
+        workspace.path(),
+    ));
+    assert_eq!(schema["data"]["command"]["hidden"], Value::Null);
+    assert_eq!(schema["data"]["command"]["side_effect"], true);
+    assert!(schema["data"]["command"]["short"]
+        .as_str()
+        .unwrap()
+        .contains("Danger"));
+
+    let replace = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "replace-did",
+            "--dry-run",
+            "--is-public=false",
+            "--role",
+            "",
+            "--endpoint-url",
+            "https://example.com/agent",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(replace["data"]["plan"]["action"], "replace_did");
+    assert_eq!(replace["data"]["plan"]["identity_name"], "alice");
+    assert_eq!(replace["data"]["plan"]["dangerous"], true);
+    assert_eq!(replace["data"]["plan"]["remote_params"]["is_public"], false);
+    assert_eq!(replace["data"]["plan"]["remote_params"]["role"], "");
+    assert_eq!(
+        replace["data"]["plan"]["remote_params"]["endpoint_url"],
+        "https://example.com/agent"
+    );
+    assert!(replace["data"]["plan"]["remote_calls"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("did-auth.replace_did")));
+    assert!(replace["data"]["plan"]["local_writes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(".legacy-backup/replace-did")));
+    assert!(replace["warnings"][0]
+        .as_str()
+        .unwrap()
+        .contains("Dangerous command"));
 }
 
 #[test]

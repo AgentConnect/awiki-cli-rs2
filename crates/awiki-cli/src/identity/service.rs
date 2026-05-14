@@ -190,6 +190,62 @@ pub fn refresh_token_plan(manager: &Manager, selected: &str) -> CommandResult {
     }
 }
 
+pub fn replace_did_plan(
+    identity_name: &str,
+    is_public: Option<bool>,
+    is_agent: Option<bool>,
+    role: Option<&str>,
+    endpoint_url: Option<&str>,
+) -> CommandResult {
+    let mut remote_params = Map::new();
+    remote_params.insert(
+        "new_did_document".to_string(),
+        json!("generated_e1_document"),
+    );
+    if let Some(value) = is_public {
+        remote_params.insert("is_public".to_string(), json!(value));
+    }
+    if let Some(value) = is_agent {
+        remote_params.insert("is_agent".to_string(), json!(value));
+    }
+    if let Some(value) = role {
+        remote_params.insert("role".to_string(), json!(value));
+    }
+    if let Some(value) = endpoint_url {
+        remote_params.insert("endpoint_url".to_string(), json!(value));
+    }
+    CommandResult {
+        data: json!({
+            "plan": {
+                "action": "replace_did",
+                "identity_name": identity_name,
+                "dangerous": true,
+                "remote_calls": ["did-auth.replace_did"],
+                "remote_params": remote_params,
+                "local_writes": [
+                    "index.json",
+                    "identity.json",
+                    "auth.json",
+                    "did_document.json",
+                    "key-1-private.pem",
+                    "key-1-public.pem",
+                    "e2ee-signing-private.pem",
+                    "e2ee-agreement-private.pem",
+                    ".legacy-backup/replace-did",
+                    "sqlite.owner_did_rebind",
+                    "sqlite.e2ee_cleanup",
+                ],
+            }
+        }),
+        summary: "Dry run: DID replacement planned".to_string(),
+        warnings: vec![replace_did_danger_warning().to_string()],
+    }
+}
+
+pub fn replace_did_danger_warning() -> &'static str {
+    "Dangerous command: replace-did creates a new e1 DID and key material, replaces the selected identity's current DID, and rebinds local SQLite owner state. The old DID material is backed up locally and remains sensitive. Verify the target identity and prefer --dry-run first."
+}
+
 pub fn import_v1(manager: &Manager, name: &str, all: bool) -> Result<CommandResult, IdentityError> {
     let result = if all {
         manager.import_all_legacy()?

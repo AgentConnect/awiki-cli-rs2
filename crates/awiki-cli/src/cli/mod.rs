@@ -87,6 +87,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.status" => app.run_id_status(),
         "id.import-v1" => app.run_id_import_v1(command),
         "id.refresh-token" => app.run_id_refresh_token(),
+        "id.replace-did" => app.run_id_replace_did(command),
         "msg.send" => app.run_msg_send(command),
         "mail.inbox" => app.run_mail_inbox(command),
         "mail.read" => app.run_mail_read(command),
@@ -95,6 +96,8 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "mail.send" => app.run_mail_send(command),
         "mail.attachment.download" => app.run_mail_attachment_download(command),
         "mail.notify" => app.run_mail_notify(command),
+        "group.create" => app.run_group_create(command),
+        "group.update" => app.run_group_update(command),
         "page.create" => app.run_page_create(command),
         "runtime.status" => app.run_runtime_status(),
         "runtime.apply" => app.run_runtime_apply(),
@@ -154,6 +157,7 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["id", "status", ..] => "id.status",
         ["id", "import-v1", ..] => "id.import-v1",
         ["id", "refresh-token", ..] => "id.refresh-token",
+        ["id", "replace-did", ..] => "id.replace-did",
         ["msg", "send", ..] => "msg.send",
         ["mail", "inbox", ..] => "mail.inbox",
         ["mail", "read", ..] => "mail.read",
@@ -162,6 +166,8 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["mail", "send", ..] => "mail.send",
         ["mail", "attachment", "download", ..] => "mail.attachment.download",
         ["mail", "notify", ..] => "mail.notify",
+        ["group", "create", ..] => "group.create",
+        ["group", "update", ..] => "group.update",
         ["page", "create", ..] => "page.create",
         ["runtime", "status", ..] => "runtime.status",
         ["runtime", "apply", ..] => "runtime.apply",
@@ -281,7 +287,17 @@ fn is_id_create_context(words: &[String]) -> bool {
 fn is_bool_local_flag(name: &str) -> bool {
     matches!(
         name,
-        "enabled" | "auto-install" | "auto-start" | "all" | "wait" | "secure" | "unread"
+        "enabled"
+            | "auto-install"
+            | "auto-start"
+            | "all"
+            | "wait"
+            | "secure"
+            | "unread"
+            | "is-public"
+            | "is-agent"
+            | "e2ee"
+            | "attachments-allowed"
     )
 }
 
