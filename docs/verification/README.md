@@ -2339,6 +2339,55 @@ Rustls-first and unchanged. The dependency audit showed no OpenSSL or
 `native-tls`; it only reported existing Rustls/ring and approved bundled
 SQLite build surfaces.
 
+## 2026-05-15 Workspace v0->v1 Local Apply Composition Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_import_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli upgrade::migration_v0_to_v1 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededImportsLegacyWorkspace|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestLoadLegacySettingsRejectsSplitServiceURLs' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added `apply_workspace_v0_to_v1_local_state` as a focused composition helper
+  for the local portions of Go `workspaceV0ToV1Migration.Apply`.
+- Preserved local Go ordering: config branch first, legacy identity/SQLite
+  import second, target schema ensure when the target database exists, and
+  resolved config/path refresh when legacy identities were imported.
+- Covered the resolved-context refresh path from legacy settings: runtime mode,
+  service base URL, DID domain, derived ANP endpoint/DID, and path refresh.
+- Covered the final target schema ensure branch directly with an existing empty
+  target database and no legacy SQLite import path.
+- Preserved the intentional boundary that `Migration::apply` itself still
+  returns the deferred execution error and `context.warnings` is untouched
+  because automatic k1->e1 DID replacement is not translated in this slice.
+
+Boundary note: this slice still does not wire v0->v1 `Apply` into the default
+Migration implementation, does not call automatic k1->e1 DID replacement, and
+does not enable full `UpgradeIfNeeded` phase execution, journal phase writes,
+backup/rollback, meta stamping, or legacy skill/listener cleanup.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses existing config, identity, store, and refresh helpers. It does not
+introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
+service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
+policy remains Rustls-first and unchanged. The dependency audit showed no
+OpenSSL or `native-tls`; it only reported existing Rustls/ring and approved
+bundled SQLite build surfaces.
+
 ## 2026-05-14 Workspace SQLite Migration Helpers Slice
 
 Local Rust and Go reference verification:

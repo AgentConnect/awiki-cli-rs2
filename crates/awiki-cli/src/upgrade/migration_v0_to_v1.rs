@@ -177,6 +177,32 @@ pub fn apply_workspace_v0_to_v1_legacy_imports_optional(
     Ok(imported_legacy)
 }
 
+pub fn apply_workspace_v0_to_v1_local_state(
+    context: &mut Context,
+) -> Result<identity::types::ImportResult, MigrationError> {
+    apply_workspace_v0_to_v1_local_state_optional(Some(context))
+}
+
+pub fn apply_workspace_v0_to_v1_local_state_optional(
+    context: Option<&mut Context>,
+) -> Result<identity::types::ImportResult, MigrationError> {
+    let context = context.ok_or_else(|| {
+        MigrationError::Message("workspace upgrade requires a resolved config".to_string())
+    })?;
+    apply_workspace_v0_to_v1_config(context)?;
+    let imported_legacy = apply_workspace_v0_to_v1_legacy_imports(context)?;
+    if fsutil::file_exists(&context.paths.database_file) {
+        ensure_target_store_schema(&context.resolved.paths)?;
+    }
+    if !imported_legacy.imported.is_empty() {
+        let refreshed = refresh_resolved_config(&context.resolved)
+            .map_err(|err| MigrationError::Message(err.to_string()))?;
+        context.resolved = refreshed;
+        context.paths = super::resolve_paths(&context.resolved);
+    }
+    Ok(imported_legacy)
+}
+
 pub fn validate_workspace_v0_to_v1(context: &Context) -> Result<(), MigrationError> {
     validate_workspace_v0_to_v1_optional(Some(context))
 }

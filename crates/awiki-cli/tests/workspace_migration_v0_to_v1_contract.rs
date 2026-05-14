@@ -647,6 +647,138 @@ fn workspace_v0_to_v1_legacy_imports_keep_go_guards() {
     );
 }
 
+#[test]
+fn workspace_v0_to_v1_local_state_applies_config_imports_and_refreshes_context() {
+    let workspace = TempDir::new("workspace-v0-v1-local-state").expect("temp workspace");
+    let mut resolved = test_resolved(workspace.path());
+    resolved.anp_service_endpoint.clear();
+    resolved.anp_service_did.clear();
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::create_dir_all(Path::new(&paths.legacy_settings_path).parent().unwrap())
+        .expect("create legacy settings dir");
+    std::fs::write(
+        &paths.legacy_settings_path,
+        r#"{"user_service_url":"https://local.example/","molt_message_url":"https://local.example/","did_domain":"tenant.local","message_transport":{"receive_mode":"websocket"}}"#,
+    )
+    .expect("write legacy settings");
+    seed_flat_legacy_identity(&resolved, "legacy", "did:wba:example.test:user:e1_legacy");
+    seed_current_legacy_db_message(
+        &resolved,
+        "legacy-msg",
+        "did:wba:example.test:user:e1_legacy",
+        "legacy",
+    );
+    let mut context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = false;
+        detection.has_legacy = true;
+        detection.legacy_identity_exists = true;
+        detection.legacy_database_exists = true;
+        detection.legacy_settings_exists = true;
+    });
+
+    let imported =
+        upgrade::apply_workspace_v0_to_v1_local_state(&mut context).expect("apply local state");
+
+    assert_eq!(imported.imported.len(), 1);
+    assert_eq!(context.resolved.runtime_mode, "websocket");
+    assert_eq!(context.resolved.service_base_url, "https://local.example");
+    assert_eq!(context.resolved.did_domain, "tenant.local");
+    assert_eq!(
+        context.resolved.anp_service_endpoint,
+        "https://local.example/anp-im/rpc"
+    );
+    assert_eq!(context.resolved.anp_service_did, "did:wba:local.example");
+    assert_eq!(
+        context.paths.config_file,
+        upgrade::resolve_paths(&context.resolved).config_file
+    );
+    assert!(
+        context.warnings.is_empty(),
+        "local helper must not run DID replacement warnings"
+    );
+    let text = std::fs::read_to_string(&resolved.paths.config_file).expect("read config");
+    assert_contains(&text, "schema_version: 1\n");
+    assert_contains(&text, "  service_base_url: https://local.example\n");
+    let target = store::open_read_only(&resolved.paths.database_file).expect("open target db");
+    assert_eq!(
+        store::current_schema_version(&target).expect("schema version"),
+        store::SCHEMA_VERSION
+    );
+    let content: String = target
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id = ?1 AND owner_did = ?2",
+            rusqlite::params!["legacy-msg", "did:wba:example.test:user:e1_legacy"],
+            |row| row.get(0),
+        )
+        .expect("imported legacy message");
+    assert_eq!(content, "legacy hello");
+}
+
+#[test]
+fn workspace_v0_to_v1_local_state_ensures_existing_target_schema_without_legacy_db() {
+    let workspace = TempDir::new("workspace-v0-v1-local-state-ensure").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    std::fs::create_dir_all(Path::new(&resolved.paths.database_file).parent().unwrap())
+        .expect("create data dir");
+    drop(rusqlite::Connection::open(&resolved.paths.database_file).expect("create empty db"));
+    let mut context = context_with_detection(&resolved, |detection| {
+        detection.config_exists = false;
+        detection.has_workspace = false;
+        detection.has_legacy = false;
+    });
+
+    let imported = upgrade::apply_workspace_v0_to_v1_local_state(&mut context)
+        .expect("ensure existing target schema");
+
+    assert!(imported.imported.is_empty());
+    let target = store::open_read_only(&resolved.paths.database_file).expect("open target db");
+    assert_eq!(
+        store::current_schema_version(&target).expect("schema version"),
+        store::SCHEMA_VERSION
+    );
+    assert_table_exists(&target, "messages");
+}
+
+#[test]
+fn workspace_v0_to_v1_local_state_keeps_guards_and_does_not_replace_apply_boundary() {
+    let missing = upgrade::apply_workspace_v0_to_v1_local_state_optional(None)
+        .expect_err("missing context should match Go guard");
+    assert_eq!(
+        missing.to_string(),
+        "workspace upgrade requires a resolved config"
+    );
+
+    let workspace =
+        TempDir::new("workspace-v0-v1-local-state-missing-inspection").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let mut missing_inspection_context = upgrade::new_context(&resolved, "1.2.3");
+    let missing_inspection =
+        upgrade::apply_workspace_v0_to_v1_local_state(&mut missing_inspection_context)
+            .expect_err("missing inspection should fail");
+    assert_eq!(
+        missing_inspection.to_string(),
+        "workspace upgrade inspection is required"
+    );
+
+    let workspace =
+        TempDir::new("workspace-v0-v1-local-state-apply-boundary").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let mut context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = false;
+        detection.has_legacy = false;
+    });
+    upgrade::apply_workspace_v0_to_v1_local_state(&mut context).expect("empty local state apply");
+    let upgrader = upgrade::new_default_upgrader();
+    let plan = upgrader.plan(0, 1).expect("v0 to v1 plan");
+    let apply_err = plan[0]
+        .apply(&mut context)
+        .expect_err("migration apply wiring should remain deferred");
+    assert_eq!(
+        apply_err.to_string(),
+        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+    );
+}
+
 fn test_resolved(root: &Path) -> config::Resolved {
     config::Resolved {
         paths: config::Paths {

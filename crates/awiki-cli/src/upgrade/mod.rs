@@ -17,6 +17,7 @@ pub use meta::{load_meta, save_meta, MetaError};
 pub use migration_v0_to_v1::{
     apply_workspace_v0_to_v1_config, apply_workspace_v0_to_v1_config_optional,
     apply_workspace_v0_to_v1_legacy_imports, apply_workspace_v0_to_v1_legacy_imports_optional,
+    apply_workspace_v0_to_v1_local_state, apply_workspace_v0_to_v1_local_state_optional,
     ensure_target_store_schema, refresh_resolved_config, refresh_resolved_config_optional,
     validate_sqlite_health, RefreshResolvedConfigError, SQLiteHealthError,
 };
