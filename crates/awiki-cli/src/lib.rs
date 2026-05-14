@@ -1,4 +1,6 @@
+pub mod anpsdk;
 pub mod app;
+pub mod authsdk;
 pub mod buildinfo;
 pub mod cli;
 pub mod cmdmeta;

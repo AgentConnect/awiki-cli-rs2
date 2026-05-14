@@ -2,6 +2,45 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Authsdk Local Token Session Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/authsdk -run 'TestCaptureTokenPersistsOnlyConfiguredScopes|TestCaptureTokenStillAcceptsLegacyAuthorizationResponseHeader' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Adds a narrow Rust `anpsdk` facade for the Go ANP module path/version and the
+  DID-WBA auth types needed by the first session slice.
+- Translates the local bearer token scope and persistence behavior from Go
+  `internal/authsdk/session.go`: remembered hostname scopes, bearer seeding,
+  token capture from `Authentication-Info`, legacy `Authorization: Bearer`
+  response compatibility, current-JWT updates only for persistent scopes,
+  persistent callback invocation, persistent-scope token clearing, 401 retry
+  policy delegation, and Go-shaped HTTP/RPC error strings.
+
+Boundary note: this slice intentionally does not implement service transport,
+`Headers`, `ChallengeHeaders`, `DoJSONRPC`, `EnsureJWT`, `DoJSON`,
+non-dry-run `id refresh-token`, real identity-store JWT persistence, or the full
+Go `internal/anpsdk/registry.go` alias surface. Those remain in later
+authsdk/Rustls service slices.
+
+No dependency was added. The code reuses the existing local `../anp/rust`
+dependency with `default-features = false`; it does not enable ANP `network`,
+add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, or bundled
+OpenSSL. TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-15 Workspace UpgradeIfNeeded Local V0 To V1 Apply Wiring Slice
 
 Local Rust and Go reference verification:
