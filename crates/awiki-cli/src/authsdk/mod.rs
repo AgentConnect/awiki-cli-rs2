@@ -3,6 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
+mod wire;
+
+pub use wire::{
+    build_json_rpc_payload, decode_json_rpc_response, decode_json_rpc_response_optional,
+    decode_plain_json_response, flatten_header_values, http_status_error, JsonRpcResponseError,
+    CONTENT_TYPE_JSON, JSON_RPC_ID, JSON_RPC_VERSION,
+};
+
 pub type PersistToken = Box<dyn FnMut(&str) -> anyhow::Result<()> + 'static>;
 
 pub struct Session {
@@ -68,6 +76,32 @@ impl Session {
         &self.jwt_token
     }
 
+    pub fn ensure_jwt_from_result(
+        &mut self,
+        request_url: &str,
+        result: &serde_json::Value,
+    ) -> anyhow::Result<String> {
+        self.remember_scope(request_url);
+        if let Some(token) = result
+            .get("access_token")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+        {
+            self.set_bearer(request_url, token);
+            self.jwt_token = token.to_string();
+            if let Some(persist_token) = self.persist_token.as_mut() {
+                let _ = persist_token(token);
+            }
+            return Ok(self.jwt_token.clone());
+        }
+        let token = self.jwt_token.trim();
+        if !token.is_empty() {
+            return Ok(token.to_string());
+        }
+        anyhow::bail!("did-auth get_me succeeded but no access token was returned")
+    }
+
     pub fn capture_token(
         &mut self,
         server_url: &str,
@@ -99,6 +133,10 @@ impl Session {
     fn is_persistent_scope(&self, server_url: &str) -> bool {
         self.persistent.contains(&auth_scope(server_url))
     }
+}
+
+pub fn auth_json_headers() -> BTreeMap<String, String> {
+    BTreeMap::from([("Content-Type".to_string(), CONTENT_TYPE_JSON.to_string())])
 }
 
 pub fn auth_scope(server_url: &str) -> String {
