@@ -14,6 +14,7 @@ use std::path::Path;
 mod group_e2ee_handlers;
 mod group_handlers;
 mod mail_handlers;
+mod page_handlers;
 mod runtime_handlers;
 mod update_handlers;
 
@@ -510,33 +511,6 @@ impl App {
                 }
             }),
             "Dry run: message send planned",
-            Vec::new(),
-        )
-    }
-
-    pub fn run_page_create(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("page create"));
-        }
-        self.render_success(
-            "awiki-cli page create",
-            &resolved,
-            json!({
-                "plan": {
-                        "action": "page.create",
-                        "identity": self.globals.identity,
-                        "rpc_endpoint": "/content/rpc",
-                        "rpc_method": "create",
-                        "request": {
-                        "slug": command.flags.get("slug").cloned().unwrap_or_default(),
-                        "title": command.flags.get("title").cloned().unwrap_or_default(),
-                        "body_bytes": command.flags.get("markdown").map(|v| v.len()).unwrap_or_default(),
-                        "visibility": command.flags.get("visibility").cloned().unwrap_or_else(|| "public".to_string()),
-                    }
-                }
-            }),
-            "Dry run: page create planned",
             Vec::new(),
         )
     }
