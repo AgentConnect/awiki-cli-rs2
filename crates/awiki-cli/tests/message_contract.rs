@@ -1,13 +1,19 @@
-use awiki_cli::identity::types::StoredIdentity;
+use anp::proof::{
+    build_im_content_digest, build_signed_request_object, canonicalize_signed_request_object,
+    verify_rfc9421_origin_proof, Rfc9421OriginProofVerificationOptions,
+};
+use awiki_cli::identity::generate_identity;
+use awiki_cli::identity::types::{GeneratedIdentity, StoredIdentity};
 use awiki_cli::message::{
     attachment_manifest_content_type, build_attachment_create_slot_rpc_params,
     build_attachment_download_ticket_rpc_params, build_attachment_manifest,
     build_direct_text_payload, build_history_rpc_params, build_inbox_rpc_params,
-    build_mark_read_rpc_params, content_type_for_message_type, find_attachment_selection,
-    manifest_content_string, select_attachment_rpc_service_from_document,
+    build_mark_read_rpc_params, build_origin_proof, content_type_for_message_type,
+    find_attachment_selection, manifest_content_string, origin_auth_value,
+    select_attachment_rpc_service_from_document, verification_method_id_from_document,
     websocket_cache_fallback_warning, websocket_http_fallback_warning, AttachmentCreateSlotResult,
     AttachmentSelection, HistoryRequest, InboxRequest, MarkReadRequest, MessageError,
-    PreparedAttachment,
+    PreparedAttachment, ORIGIN_PROOF_SCHEME,
 };
 use serde_json::{json, Value};
 
@@ -91,6 +97,123 @@ fn direct_text_payload_and_message_type_content_match_go_contracts() {
         .as_str()
         .unwrap()
         .starts_with("msg-"));
+}
+
+#[test]
+fn origin_proof_matches_rfc9421_contract_and_uses_auth_verification_method() {
+    let generated =
+        generate_identity("awiki.ai", "", "").expect("generated identity should be valid");
+    let record = generated_record("default", &generated);
+    let payload = build_direct_text_payload(
+        &generated.did,
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        "hello",
+        "text/plain",
+    )
+    .expect("direct payload");
+
+    let key_id =
+        verification_method_id_from_document(record.did_document.as_ref().expect("did document"))
+            .expect("verification method id");
+    assert_eq!(
+        key_id,
+        generated.did_document["authentication"][0]
+            .as_str()
+            .expect("authentication method")
+    );
+
+    let origin_proof = build_origin_proof(&record, &payload).expect("origin proof");
+    let auth = origin_auth_value(&origin_proof);
+    assert_eq!(auth["scheme"], ORIGIN_PROOF_SCHEME);
+    assert!(auth["origin_proof"]["contentDigest"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha-256=:"));
+    assert!(auth["origin_proof"]["signatureInput"]
+        .as_str()
+        .unwrap()
+        .contains("\"@method\""));
+    assert!(auth["origin_proof"]["signatureInput"]
+        .as_str()
+        .unwrap()
+        .contains("\"@target-uri\""));
+    assert!(auth["origin_proof"]["signatureInput"]
+        .as_str()
+        .unwrap()
+        .contains("\"content-digest\""));
+    assert!(auth["origin_proof"]["signature"]
+        .as_str()
+        .unwrap()
+        .starts_with("sig1=:"));
+
+    let signed_request = build_signed_request_object(&payload.method, &payload.meta, &payload.body)
+        .expect("signed request");
+    let canonical = canonicalize_signed_request_object(&signed_request).expect("canonical");
+    assert_eq!(
+        origin_proof.content_digest,
+        build_im_content_digest(&canonical)
+    );
+    verify_rfc9421_origin_proof(
+        &origin_proof,
+        &payload.method,
+        &payload.meta,
+        &payload.body,
+        Rfc9421OriginProofVerificationOptions {
+            did_document: record.did_document.clone(),
+            expected_signer_did: Some(generated.did.clone()),
+            ..Rfc9421OriginProofVerificationOptions::default()
+        },
+    )
+    .expect("origin proof verifies against did document");
+}
+
+#[test]
+fn origin_proof_reports_missing_verification_method_like_go_contract() {
+    let generated =
+        generate_identity("awiki.ai", "", "").expect("generated identity should be valid");
+    let mut record = generated_record("broken", &generated);
+    record.did_document = Some(json!({ "id": generated.did }));
+    let payload = build_direct_text_payload(
+        &generated.did,
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        "hello",
+        "text/plain",
+    )
+    .expect("direct payload");
+
+    let error = build_origin_proof(&record, &payload).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "identity broken is missing an authentication verification method"
+    );
+
+    let fallback = json!({
+        "verificationMethod": [{
+            "id": "did:wba:awiki.ai:user:alice:e1#key-1"
+        }]
+    });
+    assert_eq!(
+        verification_method_id_from_document(&fallback).as_deref(),
+        Some("did:wba:awiki.ai:user:alice:e1#key-1")
+    );
+
+    let empty_auth_takes_precedence = json!({
+        "authentication": [""],
+        "verificationMethod": [{
+            "id": "did:wba:awiki.ai:user:alice:e1#key-1"
+        }]
+    });
+    assert_eq!(
+        verification_method_id_from_document(&empty_auth_takes_precedence).as_deref(),
+        Some("")
+    );
+    let mut empty_auth_record = generated_record("empty-auth", &generated);
+    empty_auth_record.did_document = Some(empty_auth_takes_precedence);
+    let error = build_origin_proof(&empty_auth_record, &payload).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "identity empty-auth is missing an authentication verification method"
+    );
 }
 
 #[test]
@@ -257,6 +380,18 @@ fn websocket_fallback_warnings_use_readable_transport_details() {
 fn record(did: &str) -> StoredIdentity {
     StoredIdentity {
         did: did.to_string(),
+        ..StoredIdentity::default()
+    }
+}
+
+fn generated_record(identity_name: &str, generated: &GeneratedIdentity) -> StoredIdentity {
+    StoredIdentity {
+        identity_name: identity_name.to_string(),
+        did: generated.did.clone(),
+        unique_id: generated.unique_id.clone(),
+        did_document: Some(generated.did_document.clone()),
+        key1_private_pem: generated.key1_private_pem.clone(),
+        key1_public_pem: generated.key1_public_pem.clone(),
         ..StoredIdentity::default()
     }
 }

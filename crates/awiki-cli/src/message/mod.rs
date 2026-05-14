@@ -1,4 +1,5 @@
 mod attachment;
+mod proof;
 mod service_discovery;
 mod types;
 mod warnings;
@@ -10,6 +11,10 @@ pub use attachment::{
     build_attachment_manifest, find_attachment_selection, manifest_content_string,
     AttachmentCommitObjectResult, AttachmentCreateSlotResult, AttachmentSelection,
     PreparedAttachment,
+};
+pub use proof::{
+    build_origin_proof, load_private_key_material, origin_auth_value,
+    verification_method_id_from_document, ORIGIN_PROOF_SCHEME,
 };
 pub use service_discovery::{
     select_attachment_rpc_service_from_document, DiscoveredAttachmentService,
