@@ -2,6 +2,52 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Workspace UpgradeIfNeeded Local V0 To V1 Apply Wiring Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestLoadLegacySettingsRejectsSplitServiceURLs|TestAcquireFileLock|TestCreateBackupCopiesWorkspaceState' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Wires the already translated local v0->v1 apply composition into the default
+  `Migration::apply` implementation.
+- Lets `UpgradeIfNeeded` run local v0->v1 config/schema/import work and then
+  continue into v1->v2 cleanup before stopping at the still-deferred v2->v3
+  DID replacement boundary.
+- Adds if-needed coverage for Go's legacy `config.json` migration path:
+  legacy config is converted to canonical `config.yaml`, removed, journaled,
+  and meta-stamped through v1->v2.
+- Keeps imported legacy k1 identities at the explicit v0->v1 deferred boundary
+  because Go immediately performs service-backed k1->e1 DID replacement after
+  importing them.
+- Preserves the existing backup reuse and lock-release behavior while the
+  migration loop advances past v0->v1.
+
+Boundary note: this slice does not implement service-backed k1->e1 DID
+replacement for imported legacy identities, v2->v3 existing-workspace DID
+replacement, rollback, or full awiki-system-test migration acceptance.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+reuses existing local config, identity, bundled SQLite import/schema, journal,
+backup, and lock helpers. It does not introduce HTTP/TLS, OpenSSL,
+`native-tls`, WebSocket, authsdk session, platform service-manager,
+filesystem-copy, file-lock crate, or new SQLite dependencies. TLS policy remains
+Rustls-first and unchanged.
+
 ## 2026-05-15 Workspace UpgradeIfNeeded Journal Phase Loop Slice
 
 Local Rust and Go reference verification:

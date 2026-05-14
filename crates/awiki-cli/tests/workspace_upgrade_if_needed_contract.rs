@@ -127,8 +127,9 @@ fn workspace_upgrade_if_needed_reports_newer_workspace_like_go() {
 }
 
 #[test]
-fn workspace_upgrade_if_needed_defers_real_migration_execution_boundary() {
-    let workspace = TempDir::new("workspace-upgrade-if-needed-deferred").expect("temp workspace");
+fn workspace_upgrade_if_needed_applies_local_v0_to_v1_and_v1_to_v2_before_v2_to_v3() {
+    let workspace =
+        TempDir::new("workspace-upgrade-if-needed-v0-v1-local").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
     let paths = upgrade::resolve_paths(&resolved);
     std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
@@ -137,26 +138,26 @@ fn workspace_upgrade_if_needed_defers_real_migration_execution_boundary() {
     let mut context = upgrade::new_context(&resolved, "1.2.3");
     let err = upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect_err("legacy/current-version-zero migration remains deferred");
+        .expect_err("v2 to v3 replacement remains deferred");
     assert_eq!(
         err.to_string(),
-        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
     );
     assert!(
         Path::new(&paths.lock_path).exists(),
-        "lock anchor should be created before deferring real migration execution"
+        "lock anchor should be created before migration execution"
     );
     let lock = read_upgrade_lock_metadata(Path::new(&paths.lock_path));
     assert_eq!(lock["lock_scheme"], "os_file_lock_v1");
     assert_eq!(lock["app_version"], "1.2.3");
 
     let guard = upgrade::acquire_file_lock(&paths.lock_path, "1.2.4")
-        .expect("upgrade_if_needed should release the OS lock on return");
+        .expect("upgrade_if_needed should release the OS lock on deferred v2 to v3");
     guard.release().expect("release lock");
 
     assert!(
         !context.backup_dir.is_empty(),
-        "backup dir should be captured before migration phase deferral"
+        "backup dir should be captured during migration execution"
     );
     let backup = PathBuf::from(&context.backup_dir);
     assert_eq!(
@@ -173,21 +174,61 @@ fn workspace_upgrade_if_needed_defers_real_migration_execution_boundary() {
         "{\"legacy\":true}\n"
     );
 
+    let meta = upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .expect("meta saved after v1 to v2");
+    assert_eq!(meta.workspace_schema_version, 2);
+    assert_eq!(meta.app_version, "1.2.3");
+    assert_eq!(meta.last_backup_dir, context.backup_dir);
+
     let journal = upgrade::load_journal(&paths.journal_path)
         .expect("load deferred journal")
-        .expect("journal remains after failed migration apply");
-    assert_eq!(journal.from_version, 0);
-    assert_eq!(journal.to_version, 1);
+        .expect("journal remains after deferred v2 to v3 apply");
+    assert_eq!(journal.from_version, 2);
+    assert_eq!(journal.to_version, 3);
     assert_eq!(
         journal.current_step,
-        "workspace_0_to_1_bootstrap_local_state_upgrade"
+        "workspace_2_to_3_replace_existing_k1_handle_dids"
     );
     assert_eq!(journal.phase, "applying");
     assert_eq!(journal.backup_dir, context.backup_dir);
     assert_eq!(journal.app_version, "1.2.3");
-    assert!(upgrade::load_meta(&paths.meta_path)
+}
+
+#[test]
+fn workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop() {
+    let workspace =
+        TempDir::new("workspace-upgrade-if-needed-legacy-config").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(
+        &paths.legacy_config_file,
+        r#"{"schema_version":1,"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
+    )
+    .expect("write legacy config");
+
+    let mut context = upgrade::new_context(&resolved, "1.2.7");
+    let err = upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect_err("v2 to v3 replacement remains deferred after local migration");
+    assert_eq!(
+        err.to_string(),
+        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
+    );
+
+    assert!(
+        !Path::new(&paths.legacy_config_file).exists(),
+        "legacy config should be removed after v0 to v1 local apply"
+    );
+    let config = std::fs::read_to_string(&paths.config_file).expect("read migrated config");
+    assert_contains(&config, "schema_version: 1\n");
+    assert_contains(&config, "  mode: http\n");
+    assert_contains(&config, "  service_base_url: https://legacy.example\n");
+    assert_contains(&config, "  did_domain: legacy.example\n");
+    let meta = upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .is_none());
+        .expect("meta after v1 to v2");
+    assert_eq!(meta.workspace_schema_version, 2);
 }
 
 #[test]
@@ -218,10 +259,10 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
     let mut context = upgrade::new_context(&resolved, "1.2.4");
     let err = upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect_err("real migration still deferred");
+        .expect_err("v2 to v3 replacement remains deferred");
     assert_eq!(
         err.to_string(),
-        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
     );
     assert_eq!(context.backup_dir, path_string(&existing_backup));
     assert_eq!(
@@ -241,8 +282,52 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
         .expect("load journal")
         .expect("journal remains after deferred migration apply");
     assert_eq!(journal.upgrade_id, "upgrade-existing");
+    assert_eq!(journal.from_version, 2);
+    assert_eq!(journal.to_version, 3);
+    assert_eq!(
+        journal.current_step,
+        "workspace_2_to_3_replace_existing_k1_handle_dids"
+    );
     assert_eq!(journal.phase, "applying");
     assert_eq!(journal.backup_dir, path_string(&existing_backup));
+}
+
+#[test]
+fn workspace_upgrade_if_needed_defers_v0_to_v1_when_imported_k1_replacement_is_required() {
+    let workspace =
+        TempDir::new("workspace-upgrade-if-needed-k1-deferred").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::create_dir_all(Path::new(&paths.legacy_credentials_dir))
+        .expect("create legacy credentials dir");
+    std::fs::write(
+        Path::new(&paths.legacy_credentials_dir).join("legacy.json"),
+        r#"{"did":"did:wba:example.test:user:k1_legacy","unique_id":"k1_legacy","name":"Legacy User","handle":"legacy","jwt_token":"legacy-token","private_key_pem":"private","public_key_pem":"public","did_document":{"id":"did:wba:example.test:user:k1_legacy"}}"#,
+    )
+    .expect("write legacy identity");
+
+    let mut context = upgrade::new_context(&resolved, "1.2.5");
+    let err = upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect_err("imported k1 replacement remains deferred");
+    assert_eq!(
+        err.to_string(),
+        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+    );
+
+    let journal = upgrade::load_journal(&paths.journal_path)
+        .expect("load deferred journal")
+        .expect("journal remains after deferred v0 to v1 apply");
+    assert_eq!(journal.from_version, 0);
+    assert_eq!(journal.to_version, 1);
+    assert_eq!(
+        journal.current_step,
+        "workspace_0_to_1_bootstrap_local_state_upgrade"
+    );
+    assert_eq!(journal.phase, "applying");
+    assert!(upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .is_none());
 }
 
 #[test]
@@ -409,6 +494,13 @@ fn test_resolved(root: &Path) -> config::Resolved {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn assert_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected config to contain {needle:?}, got:\n{haystack}"
+    );
 }
 
 fn read_upgrade_lock_metadata(path: &Path) -> Value {

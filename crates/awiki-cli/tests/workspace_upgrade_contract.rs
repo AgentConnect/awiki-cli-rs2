@@ -321,11 +321,19 @@ fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
 
     let apply_err = plan[0]
         .apply(&mut context)
-        .expect_err("migration execution remains deferred in this slice");
+        .expect_err("v0 to v1 apply still requires captured inspection");
     assert_eq!(
         apply_err.to_string(),
-        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+        "workspace upgrade inspection is required"
     );
+    context.inspection = Some(upgrade::Inspection {
+        paths: context.paths.clone(),
+        detection: upgrade::Detection::default(),
+        ..Default::default()
+    });
+    plan[0]
+        .apply(&mut context)
+        .expect("v0 to v1 local apply is wired for non-legacy local state");
     plan[0]
         .validate(&context)
         .expect("first migration validation is wired");

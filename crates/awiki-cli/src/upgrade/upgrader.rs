@@ -494,6 +494,17 @@ impl Migration for WorkspaceMigration {
     }
 
     fn apply(&self, context: &mut Context) -> Result<(), MigrationError> {
+        if self.from == 0 && self.to == 1 {
+            let imported = migration_v0_to_v1::apply_workspace_v0_to_v1_local_state(context)?;
+            if imported
+                .imported
+                .iter()
+                .any(|summary| is_k1_did(&summary.did))
+            {
+                return Err(MigrationError::ExecutionDeferred { name: self.name });
+            }
+            return Ok(());
+        }
         if self.from == 1 && self.to == 2 {
             return migration_v1_to_v2::apply_workspace_v1_to_v2_cleanup(context);
         }
@@ -509,6 +520,14 @@ impl Migration for WorkspaceMigration {
         }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
+}
+
+fn is_k1_did(did: &str) -> bool {
+    did.rsplit(':')
+        .next()
+        .unwrap_or(did)
+        .trim()
+        .starts_with("k1_")
 }
 
 #[cfg(test)]

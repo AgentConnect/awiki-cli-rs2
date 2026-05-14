@@ -740,7 +740,7 @@ fn workspace_v0_to_v1_local_state_ensures_existing_target_schema_without_legacy_
 }
 
 #[test]
-fn workspace_v0_to_v1_local_state_keeps_guards_and_does_not_replace_apply_boundary() {
+fn workspace_v0_to_v1_local_state_keeps_guards_and_defers_k1_replacement_boundary() {
     let missing = upgrade::apply_workspace_v0_to_v1_local_state_optional(None)
         .expect_err("missing context should match Go guard");
     assert_eq!(
@@ -770,9 +770,26 @@ fn workspace_v0_to_v1_local_state_keeps_guards_and_does_not_replace_apply_bounda
     upgrade::apply_workspace_v0_to_v1_local_state(&mut context).expect("empty local state apply");
     let upgrader = upgrade::new_default_upgrader();
     let plan = upgrader.plan(0, 1).expect("v0 to v1 plan");
-    let apply_err = plan[0]
+    plan[0]
         .apply(&mut context)
-        .expect_err("migration apply wiring should remain deferred");
+        .expect("empty local v0 to v1 migration should now be wired");
+
+    let k1_workspace =
+        TempDir::new("workspace-v0-v1-local-state-k1-deferred").expect("temp workspace");
+    let k1_resolved = test_resolved(k1_workspace.path());
+    seed_flat_legacy_identity(
+        &k1_resolved,
+        "legacy",
+        "did:wba:example.test:user:k1_legacy",
+    );
+    let mut k1_context = context_with_detection(&k1_resolved, |detection| {
+        detection.has_workspace = false;
+        detection.has_legacy = true;
+        detection.legacy_identity_exists = true;
+    });
+    let apply_err = plan[0]
+        .apply(&mut k1_context)
+        .expect_err("imported k1 replacement still requires a dedicated service lane");
     assert_eq!(
         apply_err.to_string(),
         "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
