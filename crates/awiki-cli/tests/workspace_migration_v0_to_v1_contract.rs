@@ -313,6 +313,153 @@ fn workspace_v0_to_v1_validate_requires_imported_identity_after_legacy_detection
     );
 }
 
+#[test]
+fn workspace_v0_to_v1_config_apply_stamps_existing_config_schema() {
+    let workspace = TempDir::new("workspace-v0-v1-config-existing").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(
+        &resolved.paths.config_file,
+        concat!(
+            "schema_version: 0\n",
+            "runtime:\n",
+            "  mode: http\n",
+            "services:\n",
+            "  service_base_url: https://platform.example\n",
+            "  did_domain: old.example\n",
+        ),
+    )
+    .expect("write old config");
+    std::fs::write(
+        &paths.legacy_config_file,
+        r#"{"services":{"service_base_url":"https://legacy.example"}}"#,
+    )
+    .expect("write lower-priority legacy config");
+    std::fs::create_dir_all(Path::new(&paths.legacy_settings_path).parent().unwrap())
+        .expect("create lower-priority settings dir");
+    std::fs::write(
+        &paths.legacy_settings_path,
+        r#"{"user_service_url":"https://settings.example","molt_message_url":"https://settings.example","did_domain":"settings.example"}"#,
+    )
+    .expect("write lower-priority settings");
+    let context = context_with_detection(&resolved, |detection| {
+        detection.config_exists = true;
+        detection.legacy_config_exists = true;
+        detection.legacy_settings_exists = true;
+        detection.has_workspace = true;
+    });
+
+    upgrade::apply_workspace_v0_to_v1_config(&context).expect("apply config branch");
+
+    let text = std::fs::read_to_string(&resolved.paths.config_file).expect("read config");
+    assert_contains(&text, "schema_version: 1\n");
+    assert_contains(&text, "  mode: http\n");
+    assert_contains(&text, "  service_base_url: https://platform.example\n");
+    assert_contains(&text, "  did_domain: old.example\n");
+    assert!(
+        Path::new(&paths.legacy_config_file).exists(),
+        "legacy config should remain when canonical config wins precedence"
+    );
+}
+
+#[test]
+fn workspace_v0_to_v1_config_apply_migrates_legacy_config_json_and_removes_it() {
+    let workspace = TempDir::new("workspace-v0-v1-config-json").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(
+        &paths.legacy_config_file,
+        r#"{"schema_version":1,"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
+    )
+    .expect("write legacy config json");
+    let context = context_with_detection(&resolved, |detection| {
+        detection.legacy_config_exists = true;
+        detection.has_legacy = true;
+    });
+
+    upgrade::apply_workspace_v0_to_v1_config(&context).expect("migrate legacy config");
+
+    assert!(
+        !Path::new(&paths.legacy_config_file).exists(),
+        "legacy config should be removed after migration"
+    );
+    let text = std::fs::read_to_string(&resolved.paths.config_file).expect("read config");
+    assert_contains(&text, "schema_version: 1\n");
+    assert_contains(&text, "  mode: http\n");
+    assert_contains(&text, "  service_base_url: https://legacy.example\n");
+    assert_contains(&text, "  did_domain: legacy.example\n");
+}
+
+#[test]
+fn workspace_v0_to_v1_config_apply_imports_legacy_settings_when_no_workspace() {
+    let workspace = TempDir::new("workspace-v0-v1-config-settings").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::create_dir_all(Path::new(&paths.legacy_settings_path).parent().unwrap())
+        .expect("create legacy settings dir");
+    std::fs::write(
+        &paths.legacy_settings_path,
+        r#"{"user_service_url":"https://settings.example/","molt_message_url":"https://settings.example/","did_domain":"tenant.example","message_transport":{"receive_mode":"websocket"}}"#,
+    )
+    .expect("write legacy settings");
+    let context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = false;
+        detection.has_legacy = true;
+        detection.legacy_settings_exists = true;
+    });
+
+    upgrade::apply_workspace_v0_to_v1_config(&context).expect("migrate legacy settings");
+
+    let text = std::fs::read_to_string(&resolved.paths.config_file).expect("read config");
+    assert_contains(&text, "schema_version: 1\n");
+    assert_contains(&text, "  mode: websocket\n");
+    assert_contains(&text, "  service_base_url: https://settings.example\n");
+    assert_contains(&text, "  did_domain: tenant.example\n");
+    assert!(
+        !Path::new(&resolved.paths.database_file).exists(),
+        "config migration must not create sqlite database"
+    );
+    assert!(
+        !Path::new(&resolved.paths.identity_dir)
+            .join("index.json")
+            .exists(),
+        "config migration must not create identity index"
+    );
+}
+
+#[test]
+fn workspace_v0_to_v1_config_apply_keeps_go_guard_and_split_settings_error() {
+    let missing = upgrade::apply_workspace_v0_to_v1_config_optional(None)
+        .expect_err("missing context should match Go guard");
+    assert_eq!(
+        missing.to_string(),
+        "workspace upgrade requires a resolved config"
+    );
+
+    let workspace = TempDir::new("workspace-v0-v1-config-settings-split").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::create_dir_all(Path::new(&paths.legacy_settings_path).parent().unwrap())
+        .expect("create legacy settings dir");
+    std::fs::write(
+        &paths.legacy_settings_path,
+        r#"{"user_service_url":"https://auth.example","molt_message_url":"https://message.example","did_domain":"tenant.example"}"#,
+    )
+    .expect("write split legacy settings");
+    let context = context_with_detection(&resolved, |detection| {
+        detection.has_workspace = false;
+        detection.legacy_settings_exists = true;
+    });
+
+    let err =
+        upgrade::apply_workspace_v0_to_v1_config(&context).expect_err("split settings should fail");
+
+    assert_eq!(
+        err.to_string(),
+        "legacy settings use different user_service_url (https://auth.example) and molt_message_url (https://message.example); automatic migration to one service_base_url is not supported"
+    );
+}
+
 fn test_resolved(root: &Path) -> config::Resolved {
     config::Resolved {
         paths: config::Paths {
@@ -380,6 +527,28 @@ fn validate_first_migration(context: &upgrade::Context) -> Result<(), upgrade::M
     let upgrader = upgrade::new_default_upgrader();
     let plan = upgrader.plan(0, 1).expect("v0 to v1 plan");
     plan[0].validate(context)
+}
+
+fn context_with_detection(
+    resolved: &config::Resolved,
+    mutate: impl FnOnce(&mut upgrade::Detection),
+) -> upgrade::Context {
+    let mut context = upgrade::new_context(resolved, "1.2.3");
+    let mut detection = upgrade::Detection::default();
+    mutate(&mut detection);
+    context.inspection = Some(upgrade::Inspection {
+        paths: context.paths.clone(),
+        detection,
+        ..Default::default()
+    });
+    context
+}
+
+fn assert_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected config to contain {needle:?}, got:\n{haystack}"
+    );
 }
 
 struct TempDir {

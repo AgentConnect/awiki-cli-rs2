@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod write;
+pub(crate) use write::write_file_config_raw;
 pub use write::{
     clear_hermes_secret, clear_openclaw_token, configure_hermes_host_notify,
     ensure_config_schema_version, read_openclaw_token, set_hermes_secret, set_openclaw_token,
@@ -120,7 +121,7 @@ pub struct Resolved {
     pub sources: BTreeMap<String, ValueSource>,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct FileConfig {
     #[serde(default)]
     pub schema_version: i64,
@@ -136,13 +137,13 @@ pub struct FileConfig {
     pub update: UpdateConfig,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct IdentityConfig {
     #[serde(default)]
     pub active: String,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct RuntimeConfig {
     #[serde(default)]
     pub mode: String,
@@ -154,14 +155,14 @@ pub struct RuntimeConfig {
     pub host_notify: HostNotifyConfig,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ListenerConfig {
     pub enabled: Option<bool>,
     pub auto_install: Option<bool>,
     pub auto_start: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct HostNotifyConfig {
     pub enabled: Option<bool>,
     #[serde(default)]
@@ -176,7 +177,7 @@ pub struct HostNotifyConfig {
     pub webhook: LegacyWebhookConfig,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct OpenClawConfig {
     #[serde(default)]
     pub hook_url: String,
@@ -188,7 +189,7 @@ pub struct OpenClawConfig {
     pub token: String,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct HermesConfig {
     #[serde(default)]
     pub notify_url: String,
@@ -198,7 +199,7 @@ pub struct HermesConfig {
     pub secret: String,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct LegacyWebhookConfig {
     #[serde(default)]
     pub notify_url: String,
@@ -206,14 +207,14 @@ pub struct LegacyWebhookConfig {
     pub secret: String,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct OutputConfig {
     #[serde(default)]
     pub format: String,
     pub no_color: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ServicesConfig {
     #[serde(default)]
     pub service_base_url: String,
@@ -229,7 +230,7 @@ pub struct ServicesConfig {
     pub mail_service_url: String,
 }
 
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct UpdateConfig {
     #[serde(default)]
     pub disable_strict_version: bool,
@@ -422,7 +423,10 @@ pub fn snapshot(resolved: &Resolved) -> Value {
 
 pub(crate) fn read_file_config(path: &str) -> (FileConfig, bool, String) {
     match fs::read_to_string(path) {
-        Ok(raw) => (parse_file_config(&raw), true, String::new()),
+        Ok(raw) => match parse_file_config(&raw) {
+            Ok(config) => (config, true, String::new()),
+            Err(err) => (FileConfig::default(), true, err),
+        },
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             (FileConfig::default(), false, String::new())
         }
@@ -430,7 +434,11 @@ pub(crate) fn read_file_config(path: &str) -> (FileConfig, bool, String) {
     }
 }
 
-fn parse_file_config(raw: &str) -> FileConfig {
+fn parse_file_config(raw: &str) -> Result<FileConfig, String> {
+    let trimmed = raw.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return serde_json::from_str::<FileConfig>(raw).map_err(|err| err.to_string());
+    }
     let mut config = FileConfig::default();
     let mut stack: Vec<(usize, String)> = Vec::new();
     for line in raw.lines() {
@@ -456,7 +464,7 @@ fn parse_file_config(raw: &str) -> FileConfig {
         path.push(key);
         set_config_value(&mut config, &path, &value);
     }
-    config
+    Ok(config)
 }
 
 fn strip_yaml_scalar(value: &str) -> String {

@@ -2185,6 +2185,53 @@ HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
 service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
 policy remains Rustls-first and unchanged.
 
+## 2026-05-15 Workspace v0->v1 Config Apply Branch Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --test config_writer_contract --locked
+cargo +1.79.0 test -p awiki-cli upgrade::migration_v0_to_v1 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededImportsLegacyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestLoadLegacySettingsRejectsSplitServiceURLs' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added `apply_workspace_v0_to_v1_config` for the pure config-file branch of
+  Go `workspaceV0ToV1Migration.Apply`.
+- Preserved existing-config behavior: if canonical `config.yaml` exists, stamp
+  it to current config schema version while preserving existing values.
+- Preserved legacy-config behavior: parse legacy `config.json`, stamp schema,
+  write canonical `config.yaml`, and remove the legacy file.
+- Preserved legacy-settings behavior for no-workspace legacy installs: load
+  `settings.json`, write runtime mode, service base URL, and DID domain into a
+  minimal canonical config file.
+- Extended the existing `FileConfig` parser to accept JSON input for legacy
+  `config.json`, matching Go's YAML parser accepting JSON, without adding a
+  YAML dependency.
+
+Boundary note: this slice still does not wire v0->v1 `Apply` into the default
+Migration implementation, does not import identities, does not import legacy
+SQLite rows, does not ensure target store schema, does not refresh resolved
+config after import, does not call k1->e1 replacement RPC, and does not enable
+full `UpgradeIfNeeded` phase execution.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses existing config writer plumbing and existing `serde_json`. It does not
+introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
+service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
+policy remains Rustls-first and unchanged.
+
 ## 2026-05-15 Workspace v0->v1 Validation Wiring Slice
 
 Local Rust and Go reference verification:

@@ -88,6 +88,58 @@ pub fn ensure_target_store_schema(paths: &config::Paths) -> store::StoreResult<(
     store::ensure_schema(&connection)
 }
 
+pub fn apply_workspace_v0_to_v1_config(context: &Context) -> Result<(), MigrationError> {
+    apply_workspace_v0_to_v1_config_optional(Some(context))
+}
+
+pub fn apply_workspace_v0_to_v1_config_optional(
+    context: Option<&Context>,
+) -> Result<(), MigrationError> {
+    let context = context.ok_or_else(|| {
+        MigrationError::Message("workspace upgrade requires a resolved config".to_string())
+    })?;
+    let inspection = context.inspection.as_ref().ok_or_else(|| {
+        MigrationError::Message("workspace upgrade inspection is required".to_string())
+    })?;
+    let detection = &inspection.detection;
+    if detection.config_exists {
+        config::ensure_config_schema_version(&context.paths.config_file)
+            .map_err(|err| MigrationError::Message(err.to_string()))?;
+    } else if detection.legacy_config_exists {
+        let (mut legacy_file_config, _, error) =
+            config::read_file_config(&context.paths.legacy_config_file);
+        if !error.is_empty() {
+            return Err(MigrationError::Message(error));
+        }
+        legacy_file_config.schema_version = config::CONFIG_SCHEMA_VERSION;
+        config::write_file_config_raw(&context.paths.config_file, legacy_file_config)
+            .map_err(|err| MigrationError::Message(err.to_string()))?;
+        match std::fs::remove_file(&context.paths.legacy_config_file) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(MigrationError::Message(format!(
+                    "remove legacy config: {err}"
+                )));
+            }
+        }
+    } else if !detection.has_workspace && detection.legacy_settings_exists {
+        let legacy_config =
+            super::settings::load_legacy_settings(&context.paths.legacy_settings_path)
+                .map_err(|err| MigrationError::Message(err.to_string()))?;
+        let mut file_config = config::FileConfig {
+            schema_version: config::CONFIG_SCHEMA_VERSION,
+            ..Default::default()
+        };
+        file_config.runtime.mode = legacy_config.runtime_mode;
+        file_config.services.service_base_url = legacy_config.service_base_url;
+        file_config.services.did_domain = legacy_config.did_domain;
+        config::write_file_config_raw(&context.paths.config_file, file_config)
+            .map_err(|err| MigrationError::Message(err.to_string()))?;
+    }
+    Ok(())
+}
+
 pub fn validate_workspace_v0_to_v1(context: &Context) -> Result<(), MigrationError> {
     validate_workspace_v0_to_v1_optional(Some(context))
 }

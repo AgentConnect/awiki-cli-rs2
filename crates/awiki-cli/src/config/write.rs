@@ -60,6 +60,11 @@ pub fn write_file_config(path: &str, resolved: &Resolved) -> anyhow::Result<()> 
     write_raw_file_config(path, &config)
 }
 
+pub(crate) fn write_file_config_raw(path: &str, mut config: FileConfig) -> anyhow::Result<()> {
+    config.schema_version = CONFIG_SCHEMA_VERSION;
+    write_raw_file_config(path, &config)
+}
+
 pub fn ensure_config_schema_version(path: &str) -> anyhow::Result<()> {
     let (mut config, exists, error) = read_file_config(path);
     if !error.is_empty() {
