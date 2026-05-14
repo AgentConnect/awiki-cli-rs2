@@ -1,4 +1,6 @@
 use crate::config;
+use crate::store;
+use rusqlite::Connection;
 use std::fmt;
 
 #[derive(Debug)]
@@ -76,4 +78,119 @@ pub fn refresh_resolved_config_optional(
         refreshed.ca_bundle = file_config.services.ca_bundle.trim().to_string();
     }
     Ok(refreshed)
+}
+
+pub fn ensure_target_store_schema(paths: &config::Paths) -> store::StoreResult<()> {
+    let connection = store::open(paths)?;
+    store::ensure_schema(&connection)
+}
+
+pub fn validate_sqlite_health(connection: &Connection) -> Result<(), SQLiteHealthError> {
+    expect_single_sqlite_ok(connection, "PRAGMA integrity_check")?;
+    expect_sqlite_no_rows(connection, "PRAGMA foreign_key_check")
+}
+
+#[derive(Debug)]
+pub enum SQLiteHealthError {
+    Execute {
+        query: &'static str,
+        source: rusqlite::Error,
+    },
+    NoRows {
+        query: &'static str,
+    },
+    Scan {
+        query: &'static str,
+        source: rusqlite::Error,
+    },
+    Failed {
+        query: &'static str,
+        result: String,
+    },
+    ForeignKeyViolations {
+        query: &'static str,
+    },
+}
+
+impl fmt::Display for SQLiteHealthError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Execute { query, source } => write!(f, "execute {query}: {source}"),
+            Self::NoRows { query } => write!(f, "{query} returned no rows"),
+            Self::Scan { query, source } => write!(f, "scan {query} result: {source}"),
+            Self::Failed { query, result } => write!(f, "{query} failed: {result}"),
+            Self::ForeignKeyViolations { query } => {
+                write!(f, "{query} returned foreign key violations")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SQLiteHealthError {}
+
+fn expect_single_sqlite_ok(
+    connection: &Connection,
+    query: &'static str,
+) -> Result<(), SQLiteHealthError> {
+    let mut statement = connection
+        .prepare(query)
+        .map_err(|source| SQLiteHealthError::Execute { query, source })?;
+    let mut rows = statement
+        .query([])
+        .map_err(|source| SQLiteHealthError::Execute { query, source })?;
+    let Some(row) = rows
+        .next()
+        .map_err(|source| SQLiteHealthError::Execute { query, source })?
+    else {
+        return Err(SQLiteHealthError::NoRows { query });
+    };
+    let result: String = row
+        .get(0)
+        .map_err(|source| SQLiteHealthError::Scan { query, source })?;
+    let trimmed = result.trim();
+    if !trimmed.eq_ignore_ascii_case("ok") && !trimmed.is_empty() {
+        return Err(SQLiteHealthError::Failed { query, result });
+    }
+    Ok(())
+}
+
+fn expect_sqlite_no_rows(
+    connection: &Connection,
+    query: &'static str,
+) -> Result<(), SQLiteHealthError> {
+    let mut statement = connection
+        .prepare(query)
+        .map_err(|source| SQLiteHealthError::Execute { query, source })?;
+    let mut rows = statement
+        .query([])
+        .map_err(|source| SQLiteHealthError::Execute { query, source })?;
+    if rows
+        .next()
+        .map_err(|source| SQLiteHealthError::Execute { query, source })?
+        .is_some()
+    {
+        return Err(SQLiteHealthError::ForeignKeyViolations { query });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expect_single_sqlite_ok_matches_go_result_rules() {
+        let connection = Connection::open_in_memory().expect("open memory db");
+        expect_single_sqlite_ok(&connection, "SELECT 'ok'").expect("ok result");
+        expect_single_sqlite_ok(&connection, "SELECT ' OK '").expect("case-insensitive ok");
+        expect_single_sqlite_ok(&connection, "SELECT ''").expect("empty result is accepted");
+
+        let err = expect_single_sqlite_ok(&connection, "SELECT 'not ok'")
+            .expect_err("non-ok should fail");
+        assert_eq!(err.to_string(), "SELECT 'not ok' failed: not ok");
+
+        let err = expect_single_sqlite_ok(&connection, "SELECT 1 WHERE 0")
+            .expect_err("no rows should fail");
+        assert_eq!(err.to_string(), "SELECT 1 WHERE 0 returned no rows");
+    }
 }

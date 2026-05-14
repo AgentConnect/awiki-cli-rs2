@@ -2185,6 +2185,56 @@ HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
 service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
 policy remains Rustls-first and unchanged.
 
+## 2026-05-14 Workspace SQLite Migration Helpers Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli upgrade::migration_v0_to_v1 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+```
+
+Result: passed. Go has no dedicated unit test for the private SQLite helper
+functions; source parity is checked against
+`internal/upgrade/migration_v0_to_v1.go`, and store schema version behavior is
+validated through existing Go store tests.
+
+Scope:
+
+- Extended `crates/awiki-cli/src/upgrade/migration_v0_to_v1.rs` with
+  `ensure_target_store_schema`, `validate_sqlite_health`, and Go-equivalent SQL
+  expectation helpers.
+- Preserved Go `ensureTargetStoreSchema` behavior by opening the target store
+  through the existing writable store path and delegating to `store::ensure_schema`.
+- Preserved store schema version errors for newer and too-old SQLite databases.
+- Preserved Go `validateSQLiteHealth` behavior: run `PRAGMA integrity_check`,
+  accept case-insensitive trimmed `ok` and an empty trimmed result, then require
+  `PRAGMA foreign_key_check` to return no rows.
+- Preserved Go helper error text for non-ok integrity and foreign-key
+  violations.
+- Split v0->v1 helper tests into
+  `crates/awiki-cli/tests/workspace_migration_v0_to_v1_contract.rs` so
+  `workspace_upgrade_contract.rs` stays under the 1200-line default file-size
+  limit.
+
+Boundary note: this slice still does not wire v0->v1 `Apply`/`Validate` into
+`Migration`, run `UpgradeIfNeeded` phase execution, write/remove legacy config
+files, import identities, import legacy SQLite rows, call identity replacement
+RPC, or clean legacy skill/listener artifacts.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses the already-approved `rusqlite + bundled` SQLite path and existing store
+APIs. It does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket,
+authsdk session, platform service-manager, filesystem-copy, file-lock, or new
+SQLite dependencies. TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-14 Workspace Refresh Resolved Config Helper Slice
 
 Local Rust and Go reference verification:
