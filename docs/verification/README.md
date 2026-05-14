@@ -1315,6 +1315,62 @@ helpers are not yet wired into a public non-dry-run CLI command. The later
 identity/authsdk integration slice must add subprocess coverage when
 `id replace-did` begins calling these store helpers.
 
+## 2026-05-14 Store Recover Merge Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test store_recover_merge_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/store
+```
+
+Result: passed. The focused Rust contract has 6 tests covering missing
+database soft no-op, existing empty database schema creation,
+target-owner-only migration and old-owner E2EE cleanup, conflict merge
+algebra, current contact-handle normalization by latest timestamp then DID
+DESC, and global `relationship_events.event_id` conflict behavior. Full Rust
+crate tests, structure check, binary build, Go `internal/store` tests, and
+dependency audit also passed.
+
+Scope:
+
+- Added split recover-merge modules for Go `internal/store/recover_merge.go`:
+  `store/recover_merge.rs` for orchestration, `store/recover_merge/records.rs`
+  for row normalization and merge algebra, and `store/recover_merge/sql.rs`
+  for query/upsert/count/delete helpers.
+- Preserved Go's zero-count map shape for store merge and E2EE cleanup, and
+  the missing-DB no-op that does not open or create SQLite.
+- Preserved Go's existing-empty-DB behavior for this path: open the DB,
+  `ensure_schema`, then perform a zero-count transaction.
+- Preserved normalized old-owner filtering: trim, skip empty owners, skip the
+  normalized new owner, and deduplicate while preserving input order.
+- Preserved one transaction across message/contact/binding normalization,
+  current-handle normalization, relationship event, group, member, and E2EE
+  cleanup steps.
+- Preserved table-specific merge behavior: message self-DID/thread remapping,
+  incoming non-empty strings, max sequence/counts, later or earlier timestamp
+  rules, bool OR, contact handle normalization, global relationship event
+  conflict on `event_id`, group/member self-DID remapping, and old-owner E2EE
+  delete-only cleanup.
+
+Structure note: the Rust implementation is split into 354/794/617-line source
+files, all under the default 1200-line limit. No file-size exception is needed.
+
+Boundary note: this is a store-only slice. It does not wire non-dry-run
+`id recover`, `id replace-did`, authsdk recovery/replace calls, or any public
+CLI execution path. `awiki-system-test` is therefore deferred until the CLI
+slice calls this helper as a subprocess-observable behavior.
+
+No dependency was added. The slice continues to use the previously approved
+`rusqlite + bundled` SQLite lane and does not introduce HTTP/TLS, OpenSSL,
+`native-tls`, or platform service-manager dependencies. TLS policy remains
+Rustls-first; bundled OpenSSL is not used or newly approved by this slice.
+
 ## 2026-05-14 Store Legacy Import Row-Normalization Slice
 
 Local Rust and Go reference verification:
