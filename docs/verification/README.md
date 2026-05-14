@@ -1888,3 +1888,48 @@ uses existing serde/std helpers, the existing durable directory sync helper, the
 existing identity/store modules, and the already-approved `rusqlite + bundled`
 SQLite lane. It does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket,
 authsdk session, platform service-manager, or file-lock dependencies.
+
+## 2026-05-14 Workspace Legacy Settings Parser Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run TestLoadLegacySettingsRejectsSplitServiceURLs -count=1
+```
+
+Result: passed. The focused Rust tests cover Go-compatible legacy settings JSON
+parsing, service URL normalization, split `user_service_url`/`molt_message_url`
+rejection, DID domain pass-through, websocket receive-mode detection, HTTP
+fallback for non-websocket modes, and Go-style read/parse error prefixes. The Go
+focused test remains the source of truth for the split service URL rejection
+message.
+
+Scope:
+
+- Added `crates/awiki-cli/src/upgrade/settings.rs` for the pure
+  `loadLegacySettings` helper in Go `internal/upgrade/migration_v0_to_v1.go`.
+- Preserved Go's JSON field names: `user_service_url`, `molt_message_url`,
+  `did_domain`, and `message_transport.receive_mode`.
+- Preserved Go's URL behavior: trim and strip trailing slashes before comparing
+  service URLs; choose `user_service_url` when present, otherwise
+  `molt_message_url`.
+- Preserved Go's runtime-mode behavior: `websocket` only when receive mode is
+  `websocket` case-insensitively; all other values map to `http`.
+
+Boundary note: this slice only parses legacy settings. It does not write the
+canonical `config.yaml`, run `workspaceV0ToV1Migration`, import legacy
+identities, import legacy SQLite, call DID replacement/auth/service RPCs,
+create backups, acquire upgrade locks, write journal phases, or clean legacy
+skill/listener artifacts.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses existing serde JSON support and the existing config base-URL normalizer. It
+does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session,
+platform service-manager, backup, or file-lock dependencies.

@@ -162,6 +162,69 @@ fn workspace_upgrade_meta_and_journal_accept_go_zero_value_json() {
 }
 
 #[test]
+fn workspace_upgrade_legacy_settings_parser_matches_go_contract() {
+    let settings = upgrade::parse_legacy_settings(
+        br#"{
+          "user_service_url": " https://awiki.example/// ",
+          "molt_message_url": "https://awiki.example",
+          "did_domain": "tenant.example",
+          "message_transport": {"receive_mode": "WebSocket"}
+        }"#,
+    )
+    .expect("parse same-url settings");
+    assert_eq!(settings.service_base_url, "https://awiki.example");
+    assert_eq!(settings.did_domain, "tenant.example");
+    assert_eq!(settings.runtime_mode, "websocket");
+
+    let message_only = upgrade::parse_legacy_settings(
+        br#"{
+          "molt_message_url": "https://message.example/",
+          "did_domain": "message.example",
+          "message_transport": {"receive_mode": "poll"}
+        }"#,
+    )
+    .expect("parse message-only settings");
+    assert_eq!(message_only.service_base_url, "https://message.example");
+    assert_eq!(message_only.runtime_mode, "http");
+
+    let split = upgrade::parse_legacy_settings(
+        br#"{
+          "user_service_url": "https://auth.example",
+          "molt_message_url": "https://message.example",
+          "did_domain": "tenant.example",
+          "message_transport": {"receive_mode": "websocket"}
+        }"#,
+    )
+    .expect_err("split service URLs should be rejected");
+    assert!(
+        split
+            .to_string()
+            .contains("automatic migration to one service_base_url is not supported"),
+        "unexpected split URL error: {split}"
+    );
+    assert!(split
+        .to_string()
+        .contains("user_service_url (https://auth.example)"));
+    assert!(split
+        .to_string()
+        .contains("molt_message_url (https://message.example)"));
+}
+
+#[test]
+fn workspace_upgrade_load_legacy_settings_wraps_io_and_parse_errors_like_go() {
+    let temp = TempDir::new("workspace-upgrade-settings-errors").expect("temp dir");
+    let missing = upgrade::load_legacy_settings(&path_string(&temp.path().join("missing.json")))
+        .expect_err("missing settings should fail");
+    assert!(missing.to_string().starts_with("read legacy settings:"));
+
+    let invalid = temp.path().join("settings.json");
+    std::fs::write(&invalid, "{not-json").expect("write invalid settings");
+    let err = upgrade::load_legacy_settings(&path_string(&invalid))
+        .expect_err("invalid settings should fail");
+    assert!(err.to_string().starts_with("parse legacy settings:"));
+}
+
+#[test]
 fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
     let workspace = TempDir::new("workspace-upgrade-doctor").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
