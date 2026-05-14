@@ -95,14 +95,14 @@ pub fn detect(resolved: &Resolved, meta: Option<&Meta>) -> Detection {
         ..Detection::default()
     };
 
-    detection.config_exists = file_exists(&paths.config_file);
+    detection.config_exists = super::fsutil::file_exists(&paths.config_file);
     if detection.config_exists {
         detection.config_schema_version = resolved.config_schema_version;
         if !resolved.config_error.trim().is_empty() {
             detection.config_error = resolved.config_error.clone();
         }
     }
-    detection.legacy_config_exists = file_exists(&paths.legacy_config_file);
+    detection.legacy_config_exists = super::fsutil::file_exists(&paths.legacy_config_file);
 
     let identity_index_path = Path::new(&paths.identity_dir).join(identity::types::INDEX_FILE_NAME);
     detection.identity_index_exists = identity_index_path.is_file();
@@ -114,7 +114,7 @@ pub fn detect(resolved: &Resolved, meta: Option<&Meta>) -> Detection {
         }
     }
 
-    detection.database_exists = file_exists(&paths.database_file);
+    detection.database_exists = super::fsutil::file_exists(&paths.database_file);
     if detection.database_exists {
         match store::open_read_only(&paths.database_file) {
             Ok(db) => match store::current_schema_version(&db) {
@@ -136,7 +136,7 @@ pub fn detect(resolved: &Resolved, meta: Option<&Meta>) -> Detection {
         Err(err) => detection.legacy_database_error = err.to_string(),
     }
 
-    detection.legacy_settings_exists = file_exists(&paths.legacy_settings_path);
+    detection.legacy_settings_exists = super::fsutil::file_exists(&paths.legacy_settings_path);
     detection.has_workspace = detection.config_exists
         || detection.legacy_config_exists
         || detection.identity_index_exists
@@ -158,8 +158,4 @@ pub fn detect(resolved: &Resolved, meta: Option<&Meta>) -> Detection {
     }
 
     detection
-}
-
-fn file_exists(path: &str) -> bool {
-    !path.trim().is_empty() && Path::new(path).is_file()
 }

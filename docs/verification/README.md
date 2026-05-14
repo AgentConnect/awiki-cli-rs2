@@ -1981,3 +1981,52 @@ source parity uses direct FFI for `LockFileEx`, `UnlockFileEx`, and
 validation pass. The slice does not introduce HTTP/TLS, OpenSSL, `native-tls`,
 WebSocket, authsdk session, platform service-manager, backup, or file-lock crate
 dependencies. TLS policy remains Rustls-first and unchanged.
+
+## 2026-05-14 Workspace Upgrade Fsutil Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli upgrade::fsutil --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestAcquireFileLock|TestLoadLegacySettingsRejectsSplitServiceURLs|TestUpgradeIfNeededSkipsEmptyWorkspace|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+Result: passed. There is no direct Go unit test for private `fsutil.go`
+helpers, so Rust adds focused module tests for the local helper contract and
+keeps Go focused upgrade tests as reference coverage for existing upgrade helper
+callers.
+
+Scope:
+
+- Added `crates/awiki-cli/src/upgrade/fsutil.rs` for Go
+  `internal/upgrade/fsutil.go`.
+- Moved the existing workspace meta/journal atomic writer out of `meta.rs` and
+  into the shared upgrade fsutil module.
+- Preserved Go path helper behavior: empty paths and wrong file types return
+  false.
+- Preserved Go atomic write behavior: create parent dir, same-directory
+  `.upgrade-*.tmp`, write/sync/close temp file, chmod temp file on Unix, rename,
+  remove temp file on failure, and sync the parent directory through
+  `durablefs`.
+- Preserved Go copy helper behavior for future backup execution: direct
+  truncate-and-copy file writes, destination parent creation, destination file
+  sync, missing tree source no-op, recursive tree copy, directory `0700`
+  creation, and Unix source file mode preservation.
+
+Boundary note: this slice does not implement `CreateBackup`,
+`backupSQLiteDatabase`, SQLite `VACUUM INTO`, rollback, journal phase handling,
+or full `UpgradeIfNeeded` execution. Those remain dedicated workspace migration
+slices.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses standard library filesystem APIs, serde JSON, and the existing `durablefs`
+helper. It does not introduce filesystem-copy crates, HTTP/TLS, OpenSSL,
+`native-tls`, WebSocket, authsdk session, platform service-manager, backup
+runtime execution, or file-lock dependencies.

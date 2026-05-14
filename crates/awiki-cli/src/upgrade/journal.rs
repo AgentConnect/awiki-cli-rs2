@@ -1,4 +1,3 @@
-use super::meta::write_atomic_file;
 use super::types::Journal;
 use std::fmt;
 use std::fs;
@@ -47,7 +46,7 @@ pub fn save_journal(path: &str, journal: &Journal) -> Result<(), JournalError> {
         return Err(JournalError::RequiredPath);
     }
     let raw = serde_json::to_vec_pretty(journal).map_err(JournalError::Marshal)?;
-    write_atomic_file(path, &raw, 0o600).map_err(JournalError::Write)
+    super::fsutil::write_atomic_file(path, &raw, 0o600).map_err(JournalError::Write)
 }
 
 pub fn clear_journal(path: &str) -> Result<(), JournalError> {

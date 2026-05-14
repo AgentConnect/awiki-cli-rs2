@@ -1,4 +1,5 @@
 mod detect;
+mod fsutil;
 mod journal;
 mod lock;
 mod meta;
