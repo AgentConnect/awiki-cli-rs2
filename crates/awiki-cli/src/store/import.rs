@@ -1,13 +1,20 @@
-use super::{current_schema_version, ensure_schema, open_read_only, query::query_rows};
+use super::{
+    current_schema_version, ensure_schema,
+    helpers::{
+        bool_to_int, default_bool_value, default_int64_ptr, default_string, generate_id,
+        make_thread_id, normalize_credential_name, normalize_metadata, normalize_optional_bool,
+        normalize_optional_float64, normalize_optional_int64, normalize_optional_string,
+        normalize_owner_did, now_utc,
+    },
+    open_read_only,
+    query::query_rows,
+};
 use super::{ImportReport, LegacyScan, StoreError, StoreResult};
 use crate::config::Paths;
 use rusqlite::{params, Connection, Transaction};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
 
 const IMPORT_TABLES: &[(&str, Importer)] = &[
     ("messages", import_messages),
@@ -950,7 +957,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
             normalize_optional_string(&record.role),
             default_string(record.status, "active"),
             normalize_optional_string(&record.joined_at),
-            normalize_optional_int64(record.sent_message_count.or(Some(0))),
+            normalize_optional_int64(default_int64_ptr(record.sent_message_count, Some(0))),
             default_string(record.last_synced_at, &now_utc()),
             normalize_metadata(&record.metadata),
             normalize_credential_name(&record.credential_name),
@@ -1009,21 +1016,6 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
         ],
     )?;
     Ok(event_id)
-}
-
-fn make_thread_id(my_did: &str, peer_did: &str, group_id: &str) -> String {
-    let group_id = group_id.trim();
-    if !group_id.is_empty() {
-        return format!("group:{group_id}");
-    }
-    let peer_did = peer_did.trim();
-    let my_did = my_did.trim();
-    if !peer_did.is_empty() {
-        let mut pair = [my_did.to_string(), peer_did.to_string()];
-        pair.sort();
-        return format!("dm:{}:{}", pair[0], pair[1]);
-    }
-    format!("dm:{my_did}:unknown")
 }
 
 fn is_missing_database_error(err: &StoreError) -> bool {
@@ -1122,76 +1114,4 @@ fn parse_i64_go_style(raw: &str) -> Option<i64> {
         break;
     }
     trimmed[..end].parse::<i64>().ok()
-}
-
-fn normalize_owner_did(value: &str) -> String {
-    value.trim().to_string()
-}
-
-fn normalize_credential_name(value: &str) -> String {
-    value.trim().to_string()
-}
-
-fn normalize_optional_string(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
-}
-
-fn normalize_optional_bool(value: Option<bool>) -> Option<i64> {
-    value.map(bool_to_int)
-}
-
-fn normalize_optional_int64(value: Option<i64>) -> Option<i64> {
-    value
-}
-
-fn normalize_optional_float64(value: Option<f64>) -> Option<f64> {
-    value
-}
-
-fn normalize_metadata(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
-}
-
-fn default_bool_value(value: Option<bool>) -> i64 {
-    value.map(bool_to_int).unwrap_or(0)
-}
-
-fn bool_to_int(value: bool) -> i64 {
-    if value {
-        1
-    } else {
-        0
-    }
-}
-
-fn default_string(value: String, fallback: &str) -> String {
-    if value.trim().is_empty() {
-        fallback.to_string()
-    } else {
-        value
-    }
-}
-
-fn now_utc() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
-fn generate_id() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("local-{nanos}")
 }

@@ -1216,6 +1216,51 @@ not the shared authsdk/service HTTP or WebSocket client. Broader mail, page,
 site, message, attachment, and group service transports still need dedicated
 Rustls-backed client decisions and service-backed tests.
 
+## 2026-05-14 Store Shared Helpers Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test store_helpers_contract --test store_import_contract --test store_rebind_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/store
+```
+
+Result: passed. The focused helper contract covers direct/group/unknown
+`MakeThreadID` behavior and UTC RFC3339 timestamp shape, and module-level unit
+tests cover Go second-precision timestamp formatting, normalization helpers,
+`defaultInt64Ptr`-style fallback behavior, and generated `local-<nanos>` IDs.
+The import and rebind contract tests were re-run because they are the current
+consumers of the extracted helpers. The Go reference `internal/store` tests
+passed and remain the parity source for the helper behavior.
+
+Scope:
+
+- Added a split `store/helpers.rs` module for the already-translated Go
+  `internal/store/helpers.go` primitives used by legacy import and rebind:
+  UTC timestamps, thread ID construction, owner/credential trimming, nullable
+  string/bool/int/float coercions, metadata trimming, bool/default helpers, and
+  generated `local-<nanos>` IDs.
+- Exported only `make_thread_id` and `now_utc` publicly because current tests
+  and later modules need those stable helper contracts outside the store module;
+  other helpers stay crate-internal through the `store::helpers` module.
+- Reduced `crates/awiki-cli/src/store/import.rs` from 1197 to 1117 lines and
+  kept `crates/awiki-cli/src/store/rebind.rs` small before starting the larger
+  recover-merge translation.
+
+No dependency was added. The slice continues to use the previously approved
+`rusqlite + bundled` SQLite lane and does not introduce HTTP/TLS, OpenSSL,
+`native-tls`, or platform service-manager dependencies.
+
+No `awiki-system-test` selector was run for this slice because these helpers
+are store internals and are not newly exposed through a public CLI path. The
+later CLI integration slice must use subprocess coverage when public commands
+begin exercising recover/replace store merge behavior.
+
 ## 2026-05-14 Store Rebind Slice
 
 Local Rust and Go reference verification:

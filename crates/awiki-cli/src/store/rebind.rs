@@ -1,4 +1,4 @@
-use super::{open, StoreResult};
+use super::{helpers::normalize_owner_did, open, StoreResult};
 use crate::config::Paths;
 use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
@@ -99,10 +99,6 @@ fn zero_counts(tables: &[&str]) -> BTreeMap<String, i64> {
         .iter()
         .map(|table| ((*table).to_string(), 0))
         .collect()
-}
-
-fn normalize_owner_did(value: &str) -> String {
-    value.trim().to_string()
 }
 
 fn store_file_exists(path: &str) -> bool {

@@ -1,3 +1,4 @@
+mod helpers;
 mod import;
 mod open;
 mod query;
@@ -5,6 +6,7 @@ mod rebind;
 mod schema;
 mod types;
 
+pub use helpers::{make_thread_id, now_utc};
 pub use import::{import_legacy_database, scan_legacy_database, LegacyOwnerLookup};
 pub use open::{open, open_read_only};
 pub use query::{execute_sql, list_notifications};
