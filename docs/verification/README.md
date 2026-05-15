@@ -1373,6 +1373,60 @@ slice reuses the existing Rustls-first authsdk transport and does not add
 `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL,
 YAML crates, platform service libraries, or ANP SDK network/default features.
 
+## 2026-05-16 Runtime Bridge Unix I/O Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/runtime -run 'TestResolveShortensLongSocketPath|TestResolveKeepsShortSocketPath|TestResolveDefaultsToWebSocketMode' -count=1
+cd ../awiki-cli && go test ./internal/message -run 'TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added Unix local bridge I/O parity on top of the existing endpoint helper:
+  `listen_bridge`, `bridge_health_probe`, private dial helper, and
+  `call_local_bridge`.
+- Preserved Go's `CallLocalBridge` sequence: websocket-mode validation, blank
+  socket-path validation, endpoint preparation, separate health-probe
+  connection, separate request connection, newline-delimited JSON request,
+  write/read deadlines from `transportcfg::resolve`, response JSON decode, empty
+  result map fallback, and `BridgeCallError` phase/display mapping for
+  `bridge_health_probe`, `bridge_dial`, `bridge_write`, and `bridge_read`.
+- Preserved Go's Unix `ListenBridge` behavior: parent-directory creation,
+  stale socket path removal, and Unix listener bind without adding a new
+  platform dependency.
+- Tightened bridge JSON shape parity so missing request/response fields and
+  `result:null` deserialize to Go-style zero values.
+- Added Unix-only contract tests for the two-connection probe/request flow,
+  failure response mapping, missing error details, invalid JSON decode errors,
+  missing health probe target, health-probe direct failure, and stale socket
+  replacement.
+
+Boundary note: Windows named-pipe I/O remains intentionally deferred; this slice
+keeps Windows endpoint validation/defaults but does not add a named-pipe crate or
+other platform library. Foreground WebSocket listener service execution,
+`handleBridgeRequest`, message service WS-proxy wiring, local bridge use from
+real CLI message commands, trace phase emission, and `awiki-system-test`
+foreground runtime acceptance are not claimed by this slice.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice stays within the standard library plus existing `serde_json`, `sha2`, and
+transport timeout helpers. It does not add OpenSSL, `native-tls`, bundled
+OpenSSL, WebSocket crates, `reqwest`, `hyper`, YAML crates, platform service
+libraries, Windows named-pipe crates, or new SQLite dependencies. TLS policy
+remains Rustls-first and unchanged.
+
 ## 2026-05-15 Runtime Bridge Endpoint Helper Slice
 
 Local Rust and Go reference verification:

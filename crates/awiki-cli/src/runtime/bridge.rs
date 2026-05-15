@@ -1,10 +1,20 @@
 use crate::config::{Paths, Resolved};
+use crate::transportcfg;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
-use std::fs;
+use std::fs::{self, DirBuilder};
+use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
+
+#[cfg(unix)]
+pub type BridgeListener = std::os::unix::net::UnixListener;
+
+#[cfg(not(unix))]
+#[derive(Debug)]
+pub struct BridgeListener;
 
 pub const MODE_HTTP: &str = "http";
 pub const MODE_WEBSOCKET: &str = "websocket";
@@ -12,16 +22,23 @@ pub const MAX_UNIX_SOCKET_PATH_BYTES: usize = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BridgeRequest {
+    #[serde(default)]
     pub method: String,
     #[serde(default)]
     pub params: Map<String, Value>,
+    #[serde(default)]
     pub identity_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BridgeResponse {
+    #[serde(default)]
     pub ok: bool,
-    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_result_map",
+        skip_serializing_if = "Map::is_empty"
+    )]
     pub result: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<BridgeError>,
@@ -31,6 +48,7 @@ pub struct BridgeResponse {
 pub struct BridgeError {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub code: String,
+    #[serde(default)]
     pub message: String,
 }
 
@@ -132,12 +150,11 @@ pub fn normalize_bridge_endpoint(path: &str) -> String {
 
 #[cfg(not(windows))]
 pub fn prepare_bridge_endpoint(path: &str) -> anyhow::Result<()> {
-    let parent = Path::new(path)
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("prepare websocket bridge socket dir: missing parent"))?;
-    if !parent.exists() {
-        fs::create_dir_all(parent)
-            .map_err(|err| anyhow::anyhow!("prepare websocket bridge socket dir: {err}"))?;
+    let parent = bridge_parent_dir(path);
+    let parent_existed = parent.exists();
+    create_bridge_dir(parent)
+        .map_err(|err| anyhow::anyhow!("prepare websocket bridge socket dir: {err}"))?;
+    if !parent_existed {
         set_dir_mode(parent, 0o700)?;
     }
     Ok(())
@@ -177,6 +194,189 @@ pub fn normalize_socket_path(path: &str) -> String {
 pub fn normalize_socket_path(path: &str) -> String {
     normalize_bridge_endpoint(path)
 }
+
+pub fn call_local_bridge(
+    request: BridgeRequest,
+    resolved: &Resolved,
+) -> anyhow::Result<Map<String, Value>> {
+    let bridge = super::resolve(resolved);
+    if bridge.mode != MODE_WEBSOCKET {
+        anyhow::bail!(
+            "runtime mode {} does not use the local websocket bridge",
+            bridge.mode
+        );
+    }
+    if bridge.socket_path.trim().is_empty() {
+        anyhow::bail!("runtime websocket bridge socket is not configured");
+    }
+    prepare_bridge_endpoint(&bridge.socket_path)?;
+    let timeout_config = transportcfg::resolve();
+    if let Err(err) = bridge_health_probe(
+        &bridge.socket_path,
+        timeout_config.bridge_health_probe_timeout,
+    ) {
+        return Err(BridgeCallError::new(
+            "bridge_health_probe",
+            "local websocket bridge unavailable",
+            &err.to_string(),
+        )
+        .into());
+    }
+    call_bridge_once(
+        &bridge.socket_path,
+        request,
+        timeout_config.bridge_dial_timeout,
+        timeout_config.bridge_write_timeout,
+        timeout_config.bridge_read_timeout,
+    )
+}
+
+#[cfg(unix)]
+pub fn listen_bridge(path: &str) -> anyhow::Result<BridgeListener> {
+    let parent = bridge_parent_dir(path);
+    let parent_existed = parent.exists();
+    create_bridge_dir(parent)?;
+    if !parent_existed {
+        set_dir_mode(parent, 0o700)?;
+    }
+    let _ = fs::remove_file(path);
+    std::os::unix::net::UnixListener::bind(path).map_err(|err| anyhow::anyhow!(err))
+}
+
+#[cfg(not(unix))]
+pub fn listen_bridge(_path: &str) -> anyhow::Result<BridgeListener> {
+    anyhow::bail!("windows local websocket bridge I/O is not implemented in Rust port")
+}
+
+#[cfg(unix)]
+pub fn bridge_health_probe(path: &str, timeout: Duration) -> anyhow::Result<()> {
+    let conn = dial_bridge(path, timeout)?;
+    drop(conn);
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn bridge_health_probe(_path: &str, _timeout: Duration) -> anyhow::Result<()> {
+    anyhow::bail!("windows local websocket bridge I/O is not implemented in Rust port")
+}
+
+#[cfg(unix)]
+fn call_bridge_once(
+    path: &str,
+    request: BridgeRequest,
+    dial_timeout: Duration,
+    write_timeout: Duration,
+    read_timeout: Duration,
+) -> anyhow::Result<Map<String, Value>> {
+    let mut conn = dial_bridge(path, dial_timeout).map_err(|err| {
+        BridgeCallError::new(
+            "bridge_dial",
+            "local websocket bridge unavailable",
+            &err.to_string(),
+        )
+    })?;
+    let payload = serde_json::to_vec(&request)?;
+    let _ = conn.set_write_timeout(Some(write_timeout));
+    if let Err(err) = conn.write_all(&[payload.as_slice(), b"\n"].concat()) {
+        return Err(BridgeCallError::new(
+            "bridge_write",
+            "write websocket bridge request",
+            &err.to_string(),
+        )
+        .into());
+    }
+    let _ = conn.set_read_timeout(Some(read_timeout));
+    let response: BridgeResponse = serde_json::from_reader(&mut conn).map_err(|err| {
+        BridgeCallError::new(
+            "bridge_read",
+            "decode websocket bridge response",
+            &err.to_string(),
+        )
+    })?;
+    if !response.ok {
+        if let Some(error) = response.error {
+            return Err(BridgeCallError::new("bridge_read", &error.message, "").into());
+        }
+        return Err(BridgeCallError::new(
+            "bridge_read",
+            "bridge returned failure without details",
+            "",
+        )
+        .into());
+    }
+    Ok(response.result)
+}
+
+#[cfg(not(unix))]
+fn call_bridge_once(
+    _path: &str,
+    _request: BridgeRequest,
+    _dial_timeout: Duration,
+    _write_timeout: Duration,
+    _read_timeout: Duration,
+) -> anyhow::Result<Map<String, Value>> {
+    Err(BridgeCallError::new(
+        "bridge_dial",
+        "local websocket bridge unavailable",
+        "windows local websocket bridge I/O is not implemented in Rust port",
+    )
+    .into())
+}
+
+#[cfg(unix)]
+fn dial_bridge(path: &str, timeout: Duration) -> io::Result<std::os::unix::net::UnixStream> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let path = path.to_string();
+    std::thread::spawn(move || {
+        let _ = sender.send(std::os::unix::net::UnixStream::connect(path));
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(io::Error::new(io::ErrorKind::TimedOut, "i/o timeout"))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "bridge dial worker disconnected",
+        )),
+    }
+}
+
+#[cfg(not(windows))]
+fn bridge_parent_dir(path: &str) -> &Path {
+    match Path::new(path).parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+#[cfg(windows)]
+fn bridge_parent_dir(_path: &str) -> &Path {
+    Path::new(".")
+}
+
+fn deserialize_result_map<'de, D>(deserializer: D) -> Result<Map<String, Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Map<String, Value>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn create_bridge_dir(path: &Path) -> io::Result<()> {
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    set_dir_builder_mode(&mut builder, 0o700);
+    builder.create(path)
+}
+
+#[cfg(unix)]
+fn set_dir_builder_mode(builder: &mut DirBuilder, mode: u32) {
+    use std::os::unix::fs::DirBuilderExt;
+    builder.mode(mode);
+}
+
+#[cfg(not(unix))]
+fn set_dir_builder_mode(_builder: &mut DirBuilder, _mode: u32) {}
 
 #[cfg(unix)]
 fn set_dir_mode(path: &Path, mode: u32) -> anyhow::Result<()> {

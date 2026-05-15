@@ -14,6 +14,12 @@ fn bridge_request_response_and_error_shapes_match_go_contract() {
     assert_eq!(request_json["identity_name"], "alice");
     assert_eq!(request_json["params"], serde_json::json!({}));
 
+    let empty_request: bridge::BridgeRequest =
+        serde_json::from_str("{}").expect("empty request shape");
+    assert_eq!(empty_request.method, "");
+    assert_eq!(empty_request.identity_name, "");
+    assert!(empty_request.params.is_empty());
+
     let response = bridge::BridgeResponse {
         ok: false,
         result: serde_json::Map::new(),
@@ -41,6 +47,23 @@ fn bridge_request_response_and_error_shapes_match_go_contract() {
         bridge::BridgeCallError::new("bridge_read", "bridge returned failure without details", "")
             .to_string(),
         "local websocket bridge request failed: bridge returned failure without details"
+    );
+
+    let null_result: bridge::BridgeResponse =
+        serde_json::from_str(r#"{"ok":true,"result":null}"#).expect("null result response");
+    assert!(null_result.result.is_empty());
+
+    let missing_ok: bridge::BridgeResponse =
+        serde_json::from_str(r#"{"result":{"count":1}}"#).expect("missing ok response");
+    assert!(!missing_ok.ok);
+    assert_eq!(missing_ok.result["count"], serde_json::json!(1));
+
+    let missing_message: bridge::BridgeResponse =
+        serde_json::from_str(r#"{"ok":false,"error":{"code":"failed"}}"#)
+            .expect("missing error message response");
+    assert_eq!(
+        missing_message.error.expect("bridge error").message,
+        String::new()
     );
 }
 
@@ -145,6 +168,192 @@ fn bridge_prepare_and_available_match_go_local_endpoint_helpers() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn call_local_bridge_uses_health_probe_then_request_connection() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let (_server, events) = spawn_two_connection_bridge_server(
+        &socket_path,
+        serde_json::json!({
+            "ok": true,
+            "result": {
+                "accepted": true,
+                "message_id": "msg-123",
+                "seq": 42
+            }
+        })
+        .to_string(),
+    );
+
+    let result = bridge::call_local_bridge(
+        sample_bridge_request(),
+        &test_resolved_with_socket(socket_path.to_str().expect("socket path")),
+    )
+    .expect("call local bridge");
+
+    assert_eq!(result.get("accepted"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        result.get("message_id"),
+        Some(&serde_json::json!("msg-123"))
+    );
+    assert_eq!(result.get("seq"), Some(&serde_json::json!(42)));
+
+    let event = events
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("health probe event");
+    assert!(matches!(event, BridgeServerEvent::ProbeAccepted));
+
+    let event = events
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("request event");
+    let BridgeServerEvent::Request(request_json) = event else {
+        panic!("second bridge connection should carry request JSON");
+    };
+    assert_eq!(request_json["method"], "direct.send");
+    assert_eq!(request_json["identity_name"], "alice");
+    assert_eq!(request_json["params"]["target"], "did:example:bob");
+    assert_eq!(request_json["params"]["text"], "hello over bridge");
+}
+
+#[cfg(unix)]
+#[test]
+fn call_local_bridge_failure_response_uses_bridge_error_message() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let (_server, _events) = spawn_two_connection_bridge_server(
+        &socket_path,
+        serde_json::json!({
+            "ok": false,
+            "error": {
+                "code": "session_missing",
+                "message": "websocket session is not connected for identity alice"
+            }
+        })
+        .to_string(),
+    );
+
+    let err = bridge::call_local_bridge(
+        sample_bridge_request(),
+        &test_resolved_with_socket(socket_path.to_str().expect("socket path")),
+    )
+    .expect_err("bridge error response should fail");
+
+    assert_bridge_call_error_phase(&err, "bridge_read");
+    assert_eq!(
+        err.to_string(),
+        "local websocket bridge request failed: websocket session is not connected for identity alice"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn call_local_bridge_failure_without_error_details_matches_go_message() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let (_server, _events) = spawn_two_connection_bridge_server(
+        &socket_path,
+        serde_json::json!({ "ok": false }).to_string(),
+    );
+
+    let err = bridge::call_local_bridge(
+        sample_bridge_request(),
+        &test_resolved_with_socket(socket_path.to_str().expect("socket path")),
+    )
+    .expect_err("bridge failure without error details should fail");
+
+    assert_bridge_call_error_phase(&err, "bridge_read");
+    assert_eq!(
+        err.to_string(),
+        "local websocket bridge request failed: bridge returned failure without details"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn call_local_bridge_invalid_json_response_reports_decode_error() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    let (_server, _events) =
+        spawn_two_connection_bridge_server(&socket_path, "not-json\n".to_string());
+
+    let err = bridge::call_local_bridge(
+        sample_bridge_request(),
+        &test_resolved_with_socket(socket_path.to_str().expect("socket path")),
+    )
+    .expect_err("invalid bridge response should fail");
+
+    assert_bridge_call_error_phase(&err, "bridge_read");
+    assert!(
+        err.to_string().starts_with(
+            "local websocket bridge request failed: decode websocket bridge response:"
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn call_local_bridge_wraps_unavailable_health_probe_like_go() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let socket_path = workspace.path().join("runtime").join("missing.sock");
+
+    let err = bridge::call_local_bridge(
+        sample_bridge_request(),
+        &test_resolved_with_socket(socket_path.to_str().expect("socket path")),
+    )
+    .expect_err("missing bridge should fail during health probe");
+
+    assert_bridge_call_error_phase(&err, "bridge_health_probe");
+    assert!(
+        err.to_string()
+            .contains("local websocket bridge request failed: local websocket bridge unavailable:"),
+        "unexpected error: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bridge_health_probe_reports_unavailable_unix_socket() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let socket_path = workspace.path().join("runtime").join("missing.sock");
+
+    let err = bridge::bridge_health_probe(
+        socket_path.to_str().expect("socket path"),
+        std::time::Duration::from_millis(25),
+    )
+    .expect_err("missing bridge socket should not pass health probe");
+
+    assert!(
+        !err.to_string().trim().is_empty(),
+        "health probe error should include the dial failure"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn listen_bridge_removes_stale_socket_path_before_binding() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
+    std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
+        .expect("create runtime dir");
+    std::fs::write(&socket_path, b"stale socket placeholder").expect("write stale path");
+    assert!(socket_path.exists());
+
+    let listener =
+        bridge::listen_bridge(socket_path.to_str().expect("socket path")).expect("listen bridge");
+
+    assert!(
+        bridge::bridge_health_probe(
+            socket_path.to_str().expect("socket path"),
+            std::time::Duration::from_millis(250),
+        )
+        .is_ok(),
+        "fresh listener should accept a health probe after replacing stale path"
+    );
+    drop(listener);
+}
+
 fn platform_default_endpoint(workspace_home_dir: &str, state_dir: &str) -> String {
     #[cfg(not(windows))]
     {
@@ -171,6 +380,123 @@ fn platform_default_endpoint(workspace_home_dir: &str, state_dir: &str) -> Strin
         let digest = Sha256::digest(workspace.as_bytes());
         format!(r"\\.\pipe\awiki-cli-{}", &format!("{digest:x}")[..16])
     }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+enum BridgeServerEvent {
+    ProbeAccepted,
+    Request(serde_json::Value),
+}
+
+#[cfg(unix)]
+fn spawn_two_connection_bridge_server(
+    socket_path: &std::path::Path,
+    response_line: String,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<BridgeServerEvent>,
+) {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
+        .expect("create socket parent");
+    let _ = std::fs::remove_file(socket_path);
+    let listener = UnixListener::bind(socket_path).expect("bind test bridge socket");
+    listener
+        .set_nonblocking(true)
+        .expect("set bridge listener nonblocking");
+    let (events_tx, events_rx) = std::sync::mpsc::channel();
+    let response_line = if response_line.ends_with('\n') {
+        response_line
+    } else {
+        format!("{response_line}\n")
+    };
+
+    let handle = std::thread::spawn(move || {
+        let (probe_stream, _) =
+            accept_unix_connection(&listener).expect("accept health probe connection");
+        let _ = events_tx.send(BridgeServerEvent::ProbeAccepted);
+        drop(probe_stream);
+
+        let (mut request_stream, _) =
+            accept_unix_connection(&listener).expect("accept bridge request connection");
+        request_stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("set request read timeout");
+        let mut request_line = String::new();
+        BufReader::new(request_stream.try_clone().expect("clone request stream"))
+            .read_line(&mut request_line)
+            .expect("read bridge request line");
+        let request_json =
+            serde_json::from_str(request_line.trim_end()).expect("decode bridge request json");
+        let _ = events_tx.send(BridgeServerEvent::Request(request_json));
+        request_stream
+            .write_all(response_line.as_bytes())
+            .expect("write bridge response");
+    });
+
+    (handle, events_rx)
+}
+
+#[cfg(unix)]
+fn accept_unix_connection(
+    listener: &std::os::unix::net::UnixListener,
+) -> std::io::Result<(
+    std::os::unix::net::UnixStream,
+    std::os::unix::net::SocketAddr,
+)> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match listener.accept() {
+            Ok(accepted) => return Ok(accepted),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timed out accepting bridge test connection",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn sample_bridge_request() -> bridge::BridgeRequest {
+    let mut params = serde_json::Map::new();
+    params.insert("target".to_string(), serde_json::json!("did:example:bob"));
+    params.insert("text".to_string(), serde_json::json!("hello over bridge"));
+    bridge::BridgeRequest {
+        method: "direct.send".to_string(),
+        params,
+        identity_name: "alice".to_string(),
+    }
+}
+
+#[cfg(unix)]
+fn test_resolved_with_socket(socket_path: &str) -> Resolved {
+    let mut paths = test_paths();
+    if let Some(parent) = std::path::Path::new(socket_path).parent() {
+        paths.state_dir = parent.to_string_lossy().into_owned();
+    }
+    Resolved {
+        runtime_mode: "websocket".to_string(),
+        runtime_socket_path: socket_path.to_string(),
+        paths,
+        ..test_resolved()
+    }
+}
+
+#[cfg(unix)]
+fn assert_bridge_call_error_phase(err: &anyhow::Error, phase: &str) {
+    let bridge_err = err
+        .downcast_ref::<bridge::BridgeCallError>()
+        .expect("error should preserve BridgeCallError details");
+    assert_eq!(bridge_err.phase, phase);
 }
 
 fn test_resolved() -> Resolved {
