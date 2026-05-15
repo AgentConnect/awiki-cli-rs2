@@ -310,6 +310,73 @@ Dependency note: no dependency was added. The slice uses only
 `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform service
 libraries, E2EE provider dependencies, or new SQLite dependencies.
 
+## 2026-05-16 Runtime Listener Secure Normalization Planning Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_normalize_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `normalizeDirectSecureNotification` early returns, decrypted notification
+  mutation, secure ack/init method rewrites, and secure-init ack side-effect
+  ordering.
+- Existing secure listener/message guards cover adjacent real E2EE consumers:
+  `go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_secure_normalize` as an injected-outcome planning
+  helper for Go `normalizeDirectSecureNotification`.
+- Preserves early returns for non-secure notifications, nil current record,
+  missing secure RPC callback, E2EE client construction failure, `ProcessIncoming`
+  error, non-`decrypted` state, and missing plaintext object.
+- Preserves attempted action ordering for client construction and
+  `ProcessIncoming` before those early returns.
+- Preserves decrypted notification mutation: `meta.content_type` becomes
+  `plaintext.application_content_type`, `params.body` becomes the whitelisted
+  plaintext notification body, `secure_state` becomes `decrypted`,
+  `secure_wire_content_type` stores the original wire content type, and
+  `secure_wire_body` stores the original wire body.
+- Preserves secure ack plaintext behavior: flush queued secure outbox for the
+  sender DID, set method to `direct.secure.ack`, and return before init-ack
+  planning.
+- Preserves secure init plaintext behavior: set method to `direct.secure.init`.
+- Preserves secure init wire ack planning only when original wire content type
+  is `application/anp-direct-init+json` and both original body `session_id` plus
+  meta `message_id` are nonempty strings.
+- Preserves secure init ack side-effect order: try local in-process ack first;
+  if not delivered, send secure ack JSON with `BuildSecureAckPayload`; if that
+  send succeeds, plan local ack delivery; then flush peer queued outbox.
+- Keeps files under the default review-size cap:
+  `listener_secure_normalize.rs` is 289 lines and the focused test file is 384
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure planning slice. It does not implement real
+`message.NewSecureE2EEClientForRecord`, `ProcessIncoming`,
+`FlushQueuedSecureOutbox`, `SendJSON`, `deliverLocalSecureAckInProcess`,
+`deliverLocalSecureAck` side effects, file session stores, E2EE encrypt/decrypt,
+SQLite writes, host-notify dispatch, foreground session execution, or
+`awiki-system-test` runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing
+`serde_json`, secure notification helpers, and the local ack payload helper. It
+does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`,
+WebSocket crates, Tokio, YAML crates, platform service libraries, E2EE provider
+dependencies, file-store dependencies, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Local Secure Ack Delivery Helper Slice
 
 Status: unit verified.

@@ -21,6 +21,7 @@ pub mod listener_notification_consume;
 pub mod listener_notification_plan;
 pub mod listener_secure_ack_delivery;
 pub mod listener_secure_inbox_poll;
+pub mod listener_secure_normalize;
 pub mod listener_secure_notifications;
 pub mod listener_secure_replay;
 pub mod listener_secure_sessions;
