@@ -2,6 +2,50 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Pending Secure-Session Scan Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_sessions_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+# Use helper-specific Go tests if they are added. At the time this slice was
+# documented, Go covered these helpers indirectly through listener/message
+# secure tests.
+go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+```
+
+Scope:
+
+- Adds the pending secure-session scan helper boundary for Go
+  `internal/runtime/listener/server.go`.
+- Covers `pendingConfirmationPeerDIDs` and `readJSONFile`.
+- Covers local `p5-e2ee-sessions/*.json` discovery, missing manager/blank
+  identity no-op behavior, identity path/glob failure no-op behavior,
+  unreadable or malformed JSON skip behavior, `status="pending-confirmation"`
+  filtering, nonblank `peer_did` filtering, first-seen duplicate suppression,
+  and peer ordering from the scanned entries.
+- Keeps the slice helper-only. It does not implement
+  `syncPendingConfirmationSecureHistory`, WebSocket/RPC `direct.get_history`
+  fetches, secure direct decrypt/ack, SQLite/storage side effects, host-notify
+  dispatch, local bridge I/O, or foreground listener session processing.
+
+Dependency note: no dependency was added. The slice uses local filesystem/path
+scanning and existing JSON decoding only; it does not add WebSocket crates,
+HTTP/TLS clients, OpenSSL, `native-tls`, bundled OpenSSL, E2EE provider crates,
+platform service libraries, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Secure Direct Helper Slice
 
 Status: unit verified.
