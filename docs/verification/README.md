@@ -2,6 +2,62 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Bridge Server Framing Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go` `handleConn`.
+- No standalone Go `handleConn` unit test exists; do not treat a no-match
+  `go test -run ...` result as evidence for this slice.
+
+Result: passed.
+
+Scope:
+
+- Adds the server-side local bridge framing helper corresponding to Go
+  `handleConn`.
+- Reads exactly one newline-terminated JSON request frame and decodes it into
+  the existing Rust `BridgeRequest`.
+- Preserves Go `ReadBytes('\n')` behavior where EOF before newline, even after
+  a syntactically valid JSON object, writes an error response instead of
+  dispatching.
+- Encodes exactly one newline-terminated `BridgeResponse`.
+- Writes Go-shaped bridge error responses for read, JSON decode, and dispatch
+  errors: `ok=false`, `error.message=<error>`, no `error.code`, and no
+  `result`.
+- Keeps extra bytes after the first newline out of the dispatch boundary, as Go
+  handles only one request per connection.
+- Keeps the files under the default review-size cap: `bridge.rs` is 444 lines
+  and `runtime_bridge_contract.rs` is 732 lines before subsequent
+  formatting-independent changes.
+
+Boundary note: this is an injected-dispatch helper-only slice. It does not
+implement `Supervisor`, `acceptLoop`, real foreground listener execution,
+`handleBridgeRequest` integration, WebSocket sessions, message RPC execution,
+SQLite side effects, Windows named-pipe I/O, or `awiki-system-test`
+acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing std I/O,
+`serde_json`, `anyhow`, and bridge wire types only. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio,
+YAML crates, platform service libraries, or new SQLite dependencies. TLS policy
+remains Rustls-first and unchanged.
+
 ## 2026-05-16 Runtime Listener Message-Service DID Helper Slice
 
 Status: unit verified.

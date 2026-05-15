@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, DirBuilder};
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -246,6 +246,60 @@ pub fn listen_bridge(path: &str) -> anyhow::Result<BridgeListener> {
 #[cfg(not(unix))]
 pub fn listen_bridge(_path: &str) -> anyhow::Result<BridgeListener> {
     anyhow::bail!("windows local websocket bridge I/O is not implemented in Rust port")
+}
+
+pub fn handle_bridge_connection_once<RW, F>(stream: RW, dispatch: F) -> io::Result<()>
+where
+    RW: io::Read + io::Write,
+    F: FnOnce(BridgeRequest) -> anyhow::Result<Map<String, Value>>,
+{
+    let mut reader = BufReader::new(stream);
+    let mut line = Vec::new();
+    match reader.read_until(b'\n', &mut line) {
+        Ok(0) => return write_bridge_response(reader.get_mut(), bridge_error_response("EOF")),
+        Ok(_) => {}
+        Err(err) => {
+            return write_bridge_response(reader.get_mut(), bridge_error_response(&err.to_string()))
+        }
+    }
+    if !line.ends_with(b"\n") {
+        return write_bridge_response(reader.get_mut(), bridge_error_response("EOF"));
+    }
+    let request = match serde_json::from_slice::<BridgeRequest>(&line) {
+        Ok(request) => request,
+        Err(err) => {
+            return write_bridge_response(reader.get_mut(), bridge_error_response(&err.to_string()))
+        }
+    };
+    match dispatch(request) {
+        Ok(result) => write_bridge_response(
+            reader.get_mut(),
+            BridgeResponse {
+                ok: true,
+                result,
+                error: None,
+            },
+        ),
+        Err(err) => {
+            write_bridge_response(reader.get_mut(), bridge_error_response(&err.to_string()))
+        }
+    }
+}
+
+fn bridge_error_response(message: &str) -> BridgeResponse {
+    BridgeResponse {
+        ok: false,
+        result: Map::new(),
+        error: Some(BridgeError {
+            code: String::new(),
+            message: message.to_string(),
+        }),
+    }
+}
+
+fn write_bridge_response<W: io::Write>(writer: &mut W, response: BridgeResponse) -> io::Result<()> {
+    serde_json::to_writer(&mut *writer, &response)?;
+    writer.write_all(b"\n")
 }
 
 #[cfg(unix)]

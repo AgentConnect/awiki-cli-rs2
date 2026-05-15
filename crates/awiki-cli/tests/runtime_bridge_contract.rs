@@ -68,6 +68,117 @@ fn bridge_request_response_and_error_shapes_match_go_contract() {
 }
 
 #[test]
+fn bridge_server_framing_dispatches_one_newline_terminated_request() {
+    let request = serde_json::json!({
+        "method": "direct.send",
+        "identity_name": "alice",
+        "params": {
+            "target": "did:example:bob",
+            "text": "hello"
+        }
+    });
+    let mut stream = MemoryDuplex::new(format!("{request}\nignored-second-frame\n").into_bytes());
+    let mut seen_request = None;
+
+    bridge::handle_bridge_connection_once(&mut stream, |request| {
+        seen_request = Some(request);
+        Ok(serde_json::Map::from_iter([(
+            "message_id".to_string(),
+            serde_json::json!("msg-123"),
+        )]))
+    })
+    .expect("handle bridge connection");
+
+    let seen_request = seen_request.expect("dispatch should be called");
+    assert_eq!(seen_request.method, "direct.send");
+    assert_eq!(seen_request.identity_name, "alice");
+    assert_eq!(
+        seen_request.params["target"],
+        serde_json::json!("did:example:bob")
+    );
+    assert_eq!(seen_request.params["text"], serde_json::json!("hello"));
+
+    assert!(stream.output_string().ends_with('\n'));
+    let response_json: serde_json::Value =
+        serde_json::from_slice(stream.output()).expect("response json");
+    assert_eq!(response_json["ok"], true);
+    assert_eq!(response_json["result"]["message_id"], "msg-123");
+    assert!(response_json.get("error").is_none());
+}
+
+#[test]
+fn bridge_server_framing_reports_invalid_json_without_dispatch() {
+    let mut stream = MemoryDuplex::new(b"not-json\n".to_vec());
+    let mut called = false;
+
+    bridge::handle_bridge_connection_once(&mut stream, |_request| {
+        called = true;
+        Ok(serde_json::Map::new())
+    })
+    .expect("invalid json response write");
+
+    assert!(!called);
+    let response_json: serde_json::Value =
+        serde_json::from_slice(stream.output()).expect("response json");
+    assert_eq!(response_json["ok"], false);
+    assert!(response_json["error"]["message"]
+        .as_str()
+        .expect("error message")
+        .contains("expected ident"));
+    assert!(response_json["error"].get("code").is_none());
+    assert!(response_json.get("result").is_none());
+}
+
+#[test]
+fn bridge_server_framing_requires_newline_like_go_read_bytes() {
+    let request = serde_json::json!({
+        "method": "direct.send",
+        "identity_name": "alice",
+        "params": {}
+    });
+    let mut stream = MemoryDuplex::new(request.to_string().into_bytes());
+    let mut called = false;
+
+    bridge::handle_bridge_connection_once(&mut stream, |_request| {
+        called = true;
+        Ok(serde_json::Map::new())
+    })
+    .expect("eof response write");
+
+    assert!(!called);
+    let response_json: serde_json::Value =
+        serde_json::from_slice(stream.output()).expect("response json");
+    assert_eq!(response_json["ok"], false);
+    assert_eq!(response_json["error"]["message"], "EOF");
+    assert!(response_json.get("result").is_none());
+}
+
+#[test]
+fn bridge_server_framing_writes_dispatch_errors_as_bridge_errors() {
+    let request = serde_json::json!({
+        "method": "group.unknown",
+        "identity_name": "alice",
+        "params": {}
+    });
+    let mut stream = MemoryDuplex::new(format!("{request}\n").into_bytes());
+
+    bridge::handle_bridge_connection_once(&mut stream, |_request| {
+        anyhow::bail!("unsupported websocket bridge method: group.unknown");
+    })
+    .expect("dispatch error response write");
+
+    let response_json: serde_json::Value =
+        serde_json::from_slice(stream.output()).expect("response json");
+    assert_eq!(response_json["ok"], false);
+    assert_eq!(
+        response_json["error"]["message"],
+        "unsupported websocket bridge method: group.unknown"
+    );
+    assert!(response_json["error"].get("code").is_none());
+    assert!(response_json.get("result").is_none());
+}
+
+#[test]
 fn bridge_default_endpoint_uses_state_dir_or_workspace_runtime_dir_like_go() {
     let paths = Paths {
         workspace_home_dir: "/tmp/awiki-workspace".to_string(),
@@ -497,6 +608,46 @@ fn assert_bridge_call_error_phase(err: &anyhow::Error, phase: &str) {
         .downcast_ref::<bridge::BridgeCallError>()
         .expect("error should preserve BridgeCallError details");
     assert_eq!(bridge_err.phase, phase);
+}
+
+#[derive(Debug)]
+struct MemoryDuplex {
+    input: std::io::Cursor<Vec<u8>>,
+    output: Vec<u8>,
+}
+
+impl MemoryDuplex {
+    fn new(input: Vec<u8>) -> Self {
+        Self {
+            input: std::io::Cursor::new(input),
+            output: Vec::new(),
+        }
+    }
+
+    fn output(&self) -> &[u8] {
+        &self.output
+    }
+
+    fn output_string(&self) -> String {
+        String::from_utf8(self.output.clone()).expect("response utf8")
+    }
+}
+
+impl std::io::Read for MemoryDuplex {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.input, buffer)
+    }
+}
+
+impl std::io::Write for MemoryDuplex {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.output.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn test_resolved() -> Resolved {
