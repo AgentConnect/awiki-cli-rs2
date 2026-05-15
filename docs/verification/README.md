@@ -310,6 +310,67 @@ Dependency note: no dependency was added. The slice uses only
 `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform service
 libraries, E2EE provider dependencies, or new SQLite dependencies.
 
+## 2026-05-16 Runtime Listener Local Secure Ack Delivery Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_delivery_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `deliverLocalSecureAck` active-session, ack-body, message-id fallback, and
+  notification construction behavior.
+- Go source parity for `internal/message/secure_control.go`
+  `BuildSecureAckPayload` system type and trimming.
+- Existing secure listener/message guards cover adjacent local ack consumers:
+  `go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_secure_ack_delivery` as a pure delivery-plan helper
+  for Go `deliverLocalSecureAck` before foreground listener secure ack
+  execution is wired.
+- Preserves active-session gating: missing target session skips before reading
+  the ack body.
+- Preserves ack-body gating: missing, non-object, and empty bodies skip.
+- Preserves Go `stringValue` and `fallbackString` message-ID behavior:
+  non-string message IDs become empty, blank strings fall back to the caller
+  fallback, and nonblank strings are preserved without trimming.
+- Preserves delivered notification shape: method `direct.incoming`, sender DID,
+  target agent DID, message ID, profile `anp.direct.e2ee.v1`, security profile
+  `direct-e2ee`, content type `application/anp-direct-cipher+json`, and the ack
+  body object.
+- Preserves `BuildSecureAckPayload`: system type
+  `awiki.direct.secure_ack.v1`, trimmed session ID, and trimmed acked message ID.
+- Keeps files under the default review-size cap:
+  `listener_secure_ack_delivery.rs` is 87 lines and the focused test file is
+  137 lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure local-ack delivery-plan slice. It does not
+implement `deliverLocalSecureAckInProcess`, E2EE encrypt/decrypt, file session
+stores, recipient `ProcessIncoming`, sender/recipient session persistence,
+queued outbox flushing, local notification queue mutation, real active-session
+lookup, `handleNotification` side effects, host-notify dispatch, SQLite writes,
+foreground session execution, or `awiki-system-test` runtime listener
+acceptance.
+
+Dependency note: no dependency was added. The slice uses only existing
+`serde_json`. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, Tokio, YAML crates, platform service libraries, E2EE
+provider dependencies, file-store dependencies, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Secure Replay Filter Helper Slice
 
 Status: unit verified.
