@@ -2,6 +2,71 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Connect Session Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_connect_session_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go` `connectSession`
+  control-flow behavior before the actual WebSocket transport.
+- Adjacent Go listener/wsclient guards:
+  `go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestWSClientConnectRefreshesExpiredBearerBeforeRetryingWebSocket|TestWSClientConnectBootstrapsBearerBeforeOpeningWebSocket' -count=1`.
+- Adjacent Go identity-gating guard:
+  `go test ./internal/cli -run TestIdentityGatingUsesFrozenErrorCode -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_connect_session` as a helper-only translation of Go
+  `connectSession` decisions before foreground listener transport is wired.
+- Preserves identity manager load error ordering: load errors return before
+  readiness checks, path lookup, auth-session construction, or client creation.
+- Preserves stored identity readiness gating with Go's registration/handle
+  missing-state logic and registration-required error text.
+- Preserves path lookup ordering after readiness and before auth-session plan
+  construction.
+- Preserves auth-session construction inputs as a plan: DID document path,
+  key-1 private path, identity name, DID, and initial JWT.
+- Preserves stored JWT bearer seeding: nonblank-after-trim tokens seed exactly
+  three scopes in Go order while using the original untrimmed token string:
+  service base URL, DID-auth RPC URL, and `/im/ws` request URL.
+- Preserves blank stored JWT behavior: no bearer scopes are seeded.
+- Preserves `NewWSClient` error behavior: return the construction error without
+  closing an unconstructed client.
+- Preserves connect behavior: use a 15-second timeout, close the constructed
+  client on connect error, and return the connect error.
+- Preserves success behavior: write `authSession.CurrentJWT()` into the returned
+  record's JWT token and return connected.
+- Keeps files under the default review-size cap:
+  `listener_connect_session.rs` is 293 lines and the focused test file is 256
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure connect-session planning slice. It does not
+implement real `identity.Manager`, `authsdk.NewSession`, JWT update callback
+execution, `NewWSClient`, `WSClient.Connect`, timeout/context ownership,
+WebSocket transport selection, foreground session loops, SQLite writes,
+host-notify dispatch, local bridge I/O, or `awiki-system-test` runtime listener
+acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing endpoint URL
+helpers and `std::time::Duration` only. It does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates,
+platform service libraries, E2EE provider dependencies, or new SQLite
+dependencies.
+
 ## 2026-05-16 Runtime Listener Session Loop Backoff Helper Slice
 
 Status: unit verified.
