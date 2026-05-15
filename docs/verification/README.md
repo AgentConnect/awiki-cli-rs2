@@ -2,6 +2,72 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Notification Route-Plan Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_plan_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `handleNotification` branch ordering and side-effect sequencing after secure
+  normalization.
+- Focused Go listener/host-notify/secure guards:
+  `go test ./internal/runtime/listener -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestHandleNotificationDispatchesMailNotificationToSink|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage' -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_notification_plan` as a helper-only route/action plan
+  for Go `handleNotification` before foreground listener execution.
+- Preserves Go ordering: secure normalization first, host event normalization
+  once on the post-secure notification, then branch matching in direct, mail,
+  group, and group-state order.
+- Preserves direct incoming planning: contact sync, host handle enrichment,
+  message store, then host dispatch.
+- Preserves contact-sync error handling in direct/group branches: errors are
+  discarded and become blank sender handles.
+- Preserves recipient handle normalization through the existing
+  `normalize_listener_handle` helper.
+- Preserves mail planning: store then dispatch, with no contact sync or handle
+  enrichment.
+- Preserves group incoming planning: group-scoped contact sync, host handle
+  enrichment, message store, then host dispatch.
+- Preserves group-state planning: upsert group, optional upsert member, store
+  system message, then dispatch.
+- Preserves unknown notification behavior: no side effects.
+- Preserves secure direct control boundary through injected normalization
+  outcomes: drop stops before host/store, replace uses the replacement
+  notification, and keep-original falls back to secure-wire direct storage.
+- Keeps files under the default review-size cap:
+  `listener_notification_plan.rs` is 258 lines and the focused test file is 422
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure route-plan slice. It does not implement real
+`normalizeDirectSecureNotification`, E2EE decrypt/ack/session-store mutation,
+`FlushQueuedSecureOutbox`, `SendJSON`, local notification queue mutation,
+SQLite writes, remote contact lookup, host sink delivery/status writes,
+foreground WebSocket session execution, or `awiki-system-test` runtime listener
+acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing parser,
+host-notify, contact handle normalization, secure classification, store record
+types, `serde_json`, and `time` code only. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio, YAML
+crates, platform service libraries, E2EE provider dependencies, or new SQLite
+dependencies.
+
 ## 2026-05-16 Runtime Listener Connect Session Helper Slice
 
 Status: unit verified.

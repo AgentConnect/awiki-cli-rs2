@@ -17,6 +17,7 @@ pub mod listener_connect_session;
 pub mod listener_contact_sync;
 pub mod listener_local_notifications;
 pub mod listener_message_records;
+pub mod listener_notification_plan;
 pub mod listener_secure_notifications;
 pub mod listener_secure_replay;
 pub mod listener_secure_sessions;
