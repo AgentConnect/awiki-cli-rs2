@@ -2,6 +2,61 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener WebSocket Connect Decision Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'TestNewWSClientDerivesIMWebSocketEndpointFromServiceBaseURL|TestWSClientConnectRefreshesExpiredBearerBeforeRetryingWebSocket|TestWSClientConnectBootstrapsBearerBeforeOpeningWebSocket' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Adds a pure constructor/Connect decision boundary for Go listener
+  `wsclient.go` without adding an executable WebSocket client.
+- Preserves `NewWSClient` remembered-scope input order:
+  service base URL, DID-auth RPC URL, then `/im/ws` request URL.
+- Preserves `dialBearer` bearer header trimming.
+- Preserves `refreshBearer` precondition error text for missing auth session
+  and blank DID-auth URL.
+- Preserves Go `Connect` branch control with injected outcomes: initial token
+  dials first; first dial success attaches and stops; non-401 first dial errors
+  return formatted dial errors without refresh; 401 first dial refreshes once and
+  retries; no-token startup refreshes before any dial; refresh errors are wrapped
+  only when an initial token existed; blank refreshed JWT returns
+  `did-auth did not return a websocket bearer token`; retry dial failures use
+  the existing `formatDialError` body formatting.
+- Keeps the files under the default review-size cap:
+  `listener_wsclient.rs` is 390 lines and the focused test file is 616 lines
+  before subsequent formatting-independent changes.
+
+Boundary note: this is a helper-only slice. It does not implement the real
+`WSClient`, `websocket.Dial`, HTTP response ownership/body close behavior, actual
+DID-auth HTTP `EnsureJWT`, response-header token capture, `readLoop`, pending RPC
+channels, foreground listener session execution, or `awiki-system-test`
+acceptance for runtime listener transport.
+
+Dependency note: no dependency was added. The slice uses existing config,
+string, enum, and injected-closure helpers only. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio, YAML
+crates, platform service libraries, or new SQLite dependencies. The future real
+WebSocket transport remains a separate Rustls-first dependency decision.
+
 ## 2026-05-16 Runtime Listener WebSocket Dial Error Helper Slice
 
 Status: unit verified.

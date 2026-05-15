@@ -12,6 +12,12 @@ pub struct ListenerWsClientEndpoints {
     pub websocket_url: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListenerWsClientConstructionPlan {
+    pub endpoints: ListenerWsClientEndpoints,
+    pub remembered_scope_inputs: Vec<String>,
+}
+
 pub fn listener_ws_client_endpoints(
     resolved: &Resolved,
 ) -> anyhow::Result<ListenerWsClientEndpoints> {
@@ -27,6 +33,144 @@ pub fn listener_ws_client_endpoints(
         did_auth_url: config::join_base_url(&resolved.service_base_url, DID_AUTH_RPC_ENDPOINT),
         request_url,
     })
+}
+
+pub fn listener_ws_client_construction_plan(
+    resolved: &Resolved,
+) -> anyhow::Result<ListenerWsClientConstructionPlan> {
+    let endpoints = listener_ws_client_endpoints(resolved)?;
+    Ok(ListenerWsClientConstructionPlan {
+        remembered_scope_inputs: vec![
+            resolved.service_base_url.clone(),
+            endpoints.did_auth_url.clone(),
+            endpoints.request_url.clone(),
+        ],
+        endpoints,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListenerWsDialOutcome {
+    Connected,
+    Failed {
+        status_code: Option<u16>,
+        error: String,
+        response_body: Option<Vec<u8>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListenerWsRefreshOutcome {
+    Refreshed { current_jwt: String },
+    Failed { error: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListenerWsConnectAction {
+    DialBearer {
+        token: String,
+        authorization: String,
+    },
+    RefreshBearer,
+    Attach,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListenerWsConnectSimulation {
+    pub actions: Vec<ListenerWsConnectAction>,
+    pub error: Option<String>,
+}
+
+pub fn bearer_authorization_header(token: &str) -> String {
+    format!("Bearer {}", token.trim())
+}
+
+pub fn validate_refresh_bearer_preconditions(
+    has_auth_session: bool,
+    did_auth_url: &str,
+) -> anyhow::Result<()> {
+    if !has_auth_session {
+        anyhow::bail!("auth session is required for websocket mode");
+    }
+    if did_auth_url.trim().is_empty() {
+        anyhow::bail!("did-auth rpc url is required for websocket mode");
+    }
+    Ok(())
+}
+
+pub fn simulate_listener_ws_connect(
+    current_jwt: &str,
+    mut dial_bearer: impl FnMut(&str) -> ListenerWsDialOutcome,
+    mut refresh_bearer: impl FnMut() -> ListenerWsRefreshOutcome,
+) -> ListenerWsConnectSimulation {
+    let mut actions = Vec::new();
+    let initial_token = current_jwt.trim().to_string();
+    if !initial_token.is_empty() {
+        actions.push(dial_bearer_action(&initial_token));
+        match dial_bearer(&initial_token) {
+            ListenerWsDialOutcome::Connected => {
+                actions.push(ListenerWsConnectAction::Attach);
+                return ListenerWsConnectSimulation {
+                    actions,
+                    error: None,
+                };
+            }
+            ListenerWsDialOutcome::Failed {
+                status_code: Some(401),
+                ..
+            } => {}
+            ListenerWsDialOutcome::Failed {
+                error,
+                response_body,
+                ..
+            } => {
+                return ListenerWsConnectSimulation {
+                    actions,
+                    error: Some(format_dial_failure(&error, response_body.as_deref())),
+                };
+            }
+        }
+    }
+
+    actions.push(ListenerWsConnectAction::RefreshBearer);
+    let refreshed_token = match refresh_bearer() {
+        ListenerWsRefreshOutcome::Refreshed { current_jwt } => current_jwt.trim().to_string(),
+        ListenerWsRefreshOutcome::Failed { error } => {
+            return ListenerWsConnectSimulation {
+                actions,
+                error: Some(if initial_token.is_empty() {
+                    error
+                } else {
+                    format!("refresh websocket session JWT: {error}")
+                }),
+            };
+        }
+    };
+    if refreshed_token.is_empty() {
+        return ListenerWsConnectSimulation {
+            actions,
+            error: Some("did-auth did not return a websocket bearer token".to_string()),
+        };
+    }
+
+    actions.push(dial_bearer_action(&refreshed_token));
+    match dial_bearer(&refreshed_token) {
+        ListenerWsDialOutcome::Connected => {
+            actions.push(ListenerWsConnectAction::Attach);
+            ListenerWsConnectSimulation {
+                actions,
+                error: None,
+            }
+        }
+        ListenerWsDialOutcome::Failed {
+            error,
+            response_body,
+            ..
+        } => ListenerWsConnectSimulation {
+            actions,
+            error: Some(format_dial_failure(&error, response_body.as_deref())),
+        },
+    }
 }
 
 pub fn request_id_from_value(value: &Value) -> String {
@@ -129,6 +273,17 @@ pub fn format_dial_error_message(
     let capped = &body[..body.len().min(DIAL_ERROR_BODY_LIMIT)];
     let body_text = String::from_utf8_lossy(capped).trim().to_string();
     Some(format!("{error}: {body_text}"))
+}
+
+fn dial_bearer_action(token: &str) -> ListenerWsConnectAction {
+    ListenerWsConnectAction::DialBearer {
+        token: token.trim().to_string(),
+        authorization: bearer_authorization_header(token),
+    }
+}
+
+fn format_dial_failure(error: &str, response_body: Option<&[u8]>) -> String {
+    format_dial_error_message(Some(error), response_body).unwrap_or_else(|| error.to_string())
 }
 
 pub fn host_for_url(raw: &str) -> String {

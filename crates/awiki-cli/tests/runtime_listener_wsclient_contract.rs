@@ -63,6 +63,324 @@ fn listener_ws_client_endpoints_preserve_go_empty_base_boundary() {
 }
 
 #[test]
+fn listener_ws_client_construction_plan_matches_go_scope_side_effects() {
+    let resolved = Resolved {
+        service_base_url: "http://127.0.0.1:18080/".to_string(),
+        ..test_resolved()
+    };
+    let plan = listener_wsclient::listener_ws_client_construction_plan(&resolved)
+        .expect("construction plan");
+
+    assert_eq!(plan.endpoints.request_url, "http://127.0.0.1:18080/im/ws");
+    assert_eq!(
+        plan.remembered_scope_inputs,
+        vec![
+            "http://127.0.0.1:18080/".to_string(),
+            "http://127.0.0.1:18080/user-service/did-auth/rpc".to_string(),
+            "http://127.0.0.1:18080/im/ws".to_string(),
+        ],
+        "Go NewWSClient calls RememberScope in this exact input order"
+    );
+}
+
+#[test]
+fn bearer_authorization_header_trims_like_go_dial_bearer() {
+    assert_eq!(
+        listener_wsclient::bearer_authorization_header("  expired-token \n"),
+        "Bearer expired-token"
+    );
+}
+
+#[test]
+fn refresh_bearer_preconditions_match_go_errors() {
+    let err =
+        listener_wsclient::validate_refresh_bearer_preconditions(false, "https://awiki.ai/rpc")
+            .expect_err("missing auth");
+    assert_eq!(
+        err.to_string(),
+        "auth session is required for websocket mode"
+    );
+
+    let err = listener_wsclient::validate_refresh_bearer_preconditions(true, " \n ")
+        .expect_err("missing did-auth url");
+    assert_eq!(
+        err.to_string(),
+        "did-auth rpc url is required for websocket mode"
+    );
+
+    listener_wsclient::validate_refresh_bearer_preconditions(true, "https://awiki.ai/rpc")
+        .expect("valid preconditions");
+}
+
+#[test]
+fn connect_simulation_uses_existing_bearer_and_stops_on_success() {
+    let mut dialed = Vec::new();
+    let mut refreshes = 0;
+    let result = listener_wsclient::simulate_listener_ws_connect(
+        "  live-token \n",
+        |token| {
+            dialed.push(token.to_string());
+            listener_wsclient::ListenerWsDialOutcome::Connected
+        },
+        || {
+            refreshes += 1;
+            listener_wsclient::ListenerWsRefreshOutcome::Failed {
+                error: "refresh should not run".to_string(),
+            }
+        },
+    );
+
+    assert_eq!(
+        result.actions,
+        vec![
+            dial_action("live-token"),
+            listener_wsclient::ListenerWsConnectAction::Attach,
+        ]
+    );
+    assert_eq!(result.error, None);
+    assert_eq!(dialed, vec!["live-token"]);
+    assert_eq!(refreshes, 0);
+}
+
+#[test]
+fn connect_simulation_refreshes_expired_bearer_before_retrying_websocket() {
+    let mut dialed = Vec::new();
+    let mut refreshes = 0;
+    let result = listener_wsclient::simulate_listener_ws_connect(
+        "expired-token",
+        |token| {
+            dialed.push(token.to_string());
+            if token == "expired-token" {
+                listener_wsclient::ListenerWsDialOutcome::Failed {
+                    status_code: Some(401),
+                    error: "websocket dial failed".to_string(),
+                    response_body: Some(
+                        br#"{"jsonrpc":"2.0","error":{"code":1401,"message":"expired session"}}"#
+                            .to_vec(),
+                    ),
+                }
+            } else {
+                listener_wsclient::ListenerWsDialOutcome::Connected
+            }
+        },
+        || {
+            refreshes += 1;
+            listener_wsclient::ListenerWsRefreshOutcome::Refreshed {
+                current_jwt: " refreshed-token ".to_string(),
+            }
+        },
+    );
+
+    assert_eq!(
+        result.actions,
+        vec![
+            dial_action("expired-token"),
+            listener_wsclient::ListenerWsConnectAction::RefreshBearer,
+            dial_action("refreshed-token"),
+            listener_wsclient::ListenerWsConnectAction::Attach,
+        ]
+    );
+    assert_eq!(result.error, None);
+    assert_eq!(dialed, vec!["expired-token", "refreshed-token"]);
+    assert_eq!(refreshes, 1);
+}
+
+#[test]
+fn connect_simulation_bootstraps_bearer_before_opening_websocket() {
+    let mut dialed = Vec::new();
+    let mut refreshes = 0;
+    let result = listener_wsclient::simulate_listener_ws_connect(
+        " \n ",
+        |token| {
+            dialed.push(token.to_string());
+            listener_wsclient::ListenerWsDialOutcome::Connected
+        },
+        || {
+            refreshes += 1;
+            listener_wsclient::ListenerWsRefreshOutcome::Refreshed {
+                current_jwt: " bootstrapped-token ".to_string(),
+            }
+        },
+    );
+
+    assert_eq!(
+        result.actions,
+        vec![
+            listener_wsclient::ListenerWsConnectAction::RefreshBearer,
+            dial_action("bootstrapped-token"),
+            listener_wsclient::ListenerWsConnectAction::Attach,
+        ]
+    );
+    assert_eq!(result.error, None);
+    assert_eq!(dialed, vec!["bootstrapped-token"]);
+    assert_eq!(refreshes, 1);
+}
+
+#[test]
+fn connect_simulation_returns_non_unauthorized_first_dial_error_without_refresh() {
+    let mut dialed = Vec::new();
+    let mut refreshes = 0;
+    let result = listener_wsclient::simulate_listener_ws_connect(
+        "stale-token",
+        |token| {
+            dialed.push(token.to_string());
+            listener_wsclient::ListenerWsDialOutcome::Failed {
+                status_code: Some(500),
+                error: "websocket dial failed".to_string(),
+                response_body: Some(b"  upstream down\n".to_vec()),
+            }
+        },
+        || {
+            refreshes += 1;
+            listener_wsclient::ListenerWsRefreshOutcome::Refreshed {
+                current_jwt: "must-not-use".to_string(),
+            }
+        },
+    );
+
+    assert_eq!(result.actions, vec![dial_action("stale-token")]);
+    assert_eq!(
+        result.error,
+        Some("websocket dial failed: upstream down".to_string())
+    );
+    assert_eq!(dialed, vec!["stale-token"]);
+    assert_eq!(refreshes, 0);
+}
+
+#[test]
+fn connect_simulation_wraps_refresh_error_only_after_existing_bearer() {
+    let mut dialed = Vec::new();
+    let mut refreshes = 0;
+    let with_token = listener_wsclient::simulate_listener_ws_connect(
+        "expired-token",
+        |token| {
+            dialed.push(token.to_string());
+            listener_wsclient::ListenerWsDialOutcome::Failed {
+                status_code: Some(401),
+                error: "unauthorized".to_string(),
+                response_body: None,
+            }
+        },
+        || {
+            refreshes += 1;
+            listener_wsclient::ListenerWsRefreshOutcome::Failed {
+                error: "did-auth denied".to_string(),
+            }
+        },
+    );
+    assert_eq!(
+        with_token.actions,
+        vec![
+            dial_action("expired-token"),
+            listener_wsclient::ListenerWsConnectAction::RefreshBearer,
+        ]
+    );
+    assert_eq!(
+        with_token.error,
+        Some("refresh websocket session JWT: did-auth denied".to_string())
+    );
+    assert_eq!(dialed, vec!["expired-token"]);
+    assert_eq!(refreshes, 1);
+
+    let mut dialed = Vec::<String>::new();
+    let mut refreshes = 0;
+    let without_token = listener_wsclient::simulate_listener_ws_connect(
+        "",
+        |token| {
+            dialed.push(token.to_string());
+            listener_wsclient::ListenerWsDialOutcome::Connected
+        },
+        || {
+            refreshes += 1;
+            listener_wsclient::ListenerWsRefreshOutcome::Failed {
+                error: "did-auth denied".to_string(),
+            }
+        },
+    );
+    assert_eq!(
+        without_token.actions,
+        vec![listener_wsclient::ListenerWsConnectAction::RefreshBearer]
+    );
+    assert_eq!(without_token.error, Some("did-auth denied".to_string()));
+    assert!(dialed.is_empty());
+    assert_eq!(refreshes, 1);
+}
+
+#[test]
+fn connect_simulation_requires_non_empty_refreshed_bearer() {
+    let mut dialed = Vec::new();
+    let mut refreshes = 0;
+    let result = listener_wsclient::simulate_listener_ws_connect(
+        "expired-token",
+        |token| {
+            dialed.push(token.to_string());
+            listener_wsclient::ListenerWsDialOutcome::Failed {
+                status_code: Some(401),
+                error: "unauthorized".to_string(),
+                response_body: None,
+            }
+        },
+        || {
+            refreshes += 1;
+            listener_wsclient::ListenerWsRefreshOutcome::Refreshed {
+                current_jwt: " \n ".to_string(),
+            }
+        },
+    );
+
+    assert_eq!(
+        result.actions,
+        vec![
+            dial_action("expired-token"),
+            listener_wsclient::ListenerWsConnectAction::RefreshBearer,
+        ]
+    );
+    assert_eq!(
+        result.error,
+        Some("did-auth did not return a websocket bearer token".to_string())
+    );
+    assert_eq!(dialed, vec!["expired-token"]);
+    assert_eq!(refreshes, 1);
+}
+
+#[test]
+fn connect_simulation_formats_retry_dial_error_like_go() {
+    let mut dialed = Vec::new();
+    let mut refreshes = 0;
+    let result = listener_wsclient::simulate_listener_ws_connect(
+        "",
+        |token| {
+            dialed.push(token.to_string());
+            listener_wsclient::ListenerWsDialOutcome::Failed {
+                status_code: Some(403),
+                error: "websocket dial failed".to_string(),
+                response_body: Some(b" forbidden ".to_vec()),
+            }
+        },
+        || {
+            refreshes += 1;
+            listener_wsclient::ListenerWsRefreshOutcome::Refreshed {
+                current_jwt: "new-token".to_string(),
+            }
+        },
+    );
+
+    assert_eq!(
+        result.actions,
+        vec![
+            listener_wsclient::ListenerWsConnectAction::RefreshBearer,
+            dial_action("new-token"),
+        ]
+    );
+    assert_eq!(
+        result.error,
+        Some("websocket dial failed: forbidden".to_string())
+    );
+    assert_eq!(dialed, vec!["new-token"]);
+    assert_eq!(refreshes, 1);
+}
+
+#[test]
 fn request_id_and_int64_coercion_match_go_helpers() {
     assert_eq!(
         listener_wsclient::request_id_from_value(&json!("req-123")),
@@ -230,6 +548,13 @@ fn host_for_url_matches_go_net_url_host_boundary() {
         " http://example.com",
         "Go helper does not trim before url.Parse"
     );
+}
+
+fn dial_action(token: &str) -> listener_wsclient::ListenerWsConnectAction {
+    listener_wsclient::ListenerWsConnectAction::DialBearer {
+        token: token.to_string(),
+        authorization: format!("Bearer {token}"),
+    }
 }
 
 fn map<const N: usize>(
