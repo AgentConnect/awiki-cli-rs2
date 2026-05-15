@@ -2,6 +2,60 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener WebSocket JSON-RPC Wire Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/wsclient.go` `SendRPC`,
+  `readLoop`, and `failPending`.
+- Existing Go `NewWSClient` endpoint test remains the listener wsclient Go
+  focused test; there is no standalone Go test for these pure JSON-RPC helpers.
+
+Result: passed.
+
+Scope:
+
+- Adds pure JSON-RPC helper boundaries from Go `WSClient.SendRPC`, `readLoop`,
+  and `failPending`.
+- Builds request envelopes with `jsonrpc="2.0"`, caller-supplied request ID,
+  method, and Go-compatible params omission: `params` is absent for `None` and
+  present as `{}` for an empty map.
+- Decodes responses like Go `SendRPC`: only object-valued `error` triggers
+  `json-rpc error <code>: <message>`, only object-valued `result` is returned,
+  and missing/non-object results return an empty map.
+- Builds pending-failure messages as Go `failPending` does:
+  `{"error":{"message":...},"id":...}`.
+- Classifies incoming messages as responses when raw `id` is present and
+  notifications otherwise, reusing the existing Go-compatible request-ID
+  coercion helper.
+- Keeps the files under the default review-size cap:
+  `listener_wsclient.rs` is 217 lines and the focused test file is 257 lines
+  before subsequent formatting-independent changes.
+
+Boundary note: this is a helper-only slice. It does not implement real
+`WSClient`, WebSocket dial/read/write, JWT refresh retry, pending channel
+ownership, notification buffering, `formatDialError`, foreground listener
+execution, or `awiki-system-test` acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing
+`serde_json` and `anyhow` only. It does not add OpenSSL, `native-tls`, bundled
+OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform
+service libraries, or new SQLite dependencies. TLS policy remains Rustls-first
+and unchanged.
+
 ## 2026-05-16 Runtime Listener Session-State Helper Slice
 
 Status: unit verified.

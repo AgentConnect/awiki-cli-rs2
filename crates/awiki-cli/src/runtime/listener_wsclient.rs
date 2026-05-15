@@ -1,7 +1,7 @@
 use crate::config::{self, Resolved};
 use crate::identity::wire::DID_AUTH_RPC_ENDPOINT;
 use crate::message::MESSAGE_WS_ENDPOINT;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListenerWsClientEndpoints {
@@ -56,6 +56,63 @@ pub fn int64_from_value(value: &Value) -> i64 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IncomingWsMessage {
+    Response { request_id: String },
+    Notification,
+}
+
+pub fn build_ws_rpc_request(
+    request_id: &str,
+    method: &str,
+    params: Option<Map<String, Value>>,
+) -> Map<String, Value> {
+    let mut request = Map::new();
+    request.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
+    request.insert("id".to_string(), Value::String(request_id.to_string()));
+    request.insert("method".to_string(), Value::String(method.to_string()));
+    if let Some(params) = params {
+        request.insert("params".to_string(), Value::Object(params));
+    }
+    request
+}
+
+pub fn decode_ws_rpc_result(response: &Map<String, Value>) -> anyhow::Result<Map<String, Value>> {
+    if let Some(Value::Object(error)) = response.get("error") {
+        anyhow::bail!(
+            "json-rpc error {}: {}",
+            go_fmt_value(error.get("code")),
+            go_fmt_value(error.get("message"))
+        );
+    }
+    match response.get("result") {
+        Some(Value::Object(result)) => Ok(result.clone()),
+        _ => Ok(Map::new()),
+    }
+}
+
+pub fn pending_failure_response(request_id: &str, error: &str) -> Map<String, Value> {
+    Map::from_iter([
+        (
+            "error".to_string(),
+            Value::Object(Map::from_iter([(
+                "message".to_string(),
+                Value::String(error.to_string()),
+            )])),
+        ),
+        ("id".to_string(), Value::String(request_id.to_string())),
+    ])
+}
+
+pub fn classify_incoming_message(message: &Map<String, Value>) -> IncomingWsMessage {
+    match message.get("id") {
+        Some(id) => IncomingWsMessage::Response {
+            request_id: request_id_from_value(id),
+        },
+        None => IncomingWsMessage::Notification,
+    }
+}
+
 pub fn host_for_url(raw: &str) -> String {
     let Some((scheme, rest)) = raw.split_once(':') else {
         return String::new();
@@ -73,6 +130,17 @@ pub fn host_for_url(raw: &str) -> String {
     match parse_authority_host(authority) {
         Ok(host) => host,
         Err(_) => raw.to_string(),
+    }
+}
+
+fn go_fmt_value(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::Null) | None => "<nil>".to_string(),
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Number(value)) => value.to_string(),
+        Some(Value::Bool(value)) => value.to_string(),
+        Some(Value::Array(value)) => format!("{value:?}"),
+        Some(Value::Object(value)) => format!("{value:?}"),
     }
 }
 

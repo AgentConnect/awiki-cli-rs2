@@ -86,6 +86,88 @@ fn request_id_and_int64_coercion_match_go_helpers() {
 }
 
 #[test]
+fn ws_rpc_request_shape_matches_go_send_rpc_envelope() {
+    let no_params = listener_wsclient::build_ws_rpc_request("req-1", "inbox.get", None);
+    assert_eq!(no_params["jsonrpc"], "2.0");
+    assert_eq!(no_params["id"], "req-1");
+    assert_eq!(no_params["method"], "inbox.get");
+    assert!(no_params.get("params").is_none());
+
+    let with_empty_params =
+        listener_wsclient::build_ws_rpc_request("req-2", "anp.get_capabilities", Some(map([])));
+    assert_eq!(with_empty_params["params"], json!({}));
+
+    let with_params = listener_wsclient::build_ws_rpc_request(
+        "req-3",
+        "direct.send",
+        Some(map([
+            ("meta", json!({ "profile": "anp.direct.base.v1" })),
+            ("body", json!({ "text": "hello" })),
+        ])),
+    );
+    assert_eq!(with_params["params"]["body"]["text"], "hello");
+}
+
+#[test]
+fn ws_rpc_result_decode_matches_go_send_rpc_response_boundary() {
+    let result = listener_wsclient::decode_ws_rpc_result(&map([(
+        "result",
+        json!({ "message_id": "msg-123", "accepted": true }),
+    )]))
+    .expect("result map");
+    assert_eq!(result["message_id"], "msg-123");
+    assert_eq!(result["accepted"], true);
+
+    let missing_result =
+        listener_wsclient::decode_ws_rpc_result(&map([])).expect("missing result is empty map");
+    assert!(missing_result.is_empty());
+
+    let scalar_result = listener_wsclient::decode_ws_rpc_result(&map([("result", json!(true))]))
+        .expect("non-object result is empty map");
+    assert!(scalar_result.is_empty());
+
+    let scalar_error = listener_wsclient::decode_ws_rpc_result(&map([("error", json!("boom"))]))
+        .expect("non-object error is ignored like Go type assertion");
+    assert!(scalar_error.is_empty());
+
+    let err = listener_wsclient::decode_ws_rpc_result(&map([(
+        "error",
+        json!({ "code": -32001, "message": "denied" }),
+    )]))
+    .expect_err("json-rpc error");
+    assert_eq!(err.to_string(), "json-rpc error -32001: denied");
+
+    let err = listener_wsclient::decode_ws_rpc_result(&map([("error", json!({}))]))
+        .expect_err("missing error fields");
+    assert_eq!(err.to_string(), "json-rpc error <nil>: <nil>");
+}
+
+#[test]
+fn pending_failure_and_incoming_classification_match_go_read_loop_helpers() {
+    let failed = listener_wsclient::pending_failure_response("req-7", "reader closed");
+    assert_eq!(failed["id"], "req-7");
+    assert_eq!(failed["error"]["message"], "reader closed");
+    assert!(failed["error"].get("code").is_none());
+
+    assert_eq!(
+        listener_wsclient::classify_incoming_message(&map([("id", json!("req-7"))])),
+        listener_wsclient::IncomingWsMessage::Response {
+            request_id: "req-7".to_string()
+        }
+    );
+    assert_eq!(
+        listener_wsclient::classify_incoming_message(&map([("id", json!(7.6))])),
+        listener_wsclient::IncomingWsMessage::Response {
+            request_id: "8".to_string()
+        }
+    );
+    assert_eq!(
+        listener_wsclient::classify_incoming_message(&map([("method", json!("direct.incoming"))])),
+        listener_wsclient::IncomingWsMessage::Notification
+    );
+}
+
+#[test]
 fn host_for_url_matches_go_net_url_host_boundary() {
     assert_eq!(
         listener_wsclient::host_for_url("http://example.com:8080/path"),
@@ -114,6 +196,16 @@ fn host_for_url_matches_go_net_url_host_boundary() {
         " http://example.com",
         "Go helper does not trim before url.Parse"
     );
+}
+
+fn map<const N: usize>(
+    entries: [(&str, serde_json::Value); N],
+) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::Map::from_iter(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value)),
+    )
 }
 
 fn test_resolved() -> Resolved {
