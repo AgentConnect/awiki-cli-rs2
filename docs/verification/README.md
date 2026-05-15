@@ -2,6 +2,61 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Session DID Lookup Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_lookup_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `activeSessionByDID`, `recordByDID`, and `hasRuntimeSessionForDID`.
+- Existing Go secure-listener integration guard:
+  `TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_session_lookup` as a helper-only translation of the
+  Go listener's DID lookup logic used by local secure ack routing.
+- Preserves blank-after-trim DID behavior: active lookup returns nil, record
+  lookup returns nil, runtime-session lookup returns false, and manager
+  callbacks are not invoked.
+- Preserves `activeSessionByDID` scan behavior: sessions are scanned in the
+  provided order and only the current in-memory record DID is compared.
+- Preserves `recordByDID` manager behavior: nil manager or list failure returns
+  nil; summaries are scanned in order; only the first matching DID summary is
+  loaded; load failure returns nil without trying later matching summaries.
+- Preserves `hasRuntimeSessionForDID` behavior: current record DID matches win
+  before manager fallback; nil manager skips fallback loads; otherwise each
+  session identity is loaded in scan order, load failures are ignored, and the
+  first loaded record DID match returns true.
+- Keeps files under the default review-size cap:
+  `listener_session_lookup.rs` is 84 lines and the focused test file is 226
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure lookup helper slice. It does not implement
+`Supervisor`, mutex ownership, the real identity filesystem manager,
+`deliverLocalSecureAckInProcess`, secure ack encryption/decryption, queued local
+notification delivery, real WebSocket sessions, SQLite storage mutations,
+host-notify dispatch, or `awiki-system-test` runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice uses plain structs and an
+injected manager trait only. It does not add OpenSSL, `native-tls`, bundled
+OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform
+service libraries, E2EE provider dependencies, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Local Notification Queue Helper Slice
 
 Status: unit verified.
