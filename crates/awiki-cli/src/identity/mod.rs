@@ -5,6 +5,7 @@ pub mod legacy;
 pub mod service;
 pub mod store;
 pub mod types;
+pub mod wire;
 
 pub use did::{did_suffix, generate_identity};
 pub use handle_input::{

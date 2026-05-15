@@ -2,6 +2,54 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity Remote Wire Contract Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test identity_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/identity -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added a split `identity::wire` module for the deterministic remote contract
+  embedded in Go `internal/identity/client.go` and `service.go`.
+- Preserved user-service endpoint constants for DID auth, handle lookup, DID
+  profile, email status/send, and phone bind REST calls.
+- Preserved identity JSON-RPC builders, REST call descriptors, transport
+  profiles, params, fixed JSON-RPC envelope reuse, service RPC/HTTP error
+  display, `authsdk` error conversion, phone/email/OTP/CSV normalization,
+  handle lookup not-found normalization, profile update payload mapping,
+  refresh-token `AuthRefresh` profile, and live replace-DID null semantics for
+  empty optional `role` and `endpoint_url`.
+- Preserved deterministic result shapes and summaries for registration,
+  recovery OTP, bind phone/email, refresh token, resolve, profile get/update,
+  and replace DID.
+- Native Agent read-only parity review was used for the checklist; no
+  code-writing Native Agent modified this slice.
+
+Boundary note: this slice does not wire live HTTP/TLS/auth execution, generate
+or persist identities, build auth sessions, poll email verification, mutate the
+identity store, map service errors into CLI exits, or run identity lifecycle
+system tests. Those remain in the later shared authsdk/session plus Rustls HTTP
+client lane.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; this
+slice does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+`native-tls`, bundled OpenSSL, or ANP SDK network/default features. TLS policy
+remains Rustls-first and unchanged.
+
 ## 2026-05-15 Site RPC Wire Contract Slice
 
 Local Rust and Go reference verification:
