@@ -2,6 +2,48 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Hermes Bridge Pure Helper Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket|serde_yaml|yaml'
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added a split `runtime::hermes_bridge` module for the deterministic helper
+  subset of Go `internal/runtime/hermesbridge/hermes_config.go`.
+- Preserved Hermes route defaults, local notify URL validation, supported
+  deliver target normalization, home-channel env key mapping, display names,
+  Go-like `.env` parsing, fixed-target `deliver_extra` cleanup, legacy single
+  `skills: ["notify"]` cleanup, and notify prompt migration predicates.
+- Reused the new Hermes default constants from `runtime::resolve` and
+  `host_notify_config_view` instead of carrying duplicate string literals.
+- Used a read-only Native Agent for the parity checklist. No code-writing
+  Native Agent modified this slice.
+
+Boundary note: this slice does not implement `EnsureRoute`, `InspectRoute`,
+Hermes `config.yaml` YAML read/write, route-secret generation, state warnings,
+listener restart/refresh orchestration, bridge service execution, or
+system-test Hermes route lifecycle acceptance. Those remain in a later YAML
+parser/runtime orchestration slice.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; this
+slice does not add `serde_yaml`, HTTP/TLS clients, WebSocket crates, OpenSSL,
+`native-tls`, bundled OpenSSL, platform service libraries, or ANP SDK
+network/default features. TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-15 Identity ANP Service Helper Slice
 
 Local Rust and Go reference verification:

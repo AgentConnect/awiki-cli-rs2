@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
 
+pub mod hermes_bridge;
 pub mod listener;
 pub mod openclaw_routes;
 
@@ -79,9 +80,12 @@ pub fn resolve(resolved: &Resolved) -> RuntimeResolved {
             hermes: (sink == "hermes").then(|| HermesConfig {
                 notify_url: default_string(
                     &resolved.host_notify_hermes_notify_url,
-                    "http://127.0.0.1:8765/notify/host-event",
+                    hermes_bridge::DEFAULT_NOTIFY_URL,
                 ),
-                deliver: default_string(&resolved.host_notify_hermes_deliver, "feishu"),
+                deliver: default_string(
+                    &resolved.host_notify_hermes_deliver,
+                    hermes_bridge::DEFAULT_DELIVER_TARGET,
+                ),
             }),
         },
     }
@@ -183,7 +187,7 @@ pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
         },
         "hermes": {
             "notify_url": resolved.host_notify_hermes_notify_url,
-            "deliver": if resolved.host_notify_hermes_deliver.is_empty() { "feishu" } else { &resolved.host_notify_hermes_deliver },
+            "deliver": if resolved.host_notify_hermes_deliver.is_empty() { hermes_bridge::DEFAULT_DELIVER_TARGET } else { &resolved.host_notify_hermes_deliver },
             "secret_configured": false,
             "secret_source": "unset",
             "secret_env_fallback": "AWIKI_HOST_NOTIFY_HERMES_SECRET",
