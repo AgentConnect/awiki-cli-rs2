@@ -2,6 +2,78 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Store E2EE Outbox DAO Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test store_e2ee_outbox_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_import_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_rebind_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_recover_merge_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/store/dao.go` E2EE outbox functions:
+  `QueueE2EEOutbox`, `MarkE2EEOutboxSent`, `MarkE2EEOutboxFailed`,
+  `UpdateE2EEOutboxStatus`, `SetE2EEOutboxFailureByID`, `GetE2EEOutbox`,
+  and `ListE2EEOutbox`.
+- Adjacent Go store guard: `go test ./internal/store -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `store::e2ee_outbox` as a focused Rust module for the Go E2EE outbox
+  DAO subset.
+- Preserves queue insert SQL shape, generated `local-<nanos>` IDs, owner DID
+  trimming, raw peer DID/plaintext preservation, optional string trim-to-null
+  behavior, optional integer null behavior, metadata blank-to-null behavior,
+  `original_type` defaulting to `text`, `local_status` defaulting to `queued`,
+  shared `created_at`/`updated_at` default timestamp capture, and credential
+  name trimming.
+- Preserves mark-sent behavior: owner-only where clause, optional string/int
+  `COALESCE`, `local_status="sent"`, attempt increment, `last_attempt_at` and
+  `updated_at` refresh, and clearing of failure fields.
+- Preserves mark-failed behavior: owner-only where clause, failed status,
+  raw error code, optional retry/failed-message/server-seq/metadata `COALESCE`,
+  updated timestamp, and no attempt/last-attempt mutation.
+- Preserves status update and failure-by-ID owner-vs-credential fallback
+  branches, including raw status/error-code values and credential-name trim in
+  fallback mode.
+- Preserves get/list branch behavior: owner branch wins when owner DID is
+  nonblank, blank owner queries by credential, missing rows map to
+  `StoreError::NotFound("query returned no rows")`, and all list branches sort
+  by `updated_at DESC` without an extra tie-breaker.
+- Preserves JSON row mapping for `SELECT *`: nulls become JSON null, integers
+  become JSON numbers, text values become strings, and all schema columns remain
+  visible to callers.
+- Keeps files under the default review-size cap: `e2ee_outbox.rs` is 314 lines
+  and the focused test file is 420 lines after the final local assertions were
+  added.
+- A code-writing Native Agent contributed the focused test file under the
+  required GPT-5.5 xhigh configuration and a single-file write scope.
+
+Boundary note: this is a local SQLite DAO slice. It does not implement message
+secure execution, `queueSecureOutboxRecord`, `FlushQueuedSecureOutbox` real
+store/client wiring, `currentSecureSessionID`, ANP SDK file session stores,
+E2EE clients, WebSocket RPC, CLI secure commands, or `awiki-system-test`
+secure-direct acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing
+`rusqlite + bundled`, `serde_json`, and store helpers. It does not add
+OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
+Tokio, YAML crates, platform service libraries, ANP SDK wiring, E2EE provider
+dependencies, file-store dependencies, or new SQLite dependencies.
+
 ## 2026-05-16 Message Secure Queued Outbox Row Planning Slice
 
 Status: unit verified.

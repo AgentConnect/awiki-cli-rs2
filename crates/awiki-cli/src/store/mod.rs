@@ -1,4 +1,5 @@
 mod contacts;
+mod e2ee_outbox;
 mod groups;
 mod helpers;
 mod import;
@@ -13,6 +14,10 @@ mod types;
 pub use contacts::{
     get_contact_by_did, get_current_contact_by_handle, list_dids_by_handle,
     resolve_contact_handle_by_did, upsert_contact, ContactRecord,
+};
+pub use e2ee_outbox::{
+    get_e2ee_outbox, list_e2ee_outbox, mark_e2ee_outbox_failed, mark_e2ee_outbox_sent,
+    queue_e2ee_outbox, set_e2ee_outbox_failure_by_id, update_e2ee_outbox_status, E2EEOutboxRecord,
 };
 pub use groups::{
     get_group_snapshot, list_cached_group_members, list_group_messages, mark_group_left,
