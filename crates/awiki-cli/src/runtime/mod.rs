@@ -22,6 +22,7 @@ pub mod listener_secure_sessions;
 pub mod listener_service;
 pub mod listener_service_did;
 pub mod listener_session_lookup;
+pub mod listener_session_loop;
 pub mod listener_session_state;
 pub mod listener_wsclient;
 pub mod openclaw_host_notify;

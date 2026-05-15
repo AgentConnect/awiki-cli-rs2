@@ -2,6 +2,73 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Session Loop Backoff Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go` `runSessionLoop`,
+  `retryPublishSecurePrekeys`, `sleepWithContext`, and `minDuration` pure
+  control-flow behavior.
+- Focused Go runtime listener reconnect integration guard:
+  `go test ./internal/runtime/listener -run TestSessionLoopReconnectsAndStoresNotifications -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_session_loop` as a helper-only translation of session
+  loop retry/backoff decisions before foreground listener execution.
+- Preserves Go constants: reconnect base delay one second, reconnect max delay
+  30 seconds, and secure prekey retry delay one second.
+- Preserves top-of-loop cancellation behavior as a close-current-client-and-exit
+  decision.
+- Preserves connect-failure behavior: mark disconnected and signal initial
+  error happen in the caller boundary, then the helper sleeps the current delay,
+  doubles delay, caps at 30 seconds, and retries only when the sleep completes.
+- Preserves successful-connect behavior: delay resets to one second before the
+  connected-session work sequence.
+- Preserves connected action order for marking connected, one-shot initial
+  success, status refresh, queued local notification flush, secure prekey retry
+  start, unread secure direct inbox polling start, and notification consumption.
+- Preserves consume completion order for child task cancellation, client close,
+  mark disconnected, and status refresh.
+- Preserves cancellation after consume: exit before sleeping or doubling.
+- Preserves context-cancelled sleep behavior: exit without doubling the pending
+  delay.
+- Preserves `signalInitial` one-shot behavior through a pure `sync.Once`-like
+  helper.
+- Preserves `retryPublishSecurePrekeys` stop/retry decision: empty warnings
+  finish; nonempty warnings log
+  `listener secure prekey publish retry identity=<identity> warnings=<joined>`
+  and retry after one second.
+- Keeps files under the default review-size cap:
+  `listener_session_loop.rs` is 197 lines and the focused test file is 184
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure control-flow helper slice. It does not implement
+`Supervisor`, goroutine/task spawning, real context/timer ownership,
+`connectSession`, `WSClient.Connect`, `consumeNotifications`, secure inbox
+polling, `PublishSecurePrekeys`, SQLite writes, host-notify dispatch, local
+bridge I/O, or `awiki-system-test` runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice uses only
+`std::time::Duration` and does not add OpenSSL, `native-tls`, bundled OpenSSL,
+`reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform service
+libraries, E2EE provider dependencies, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Secure Replay Filter Helper Slice
 
 Status: unit verified.
