@@ -2,6 +2,43 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity ANP Service Helper Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket'
+cd ../awiki-cli && go test ./internal/identity -run 'TestGenerateIdentity|TestGenerateIdentityRejectsLoopbackANPServiceEndpoint|TestGenerateIdentityRejectsNonBareANPServiceDID' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added Go-shaped ANP service helpers to the existing `identity::did` module:
+  `default_anp_service_endpoint`, `default_anp_service_did`,
+  `validate_anp_service_endpoint`, `validate_anp_service_did`, and
+  `build_agent_anp_message_service`.
+- Made `generate_identity` reuse the helper so loopback endpoint and
+  non-bare service DID validation follow Go's `BuildAgentANPMessageService`
+  boundary.
+- Preserved the `#message` ANPMessageService shape, trimmed endpoint/service
+  DID values, profile list, and `transport-protected` security profile.
+
+Boundary note: this slice does not implement `identity/key_compat.go`, real
+service calls, HTTP/TLS transport, ANP SDK network/default features, or MLS
+provider execution.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; this
+slice reuses the existing local `../anp/rust` SDK path with default features
+disabled. TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-15 Identity Remote Wire Contract Slice
 
 Local Rust and Go reference verification:

@@ -7,7 +7,10 @@ pub mod store;
 pub mod types;
 pub mod wire;
 
-pub use did::{did_suffix, generate_identity};
+pub use did::{
+    build_agent_anp_message_service, default_anp_service_did, default_anp_service_endpoint,
+    did_suffix, generate_identity, validate_anp_service_did, validate_anp_service_endpoint,
+};
 pub use handle_input::{
     complete_bare_handle, default_string as default_handle_string, derive_full_handle_from_did,
     normalize_handle_input, NormalizedHandle,

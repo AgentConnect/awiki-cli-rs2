@@ -4,6 +4,96 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn identity_anp_service_helpers_match_go_contract() {
+    assert_eq!(
+        awiki_cli::identity::default_anp_service_endpoint(" awiki.ai "),
+        "https://awiki.ai/anp-im/rpc"
+    );
+    assert_eq!(
+        awiki_cli::identity::default_anp_service_did(" awiki.ai "),
+        "did:wba:awiki.ai"
+    );
+
+    awiki_cli::identity::did::validate_anp_service_endpoint("https://awiki.ai/anp-im/rpc")
+        .expect("https endpoint");
+    awiki_cli::identity::did::validate_anp_service_endpoint("http://api.example/rpc")
+        .expect("http endpoint");
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_endpoint(" ").expect_err("missing endpoint"),
+        "invalid input: anp_service_endpoint is required",
+    );
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_endpoint("ftp://awiki.ai/rpc")
+            .expect_err("bad scheme"),
+        "invalid input: anp_service_endpoint must use http or https",
+    );
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_endpoint("https:///rpc")
+            .expect_err("missing hostname"),
+        "invalid input: anp_service_endpoint must include a hostname",
+    );
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_endpoint("https://localhost/anp-im/rpc")
+            .expect_err("localhost"),
+        "invalid input: anp_service_endpoint must not use localhost",
+    );
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_endpoint("http://127.0.0.1:9898/rpc")
+            .expect_err("loopback"),
+        "invalid input: anp_service_endpoint must not use a loopback address",
+    );
+
+    awiki_cli::identity::did::validate_anp_service_did("did:wba:awiki.ai")
+        .expect("bare service did");
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_did(" ").expect_err("missing service did"),
+        "invalid input: anp_service_did is required",
+    );
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_did("did:key:z6Mkwrong")
+            .expect_err("wrong did method"),
+        "invalid input: anp_service_did must use did:wba",
+    );
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_did("did:wba:awiki.ai#message")
+            .expect_err("fragment"),
+        "invalid input: anp_service_did must not include a fragment",
+    );
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_did("did:wba:").expect_err("missing domain"),
+        "invalid input: anp_service_did must include a domain",
+    );
+    assert_error_contains(
+        awiki_cli::identity::did::validate_anp_service_did(
+            "did:wba:awiki.ai:services:message:e1_local",
+        )
+        .expect_err("non-bare service did"),
+        "invalid input: anp_service_did must be a bare-domain did:wba DID",
+    );
+
+    let service = awiki_cli::identity::did::build_agent_anp_message_service(
+        " https://awiki.ai/anp-im/rpc ",
+        " did:wba:awiki.ai ",
+    )
+    .expect("message service");
+    assert_eq!(
+        service,
+        json!({
+            "id": "#message",
+            "type": "ANPMessageService",
+            "serviceEndpoint": "https://awiki.ai/anp-im/rpc",
+            "serviceDid": "did:wba:awiki.ai",
+            "profiles": [
+                "anp.core.binding.v1",
+                "anp.direct.base.v1",
+                "anp.attachment.v1",
+            ],
+            "securityProfiles": ["transport-protected"],
+        })
+    );
+}
+
+#[test]
 fn identity_handle_input_helpers_match_go_contract() {
     let bare = awiki_cli::identity::normalize_handle_input("Alice", "Tenant.Example.")
         .expect("normalize bare handle");
@@ -484,6 +574,14 @@ fn assert_code(output: &Output, code: i32) {
         "stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_error_contains(error: awiki_cli::identity::IdentityError, needle: &str) {
+    let message = error.to_string();
+    assert!(
+        message.contains(needle),
+        "error {message:?} should contain {needle:?}"
     );
 }
 

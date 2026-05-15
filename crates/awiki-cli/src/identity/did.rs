@@ -5,8 +5,15 @@ use anp::authentication::{
 };
 use rand::RngCore;
 use serde_json::Value;
+use std::net::IpAddr;
 
 const DEFAULT_ANP_SERVICE_PATH: &str = "/anp-im/rpc";
+const AGENT_MESSAGE_SERVICE_PROFILES: &[&str] = &[
+    "anp.core.binding.v1",
+    "anp.direct.base.v1",
+    "anp.attachment.v1",
+];
+const AGENT_MESSAGE_SERVICE_SECURITY_PROFILES: &[&str] = &["transport-protected"];
 
 pub fn default_anp_service_endpoint(hostname: &str) -> String {
     format!("https://{}{}", hostname.trim(), DEFAULT_ANP_SERVICE_PATH)
@@ -14,6 +21,81 @@ pub fn default_anp_service_endpoint(hostname: &str) -> String {
 
 pub fn default_anp_service_did(hostname: &str) -> String {
     format!("did:wba:{}", hostname.trim())
+}
+
+pub fn validate_anp_service_endpoint(service_endpoint: &str) -> Result<(), IdentityError> {
+    let trimmed = service_endpoint.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_input("anp_service_endpoint is required"));
+    }
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return Err(invalid_input("anp_service_endpoint is invalid"));
+    };
+    if scheme != "http" && scheme != "https" {
+        return Err(invalid_input("anp_service_endpoint must use http or https"));
+    }
+    let Some(hostname) = endpoint_hostname(rest) else {
+        return Err(invalid_input(
+            "anp_service_endpoint must include a hostname",
+        ));
+    };
+    let hostname = hostname.trim().to_ascii_lowercase();
+    if hostname.is_empty() {
+        return Err(invalid_input(
+            "anp_service_endpoint must include a hostname",
+        ));
+    }
+    if hostname == "localhost" {
+        return Err(invalid_input("anp_service_endpoint must not use localhost"));
+    }
+    if hostname
+        .parse::<IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+    {
+        return Err(invalid_input(
+            "anp_service_endpoint must not use a loopback address",
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_anp_service_did(service_did: &str) -> Result<(), IdentityError> {
+    let trimmed = service_did.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_input("anp_service_did is required"));
+    }
+    let Some(remainder) = trimmed.strip_prefix("did:wba:") else {
+        return Err(invalid_input("anp_service_did must use did:wba"));
+    };
+    if trimmed.contains('#') {
+        return Err(invalid_input("anp_service_did must not include a fragment"));
+    }
+    if remainder.is_empty() {
+        return Err(invalid_input("anp_service_did must include a domain"));
+    }
+    if remainder.contains([':', '/', '?']) {
+        return Err(invalid_input(
+            "anp_service_did must be a bare-domain did:wba DID",
+        ));
+    }
+    Ok(())
+}
+
+pub fn build_agent_anp_message_service(
+    service_endpoint: &str,
+    service_did: &str,
+) -> Result<Value, IdentityError> {
+    validate_anp_service_endpoint(service_endpoint)?;
+    validate_anp_service_did(service_did)?;
+    Ok(build_anp_message_service(
+        "#message",
+        service_endpoint.trim().to_string(),
+        AnpMessageServiceOptions::default()
+            .with_service_did(service_did.trim().to_string())
+            .with_profiles(AGENT_MESSAGE_SERVICE_PROFILES.iter().copied())
+            .with_security_profiles(AGENT_MESSAGE_SERVICE_SECURITY_PROFILES.iter().copied()),
+    ))
 }
 
 pub fn generate_identity(
@@ -37,18 +119,7 @@ pub fn generate_identity(
     } else {
         service_did.trim().to_string()
     };
-    let service = build_anp_message_service(
-        "#message",
-        endpoint,
-        AnpMessageServiceOptions::default()
-            .with_service_did(service_did)
-            .with_profiles([
-                "anp.core.binding.v1",
-                "anp.direct.base.v1",
-                "anp.attachment.v1",
-            ])
-            .with_security_profiles(["transport-protected"]),
-    );
+    let service = build_agent_anp_message_service(&endpoint, &service_did)?;
     let options = DidDocumentOptions {
         path_segments: vec!["user".to_string()],
         domain: Some(hostname.to_string()),
@@ -121,4 +192,23 @@ fn random_hex(num_bytes: usize) -> String {
 
 pub fn object_or_null(value: Option<Value>) -> Value {
     value.unwrap_or(Value::Null)
+}
+
+fn endpoint_hostname(rest: &str) -> Option<&str> {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    if let Some(stripped) = host_port.strip_prefix('[') {
+        return stripped.split_once(']').map(|(host, _)| host);
+    }
+    host_port
+        .split_once(':')
+        .map(|(host, _)| host)
+        .or(Some(host_port))
+}
+
+fn invalid_input(message: &str) -> IdentityError {
+    IdentityError::InvalidInput(format!("invalid input: {message}"))
 }
