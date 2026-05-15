@@ -2,6 +2,52 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Secure Direct Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_notifications_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+```
+
+Scope:
+
+- Adds the secure-direct helper-only boundary for Go
+  `internal/runtime/listener/server.go`.
+- Covers `isDirectSecureIncomingNotification`,
+  `isSecureDirectWireContentType`, `secureNotificationFromMessageView`, and
+  `plaintextBodyToNotificationBody`.
+- Keeps the slice pure: notification classification, secure direct wire
+  content-type recognition, message-view to notification conversion, and
+  plaintext-body to notification-body conversion only.
+- Go currently covers these helpers through secure listener integration tests;
+  Rust adds direct helper-level contract coverage for the helper-only boundary.
+
+Dependency note: no dependency was added. The slice reuses existing JSON/value
+and listener helper surfaces in `runtime::listener_secure_notifications`; it
+does not add WebSocket crates, HTTP/TLS clients, OpenSSL, `native-tls`, bundled
+OpenSSL, E2EE provider crates, platform service libraries, or new SQLite
+dependencies.
+
+Boundary note: Go foreground WebSocket runtime processing, direct secure
+decrypt/ack, message/group storage side effects, host-notify dispatch, local
+bridge I/O, and runtime listener session orchestration are not claimed by this
+helper-only slice.
+
 ## 2026-05-16 Runtime Listener WebSocket Client Helper Slice
 
 Status: unit verified.
