@@ -471,6 +471,7 @@ fn awiki_cmd_with_workspace(args: &[&str], workspace: &std::path::Path) -> Outpu
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")

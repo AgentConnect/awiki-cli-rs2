@@ -101,28 +101,16 @@ fn build_upgrade_status(
     (data, summary, warnings)
 }
 
-fn npm_global_install_attempts() -> Vec<Vec<&'static str>> {
-    vec![
-        vec!["install", "-g", "@awiki/cli@latest"],
-        vec![
-            "install",
-            "-g",
-            "@awiki/cli@latest",
-            "--registry=https://registry.npmmirror.com",
-        ],
-    ]
-}
-
 fn format_npm_install_command(args: &[&str]) -> String {
-    format!("npm {}", args.join(" "))
+    super::update_preflight::format_npm_install_command(args)
 }
 
 fn direct_npm_install_command() -> String {
-    format_npm_install_command(&npm_global_install_attempts()[0])
+    super::update_preflight::direct_npm_install_command()
 }
 
 fn mirror_npm_install_command() -> String {
-    format_npm_install_command(&npm_global_install_attempts()[1])
+    format_npm_install_command(&super::update_preflight::npm_global_install_attempts()[1])
 }
 
 fn direct_upgrade_hint() -> String {
@@ -134,7 +122,7 @@ fn direct_upgrade_hint() -> String {
 }
 
 fn run_npm_global_install() -> Result<(), String> {
-    let attempts = npm_global_install_attempts();
+    let attempts = super::update_preflight::npm_global_install_attempts();
     let mut errors = Vec::new();
     for (index, args) in attempts.iter().enumerate() {
         if index > 0 {

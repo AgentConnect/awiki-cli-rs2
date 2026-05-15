@@ -10,6 +10,8 @@ const DEFAULT_METADATA_CACHE_TTL_SECONDS: i64 = 43_200;
 static TEST_NPM_LATEST_URLS: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
 #[cfg(test)]
 static TEST_NPM_LATEST_URLS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+static TEST_CURRENT_VERSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Metadata {
@@ -97,6 +99,16 @@ fn check_inner(resolved: &Resolved, prefer_fresh: bool) -> CheckOutcome {
 }
 
 fn current_version() -> String {
+    #[cfg(test)]
+    {
+        if let Some(version) = TEST_CURRENT_VERSION
+            .lock()
+            .expect("test current version mutex")
+            .clone()
+        {
+            return version;
+        }
+    }
     let current = buildinfo::VERSION.trim();
     if current.is_empty() {
         "dev".to_string()
@@ -163,7 +175,7 @@ fn npm_latest_urls() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{version, TEST_NPM_LATEST_URLS, TEST_NPM_LATEST_URLS_LOCK};
+    use super::{version, TEST_CURRENT_VERSION, TEST_NPM_LATEST_URLS, TEST_NPM_LATEST_URLS_LOCK};
     use crate::config::{Paths, Resolved};
     use std::fs;
     use std::io::{BufRead, BufReader, Write};
@@ -285,6 +297,42 @@ mod tests {
         assert_eq!(server.paths(), Vec::<String>::new());
     }
 
+    #[test]
+    fn check_blocks_non_dev_version_below_minimum_supported() {
+        let _version = TestCurrentVersion::set("1.0.0");
+        let _env = EnvVar::set("AWIKI_CLI_UPDATE_CACHE_ONLY", "1");
+        let temp = TempDir::new();
+        seed_metadata(temp.path(), "1.0.2", "1.0.1", "");
+
+        let outcome = super::check(&resolved(temp.path()));
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.decision.current_version, "1.0.0");
+        assert_eq!(outcome.decision.latest_version, "1.0.2");
+        assert_eq!(outcome.decision.min_supported_version, "1.0.1");
+        assert_eq!(outcome.decision.metadata_source, "cache");
+        assert_eq!(outcome.decision.dev_build, false);
+        assert_eq!(outcome.decision.strict_disabled, false);
+        assert_eq!(outcome.decision.has_newer_version, true);
+        assert_eq!(outcome.decision.blocked, true);
+    }
+
+    #[test]
+    fn check_strict_disable_suppresses_blocking() {
+        let _version = TestCurrentVersion::set("1.0.0");
+        let _env = EnvVar::set("AWIKI_CLI_UPDATE_CACHE_ONLY", "1");
+        let _strict = EnvVar::set("AWIKI_CLI_DISABLE_STRICT_VERSION", "1");
+        let temp = TempDir::new();
+        seed_metadata(temp.path(), "1.0.2", "1.0.1", "");
+
+        let outcome = super::check(&resolved(temp.path()));
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.decision.strict_disabled, true);
+        assert_eq!(outcome.decision.blocked, false);
+        assert_eq!(outcome.decision.has_newer_version, true);
+    }
+
     fn resolved(root: &Path) -> Resolved {
         let paths = test_paths(root);
         Resolved {
@@ -404,6 +452,30 @@ mod tests {
     impl Drop for TestUrls {
         fn drop(&mut self) {
             *TEST_NPM_LATEST_URLS.lock().expect("test urls mutex") = None;
+        }
+    }
+
+    struct TestCurrentVersion {
+        _guard: MutexGuard<'static, ()>,
+    }
+
+    impl TestCurrentVersion {
+        fn set(version: &str) -> Self {
+            let guard = TEST_NPM_LATEST_URLS_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            *TEST_CURRENT_VERSION
+                .lock()
+                .expect("test current version mutex") = Some(version.to_string());
+            Self { _guard: guard }
+        }
+    }
+
+    impl Drop for TestCurrentVersion {
+        fn drop(&mut self) {
+            *TEST_CURRENT_VERSION
+                .lock()
+                .expect("test current version mutex") = None;
         }
     }
 

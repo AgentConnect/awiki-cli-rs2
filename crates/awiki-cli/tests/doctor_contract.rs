@@ -187,6 +187,7 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
         .env("HOME", workspace.join("home"))
         .env("USERPROFILE", workspace.join("home"))
         .env("PATH", "/usr/bin:/bin")
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")

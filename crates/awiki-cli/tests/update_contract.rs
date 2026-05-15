@@ -87,6 +87,108 @@ fn upgrade_strict_disable_follows_config_and_env_override() {
     assert_eq!(envelope["data"]["blocked"], false);
 }
 
+#[test]
+fn root_preflight_soft_fails_update_check_for_non_exempt_commands() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let output = awiki_cmd_with_workspace(
+        &["status", "--format", "json"],
+        workspace.path(),
+        &[("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")],
+    );
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    assert_eq!(envelope["command"], "awiki-cli status");
+    assert_eq!(envelope["data"]["cli"]["phase"], "phase1-shell");
+}
+
+#[test]
+fn root_preflight_verbose_logs_soft_update_check_failures() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let output = awiki_cmd_with_workspace(
+        &["--verbose", "status", "--format", "json"],
+        workspace.path(),
+        &[("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")],
+    );
+    assert_success_code(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[awiki-cli] update check failed:"),
+        "stderr should include verbose update check failure, got {stderr}"
+    );
+    assert!(
+        stderr.contains("cache-only mode"),
+        "stderr should include cache-only failure cause, got {stderr}"
+    );
+    let envelope: Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(envelope["command"], "awiki-cli status");
+}
+
+#[test]
+fn root_preflight_exempts_local_recovery_commands_from_update_check() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let successful_exempt_commands: &[&[&str]] = &[
+        &["version", "--format", "json"],
+        &["upgrade", "--format", "json"],
+        &["init", "--dry-run", "--format", "json"],
+        &["docs", "--format", "json"],
+        &["schema", "--format", "json"],
+        &["config", "show", "--format", "json"],
+        &["doctor", "--format", "json"],
+        &["completion", "bash"],
+    ];
+
+    for args in successful_exempt_commands {
+        let mut verbose_args = vec!["--verbose"];
+        verbose_args.extend_from_slice(args);
+        let output = awiki_cmd_with_workspace(
+            &verbose_args,
+            workspace.path(),
+            &[("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("[awiki-cli] update check failed:"),
+            "exempt command {args:?} should not log update check failure, stderr = {stderr}"
+        );
+        assert_success_with_context(
+            &output,
+            &format!("expected exempt command {args:?} to skip update check"),
+        );
+    }
+
+    let deferred_exempt_commands: &[&[&str]] = &[
+        &["runtime", "listener", "service-run"],
+        &["runtime", "host-notify", "hermes", "bridge", "service-run"],
+    ];
+
+    for args in deferred_exempt_commands {
+        let mut verbose_args = vec!["--verbose"];
+        verbose_args.extend_from_slice(args);
+        let output = awiki_cmd_with_workspace(
+            &verbose_args,
+            workspace.path(),
+            &[("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("[awiki-cli] update check failed:"),
+            "deferred exempt command {args:?} should not log update check failure, stderr = {stderr}"
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "deferred command should still stop at current handler boundary; stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            stderr
+        );
+    }
+}
+
 fn seed_metadata(workspace: &Path, latest: &str, minimum: &str) {
     let path = workspace.join("cache").join("update").join("metadata.json");
     fs::create_dir_all(path.parent().unwrap()).expect("create cache dir");
@@ -129,13 +231,21 @@ fn awiki_cmd_with_workspace(args: &[&str], workspace: &Path, extra_env: &[(&str,
 }
 
 fn assert_success(output: &Output) {
+    assert_success_with_context(output, "unexpected exit status");
+}
+
+fn assert_success_with_context(output: &Output, context: &str) {
     assert_eq!(
         output.status.code(),
         Some(0),
-        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        "{context}; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn assert_success_code(output: &Output) {
+    assert_success_with_context(output, "unexpected exit status");
 }
 
 fn success_json(output: &Output) -> Value {

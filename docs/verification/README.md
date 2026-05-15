@@ -1737,9 +1737,10 @@ uv run --no-sync pytest tests_v2/update -q
 
 Result: `5 passed in 0.72s`.
 
-Boundary note: registry fetch/writeback and the root update-policy preflight
-guard remain deferred translation tasks. They require the shared Rustls HTTP
-dependency decision and broader CLI-root parity tests.
+Boundary update: the registry fetch/writeback and root update-policy preflight
+guard deferred here were translated in later update slices. The root preflight
+now lives in `crates/awiki-cli/src/app/update_preflight.rs` and reuses the
+Rustls-backed `update::check` path.
 
 ## 2026-05-14 Identity/Group Dry-Run CLI Slice
 
@@ -3132,3 +3133,55 @@ uses existing config parsing and URL derivation helpers. It does not introduce
 HTTP/TLS, OpenSSL, `native-tls`, WebSocket, authsdk session, platform
 service-manager, filesystem-copy, file-lock, or new SQLite dependencies. TLS
 policy remains Rustls-first and unchanged.
+
+## 2026-05-15 Root Update Preflight Guard Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli app::update_preflight --locked
+cargo +1.79.0 test -p awiki-cli update --locked
+cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket|serde_yaml|yaml'
+cd ../awiki-cli && go test ./internal/cli ./internal/update -run 'Test.*Update|Test.*Preflight|Test.*Root|TestIsUpdateExemptCommandAllowsListenerServiceRun' -count=1
+```
+
+Result: passed. The full local Rust suite, focused Go reference tests, structure check, build, and dependency audit all passed.
+
+Scope:
+
+- Added `crates/awiki-cli/src/app/update_preflight.rs` for Go
+  `internal/cli/root.go` update preflight behavior while keeping `app.rs` below
+  the default 1200-line review cap.
+- Preserved Go ordering: global `--format` validation runs first, then the
+  update policy guard runs before non-exempt command dispatch.
+- Preserved Go exemptions for local/recovery commands represented by the
+  current Rust parser: version, upgrade, init, docs, schema, config show,
+  doctor, completion shells, hidden `runtime listener service-run`, and hidden
+  Hermes bridge service-run command names.
+- Preserved Go soft-fail behavior: config/update-check failures do not block
+  normal command execution; `--verbose` prints
+  `[awiki-cli] update check failed: ...` to stderr.
+- Preserved Go unsupported-version behavior at the helper/decision boundary:
+  non-dev versions below `min_supported_version` produce `version_unsupported`
+  with exit code 3 and npm primary/mirror install hints.
+- Preserved Go newer-version warning placement by prepending the update warning
+  before command-specific warnings.
+- Added test-only current-version override in `update/mod.rs` so the blocked
+  path can be tested without changing default dev-build behavior.
+- Subprocess CLI test helpers set `AWIKI_CLI_UPDATE_CACHE_ONLY=1` to keep
+  unrelated CLI contract tests deterministic and offline after preflight became
+  global. This is a test isolation choice only; production still follows
+  `update::check` cache/network behavior.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This
+slice reuses the existing direct Rustls update registry path and the approved
+`rusqlite + bundled` SQLite path. It does not introduce OpenSSL,
+`native-tls`, reqwest, hyper, WebSocket, YAML, platform service-manager, or new
+SQLite dependencies.

@@ -22,6 +22,7 @@ mod page_handlers;
 mod runtime_handlers;
 mod site_handlers;
 mod update_handlers;
+pub(super) mod update_preflight;
 
 #[derive(Debug, Clone)]
 pub struct GlobalOptions {
@@ -51,6 +52,7 @@ impl Default for GlobalOptions {
 #[derive(Debug, Clone, Default)]
 pub struct App {
     pub globals: GlobalOptions,
+    update_warning: String,
 }
 
 pub fn execute() -> i32 {
@@ -60,8 +62,9 @@ pub fn execute() -> i32 {
     };
     let mut app = App {
         globals: command.globals.clone(),
+        update_warning: String::new(),
     };
-    if let Err(err) = app.preflight() {
+    if let Err(err) = app.preflight(&command) {
         return app.handle_error(err);
     }
     match cli::dispatch(&app, &command) {
@@ -71,16 +74,13 @@ pub fn execute() -> i32 {
 }
 
 impl App {
-    fn preflight(&mut self) -> Result<(), ExitError> {
-        output::normalize_format(&self.globals.format).map_err(|err| {
-            ExitError::new(
-                "invalid_argument",
-                2,
-                err.to_string(),
-                "Use --format json, pretty, ndjson, or table.",
-            )
-        })?;
-        Ok(())
+    pub(super) fn resolve_config_raw(&self) -> anyhow::Result<Resolved> {
+        config::resolve(Overrides {
+            identity: self.globals.identity.clone(),
+            identity_changed: self.globals.identity_changed,
+            format: self.globals.format.clone(),
+            format_changed: self.globals.format_changed,
+        })
     }
 
     pub fn run_status(&self) -> Result<(), ExitError> {
@@ -600,13 +600,7 @@ impl App {
     }
 
     fn resolve_config(&self) -> Result<Resolved, ExitError> {
-        config::resolve(Overrides {
-            identity: self.globals.identity.clone(),
-            identity_changed: self.globals.identity_changed,
-            format: self.globals.format.clone(),
-            format_changed: self.globals.format_changed,
-        })
-        .map_err(internal_anyhow)
+        self.resolve_config_raw().map_err(internal_anyhow)
     }
 
     fn open_store(
@@ -645,6 +639,7 @@ impl App {
         warnings: Vec<String>,
     ) -> Result<(), ExitError> {
         let format = output::normalize_format(&resolved.output_format).unwrap_or(Format::Json);
+        let warnings = update_preflight::merge_update_warning(&self.update_warning, warnings);
         let envelope = SuccessEnvelope {
             ok: true,
             command: command.to_string(),

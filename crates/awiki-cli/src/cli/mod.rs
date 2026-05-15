@@ -273,6 +273,8 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["runtime", "listener", "config", "set", ..] => "runtime.listener.config.set",
         ["runtime", "listener", "enable", ..] => "runtime.listener.enable",
         ["runtime", "listener", "disable", ..] => "runtime.listener.disable",
+        ["runtime", "listener", "run", ..] => "runtime.listener.run",
+        ["runtime", "listener", "service-run", ..] => "runtime.listener.service-run",
         ["runtime", "host-notify", "config", "show", ..] => "runtime.host-notify.config.show",
         ["runtime", "host-notify", "config", "set", ..] => "runtime.host-notify.config.set",
         ["runtime", "host-notify", "openclaw", "set", ..] => "runtime.host-notify.openclaw.set",
@@ -290,6 +292,9 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         }
         ["runtime", "host-notify", "openclaw", "route", "remove", ..] => {
             "runtime.host-notify.openclaw.route.remove"
+        }
+        ["runtime", "host-notify", "hermes", "bridge", "service-run", ..] => {
+            "runtime.host-notify.hermes.bridge.service-run"
         }
         ["debug", "db", "query", ..] => "debug.db.query",
         ["debug", "db", "import-v1", ..] => "debug.db.import-v1",
