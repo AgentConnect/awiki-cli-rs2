@@ -1,9 +1,11 @@
 use awiki_cli::message::{
-    compact_warnings, flush_queued_secure_outbox_rows_plan, MarkSentOutcome, QueuedSecureOutboxRow,
+    build_secure_ack_payload, build_secure_init_payload, compact_warnings,
+    flush_queued_secure_outbox_rows_plan, is_pending_confirmation_error, is_secure_ack_plaintext,
+    is_secure_init_plaintext, secure_ack_session_id, MarkSentOutcome, QueuedSecureOutboxRow,
     SecureOutboxFlushAction, SecureOutboxFlushRowOutcome, SecureOutboxSendOutcome,
     StoreMessageOutcome,
 };
-use serde_json::{json, Map};
+use serde_json::{json, Map, Value};
 
 #[test]
 fn rows_are_stably_sorted_by_created_at_before_flushing() {
@@ -369,6 +371,124 @@ fn compact_warnings_trims_deduplicates_and_drops_empty_values() {
     assert!(compact_warnings(vec![" ".to_string(), "".to_string()]).is_empty());
 }
 
+#[test]
+fn secure_ack_payload_trims_session_and_acked_message_ids() {
+    assert_eq!(
+        Value::Object(build_secure_ack_payload(" session-1 \n", "\tmsg-9 ")),
+        json!({
+            "system_type": "awiki.direct.secure_ack.v1",
+            "session_id": "session-1",
+            "acked_message_id": "msg-9",
+        })
+    );
+}
+
+#[test]
+fn secure_init_payload_matches_go_manual_init_control_payload() {
+    assert_eq!(
+        Value::Object(build_secure_init_payload()),
+        json!({
+            "system_type": "awiki.direct.secure_init.v1",
+            "reason": "manual_init",
+        })
+    );
+}
+
+#[test]
+fn secure_control_plaintext_detection_accepts_matching_json_object_payloads() {
+    assert!(is_secure_ack_plaintext(&plaintext_with_payload(json!({
+        "system_type": "awiki.direct.secure_ack.v1",
+        "session_id": "session-1",
+        "acked_message_id": "msg-9",
+    }))));
+    assert!(is_secure_init_plaintext(&plaintext_with_payload(json!({
+        "system_type": "awiki.direct.secure_init.v1",
+        "reason": "manual_init",
+    }))));
+    assert!(is_secure_ack_plaintext(&plaintext_with_payload(json!(
+        r#"{"system_type":"awiki.direct.secure_ack.v1","session_id":"session-from-string"}"#
+    ))));
+}
+
+#[test]
+fn secure_control_plaintext_detection_rejects_non_matching_shapes() {
+    let valid_ack_payload = json!({
+        "system_type": "awiki.direct.secure_ack.v1",
+        "session_id": "session-1",
+        "acked_message_id": "msg-9",
+    });
+
+    let mut missing_content_type = plaintext_with_payload(valid_ack_payload.clone());
+    missing_content_type.remove("application_content_type");
+    assert!(!is_secure_ack_plaintext(&missing_content_type));
+
+    let mut wrong_content_type = plaintext_with_payload(valid_ack_payload.clone());
+    wrong_content_type.insert("application_content_type".to_string(), json!("text/plain"));
+    assert!(!is_secure_ack_plaintext(&wrong_content_type));
+
+    assert!(!is_secure_ack_plaintext(&plaintext_with_payload(json!(
+        "not-an-object"
+    ))));
+    assert!(is_secure_ack_plaintext(&plaintext_with_payload(json!(
+        r#"{"system_type":"awiki.direct.secure_ack.v1"}"#
+    ))));
+    assert!(!is_secure_ack_plaintext(&plaintext_with_payload(json!({
+        "system_type": 42,
+        "session_id": "session-1",
+        "acked_message_id": "msg-9",
+    }))));
+    assert!(!is_secure_ack_plaintext(&plaintext_with_payload(json!({
+        "system_type": "awiki.direct.secure_init.v1",
+        "reason": "manual_init",
+    }))));
+    assert!(!is_secure_init_plaintext(&plaintext_with_payload(json!({
+        "system_type": "awiki.direct.secure_ack.v1",
+        "session_id": "session-1",
+        "acked_message_id": "msg-9",
+    }))));
+}
+
+#[test]
+fn secure_ack_session_id_reads_only_string_session_from_object_payload() {
+    assert_eq!(
+        secure_ack_session_id(&plaintext_with_payload(json!({
+            "system_type": "awiki.direct.secure_ack.v1",
+            "session_id": "session-1",
+        }))),
+        "session-1"
+    );
+    assert_eq!(
+        secure_ack_session_id(&plaintext_with_payload(json!({
+            "system_type": "awiki.direct.secure_ack.v1",
+            "session_id": 42,
+        }))),
+        ""
+    );
+    assert_eq!(
+        secure_ack_session_id(&plaintext_with_payload(json!("not-an-object"))),
+        ""
+    );
+    assert_eq!(
+        secure_ack_session_id(&plaintext_with_payload(json!(
+            r#"{"session_id":"session-1"}"#
+        ))),
+        "session-1"
+    );
+}
+
+#[test]
+fn pending_confirmation_error_detection_matches_go_string_checks() {
+    assert!(!is_pending_confirmation_error(None));
+
+    assert!(is_pending_confirmation_error(Some(
+        "remote returned PENDING CONFIRMATION for peer"
+    )));
+    assert!(is_pending_confirmation_error(Some(
+        "secure state is Pending-Confirmation"
+    )));
+    assert!(!is_pending_confirmation_error(Some("confirmation pending")));
+}
+
 fn row(
     outbox_id: &str,
     peer_did: &str,
@@ -418,4 +538,14 @@ fn stored_record(actions: &[SecureOutboxFlushAction]) -> awiki_cli::store::Messa
             _ => None,
         })
         .expect("StoreMessage action")
+}
+
+fn plaintext_with_payload(payload: Value) -> Map<String, Value> {
+    Map::from_iter([
+        (
+            "application_content_type".to_string(),
+            json!("application/json"),
+        ),
+        ("payload".to_string(), payload),
+    ])
 }

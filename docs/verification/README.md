@@ -143,7 +143,7 @@ OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
 Tokio, YAML crates, platform service libraries, ANP SDK wiring, E2EE provider
 dependencies, file-store dependencies, or new SQLite dependencies.
 
-## 2026-05-16 Message Secure Queued Outbox Row Planning Slice
+## 2026-05-16 Message Secure Control Helper and Queued Outbox Row Planning Slice
 
 Status: unit verified.
 
@@ -160,6 +160,10 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 
 Go reference verification:
 
+- Go source parity for `internal/message/secure_control.go` pure helpers:
+  `BuildSecureAckPayload`, `BuildSecureInitPayload`, `IsSecureAckPlaintext`,
+  `IsSecureInitPlaintext`, `secureAckSessionID`, and
+  `isPendingConfirmationError`.
 - Go source parity for `internal/message/secure_control.go`
   `FlushQueuedSecureOutbox` queued-row sorting, filtering, payload handling,
   failure updates, send result handling, sent metadata, stored message shape,
@@ -171,6 +175,22 @@ Result: passed.
 
 Scope:
 
+- Adds `message::secure_control` as a pure helper module for the control
+  payload and plaintext predicates used by Go secure-direct command/listener
+  flows.
+- Preserves `BuildSecureAckPayload`: fixed secure-ack system type, trimmed
+  `session_id`, and trimmed `acked_message_id`.
+- Preserves `BuildSecureInitPayload`: fixed secure-init system type and
+  `reason="manual_init"`.
+- Preserves `IsSecureAckPlaintext` and `IsSecureInitPlaintext`: exact
+  `application/json` content-type check, Go `mapFromAny` object-or-JSON-string
+  payload parsing, string-only `system_type` extraction, and ack/init type
+  mismatch rejection.
+- Preserves `secureAckSessionID`: Go `mapFromAny` payload parsing and
+  string-only `session_id` extraction.
+- Preserves `isPendingConfirmationError`: nil-equivalent false behavior plus
+  case-insensitive matching for `pending confirmation` and
+  `pending-confirmation`.
 - Adds `message::secure_outbox_flush` as a pure row-loop planning helper for Go
   `FlushQueuedSecureOutbox`.
 - Preserves stable ascending sort by raw `created_at` string, including stable
@@ -201,20 +221,22 @@ Scope:
   metadata, and Go's current `json` content-type fallback to `text/plain`.
 - Preserves `compactWarnings` trimming, empty-drop, deduplication, and first
   occurrence order.
-- Keeps files under the default review-size cap: `secure_outbox_flush.rs` is
-  365 lines and the focused test file is 421 lines.
+- Keeps files under the default review-size cap: `secure_control.rs`,
+  `secure_outbox_flush.rs`, and the focused test file are all below 1200
+  lines.
 
 Boundary note: this is a pure planning slice. It does not implement real store
-open/schema/list, `currentSecureSessionID`, ANP SDK file session stores, E2EE
-client construction or sending, SQLite outbox mutation, message store writes,
-WebSocket RPC, foreground listener execution, or `awiki-system-test` runtime
-listener acceptance.
+open/schema/list, `queueSecureOutboxRecord`, `currentSecureSessionID`, ANP SDK
+file session stores, E2EE client construction or sending, SQLite outbox
+mutation, message store writes, WebSocket RPC, foreground listener execution,
+or `awiki-system-test` runtime listener acceptance.
 
 Dependency note: no dependency was added. The slice reuses existing message
-helpers, store record types, `serde_json`, and std collections. It does not add
-OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
-Tokio, YAML crates, platform service libraries, E2EE provider dependencies,
-file-store dependencies, ANP SDK wiring, or new SQLite dependencies.
+helpers, store record types, `serde_json`, and std collections. It does not
+add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
+crates, Tokio, YAML crates, platform service libraries, E2EE provider
+dependencies, file-store dependencies, ANP SDK wiring, or new SQLite
+dependencies.
 
 ## 2026-05-16 Runtime Listener Notification Consume Helper Slice
 
