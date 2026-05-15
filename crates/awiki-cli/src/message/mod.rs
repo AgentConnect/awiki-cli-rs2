@@ -53,7 +53,7 @@ pub use proof::{
     build_origin_proof, load_private_key_material, origin_auth_value,
     verification_method_id_from_document, ORIGIN_PROOF_SCHEME,
 };
-pub use secure_commands::{secure_drop, secure_failed};
+pub use secure_commands::{secure_drop, secure_failed, secure_status};
 pub use secure_outbox_flush::{
     compact_warnings, flush_queued_secure_outbox_rows_plan, MarkSentOutcome, QueuedSecureOutboxRow,
     SecureOutboxFlushAction, SecureOutboxFlushPlan, SecureOutboxFlushRowOutcome,

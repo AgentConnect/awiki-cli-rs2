@@ -1,9 +1,64 @@
-use super::service::{require_active_identity, CommandResult};
+use super::service::{require_active_identity, resolve_target, CommandResult};
 use super::types::{MessageError, SecureOutboxActionRequest, SecureStatusRequest};
 use crate::config::Resolved;
-use crate::identity::Manager;
+use crate::identity::{types::StoredIdentity, Manager};
 use crate::store::{self, StoreError};
-use serde_json::json;
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+const SECURE_SESSION_DIR_NAME: &str = "p5-e2ee-sessions";
+
+pub fn secure_status(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: SecureStatusRequest,
+) -> Result<CommandResult, MessageError> {
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let target = if request.with.trim().is_empty() {
+        None
+    } else {
+        Some(resolve_target(resolved, &request.with)?)
+    };
+    let peer_did = target
+        .as_ref()
+        .map(|target| target.did.as_str())
+        .unwrap_or("");
+    let sessions = list_secure_sessions(manager, &record, peer_did)?;
+    let connection = open_secure_store(resolved)?;
+    let mut outbox_rows =
+        store::list_e2ee_outbox(&connection, &record.did, &record.identity_name, "")
+            .map_err(store_error)?;
+    if !peer_did.is_empty() {
+        outbox_rows.retain(|row| string_from_value(row.get("peer_did")) == peer_did);
+    }
+    let mut by_status: BTreeMap<String, usize> = BTreeMap::new();
+    for row in &outbox_rows {
+        let status = default_string(&string_from_value(row.get("local_status")), "unknown");
+        *by_status.entry(status).or_default() += 1;
+    }
+    let session_total = sessions.len();
+    let outbox_total = outbox_rows.len();
+    let with = target
+        .as_ref()
+        .map(|target| peer_handle_or_did(&target.handle, &target.did))
+        .unwrap_or_default();
+    Ok(CommandResult {
+        data: json!({
+            "with": with,
+            "sessions": sessions,
+            "outbox": {
+                "total": outbox_total,
+                "by_status": by_status,
+                "records": redact_secure_outbox_rows_for_status(&outbox_rows),
+            },
+        }),
+        summary: format!(
+            "Loaded {session_total} secure session(s) and {outbox_total} secure outbox record(s)"
+        ),
+        warnings: Vec::new(),
+    })
+}
 
 pub fn secure_failed(
     resolved: &Resolved,
@@ -65,5 +120,162 @@ fn open_secure_store(resolved: &Resolved) -> Result<rusqlite::Connection, Messag
 }
 
 fn store_error(err: StoreError) -> MessageError {
+    MessageError::Internal(err.to_string())
+}
+
+fn list_secure_sessions(
+    manager: &Manager,
+    record: &StoredIdentity,
+    peer_did: &str,
+) -> Result<Vec<Value>, MessageError> {
+    let paths = manager.paths_for_identity(&record.identity_name)?;
+    let root = Path::new(&paths.identity_dir).join(SECURE_SESSION_DIR_NAME);
+    let mut entries = session_json_paths(&root)?;
+    entries.sort();
+    let mut sessions = Vec::new();
+    for path in entries {
+        let raw = std::fs::read(&path).map_err(internal_error)?;
+        let session: Map<String, Value> = serde_json::from_slice(&raw).map_err(internal_error)?;
+        let session = Value::Object(session);
+        if !peer_did.is_empty() && string_from_value(session.get("peer_did")) != peer_did {
+            continue;
+        }
+        sessions.push(redact_secure_session_for_status(&session));
+    }
+    sessions.sort_by(|left, right| {
+        string_from_value(left.get("peer_did")).cmp(&string_from_value(right.get("peer_did")))
+    });
+    Ok(sessions)
+}
+
+fn session_json_paths(root: &Path) -> Result<Vec<PathBuf>, MessageError> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(internal_error(err)),
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(internal_error)?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) == Some("json") {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+fn redact_secure_session_for_status(session: &Value) -> Value {
+    json!({
+        "session_id": string_from_value(session.get("session_id")),
+        "suite": string_from_value(session.get("suite")),
+        "peer_did": string_from_value(session.get("peer_did")),
+        "status": string_from_value(session.get("status")),
+        "is_initiator": bool_from_value(session.get("is_initiator")),
+        "send_n": int_from_value(session.get("send_n"), 0),
+        "recv_n": int_from_value(session.get("recv_n"), 0),
+        "previous_send_chain_length": int_from_value(
+            session.get("previous_send_chain_length"),
+            0,
+        ),
+        "skipped_key_count": count_status_array_items(session.get("skipped_message_keys")),
+    })
+}
+
+fn count_status_array_items(value: Option<&Value>) -> usize {
+    value
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default()
+}
+
+fn redact_secure_outbox_rows_for_status(rows: &[Value]) -> Vec<Value> {
+    rows.iter()
+        .map(|row| {
+            let mut redacted = Map::new();
+            insert_string(&mut redacted, "outbox_id", row);
+            insert_string(&mut redacted, "peer_did", row);
+            insert_string(&mut redacted, "session_id", row);
+            insert_string(&mut redacted, "original_type", row);
+            insert_string(&mut redacted, "local_status", row);
+            redacted.insert(
+                "attempt_count".to_string(),
+                json!(int_from_value(row.get("attempt_count"), 0)),
+            );
+            insert_string(&mut redacted, "sent_msg_id", row);
+            redacted.insert(
+                "sent_server_seq".to_string(),
+                row.get("sent_server_seq").cloned().unwrap_or(Value::Null),
+            );
+            insert_string(&mut redacted, "last_error_code", row);
+            insert_string(&mut redacted, "retry_hint", row);
+            insert_string(&mut redacted, "failed_msg_id", row);
+            redacted.insert(
+                "failed_server_seq".to_string(),
+                row.get("failed_server_seq").cloned().unwrap_or(Value::Null),
+            );
+            insert_string(&mut redacted, "last_attempt_at", row);
+            insert_string(&mut redacted, "created_at", row);
+            insert_string(&mut redacted, "updated_at", row);
+            Value::Object(redacted)
+        })
+        .collect()
+}
+
+fn insert_string(object: &mut Map<String, Value>, field: &str, source: &Value) {
+    object.insert(
+        field.to_string(),
+        Value::String(string_from_value(source.get(field))),
+    );
+}
+
+fn peer_handle_or_did(handle: &str, did: &str) -> String {
+    if handle.is_empty() {
+        did.to_string()
+    } else {
+        handle.to_string()
+    }
+}
+
+fn string_from_value(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn int_from_value(value: Option<&Value>, fallback: i64) -> i64 {
+    match value {
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .or_else(|| number.as_f64().map(|value| value as i64))
+            .unwrap_or(fallback),
+        _ => fallback,
+    }
+}
+
+fn bool_from_value(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .or_else(|| number.as_f64().map(|value| value as i64))
+            .is_some_and(|value| value != 0),
+        Some(Value::String(value)) => value == "1" || value.eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+fn default_string(value: &str, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn internal_error(err: impl std::fmt::Display) -> MessageError {
     MessageError::Internal(err.to_string())
 }

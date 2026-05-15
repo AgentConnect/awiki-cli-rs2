@@ -2,7 +2,7 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
-## 2026-05-16 Message Secure Failed/Drop Command Slice
+## 2026-05-16 Message Secure Status/Failed/Drop Command Slice
 
 Status: unit verified.
 
@@ -20,7 +20,7 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 Go reference verification:
 
 ```bash
-go test ./internal/message -run 'TestServiceSecureFailedAndDropOperateOnOutbox' -count=1
+go test ./internal/message -run 'TestServiceSecureStatusReturnsSessionAndOutboxSummary|TestServiceSecureFailedAndDropOperateOnOutbox' -count=1
 ```
 
 Result: passed.
@@ -29,10 +29,19 @@ Scope:
 
 - Adds `message::secure_commands` for the local SQLite-backed subset of Go
   `internal/message/secure_commands.go`.
-- Wires non-dry-run `msg secure failed` and `msg secure drop` through the app
-  handler while leaving dry-run output unchanged.
+- Wires non-dry-run `msg secure status`, `msg secure failed`, and
+  `msg secure drop` through the app handler while leaving dry-run output
+  unchanged.
 - Preserves active/ready identity gating through the existing message service
   helper.
+- Preserves `SecureStatus` local status behavior: optional `--with` resolution,
+  `p5-e2ee-sessions/*.json` object loading, peer-DID filtering, session sort by
+  `peer_did`, Go session status redaction fields, `skipped_key_count`, outbox
+  owner/credential listing, peer filtering, blank `local_status` counting as
+  `unknown`, outbox status row redaction, and summary/data shape. The focused
+  contract test asserts that key material, skipped message key material,
+  outbox plaintext, metadata, owner DID, and credential name do not leak through
+  the status output.
 - Preserves `SecureFailed` store behavior: open the local store, ensure schema,
   list `e2ee_outbox` rows for the active owner/credential with
   `local_status="failed"`, return full rows without status redaction, return
@@ -45,22 +54,22 @@ Scope:
 - Preserves missing-row parity with Go's `sql.ErrNoRows` path by surfacing the
   store `query returned no rows` error through the generic internal-error lane
   rather than mapping it to `message not found`.
-- Keeps files under the default review-size cap: `secure_commands.rs` is 69
-  lines and the focused test file is 327 lines.
-- A code-writing Native Agent contributed the focused test file under the
+- Keeps files under the default review-size cap: `secure_commands.rs` and the
+  focused test file remain below 1200 lines.
+- A code-writing Native Agent contributed the focused test expansion under the
   required GPT-5.5 xhigh configuration and a single-file write scope.
 
-Boundary note: this slice does not implement `SecureStatus` session/outbox
-redaction, `SecureRetry` queued flush execution, `SecureInit`, `SecureRepair`,
-`queueSecureOutboxRecord`, `currentSecureSessionID`, ANP SDK E2EE clients, file
-session stores, WebSocket RPC, prekey publishing, or `awiki-system-test`
-secure-direct acceptance.
+Boundary note: this slice does not implement `SecureRetry` queued flush
+execution, `SecureInit`, `SecureRepair`, `queueSecureOutboxRecord`,
+`currentSecureSessionID`, ANP SDK E2EE clients, session-store mutation,
+WebSocket RPC, prekey publishing, or `awiki-system-test` secure-direct
+acceptance.
 
 Dependency note: no dependency was added. The slice reuses existing identity,
-message, store, `serde_json`, and approved `rusqlite + bundled` APIs. It does
-not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
-crates, Tokio, YAML crates, platform service libraries, ANP SDK E2EE wiring, or
-new SQLite dependencies.
+message, store, `serde_json`, filesystem, and approved `rusqlite + bundled`
+APIs. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, Tokio, YAML crates, platform service libraries, ANP
+SDK E2EE wiring, or new SQLite dependencies.
 
 ## 2026-05-16 Store E2EE Outbox DAO Slice
 
