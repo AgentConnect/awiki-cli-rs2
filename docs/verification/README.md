@@ -2,6 +2,79 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Message Secure Queued Outbox Row Planning Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/message/secure_control.go`
+  `FlushQueuedSecureOutbox` queued-row sorting, filtering, payload handling,
+  failure updates, send result handling, sent metadata, stored message shape,
+  and compact warnings.
+- Existing secure listener/message guards cover adjacent real E2EE consumers:
+  `go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation' -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `message::secure_outbox_flush` as a pure row-loop planning helper for Go
+  `FlushQueuedSecureOutbox`.
+- Preserves stable ascending sort by raw `created_at` string, including stable
+  order for equal timestamps.
+- Preserves peer filtering: trim the caller filter, then compare exact raw row
+  `peer_did` values.
+- Preserves silent skips for empty `outbox_id` or empty `peer_did`.
+- Preserves `original_type` defaulting: blank or whitespace becomes `text`,
+  while nonblank values retain their original string.
+- Preserves text send planning and JSON-object send planning, including no
+  injected send outcome lookup for invalid JSON or unsupported original types.
+- Preserves invalid JSON failure update with `invalid_payload`, `drop`, detail
+  metadata, parse warning, and continue.
+- Preserves unsupported original-type failure update with
+  `unsupported_original_type`, `drop`, original-type metadata, warning, and
+  continue.
+- Preserves send failure update with `send_failed`, `retry`, detail metadata,
+  warning, and no mark-sent or store-message action.
+- Preserves successful send behavior: message ID fallback to outbox ID, compact
+  sent metadata with `target_did`, `operation_id`, `delivery_state`, and
+  `flushed_from="queued"`, injected session ID, and mark-sent action.
+- Preserves mark-sent error behavior: warning and no store-message action.
+- Preserves store-message error behavior: store action is still planned and the
+  warning is appended afterward.
+- Preserves outgoing direct E2EE `MessageRecord` shape, including
+  `Direction=1`, deterministic direct thread ID, `IsRead=true`, `IsE2EE=true`,
+  credential name, original plaintext content, accepted-at timestamp, success
+  metadata, and Go's current `json` content-type fallback to `text/plain`.
+- Preserves `compactWarnings` trimming, empty-drop, deduplication, and first
+  occurrence order.
+- Keeps files under the default review-size cap: `secure_outbox_flush.rs` is
+  365 lines and the focused test file is 421 lines.
+
+Boundary note: this is a pure planning slice. It does not implement real store
+open/schema/list, `currentSecureSessionID`, ANP SDK file session stores, E2EE
+client construction or sending, SQLite outbox mutation, message store writes,
+WebSocket RPC, foreground listener execution, or `awiki-system-test` runtime
+listener acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing message
+helpers, store record types, `serde_json`, and std collections. It does not add
+OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
+Tokio, YAML crates, platform service libraries, E2EE provider dependencies,
+file-store dependencies, ANP SDK wiring, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Notification Consume Helper Slice
 
 Status: unit verified.

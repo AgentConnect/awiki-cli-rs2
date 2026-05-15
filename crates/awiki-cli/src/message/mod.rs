@@ -6,6 +6,7 @@ mod group_e2ee_wire;
 mod group_service;
 mod group_wire;
 mod proof;
+mod secure_outbox_flush;
 mod service;
 mod service_discovery;
 mod types;
@@ -50,6 +51,11 @@ pub use group_wire::{
 pub use proof::{
     build_origin_proof, load_private_key_material, origin_auth_value,
     verification_method_id_from_document, ORIGIN_PROOF_SCHEME,
+};
+pub use secure_outbox_flush::{
+    compact_warnings, flush_queued_secure_outbox_rows_plan, MarkSentOutcome, QueuedSecureOutboxRow,
+    SecureOutboxFlushAction, SecureOutboxFlushPlan, SecureOutboxFlushRowOutcome,
+    SecureOutboxSendOutcome, StoreMessageOutcome,
 };
 pub use service::{history, inbox, mark_read, send, CommandResult};
 pub use service_discovery::{
