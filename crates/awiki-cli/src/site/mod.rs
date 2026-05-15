@@ -1,6 +1,12 @@
+mod client;
+mod service;
 mod types;
 mod wire;
 
+pub use client::Client;
+pub use service::{
+    create_page, delete_page, get_page, get_root, list_pages, rename_page, set_root, update_page,
+};
 pub use types::{
     CommandResult, CreatePageParams, IdentitySummary, RenamePageParams, SetRootParams, SiteError,
     UpdatePageParams, DID_AUTH_RPC_ENDPOINT, SITE_RPC_ENDPOINT,

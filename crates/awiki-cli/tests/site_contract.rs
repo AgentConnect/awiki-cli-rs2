@@ -326,19 +326,19 @@ fn site_validation_errors_match_go_cli_boundary() {
 }
 
 #[test]
-fn site_non_dry_run_is_deferred_until_site_rpc_slice() {
+fn site_non_dry_run_requires_active_identity_before_site_rpc() {
     let workspace = TempDir::new().expect("workspace");
 
     let get = awiki_cmd(
         &["site", "root", "get", "--domain", "tenant.example"],
         workspace.path(),
     );
-    assert_code(&get, 1);
+    assert_code(&get, 5);
     let envelope = error_json(&get);
-    assert_eq!(envelope["error"]["code"], "not_implemented");
+    assert_eq!(envelope["error"]["code"], "not_found");
     assert_contains(
         &envelope["error"]["message"],
-        "site root get requires non-dry-run implementation",
+        "identity not found: no active identity is configured",
     );
 
     let create = awiki_cmd(
@@ -355,9 +355,9 @@ fn site_non_dry_run_is_deferred_until_site_rpc_slice() {
         ],
         workspace.path(),
     );
-    assert_code(&create, 1);
+    assert_code(&create, 5);
     let envelope = error_json(&create);
-    assert_eq!(envelope["error"]["code"], "not_implemented");
+    assert_eq!(envelope["error"]["code"], "not_found");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

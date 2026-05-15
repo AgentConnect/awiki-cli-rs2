@@ -2,6 +2,60 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Tenant Site Live RPC Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test site_contract --locked
+cargo +1.79.0 test -p awiki-cli --test site_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test site_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test page_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test content_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/site ./internal/cli -run 'Test.*Site|TestGetRootCallsSiteRPC|TestDeletePageMapsRPCError|TestNormalizeDomainRejectsURLs' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/multi_tenant/test_awiki_cli_tenant_config.py -q
+```
+
+Result: passed. Focused `site_live_contract` passed with 4 passed, 0 failed,
+0 skipped. Focused `awiki-system-test` multi-tenant CLI acceptance passed with
+2 passed, 0 failed, 0 skipped in 1.91s. Command:
+`AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/multi_tenant/test_awiki_cli_tenant_config.py -q`.
+Configuration context: the selected tests use isolated local CLI workspaces and
+do not call live remote services; direct `awiki-cli site ...` tests do not
+currently exist in tests_v2.
+
+Scope:
+
+- Added split `site::client` and `site::service` modules for the live execution
+  portion of Go `internal/site/service.go`.
+- Preserved `/site/rpc` execution for `get_root`, `set_root`, `list_pages`,
+  `get_page`, `create_page`, `update_page`, `rename_page`, and `delete_page`
+  using the existing site wire builders and result renderers.
+- Reused active identity loading, `authsdk::Session`, stored JWT bearer seeding,
+  empty-token DID-auth `get_me` bootstrap, persisted JWT update, and the shared
+  Rustls/std `transportcfg::HttpClient`.
+- Wired non-dry-run `site root/page` commands through the live site service and
+  mapped Go site service errors to `invalid_argument`, `auth_required`,
+  `forbidden`, `not_found`, `conflict`, and `internal_error` exits.
+- Added live contract tests for authenticated `/site/rpc` JSON-RPC payloads,
+  domain/slug/body param normalization, RPC forbidden mapping, and initially
+  empty JWT bootstrap plus persisted token reuse.
+
+Boundary note: this slice does not implement Go's per-call profile timeout
+wrappers, trace phase emission, or direct `awiki-system-test` site lifecycle
+coverage. Those remain later parity work.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing Rustls-first authsdk transport and does not add
+`reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL,
+YAML crates, platform service libraries, or ANP SDK network/default features.
+
 ## 2026-05-15 Identity Phone Register And Page System Slice
 
 Local Rust and Go reference verification:
@@ -109,8 +163,9 @@ Scope:
   bootstrap plus persisted token reuse.
 
 Boundary note: this slice does not implement Go's per-call profile timeout
-wrappers, trace phase emission, tenant site live RPC, message service
-RPC/WebSocket execution, or full all-domain `awiki-system-test` acceptance.
+wrappers, trace phase emission, message service RPC/WebSocket execution, or full
+all-domain `awiki-system-test` acceptance. Tenant site live RPC is covered by
+the later "Tenant Site Live RPC Slice" above.
 
 No dependency was added. Cargo manifests and lockfile remain unchanged; this
 slice reuses the existing Rustls-first authsdk transport and does not add
@@ -319,11 +374,13 @@ Scope:
   normalization, while the new site service wire tests cover stricter
   live-service rules.
 
-Boundary note: this slice does not wire non-dry-run site commands, implement
-`identity.RemoteClient`, bootstrap the auth session, refresh DID-auth JWTs,
-perform HTTP transport, map site service errors into CLI exit codes, or run
-site lifecycle system tests. Those remain in the shared authsdk/session plus
-Rustls HTTP client lane.
+Boundary note: this wire-only slice did not wire non-dry-run site commands,
+implement `identity.RemoteClient`, bootstrap the auth session, refresh DID-auth
+JWTs, perform HTTP transport, map site service errors into CLI exit codes, or
+run site lifecycle system tests. The later "Tenant Site Live RPC Slice" now
+covers non-dry-run command wiring, auth bootstrap, JWT refresh, shared Rustls
+HTTP execution, and CLI error mapping; direct site system-test coverage remains
+absent from the current tests_v2 inventory.
 
 No dependency was added. Cargo manifests and lockfile were unchanged; this
 slice does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,

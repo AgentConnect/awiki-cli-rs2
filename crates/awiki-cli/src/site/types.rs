@@ -11,13 +11,17 @@ pub struct CommandResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum SiteError {
     DomainRequired,
     DomainInvalid(String),
     SlugRequired,
     NoBodySourceProvided,
     BodySourceConflict,
+    AuthIdentityRequired,
+    Service(crate::identity::wire::ServiceError),
+    Identity(crate::identity::IdentityError),
+    Internal(String),
 }
 
 impl fmt::Display for SiteError {
@@ -32,11 +36,21 @@ impl fmt::Display for SiteError {
             Self::BodySourceConflict => {
                 formatter.write_str("use either inline markdown or markdown file, not both")
             }
+            Self::AuthIdentityRequired => formatter.write_str("active identity is required"),
+            Self::Service(err) => write!(formatter, "{err}"),
+            Self::Identity(err) => write!(formatter, "{err}"),
+            Self::Internal(message) => formatter.write_str(message),
         }
     }
 }
 
 impl std::error::Error for SiteError {}
+
+impl From<crate::identity::IdentityError> for SiteError {
+    fn from(value: crate::identity::IdentityError) -> Self {
+        Self::Identity(value)
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SetRootParams {
