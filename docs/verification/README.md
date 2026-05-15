@@ -2,6 +2,63 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Notification Consume Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `consumeNotifications` ping, context-cancel, notification-channel close, and
+  dispatch control flow.
+- Adjacent Go listener reconnect guard:
+  `go test ./internal/runtime/listener -run TestSessionLoopReconnectsAndStoresNotifications -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_notification_consume` as a pure step helper for Go
+  `consumeNotifications` before foreground WebSocket notification execution is
+  wired.
+- Preserves Go ping timing constants: `sessionPingInterval` remains 60 seconds
+  and the per-ping timeout remains 15 seconds.
+- Preserves context cancellation behavior: exit with the context error and no
+  planned side effects.
+- Preserves ping-tick behavior: create a 15-second ping timeout, call ping, and
+  cancel the timeout context after the ping attempt.
+- Preserves ping error wrapping as `websocket ping failed: <err>`.
+- Preserves notification dispatch behavior: a received notification is passed
+  to `handleNotification` and the loop continues.
+- Preserves closed notification channel behavior: prefer `ReaderError()` when
+  present, otherwise return `websocket notification loop closed`.
+- Keeps files under the default review-size cap:
+  `listener_notification_consume.rs` is 75 lines and the focused test file is
+  116 lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure consume-step helper. It does not implement real
+ticker/context/channel ownership, `WSClient.Ping`, `WSClient.Notifications`,
+`ReaderError`, `handleNotification` side effects, foreground session execution,
+host-notify dispatch, SQLite writes, local bridge I/O, or
+`awiki-system-test` runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice uses only existing
+`serde_json::Value` plus `std::time::Duration`. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio,
+YAML crates, platform service libraries, E2EE provider dependencies, or new
+SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Notification Route-Plan Helper Slice
 
 Status: unit verified.
