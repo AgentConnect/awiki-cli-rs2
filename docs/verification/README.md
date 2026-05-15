@@ -310,6 +310,77 @@ Dependency note: no dependency was added. The slice uses only
 `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform service
 libraries, E2EE provider dependencies, or new SQLite dependencies.
 
+## 2026-05-16 Runtime Listener Local Secure Ack In-Process Planning Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_in_process_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `deliverLocalSecureAckInProcess` skip ladder, encrypted ack notification
+  shape, recipient process fallback ladder, sender/recipient session save
+  ordering, active recipient flush/log branch, managed queue branch, and network
+  fallback branch.
+- Existing secure listener/message guards cover adjacent real E2EE consumers:
+  `go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation' -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_secure_ack_in_process` as a pure control-flow
+  planning helper for Go `deliverLocalSecureAckInProcess`.
+- Preserves nil sender behavior: return false before recipient lookup.
+- Preserves missing local recipient behavior: lookup recipient DID, then return
+  false when no local record is found.
+- Preserves sender-side setup ordering: sender paths, sender session store,
+  `FindByPeerDID`, and `EncryptFollowUp` skip in order on failure.
+- Preserves encrypted ack request shape: `BuildSecureAckPayload` is used for
+  the JSON plaintext, metadata uses sender DID, recipient target DID, ack
+  message ID, `anp.direct.e2ee.v1`, `direct-e2ee`, and
+  `application/anp-direct-cipher+json`.
+- Preserves recipient client init failure before `ProcessIncoming`.
+- Preserves recipient `ProcessIncoming` success gate: only exact
+  `state="decrypted"` skips the fallback ladder.
+- Preserves fallback ladder after process error/non-decrypted state: recipient
+  paths, recipient session store, `LoadSession`, marshal ack body, unmarshal
+  cipher body, `DecryptFollowUp`, and recipient session save, with false return
+  at each failing step.
+- Preserves sender session save after recipient processing and before active
+  session lookup.
+- Preserves active recipient branch: optional queued outbox flush when secure
+  RPC exists, flush-warning log before delivered log, then true.
+- Preserves managed inactive runtime branch: queue a `direct.incoming` wrapper
+  whose `params` are the encrypted ack notification, then true.
+- Preserves unmanaged runtime branch: log network fallback and return false.
+- Keeps files under the default review-size cap:
+  `listener_secure_ack_in_process.rs` is 458 lines and the focused test file is
+  489 lines.
+
+Boundary note: this is a pure planning slice. It does not implement real ANP
+SDK file session stores, E2EE encrypt/decrypt, `message.NewSecureE2EEClientForRecord`,
+`ProcessIncoming`, `FlushQueuedSecureOutbox`, `activeSessionByDID`,
+`hasRuntimeSessionForDID`, local notification queue mutation, SQLite writes,
+WebSocket RPC, host-notify dispatch, foreground listener execution, or
+`awiki-system-test` runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing identity
+types, `serde_json`, and `BuildSecureAckPayload`. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio,
+YAML crates, platform service libraries, E2EE provider dependencies,
+file-store dependencies, ANP SDK wiring, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Peer Queued Secure Outbox Flush Trigger Slice
 
 Status: unit verified.
