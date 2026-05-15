@@ -30,7 +30,7 @@ where
     T: DeserializeOwned,
 {
     let envelope: Value = serde_json::from_slice(raw)?;
-    if let Some(error) = envelope.get("error") {
+    if let Some(error) = envelope.get("error").filter(|error| !error.is_null()) {
         let error: JsonRpcResponseError = serde_json::from_value(error.clone())?;
         return Err(RpcError {
             code: error.code,
@@ -45,7 +45,7 @@ where
 
 pub fn decode_json_rpc_response_optional(raw: &[u8]) -> Result<(), anyhow::Error> {
     let envelope: Value = serde_json::from_slice(raw)?;
-    if let Some(error) = envelope.get("error") {
+    if let Some(error) = envelope.get("error").filter(|error| !error.is_null()) {
         let error: JsonRpcResponseError = serde_json::from_value(error.clone())?;
         return Err(RpcError {
             code: error.code,

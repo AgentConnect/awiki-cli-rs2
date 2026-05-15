@@ -409,8 +409,25 @@ fn host_header(parsed: &ParsedUrl) -> String {
 }
 
 fn read_http_response(mut reader: impl Read) -> Result<HttpResponse, HttpClientError> {
+    let raw = read_http_response_bytes(&mut reader)?;
+    parse_http_response(&raw)
+}
+
+fn read_http_response_bytes(reader: &mut impl Read) -> Result<Vec<u8>, HttpClientError> {
     let mut raw = Vec::new();
-    reader.read_to_end(&mut raw)?;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => raw.extend_from_slice(&buffer[..count]),
+            Err(err) if is_tolerable_response_eof(&err, &raw) => break,
+            Err(err) => return Err(HttpClientError::Io(err)),
+        }
+    }
+    Ok(raw)
+}
+
+fn parse_http_response(raw: &[u8]) -> Result<HttpResponse, HttpClientError> {
     let split = raw
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -445,6 +462,52 @@ fn read_http_response(mut reader: impl Read) -> Result<HttpResponse, HttpClientE
         headers,
         body,
     })
+}
+
+fn is_tolerable_response_eof(err: &std::io::Error, raw: &[u8]) -> bool {
+    if err.kind() != std::io::ErrorKind::UnexpectedEof {
+        return false;
+    }
+    let message = err.to_string();
+    let lower = message.to_ascii_lowercase();
+    if !lower.contains("close_notify") && !lower.contains("unexpected eof") {
+        return false;
+    }
+    response_is_complete(raw)
+}
+
+fn response_is_complete(raw: &[u8]) -> bool {
+    let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let Ok(headers_raw) = std::str::from_utf8(&raw[..split]) else {
+        return false;
+    };
+    let body = &raw[split + 4..];
+    let headers = headers_raw
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.trim(), value.trim()))
+        })
+        .collect::<Vec<_>>();
+    if headers.iter().any(|(key, value)| {
+        key.eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
+    }) {
+        return decode_chunked_body(body).is_ok();
+    }
+    if let Some(content_length) = headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.parse::<usize>().ok())
+    {
+        return body.len() == content_length;
+    }
+    false
 }
 
 fn parse_status_code(status_line: &str) -> Result<u16, HttpClientError> {

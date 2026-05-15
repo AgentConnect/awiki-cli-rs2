@@ -309,6 +309,16 @@ fn authsdk_json_rpc_wire_contract_matches_go_session_helpers() {
         decode_json_rpc_response(br#"{ "result": null }"#).expect("decode null result");
     assert_eq!(null_result, serde_json::Value::Null);
 
+    let null_error_result: BTreeMap<String, String> =
+        decode_json_rpc_response(br#"{ "result": { "access_token": "fresh" }, "error": null }"#)
+            .expect("json-rpc error null should be ignored like Go");
+    assert_eq!(
+        null_error_result.get("access_token").map(String::as_str),
+        Some("fresh")
+    );
+    decode_json_rpc_response_optional(br#"{ "result": null, "error": null }"#)
+        .expect("out nil ignores null error");
+
     let missing_typed =
         decode_json_rpc_response::<BTreeMap<String, String>>(br#"{ "jsonrpc": "2.0" }"#)
             .expect_err("missing result cannot decode typed output");

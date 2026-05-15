@@ -103,6 +103,19 @@ pub fn generate_identity(
     service_endpoint: &str,
     service_did: &str,
 ) -> Result<GeneratedIdentity, IdentityError> {
+    generate_identity_with_path_segments(hostname, ["user"], service_endpoint, service_did)
+}
+
+pub fn generate_identity_with_path_segments<I, S>(
+    hostname: &str,
+    path_segments: I,
+    service_endpoint: &str,
+    service_did: &str,
+) -> Result<GeneratedIdentity, IdentityError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let hostname = hostname.trim();
     if hostname.is_empty() {
         return Err(IdentityError::InvalidInput(
@@ -119,9 +132,19 @@ pub fn generate_identity(
     } else {
         service_did.trim().to_string()
     };
+    let path_segments = path_segments
+        .into_iter()
+        .map(|segment| segment.as_ref().trim().to_string())
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if path_segments.is_empty() {
+        return Err(IdentityError::InvalidInput(
+            "invalid input: did path prefix is required".to_string(),
+        ));
+    }
     let service = build_agent_anp_message_service(&endpoint, &service_did)?;
     let options = DidDocumentOptions {
-        path_segments: vec!["user".to_string()],
+        path_segments,
         domain: Some(hostname.to_string()),
         challenge: Some(random_hex(16)),
         services: vec![service],

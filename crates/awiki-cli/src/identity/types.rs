@@ -25,6 +25,7 @@ pub enum IdentityError {
     NoDefaultIdentity(String),
     Conflict(String),
     LegacyNotFound(String),
+    Service(super::wire::ServiceError),
     Io(std::io::Error),
     Json(serde_json::Error),
     Internal(String),
@@ -39,6 +40,7 @@ impl fmt::Display for IdentityError {
             | Self::Conflict(message)
             | Self::LegacyNotFound(message)
             | Self::Internal(message) => f.write_str(message),
+            Self::Service(err) => write!(f, "{err}"),
             Self::Io(err) => write!(f, "{err}"),
             Self::Json(err) => write!(f, "{err}"),
         }
@@ -56,6 +58,12 @@ impl From<std::io::Error> for IdentityError {
 impl From<serde_json::Error> for IdentityError {
     fn from(value: serde_json::Error) -> Self {
         Self::Json(value)
+    }
+}
+
+impl From<super::wire::ServiceError> for IdentityError {
+    fn from(value: super::wire::ServiceError) -> Self {
+        Self::Service(value)
     }
 }
 
@@ -238,6 +246,17 @@ pub struct SaveInput {
     pub e2ee_signing_private_pem: String,
     pub e2ee_agreement_private_pem: String,
     pub replace_existing: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RegisterParams {
+    pub identity_name: String,
+    pub handle: String,
+    pub phone: String,
+    pub email: String,
+    pub otp: String,
+    pub invite_code: String,
+    pub wait: bool,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -2,6 +2,68 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity Phone Register And Page System Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --test page_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/identity ./internal/cli -run 'Test.*Register|TestRunIDRegister|TestServiceRegister' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/page -q
+```
+
+Result: passed. Focused `awiki-system-test` page acceptance passed with
+3 passed, 0 failed, 0 skipped in 5.43s. Command:
+`AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/page -q`.
+Configuration context: `AWIKI_SYSTEM_TEST_MODE=remote`,
+`E2E_USER_SERVICE_URL=https://awiki.info`,
+`E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
+`E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`, and
+`E2E_DID_DOMAIN=awiki.info`.
+
+Scope:
+
+- Added live `id register --handle --phone` OTP-send execution through
+  `/user-service/handle/rpc` method `send_otp`; this writes no local identity.
+- Added live `id register --handle --phone --otp` execution through
+  `/user-service/did-auth/rpc` method `register`; it generates a handle-path
+  e1 DID, sends normalized phone and sanitized OTP, saves handle/full_handle,
+  user_id, JWT, DID document, and key material, and returns Go-shaped command
+  results.
+- Added a split unauthenticated identity service client that reuses the shared
+  Rustls/std `transportcfg::HttpClient` and existing identity wire builders.
+- Extended DID generation with a path-segment helper so live registration uses
+  Go's handle path prefix instead of the local-only `user` path.
+- Updated the shared authsdk JSON-RPC decoder to treat `"error": null` as no
+  error, matching Go's nullable error-pointer behavior observed from
+  `awiki.info`.
+- Updated the shared Rustls HTTP reader to tolerate missing TLS `close_notify`
+  only after a complete HTTP-framed response has already been read, matching
+  Go's effective behavior while preserving incomplete-response errors.
+- Added `identity_live_contract` coverage for live phone OTP-send, register
+  payload shape, handle-path DID generation, local persistence, and no-write
+  OTP behavior.
+
+Boundary note: this slice does not implement live email registration/wait
+polling, non-dry-run `id refresh-token`, non-dry-run `id replace-did`, real
+profile RPC execution, per-call profile-timeout wrappers, or trace phase
+emission. Those remain later identity/transport parity slices.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK plus Rustls/std transport and does
+not add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled
+OpenSSL, YAML crates, platform service libraries, or ANP SDK network/default
+features.
+
 ## 2026-05-15 Page Content Live RPC Slice
 
 Local Rust and Go reference verification:
@@ -21,19 +83,12 @@ cd ../awiki-cli && go test ./internal/content ./internal/cli -run 'Test.*Page|Te
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/page -q
 ```
 
-Result: local Rust and Go reference checks passed. Focused
-`awiki-system-test` page acceptance did not pass because all three page tests
-fail in the prerequisite `id register` step before page/content RPC execution:
-the current Rust port still returns `not_implemented` for live `id register`.
-Failures: 3, skips: 0, command:
-`AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/page -q`.
-Configuration context resolved from `awiki-system-test`: `AWIKI_SYSTEM_TEST_MODE=remote`,
-`E2E_USER_SERVICE_URL=https://awiki.info`,
-`E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
-`E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`, and
-`E2E_DID_DOMAIN=awiki.info`. This is a full-port acceptance blocker outside the
-page/content slice; page/content local live contracts are covered by
-`page_live_contract`.
+Result: local Rust and Go reference checks passed. At the time of this page
+slice, focused `awiki-system-test` page acceptance failed in the prerequisite
+`id register` step because live identity registration was not yet implemented.
+The later "Identity Phone Register And Page System Slice" above resolves that
+blocker and records `tests_v2/page` passing with 3 passed, 0 failed, 0 skipped
+against `awiki.info`.
 
 Scope:
 
@@ -54,9 +109,8 @@ Scope:
   bootstrap plus persisted token reuse.
 
 Boundary note: this slice does not implement Go's per-call profile timeout
-wrappers, trace phase emission, remote `awiki.info` content-service acceptance,
-tenant site live RPC, identity live RPC, message service RPC/WebSocket
-execution, or full `awiki-system-test` acceptance.
+wrappers, trace phase emission, tenant site live RPC, message service
+RPC/WebSocket execution, or full all-domain `awiki-system-test` acceptance.
 
 No dependency was added. Cargo manifests and lockfile remain unchanged; this
 slice reuses the existing Rustls-first authsdk transport and does not add

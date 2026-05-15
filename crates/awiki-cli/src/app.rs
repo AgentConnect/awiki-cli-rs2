@@ -376,6 +376,30 @@ impl App {
         self.render_identity_result("awiki-cli id create", &resolved, result)
     }
 
+    pub fn run_id_register(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let params = identity::RegisterParams {
+            identity_name: self.globals.identity.clone(),
+            handle: string_flag(command, "handle"),
+            phone: string_flag(command, "phone"),
+            email: string_flag(command, "email"),
+            otp: string_flag(command, "otp"),
+            invite_code: string_flag(command, "invite-code"),
+            wait: command
+                .flags
+                .get("wait")
+                .is_some_and(|value| value == "true"),
+        };
+        let manager = self.identity_manager(&resolved);
+        let result = if self.globals.dry_run {
+            identity::register_plan(&manager, &resolved.did_domain, &params)
+                .map_err(identity_exit)?
+        } else {
+            identity::register(&resolved, &manager, params).map_err(identity_exit)?
+        };
+        self.render_identity_result("awiki-cli id register", &resolved, result)
+    }
+
     pub fn run_id_list(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let result =
@@ -889,6 +913,7 @@ fn identity_exit(err: IdentityError) -> ExitError {
             message,
             "Use a different --identity value if the alias is already occupied.",
         ),
+        IdentityError::Service(err) => identity_service_exit(err),
         IdentityError::Io(err) => ExitError::new(
             "internal_error",
             1,
@@ -906,6 +931,82 @@ fn identity_exit(err: IdentityError) -> ExitError {
             1,
             message,
             "Run `awiki-cli doctor` to inspect configuration and storage paths.",
+        ),
+    }
+}
+
+fn identity_service_exit(err: identity::wire::ServiceError) -> ExitError {
+    let message = err.to_string();
+    match err {
+        identity::wire::ServiceError {
+            status_code: 400, ..
+        } => ExitError::new(
+            "invalid_argument",
+            2,
+            message,
+            "Ensure the handle, verification method, and local alias are valid.",
+        ),
+        identity::wire::ServiceError {
+            status_code: 401, ..
+        } => ExitError::new(
+            "auth_required",
+            3,
+            message,
+            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+        ),
+        identity::wire::ServiceError {
+            status_code: 404, ..
+        } => ExitError::new(
+            "not_found",
+            5,
+            message,
+            "Ensure the handle, verification method, and local alias are valid.",
+        ),
+        identity::wire::ServiceError {
+            status_code: 409, ..
+        } => ExitError::new(
+            "conflict",
+            1,
+            message,
+            "Ensure the handle, verification method, and local alias are valid.",
+        ),
+        identity::wire::ServiceError { rpc_code, .. } if rpc_code != 0 => match rpc_code {
+            -32602 => ExitError::new(
+                "invalid_argument",
+                2,
+                message,
+                "Ensure the handle, verification method, and local alias are valid.",
+            ),
+            -32000 => ExitError::new(
+                "auth_required",
+                3,
+                message,
+                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+            ),
+            -32002 => ExitError::new(
+                "not_found",
+                5,
+                message,
+                "Ensure the handle, verification method, and local alias are valid.",
+            ),
+            -32003 | -32004 => ExitError::new(
+                "conflict",
+                1,
+                message,
+                "Ensure the handle, verification method, and local alias are valid.",
+            ),
+            _ => ExitError::new(
+                "internal_error",
+                1,
+                message,
+                "Ensure the handle, verification method, and local alias are valid.",
+            ),
+        },
+        _ => ExitError::new(
+            "internal_error",
+            1,
+            message,
+            "Ensure the handle, verification method, and local alias are valid.",
         ),
     }
 }

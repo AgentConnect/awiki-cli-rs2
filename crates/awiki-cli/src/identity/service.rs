@@ -1,6 +1,14 @@
-use super::did::generate_identity;
-use super::store::{choose_default_identity_name, identity_summary_from_record};
-use super::types::{IdentityError, SaveInput, LEGACY_LAYOUT_HINT};
+use super::client::Client;
+use super::did::{generate_identity, generate_identity_with_path_segments};
+use super::handle_input::normalize_handle_input;
+use super::store::{
+    choose_default_identity_name, choose_named_identity, identity_summary_from_record,
+};
+use super::types::{IdentityError, RegisterParams, SaveInput, LEGACY_LAYOUT_HINT};
+use super::wire::{
+    build_register_rpc_call, build_send_otp_rpc_call, normalize_email, register_completed_result,
+    register_phone_otp_result, RegisterRpcParams,
+};
 use super::Manager;
 use crate::config::Resolved;
 use serde_json::{json, Map, Value};
@@ -149,6 +157,139 @@ pub fn create_identity(
     })
 }
 
+pub fn register_plan(
+    manager: &Manager,
+    did_domain: &str,
+    params: &RegisterParams,
+) -> Result<CommandResult, IdentityError> {
+    let target = normalize_handle_input(&params.handle, did_domain)?;
+    let existing = manager.list().unwrap_or_default();
+    let alias_base = if target.explicit_domain {
+        target.full_handle.as_str()
+    } else {
+        target.local_part.as_str()
+    };
+    let alias = choose_named_identity(&params.identity_name, &existing, alias_base);
+    let phone = params.phone.as_str();
+    let email = params.email.as_str();
+    let mut action = "register_handle";
+    let mut remote_calls = vec!["did-auth.register"];
+    if !phone.is_empty() && params.otp.trim().is_empty() {
+        action = "send_handle_otp";
+        remote_calls = vec!["handle.send_otp"];
+    }
+    if !email.is_empty() && !params.wait {
+        action = "send_registration_email";
+        remote_calls = vec!["POST /user-service/auth/email-send"];
+    }
+    if !email.is_empty() && params.wait {
+        remote_calls = vec![
+            "GET /user-service/auth/email-status",
+            "POST /user-service/auth/email-send",
+            "did-auth.register",
+        ];
+    }
+    Ok(CommandResult {
+        data: json!({
+            "plan": {
+                "action": action,
+                "identity_name": alias,
+                "handle": target.local_part,
+                "full_handle": target.full_handle,
+                "did_domain": target.effective_domain,
+                "phone": phone,
+                "email": email,
+                "remote_calls": remote_calls,
+            }
+        }),
+        summary: "Dry run: handle registration flow planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+pub fn register(
+    resolved: &Resolved,
+    manager: &Manager,
+    params: RegisterParams,
+) -> Result<CommandResult, IdentityError> {
+    let target = normalize_handle_input(&params.handle, &resolved.did_domain)?;
+    let phone = params.phone.trim().to_string();
+    let email = normalize_email(&params.email);
+    if (phone.is_empty() && email.is_empty()) || (!phone.is_empty() && !email.is_empty()) {
+        return Err(IdentityError::InvalidInput(
+            "exactly one of phone or email is required".to_string(),
+        ));
+    }
+
+    let existing = manager.list()?;
+    let alias_base = if target.explicit_domain {
+        target.full_handle.as_str()
+    } else {
+        target.local_part.as_str()
+    };
+    let alias = choose_named_identity(&params.identity_name, &existing, alias_base);
+    let client = Client::new(resolved)?;
+
+    if !phone.is_empty() && params.otp.trim().is_empty() {
+        let call = build_send_otp_rpc_call(&phone)?;
+        let result: Value =
+            client.rpc_call_profile(call.profile, call.endpoint, call.method, call.params)?;
+        return register_phone_otp_result(
+            &alias,
+            &target.local_part,
+            &target.full_handle,
+            &phone,
+            result,
+        );
+    }
+
+    if !email.is_empty() {
+        return Err(IdentityError::Internal(
+            "email registration is not implemented in this Rust port slice".to_string(),
+        ));
+    }
+
+    let generated = generate_identity_with_path_segments(
+        &target.effective_domain,
+        [target.local_part.as_str()],
+        &resolved.anp_service_endpoint,
+        &resolved.anp_service_did,
+    )?;
+    let call = build_register_rpc_call(RegisterRpcParams {
+        did_document: generated.did_document.clone(),
+        handle: target.local_part.clone(),
+        phone: Some(phone.clone()),
+        otp_code: Some(params.otp.clone()),
+        invite_code: params.invite_code,
+        ..RegisterRpcParams::default()
+    })?;
+    let result: Value =
+        client.rpc_call_profile(call.profile, call.endpoint, call.method, call.params)?;
+    let record = manager.save(SaveInput {
+        identity_name: alias,
+        did: string_value(&result, "did", &generated.did),
+        unique_id: generated.unique_id,
+        user_id: string_value(&result, "user_id", ""),
+        display_name: target.local_part.clone(),
+        handle: default_string_value(&result, "handle", &target.local_part),
+        full_handle: default_string_value(&result, "full_handle", &target.full_handle),
+        jwt_token: string_value(&result, "access_token", ""),
+        did_document: Some(generated.did_document),
+        key1_private_pem: generated.key1_private_pem,
+        key1_public_pem: generated.key1_public_pem,
+        e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+        e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+        ..SaveInput::default()
+    })?;
+    let summary = identity_summary_from_record(&record);
+    Ok(register_completed_result(
+        &summary,
+        &target.full_handle,
+        "phone",
+        result,
+    ))
+}
+
 pub fn use_plan(identity_name: &str) -> CommandResult {
     CommandResult {
         data: json!({
@@ -257,6 +398,23 @@ pub fn import_v1(manager: &Manager, name: &str, all: bool) -> Result<CommandResu
         summary: "Legacy identity import completed".to_string(),
         warnings: Vec::new(),
     })
+}
+
+fn string_value(result: &Value, key: &str, fallback: &str) -> String {
+    result
+        .get(key)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn default_string_value(result: &Value, key: &str, fallback: &str) -> String {
+    let value = string_value(result, key, "");
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value
+    }
 }
 
 pub fn sanitize_public_value(value: Value) -> Value {
