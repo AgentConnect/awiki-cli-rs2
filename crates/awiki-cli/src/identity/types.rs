@@ -13,6 +13,7 @@ pub const KEY1_PUBLIC_FILE_NAME: &str = "key-1-public.pem";
 pub const E2EE_SIGNING_PRIVATE_FILE_NAME: &str = "e2ee-signing-private.pem";
 pub const E2EE_AGREEMENT_PRIVATE_FILE_NAME: &str = "e2ee-agreement-private.pem";
 pub const E2EE_STATE_FILE_NAME: &str = "e2ee-state.json";
+pub const LEGACY_BACKUP_DIR_NAME: &str = ".legacy-backup";
 pub const LEGACY_E2EE_PREFIX: &str = "e2ee_";
 pub const LEGACY_LAYOUT_HINT: &str =
     "Legacy credential layout detected. Import it before relying on the v2 identity store.";
@@ -237,6 +238,14 @@ pub struct SaveInput {
     pub e2ee_signing_private_pem: String,
     pub e2ee_agreement_private_pem: String,
     pub replace_existing: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RecoverParams {
+    pub identity_name: String,
+    pub handle: String,
+    pub phone: String,
+    pub otp: String,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

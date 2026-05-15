@@ -3278,3 +3278,58 @@ No dependency was added. Cargo manifests and lockfile were unchanged. This
 slice keeps local ANP SDK default features disabled and does not introduce
 HTTP/TLS clients, OpenSSL, `native-tls`, reqwest, hyper, WebSocket, YAML,
 platform service-manager, or new SQLite dependencies.
+
+## 2026-05-15 Identity Recover Dry-Run Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli identity::recover --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket|serde_yaml|yaml'
+```
+
+Go reference verification:
+
+```bash
+cd ../awiki-cli
+go test ./internal/cli ./internal/identity -run 'TestRunIDRecoverDryRun|TestRecover' -count=1
+```
+
+Result: passed. Rust focused recover unit tests, the identity CLI contract
+suite, the full `awiki-cli` Rust test suite, structure check, build, dependency
+audit, and the Go focused recover tests all passed.
+
+Scope:
+
+- Added a split `crates/awiki-cli/src/identity/recover.rs` module for the local
+  recover preview subset of Go `internal/identity/recover.go` and
+  `internal/identity/service.go`.
+- Preserved handle normalization, final identity name derivation, same-handle
+  candidate detection, excluded identity conflict detection, stable candidate
+  sorting, temporary recovery identity naming, and backup preview path shape.
+- Added `id recover` to Rust command metadata, parser dispatch, and app handler
+  for `--dry-run`.
+- Preserved Go's dry-run branch split: with `--otp`, action is
+  `recover_handle` with `did-auth.recover_handle` and local writes including
+  `sqlite.recover_handle_merge`; without `--otp`, action is
+  `send_recover_otp` with `handle.send_otp`, no local writes, and empty backup
+  path.
+- Preserved Go's public warning that global `--identity` is ignored by
+  `awiki-cli id recover`.
+
+Deferred:
+
+- Non-dry-run OTP sending, `did-auth.recover_handle`, recovered DID/key
+  generation and persistence, backup creation, SQLite recovered-state merge,
+  promotion/finalization, and recover-specific internal error details remain
+  deferred until the shared authsdk/Rustls identity-service execution lane.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This
+slice does not introduce HTTP/TLS clients, OpenSSL, `native-tls`, reqwest,
+hyper, WebSocket, YAML, platform service-manager, or new SQLite dependencies.
