@@ -2,6 +2,66 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Secure Replay Filter Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_replay_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `syncUnreadSecureDirectInbox` and `syncPendingConfirmationSecureHistory`
+  replay filters before `secureNotificationFromMessageView`.
+- Existing secure listener integration guards cover the consuming decrypt/local
+  ack paths; no standalone Go replay-filter helper test exists.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_secure_replay` as a helper-only translation of secure
+  backlog/history replay filtering.
+- Preserves exact secure direct wire content-type gating.
+- Preserves malformed-item skip for non-object message entries.
+- Preserves unread inbox behavior: no sender-self skip; accepted secure message
+  views use `(message_id, owner_did, credential_name)` for injected store lookup.
+- Preserves pending history behavior: sender DID equal to the local identity DID
+  is skipped before store lookup.
+- Preserves owner DID fallback for store lookup: use `receiver_did` when present,
+  otherwise local/session DID. This fallback is intentionally separate from
+  notification conversion, which still requires a non-empty original
+  `receiver_did`.
+- Preserves store lookup tri-state behavior: existing row skips, non-NoRows
+  lookup error skips, NoRows continues to conversion.
+- Preserves conversion-error skip for malformed secure message views after store
+  lookup, while continuing with later messages.
+- Preserves input order for accepted candidates.
+- Keeps files under the default review-size cap:
+  `listener_secure_replay.rs` is 102 lines and the focused test file is 244
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure replay-filter slice. It does not implement
+`WSClient.SendRPC`, inbox/history RPC param construction, periodic polling,
+SQLite `GetMessageByID`, `handleNotification`, secure decrypt/ack, foreground
+listener sessions, host-notify dispatch, local bridge I/O, or `awiki-system-test`
+runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing
+`serde_json` and secure notification helper code only. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio, YAML
+crates, platform service libraries, E2EE provider dependencies, or new SQLite
+dependencies.
+
 ## 2026-05-16 Runtime Listener Session DID Lookup Helper Slice
 
 Status: unit verified.
