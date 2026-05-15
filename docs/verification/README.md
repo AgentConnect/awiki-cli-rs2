@@ -241,7 +241,7 @@ Boundary note: Go `newHostNotifySink` wiring, `handleNotification`, foreground
 session processing, actual SQLite storage, host-notify dispatch, local bridge
 I/O, and WebSocket runtime execution are not claimed by this slice.
 
-## 2026-05-15 Runtime OpenClaw Host Notification Builder Helper Slice
+## 2026-05-16 Runtime Host Notification Sink Dispatcher Slice
 
 Status: unit verified.
 
@@ -249,13 +249,65 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
-cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 ```
+
+Current result: passed locally. The focused contract test ran 10 tests covering
+file sink errors/writes/appends/modes, disabled noop dispatch, sink
+normalization, Hermes constructor error propagation, and OpenClaw constructor
+dispatch/status. Full package tests, structure check, whitespace check, and
+dependency audit passed; audit output stayed limited to the existing
+Rustls/ring/sha/base64 paths and the user-approved bundled SQLite path.
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'Test(NewHermesHostNotifySinkRejectsInvalidNotifyURL|HermesHostNotifySinkNotifySignsRequest|BuildOpenClawHookRequestIncludesChannelDelivery|BuildOpenClawEventTextUsesMainAgentSessionFormat|BuildOpenClawEventTextUsesMailFormat|BuildOpenClawHookRequestIncludesMailPrompt)' -count=1
+```
+
+Current result: passed locally.
+
+Scope:
+
+- Adds `runtime::host_notify_sink` as a split translation of the sink and
+  dispatcher layer from Go `internal/runtime/listener/host_notify.go`.
+- Covers `HostNotifySink`-style notify/close dispatch, noop and log sinks, file
+  sink creation, append-only JSONL writes, file sync, idempotent close, disabled
+  notification noop behavior, status construction, blank sink defaulting to
+  `log`, `webhook` alias normalization to `hermes`, unsupported sink errors,
+  Hermes constructor dispatch, and OpenClaw constructor dispatch.
+- Keeps foreground notification handling separate: Go `handleNotification`,
+  foreground WebSocket session processing, SQLite storage side effects, local
+  bridge I/O, and OS service execution are not claimed by this slice.
+
+Dependency note: no dependency was added. The slice uses std filesystem
+primitives, existing `serde_json`, the existing Hermes sink, and the existing
+OpenClaw Rustls/std webhook sink; it does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, YAML crates, platform
+service libraries, or new SQLite dependencies.
+
+## 2026-05-15 Runtime OpenClaw Host Notification Builder And Sink Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+rustfmt +1.79.0 --edition 2021 --check crates/awiki-cli/src/runtime/openclaw_host_notify.rs crates/awiki-cli/src/runtime/openclaw_webhook.rs crates/awiki-cli/tests/runtime_openclaw_host_notify_contract.rs
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
+```
+
+Current result: passed locally. The focused host-notify contract test ran 11
+tests, including local HTTP-server coverage for partial success, all-route
+failure aggregation, missing routes, bearer token forwarding, and payload
+shape.
 
 Go reference verification:
 
@@ -265,9 +317,9 @@ go test ./internal/runtime/listener -run 'TestBuildOpenClawHookRequestIncludesCh
 
 Scope:
 
-- Adds `runtime::openclaw_host_notify` as a split helper translation of Go
-  `internal/runtime/listener/openclaw_host_notify.go` pure hook-request and
-  event-text builders.
+- Adds `runtime::openclaw_host_notify` as a split translation of Go
+  `internal/runtime/listener/openclaw_host_notify.go` hook-request/event-text
+  builders and OpenClaw delivery sink behavior.
 - Covers OpenClaw hook request JSON shape (`message`, `name`, `wakeMode`,
   `deliver`, `channel`, `to`), fixed `AWiki` hook name, `wakeMode=now`,
   route channel/to delivery fields, prompt header/security notice, direct,
@@ -275,20 +327,19 @@ Scope:
   direct notification detection, mail metadata/content fallback, direct/group
   fallback content brackets, group-state content summaries, and JSON fallback
   for unknown events.
-- Keeps the implementation helper-only because Rust does not yet implement the
-  Go foreground listener WebSocket/session notification loop from
-  `internal/runtime/listener/server.go`.
+- Adds `new_openclaw_host_notify_sink`, settings re-resolution, hook URL/client
+  preparation, route registry loading, no-route errors, route-by-route HTTP
+  delivery, partial-success semantics, and Go-shaped aggregate failure strings.
+- Dispatcher construction is covered by the separate host-notify sink row.
 
 Dependency note: no dependency was added. The slice reuses existing `serde` and
-`serde_json`; it does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
-`hyper`, WebSocket crates, YAML crates, platform service libraries, or new
-SQLite dependencies.
+`serde_json` plus the existing Rustls/std `transportcfg` HTTP client; it does
+not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
+crates, YAML crates, platform service libraries, or new SQLite dependencies.
 
-Boundary note: Go `newOpenClawHostNotifySink` and `Notify` integration remain
-deferred: route registry loading, webhook client construction, HTTP delivery,
-retry/failure aggregation, Go `handleNotification`, foreground session
-processing, actual SQLite storage, host-notify dispatch, local bridge I/O, and
-WebSocket runtime execution are not claimed by this helper-only slice.
+Boundary note: Go `handleNotification`, foreground session processing, actual
+SQLite storage, host-notify dispatch from listener notifications, local bridge
+I/O, and WebSocket runtime execution are not claimed by this sink slice.
 
 ## 2026-05-15 Runtime Host Notification Normalizer Helper Slice
 

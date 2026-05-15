@@ -1,5 +1,5 @@
 use crate::config::Resolved;
-use crate::transportcfg::{new_http_client, HttpRequest};
+use crate::transportcfg::{new_http_client, HttpClient, HttpRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
@@ -46,7 +46,10 @@ pub fn send_route_confirmation(
         channel: route.channel.clone(),
         to: route.to.clone(),
     };
-    send_hook_request(resolved, &settings.hook_url, &settings.token, request)
+    let client = build_hook_client(resolved).map_err(|err| {
+        format!("route was added, but the confirmation message was not accepted by OpenClaw: {err}")
+    })?;
+    send_hook_request(&client, &settings.hook_url, &settings.token, &request)
         .map(|run_id| json!({ "accepted": true, "run_id": run_id }))
         .map_err(|err| {
             format!(
@@ -55,11 +58,16 @@ pub fn send_route_confirmation(
         })
 }
 
-fn send_hook_request(
-    resolved: &Resolved,
+pub(crate) fn build_hook_client(resolved: &Resolved) -> anyhow::Result<HttpClient> {
+    new_http_client(&resolved.ca_bundle)
+        .map_err(|err| anyhow::anyhow!("build openclaw hook request: {err}"))
+}
+
+pub(crate) fn send_hook_request<T: Serialize>(
+    client: &HttpClient,
     hook_url: &str,
     token: &str,
-    request: HookRequest,
+    request: &T,
 ) -> anyhow::Result<String> {
     let raw = serde_json::to_vec(&request)
         .map_err(|err| anyhow::anyhow!("marshal openclaw hook payload: {err}"))?;
@@ -71,8 +79,6 @@ fn send_hook_request(
     if !token.is_empty() {
         http_request = http_request.header("Authorization", format!("Bearer {token}"));
     }
-    let client = new_http_client(&resolved.ca_bundle)
-        .map_err(|err| anyhow::anyhow!("build openclaw hook request: {err}"))?;
     let response = client
         .execute(http_request)
         .map_err(|err| anyhow::anyhow!("send openclaw hook request: {err}"))?;

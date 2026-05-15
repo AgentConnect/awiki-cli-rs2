@@ -1,3 +1,5 @@
+use crate::config::{Paths, Resolved};
+use crate::transportcfg::HttpClient;
 use serde::Serialize;
 
 use super::host_notify::{
@@ -19,6 +21,73 @@ pub struct HookRequest {
     pub channel: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub to: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenClawHostNotifySink {
+    paths: Paths,
+    resolved: Resolved,
+    hook_name: String,
+}
+
+pub fn new_openclaw_host_notify_sink(
+    resolved: &Resolved,
+) -> anyhow::Result<OpenClawHostNotifySink> {
+    let settings = super::effective_openclaw_settings(resolved);
+    super::validate_openclaw_hook_url(&settings.hook_url)?;
+    let _client = super::openclaw_webhook::build_hook_client(resolved)?;
+    Ok(OpenClawHostNotifySink {
+        paths: resolved.paths.clone(),
+        resolved: resolved.clone(),
+        hook_name: FIXED_HOOK_NAME.to_string(),
+    })
+}
+
+impl OpenClawHostNotifySink {
+    pub fn notify(&self, event: &HostNotificationEvent) -> anyhow::Result<()> {
+        let settings = super::effective_openclaw_settings(&self.resolved);
+        super::validate_openclaw_hook_url(&settings.hook_url)
+            .map_err(|err| anyhow::anyhow!("openclaw notify failed: resolve settings: {err}"))?;
+        let client = super::openclaw_webhook::build_hook_client(&self.resolved).map_err(|err| {
+            anyhow::anyhow!("openclaw notify failed: prepare webhook client: {err}")
+        })?;
+        self.notify_with_client(event, &client, &settings.hook_url, &settings.token)
+    }
+
+    pub fn close(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn notify_with_client(
+        &self,
+        event: &HostNotificationEvent,
+        client: &HttpClient,
+        hook_url: &str,
+        token: &str,
+    ) -> anyhow::Result<()> {
+        let routes = super::openclaw_routes::load_routes(&self.paths)
+            .map_err(|err| anyhow::anyhow!("openclaw notify failed: load routes: {err}"))?;
+        if routes.is_empty() {
+            anyhow::bail!("openclaw notify failed: no configured routes");
+        }
+
+        let mut failures = Vec::new();
+        let mut delivery_ok = false;
+        for route in routes {
+            let request =
+                build_openclaw_hook_request(event, &self.hook_name, &route.channel, &route.to);
+            match super::openclaw_webhook::send_hook_request(client, hook_url, token, &request) {
+                Ok(_) => delivery_ok = true,
+                Err(err) => {
+                    failures.push(format!("channel={} to={}: {err}", route.channel, route.to))
+                }
+            }
+        }
+        if delivery_ok {
+            return Ok(());
+        }
+        anyhow::bail!("openclaw notify failed: {}", failures.join("; "))
+    }
 }
 
 pub fn build_openclaw_hook_request(

@@ -10,6 +10,7 @@ pub mod bridge;
 pub mod hermes_bridge;
 pub mod hermes_host_notify;
 pub mod host_notify;
+pub mod host_notify_sink;
 pub mod listener;
 pub mod listener_contact_sync;
 pub mod listener_message_records;
@@ -70,7 +71,10 @@ pub struct HermesConfig {
 
 pub fn resolve(resolved: &Resolved) -> RuntimeResolved {
     let mode = normalize_runtime_mode(&resolved.runtime_mode);
-    let sink = resolved.host_notify_sink.to_ascii_lowercase();
+    let mut sink = default_string(&resolved.host_notify_sink, "log").to_ascii_lowercase();
+    if sink == "webhook" {
+        sink = "hermes".to_string();
+    }
     RuntimeResolved {
         mode,
         socket_path: bridge::resolved_bridge_endpoint(resolved),
@@ -83,7 +87,7 @@ pub fn resolve(resolved: &Resolved) -> RuntimeResolved {
             enabled: resolved.host_notify_enabled,
             sink: sink.clone(),
             file_path: if sink == "file" {
-                resolved.host_notify_file_path.clone()
+                resolved.host_notify_file_path.trim().to_string()
             } else {
                 String::new()
             },
