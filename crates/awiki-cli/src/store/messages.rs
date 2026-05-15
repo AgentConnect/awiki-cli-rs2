@@ -128,6 +128,64 @@ LIMIT ?3"#,
     )
 }
 
+pub fn list_direct_messages_by_peer_dids(
+    connection: &Connection,
+    owner_did: &str,
+    peer_dids: &[String],
+    limit: i64,
+    unread_only: bool,
+    inbox_only: bool,
+) -> StoreResult<Vec<Value>> {
+    let mut normalized_peers = Vec::new();
+    for did in peer_dids {
+        let did = did.trim();
+        if did.is_empty() || normalized_peers.iter().any(|known| known == did) {
+            continue;
+        }
+        normalized_peers.push(did.to_string());
+    }
+    if normalized_peers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = if limit <= 0 { 50 } else { limit };
+    let placeholders = vec!["?"; normalized_peers.len()].join(",");
+    let mut statement = String::from(
+        r#"
+SELECT *
+FROM messages
+WHERE owner_did = ?
+  AND COALESCE(group_did, group_id) IS NULL"#,
+    );
+    if inbox_only {
+        statement.push_str(" AND direction = 0");
+    }
+    if unread_only {
+        statement.push_str(" AND is_read = 0");
+    }
+    statement.push_str(&format!(
+        r#"
+  AND (
+        (sender_did IN ({placeholders}) AND receiver_did = ?)
+     OR (receiver_did IN ({placeholders}) AND sender_did = ?)
+  )
+ORDER BY COALESCE(sent_at, stored_at) DESC
+LIMIT ?"#
+    ));
+    let owner = normalize_owner_did(owner_did);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(4 + normalized_peers.len() * 2);
+    params.push(&owner);
+    for did in &normalized_peers {
+        params.push(did);
+    }
+    params.push(&owner);
+    for did in &normalized_peers {
+        params.push(did);
+    }
+    params.push(&owner);
+    params.push(&limit);
+    query_rows_with_params(connection, &statement, &params)
+}
+
 pub fn list_messages_by_ids(
     connection: &Connection,
     owner_did: &str,

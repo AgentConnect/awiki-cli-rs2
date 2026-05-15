@@ -112,10 +112,7 @@ fn group_members_live_posts_group_list_members_and_maps_members_like_go() {
     assert_eq!(envelope["data"]["group"], group_did);
     assert_eq!(envelope["data"]["total"], 1);
     assert_eq!(envelope["data"]["members"][0]["member_did"], bob_did);
-    assert_eq!(
-        envelope["data"]["members"][0]["member_handle"],
-        "bob.awiki.ai"
-    );
+    assert_eq!(envelope["data"]["members"][0]["member_handle"], "bob");
     assert_eq!(envelope["data"]["members"][0]["role"], "member");
     assert_eq!(envelope["data"]["source"], "remote_http");
 

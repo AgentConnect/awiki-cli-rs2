@@ -106,10 +106,12 @@ pub fn inbox(
         return Err(MessageError::GroupNotSupported);
     }
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    let target = if request.with.trim().is_empty() {
+    let original_with = request.with.trim().to_string();
+    let target_is_handle = !original_with.is_empty() && !original_with.starts_with("did:");
+    let target = if original_with.is_empty() {
         TargetResolution::default()
     } else {
-        resolve_target(resolved, &request.with)?
+        resolve_target(resolved, &original_with)?
     };
     request.with = target.did.clone();
     let mut auth = auth_session(resolved, manager, &record)?;
@@ -123,8 +125,29 @@ pub fn inbox(
         &mut auth,
     )?;
     let mut warnings = Vec::new();
-    let mut messages = persist_inbox_messages(resolved, &record, &raw, &mut warnings);
-    messages = apply_inbox_filters(messages, &target.did, request.unread_only, request.limit);
+    let mut messages =
+        persist_inbox_messages(resolved, &record, &raw, &target.handle, &mut warnings);
+    let mut source = source_with_default(&raw);
+    if target_is_handle {
+        merge_handle_history_messages(
+            resolved,
+            &record.did,
+            &target,
+            request.limit,
+            request.unread_only,
+            true,
+            &mut messages,
+            &mut source,
+            &mut warnings,
+        );
+    }
+    let filter_peer_did = if target_is_handle { "" } else { &target.did };
+    messages = apply_inbox_filters(
+        messages,
+        filter_peer_did,
+        request.unread_only,
+        request.limit,
+    );
     let total = messages.len();
     if request.mark_read && !messages.is_empty() {
         let ids = collect_message_ids(&messages);
@@ -147,7 +170,7 @@ pub fn inbox(
         data: json!({
             "messages": messages,
             "total": total,
-            "source": source_with_default(&raw),
+            "source": source,
             "with": peer_handle_or_did(&target),
         }),
         summary: format!("Loaded {total} direct inbox messages"),
@@ -167,7 +190,9 @@ pub fn history(
         request.limit = 50;
     }
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    let target = resolve_target(resolved, &request.with)?;
+    let original_with = request.with.trim().to_string();
+    let target_is_handle = !original_with.is_empty() && !original_with.starts_with("did:");
+    let target = resolve_target(resolved, &original_with)?;
     request.with = target.did.clone();
     let mut auth = auth_session(resolved, manager, &record)?;
     let client = Client::new(resolved)?;
@@ -180,15 +205,40 @@ pub fn history(
         &mut auth,
     )?;
     let mut warnings = Vec::new();
-    let messages = persist_history_messages(resolved, &record, &target.did, &raw, &mut warnings);
+    let mut messages = persist_history_messages(
+        resolved,
+        &record,
+        &target.did,
+        &target.handle,
+        &raw,
+        &mut warnings,
+    );
+    let mut source = source_with_default(&raw);
+    let mut resolved_dids = resolved_dids_value(&raw);
+    if target_is_handle {
+        let dids = merge_handle_history_messages(
+            resolved,
+            &record.did,
+            &target,
+            request.limit,
+            false,
+            false,
+            &mut messages,
+            &mut source,
+            &mut warnings,
+        );
+        if let Some(dids) = dids {
+            resolved_dids = json!(dids);
+        }
+    }
     let total = messages.len();
     Ok(CommandResult {
         data: json!({
             "messages": messages,
             "total": total,
-            "source": source_with_default(&raw),
+            "source": source,
             "with": peer_handle_or_did(&target),
-            "resolved_dids": resolved_dids_value(&raw),
+            "resolved_dids": resolved_dids,
         }),
         summary: format!("Loaded {total} direct history messages"),
         warnings,
@@ -422,6 +472,7 @@ fn persist_inbox_messages(
     resolved: &Resolved,
     record: &StoredIdentity,
     raw: &Value,
+    known_handle: &str,
     warnings: &mut Vec<String>,
 ) -> Vec<Value> {
     let messages = messages_from_result(raw.get("messages"));
@@ -441,6 +492,14 @@ fn persist_inbox_messages(
     if let Err(err) = store::store_messages_batch(&mut connection, &records) {
         warnings.push(format!("Failed to persist inbox messages: {err}"));
     }
+    warnings.extend(super::contact_sync::sync_direct_peer_handles(
+        resolved,
+        &mut connection,
+        &record.did,
+        &messages,
+        known_handle,
+        "msg.inbox",
+    ));
     messages
 }
 
@@ -448,6 +507,7 @@ fn persist_history_messages(
     resolved: &Resolved,
     record: &StoredIdentity,
     peer_did: &str,
+    known_handle: &str,
     raw: &Value,
     warnings: &mut Vec<String>,
 ) -> Vec<Value> {
@@ -468,6 +528,14 @@ fn persist_history_messages(
     if let Err(err) = store::store_messages_batch(&mut connection, &records) {
         warnings.push(format!("Failed to persist history messages: {err}"));
     }
+    warnings.extend(super::contact_sync::sync_direct_peer_handles(
+        resolved,
+        &mut connection,
+        &record.did,
+        &messages,
+        known_handle,
+        "msg.history",
+    ));
     messages
 }
 
@@ -569,6 +637,91 @@ fn apply_inbox_filters(
         .collect()
 }
 
+fn merge_handle_history_messages(
+    resolved: &Resolved,
+    owner_did: &str,
+    target: &TargetResolution,
+    limit: i64,
+    unread_only: bool,
+    inbox_only: bool,
+    messages: &mut Vec<Value>,
+    source: &mut String,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    let dids = match super::contact_sync::peer_dids_for_handle_from_store(
+        resolved,
+        owner_did,
+        &target.handle,
+        &target.did,
+    ) {
+        Ok(dids) => dids,
+        Err(err) => {
+            warnings.push(format!("Failed to expand handle history: {err}"));
+            return None;
+        }
+    };
+    if dids.is_empty() {
+        return Some(dids);
+    }
+    let Ok(connection) = store::open(&resolved.paths) else {
+        return Some(dids);
+    };
+    if store::ensure_schema(&connection).is_err() {
+        return Some(dids);
+    }
+    match store::list_direct_messages_by_peer_dids(
+        &connection,
+        owner_did,
+        &dids,
+        limit,
+        unread_only,
+        inbox_only,
+    ) {
+        Ok(cached) if !cached.is_empty() => {
+            let merged = merge_direct_history_messages(messages, cached, limit);
+            if merged.len() > messages.len() || !merged.is_empty() {
+                *messages = merged;
+                if !source.ends_with("+handle_history") {
+                    source.push_str("+handle_history");
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(err) => warnings.push(format!("Failed to load handle history from cache: {err}")),
+    }
+    Some(dids)
+}
+
+fn merge_direct_history_messages(remote: &[Value], cached: Vec<Value>, limit: i64) -> Vec<Value> {
+    let mut merged = Vec::with_capacity(remote.len() + cached.len());
+    let mut seen = Vec::new();
+    for message in remote.iter().cloned().chain(cached) {
+        let id = message_identity(&message);
+        if id.is_empty() || seen.iter().any(|known| known == &id) {
+            continue;
+        }
+        seen.push(id);
+        merged.push(message);
+    }
+    merged.sort_by(|left, right| {
+        comparable_message_time(right)
+            .cmp(&comparable_message_time(left))
+            .then_with(|| message_identity(right).cmp(&message_identity(left)))
+    });
+    let limit = if limit <= 0 { 50 } else { limit as usize };
+    merged.truncate(limit);
+    merged
+}
+
+fn comparable_message_time(message: &Value) -> String {
+    message
+        .get("sent_at")
+        .or_else(|| message.get("stored_at"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn fill_direct_send_result(result: &mut DirectSendResult, meta: &Value, target_did: &str) {
     if result.message_id.is_empty() {
         result.message_id = string_value(meta.get("message_id"));
@@ -651,10 +804,7 @@ pub(crate) fn default_message_type(message_type: &str) -> &str {
 }
 
 pub(crate) fn normalize_handle_value(value: &str) -> String {
-    value
-        .trim()
-        .trim_start_matches("wba://")
-        .to_ascii_lowercase()
+    super::contact_sync::normalize_handle_value(value)
 }
 
 pub(crate) fn metadata_string(value: Value) -> String {

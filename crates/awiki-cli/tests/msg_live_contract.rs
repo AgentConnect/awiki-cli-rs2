@@ -107,6 +107,11 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
             "source": "remote_http"
         }))),
         TestResponse::ok(&json_rpc_result(json!({
+            "did": alice_did,
+            "handle": "alice.awiki.ai",
+            "full_handle": "alice.awiki.ai"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
             "messages": [message.clone()],
             "total": 1,
             "source": "remote_http"
@@ -163,10 +168,11 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(mark_json["data"]["message_ids"], json!(["msg-direct-1"]));
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
     assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /im/rpc HTTP/1.1"));
 
     let inbox_body: Value = serde_json::from_str(request_body(&requests[0])).expect("inbox body");
     assert_eq!(inbox_body["method"], "inbox.get");
@@ -178,12 +184,12 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(inbox_body["params"]["body"].get("peer_did"), None);
 
     let history_body: Value =
-        serde_json::from_str(request_body(&requests[1])).expect("history body");
+        serde_json::from_str(request_body(&requests[2])).expect("history body");
     assert_eq!(history_body["method"], "direct.get_history");
     assert_eq!(history_body["params"]["body"]["peer_did"], alice_did);
     assert_eq!(history_body["params"]["body"]["limit"], 5);
 
-    let mark_body: Value = serde_json::from_str(request_body(&requests[2])).expect("mark body");
+    let mark_body: Value = serde_json::from_str(request_body(&requests[3])).expect("mark body");
     assert_eq!(mark_body["method"], "inbox.mark_read");
     assert_eq!(
         mark_body["params"]["body"]["message_ids"],
@@ -208,6 +214,94 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(rows[0]["direction"], 0);
     assert_eq!(rows[0]["content"], "hello bob");
     assert_eq!(rows[0]["is_read"], 1);
+
+    let contacts = query_rows(
+        workspace.path(),
+        "SELECT did, handle, messaged FROM contacts WHERE did = 'did:wba:awiki.ai:alice:e1_alice'",
+    );
+    assert_eq!(contacts.len(), 1);
+    assert_eq!(contacts[0]["handle"], "alice");
+    assert_eq!(contacts[0]["messaged"], 1);
+}
+
+#[test]
+fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
+    let workspace = TempDir::new("msg-live-handle-history").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let alice_old = "did:wba:awiki.ai:alice:e1_old";
+    let alice_new = "did:wba:awiki.ai:alice:e1_new";
+    seed_contact(
+        workspace.path(),
+        bob_did,
+        alice_old,
+        "alice",
+        "2026-04-07T01:00:00Z",
+    );
+    seed_direct_message(
+        workspace.path(),
+        bob_did,
+        alice_old,
+        "msg-old",
+        "hello from old DID",
+        "2026-04-07T01:00:00Z",
+    );
+    let remote_message = json!({
+        "id": "msg-new",
+        "type": "text",
+        "sender_did": alice_new,
+        "receiver_did": bob_did,
+        "content_type": "text/plain",
+        "content": "hello from new DID",
+        "sent_at": "2026-04-07T02:00:00Z",
+        "is_read": false,
+    });
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "did": alice_new,
+            "handle": "alice.awiki.ai",
+            "full_handle": "alice.awiki.ai"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "messages": [remote_message],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let history = awiki_cmd(
+        &[
+            "--identity",
+            "bob-msg",
+            "msg",
+            "history",
+            "--with",
+            "alice",
+            "--limit",
+            "5",
+        ],
+        workspace.path(),
+    );
+    assert_success(&history);
+    let envelope = success_json(&history);
+    assert_eq!(envelope["summary"], "Loaded 2 direct history messages");
+    assert_eq!(envelope["data"]["source"], "remote_http+handle_history");
+    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-new");
+    assert_eq!(envelope["data"]["messages"][1]["msg_id"], "msg-old");
+    assert_eq!(
+        envelope["data"]["resolved_dids"],
+        json!([alice_new, alice_old])
+    );
+
+    let bindings = query_rows(
+        workspace.path(),
+        "SELECT did, is_current FROM contact_handle_bindings WHERE handle = 'alice' ORDER BY is_current DESC, last_seen_at DESC",
+    );
+    assert_eq!(bindings.len(), 2);
+    assert_eq!(bindings[0]["did"], alice_new);
+    assert_eq!(bindings[0]["is_current"], 1);
+    assert_eq!(bindings[1]["did"], alice_old);
 }
 
 fn register_ready_msg_identity(
@@ -246,6 +340,7 @@ fn register_ready_msg_identity(
     let mut identity: Value =
         serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
     let original_did = identity["did"].as_str().unwrap().to_string();
+    identity["did"] = json!(did);
     identity["handle"] = json!(handle);
     identity["full_handle"] = json!(format!("{handle}.awiki.ai"));
     identity["user_id"] = json!(format!("user-{handle}"));
@@ -336,6 +431,65 @@ fn assert_contains_text(haystack: &str, needle: &str) {
         haystack.contains(needle),
         "expected request to contain {needle:?}, got:\n{haystack}"
     );
+}
+
+fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
+    let query = awiki_cmd_owned(
+        &[
+            "debug".to_string(),
+            "db".to_string(),
+            "query".to_string(),
+            sql.to_string(),
+        ],
+        workspace,
+    );
+    assert_success(&query);
+    success_json(&query)["data"]["rows"]
+        .as_array()
+        .cloned()
+        .unwrap()
+}
+
+fn seed_contact(workspace: &Path, owner_did: &str, peer_did: &str, handle: &str, seen_at: &str) {
+    execute_sql(
+        workspace,
+        format!(
+            "INSERT INTO contacts (owner_did, did, handle, messaged, first_seen_at, last_seen_at) VALUES ('{owner_did}', '{peer_did}', '{handle}', 1, '{seen_at}', '{seen_at}')",
+        ),
+    );
+    execute_sql(
+        workspace,
+        format!(
+            "UPDATE contact_handle_bindings SET is_current = 1, last_seen_at = '{seen_at}', credential_name = 'bob-msg' WHERE owner_did = '{owner_did}' AND handle = '{handle}' AND did = '{peer_did}'",
+        ),
+    );
+}
+
+fn seed_direct_message(
+    workspace: &Path,
+    owner_did: &str,
+    peer_did: &str,
+    msg_id: &str,
+    content: &str,
+    sent_at: &str,
+) {
+    let thread_id = format!("dm:{owner_did}:{peer_did}");
+    let statement = format!(
+        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', '{thread_id}', 0, '{peer_did}', '{owner_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', 0, 'bob-msg')",
+    );
+    execute_sql(workspace, statement);
+}
+
+fn execute_sql(workspace: &Path, statement: String) {
+    assert_success(&awiki_cmd_owned(
+        &[
+            "debug".to_string(),
+            "db".to_string(),
+            "query".to_string(),
+            statement,
+        ],
+        workspace,
+    ));
 }
 
 fn json_rpc_result(result: Value) -> String {

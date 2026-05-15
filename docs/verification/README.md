@@ -2,6 +2,54 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Direct Message Contact Sync Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test store_contact_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/store ./internal/message -run 'TestUpsertContactRebindsCurrentHandleAndPreservesHistory|TestListDIDsByHandleFallsBackToContactsWithoutHistoryBindings|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates|TestSyncPeerHandle|TestReadHistoryFromCacheByPeerDIDsAggregatesHistoricalBindings' -count=1
+```
+
+Scope:
+
+- Adds the Go `store` contact helper boundary in split Rust files:
+  `ResolveContactHandleByDID`, `ListDIDsByHandle`, `UpsertContact`, and
+  `ListDirectMessagesByPeerDIDs`.
+- Adds message contact-sync helpers for inbox/history peer DID handling,
+  local contact handle reuse, DID->handle remote lookup fallback, `wba://`
+  and domain-trimming handle normalization, and handle-history DID merging.
+- Wires direct inbox/history persistence to sync contacts and expands
+  `msg history --with <handle>` through local handle-history cache rows.
+- Keeps direct send contact behavior Go-compatible: send persists the outbound
+  message but does not upsert `contacts`.
+
+Dependency note: no dependency was added. The slice reuses approved
+`rusqlite + bundled` for local SQLite, existing Rustls/std HTTP for remote
+handle lookup, and existing auth/session wiring. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, YAML
+crates, platform service libraries, or new SQLite dependencies.
+
+Boundary note: runtime listener incoming contact sync remains a separate
+listener/server execution slice because the current Rust runtime listener lane
+does not yet implement the Go foreground session/message processing loop.
+Secure direct E2EE, WebSocket/local bridge fallback, and deeper fallback trace
+phase parity remain deferred.
+
 ## 2026-05-15 Trace Timing Integration Slice
 
 Status: unit verified.

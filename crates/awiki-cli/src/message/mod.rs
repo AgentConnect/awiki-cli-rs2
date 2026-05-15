@@ -1,6 +1,7 @@
 mod attachment;
 mod attachment_service;
 mod client;
+mod contact_sync;
 mod group_e2ee_wire;
 mod group_service;
 mod group_wire;
