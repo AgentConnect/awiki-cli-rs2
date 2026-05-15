@@ -22,9 +22,9 @@ pub struct CommandResult {
 }
 
 #[derive(Debug, Clone, Default)]
-struct TargetResolution {
-    did: String,
-    handle: String,
+pub(crate) struct TargetResolution {
+    pub(crate) did: String,
+    pub(crate) handle: String,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
@@ -54,7 +54,7 @@ pub fn send(
         return Err(MessageError::AttachmentNotSupported);
     }
     if !request.group.trim().is_empty() {
-        return Err(MessageError::GroupNotSupported);
+        return super::group_service::send_group(resolved, manager, request);
     }
     if request.target.trim().is_empty() {
         return Err(MessageError::TargetRequired);
@@ -233,7 +233,7 @@ pub fn mark_read(
     })
 }
 
-fn require_active_identity(
+pub(crate) fn require_active_identity(
     resolved: &Resolved,
     manager: &Manager,
     requested: &str,
@@ -258,7 +258,7 @@ fn require_active_identity(
     Ok(record)
 }
 
-fn auth_session(
+pub(crate) fn auth_session(
     resolved: &Resolved,
     manager: &Manager,
     record: &StoredIdentity,
@@ -305,7 +305,10 @@ fn auth_session(
     Ok(session)
 }
 
-fn resolve_target(resolved: &Resolved, target: &str) -> Result<TargetResolution, MessageError> {
+pub(crate) fn resolve_target(
+    resolved: &Resolved,
+    target: &str,
+) -> Result<TargetResolution, MessageError> {
     let target = target.trim();
     if target.is_empty() {
         return Err(MessageError::TargetRequired);
@@ -627,7 +630,7 @@ fn peer_handle_or_did(target: &TargetResolution) -> String {
     }
 }
 
-fn default_message_type(message_type: &str) -> &str {
+pub(crate) fn default_message_type(message_type: &str) -> &str {
     if message_type.trim().is_empty() {
         "text"
     } else {
@@ -635,18 +638,18 @@ fn default_message_type(message_type: &str) -> &str {
     }
 }
 
-fn normalize_handle_value(value: &str) -> String {
+pub(crate) fn normalize_handle_value(value: &str) -> String {
     value
         .trim()
         .trim_start_matches("wba://")
         .to_ascii_lowercase()
 }
 
-fn metadata_string(value: Value) -> String {
+pub(crate) fn metadata_string(value: Value) -> String {
     serde_json::to_string(&value).unwrap_or_default()
 }
 
-fn content_string(value: Option<&Value>) -> String {
+pub(crate) fn content_string(value: Option<&Value>) -> String {
     match value {
         Some(Value::String(value)) => value.clone(),
         Some(value) => serde_json::to_string(value).unwrap_or_default(),
@@ -654,14 +657,14 @@ fn content_string(value: Option<&Value>) -> String {
     }
 }
 
-fn string_value(value: Option<&Value>) -> String {
+pub(crate) fn string_value(value: Option<&Value>) -> String {
     value
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
 }
 
-fn int_value(value: Option<&Value>, fallback: i64) -> i64 {
+pub(crate) fn int_value(value: Option<&Value>, fallback: i64) -> i64 {
     match value {
         Some(Value::Number(number)) => number
             .as_i64()
@@ -673,7 +676,7 @@ fn int_value(value: Option<&Value>, fallback: i64) -> i64 {
     }
 }
 
-fn i64_value(value: Option<&Value>) -> Option<i64> {
+pub(crate) fn i64_value(value: Option<&Value>) -> Option<i64> {
     match value {
         Some(Value::Number(number)) => number
             .as_i64()
@@ -684,7 +687,7 @@ fn i64_value(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn bool_value(value: Option<&Value>) -> bool {
+pub(crate) fn bool_value(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(value)) => *value,
         Some(Value::Number(number)) => number.as_i64().unwrap_or_default() != 0,

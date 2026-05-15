@@ -614,7 +614,7 @@ fn require_flags(command: &ParsedCommand, names: &[&str]) -> Result<(), ExitErro
     ))
 }
 
-fn message_exit(err: MessageError, hint: &str) -> ExitError {
+pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {
     match err {
         MessageError::TargetRequired
         | MessageError::TextRequired

@@ -498,7 +498,10 @@ fn generated_record(identity_name: &str, generated: &GeneratedIdentity) -> Store
 fn assert_has_generated_meta(meta: &Value) {
     assert_eq!(meta["anp_version"], "1.0");
     assert!(meta["operation_id"].as_str().unwrap().starts_with("op-"));
-    assert!(!meta["created_at"].as_str().unwrap().is_empty());
+    let created_at = meta["created_at"].as_str().unwrap();
+    assert_eq!(created_at.len(), "2026-05-15T09:33:18Z".len());
+    assert!(created_at.ends_with('Z'));
+    assert!(!created_at.contains('.'));
 }
 
 fn assert_origin_proof_verifies(params: &Value, method: &str, record: &StoredIdentity) {

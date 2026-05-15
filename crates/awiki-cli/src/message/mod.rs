@@ -1,6 +1,7 @@
 mod attachment;
 mod client;
 mod group_e2ee_wire;
+mod group_service;
 mod group_wire;
 mod proof;
 mod service;
@@ -28,6 +29,10 @@ pub use group_e2ee_wire::{
     build_group_e2ee_recover_member_rpc_params, build_group_e2ee_remove_rpc_params,
     build_group_e2ee_send_rpc_params, build_group_e2ee_update_member_rpc_params,
     GROUP_E2EE_CIPHER_CONTENT_TYPE,
+};
+pub use group_service::{
+    add_group_member, create_group, get_group, group_members, group_messages, join_group,
+    leave_group, list_groups, remove_group_member, update_group,
 };
 pub use group_wire::{
     build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_info_rpc_params,

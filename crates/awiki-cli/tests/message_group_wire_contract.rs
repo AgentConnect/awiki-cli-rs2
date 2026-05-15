@@ -384,6 +384,7 @@ fn object_map(value: Value) -> Map<String, Value> {
 }
 
 fn assert_origin_proof_verifies(params: &Value, method: &str, record: &StoredIdentity) {
+    assert_service_meta_timestamp_compatible(&params["meta"]);
     let origin_proof: anp::proof::Rfc9421OriginProof =
         serde_json::from_value(params["auth"]["origin_proof"].clone())
             .expect("origin proof should deserialize");
@@ -399,4 +400,11 @@ fn assert_origin_proof_verifies(params: &Value, method: &str, record: &StoredIde
         },
     )
     .expect("origin proof verifies");
+}
+
+fn assert_service_meta_timestamp_compatible(meta: &Value) {
+    let created_at = meta["created_at"].as_str().expect("created_at");
+    assert_eq!(created_at.len(), "2026-05-15T09:33:18Z".len());
+    assert!(created_at.ends_with('Z'));
+    assert!(!created_at.contains('.'));
 }

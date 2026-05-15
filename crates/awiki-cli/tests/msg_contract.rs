@@ -540,6 +540,30 @@ fn msg_remaining_non_dry_run_boundaries_stay_deferred() {
             "--group",
             "did:wba:awiki.ai:groups:g:e1",
             "--text",
+            "caption",
+            "--file",
+            "/tmp/demo.txt",
+        ],
+        workspace.path(),
+    );
+    assert_code(&output, 1);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "not_implemented");
+    assert_contains(
+        &envelope["error"]["message"],
+        "direct attachment messaging is not supported",
+    );
+
+    let output = awiki_cmd(
+        &[
+            "msg",
+            "attachment",
+            "download",
+            "--group",
+            "did:wba:awiki.ai:groups:g:e1",
+            "--message-id",
+            "msg-1",
+            "--output",
             "hello",
         ],
         workspace.path(),
@@ -549,7 +573,7 @@ fn msg_remaining_non_dry_run_boundaries_stay_deferred() {
     assert_eq!(envelope["error"]["code"], "not_implemented");
     assert_contains(
         &envelope["error"]["message"],
-        "group messaging is not supported",
+        "msg attachment download requires non-dry-run implementation",
     );
 }
 

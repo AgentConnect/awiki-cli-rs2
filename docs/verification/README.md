@@ -2,6 +2,85 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Non-E2EE Group Live HTTP Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_groups_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+```
+
+Focused remote system-test verification:
+
+```bash
+cd ../awiki-system-test
+AWIKI_SYSTEM_TEST_MODE=remote \
+E2E_USER_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws \
+E2E_DID_DOMAIN=awiki.info \
+NO_PROXY=awiki.info,www.awiki.info,localhost,127.0.0.1 \
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+uv run --no-sync python -m pytest \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_can_create_group_add_member_send_and_list_messages \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_can_update_members_remove_and_leave_groups \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_can_join_open_group_and_use_show_alias \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_get_returns_not_found_for_unknown_group \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_commands_support_dry_run_for_extended_policy_fields \
+  -q
+```
+
+Result: local Rust formatting, package check, focused message/group/store tests,
+and structure check passed. The focused remote `awiki-system-test` group
+selector set passed against `awiki.info`: 5 passed, 0 failed, 0 skipped in
+8.48s. Configuration context: `AWIKI_SYSTEM_TEST_MODE=remote`,
+`E2E_USER_SERVICE_URL=https://awiki.info`,
+`E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
+`E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`, and
+`E2E_DID_DOMAIN=awiki.info`.
+
+Scope:
+
+- Wired ordinary non-E2EE group execution for `group create`, `group get`,
+  `group show`, `group join`, `group add`, `group remove`, `group kick`,
+  `group leave`, `group update`, `group list`, `group members`,
+  `group messages`, and `msg send --group --text`.
+- Preserved Go auth/session behavior through the existing `authsdk::Session`:
+  active messaging identity gate, stored JWT seeding, DID-auth `get_me`
+  bootstrap when no token is stored, captured JWT persistence, and service
+  error conversion.
+- Preserved Go message-service HTTP behavior for `/im/rpc` group methods,
+  including member handle-to-DID lookup, group text send, list/read methods,
+  update-profile/update-policy sequencing, and Go-shaped result summaries.
+- Added split local group cache helpers in `store/groups.rs` for group,
+  member, and group-message persistence plus local owner leave handling.
+- Fixed signed message/group metadata timestamps to Go-compatible
+  second-precision RFC3339 UTC text so message-service typed `Meta`
+  reserialization verifies RFC9421 origin-proof `contentDigest`.
+- Kept all touched Rust source/test files below the default 1200-line limit;
+  `xtask check-structure` reports no undocumented oversized files.
+
+Boundary note: group attachments, group E2EE/MLS execution, WebSocket/local
+bridge/runtime listener fallback, OpenClaw host notify, profile-timeout
+wrappers, trace phase plumbing, and deeper cache fallback behavior remain later
+parity slices.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
+authsdk session, message wire/proof helpers, and approved `rusqlite + bundled`
+SQLite path. It does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+`native-tls`, bundled OpenSSL, YAML crates, platform service libraries, or ANP
+SDK network/default features.
+
 ## 2026-05-15 Direct Message Live HTTP Slice
 
 Local Rust verification:

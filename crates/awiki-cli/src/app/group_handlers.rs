@@ -1,6 +1,7 @@
-use super::{not_implemented_side_effect, App};
+use super::{msg_handlers::message_exit, App};
 use crate::cli::ParsedCommand;
 use crate::identity;
+use crate::message::{self, CommandResult};
 use crate::output::ExitError;
 use serde_json::{json, Value};
 
@@ -17,7 +18,34 @@ impl App {
             ));
         }
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group create"));
+            let result = message::create_group(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupCreateRequest {
+                    identity_name: self.globals.identity.clone(),
+                    name,
+                    description: string_flag(command, "description"),
+                    discoverability: string_flag_or(command, "discoverability", "private"),
+                    admission_mode: string_flag_or(command, "admission-mode", "open-join"),
+                    message_security_profile: string_flag_or(
+                        command,
+                        "message-security-profile",
+                        "transport-protected",
+                    ),
+                    e2ee: bool_flag(command, "e2ee")?.unwrap_or(false),
+                    slug: string_flag(command, "slug"),
+                    goal: string_flag(command, "goal"),
+                    rules: string_flag(command, "rules"),
+                    message_prompt: string_flag(command, "message-prompt"),
+                    doc_url: string_flag(command, "doc-url"),
+                    attachments_allowed: optional_bool(command, "attachments-allowed")?,
+                    max_members: string_flag(command, "max-members"),
+                    member_max_messages: optional_i64(command, "member-max-messages")?,
+                    member_max_total_chars: optional_i64(command, "member-max-total-chars")?,
+                },
+            )
+            .map_err(group_exit)?;
+            return self.render_group_result("awiki-cli group create", &resolved, result);
         }
         self.render_success(
             "awiki-cli group create",
@@ -61,7 +89,16 @@ impl App {
             "Usage: awiki-cli group get --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group get"));
+            let result = message::get_group(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupGetRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                },
+            )
+            .map_err(group_exit)?;
+            return self.render_group_result("awiki-cli group get", &resolved, result);
         }
         self.render_success(
             "awiki-cli group get",
@@ -88,7 +125,17 @@ impl App {
             "Usage: awiki-cli group join --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group join"));
+            let result = message::join_group(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupJoinRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    reason_text: string_flag(command, "reason"),
+                },
+            )
+            .map_err(group_exit)?;
+            return self.render_group_result("awiki-cli group join", &resolved, result);
         }
         self.render_success(
             "awiki-cli group join",
@@ -140,7 +187,35 @@ impl App {
             &format!("Usage: awiki-cli {command_name} --group <GROUP_DID> --member <MEMBER>"),
         )?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect(command_name));
+            let request = message::GroupMemberRequest {
+                identity_name: self.globals.identity.clone(),
+                group,
+                member,
+                role: string_flag_or(command, "role", role_fallback),
+                reason_text: if include_reason {
+                    string_flag(command, "reason")
+                } else {
+                    String::new()
+                },
+                e2ee: bool_flag(command, "e2ee")?.unwrap_or(false),
+                leave_request_id: String::new(),
+            };
+            let mut result = if public_action == "add" {
+                message::add_group_member(&resolved, &self.identity_manager(&resolved), request)
+            } else {
+                message::remove_group_member(&resolved, &self.identity_manager(&resolved), request)
+            }
+            .map_err(group_exit)?;
+            result.summary = if public_action == "add" {
+                "Added member to group".to_string()
+            } else {
+                "Removed member from group".to_string()
+            };
+            return self.render_group_result(
+                &format!("awiki-cli {command_name}"),
+                &resolved,
+                result,
+            );
         }
         let reason = if include_reason {
             string_flag(command, "reason")
@@ -183,7 +258,18 @@ impl App {
             "Usage: awiki-cli group leave --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group leave"));
+            let result = message::leave_group(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupLeaveRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    reason_text: string_flag(command, "reason"),
+                    e2ee: bool_flag(command, "e2ee")?.unwrap_or(false),
+                },
+            )
+            .map_err(group_exit)?;
+            return self.render_group_result("awiki-cli group leave", &resolved, result);
         }
         self.render_success(
             "awiki-cli group leave",
@@ -215,7 +301,29 @@ impl App {
             "Usage: awiki-cli group update --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group update"));
+            let result = message::update_group(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupUpdateRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    name: string_flag(command, "name"),
+                    description: string_flag(command, "description"),
+                    discoverability: string_flag(command, "discoverability"),
+                    admission_mode: string_flag(command, "admission-mode"),
+                    slug: string_flag(command, "slug"),
+                    goal: string_flag(command, "goal"),
+                    rules: string_flag(command, "rules"),
+                    message_prompt: string_flag(command, "message-prompt"),
+                    doc_url: string_flag(command, "doc-url"),
+                    attachments_allowed: optional_bool(command, "attachments-allowed")?,
+                    max_members: string_flag(command, "max-members"),
+                    member_max_messages: optional_i64(command, "member-max-messages")?,
+                    member_max_total_chars: optional_i64(command, "member-max-total-chars")?,
+                },
+            )
+            .map_err(group_exit)?;
+            return self.render_group_result("awiki-cli group update", &resolved, result);
         }
         self.render_success(
             "awiki-cli group update",
@@ -253,7 +361,16 @@ impl App {
         let resolved = self.resolve_config()?;
         let limit = int_flag(command, "limit", 50)?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group list"));
+            let result = message::list_groups(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupListRequest {
+                    identity_name: self.globals.identity.clone(),
+                    limit,
+                },
+            )
+            .map_err(group_exit)?;
+            return self.render_group_result("awiki-cli group list", &resolved, result);
         }
         self.render_success(
             "awiki-cli group list",
@@ -284,7 +401,17 @@ impl App {
         )?;
         let limit = int_flag(command, "limit", 100)?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group members"));
+            let result = message::group_members(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupMembersRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    limit,
+                },
+            )
+            .map_err(group_exit)?;
+            return self.render_group_result("awiki-cli group members", &resolved, result);
         }
         self.render_success(
             "awiki-cli group members",
@@ -316,7 +443,19 @@ impl App {
         )?;
         let limit = int_flag(command, "limit", 50)?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group messages"));
+            let result = message::group_messages(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupMessagesRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    limit,
+                    cursor: string_flag(command, "cursor"),
+                    skip: 0,
+                },
+            )
+            .map_err(group_exit)?;
+            return self.render_group_result("awiki-cli group messages", &resolved, result);
         }
         self.render_success(
             "awiki-cli group messages",
@@ -339,6 +478,28 @@ impl App {
             Vec::new(),
         )
     }
+
+    fn render_group_result(
+        &self,
+        command: &str,
+        resolved: &crate::config::Resolved,
+        result: CommandResult,
+    ) -> Result<(), ExitError> {
+        self.render_success(
+            command,
+            resolved,
+            result.data,
+            &result.summary,
+            result.warnings,
+        )
+    }
+}
+
+fn group_exit(err: message::MessageError) -> ExitError {
+    message_exit(
+        err,
+        "Ensure the active identity is ready and the message service is reachable.",
+    )
 }
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {
@@ -420,6 +581,29 @@ fn optional_i64_value(command: &ParsedCommand, name: &str) -> Result<Value, Exit
     }
     let raw = command.flags.get(name).cloned().unwrap_or_default();
     raw.trim().parse::<i64>().map(Value::from).map_err(|_| {
+        ExitError::new(
+            "invalid_argument",
+            2,
+            format!("--{name} must be an integer."),
+            "Pass a numeric value after the flag.",
+        )
+    })
+}
+
+fn optional_bool(command: &ParsedCommand, name: &str) -> Result<Option<bool>, ExitError> {
+    if changed(command, name) {
+        Ok(Some(bool_flag(command, name)?.unwrap_or(false)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn optional_i64(command: &ParsedCommand, name: &str) -> Result<Option<i64>, ExitError> {
+    if !changed(command, name) {
+        return Ok(None);
+    }
+    let raw = command.flags.get(name).cloned().unwrap_or_default();
+    raw.trim().parse::<i64>().map(Some).map_err(|_| {
         ExitError::new(
             "invalid_argument",
             2,

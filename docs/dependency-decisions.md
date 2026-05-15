@@ -145,6 +145,7 @@ substitute for a Rustls-backed stack.
 | Identity handle input helper slice | Add no dependency for Go `internal/identity/handle_input.go`; move handle normalization/completion and stored-handle derivation into `identity::handle_input`. | The Go helper is pure string/DID-path normalization used by identity storage and CLI handle completion. Consolidating `msg` and non-E2EE `group` callers on the identity helper removes duplicated, divergent local logic without selecting authsdk, HTTP/TLS, WebSocket, crypto, MLS, or platform dependencies. | `crates/awiki-cli/tests/identity_contract.rs::identity_handle_input_helpers_match_go_contract`, `identity_contract full_handle`, full identity contract test, full `cargo +1.79.0 test -p awiki-cli --locked`, structure check, build, and dependency audit passed. Dependency tree unchanged except existing approved bundled SQLite and existing Rustls/update paths; no OpenSSL/native-tls, HTTP/TLS client, WebSocket, or platform service dependency was added. |
 | Group non-E2EE dry-run lifecycle slice | Add no dependency for `group get/join/add/remove/leave/list/members/messages --dry-run`; use static plan builders and existing config resolution. | The Go dry-run contracts do not require network/auth execution. Real group RPC and group E2EE require shared authsdk/message-service/MLS dependency decisions and should stay out of this dry-run slice. | `crates/awiki-cli/tests/group_contract.rs` passed. Dependency tree unchanged. |
 | Group base/local wire builder slice | Add no dependency for `internal/message/group_wire.go` base/local request builders; reuse existing local ANP SDK proof generation and current message helper crates only. | This slice constructs JSON-RPC params and RFC9421 origin-proof auth values but does not execute service calls. Transport, JWT refresh, WebSocket, cache mutation, and MLS provider execution remain deferred to the shared Rustls/authsdk/group-E2EE slices. | `crates/awiki-cli/tests/message_group_wire_contract.rs`, full `cargo +1.79.0 test -p awiki-cli --locked`, `xtask check-structure`, build, dependency audit, and accepted `awiki-system-test` selector set passed. Dependency tree remained limited to the already approved bundled SQLite path; no OpenSSL/native-tls/TLS client path was added. |
+| Group non-E2EE live HTTP slice | Add no dependency for ordinary non-E2EE group lifecycle, member, list, message-list, and text-send execution; reuse existing authsdk, Rustls/std `transportcfg::HttpClient`, local ANP origin-proof helper, and approved `rusqlite + bundled` store path. | The shared authsdk/Rustls transport already satisfies Go `/im/rpc` HTTP parity for `group.create`, `group.get`, `group.join`, `group.add`, `group.remove`, `group.leave`, `group.update_profile`, `group.update_policy`, `group.list`, `group.list_members`, `group.list_messages`, and `group.send`. Adding `reqwest`, `hyper`, WebSocket crates, OpenSSL/native-tls, YAML crates, platform libraries, or ANP SDK network/default features would expand scope without improving this parity slice. Group attachments, group E2EE/MLS execution, WebSocket/local bridge/runtime listener fallback, OpenClaw host notify, profile-timeout wrappers, and trace phase plumbing remain separate decisions. | Focused local Rust checks and five remote `awiki-system-test` group selectors against `awiki.info` passed. Cargo manifests and lockfile are unchanged; dependency tree remains on existing Rustls/webpki/ring and approved bundled SQLite paths, with no OpenSSL/native-tls, `reqwest`, `hyper`, WebSocket, YAML, or platform service dependency added. |
 | Group E2EE wire builder slice | Add no dependency for `internal/message/group_wire.go` E2EE request builders; reuse the existing local ANP SDK proof generation and JSON helper crates only. | These builders construct signed hidden E2EE JSON-RPC params and sanitize opaque provider artifacts, but they do not invoke `anp-mls`, call message service RPCs, refresh auth sessions, select transport, or mutate cache. MLS/provider execution remains a separate local-ANP-SDK/service slice. | `crates/awiki-cli/tests/message_group_e2ee_wire_contract.rs`, full `cargo +1.79.0 test -p awiki-cli --locked`, `xtask check-structure`, build, dependency audit, and accepted `awiki-system-test` selector set passed. Dependency tree remained limited to the already approved bundled SQLite path; no OpenSSL/native-tls/TLS client path was added. |
 | Group E2EE dry-run CLI slice | Add no dependency for `group e2ee ... --dry-run`; model provider metadata and plans without invoking `anp-mls`. | Go dry-run plans expose the intended MLS/provider orchestration without executing the provider. Real MLS execution should be implemented with the local ANP Rust tooling and focused security/system tests, not hidden inside static CLI plan translation. | `crates/awiki-cli/tests/group_contract.rs` passed. Dependency tree unchanged. |
 | Local CLI validation selector slice | Add no dependency for Go-shaped `msg attachment download` target validation and `id profile set` body-source validation. Keep real profile RPC and attachment transfer deferred. | These checks are command/service-boundary argument validation in Go and can run before auth, HTTP/TLS, WebSocket, or attachment transfer code. Translating them separately unlocks offline `awiki-system-test` selectors without forcing a shared service transport dependency decision. | `crates/awiki-cli/tests/msg_contract.rs`, `crates/awiki-cli/tests/identity_contract.rs`, and the focused offline system-test selector batch passed. Dependency tree unchanged except existing approved bundled SQLite and existing Rustls/update paths; no OpenSSL/native-tls, HTTP/TLS client, WebSocket, or bundled OpenSSL path was added. |
@@ -205,9 +206,35 @@ substitute for a Rustls-backed stack.
   `native-tls`, bundled OpenSSL, YAML crates, platform service libraries, or
   ANP SDK network/default features.
 - Remaining message-service work is deliberately split: secure direct E2EE,
-  direct attachments, group lifecycle/messages, WebSocket/local bridge/runtime
-  listener transport, OpenClaw host notify, profile-timeout wrappers, and trace
-  phase plumbing remain later parity slices.
+  direct attachments, group attachments, group E2EE/MLS, WebSocket/local
+  bridge/runtime listener transport, OpenClaw host notify, profile-timeout
+  wrappers, and trace phase plumbing remain later parity slices. Ordinary
+  non-E2EE group lifecycle/messages are covered by the dedicated group live
+  slice below.
+
+## Group Live Slice Notes
+
+2026-05-15:
+
+- Added the ordinary non-E2EE group live HTTP slice for Go
+  `internal/cli/group.go`, `internal/message/group_service.go`,
+  `internal/message/group_wire.go`, and the group/message cache helpers from
+  `internal/store/dao.go` and `internal/store/query.go`.
+- Reused the existing Rustls/std `transportcfg::HttpClient`,
+  `authsdk::Session`, local ANP origin-proof helper, and approved
+  `rusqlite + bundled` SQLite lane for group lifecycle/read/member/message
+  operations and `msg send --group --text`.
+- No dependency was added. Cargo manifests and lockfile remain unchanged; this
+  slice does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+  `native-tls`, bundled OpenSSL, YAML crates, platform service libraries, or
+  ANP SDK network/default features.
+- `created_at` in signed message/group metadata is now emitted with
+  Go-compatible second-precision RFC3339 UTC text so message-service typed
+  `Meta` reserialization verifies the RFC9421 origin-proof digest.
+- Remaining group work is deliberately split: group attachments,
+  group E2EE/MLS execution, WebSocket/local bridge/runtime listener fallback,
+  OpenClaw host notify, profile-timeout wrappers, trace phase plumbing, and
+  cache fallback depth remain later parity slices.
 
 Earlier 2026-05-15 wire-only slice:
 

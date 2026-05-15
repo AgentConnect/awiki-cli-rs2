@@ -3,7 +3,6 @@ use crate::message::attachment_manifest_content_type;
 use crate::message::types::{HistoryRequest, InboxRequest, MarkReadRequest, MessageError};
 use crate::message::{build_origin_proof, origin_auth_value};
 use serde_json::{json, Map, Value};
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,9 +190,18 @@ pub(crate) fn signed_message_meta(
 }
 
 pub(crate) fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+    let now = OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
 }
 
 pub(crate) fn generate_operation_id() -> String {
