@@ -3229,3 +3229,52 @@ No dependency was added. Cargo manifests and lockfile were unchanged. This
 slice reuses the local ANP Rust SDK with default features disabled and does not
 introduce HTTP/TLS clients, OpenSSL, `native-tls`, reqwest, hyper, WebSocket,
 YAML, platform service-manager, or new SQLite dependencies.
+
+## 2026-05-15 ANP SDK Registry Facade Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket|serde_yaml|yaml'
+cd ../awiki-cli && go test ./internal/anpsdk -count=1
+```
+
+Result: passed. The full local Rust suite, AuthSDK regression test, Go registry
+compile check, structure check, build, and dependency audit all passed.
+
+Scope:
+
+- Expanded `crates/awiki-cli/src/anpsdk.rs` from the initial auth-header-only
+  facade toward Go `internal/anpsdk/registry.go`, but limited the change to
+  existing public local Rust SDK symbols.
+- Re-exported authentication equivalents for DID profiles, DID document
+  options/bundles, ANP message service options/builder, DID resolver functions,
+  auth/signature helpers, verifier/config/options, and root key material.
+- Re-exported proof equivalents for IM proof helpers, RFC9421 origin proof
+  helpers, DID-WBA binding/group receipt helpers, `TargetKind`, and Rust-cased
+  proof option/result structures.
+- Re-exported direct-E2EE model/session state types that already exist in the
+  Rust SDK, including `PrekeyBundle`, `SignedPrekey`, `OneTimePrekey`,
+  `DirectSessionState`, and `DirectE2eeSession`.
+- Added a focused facade contract test that exercises the re-exported symbols
+  through `awiki_cli::anpsdk` instead of importing `anp` directly.
+
+Deferred:
+
+- Go `KeyType`, `GenerateKeyPairPEM`, free `PrivateKeyFromPEM` and
+  `PublicKeyFromPEM`, `GeneratedKeyPairPEM`, file-backed direct-E2EE stores,
+  and high-level `MessageServiceE2EEClient` still do not have exact public Rust
+  SDK equivalents. They remain deferred until a consuming translated module
+  requires an explicit SDK/facade lane.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This
+slice keeps local ANP SDK default features disabled and does not introduce
+HTTP/TLS clients, OpenSSL, `native-tls`, reqwest, hyper, WebSocket, YAML,
+platform service-manager, or new SQLite dependencies.
