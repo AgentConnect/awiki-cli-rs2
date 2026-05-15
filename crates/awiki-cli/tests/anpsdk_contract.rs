@@ -1,5 +1,7 @@
 use awiki_cli::anpsdk;
 use serde_json::json;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn anpsdk_facade_exposes_go_registry_authentication_symbols() {
@@ -146,4 +148,159 @@ fn anpsdk_facade_exposes_go_registry_direct_e2ee_state_symbols() {
         skipped_message_keys: Vec::new(),
     };
     assert_eq!(session.session_id, "session-1");
+}
+
+#[test]
+fn file_session_store_creates_root_and_round_trips_pretty_json_without_trailing_newline() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root = workspace.path().join("sessions").join("direct");
+    assert!(!root.exists());
+
+    let mut store = anpsdk::FileSessionStore::new(&root).expect("create session store");
+    assert!(root.is_dir());
+
+    let session = direct_session("session-1", "did:wba:example.com:user:bob:e1_bob");
+    store.save_session(&session).expect("save session");
+
+    let session_path = root.join("session-1.json");
+    let written = std::fs::read_to_string(&session_path).expect("read session json");
+    assert_eq!(
+        written,
+        serde_json::to_string_pretty(&session).expect("pretty session json")
+    );
+    assert!(!written.ends_with('\n'));
+
+    let loaded = store.load_session("session-1").expect("load session");
+    assert_eq!(loaded, session);
+}
+
+#[test]
+fn file_session_store_missing_load_maps_to_session_not_found_and_delete_missing_succeeds() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let mut store =
+        anpsdk::FileSessionStore::new(workspace.path().join("sessions")).expect("create store");
+
+    let error = store
+        .load_session("missing-session")
+        .expect_err("missing session should fail");
+    assert!(
+        matches!(error, anpsdk::DirectE2eeError::SessionNotFound(session_id) if session_id == "missing-session")
+    );
+
+    store
+        .delete_session("missing-session")
+        .expect("delete missing session");
+}
+
+#[test]
+fn file_session_store_find_by_peer_did_uses_exact_match_and_first_lexicographic_json_path() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root = workspace.path().join("sessions");
+    let store = anpsdk::FileSessionStore::new(&root).expect("create store");
+    let peer_did = "did:wba:example.com:user:bob:e1_bob";
+
+    write_session_json(
+        &root,
+        &direct_session("200-matching-session", peer_did),
+        "write later matching session",
+    );
+    write_session_json(
+        &root,
+        &direct_session("000-prefix-session", &format!("{peer_did}:extra")),
+        "write non-exact peer session",
+    );
+    let first_match = direct_session("100-matching-session", peer_did);
+    write_session_json(&root, &first_match, "write first matching session");
+
+    assert_eq!(
+        store.find_by_peer_did(peer_did).expect("find peer session"),
+        Some(first_match)
+    );
+    assert_eq!(
+        store
+            .find_by_peer_did("did:wba:example.com:user:carol:e1_carol")
+            .expect("find missing peer session"),
+        None
+    );
+
+    std::fs::remove_dir_all(&root).expect("remove session root");
+    assert_eq!(
+        store
+            .find_by_peer_did(peer_did)
+            .expect("missing root should not fail"),
+        None
+    );
+}
+
+#[test]
+fn file_session_store_find_by_peer_did_aborts_on_malformed_json_in_matching_glob() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root = workspace.path().join("sessions");
+    let store = anpsdk::FileSessionStore::new(&root).expect("create store");
+    let peer_did = "did:wba:example.com:user:bob:e1_bob";
+
+    std::fs::write(root.join("000-malformed.json"), "{not json").expect("write malformed json");
+    write_session_json(
+        &root,
+        &direct_session("100-matching-session", peer_did),
+        "write matching session",
+    );
+
+    assert!(store.find_by_peer_did(peer_did).is_err());
+}
+
+fn direct_session(session_id: &str, peer_did: &str) -> anpsdk::DirectSessionState {
+    anpsdk::DirectSessionState {
+        session_id: session_id.to_string(),
+        suite: "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1".to_string(),
+        peer_did: peer_did.to_string(),
+        local_key_agreement_id: "did:wba:example.com:user:alice:e1_alice#key-3".to_string(),
+        peer_key_agreement_id: "did:wba:example.com:user:bob:e1_bob#key-3".to_string(),
+        root_key_b64u: "root".to_string(),
+        send_chain_key_b64u: Some("send".to_string()),
+        recv_chain_key_b64u: Some("recv".to_string()),
+        ratchet_private_key_b64u: "private".to_string(),
+        ratchet_public_key_b64u: "public".to_string(),
+        peer_ratchet_public_key_b64u: Some("peer-public".to_string()),
+        send_n: 1,
+        recv_n: 2,
+        previous_send_chain_length: 0,
+        is_initiator: true,
+        status: "pending".to_string(),
+        skipped_message_keys: Vec::new(),
+    }
+}
+
+fn write_session_json(root: &Path, session: &anpsdk::DirectSessionState, context: &str) {
+    let json = serde_json::to_string_pretty(session).expect("serialize session");
+    std::fs::write(root.join(format!("{}.json", session.session_id)), json).expect(context);
+}
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new() -> std::io::Result<Self> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-anpsdk-contract-test-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }

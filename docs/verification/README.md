@@ -6276,6 +6276,63 @@ slice keeps local ANP SDK default features disabled and does not introduce
 HTTP/TLS clients, OpenSSL, `native-tls`, reqwest, hyper, WebSocket, YAML,
 platform service-manager, or new SQLite dependencies.
 
+## 2026-05-16 ANP File Session Store Facade Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/anpsdk -count=1
+cd ../awiki-cli && go test ./internal/message ./internal/runtime/listener -run 'TestServiceSecureStatusReturnsSessionAndOutboxSummary|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+```
+
+Result: passed after final verification.
+
+Scope:
+
+- Added `anpsdk::FileSessionStore` as the CLI facade equivalent of Go ANP SDK
+  `NewFileSessionStore` for the direct-E2EE session store boundary.
+- Preserved Go file behavior: constructor creates the root session directory,
+  session files are named `<session_id>.json`, save writes pretty JSON without
+  a trailing newline, load round-trips `DirectSessionState`, missing load maps
+  to `DirectE2eeError::SessionNotFound`, delete ignores missing files, and
+  `find_by_peer_did` scans sorted `*.json` paths.
+- Preserved Go lookup semantics: exact `peer_did` equality, first
+  lexicographic path match when multiple sessions share a peer DID,
+  missing-root/no-match returning `None`, and malformed JSON in any scanned
+  `*.json` aborting the lookup.
+- Implemented the local ANP Rust `SessionStore` trait for the facade store so
+  later secure-direct slices can depend on the trait methods for save/load/delete.
+- Added focused contract tests through `awiki_cli::anpsdk` so downstream code
+  does not need to import `anp` directly for this Go-shaped boundary.
+
+Boundary note: this is a local facade helper slice, not the full Go
+`direct_e2ee` SDK store/client port. Signed-prekey stores, one-time prekey
+stores, pending outbound stores, `FindByPeerDID` on the upstream Rust SDK trait,
+prekey publishing, no-session init, DID resolution, high-level
+`MessageServiceE2EEClient`, WebSocket/RPC send execution, SQLite queued flush
+mutation, `currentSecureSessionID`, and full `SecureRetry` remain deferred
+parity slices.
+
+Parallelism note: the focused `anpsdk_contract` tests were added by a
+code-writing Native Agent launched with GPT-5.5 and xhigh reasoning under a
+test-only write scope.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the local ANP Rust SDK with default features
+disabled plus std filesystem APIs and existing `serde_json`. It does not
+introduce ANP `network`/default features, `reqwest`, `hyper`, WebSocket crates,
+OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, platform service
+libraries, or new SQLite dependencies.
+
 ## 2026-05-15 Identity Recover Dry-Run Slice
 
 Local Rust verification:
