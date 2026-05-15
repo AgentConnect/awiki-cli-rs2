@@ -127,7 +127,7 @@ fn workspace_upgrade_if_needed_reports_newer_workspace_like_go() {
 }
 
 #[test]
-fn workspace_upgrade_if_needed_applies_local_v0_to_v1_and_v1_to_v2_before_v2_to_v3() {
+fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() {
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-v0-v1-local").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
@@ -136,13 +136,9 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v1_and_v1_to_v2_before_v2_to_
     std::fs::write(&paths.legacy_config_file, "{\"legacy\":true}\n").expect("write legacy config");
 
     let mut context = upgrade::new_context(&resolved, "1.2.3");
-    let err = upgrade::new_default_upgrader()
+    upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect_err("v2 to v3 replacement remains deferred");
-    assert_eq!(
-        err.to_string(),
-        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
-    );
+        .expect("no-k1 v2 to v3 migration should complete locally");
     assert!(
         Path::new(&paths.lock_path).exists(),
         "lock anchor should be created before migration execution"
@@ -152,7 +148,7 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v1_and_v1_to_v2_before_v2_to_
     assert_eq!(lock["app_version"], "1.2.3");
 
     let guard = upgrade::acquire_file_lock(&paths.lock_path, "1.2.4")
-        .expect("upgrade_if_needed should release the OS lock on deferred v2 to v3");
+        .expect("upgrade_if_needed should release the OS lock after completed v2 to v3");
     guard.release().expect("release lock");
 
     assert!(
@@ -176,23 +172,24 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v1_and_v1_to_v2_before_v2_to_
 
     let meta = upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta saved after v1 to v2");
-    assert_eq!(meta.workspace_schema_version, 2);
+        .expect("meta saved after v2 to v3");
+    assert_eq!(meta.workspace_schema_version, 3);
     assert_eq!(meta.app_version, "1.2.3");
     assert_eq!(meta.last_backup_dir, context.backup_dir);
-
-    let journal = upgrade::load_journal(&paths.journal_path)
-        .expect("load deferred journal")
-        .expect("journal remains after deferred v2 to v3 apply");
-    assert_eq!(journal.from_version, 2);
-    assert_eq!(journal.to_version, 3);
     assert_eq!(
-        journal.current_step,
-        "workspace_2_to_3_replace_existing_k1_handle_dids"
+        context
+            .current_meta
+            .as_ref()
+            .expect("context meta after v2 to v3")
+            .workspace_schema_version,
+        3
     );
-    assert_eq!(journal.phase, "applying");
-    assert_eq!(journal.backup_dir, context.backup_dir);
-    assert_eq!(journal.app_version, "1.2.3");
+    assert!(
+        upgrade::load_journal(&paths.journal_path)
+            .expect("load cleared journal")
+            .is_none(),
+        "journal should be cleared after completed v2 to v3"
+    );
 }
 
 #[test]
@@ -208,13 +205,9 @@ fn workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop
     .expect("write legacy config");
 
     let mut context = upgrade::new_context(&resolved, "1.2.7");
-    let err = upgrade::new_default_upgrader()
+    upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect_err("v2 to v3 replacement remains deferred after local migration");
-    assert_eq!(
-        err.to_string(),
-        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
-    );
+        .expect("legacy config migration should complete through no-k1 v2 to v3");
 
     assert!(
         !Path::new(&paths.legacy_config_file).exists(),
@@ -227,8 +220,14 @@ fn workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop
     assert_contains(&config, "  did_domain: legacy.example\n");
     let meta = upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta after v1 to v2");
-    assert_eq!(meta.workspace_schema_version, 2);
+        .expect("meta after v2 to v3");
+    assert_eq!(meta.workspace_schema_version, 3);
+    assert!(
+        upgrade::load_journal(&paths.journal_path)
+            .expect("load cleared journal")
+            .is_none(),
+        "journal should be cleared after completed migration"
+    );
 }
 
 #[test]
@@ -257,13 +256,9 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
     .expect("save journal with backup dir");
 
     let mut context = upgrade::new_context(&resolved, "1.2.4");
-    let err = upgrade::new_default_upgrader()
+    upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect_err("v2 to v3 replacement remains deferred");
-    assert_eq!(
-        err.to_string(),
-        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
-    );
+        .expect("no-k1 v2 to v3 migration should complete with reused backup");
     assert_eq!(context.backup_dir, path_string(&existing_backup));
     assert_eq!(
         std::fs::read_to_string(existing_backup.join("sentinel.txt")).unwrap(),
@@ -278,18 +273,17 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
         1,
         "journal backup dir should be reused without creating a new backup"
     );
-    let journal = upgrade::load_journal(&paths.journal_path)
-        .expect("load journal")
-        .expect("journal remains after deferred migration apply");
-    assert_eq!(journal.upgrade_id, "upgrade-existing");
-    assert_eq!(journal.from_version, 2);
-    assert_eq!(journal.to_version, 3);
-    assert_eq!(
-        journal.current_step,
-        "workspace_2_to_3_replace_existing_k1_handle_dids"
+    let meta = upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .expect("meta after reused backup migration");
+    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(meta.last_backup_dir, path_string(&existing_backup));
+    assert!(
+        upgrade::load_journal(&paths.journal_path)
+            .expect("load cleared journal")
+            .is_none(),
+        "journal should be cleared after completed reused-backup migration"
     );
-    assert_eq!(journal.phase, "applying");
-    assert_eq!(journal.backup_dir, path_string(&existing_backup));
 }
 
 #[test]
@@ -331,7 +325,7 @@ fn workspace_upgrade_if_needed_defers_v0_to_v1_when_imported_k1_replacement_is_r
 }
 
 #[test]
-fn workspace_upgrade_if_needed_applies_v1_to_v2_then_defers_v2_to_v3_like_go() {
+fn workspace_upgrade_if_needed_applies_v1_to_v3_without_current_k1_dids() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-v1-v2").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
     let paths = upgrade::resolve_paths(&resolved);
@@ -370,31 +364,73 @@ fn workspace_upgrade_if_needed_applies_v1_to_v2_then_defers_v2_to_v3_like_go() {
     let _home_guard = EnvGuard::set("HOME", Some(path_string(&home)));
 
     let mut context = upgrade::new_context(&resolved, "1.2.6");
-    let err = upgrade::new_default_upgrader()
+    upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect_err("v2 to v3 replacement remains deferred");
-    assert_eq!(
-        err.to_string(),
-        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
-    );
+        .expect("v1 to v2 cleanup should continue through no-k1 v2 to v3");
 
     assert!(!skill_dir.exists());
     let heartbeat_text = std::fs::read_to_string(&heartbeat).expect("read heartbeat");
     assert!(!heartbeat_text.contains("awiki-agent-id-message"));
     let meta = upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
-        .expect("meta saved after v1 to v2");
-    assert_eq!(meta.workspace_schema_version, 2);
+        .expect("meta saved after v2 to v3");
+    assert_eq!(meta.workspace_schema_version, 3);
     assert_eq!(meta.app_version, "1.2.6");
     assert_eq!(meta.last_backup_dir, context.backup_dir);
     assert_eq!(
         context
             .current_meta
             .as_ref()
-            .expect("context meta after v1 to v2")
+            .expect("context meta after v2 to v3")
             .workspace_schema_version,
-        2
+        3
     );
+    assert!(
+        upgrade::load_journal(&paths.journal_path)
+            .expect("load cleared journal")
+            .is_none(),
+        "journal should be cleared after completed v2 to v3"
+    );
+}
+
+#[test]
+fn workspace_upgrade_if_needed_defers_v2_to_v3_when_current_identity_index_has_k1_did() {
+    let workspace = TempDir::new("workspace-upgrade-if-needed-v2-v3-k1").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+    upgrade::save_meta(
+        &paths.meta_path,
+        &upgrade::Meta {
+            workspace_schema_version: 2,
+            app_version: "1.0.0".to_string(),
+            updated_at: "2026-05-15T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save v2 meta");
+    std::fs::create_dir_all(&paths.identity_dir).expect("create identity dir");
+    std::fs::write(
+        Path::new(&paths.identity_dir).join("index.json"),
+        r#"{"schema_version":3,"default_credential_name":"legacy","credentials":{"legacy":{"credential_name":"legacy","dir_name":"legacy","did":"did:wba:example.test:user:k1_legacy","unique_id":"k1_legacy","name":"Legacy User","handle":"legacy","full_handle":"legacy.example.test","is_default":true}}}"#,
+    )
+    .expect("write k1 identity index");
+
+    let mut context = upgrade::new_context(&resolved, "1.2.8");
+    let err = upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect_err("current k1 identity replacement remains deferred");
+    assert_eq!(
+        err.to_string(),
+        "workspace migration execution is not implemented: workspace_2_to_3_replace_existing_k1_handle_dids"
+    );
+
+    let meta = upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .expect("meta remains");
+    assert_eq!(meta.workspace_schema_version, 2);
     let journal = upgrade::load_journal(&paths.journal_path)
         .expect("load deferred journal")
         .expect("journal remains for deferred v2 to v3");
@@ -405,7 +441,62 @@ fn workspace_upgrade_if_needed_applies_v1_to_v2_then_defers_v2_to_v3_like_go() {
         "workspace_2_to_3_replace_existing_k1_handle_dids"
     );
     assert_eq!(journal.phase, "applying");
-    assert_eq!(journal.backup_dir, context.backup_dir);
+
+    let guard = upgrade::acquire_file_lock(&paths.lock_path, "1.2.9")
+        .expect("upgrade_if_needed should release the OS lock on deferred v2 to v3");
+    guard.release().expect("release lock");
+}
+
+#[test]
+fn workspace_upgrade_if_needed_completes_v2_to_v3_when_current_identity_index_has_only_e1_dids() {
+    let workspace = TempDir::new("workspace-upgrade-if-needed-v2-v3-e1").expect("temp workspace");
+    let resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
+    upgrade::save_meta(
+        &paths.meta_path,
+        &upgrade::Meta {
+            workspace_schema_version: 2,
+            app_version: "1.0.0".to_string(),
+            updated_at: "2026-05-15T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save v2 meta");
+    std::fs::create_dir_all(&paths.identity_dir).expect("create identity dir");
+    std::fs::write(
+        Path::new(&paths.identity_dir).join("index.json"),
+        r#"{"schema_version":3,"default_credential_name":"current","credentials":{"current":{"credential_name":"current","dir_name":"current","did":"did:wba:example.test:user:e1_current","unique_id":"e1_current","name":"Current User","handle":"current","full_handle":"current.example.test","is_default":true}}}"#,
+    )
+    .expect("write e1 identity index");
+
+    let mut context = upgrade::new_context(&resolved, "1.2.10");
+    upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect("current non-k1 identities should complete v2 to v3 locally");
+
+    let meta = upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .expect("meta saved after v2 to v3");
+    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(meta.app_version, "1.2.10");
+    assert!(meta.warnings.is_empty());
+    assert_eq!(
+        context
+            .current_meta
+            .as_ref()
+            .expect("context meta after v2 to v3")
+            .workspace_schema_version,
+        3
+    );
+    assert!(
+        upgrade::load_journal(&paths.journal_path)
+            .expect("load cleared journal")
+            .is_none(),
+        "journal should be cleared after completed v2 to v3"
+    );
 }
 
 #[test]

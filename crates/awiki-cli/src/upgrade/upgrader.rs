@@ -5,6 +5,7 @@ use super::lock::{acquire_file_lock, LockError};
 use super::meta::{load_meta, save_meta, MetaError};
 use super::migration_v0_to_v1;
 use super::migration_v1_to_v2;
+use super::migration_v2_to_v3;
 use super::resolve_paths;
 use super::types::{Inspection, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
 use crate::{config, identity, store};
@@ -508,6 +509,14 @@ impl Migration for WorkspaceMigration {
         if self.from == 1 && self.to == 2 {
             return migration_v1_to_v2::apply_workspace_v1_to_v2_cleanup(context);
         }
+        if self.from == 2 && self.to == 3 {
+            if migration_v2_to_v3::apply_workspace_v2_to_v3_replace_existing_k1_boundary(context)?
+                .has_k1_did()
+            {
+                return Err(MigrationError::ExecutionDeferred { name: self.name });
+            }
+            return Ok(());
+        }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
 
@@ -518,16 +527,17 @@ impl Migration for WorkspaceMigration {
         if self.from == 1 && self.to == 2 {
             return Ok(());
         }
+        if self.from == 2 && self.to == 3 {
+            return migration_v2_to_v3::validate_workspace_v2_to_v3_replace_existing_k1_boundary(
+                context,
+            );
+        }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
 }
 
 fn is_k1_did(did: &str) -> bool {
-    did.rsplit(':')
-        .next()
-        .unwrap_or(did)
-        .trim()
-        .starts_with("k1_")
+    migration_v2_to_v3::is_k1_did(did)
 }
 
 #[cfg(test)]

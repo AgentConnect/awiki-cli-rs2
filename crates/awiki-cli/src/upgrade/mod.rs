@@ -6,6 +6,7 @@ mod lock;
 mod meta;
 mod migration_v0_to_v1;
 mod migration_v1_to_v2;
+mod migration_v2_to_v3;
 mod settings;
 mod types;
 mod upgrader;

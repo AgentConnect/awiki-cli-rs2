@@ -3333,3 +3333,57 @@ Deferred:
 No dependency was added. Cargo manifests and lockfile were unchanged. This
 slice does not introduce HTTP/TLS clients, OpenSSL, `native-tls`, reqwest,
 hyper, WebSocket, YAML, platform service-manager, or new SQLite dependencies.
+
+## 2026-05-15 Workspace v2->v3 No-k1 Local Completion Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli upgrade::migration_v2_to_v3 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket|serde_yaml|yaml'
+```
+
+Go reference verification:
+
+```bash
+cd ../awiki-cli
+go test ./internal/upgrade -run 'TestUpgradeIfNeeded' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added `crates/awiki-cli/src/upgrade/migration_v2_to_v3.rs` as the split
+  Rust module for the local boundary of Go `workspaceV2ToV3Migration`.
+- Wired migration `2 -> 3` so validation is a Go no-op and apply completes
+  locally when the current identity store is missing, empty, or contains only
+  non-k1 DID suffixes.
+- Preserved the explicit deferred boundary for current identity indexes that
+  contain a `k1_` DID suffix:
+  `workspace_2_to_3_replace_existing_k1_handle_dids`.
+- Updated `UpgradeIfNeeded` contract tests so no-k1 workspaces advance to
+  workspace schema version 3, clear the journal, preserve backup
+  creation/reuse behavior, and update `Context.current_meta`.
+- Added current-k1 and current-e1 identity-index coverage for the v2->v3 path.
+
+Boundary note: this slice does not implement service-backed k1->e1 DID
+replacement, identity remote-service construction warning parity for non-empty
+non-k1 identity stores, remote `did-auth.replace_did`, identity replacement
+backups, SQLite owner-DID rebinding, rollback, or full awiki-system-test
+migration acceptance. Those remain in the shared authsdk/Rustls
+identity-service lane.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. The slice
+uses the existing identity manager, upgrade journal/meta/backup/lock loop, and
+approved bundled SQLite paths only. It does not introduce HTTP/TLS clients,
+OpenSSL, `native-tls`, reqwest, hyper, WebSocket, YAML, platform
+service-manager, filesystem-copy, file-lock crate, or new SQLite dependencies.
