@@ -2,6 +2,65 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Session-State Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_state_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'TestSessionWarnings|TestHasDisconnectedSessions|TestMergeSavedRuntimeStatus' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Adds a pure listener session-state helper for the local state transitions
+  embedded in Go `internal/runtime/listener/server.go`.
+- Preserves Go `markConnected` visible behavior: connected sessions set DID and
+  clear `last_error`.
+- Preserves Go `markDisconnected` visible behavior: nil, empty, or
+  cancel-equivalent errors leave the previous `last_error` untouched; non-empty
+  errors set it and mark the session disconnected.
+- Preserves Go `recordSessionError` visible behavior: a missing session is
+  created with the provided DID, while an existing session keeps its current
+  record/DID and only records the disconnect/error state.
+- Preserves Go `refreshStatus` identity naming: snapshots use the session map
+  key as `identity_name`.
+- Tracks `bridge_available` changes as a pure changed-bool helper matching
+  Go's changed-only status write gate.
+- Reuses existing Rust `listener::SessionStatus`, `session_warnings`, and
+  `has_disconnected_sessions`.
+- Uses `BTreeMap` for deterministic Rust helper snapshots; this is only a test
+  stability choice and is stronger than Go's unspecified map iteration order.
+- Keeps the files under the default review-size cap:
+  `listener_session_state.rs` is 79 lines and the focused test file is 124
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a helper-only slice. It does not implement `Supervisor`,
+locks, status file writes, identity manager lookup, reconnect loops, WebSocket
+clients, foreground listener execution, message RPC execution, SQLite side
+effects, or `awiki-system-test` acceptance.
+
+Dependency note: no dependency was added. The slice uses std collections and
+existing listener status types only. It does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates,
+platform service libraries, or new SQLite dependencies. TLS policy remains
+Rustls-first and unchanged.
+
 ## 2026-05-16 Runtime Bridge Server Framing Helper Slice
 
 Status: unit verified.
