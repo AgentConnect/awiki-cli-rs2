@@ -1,8 +1,12 @@
 use awiki_cli::config::{self, Overrides, Paths, Resolved, ValueSource};
 use awiki_cli::runtime;
 use awiki_cli::runtime::hermes_host_notify;
+use awiki_cli::runtime::host_notify::{HostNotificationData, HostNotificationEvent};
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::Mutex;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -155,6 +159,138 @@ fn host_notify_config_view_uses_go_legacy_secret_env_name() {
     );
 }
 
+#[test]
+fn hermes_host_notify_sink_notify_signs_and_posts_request_like_go() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let workspace = TempDir::new().expect("temp workspace");
+    let config_path = workspace.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "runtime:\n  host_notify:\n    hermes:\n      secret: test-secret\n",
+    )
+    .expect("write config");
+    let server = HttpCaptureServer::new(
+        b"HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"accepted\":true}"
+            .to_vec(),
+    )
+    .expect("server");
+    let mut resolved = resolved_for_config(&config_path);
+    resolved.ca_bundle.clear();
+    let config = runtime::HermesConfig {
+        notify_url: server.url("/notify/host-event"),
+        deliver: String::new(),
+    };
+    let sink = hermes_host_notify::new_hermes_host_notify_sink(&resolved, &config).expect("sink");
+
+    let event = HostNotificationEvent {
+        version: "1.0".to_string(),
+        id: "msg-001".to_string(),
+        topic: "im.message.received".to_string(),
+        received_at: "2026-04-12T10:30:00Z".to_string(),
+        data: Some(HostNotificationData::Direct(Default::default())),
+    };
+    sink.notify(&event).expect("notify");
+    sink.close().expect("close");
+
+    let request = server.request_text().expect("request");
+    assert!(request.starts_with("POST /notify/host-event HTTP/1.1\r\n"));
+    assert!(request.contains("Content-Type: application/json\r\n"));
+    assert!(request.contains("X-Notify-Timestamp: "));
+    assert!(request.contains("X-Notify-Signature: sha256="));
+    let body = request
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("request body")
+        .as_bytes()
+        .to_vec();
+    let timestamp = header_value(&request, hermes_host_notify::NOTIFY_TIMESTAMP_HEADER);
+    assert!(!timestamp.trim().is_empty());
+    let signature = header_value(&request, hermes_host_notify::NOTIFY_SIGNATURE_HEADER);
+    assert_eq!(
+        signature,
+        hermes_host_notify::build_hermes_notify_signature_header(&body, &timestamp, "test-secret")
+    );
+    let posted: serde_json::Value = serde_json::from_slice(&body).expect("posted json");
+    assert_eq!(posted["id"], "msg-001");
+    assert_eq!(posted["topic"], "im.message.received");
+}
+
+#[test]
+fn hermes_host_notify_sink_errors_match_go_status_mapping() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let workspace = TempDir::new().expect("temp workspace");
+    let config_path = workspace.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "runtime:\n  host_notify:\n    hermes:\n      secret: test-secret\n",
+    )
+    .expect("write config");
+    let server = HttpCaptureServer::new(
+        b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 12\r\n\r\n  no route  "
+            .to_vec(),
+    )
+    .expect("server");
+    let resolved = resolved_for_config(&config_path);
+    let config = runtime::HermesConfig {
+        notify_url: server.url("/notify/host-event"),
+        deliver: String::new(),
+    };
+    let sink = hermes_host_notify::new_hermes_host_notify_sink(&resolved, &config).expect("sink");
+    let event = HostNotificationEvent {
+        version: "1.0".to_string(),
+        id: "msg-001".to_string(),
+        topic: "im.message.received".to_string(),
+        received_at: "2026-04-12T10:30:00Z".to_string(),
+        data: None,
+    };
+
+    let err = sink.notify(&event).expect_err("status error");
+    assert_eq!(
+        err.to_string(),
+        "hermes host notify failed status=503: no route"
+    );
+}
+
+#[test]
+fn new_hermes_host_notify_sink_validates_url_and_secret_like_go() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let workspace = TempDir::new().expect("temp workspace");
+    let missing_config_path = workspace.path().join("missing-config.yaml");
+    let resolved = resolved_for_config(&missing_config_path);
+    let _new_removed = EnvGuard::remove(hermes_host_notify::HERMES_NOTIFY_SECRET_ENV);
+    let _legacy_removed = EnvGuard::remove(hermes_host_notify::LEGACY_WEBHOOK_NOTIFY_SECRET_ENV);
+
+    let empty_url = runtime::HermesConfig {
+        notify_url: String::new(),
+        deliver: String::new(),
+    };
+    let err = hermes_host_notify::new_hermes_host_notify_sink(&resolved, &empty_url)
+        .expect_err("empty url");
+    assert_eq!(
+        err.to_string(),
+        "hermes host notify requires runtime.host_notify.hermes.notify_url"
+    );
+
+    let invalid_url = runtime::HermesConfig {
+        notify_url: "ftp://example.com/notify".to_string(),
+        deliver: String::new(),
+    };
+    let err = hermes_host_notify::new_hermes_host_notify_sink(&resolved, &invalid_url)
+        .expect_err("invalid url");
+    assert!(err.to_string().contains("must use http or https"));
+
+    let missing_secret = runtime::HermesConfig {
+        notify_url: "http://127.0.0.1/notify".to_string(),
+        deliver: String::new(),
+    };
+    let err = hermes_host_notify::new_hermes_host_notify_sink(&resolved, &missing_secret)
+        .expect_err("missing secret");
+    assert_eq!(
+        err.to_string(),
+        "hermes host notify requires runtime.host_notify.hermes.secret or AWIKI_HOST_NOTIFY_HERMES_SECRET (legacy: AWIKI_HOST_NOTIFY_WEBHOOK_SECRET)"
+    );
+}
+
 fn resolved_for_config(path: &std::path::Path) -> Resolved {
     Resolved {
         paths: Paths {
@@ -258,5 +394,87 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn header_value(request: &str, name: &str) -> String {
+    request
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
+struct HttpCaptureServer {
+    url: String,
+    join: Option<thread::JoinHandle<String>>,
+}
+
+impl HttpCaptureServer {
+    fn new(response: Vec<u8>) -> std::io::Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let join = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let request = read_request(&mut stream);
+            stream.write_all(&response).expect("write response");
+            request
+        });
+        Ok(Self {
+            url: format!("http://{addr}"),
+            join: Some(join),
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.url, path)
+    }
+
+    fn request_text(mut self) -> std::thread::Result<String> {
+        self.join.take().expect("server join").join()
+    }
+}
+
+impl Drop for HttpCaptureServer {
+    fn drop(&mut self) {
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn read_request(stream: &mut impl Read) -> String {
+    let mut raw = Vec::new();
+    let mut buffer = [0u8; 1024];
+    loop {
+        let read = stream.read(&mut buffer).expect("read request");
+        if read == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buffer[..read]);
+        if request_complete(&raw) {
+            break;
+        }
+    }
+    String::from_utf8(raw).expect("request utf8")
+}
+
+fn request_complete(raw: &[u8]) -> bool {
+    let Some(split) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&raw[..split]);
+    let content_length = headers.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())
+            .flatten()
+    });
+    match content_length {
+        Some(length) => raw.len() >= split + 4 + length,
+        None => true,
     }
 }

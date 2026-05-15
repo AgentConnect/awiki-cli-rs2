@@ -1,13 +1,87 @@
 use crate::config::{self, Resolved};
+use crate::transportcfg::{new_http_client_with_proxy_env, HttpClient, HttpRequest};
 use anyhow::Context;
 use sha2::{Digest, Sha256};
 use std::env;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use super::host_notify::HostNotificationEvent;
 
 pub const HERMES_NOTIFY_SECRET_ENV: &str = "AWIKI_HOST_NOTIFY_HERMES_SECRET";
 pub const LEGACY_WEBHOOK_NOTIFY_SECRET_ENV: &str = "AWIKI_HOST_NOTIFY_WEBHOOK_SECRET";
 pub const NOTIFY_TIMESTAMP_HEADER: &str = "X-Notify-Timestamp";
 pub const NOTIFY_SIGNATURE_HEADER: &str = "X-Notify-Signature";
 pub const SIGNATURE_PREFIX: &str = "sha256=";
+pub const NOTIFY_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone)]
+pub struct HermesHostNotifySink {
+    client: HttpClient,
+    notify_url: String,
+    secret: String,
+}
+
+pub fn new_hermes_host_notify_sink(
+    resolved: &Resolved,
+    config: &super::HermesConfig,
+) -> anyhow::Result<HermesHostNotifySink> {
+    let notify_url = config.notify_url.trim();
+    if notify_url.is_empty() {
+        anyhow::bail!("hermes host notify requires runtime.host_notify.hermes.notify_url");
+    }
+    validate_hermes_notify_url(notify_url)?;
+    let secret = resolve_hermes_notify_secret(Some(resolved));
+    if secret.is_empty() {
+        anyhow::bail!(
+            "hermes host notify requires runtime.host_notify.hermes.secret or {HERMES_NOTIFY_SECRET_ENV} (legacy: {LEGACY_WEBHOOK_NOTIFY_SECRET_ENV})"
+        );
+    }
+    let client = new_http_client_with_proxy_env(&resolved.ca_bundle)
+        .map_err(|err| anyhow::anyhow!("build hermes host notify request: {err}"))?;
+    Ok(HermesHostNotifySink {
+        client,
+        notify_url: notify_url.to_string(),
+        secret,
+    })
+}
+
+impl HermesHostNotifySink {
+    pub fn notify(&self, event: &HostNotificationEvent) -> anyhow::Result<()> {
+        let raw_body = serde_json::to_vec(event)
+            .map_err(|err| anyhow::anyhow!("marshal host notify event: {err}"))?;
+        let timestamp = unix_timestamp_seconds().to_string();
+        let request = HttpRequest::new("POST", &self.notify_url)
+            .header("Content-Type", "application/json")
+            .header(NOTIFY_TIMESTAMP_HEADER, &timestamp)
+            .header(
+                NOTIFY_SIGNATURE_HEADER,
+                build_hermes_notify_signature_header(&raw_body, &timestamp, &self.secret),
+            )
+            .body(raw_body)
+            .timeout(NOTIFY_TIMEOUT);
+        let response = self
+            .client
+            .execute(request)
+            .map_err(|err| anyhow::anyhow!("send hermes host notify request: {err}"))?;
+        if (200..300).contains(&response.status_code) {
+            return Ok(());
+        }
+        let raw_response = limit_body(&response.body, 2048);
+        let body = String::from_utf8_lossy(&raw_response).trim().to_string();
+        if body.is_empty() {
+            anyhow::bail!("hermes host notify failed status={}", response.status_code);
+        }
+        anyhow::bail!(
+            "hermes host notify failed status={}: {}",
+            response.status_code,
+            body
+        );
+    }
+
+    pub fn close(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
 
 pub fn build_hermes_notify_signature(raw_body: &[u8], timestamp: &str, secret: &str) -> String {
     let mut signing_input = Vec::with_capacity(timestamp.len() + 1 + raw_body.len());
@@ -157,6 +231,17 @@ fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
     outer.update(outer_key);
     outer.update(inner_digest);
     hex_lower(&outer.finalize())
+}
+
+fn unix_timestamp_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn limit_body(body: &[u8], limit: usize) -> Vec<u8> {
+    body.iter().copied().take(limit).collect()
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
