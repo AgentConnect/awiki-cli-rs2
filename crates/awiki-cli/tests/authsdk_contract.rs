@@ -8,11 +8,15 @@ use awiki_cli::authsdk::{
     http_status_error, HttpError, PersistToken, RpcError, Session, CONTENT_TYPE_JSON, JSON_RPC_ID,
     JSON_RPC_VERSION,
 };
+use awiki_cli::transportcfg::new_http_client;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -434,6 +438,190 @@ fn authsdk_ensure_jwt_can_fallback_to_header_token_captured_before_body_decode()
     assert_eq!(&*persisted.lock().unwrap(), &["header-token"]);
 }
 
+#[test]
+fn authsdk_do_json_rpc_posts_signed_json_rpc_and_decodes_result_like_go() {
+    let fixture = AuthFixture::new();
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"result":{"ok":true,"value":"done"}}"#,
+    )]);
+    let mut session = fixture.session("");
+    let client = new_http_client("").expect("client");
+
+    let result: serde_json::Value = session
+        .do_json_rpc(
+            &client,
+            &server.url("/rpc"),
+            "POST",
+            "mail.getInbox",
+            json!({"folder": "inbox"}),
+        )
+        .expect("json rpc");
+
+    assert_eq!(result, json!({"ok": true, "value": "done"}));
+    let request = server.requests();
+    assert_eq!(request.len(), 1);
+    assert!(request[0].starts_with("POST /rpc HTTP/1.1\r\n"));
+    assert_contains(&request[0], "Content-Type: application/json\r\n");
+    assert_contains(&request[0], "Signature-Input:");
+    assert_contains(&request[0], "Signature:");
+    let body = request_body(&request[0]);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).expect("request body"),
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "mail.getInbox",
+            "params": {"folder": "inbox"},
+        })
+    );
+}
+
+#[test]
+fn authsdk_do_json_rpc_maps_rpc_error_like_go() {
+    let fixture = AuthFixture::new();
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"error":{"code":-32602,"message":"bad params","data":{"field":"id"}}}"#,
+    )]);
+    let mut session = fixture.session("");
+    let client = new_http_client("").expect("client");
+
+    let err = session
+        .do_json_rpc::<serde_json::Value, _>(
+            &client,
+            &server.url("/rpc"),
+            "POST",
+            "mail.getInbox",
+            json!({}),
+        )
+        .expect_err("rpc error");
+
+    let rpc = err.downcast_ref::<RpcError>().expect("rpc error type");
+    assert_eq!(rpc.code, -32602);
+    assert_eq!(rpc.message, "bad params");
+    assert_eq!(rpc.data, Some(json!({"field": "id"})));
+}
+
+#[test]
+fn authsdk_do_json_maps_http_error_and_trims_body_like_go() {
+    let fixture = AuthFixture::new();
+    let server = TestServer::new(vec![
+        TestResponse::status(401, " stale token "),
+        TestResponse::status(403, " forbidden \n"),
+    ]);
+    let mut session = fixture.session("");
+    session.set_bearer(&server.url("/rest"), "stale");
+    let client = new_http_client("").expect("client");
+
+    let err = session
+        .do_json::<serde_json::Value, _>(&client, "POST", &server.url("/rest"), json!({}))
+        .expect_err("http error");
+
+    let http = err.downcast_ref::<HttpError>().expect("http error type");
+    assert_eq!(http.status_code, 403);
+    assert_eq!(http.message, "forbidden");
+    assert_eq!(http.to_string(), "http error 403: forbidden");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_contains(&requests[0], "Authorization: Bearer stale\r\n");
+    assert!(!requests[1].contains("Authorization: Bearer stale\r\n"));
+    assert_contains(&requests[1], "Signature-Input:");
+    assert_eq!(session.current_jwt(), "");
+}
+
+#[test]
+fn authsdk_do_request_retries_401_with_challenge_headers_like_go() {
+    let fixture = AuthFixture::new();
+    let server = TestServer::new(vec![
+        TestResponse::status(401, "challenge")
+            .header("WWW-Authenticate", r#"DIDWba nonce="server-nonce-123""#)
+            .header(
+                "Accept-Signature",
+                "sig1=(\"@method\" \"@target-uri\" \"@authority\" \"content-digest\" \"content-type\");created;expires;nonce;keyid",
+            ),
+        TestResponse::ok(r#"{"result":{"ok":true}}"#),
+    ]);
+    let mut session = fixture.session("");
+    let client = new_http_client("").expect("client");
+
+    let result: serde_json::Value = session
+        .do_json_rpc(&client, &server.url("/rpc"), "POST", "get_me", json!({}))
+        .expect("retry response");
+
+    assert_eq!(result, json!({"ok": true}));
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert_contains(&requests[0], "Signature-Input:");
+    assert_contains(&requests[1], "Signature-Input:");
+    let headers = parse_request_headers(&requests[1]);
+    let metadata = extract_signature_metadata(&headers).expect("signature metadata");
+    assert_eq!(metadata.nonce.as_deref(), Some("server-nonce-123"));
+    assert!(metadata
+        .components
+        .iter()
+        .any(|component| component == "content-type"));
+}
+
+#[test]
+fn authsdk_ensure_jwt_executes_get_me_and_persists_access_token_like_go() {
+    let fixture = AuthFixture::new();
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"result":{"access_token":" fresh-token "}}"#,
+    )]);
+    let persisted = Arc::new(Mutex::new(Vec::<String>::new()));
+    let capture = Arc::clone(&persisted);
+    let persist_token: PersistToken = Box::new(move |token| {
+        capture.lock().unwrap().push(token.to_string());
+        Ok(())
+    });
+    let mut session = fixture.session_with_persist("", Some(persist_token));
+    let client = new_http_client("").expect("client");
+
+    let token = session
+        .ensure_jwt(&client, &server.url("/user-service/did-auth/rpc"))
+        .expect("ensure jwt");
+
+    assert_eq!(token, "fresh-token");
+    assert_eq!(session.current_jwt(), "fresh-token");
+    assert_eq!(&*persisted.lock().unwrap(), &["fresh-token"]);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(request_body(&requests[0]))
+            .expect("request body"),
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "get_me",
+            "params": {},
+        })
+    );
+}
+
+#[test]
+fn authsdk_ensure_jwt_falls_back_to_captured_header_token_like_go() {
+    let fixture = AuthFixture::new();
+    let server = TestServer::new(vec![TestResponse::ok(r#"{"result":{}}"#).header(
+        "Authentication-Info",
+        r#"access_token="header-token", token_type="Bearer", expires_in=3600"#,
+    )]);
+    let persisted = Arc::new(Mutex::new(Vec::<String>::new()));
+    let capture = Arc::clone(&persisted);
+    let persist_token: PersistToken = Box::new(move |token| {
+        capture.lock().unwrap().push(token.to_string());
+        Ok(())
+    });
+    let mut session = fixture.session_with_persist("", Some(persist_token));
+    let client = new_http_client("").expect("client");
+
+    let token = session
+        .ensure_jwt(&client, &server.url("/user-service/did-auth/rpc"))
+        .expect("header token fallback");
+
+    assert_eq!(token, "header-token");
+    assert_eq!(session.current_jwt(), "header-token");
+    assert_eq!(&*persisted.lock().unwrap(), &["header-token"]);
+}
+
 fn headers<const N: usize>(pairs: [(&str, &str); N]) -> BTreeMap<String, String> {
     pairs
         .into_iter()
@@ -474,6 +662,25 @@ impl AuthFixture {
             did,
         }
     }
+
+    fn session(&self, jwt_token: &str) -> Session {
+        self.session_with_persist(jwt_token, None)
+    }
+
+    fn session_with_persist(
+        &self,
+        jwt_token: &str,
+        persist_token: Option<PersistToken>,
+    ) -> Session {
+        Session::new(
+            &self.did_path,
+            &self.key_path,
+            "alice",
+            self.did.as_str(),
+            jwt_token,
+            persist_token,
+        )
+    }
 }
 
 impl Drop for AuthFixture {
@@ -488,4 +695,157 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
         .expect("system time before epoch")
         .as_nanos();
     std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+}
+
+#[derive(Clone)]
+struct TestResponse {
+    status: u16,
+    body: String,
+    headers: Vec<(String, String)>,
+}
+
+impl TestResponse {
+    fn ok(body: &str) -> Self {
+        Self::status(200, body)
+    }
+
+    fn status(status: u16, body: &str) -> Self {
+        Self {
+            status,
+            body: body.to_string(),
+            headers: Vec::new(),
+        }
+    }
+
+    fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.push((key.to_string(), value.to_string()));
+        self
+    }
+}
+
+struct TestServer {
+    address: String,
+    requests: Arc<Mutex<Vec<String>>>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl TestServer {
+    fn new(responses: Vec<TestResponse>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = format!("http://{}", listener.local_addr().expect("local addr"));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
+        let join = thread::spawn(move || {
+            for response in responses {
+                let Ok((stream, _)) = listener.accept() else {
+                    break;
+                };
+                handle_connection(stream, &server_requests, response);
+            }
+        });
+        Self {
+            address,
+            requests,
+            join: Some(join),
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.address, path)
+    }
+
+    fn requests(&self) -> Vec<String> {
+        self.requests.lock().expect("requests mutex").clone()
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn handle_connection(
+    mut stream: TcpStream,
+    requests: &Arc<Mutex<Vec<String>>>,
+    response: TestResponse,
+) {
+    let raw = read_request(&mut stream);
+    requests.lock().expect("requests mutex").push(raw);
+    let reason = if response.status == 200 {
+        "OK"
+    } else {
+        "ERROR"
+    };
+    let mut headers = format!(
+        "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+        response.status,
+        response.body.len()
+    );
+    for (key, value) in response.headers {
+        headers.push_str(&format!("{key}: {value}\r\n"));
+    }
+    let raw_response = format!("{headers}\r\n{}", response.body);
+    stream
+        .write_all(raw_response.as_bytes())
+        .expect("write response");
+}
+
+fn read_request(stream: &mut TcpStream) -> String {
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut buffer).expect("read request");
+        if read == 0 {
+            panic!("connection closed before headers");
+        }
+        raw.extend_from_slice(&buffer[..read]);
+        if let Some(end) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            break end;
+        }
+    };
+    let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while raw.len() < header_end + 4 + content_length {
+        let read = stream.read(&mut buffer).expect("read body");
+        if read == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buffer[..read]);
+    }
+    String::from_utf8_lossy(&raw).to_string()
+}
+
+fn request_body(raw: &str) -> &str {
+    raw.split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .expect("request body")
+}
+
+fn parse_request_headers(raw: &str) -> BTreeMap<String, String> {
+    raw.split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+fn assert_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected {needle:?} in:\n{haystack}"
+    );
 }

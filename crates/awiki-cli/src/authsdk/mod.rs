@@ -1,4 +1,7 @@
 use crate::anpsdk::{DIDWbaAuthHeader, AUTH_MODE_HTTP_SIGNATURES};
+use crate::transportcfg::{HttpClient, HttpRequest, HttpResponse};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
@@ -166,9 +169,132 @@ impl Session {
         self.helper.should_retry_after_401(headers)
     }
 
+    pub fn do_json_rpc<T, P>(
+        &mut self,
+        client: &HttpClient,
+        request_url: &str,
+        http_method: &str,
+        rpc_method: &str,
+        params: P,
+    ) -> anyhow::Result<T>
+    where
+        T: DeserializeOwned,
+        P: Serialize,
+    {
+        let payload = build_json_rpc_payload(rpc_method, serde_json::to_value(params)?);
+        let body = serde_json::to_vec(&payload)?;
+        let response = self.do_request(client, request_url, http_method, &body)?;
+        decode_json_rpc_response(&response.body)
+    }
+
+    pub fn do_json_rpc_optional<P>(
+        &mut self,
+        client: &HttpClient,
+        request_url: &str,
+        http_method: &str,
+        rpc_method: &str,
+        params: P,
+    ) -> anyhow::Result<()>
+    where
+        P: Serialize,
+    {
+        let payload = build_json_rpc_payload(rpc_method, serde_json::to_value(params)?);
+        let body = serde_json::to_vec(&payload)?;
+        let response = self.do_request(client, request_url, http_method, &body)?;
+        decode_json_rpc_response_optional(&response.body)
+    }
+
+    pub fn ensure_jwt(&mut self, client: &HttpClient, request_url: &str) -> anyhow::Result<String> {
+        self.remember_scope(request_url);
+        let result: serde_json::Value =
+            self.do_json_rpc(client, request_url, "POST", "get_me", serde_json::json!({}))?;
+        self.ensure_jwt_from_result(request_url, &result)
+    }
+
+    pub fn do_json<T, P>(
+        &mut self,
+        client: &HttpClient,
+        method: &str,
+        request_url: &str,
+        payload: P,
+    ) -> anyhow::Result<T>
+    where
+        T: DeserializeOwned,
+        P: Serialize,
+    {
+        let body = serde_json::to_vec(&payload)?;
+        let response = self.do_request(client, request_url, method, &body)?;
+        Ok(decode_plain_json_response(&response.body)?)
+    }
+
+    pub fn do_json_optional<P>(
+        &mut self,
+        client: &HttpClient,
+        method: &str,
+        request_url: &str,
+        payload: P,
+    ) -> anyhow::Result<()>
+    where
+        P: Serialize,
+    {
+        let body = serde_json::to_vec(&payload)?;
+        let response = self.do_request(client, request_url, method, &body)?;
+        let _ = response;
+        Ok(())
+    }
+
+    fn do_request(
+        &mut self,
+        client: &HttpClient,
+        request_url: &str,
+        method: &str,
+        body: &[u8],
+    ) -> anyhow::Result<HttpResponse> {
+        let headers = self.headers(request_url, method, body, false)?;
+        let mut response = execute_with_headers(client, method, request_url, body, headers)?;
+        if response.status_code == 401 {
+            let response_headers = response_header_map(&response);
+            let headers = if self.should_retry_after_401(&response_headers) {
+                self.challenge_headers(request_url, &response_headers, method, body)?
+            } else {
+                self.clear_token(request_url);
+                self.headers(request_url, method, body, true)?
+            };
+            response = execute_with_headers(client, method, request_url, body, headers)?;
+        }
+        if let Some(err) = http_status_error(response.status_code, &response.body) {
+            return Err(err.into());
+        }
+        let response_headers = response_header_map(&response);
+        self.capture_token(request_url, &response_headers);
+        Ok(response)
+    }
+
     fn is_persistent_scope(&self, server_url: &str) -> bool {
         self.persistent.contains(&auth_scope(server_url))
     }
+}
+
+fn execute_with_headers(
+    client: &HttpClient,
+    method: &str,
+    request_url: &str,
+    body: &[u8],
+    headers: BTreeMap<String, String>,
+) -> anyhow::Result<HttpResponse> {
+    let mut request = HttpRequest::new(method, request_url).body(body.to_vec());
+    for (key, value) in headers {
+        request.headers.push((key, value));
+    }
+    Ok(client.execute(request)?)
+}
+
+fn response_header_map(response: &HttpResponse) -> BTreeMap<String, String> {
+    let mut headers = BTreeMap::new();
+    for (key, value) in &response.headers {
+        headers.entry(key.clone()).or_insert_with(|| value.clone());
+    }
+    headers
 }
 
 pub fn auth_json_headers() -> BTreeMap<String, String> {

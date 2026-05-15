@@ -3444,3 +3444,58 @@ uses existing `rustls` + `webpki-roots` and standard-library sockets only; it
 does not add `reqwest`, `hyper`, OpenSSL, `native-tls`, bundled OpenSSL,
 WebSocket crates, YAML crates, platform service libraries, or new SQLite
 dependencies.
+
+## 2026-05-15 Authsdk Rustls HTTP Execution Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli update --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml'
+```
+
+Go reference verification:
+
+```bash
+cd ../awiki-cli
+go test ./internal/authsdk -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Extended `authsdk::Session` with the generic HTTP execution boundary from Go
+  `internal/authsdk/session.go`: `do_json_rpc`, optional JSON-RPC,
+  `do_json`, optional plain JSON, `ensure_jwt`, and private request execution.
+- Reused the shared Rustls/std `transportcfg::HttpClient` introduced in the
+  transport slice instead of adding `reqwest`, `hyper`, OpenSSL, `native-tls`,
+  or enabling ANP SDK network features.
+- Preserved Go request behavior: JSON request headers, signed or cached-bearer
+  first request, one 401 retry via challenge headers when the DID-WBA helper
+  accepts the challenge, otherwise clearing the remembered token and retrying
+  with force-new signed headers.
+- Preserved Go response behavior: final `>=400` responses map to trimmed
+  `HttpError`, JSON-RPC response errors map to `RpcError` with data preserved,
+  successful response headers are captured before callers decode/fallback, and
+  `EnsureJWT` persists body `access_token`, falls back to a captured header
+  token, then to stored JWT, then emits the Go missing-token error.
+
+Boundary note: this slice does not wire endpoint-specific live mail, page,
+site, identity, or message clients; it does not add profile-timeout wrappers,
+trace phases, identity-store command wiring, attachment transfer, WebSocket
+transport, or full awiki-system-test service acceptance. Those remain in later
+service/client slices now that the shared auth transport is available.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This slice
+uses existing local `../anp/rust` APIs with default features disabled and the
+existing Rustls/std transport client. It does not add `reqwest`, `hyper`,
+OpenSSL, `native-tls`, bundled OpenSSL, WebSocket crates, YAML crates, platform
+service libraries, or new SQLite dependencies.
