@@ -12,6 +12,7 @@ pub mod host_notify;
 pub mod listener;
 pub mod listener_contact_sync;
 pub mod listener_message_records;
+pub mod openclaw_host_notify;
 pub mod openclaw_routes;
 pub mod openclaw_webhook;
 
