@@ -7,6 +7,7 @@ use crate::authsdk::{
 use crate::config::{join_base_url, Resolved};
 use crate::transportcfg::{new_http_client, HttpClient, HttpRequest, Profile};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -55,6 +56,23 @@ impl Client {
             return Err(service_error(err).into());
         }
         decode_json_rpc_response(&response.body).map_err(identity_service_error)
+    }
+
+    pub fn authenticated_rpc_call_profile<T, P>(
+        &self,
+        _profile: Profile,
+        endpoint: &str,
+        rpc_method: &str,
+        params: P,
+        auth: &mut Session,
+    ) -> Result<T, IdentityError>
+    where
+        T: DeserializeOwned,
+        P: Serialize,
+    {
+        let request_url = join_base_url(&self.base_url, endpoint);
+        auth.do_json_rpc(&self.http_client, &request_url, "POST", rpc_method, params)
+            .map_err(identity_service_error)
     }
 
     pub fn ensure_jwt(

@@ -218,6 +218,29 @@ impl Manager {
         )
     }
 
+    pub fn update_display_name(&self, name: &str, display_name: &str) -> Result<(), IdentityError> {
+        let record = self.load(name)?;
+        let paths = self.build_paths(&record.dir_name);
+        let mut payload = read_json_value(&paths.identity_path)?;
+        let object = payload.as_object_mut().ok_or_else(|| {
+            IdentityError::Internal("identity payload must be a JSON object".to_string())
+        })?;
+        object.insert("name".to_string(), Value::String(display_name.to_string()));
+        write_secure_json(&paths.identity_path, &payload)?;
+
+        let mut index = self.load_index()?;
+        let mut entry = index
+            .credentials
+            .get(&record.identity_name)
+            .cloned()
+            .ok_or_else(|| {
+                IdentityError::NotFound(format!("identity not found: {}", record.identity_name))
+            })?;
+        entry.name = display_name.to_string();
+        index.credentials.insert(record.identity_name, entry);
+        self.save_index(index)
+    }
+
     pub fn list(&self) -> Result<Vec<IdentitySummary>, IdentityError> {
         let index = self.load_index()?;
         let mut items = Vec::with_capacity(index.credentials.len());

@@ -6,8 +6,13 @@ use super::store::{
 };
 use super::types::{IdentityError, RegisterParams, SaveInput, LEGACY_LAYOUT_HINT};
 use super::wire::{
-    build_register_rpc_call, build_send_otp_rpc_call, normalize_email, refresh_token_result,
-    register_completed_result, register_phone_otp_result, RegisterRpcParams, DID_AUTH_RPC_ENDPOINT,
+    build_get_me_profile_rpc_call, build_handle_lookup_by_did_rpc_call,
+    build_handle_lookup_by_handle_rpc_call, build_profile_resolve_rpc_call,
+    build_public_profile_rpc_call, build_register_rpc_call, build_send_otp_rpc_call,
+    build_update_me_profile_rpc_call, normalize_email, profile_public_result, profile_self_result,
+    profile_update_result, refresh_token_result, register_completed_result,
+    register_phone_otp_result, resolve_result, HandleLookupResult, RegisterRpcParams,
+    UpdateProfileParams, DID_AUTH_RPC_ENDPOINT,
 };
 use super::Manager;
 use crate::authsdk::Session;
@@ -18,6 +23,28 @@ pub struct CommandResult {
     pub data: Value,
     pub summary: String,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SetProfileParams {
+    pub display_name: String,
+    pub bio: String,
+    pub tags_csv: String,
+    pub markdown: String,
+    pub markdown_file: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GetProfileParams {
+    pub self_profile: bool,
+    pub handle: String,
+    pub did: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResolveParams {
+    pub handle: String,
+    pub did: String,
 }
 
 pub fn status(manager: &Manager) -> Result<CommandResult, IdentityError> {
@@ -410,6 +437,158 @@ pub fn replace_did_plan(
     }
 }
 
+pub fn set_profile(
+    resolved: &Resolved,
+    manager: &Manager,
+    params: SetProfileParams,
+) -> Result<CommandResult, IdentityError> {
+    let record = load_identity_for_mutation(resolved, manager, "")?;
+    let identity = identity_summary_from_record(&record);
+    let mut auth = auth_session(resolved, manager, &record)?;
+    let call = build_update_me_profile_rpc_call(update_profile_wire_params(&params)?)?;
+    let client = Client::new(resolved)?;
+    let profile: Value = client.authenticated_rpc_call_profile(
+        call.call.profile,
+        call.call.endpoint,
+        call.call.method,
+        call.call.params,
+        &mut auth,
+    )?;
+    if !params.display_name.trim().is_empty() {
+        let _ = manager.update_display_name(&record.identity_name, params.display_name.trim());
+    }
+    Ok(profile_update_result(
+        &identity,
+        call.changed_fields,
+        profile,
+    ))
+}
+
+pub fn get_profile(
+    resolved: &Resolved,
+    manager: &Manager,
+    params: GetProfileParams,
+) -> Result<CommandResult, IdentityError> {
+    let self_profile =
+        params.self_profile || (params.handle.trim().is_empty() && params.did.trim().is_empty());
+    let client = Client::new(resolved)?;
+    if self_profile {
+        let record = load_identity_for_mutation(resolved, manager, "")?;
+        let mut auth = auth_session(resolved, manager, &record)?;
+        let call = build_get_me_profile_rpc_call();
+        let profile: Value = client.authenticated_rpc_call_profile(
+            call.profile,
+            call.endpoint,
+            call.method,
+            call.params,
+            &mut auth,
+        )?;
+        return Ok(profile_self_result(profile));
+    }
+
+    let mut subject = Map::new();
+    let mut profile_did = params.did.trim().to_string();
+    if !params.handle.trim().is_empty() {
+        let target = normalize_handle_input(&params.handle, &resolved.did_domain)?;
+        let lookup_call = build_handle_lookup_by_handle_rpc_call(&target.full_handle)?;
+        let lookup: HandleLookupResult = client.rpc_call_profile(
+            lookup_call.profile,
+            lookup_call.endpoint,
+            lookup_call.method,
+            lookup_call.params,
+        )?;
+        if lookup.did.trim().is_empty() {
+            return Err(IdentityError::NotFound(format!(
+                "identity not found: handle {} did not resolve to a did",
+                target.full_handle
+            )));
+        }
+        profile_did = lookup.did.clone();
+        subject.insert("handle".to_string(), Value::String(target.local_part));
+        subject.insert("full_handle".to_string(), Value::String(target.full_handle));
+        subject.insert("domain".to_string(), Value::String(target.effective_domain));
+        subject.insert("did".to_string(), Value::String(lookup.did));
+    }
+    if !params.did.trim().is_empty() && !subject.contains_key("did") {
+        subject.insert(
+            "did".to_string(),
+            Value::String(params.did.trim().to_string()),
+        );
+    }
+    let profile_call = build_public_profile_rpc_call(&profile_did)?;
+    let profile: Value = client.rpc_call_profile(
+        profile_call.profile,
+        profile_call.endpoint,
+        profile_call.method,
+        profile_call.params,
+    )?;
+    Ok(profile_public_result(Value::Object(subject), profile))
+}
+
+pub fn resolve_identity(
+    resolved: &Resolved,
+    params: ResolveParams,
+) -> Result<CommandResult, IdentityError> {
+    let handle = params.handle.trim();
+    let mut did = params.did.trim().to_string();
+    if (handle.is_empty() && did.is_empty()) || (!handle.is_empty() && !did.is_empty()) {
+        return Err(IdentityError::InvalidInput(
+            "invalid input: exactly one of handle or did is required".to_string(),
+        ));
+    }
+    let client = Client::new(resolved)?;
+    let mut lookup = None;
+    let mut public_profile = None;
+    let mut warnings = Vec::new();
+
+    if !handle.is_empty() {
+        let target = normalize_handle_input(handle, &resolved.did_domain)?;
+        let lookup_call = build_handle_lookup_by_handle_rpc_call(&target.full_handle)?;
+        let lookup_value: Value = client.rpc_call_profile(
+            lookup_call.profile,
+            lookup_call.endpoint,
+            lookup_call.method,
+            lookup_call.params,
+        )?;
+        did = lookup_value
+            .get("did")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if did.trim().is_empty() {
+            return Err(IdentityError::NotFound(format!(
+                "identity not found: handle {} did not resolve to a did",
+                target.full_handle
+            )));
+        }
+        lookup = Some(lookup_value);
+        match public_profile_by_did(&client, &did) {
+            Ok(profile) => public_profile = Some(profile),
+            Err(err) => warnings.push(format!("Public profile lookup failed: {err}")),
+        }
+    }
+
+    let resolve_call = build_profile_resolve_rpc_call(&did)?;
+    let resolve = Some(client.rpc_call_profile(
+        resolve_call.profile,
+        resolve_call.endpoint,
+        resolve_call.method,
+        resolve_call.params,
+    )?);
+    if handle.is_empty() {
+        match handle_lookup_by_did(&client, &did) {
+            Ok(value) => lookup = Some(value),
+            Err(err) => warnings.push(format!("Handle lookup failed: {err}")),
+        }
+        match public_profile_by_did(&client, &did) {
+            Ok(profile) => public_profile = Some(profile),
+            Err(err) => warnings.push(format!("Public profile lookup failed: {err}")),
+        }
+    }
+
+    Ok(resolve_result(resolve, lookup, public_profile, warnings))
+}
+
 fn load_identity_for_mutation(
     resolved: &Resolved,
     manager: &Manager,
@@ -435,10 +614,46 @@ fn load_identity_for_mutation(
     manager.load(&identity_name)
 }
 
+fn auth_session(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &super::types::StoredIdentity,
+) -> Result<Session, IdentityError> {
+    let mut session = new_auth_session(resolved, manager, record, record.jwt_token.as_str())?;
+    let base_url = resolved.service_base_url.trim();
+    let did_auth_url = crate::config::join_base_url(base_url, DID_AUTH_RPC_ENDPOINT);
+    let token = record.jwt_token.trim();
+    if !token.is_empty() && !base_url.is_empty() {
+        session.set_bearer(base_url, token);
+        session.set_bearer(&did_auth_url, token);
+    }
+    if token.is_empty() {
+        let client = Client::new(resolved)?;
+        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url) {
+            return match err {
+                IdentityError::Service(err) => Err(IdentityError::Service(err)),
+                err => Err(IdentityError::Internal(format!(
+                    "active identity does not have a JWT yet: {err}"
+                ))),
+            };
+        }
+    }
+    Ok(session)
+}
+
 fn auth_session_without_stored_bearer(
     resolved: &Resolved,
     manager: &Manager,
     record: &super::types::StoredIdentity,
+) -> Result<Session, IdentityError> {
+    new_auth_session(resolved, manager, record, "")
+}
+
+fn new_auth_session(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &super::types::StoredIdentity,
+    jwt_token: &str,
 ) -> Result<Session, IdentityError> {
     if record.identity_name.trim().is_empty() {
         return Err(IdentityError::AuthRequired(
@@ -458,7 +673,7 @@ fn auth_session_without_stored_bearer(
         &paths.key1_private_path,
         identity_name,
         record.did.as_str(),
-        "",
+        jwt_token,
         Some(persist_token),
     );
     let base_url = resolved.service_base_url.trim();
@@ -468,6 +683,35 @@ fn auth_session_without_stored_bearer(
         session.remember_scope(&did_auth_url);
     }
     Ok(session)
+}
+
+fn update_profile_wire_params(
+    params: &SetProfileParams,
+) -> Result<UpdateProfileParams, IdentityError> {
+    let markdown_file = params.markdown_file.trim();
+    let (markdown, preserve_markdown) = if markdown_file.is_empty() {
+        (params.markdown.trim().to_string(), false)
+    } else {
+        let raw = std::fs::read(&params.markdown_file)?;
+        (String::from_utf8_lossy(&raw).into_owned(), true)
+    };
+    Ok(UpdateProfileParams {
+        display_name: params.display_name.clone(),
+        bio: params.bio.clone(),
+        tags_csv: params.tags_csv.clone(),
+        markdown,
+        preserve_markdown,
+    })
+}
+
+fn handle_lookup_by_did(client: &Client, did: &str) -> Result<Value, IdentityError> {
+    let call = build_handle_lookup_by_did_rpc_call(did)?;
+    client.rpc_call_profile(call.profile, call.endpoint, call.method, call.params)
+}
+
+fn public_profile_by_did(client: &Client, did: &str) -> Result<Value, IdentityError> {
+    let call = build_public_profile_rpc_call(did)?;
+    client.rpc_call_profile(call.profile, call.endpoint, call.method, call.params)
 }
 
 fn refresh_token_auth_required(identity_name: &str) -> IdentityError {

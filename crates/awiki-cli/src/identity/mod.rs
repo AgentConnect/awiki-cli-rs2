@@ -21,9 +21,10 @@ pub use handle_input::{
 pub use layout::Manager;
 pub use recover::{recover_identity_ignored_warning, recover_preview, RecoverPlan};
 pub use service::{
-    create_identity, current_identity, import_v1, list_identities, refresh_token,
-    refresh_token_plan, register, register_plan, replace_did_plan, sanitize_public_value,
-    status as identity_status, switch_default_identity, use_plan, CommandResult,
+    create_identity, current_identity, get_profile, import_v1, list_identities, refresh_token,
+    refresh_token_plan, register, register_plan, replace_did_plan, resolve_identity,
+    sanitize_public_value, set_profile, status as identity_status, switch_default_identity,
+    use_plan, CommandResult, GetProfileParams, ResolveParams, SetProfileParams,
 };
 pub use store::choose_default_identity_name;
 pub use types::{

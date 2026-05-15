@@ -88,8 +88,10 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "id.status" => app.run_id_status(),
         "id.import-v1" => app.run_id_import_v1(command),
         "id.refresh-token" => app.run_id_refresh_token(),
+        "id.resolve" => app.run_id_resolve(command),
         "id.recover" => app.run_id_recover(command),
         "id.replace-did" => app.run_id_replace_did(command),
+        "id.profile.get" => app.run_id_profile_get(command),
         "id.profile.set" => app.run_id_profile_set(command),
         "msg.send" => app.run_msg_send(command),
         "msg.attachment.download" => app.run_msg_attachment_download(command),
@@ -209,8 +211,10 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["id", "status", ..] => "id.status",
         ["id", "import-v1", ..] => "id.import-v1",
         ["id", "refresh-token", ..] => "id.refresh-token",
+        ["id", "resolve", ..] => "id.resolve",
         ["id", "recover", ..] => "id.recover",
         ["id", "replace-did", ..] => "id.replace-did",
+        ["id", "profile", "get", ..] => "id.profile.get",
         ["id", "profile", "set", ..] => "id.profile.set",
         ["msg", "send", ..] => "msg.send",
         ["msg", "attachment", "download", ..] => "msg.attachment.download",
@@ -399,6 +403,7 @@ fn is_bool_local_flag(name: &str) -> bool {
             | "auto-start"
             | "all"
             | "wait"
+            | "self"
             | "secure"
             | "unread"
             | "mark-read"

@@ -209,6 +209,401 @@ fn identity_register_phone_without_otp_live_posts_send_otp_and_does_not_create_i
     );
 }
 
+#[test]
+fn identity_profile_set_live_posts_authenticated_update_me_and_persists_display_name_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(
+            r###"{"jsonrpc":"2.0","result":{"nick_name":"Alice Example","bio":"Rust port","tags":["rust","cli","parity"],"profile_md":"## Alice\nProfile"},"id":"req-1"}"###,
+        ),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "profile",
+            "set",
+            "--display-name",
+            " Alice Example ",
+            "--bio",
+            " Rust port ",
+            "--tags",
+            " rust, ,cli, parity , ",
+            "--markdown",
+            "## Alice\nProfile",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Profile updated successfully");
+    assert_eq!(envelope["data"]["action"], "update_profile");
+    assert_eq!(
+        envelope["data"]["changed_fields"],
+        json!(["display_name", "bio", "tags", "profile_md"])
+    );
+    assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(envelope["data"]["identity"]["display_name"], "alice");
+    assert_eq!(envelope["data"]["profile"]["nick_name"], "Alice Example");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "update_me",
+            "params": {
+                "nick_name": "Alice Example",
+                "bio": "Rust port",
+                "tags": ["rust", "cli", "parity"],
+                "profile_md": "## Alice\nProfile",
+            },
+        })
+    );
+
+    let stored = read_stored_identity(workspace.path(), "alice");
+    assert_eq!(stored.identity["name"], "Alice Example");
+    assert_eq!(stored.index["name"], "Alice Example");
+}
+
+#[test]
+fn identity_profile_set_live_markdown_file_preserves_raw_nonblank_profile_md_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let markdown = " \n# Alice\n\nProfile body\n ";
+    let markdown_path = workspace.path().join("profile.md");
+    std::fs::write(&markdown_path, markdown).unwrap();
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"profile_md":" \n# Alice\n\nProfile body\n "},"id":"req-1"}"#,
+        ),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "profile",
+            "set",
+            "--markdown-file",
+            markdown_path.to_str().unwrap(),
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Profile updated successfully");
+    assert_eq!(envelope["data"]["changed_fields"], json!(["profile_md"]));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(body["method"], "update_me");
+    assert_eq!(body["params"], json!({ "profile_md": markdown }));
+}
+
+#[test]
+fn identity_profile_set_live_empty_profile_fields_fail_before_remote_update_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "profile",
+            "set",
+            "--display-name",
+            " \t ",
+            "--bio",
+            "\n ",
+            "--tags",
+            " \t ",
+            "--markdown",
+            " \n\t ",
+        ],
+        workspace.path(),
+    );
+
+    assert_code(&output, 2);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "empty profile update must not call remote update endpoint; got requests:\n{requests:#?}"
+    );
+    let stored = read_stored_identity(workspace.path(), "alice");
+    assert_eq!(stored.identity["name"], "alice");
+    assert_eq!(stored.index["name"], "alice");
+}
+
+#[test]
+fn identity_profile_get_self_live_posts_authenticated_get_me_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice","bio":"Self profile"},"id":"req-1"}"#,
+        ),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &["--identity", "alice", "id", "profile", "get", "--self"],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Fetched current identity profile");
+    assert_eq!(envelope["data"]["subject"], "self");
+    assert_eq!(envelope["data"]["profile"]["nick_name"], "Alice");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "get_me",
+            "params": {},
+        })
+    );
+}
+
+#[test]
+fn identity_profile_get_handle_live_resolves_handle_then_reads_public_profile_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","handle":"alice","full_handle":"alice.awiki.ai","domain":"awiki.ai","status":"active"},"id":"req-1"}"#,
+        ),
+        TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice Public"},"id":"req-1"}"#),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &["id", "profile", "get", "--handle", "Alice"],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Fetched public profile");
+    assert_eq!(envelope["data"]["subject"]["handle"], "alice");
+    assert_eq!(envelope["data"]["subject"]["full_handle"], "alice.awiki.ai");
+    assert_eq!(
+        envelope["data"]["subject"]["did"],
+        "did:wba:awiki.ai:alice:e1_remote"
+    );
+    assert_eq!(envelope["data"]["profile"]["nick_name"], "Alice Public");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    let lookup_body: Value =
+        serde_json::from_str(request_body(&requests[1])).expect("lookup request body");
+    assert_eq!(
+        lookup_body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "lookup",
+            "params": { "handle": "alice.awiki.ai" },
+        })
+    );
+    assert!(requests[2].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    let profile_body: Value =
+        serde_json::from_str(request_body(&requests[2])).expect("profile request body");
+    assert_eq!(
+        profile_body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "get_public_profile",
+            "params": { "did": "did:wba:awiki.ai:alice:e1_remote" },
+        })
+    );
+}
+
+#[test]
+fn identity_profile_get_did_live_reads_public_profile_directly_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice DID"},"id":"req-1"}"#,
+    )]);
+    write_service_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &[
+            "id",
+            "profile",
+            "get",
+            "--did",
+            "did:wba:awiki.ai:alice:e1_remote",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Fetched public profile");
+    assert_eq!(
+        envelope["data"]["subject"]["did"],
+        "did:wba:awiki.ai:alice:e1_remote"
+    );
+    assert_eq!(envelope["data"]["profile"]["nick_name"], "Alice DID");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "get_public_profile",
+            "params": { "did": "did:wba:awiki.ai:alice:e1_remote" },
+        })
+    );
+}
+
+#[test]
+fn identity_resolve_handle_live_matches_go_lookup_profile_and_resolve_sequence() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","handle":"alice","full_handle":"alice.awiki.ai"},"id":"req-1"}"#,
+        ),
+        TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice Public"},"id":"req-1"}"#),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","service_endpoint":"https://service.example"},"id":"req-1"}"#,
+        ),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(&["id", "resolve", "--handle", "Alice"], workspace.path());
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Identity resolved successfully");
+    assert_eq!(
+        envelope["data"]["lookup"]["did"],
+        "did:wba:awiki.ai:alice:e1_remote"
+    );
+    assert_eq!(
+        envelope["data"]["resolve"]["did"],
+        "did:wba:awiki.ai:alice:e1_remote"
+    );
+    assert_eq!(
+        envelope["data"]["public_profile"]["nick_name"],
+        "Alice Public"
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    let lookup_body: Value = serde_json::from_str(request_body(&requests[0])).unwrap();
+    let profile_body: Value = serde_json::from_str(request_body(&requests[1])).unwrap();
+    let resolve_body: Value = serde_json::from_str(request_body(&requests[2])).unwrap();
+    assert_eq!(
+        lookup_body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "lookup",
+            "params": { "handle": "alice.awiki.ai" },
+        })
+    );
+    assert_eq!(
+        profile_body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "get_public_profile",
+            "params": { "did": "did:wba:awiki.ai:alice:e1_remote" },
+        })
+    );
+    assert_eq!(
+        resolve_body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "resolve",
+            "params": { "did": "did:wba:awiki.ai:alice:e1_remote" },
+        })
+    );
+}
+
+#[test]
+fn identity_resolve_did_live_matches_go_resolve_lookup_profile_sequence() {
+    let workspace = TempDir::new().expect("workspace");
+    let did = "did:wba:awiki.ai:alice:e1_remote";
+    let server = TestServer::new(vec![
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","service_endpoint":"https://service.example"},"id":"req-1"}"#,
+        ),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","handle":"alice","full_handle":"alice.awiki.ai"},"id":"req-1"}"#,
+        ),
+        TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice DID"},"id":"req-1"}"#),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(&["id", "resolve", "--did", did], workspace.path());
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Identity resolved successfully");
+    assert_eq!(envelope["data"]["resolve"]["did"], did);
+    assert_eq!(envelope["data"]["lookup"]["handle"], "alice");
+    assert_eq!(envelope["data"]["public_profile"]["nick_name"], "Alice DID");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    let resolve_body: Value = serde_json::from_str(request_body(&requests[0])).unwrap();
+    let lookup_body: Value = serde_json::from_str(request_body(&requests[1])).unwrap();
+    let profile_body: Value = serde_json::from_str(request_body(&requests[2])).unwrap();
+    assert_eq!(resolve_body["method"], "resolve");
+    assert_eq!(resolve_body["params"], json!({ "did": did }));
+    assert_eq!(lookup_body["method"], "lookup");
+    assert_eq!(lookup_body["params"], json!({ "did": did }));
+    assert_eq!(profile_body["method"], "get_public_profile");
+    assert_eq!(profile_body["params"], json!({ "did": did }));
+}
+
 fn write_service_config(workspace: &Path, base_url: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
@@ -234,6 +629,27 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command.output().expect("run awiki-cli binary")
 }
 
+fn register_alice(workspace: &Path) {
+    let output = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace,
+    );
+    assert_success(&output);
+}
+
+fn register_alice_response() -> &'static str {
+    r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","message":"Registration successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#
+}
+
 fn assert_success(output: &Output) {
     assert_code(output, 0);
 }
@@ -257,6 +673,18 @@ fn success_json(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true);
+    envelope
+}
+
+fn error_json(output: &Output) -> Value {
+    assert!(
+        output.stdout.is_empty(),
+        "stdout should be empty: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let envelope: Value =
+        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
+    assert_eq!(envelope["ok"], false);
     envelope
 }
 

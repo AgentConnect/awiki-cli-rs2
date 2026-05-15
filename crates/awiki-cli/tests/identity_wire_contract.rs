@@ -305,6 +305,7 @@ fn identity_profile_update_payload_matches_go_mapping_and_order() {
         bio: " Rust port ".to_string(),
         tags_csv: " rust, port, ,cli ".to_string(),
         markdown: " # Profile ".to_string(),
+        preserve_markdown: false,
     })
     .expect("profile payload");
     assert_eq!(

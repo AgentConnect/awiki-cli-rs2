@@ -487,6 +487,7 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         .iter()
         .map(|child| child["name"].as_str().unwrap())
         .collect();
+    assert!(children.contains(&"id.profile.get"));
     assert!(children.contains(&"id.profile.set"));
 
     let profile_plan = success_json(&awiki_cmd(

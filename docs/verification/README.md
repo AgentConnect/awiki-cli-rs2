@@ -2,6 +2,64 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity Profile And Resolve Live Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/cli ./internal/identity ./internal/authsdk ./internal/cmdmeta -run 'Test.*Profile|Test.*Resolve|TestRunIDRefreshTokenDryRunPlansDidAuthRefresh|TestRefreshTokenUsesDIDAuthWithoutStoredBearerAndPersistsNewJWT|TestCatalogPublishesRefreshTokenCommand|TestCaptureTokenPersistsOnlyConfiguredScopes|TestCaptureTokenStillAcceptsLegacyAuthorizationResponseHeader' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/id/test_identity_cli.py::test_id_register_resolve_profile_bind_and_recover_flow tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh tests_v2/id/test_identity_cli.py::test_id_refresh_token_replaces_stale_local_jwt_for_registered_identity tests_v2/id/test_identity_cli.py::test_id_profile_set_rejects_conflicting_body_sources -q
+```
+
+Result: local Rust checks passed, including the full
+`cargo +1.79.0 test -p awiki-cli --locked` run. Focused Go profile/resolve,
+identity/authsdk, and cmdmeta tests passed. The dependency audit stayed on the
+existing expected paths only: `base64`, approved `rusqlite`/`libsqlite3-sys`
+with build helpers, and the existing Rustls/webpki/ring TLS path.
+
+Focused `awiki-system-test` result: 3 passed, 1 failed at the known next Rust
+port gap. The end-to-end identity flow now progresses through live
+`id register`, `id profile set`, `id profile get --self`,
+`id profile get --handle`, `id profile get --did`, `id resolve --handle`, and
+`id resolve --did`; it then fails at `id bind --phone ... --email ...` because
+the Rust port still returns `not_implemented` for `id bind`.
+
+Scope:
+
+- Wired non-dry-run `id profile set` to authenticated
+  `/user-service/did/profile/rpc` `update_me`, including stored-JWT session
+  seeding, empty-token DID-auth bootstrap, Go profile payload field mapping,
+  raw `--markdown-file` content preservation, and local display-name writeback
+  after remote success.
+- Wired non-dry-run `id profile get` for self, handle, and DID targets:
+  authenticated `get_me` for `--self`, handle lookup plus public profile for
+  `--handle`, and direct public profile lookup for `--did`.
+- Wired non-dry-run `id resolve` for handle and DID targets, including Go's
+  handle normalization, handle lookup, profile best-effort warnings, resolve
+  RPC calls, and command summary shape.
+- Added command parser and cmdmeta entries for `id profile get` and
+  `id resolve`, plus contract tests for command schema exposure.
+
+Boundary note: live `id bind`, non-dry-run `id recover`, non-dry-run
+`id replace-did`, live email registration/wait polling, profile-timeout
+wrappers, and trace phase emission remain deferred identity/transport parity
+slices.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK, `authsdk::Session`, and
+Rustls/std `transportcfg::HttpClient`. It does not add `reqwest`, `hyper`,
+WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, platform
+service libraries, or ANP SDK network/default features.
+
 ## 2026-05-15 Identity Refresh Token Live Slice
 
 Local Rust and Go reference verification:

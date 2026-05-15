@@ -136,6 +136,7 @@ pub struct UpdateProfileParams {
     pub bio: String,
     pub tags_csv: String,
     pub markdown: String,
+    pub preserve_markdown: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -382,12 +383,13 @@ pub fn build_update_profile_payload(
         payload.insert("tags".to_string(), json!(split_csv(&params.tags_csv)));
         changed_fields.push("tags".to_string());
     }
-    let markdown = params.markdown.trim();
-    if !markdown.is_empty() {
-        payload.insert(
-            "profile_md".to_string(),
-            Value::String(markdown.to_string()),
-        );
+    let markdown = if params.preserve_markdown {
+        params.markdown.clone()
+    } else {
+        params.markdown.trim().to_string()
+    };
+    if !markdown.trim().is_empty() {
+        payload.insert("profile_md".to_string(), Value::String(markdown));
         changed_fields.push("profile_md".to_string());
     }
     if payload.is_empty() {

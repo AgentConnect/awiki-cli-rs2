@@ -573,7 +573,50 @@ impl App {
                 },
             );
         }
-        Err(not_implemented_side_effect("id profile set"))
+        let result = identity::set_profile(
+            &resolved,
+            &self.identity_manager(&resolved),
+            identity::SetProfileParams {
+                display_name,
+                bio,
+                tags_csv: tags,
+                markdown,
+                markdown_file,
+            },
+        )
+        .map_err(identity_exit)?;
+        self.render_identity_result("awiki-cli id profile set", &resolved, result)
+    }
+
+    pub fn run_id_profile_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let result = identity::get_profile(
+            &resolved,
+            &self.identity_manager(&resolved),
+            identity::GetProfileParams {
+                self_profile: command
+                    .flags
+                    .get("self")
+                    .is_some_and(|value| value == "true"),
+                handle: string_flag(command, "handle"),
+                did: string_flag(command, "did"),
+            },
+        )
+        .map_err(identity_exit)?;
+        self.render_identity_result("awiki-cli id profile get", &resolved, result)
+    }
+
+    pub fn run_id_resolve(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let result = identity::resolve_identity(
+            &resolved,
+            identity::ResolveParams {
+                handle: string_flag(command, "handle"),
+                did: string_flag(command, "did"),
+            },
+        )
+        .map_err(identity_exit)?;
+        self.render_identity_result("awiki-cli id resolve", &resolved, result)
     }
 
     pub fn run_debug_db_query(&self, command: &ParsedCommand) -> Result<(), ExitError> {
