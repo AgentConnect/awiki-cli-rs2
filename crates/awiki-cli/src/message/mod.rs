@@ -1,7 +1,9 @@
 mod attachment;
+mod client;
 mod group_e2ee_wire;
 mod group_wire;
 mod proof;
+mod service;
 mod service_discovery;
 mod types;
 mod warnings;
@@ -15,6 +17,7 @@ pub use attachment::{
     AttachmentCommitObjectResult, AttachmentCreateSlotResult, AttachmentSelection,
     PreparedAttachment,
 };
+pub use client::Client;
 pub use group_e2ee_wire::{
     build_group_e2ee_add_rpc_params, build_group_e2ee_create_rpc_params,
     build_group_e2ee_get_key_package_rpc_params,
@@ -38,6 +41,7 @@ pub use proof::{
     build_origin_proof, load_private_key_material, origin_auth_value,
     verification_method_id_from_document, ORIGIN_PROOF_SCHEME,
 };
+pub use service::{history, inbox, mark_read, send, CommandResult};
 pub use service_discovery::{
     select_attachment_rpc_service_from_document, DiscoveredAttachmentService,
 };

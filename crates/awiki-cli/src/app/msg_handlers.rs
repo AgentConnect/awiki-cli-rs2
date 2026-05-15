@@ -2,6 +2,7 @@ use super::{not_implemented_side_effect, App};
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
 use crate::identity;
+use crate::message::{self, CommandResult, MessageError};
 use crate::output::ExitError;
 use serde_json::{json, Map, Value};
 use std::fs;
@@ -57,7 +58,27 @@ impl App {
 
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("msg send"));
+            let result = message::send(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::SendRequest {
+                    identity_name: self.globals.identity.clone(),
+                    target: to,
+                    group,
+                    text,
+                    message_type,
+                    file_path,
+                    mime_type,
+                    ..message::SendRequest::default()
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the active identity is ready and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg send", &resolved, result);
         }
 
         let mut plan = Map::new();
@@ -181,7 +202,26 @@ impl App {
     pub fn run_msg_inbox(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("msg inbox"));
+            let result = message::inbox(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::InboxRequest {
+                    identity_name: self.globals.identity.clone(),
+                    scope: default_string(&string_flag(command, "scope"), "all"),
+                    with: string_flag(command, "with"),
+                    group: string_flag(command, "group"),
+                    limit: int_flag(command, "limit", 20)?,
+                    unread_only: bool_flag(command, "unread"),
+                    mark_read: bool_flag(command, "mark-read"),
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the active identity is ready and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg inbox", &resolved, result);
         }
         let with = string_flag(command, "with");
         let mut plan = Map::new();
@@ -222,7 +262,24 @@ impl App {
         require_flags(command, &["with"])?;
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("msg history"));
+            let result = message::history(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::HistoryRequest {
+                    identity_name: self.globals.identity.clone(),
+                    with: string_flag(command, "with"),
+                    limit: int_flag(command, "limit", 50)?,
+                    cursor: string_flag(command, "cursor"),
+                    ..message::HistoryRequest::default()
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the peer is valid and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg history", &resolved, result);
         }
         let with = string_flag(command, "with");
         let mut plan = Map::new();
@@ -265,7 +322,21 @@ impl App {
         }
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("msg mark-read"));
+            let result = message::mark_read(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::MarkReadRequest {
+                    identity_name: self.globals.identity.clone(),
+                    message_ids: command.args.clone(),
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the message ids are valid and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg mark-read", &resolved, result);
         }
         self.render_success(
             "awiki-cli msg mark-read",
@@ -424,6 +495,21 @@ impl App {
             Vec::new(),
         )
     }
+
+    fn render_message_result(
+        &self,
+        command: &str,
+        resolved: &Resolved,
+        result: CommandResult,
+    ) -> Result<(), ExitError> {
+        self.render_success(
+            command,
+            resolved,
+            result.data,
+            &result.summary,
+            result.warnings,
+        )
+    }
 }
 
 fn target_value(to: &str, group: &str, resolved: &Resolved) -> Value {
@@ -526,4 +612,71 @@ fn require_flags(command: &ParsedCommand, names: &[&str]) -> Result<(), ExitErro
         format!("required flag(s) {quoted} not set"),
         "",
     ))
+}
+
+fn message_exit(err: MessageError, hint: &str) -> ExitError {
+    match err {
+        MessageError::TargetRequired
+        | MessageError::TextRequired
+        | MessageError::MessageNotFound
+        | MessageError::AttachmentNotFound
+        | MessageError::AttachmentIdRequired
+        | MessageError::AttachmentMessageInvalid
+        | MessageError::AttachmentSenderRequired
+        | MessageError::GroupRequired
+        | MessageError::MemberRequired
+        | MessageError::GroupOwnerCannotLeave
+        | MessageError::FilePathRequired
+        | MessageError::MimeTypeWithoutFile
+        | MessageError::MessageIdRequired
+        | MessageError::OutputPathRequired
+        | MessageError::DownloadTargetNeeded
+        | MessageError::DownloadTargetConflict
+        | MessageError::MissingMessageServiceDid
+        | MessageError::MissingAttachmentServiceDid
+        | MessageError::InvalidAttachmentServiceEndpoint(_)
+        | MessageError::Json(_) => ExitError::new(
+            "invalid_argument",
+            2,
+            err.to_string(),
+            "Check the message command arguments and try again.",
+        ),
+        MessageError::IdentityRequired(message) => ExitError::new(
+            "identity_required",
+            3,
+            message,
+            "Complete user setup with `awiki-cli id register --handle <handle> ...` or recover an existing handle before using `awiki-cli msg` commands.",
+        ),
+        MessageError::SecureNotSupported
+        | MessageError::AttachmentNotSupported
+        | MessageError::GroupNotSupported
+        | MessageError::GroupE2eeSelfLeaveUnsupported
+        | MessageError::TransportUnavailable(_) => {
+            ExitError::new("not_implemented", 1, err.to_string(), hint)
+        }
+        MessageError::Service(service_err) => match () {
+            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
+                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
+            }
+            _ if service_err.status_code == 401 || service_err.rpc_code == -32000 => {
+                ExitError::new(
+                    "auth_required",
+                    3,
+                    service_err.to_string(),
+                    "Use an identity with a valid JWT or DID WBA auth material.",
+                )
+            }
+            _ if service_err.status_code == 404 || service_err.rpc_code == -32002 => {
+                ExitError::new("not_found", 5, service_err.to_string(), hint)
+            }
+            _ if service_err.status_code == 409
+                || matches!(service_err.rpc_code, -32003 | -32004) =>
+            {
+                ExitError::new("conflict", 1, service_err.to_string(), hint)
+            }
+            _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
+        },
+        MessageError::Identity(err) => super::identity_exit(err),
+        MessageError::Internal(message) => ExitError::new("internal_error", 1, message, hint),
+    }
 }

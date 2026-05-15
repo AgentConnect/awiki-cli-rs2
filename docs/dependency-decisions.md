@@ -151,6 +151,7 @@ substitute for a Rustls-backed stack.
 | Mail remote wire contract slice | Add no dependency for the pure `internal/mail/client.go` and `service.go` RPC wire/error/summary contract. Keep `NewClient`, HTTP execution, DID-auth session construction, JWT refresh, CA bundle handling, and attachment file writes deferred. | The Go mail service methods have a useful pure boundary: endpoint, method names, transport profiles, JSON params, validation errors, result summaries, and RPC/HTTP `ServiceError` display can be translated and unit-tested before selecting the shared Rustls HTTP stack. Wiring fake non-dry-run mail execution would break parity, and wiring real execution here would duplicate the pending authsdk/session transport decision. | `cargo +1.79.0 test -p awiki-cli --test mail_wire_contract --locked` passed before full verification. Cargo manifests and lockfile are unchanged; this slice adds no `reqwest`, `hyper`, WebSocket crate, OpenSSL, `native-tls`, bundled OpenSSL, or ANP SDK network/default feature. Future live mail RPC must reuse these builders with the Rustls-first shared client. |
 | Page dry-run CLI slice | Add no HTTP/TLS dependency for `page create/list/get/update/rename/delete --dry-run`; use static plan builders and local markdown-file reads only. | Go dry-run page contracts expose `/content/rpc` request metadata without making network calls. Real page CRUD requires active identity auth, DID-auth JWT refresh, and content RPC over HTTP, so it belongs in the shared authsdk + Rustls HTTP slice rather than this CLI-contract translation. | `crates/awiki-cli/tests/page_contract.rs` passed. Dependency tree unchanged. |
 | Msg dry-run CLI slice | Add no HTTP/TLS, WebSocket, or E2EE execution dependency for `msg send/attachment download/inbox/history/mark-read/secure ... --dry-run`; use static plan builders and local text-file reads only. | Go dry-run contracts expose service intent without executing message RPC, WebSocket proxy transport, attachment transfer, or secure direct E2EE. Those paths require authsdk/session, message-service clients, Rustls HTTP/WS dependency selection, and E2EE provider decisions, so they should not be hidden inside this CLI-boundary translation. | `crates/awiki-cli/tests/msg_contract.rs` passed. Dependency tree unchanged except the existing approved bundled SQLite path; no OpenSSL/native-tls or HTTP/TLS crate was added. |
+| Direct message live HTTP slice | Add no dependency for ordinary direct text message execution; reuse existing authsdk, Rustls/std `transportcfg::HttpClient`, local ANP proof, and approved `rusqlite + bundled` store path. | The shared authsdk/Rustls transport already satisfies Go `/im/rpc` HTTP parity for `direct.send`, `inbox.get`, `direct.get_history`, and `inbox.mark_read`. Adding `reqwest`, `hyper`, WebSocket crates, OpenSSL/native-tls, YAML crates, platform libraries, or ANP SDK network/default features would expand scope without improving this parity slice. Attachments, secure direct E2EE, group execution, and WebSocket/local bridge transport remain separate dependency decisions. | Focused local Rust checks and two remote `awiki-system-test` direct selectors against `awiki.info` passed. Cargo manifests and lockfile are unchanged; dependency tree remains on existing Rustls/webpki/ring and approved bundled SQLite paths, with no OpenSSL/native-tls, `reqwest`, `hyper`, WebSocket, YAML, or platform service dependency added. |
 | Site dry-run CLI slice | Add no HTTP/TLS dependency for `site root/page ... --dry-run`; use static plan builders and local markdown-file reads only. | Go dry-run site contracts expose `/site/rpc` request metadata without making network calls. The later tenant site live RPC slice now wires real execution through the existing shared authsdk + Rustls HTTP stack instead of changing the dry-run dependency boundary. | `crates/awiki-cli/tests/site_contract.rs` passed. Dependency tree unchanged except the existing approved bundled SQLite path; no OpenSSL/native-tls or HTTP/TLS crate was added. |
 | Message pure foundation slice | Add no dependency for message request builders, attachment manifest/selection, DID-document service selection, or fallback warning text. | These helpers are pure JSON/value transformations and validation logic in Go. Porting them before real transport reduces risk for the later message-service slice while staying within the no-new-dependency lane. | `crates/awiki-cli/tests/message_contract.rs` passed. Dependency tree unchanged except the existing approved bundled SQLite path; no OpenSSL/native-tls, HTTP/TLS, WebSocket, or new crypto dependency was added. |
 | Message RFC9421 origin-proof slice | Reuse the existing local ANP Rust SDK proof/key APIs; add no new dependency. | Go `internal/message/proof.go` signs direct payloads through ANP helpers. The Rust port can preserve this local proof boundary with the already-approved local `../anp/rust` path dependency, without introducing auth session refresh, HTTP/TLS, WebSocket, or additional crypto crates. | `crates/awiki-cli/tests/message_contract.rs` passed with origin-proof generation, canonical digest comparison, and DID-document verification. Dependency tree unchanged except the approved bundled SQLite path; no OpenSSL/native-tls or HTTP/TLS crate was added. |
@@ -186,6 +187,27 @@ substitute for a Rustls-backed stack.
   ANP SDK path.
 - Verification is recorded in `docs/verification/`; no OpenSSL/native-tls,
   WebSocket, `reqwest`, `hyper`, or ANP network/default feature was added.
+
+## Direct Message Slice Notes
+
+2026-05-15:
+
+- Added the ordinary direct text message live HTTP slice for Go
+  `internal/cli/msg.go`, `internal/message/service.go`,
+  `internal/message/http_client.go`, and the message-cache helpers from
+  `internal/store/dao.go` and `internal/store/query.go`.
+- Reused the existing Rustls/std `transportcfg::HttpClient`,
+  `authsdk::Session`, local ANP origin-proof helper, and approved
+  `rusqlite + bundled` SQLite lane for `msg send --to --text/--text-file`,
+  `msg inbox`, `msg history --with`, and `msg mark-read`.
+- No dependency was added. Cargo manifests and lockfile remain unchanged; this
+  slice does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+  `native-tls`, bundled OpenSSL, YAML crates, platform service libraries, or
+  ANP SDK network/default features.
+- Remaining message-service work is deliberately split: secure direct E2EE,
+  direct attachments, group lifecycle/messages, WebSocket/local bridge/runtime
+  listener transport, OpenClaw host notify, profile-timeout wrappers, and trace
+  phase plumbing remain later parity slices.
 
 Earlier 2026-05-15 wire-only slice:
 

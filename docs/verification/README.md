@@ -2,6 +2,75 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Direct Message Live HTTP Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+```
+
+Focused remote system-test verification:
+
+```bash
+cd ../awiki-system-test
+AWIKI_SYSTEM_TEST_MODE=remote \
+E2E_USER_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws \
+E2E_DID_DOMAIN=awiki.info \
+NO_PROXY=awiki.info,www.awiki.info,localhost,127.0.0.1 \
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+uv run --no-sync python -m pytest \
+  tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_can_send_direct_messages_and_mark_them_read \
+  tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_inbox_scope_all_limit_and_mark_read_work \
+  -q
+```
+
+Result: passed. Local Rust formatting, whitespace, package check, focused
+message/authsdk tests, full package test, structure check, and binary build
+passed. The two remote direct-message system-test selectors passed against
+`awiki.info`.
+
+Scope:
+
+- Wired ordinary direct text message execution for `msg send --to
+  --text/--text-file`, `msg inbox`, `msg history --with`, and
+  `msg mark-read`.
+- Preserved Go auth/session behavior through the existing `authsdk::Session`:
+  active messaging identity gate, stored JWT seeding, DID-auth `get_me`
+  bootstrap when no token is stored, captured JWT persistence, and service error
+  conversion.
+- Preserved Go message service HTTP behavior for `/im/rpc` methods
+  `direct.send`, `inbox.get`, `direct.get_history`, and `inbox.mark_read`,
+  including handle-to-DID lookup through the user-service handle RPC.
+- Added split local cache helpers in `store/messages.rs` for Go-shaped message
+  upserts, batch persistence, local read filters, and mark-read mutation.
+- Kept all touched Rust source/test files below the default 1200-line limit;
+  `xtask check-structure` reports no undocumented oversized files.
+
+Boundary note: secure direct E2EE, direct attachments, group
+lifecycle/messages, WebSocket/local bridge/runtime listener transport,
+OpenClaw host notify, profile-timeout wrappers, and trace phase plumbing remain
+later parity slices.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
+authsdk session, message wire/proof helpers, and approved `rusqlite + bundled`
+SQLite path. It does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+`native-tls`, bundled OpenSSL, YAML crates, platform service libraries, or ANP
+SDK network/default features.
+
 ## 2026-05-15 Identity Email Register Live Slice
 
 Local Rust, Go reference, dependency, and focused system-test verification:

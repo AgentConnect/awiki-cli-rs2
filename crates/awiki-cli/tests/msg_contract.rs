@@ -507,11 +507,22 @@ fn msg_required_flag_errors_match_go_cobra_boundary() {
 }
 
 #[test]
-fn msg_non_dry_run_is_deferred_to_message_service_slice() {
+fn msg_remaining_non_dry_run_boundaries_stay_deferred() {
     let workspace = TempDir::new().expect("workspace");
 
     let output = awiki_cmd(
-        &["msg", "send", "--to", "bob", "--text", "hello"],
+        &[
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--text",
+            "caption",
+            "--file",
+            "/tmp/demo.txt",
+            "--mime-type",
+            "text/plain",
+        ],
         workspace.path(),
     );
     assert_code(&output, 1);
@@ -519,13 +530,27 @@ fn msg_non_dry_run_is_deferred_to_message_service_slice() {
     assert_eq!(envelope["error"]["code"], "not_implemented");
     assert_contains(
         &envelope["error"]["message"],
-        "msg send requires non-dry-run implementation",
+        "direct attachment messaging is not supported",
     );
 
-    let output = awiki_cmd(&["msg", "inbox"], workspace.path());
+    let output = awiki_cmd(
+        &[
+            "msg",
+            "send",
+            "--group",
+            "did:wba:awiki.ai:groups:g:e1",
+            "--text",
+            "hello",
+        ],
+        workspace.path(),
+    );
     assert_code(&output, 1);
     let envelope = error_json(&output);
     assert_eq!(envelope["error"]["code"], "not_implemented");
+    assert_contains(
+        &envelope["error"]["message"],
+        "group messaging is not supported",
+    );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

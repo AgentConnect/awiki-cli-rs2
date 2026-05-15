@@ -5,7 +5,7 @@ pub const MESSAGE_WS_ENDPOINT: &str = "/im/ws";
 
 pub const ERR_TRANSPORT_UNAVAILABLE_TEXT: &str = "message transport is unavailable";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum MessageError {
     TargetRequired,
     GroupRequired,
@@ -24,12 +24,61 @@ pub enum MessageError {
     AttachmentSenderRequired,
     TransportUnavailable(String),
     SecureNotSupported,
+    AttachmentNotSupported,
+    GroupNotSupported,
     GroupE2eeSelfLeaveUnsupported,
     MessageNotFound,
+    IdentityRequired(String),
+    Service(crate::identity::wire::ServiceError),
+    Identity(crate::identity::IdentityError),
+    Internal(String),
     InvalidAttachmentServiceEndpoint(String),
     MissingMessageServiceDid,
     MissingAttachmentServiceDid,
     Json(String),
+}
+
+impl PartialEq for MessageError {
+    fn eq(&self, other: &Self) -> bool {
+        use MessageError::*;
+        match (self, other) {
+            (TargetRequired, TargetRequired)
+            | (GroupRequired, GroupRequired)
+            | (MemberRequired, MemberRequired)
+            | (GroupOwnerCannotLeave, GroupOwnerCannotLeave)
+            | (TextRequired, TextRequired)
+            | (FilePathRequired, FilePathRequired)
+            | (MimeTypeWithoutFile, MimeTypeWithoutFile)
+            | (MessageIdRequired, MessageIdRequired)
+            | (OutputPathRequired, OutputPathRequired)
+            | (DownloadTargetNeeded, DownloadTargetNeeded)
+            | (DownloadTargetConflict, DownloadTargetConflict)
+            | (AttachmentNotFound, AttachmentNotFound)
+            | (AttachmentIdRequired, AttachmentIdRequired)
+            | (AttachmentMessageInvalid, AttachmentMessageInvalid)
+            | (AttachmentSenderRequired, AttachmentSenderRequired)
+            | (SecureNotSupported, SecureNotSupported)
+            | (AttachmentNotSupported, AttachmentNotSupported)
+            | (GroupNotSupported, GroupNotSupported)
+            | (GroupE2eeSelfLeaveUnsupported, GroupE2eeSelfLeaveUnsupported)
+            | (MessageNotFound, MessageNotFound)
+            | (MissingMessageServiceDid, MissingMessageServiceDid)
+            | (MissingAttachmentServiceDid, MissingAttachmentServiceDid) => true,
+            (TransportUnavailable(left), TransportUnavailable(right))
+            | (InvalidAttachmentServiceEndpoint(left), InvalidAttachmentServiceEndpoint(right))
+            | (IdentityRequired(left), IdentityRequired(right))
+            | (Internal(left), Internal(right))
+            | (Json(left), Json(right)) => left == right,
+            (Service(left), Service(right)) => {
+                left.status_code == right.status_code
+                    && left.rpc_code == right.rpc_code
+                    && left.message == right.message
+                    && left.data == right.data
+            }
+            (Identity(left), Identity(right)) => left.to_string() == right.to_string(),
+            _ => false,
+        }
+    }
 }
 
 impl MessageError {
@@ -74,10 +123,19 @@ impl fmt::Display for MessageError {
             Self::SecureNotSupported => {
                 f.write_str("secure messaging is not supported for this command yet")
             }
+            Self::AttachmentNotSupported => {
+                f.write_str("direct attachment messaging is not supported for this command yet")
+            }
+            Self::GroupNotSupported => {
+                f.write_str("group messaging is not supported for this command yet")
+            }
             Self::GroupE2eeSelfLeaveUnsupported => {
                 f.write_str("group E2EE self-leave is not cryptographically supported yet")
             }
             Self::MessageNotFound => f.write_str("message not found"),
+            Self::IdentityRequired(message) | Self::Internal(message) => f.write_str(message),
+            Self::Service(err) => write!(f, "{err}"),
+            Self::Identity(err) => write!(f, "{err}"),
             Self::InvalidAttachmentServiceEndpoint(message) => {
                 write!(f, "attachment service endpoint is invalid: {message}")
             }
@@ -89,6 +147,12 @@ impl fmt::Display for MessageError {
 }
 
 impl std::error::Error for MessageError {}
+
+impl From<crate::identity::IdentityError> for MessageError {
+    fn from(value: crate::identity::IdentityError) -> Self {
+        Self::Identity(value)
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SendRequest {

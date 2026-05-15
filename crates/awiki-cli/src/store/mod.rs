@@ -1,5 +1,6 @@
 mod helpers;
 mod import;
+mod messages;
 mod open;
 mod query;
 mod rebind;
@@ -9,6 +10,10 @@ mod types;
 
 pub use helpers::{make_thread_id, now_utc};
 pub use import::{import_legacy_database, scan_legacy_database, LegacyOwnerLookup};
+pub use messages::{
+    list_inbox_messages, list_messages_by_ids, list_thread_messages, mark_messages_read,
+    store_message, store_messages_batch, MessageRecord,
+};
 pub use open::{open, open_read_only};
 pub use query::{execute_sql, list_notifications};
 pub use rebind::{
