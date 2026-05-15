@@ -17,6 +17,7 @@ mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
 mod id_recover_handlers;
+mod id_replace_did_handlers;
 mod mail_handlers;
 mod msg_handlers;
 mod page_handlers;
@@ -502,25 +503,6 @@ impl App {
                 .map_err(identity_exit)?
         };
         self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
-    }
-
-    pub fn run_id_replace_did(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("id replace-did"));
-        }
-        let is_public = optional_bool_flag(command, "is-public")?;
-        let is_agent = optional_bool_flag(command, "is-agent")?;
-        let role = changed_string_flag(command, "role");
-        let endpoint_url = changed_string_flag(command, "endpoint-url");
-        let result = identity::replace_did_plan(
-            &self.globals.identity,
-            is_public,
-            is_agent,
-            role.as_deref(),
-            endpoint_url.as_deref(),
-        );
-        self.render_identity_result("awiki-cli id replace-did", &resolved, result)
     }
 
     pub fn run_id_profile_set(&self, command: &ParsedCommand) -> Result<(), ExitError> {

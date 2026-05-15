@@ -2,6 +2,76 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity Replace-DID Live Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test identity_replace_did_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_recover_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_rebind_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/cli ./internal/identity ./internal/store ./internal/authsdk ./internal/cmdmeta -run 'Test.*ReplaceDID|TestRunIDReplaceDIDDryRunWarnsAndTargetsIdentity|TestCatalogPublishesPublicDangerousReplaceDIDCommand|TestRebind|TestClearOwnerE2EEData|TestRefreshTokenUsesDIDAuthWithoutStoredBearerAndPersistsNewJWT|TestCaptureTokenPersistsOnlyConfiguredScopes|TestCaptureTokenStillAcceptsLegacyAuthorizationResponseHeader' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/id/test_identity_cli.py::test_id_replace_did_public_command_dry_run_warns_about_danger_and_backup -q
+```
+
+Result: Rust focused replace-DID live tests passed, including authenticated
+`replace_did`, optional flag/null payload mapping, no-JWT `get_me` bootstrap,
+store rebind/E2EE cleanup output, and backup-failure-before-remote ordering.
+Existing identity live, identity wire, and store rebind focused tests passed
+during the slice. Structure check passed with no undocumented Rust source/test
+file over 1200 lines: `app.rs` 1084 lines,
+`app/id_replace_did_handlers.rs` 95 lines, `identity/replace_did.rs` 417
+lines, `identity/service.rs` 1014 lines, and
+`identity_replace_did_live_contract.rs` 744 lines.
+
+Scope:
+
+- Wired non-dry-run `id replace-did` through the split
+  `app/id_replace_did_handlers.rs` CLI layer and new
+  `identity/replace_did.rs` service layer, keeping large existing files under
+  the project file-size threshold.
+- Preserved Go dry-run and live flag behavior for `--is-public`,
+  `--is-agent`, changed `--role`, and changed `--endpoint-url`, including JSON
+  `null` for empty role/endpoint values in the live `replace_did` RPC.
+- Preserved Go live service ordering: load selected/default identity, require a
+  handle-backed DID, generate a handle-path e1 DID/key bundle, create a
+  `.legacy-backup/replace-did` backup under the identity store before auth or
+  remote mutation, call authenticated `/user-service/did-auth/rpc`
+  `replace_did`, write the new identity material, remove stale e2ee state, and
+  remove the old identity directory after index update.
+- Preserved Go auth behavior: stored bearer is reused when present; when JWT is
+  missing, DID-auth `get_me` bootstrap runs first and the fresh token is used
+  for `replace_did`.
+- Preserved CLI-owned local SQLite post-processing:
+  `store::rebind_local_identity_state_with_partial` exposes `store_rebind` and
+  `e2ee_cleanup`; local SQLite failures keep the command successful after
+  service replacement and append the Go-shaped warning while preserving partial
+  count output.
+- Preserved the public dangerous warning and public output sanitization.
+
+Boundary note: legacy ANP-labeled k1 PEM compatibility conversion and
+workspace-migration-driven k1 replacement remain deferred under the existing ANP
+registry / workspace v2->v3 compatibility lanes. Live email registration/wait
+polling, profile-timeout wrappers, trace phase emission, and message/group
+service execution remain deferred identity/transport parity slices.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
+authsdk session, identity wire builders, and approved `rusqlite + bundled`
+SQLite path. It does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL,
+`native-tls`, bundled OpenSSL, YAML crates, platform service libraries, or ANP
+SDK network/default features.
+
 ## 2026-05-15 Identity Recover Live Slice
 
 Local Rust and Go reference verification:

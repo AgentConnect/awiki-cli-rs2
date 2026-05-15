@@ -1,4 +1,4 @@
-use super::{helpers::normalize_owner_did, open, StoreResult};
+use super::{helpers::normalize_owner_did, open, StoreError, StoreResult};
 use crate::config::Paths;
 use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
@@ -28,16 +28,62 @@ pub fn rebind_local_identity_state(
     old_owner_did: &str,
     new_owner_did: &str,
 ) -> StoreResult<(BTreeMap<String, i64>, BTreeMap<String, i64>)> {
+    rebind_local_identity_state_with_partial(paths, old_owner_did, new_owner_did)
+        .map(|outcome| (outcome.store_rebind, outcome.e2ee_cleanup))
+        .map_err(|err| err.error)
+}
+
+pub fn rebind_local_identity_state_with_partial(
+    paths: &Paths,
+    old_owner_did: &str,
+    new_owner_did: &str,
+) -> Result<RebindLocalIdentityStateOutcome, RebindLocalIdentityStateError> {
     let mut store_rebind = zero_counts(LOCAL_REBIND_TABLES);
     let mut e2ee_cleanup = zero_counts(E2EE_TABLES);
     if !store_file_exists(&paths.database_file) {
-        return Ok((store_rebind, e2ee_cleanup));
+        return Ok(RebindLocalIdentityStateOutcome {
+            store_rebind,
+            e2ee_cleanup,
+        });
     }
 
-    let mut connection = open(paths)?;
-    store_rebind = rebind_owner_did(&mut connection, old_owner_did, new_owner_did)?;
-    e2ee_cleanup = clear_owner_e2ee_data(&connection, old_owner_did)?;
-    Ok((store_rebind, e2ee_cleanup))
+    let mut connection = open(paths).map_err(|error| RebindLocalIdentityStateError {
+        store_rebind: store_rebind.clone(),
+        e2ee_cleanup: e2ee_cleanup.clone(),
+        error,
+    })?;
+    store_rebind =
+        rebind_owner_did(&mut connection, old_owner_did, new_owner_did).map_err(|error| {
+            RebindLocalIdentityStateError {
+                store_rebind: store_rebind.clone(),
+                e2ee_cleanup: e2ee_cleanup.clone(),
+                error,
+            }
+        })?;
+    e2ee_cleanup = clear_owner_e2ee_data(&connection, old_owner_did).map_err(|error| {
+        RebindLocalIdentityStateError {
+            store_rebind: store_rebind.clone(),
+            e2ee_cleanup: e2ee_cleanup.clone(),
+            error,
+        }
+    })?;
+    Ok(RebindLocalIdentityStateOutcome {
+        store_rebind,
+        e2ee_cleanup,
+    })
+}
+
+#[derive(Debug)]
+pub struct RebindLocalIdentityStateOutcome {
+    pub store_rebind: BTreeMap<String, i64>,
+    pub e2ee_cleanup: BTreeMap<String, i64>,
+}
+
+#[derive(Debug)]
+pub struct RebindLocalIdentityStateError {
+    pub store_rebind: BTreeMap<String, i64>,
+    pub e2ee_cleanup: BTreeMap<String, i64>,
+    pub error: StoreError,
 }
 
 pub fn rebind_owner_did(

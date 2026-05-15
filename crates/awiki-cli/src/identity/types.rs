@@ -279,6 +279,15 @@ pub struct RecoverParams {
     pub otp: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ReplaceDidParams {
+    pub identity_name: String,
+    pub is_public: Option<bool>,
+    pub is_agent: Option<bool>,
+    pub role: Option<String>,
+    pub endpoint_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ImportResult {
     #[serde(skip_serializing_if = "Vec::is_empty")]

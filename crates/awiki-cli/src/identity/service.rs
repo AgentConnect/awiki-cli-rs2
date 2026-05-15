@@ -772,7 +772,7 @@ pub fn resolve_identity(
     Ok(resolve_result(resolve, lookup, public_profile, warnings))
 }
 
-fn load_identity_for_mutation(
+pub(crate) fn load_identity_for_mutation(
     resolved: &Resolved,
     manager: &Manager,
     requested: &str,
@@ -797,7 +797,7 @@ fn load_identity_for_mutation(
     manager.load(&identity_name)
 }
 
-fn auth_session(
+pub(crate) fn auth_session(
     resolved: &Resolved,
     manager: &Manager,
     record: &super::types::StoredIdentity,
