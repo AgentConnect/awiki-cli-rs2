@@ -2,6 +2,51 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Runtime Listener Contact Sync Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli listener_contact_sync --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'TestMessageRecordFromDirectIncomingUsesProtocolFieldsOnly|TestMessageRecordFromGroupIncomingUsesProtocolFieldsOnly|TestNormalizeHostNotificationDirectIncomingKeepsMinimalFields|TestNormalizeHostNotificationGroupIncomingOmitsPayloadBody|TestSessionWarningsReportsDisconnectedSessions|TestHasDisconnectedSessions|TestMergeSavedRuntimeStatus' -count=1
+```
+
+Scope:
+
+- Adds `runtime::listener_contact_sync` as a split helper translation of Go
+  `internal/runtime/listener/contact_sync.go`.
+- Covers empty/self DID no-ops, local handle short-circuit, historical
+  contact-handle-binding fallback through the shared store helper, no-remote
+  no-op, remote error/nil/blank behavior, Go listener handle normalization,
+  and successful direct/group incoming contact upserts with `messaged=true`,
+  source metadata, UTC timestamps, and current handle bindings.
+- Keeps the implementation helper-only because Rust does not yet implement the
+  Go foreground listener WebSocket/session notification loop from
+  `internal/runtime/listener/server.go`.
+
+Dependency note: no dependency was added. The slice uses the existing
+`rusqlite + bundled` store path and existing std/Rust code; it does not add
+OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
+YAML crates, platform service libraries, or new SQLite dependencies.
+
+Boundary note: Go `server.go` integration remains deferred: foreground session
+processing, incoming notification parsing/storage, host-notify handle
+enrichment/dispatch, local bridge I/O, and WebSocket runtime execution are not
+claimed by this helper-only slice.
+
 ## 2026-05-15 Direct Message Contact Sync Slice
 
 Status: unit verified.
@@ -44,11 +89,11 @@ handle lookup, and existing auth/session wiring. It does not add OpenSSL,
 `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, YAML
 crates, platform service libraries, or new SQLite dependencies.
 
-Boundary note: runtime listener incoming contact sync remains a separate
-listener/server execution slice because the current Rust runtime listener lane
-does not yet implement the Go foreground session/message processing loop.
-Secure direct E2EE, WebSocket/local bridge fallback, and deeper fallback trace
-phase parity remain deferred.
+Boundary note: runtime listener foreground/server wiring for incoming contact
+sync remains a separate listener/server execution slice because the current Rust
+runtime listener lane does not yet implement the Go foreground session/message
+processing loop. Secure direct E2EE, WebSocket/local bridge fallback, and
+deeper fallback trace phase parity remain deferred.
 
 ## 2026-05-15 Trace Timing Integration Slice
 
