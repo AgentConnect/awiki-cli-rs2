@@ -3,6 +3,8 @@ use crate::identity::wire::DID_AUTH_RPC_ENDPOINT;
 use crate::message::MESSAGE_WS_ENDPOINT;
 use serde_json::{Map, Value};
 
+pub const DIAL_ERROR_BODY_LIMIT: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListenerWsClientEndpoints {
     pub request_url: String,
@@ -111,6 +113,22 @@ pub fn classify_incoming_message(message: &Map<String, Value>) -> IncomingWsMess
         },
         None => IncomingWsMessage::Notification,
     }
+}
+
+pub fn format_dial_error_message(
+    error: Option<&str>,
+    response_body: Option<&[u8]>,
+) -> Option<String> {
+    let error = error?;
+    let Some(body) = response_body else {
+        return Some(error.to_string());
+    };
+    if body.is_empty() {
+        return Some(error.to_string());
+    }
+    let capped = &body[..body.len().min(DIAL_ERROR_BODY_LIMIT)];
+    let body_text = String::from_utf8_lossy(capped).trim().to_string();
+    Some(format!("{error}: {body_text}"))
 }
 
 pub fn host_for_url(raw: &str) -> String {

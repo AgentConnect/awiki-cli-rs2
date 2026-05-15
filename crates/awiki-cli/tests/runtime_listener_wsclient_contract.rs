@@ -168,6 +168,40 @@ fn pending_failure_and_incoming_classification_match_go_read_loop_helpers() {
 }
 
 #[test]
+fn format_dial_error_message_matches_go_response_body_boundary() {
+    assert_eq!(
+        listener_wsclient::format_dial_error_message(None, Some(b"body")),
+        None
+    );
+    assert_eq!(
+        listener_wsclient::format_dial_error_message(Some("dial failed"), None),
+        Some("dial failed".to_string())
+    );
+    assert_eq!(
+        listener_wsclient::format_dial_error_message(Some("dial failed"), Some(b"")),
+        Some("dial failed".to_string())
+    );
+    assert_eq!(
+        listener_wsclient::format_dial_error_message(
+            Some("dial failed"),
+            Some(b"  unauthorized token  \n"),
+        ),
+        Some("dial failed: unauthorized token".to_string())
+    );
+
+    let mut body = vec![b'a'; listener_wsclient::DIAL_ERROR_BODY_LIMIT + 4];
+    body[listener_wsclient::DIAL_ERROR_BODY_LIMIT - 1] = b'z';
+    body[listener_wsclient::DIAL_ERROR_BODY_LIMIT] = b'b';
+    assert_eq!(
+        listener_wsclient::format_dial_error_message(Some("dial failed"), Some(&body)),
+        Some(format!(
+            "dial failed: {}z",
+            "a".repeat(listener_wsclient::DIAL_ERROR_BODY_LIMIT - 1)
+        ))
+    );
+}
+
+#[test]
 fn host_for_url_matches_go_net_url_host_boundary() {
     assert_eq!(
         listener_wsclient::host_for_url("http://example.com:8080/path"),
