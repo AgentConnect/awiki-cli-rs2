@@ -1,8 +1,166 @@
-use super::types::{CommandResult, MailError};
+use super::types::{
+    AccountRequest, AttachmentRequest, CommandResult, InboxRequest, MailError, MarkReadRequest,
+    ReadRequest, SendRequest,
+};
+use super::wire::{
+    account_summary, attachment_summary, build_account_rpc_call, build_attachment_rpc_call,
+    build_inbox_rpc_call, build_mark_read_rpc_call, build_read_rpc_call, build_send_rpc_call,
+    inbox_summary, mark_read_summary, read_summary, send_summary,
+};
+use super::Client;
+use crate::authsdk::Session;
 use crate::config::Resolved;
+use crate::identity::types::StoredIdentity;
 use crate::identity::Manager;
 use crate::store;
 use serde_json::{json, Value};
+
+const DID_AUTH_RPC_ENDPOINT: &str = "/user-service/did-auth/rpc";
+
+pub fn inbox(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: InboxRequest,
+) -> Result<CommandResult, MailError> {
+    let mut request = request;
+    if request.folder.trim().is_empty() {
+        request.folder = "inbox".to_string();
+    }
+    if request.limit <= 0 {
+        request.limit = 20;
+    }
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let mut auth = auth_session(resolved, manager, &record)?;
+    let client = Client::new(resolved)?;
+    let call = build_inbox_rpc_call(request.clone());
+    let result: Value = client.authenticated_rpc_call_profile(
+        call.profile,
+        call.endpoint,
+        call.method,
+        call.params,
+        &mut auth,
+    )?;
+    Ok(CommandResult {
+        summary: inbox_summary(&result, &request.folder),
+        data: result,
+        warnings: Vec::new(),
+    })
+}
+
+pub fn read(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: ReadRequest,
+) -> Result<CommandResult, MailError> {
+    let call = build_read_rpc_call(request.clone())?;
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let mut auth = auth_session(resolved, manager, &record)?;
+    let client = Client::new(resolved)?;
+    let result: Value = client.authenticated_rpc_call_profile(
+        call.profile,
+        call.endpoint,
+        call.method,
+        call.params,
+        &mut auth,
+    )?;
+    Ok(CommandResult {
+        data: result,
+        summary: read_summary(&request.message_id),
+        warnings: Vec::new(),
+    })
+}
+
+pub fn mark_read(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: MarkReadRequest,
+) -> Result<CommandResult, MailError> {
+    let call = build_mark_read_rpc_call(request.clone())?;
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let mut auth = auth_session(resolved, manager, &record)?;
+    let client = Client::new(resolved)?;
+    let result: Value = client.authenticated_rpc_call_profile(
+        call.profile,
+        call.endpoint,
+        call.method,
+        call.params,
+        &mut auth,
+    )?;
+    Ok(CommandResult {
+        summary: mark_read_summary(&result),
+        data: result,
+        warnings: Vec::new(),
+    })
+}
+
+pub fn account(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: AccountRequest,
+) -> Result<CommandResult, MailError> {
+    let call = build_account_rpc_call(request.clone());
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let mut auth = auth_session(resolved, manager, &record)?;
+    let client = Client::new(resolved)?;
+    let result: Value = client.authenticated_rpc_call_profile(
+        call.profile,
+        call.endpoint,
+        call.method,
+        call.params,
+        &mut auth,
+    )?;
+    Ok(CommandResult {
+        data: result,
+        summary: account_summary().to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+pub fn attachment(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: AttachmentRequest,
+) -> Result<CommandResult, MailError> {
+    let call = build_attachment_rpc_call(request.clone())?;
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let mut auth = auth_session(resolved, manager, &record)?;
+    let client = Client::new(resolved)?;
+    let result: Value = client.authenticated_rpc_call_profile(
+        call.profile,
+        call.endpoint,
+        call.method,
+        call.params,
+        &mut auth,
+    )?;
+    Ok(CommandResult {
+        summary: attachment_summary(&result, request.attachment_index),
+        data: result,
+        warnings: Vec::new(),
+    })
+}
+
+pub fn send(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: SendRequest,
+) -> Result<CommandResult, MailError> {
+    let call = build_send_rpc_call(request.clone())?;
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let mut auth = auth_session(resolved, manager, &record)?;
+    let client = Client::new(resolved)?;
+    let result: Value = client.authenticated_rpc_call_profile(
+        call.profile,
+        call.endpoint,
+        call.method,
+        call.params,
+        &mut auth,
+    )?;
+    Ok(CommandResult {
+        data: result,
+        summary: send_summary().to_string(),
+        warnings: Vec::new(),
+    })
+}
 
 pub fn notifications(
     resolved: &Resolved,
@@ -72,6 +230,63 @@ fn require_active_identity(
         )));
     }
     Ok(record)
+}
+
+fn auth_session(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+) -> Result<Session, MailError> {
+    if record.identity_name.trim().is_empty() {
+        return Err(MailError::Internal(
+            "active identity is required".to_string(),
+        ));
+    }
+    let paths = manager.paths_for_identity(&record.identity_name)?;
+    let identity_name = record.identity_name.clone();
+    let persist_manager = manager.clone();
+    let persist_identity_name = identity_name.clone();
+    let persist_token: crate::authsdk::PersistToken = Box::new(move |token| {
+        persist_manager.update_jwt(&persist_identity_name, token)?;
+        Ok(())
+    });
+    let mut session = Session::new(
+        &paths.did_document_path,
+        &paths.key1_private_path,
+        identity_name,
+        record.did.as_str(),
+        record.jwt_token.as_str(),
+        Some(persist_token),
+    );
+    let base_url = resolved.service_base_url.trim();
+    let did_auth_url = crate::config::join_base_url(base_url, DID_AUTH_RPC_ENDPOINT);
+    if !base_url.is_empty() {
+        session.remember_scope(base_url);
+        session.remember_scope(&did_auth_url);
+    }
+    if !resolved.mail_service_url.trim().is_empty() {
+        session.remember_scope(&resolved.mail_service_url);
+    }
+    let token = record.jwt_token.trim();
+    if !token.is_empty() && !base_url.is_empty() {
+        session.set_bearer(base_url, token);
+        session.set_bearer(&did_auth_url, token);
+    }
+    if !token.is_empty() && !resolved.mail_service_url.trim().is_empty() {
+        session.set_bearer(&resolved.mail_service_url, token);
+    }
+    if token.is_empty() {
+        let client = Client::new(resolved)?;
+        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url) {
+            return match err {
+                MailError::Service(err) => Err(MailError::Service(err)),
+                err => Err(MailError::Internal(format!(
+                    "active identity does not have a JWT yet: {err}"
+                ))),
+            };
+        }
+    }
+    Ok(session)
 }
 
 fn normalize_notification_rows(rows: Vec<Value>) -> Vec<Value> {

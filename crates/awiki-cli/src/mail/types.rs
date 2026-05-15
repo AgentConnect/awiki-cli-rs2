@@ -18,6 +18,7 @@ pub enum MailError {
     BodyRequired,
     AttachmentIndexZero,
     IdentityRequired(String),
+    Service(super::wire::ServiceError),
     Store(crate::store::StoreError),
     Identity(crate::identity::IdentityError),
     Internal(String),
@@ -32,6 +33,7 @@ impl fmt::Display for MailError {
             Self::BodyRequired => f.write_str("mail body is required"),
             Self::AttachmentIndexZero => f.write_str("attachment index must be >= 0"),
             Self::IdentityRequired(message) | Self::Internal(message) => f.write_str(message),
+            Self::Service(err) => write!(f, "{err}"),
             Self::Store(err) => write!(f, "{err}"),
             Self::Identity(err) => write!(f, "{err}"),
         }

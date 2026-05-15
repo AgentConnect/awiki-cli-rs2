@@ -771,7 +771,7 @@ pub fn normalize_base_url(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
 
-fn join_base_url(base_url: &str, path: &str) -> String {
+pub fn join_base_url(base_url: &str, path: &str) -> String {
     let base = normalize_base_url(base_url);
     if base.is_empty() {
         return path.trim().to_string();

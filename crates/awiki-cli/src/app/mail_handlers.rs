@@ -1,7 +1,10 @@
-use super::{identity_exit, internal_anyhow, not_implemented_side_effect, App};
+use super::{identity_exit, App};
 use crate::cli::ParsedCommand;
 use crate::mail::{self, CommandResult, MailError};
 use crate::output::ExitError;
+use base64::Engine;
+use serde_json::{json, Value};
+use std::path::Path;
 
 impl App {
     pub fn run_mail_inbox(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -14,14 +17,28 @@ impl App {
         let limit = int_flag(command, "limit", 20)?;
         let offset = int_flag(command, "offset", 0)?;
         let unread_only = bool_flag(command, "unread");
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("mail inbox"));
-        }
-        self.render_mail_result(
-            "awiki-cli mail inbox",
-            &resolved,
-            mail::inbox_plan(&self.globals.identity, &folder, limit, offset, unread_only),
-        )
+        let result = if self.globals.dry_run {
+            mail::inbox_plan(&self.globals.identity, &folder, limit, offset, unread_only)
+        } else {
+            mail::inbox(
+                &resolved,
+                &self.identity_manager(&resolved),
+                mail::InboxRequest {
+                    identity_name: self.globals.identity.clone(),
+                    folder,
+                    limit,
+                    offset,
+                    unread_only,
+                },
+            )
+            .map_err(|err| {
+                mail_exit(
+                    err,
+                    "Ensure the active identity is valid and mail service is reachable.",
+                )
+            })?
+        };
+        self.render_mail_result("awiki-cli mail inbox", &resolved, result)
     }
 
     pub fn run_mail_read(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -35,14 +52,25 @@ impl App {
                 "Usage: awiki-cli mail read --id <MESSAGE_ID>",
             ));
         }
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("mail read"));
-        }
-        self.render_mail_result(
-            "awiki-cli mail read",
-            &resolved,
-            mail::read_plan(&self.globals.identity, &message_id),
-        )
+        let result = if self.globals.dry_run {
+            mail::read_plan(&self.globals.identity, &message_id)
+        } else {
+            mail::read(
+                &resolved,
+                &self.identity_manager(&resolved),
+                mail::ReadRequest {
+                    identity_name: self.globals.identity.clone(),
+                    message_id: message_id.clone(),
+                },
+            )
+            .map_err(|err| {
+                mail_exit(
+                    err,
+                    "Ensure the message id is valid and mail service is reachable.",
+                )
+            })?
+        };
+        self.render_mail_result("awiki-cli mail read", &resolved, result)
     }
 
     pub fn run_mail_mark_read(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -55,26 +83,43 @@ impl App {
                 "Usage: awiki-cli mail mark-read <MESSAGE_ID...>",
             ));
         }
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("mail mark-read"));
-        }
-        self.render_mail_result(
-            "awiki-cli mail mark-read",
-            &resolved,
-            mail::mark_read_plan(&self.globals.identity, &command.args),
-        )
+        let result = if self.globals.dry_run {
+            mail::mark_read_plan(&self.globals.identity, &command.args)
+        } else {
+            mail::mark_read(
+                &resolved,
+                &self.identity_manager(&resolved),
+                mail::MarkReadRequest {
+                    identity_name: self.globals.identity.clone(),
+                    message_ids: command.args.clone(),
+                    is_read: true,
+                },
+            )
+            .map_err(|err| {
+                mail_exit(
+                    err,
+                    "Ensure the message ids are valid and mail service is reachable.",
+                )
+            })?
+        };
+        self.render_mail_result("awiki-cli mail mark-read", &resolved, result)
     }
 
     pub fn run_mail_account(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("mail account"));
-        }
-        self.render_mail_result(
-            "awiki-cli mail account",
-            &resolved,
-            mail::account_plan(&self.globals.identity),
-        )
+        let result = if self.globals.dry_run {
+            mail::account_plan(&self.globals.identity)
+        } else {
+            mail::account(
+                &resolved,
+                &self.identity_manager(&resolved),
+                mail::AccountRequest {
+                    identity_name: self.globals.identity.clone(),
+                },
+            )
+            .map_err(|err| mail_exit(err, "Ensure the mail service is reachable."))?
+        };
+        self.render_mail_result("awiki-cli mail account", &resolved, result)
     }
 
     pub fn run_mail_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -110,14 +155,29 @@ impl App {
                 "Provide the plain text body with --body.",
             ));
         }
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("mail send"));
-        }
-        self.render_mail_result(
-            "awiki-cli mail send",
-            &resolved,
-            mail::send_plan(&self.globals.identity, &to, &cc, &subject, &html),
-        )
+        let result = if self.globals.dry_run {
+            mail::send_plan(&self.globals.identity, &to, &cc, &subject, &html)
+        } else {
+            mail::send(
+                &resolved,
+                &self.identity_manager(&resolved),
+                mail::SendRequest {
+                    identity_name: self.globals.identity.clone(),
+                    to,
+                    cc,
+                    subject,
+                    body_text: body,
+                    body_html: html,
+                },
+            )
+            .map_err(|err| {
+                mail_exit(
+                    err,
+                    "Ensure the mail service is reachable and the active identity is valid.",
+                )
+            })?
+        };
+        self.render_mail_result("awiki-cli mail send", &resolved, result)
     }
 
     pub fn run_mail_attachment_download(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -141,18 +201,39 @@ impl App {
                 "Use --attachment-index 0 for the first attachment.",
             ));
         }
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("mail attachment download"));
+        if self.globals.dry_run {
+            return self.render_mail_result(
+                "awiki-cli mail attachment download",
+                &resolved,
+                mail::attachment_download_plan(
+                    &self.globals.identity,
+                    &message_id,
+                    attachment_index,
+                    &output,
+                ),
+            );
         }
-        self.render_mail_result(
-            "awiki-cli mail attachment download",
+        let result = mail::attachment(
             &resolved,
-            mail::attachment_download_plan(
-                &self.globals.identity,
-                &message_id,
+            &self.identity_manager(&resolved),
+            mail::AttachmentRequest {
+                identity_name: self.globals.identity.clone(),
+                message_id: message_id.clone(),
                 attachment_index,
-                &output,
-            ),
+            },
+        )
+        .map_err(|err| {
+            mail_exit(
+                err,
+                "Ensure the message id is valid and mail service is reachable.",
+            )
+        })?;
+        self.render_attachment_download_result(
+            &resolved,
+            &message_id,
+            attachment_index,
+            &output,
+            result,
         )
     }
 
@@ -168,7 +249,12 @@ impl App {
                 &self.globals.identity,
                 limit,
             )
-            .map_err(mail_exit)?
+            .map_err(|err| {
+                mail_exit(
+                    err,
+                    "Ensure the runtime listener is running in websocket mode and has received notifications.",
+                )
+            })?
         };
         self.render_mail_result("awiki-cli mail notify", &resolved, result)
     }
@@ -184,6 +270,81 @@ impl App {
             resolved,
             result.data,
             &result.summary,
+            result.warnings,
+        )
+    }
+
+    fn render_attachment_download_result(
+        &self,
+        resolved: &crate::config::Resolved,
+        message_id: &str,
+        attachment_index: i64,
+        output_path: &str,
+        result: CommandResult,
+    ) -> Result<(), ExitError> {
+        let filename = string_value(result.data.get("filename"))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("attachment_{attachment_index}"));
+        let content_base64 = string_value(result.data.get("content_base64")).unwrap_or_default();
+        let content_type = string_value(result.data.get("content_type"))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let size = result.data.get("size").cloned().unwrap_or(Value::Null);
+        if content_base64.is_empty() {
+            return Err(ExitError::new(
+                "internal_error",
+                1,
+                "attachment content is empty",
+                "Try fetching the attachment again or verify the mail service response.",
+            ));
+        }
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(content_base64.as_bytes())
+            .map_err(|err| {
+                ExitError::new(
+                    "internal_error",
+                    1,
+                    format!("attachment base64 decode failed: {err}"),
+                    "Ensure the mail service response is valid.",
+                )
+            })?;
+        let final_path = if output_path.trim().is_empty() {
+            filename.clone()
+        } else {
+            output_path.to_string()
+        };
+        if let Some(parent) = Path::new(&final_path).parent() {
+            if parent != Path::new("") && parent != Path::new(".") {
+                std::fs::create_dir_all(parent).map_err(|err| {
+                    ExitError::new(
+                        "internal_error",
+                        1,
+                        err.to_string(),
+                        "Check write permissions for the output directory.",
+                    )
+                })?;
+            }
+        }
+        std::fs::write(&final_path, content).map_err(|err| {
+            ExitError::new(
+                "internal_error",
+                1,
+                err.to_string(),
+                "Check write permissions for the output file.",
+            )
+        })?;
+        self.render_success(
+            "awiki-cli mail attachment download",
+            resolved,
+            json!({
+                "message_id": message_id,
+                "attachment_index": attachment_index,
+                "filename": filename,
+                "content_type": content_type,
+                "size": size,
+                "path": final_path,
+            }),
+            &format!("Attachment saved to {final_path}"),
             result.warnings,
         )
     }
@@ -214,7 +375,7 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
-fn mail_exit(err: MailError) -> ExitError {
+fn mail_exit(err: MailError, hint: &str) -> ExitError {
     match err {
         MailError::MessageIdRequired
         | MailError::RecipientRequired
@@ -232,11 +393,37 @@ fn mail_exit(err: MailError) -> ExitError {
             message,
             "Complete user setup with `awiki-cli id register --handle <handle> ...` or recover an existing handle before using `awiki-cli mail` commands.",
         ),
+        MailError::Service(service_err) => match () {
+            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
+                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
+            }
+            _ if service_err.status_code == 401 || service_err.rpc_code == -32000 => {
+                ExitError::new(
+                    "auth_required",
+                    3,
+                    service_err.to_string(),
+                    "Use an identity with a valid JWT or DID WBA auth material.",
+                )
+            }
+            _ if service_err.status_code == 404 || service_err.rpc_code == -32002 => {
+                ExitError::new("not_found", 5, service_err.to_string(), hint)
+            }
+            _ if service_err.status_code == 409
+                || matches!(service_err.rpc_code, -32003 | -32004) =>
+            {
+                ExitError::new("conflict", 1, service_err.to_string(), hint)
+            }
+            _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
+        },
         MailError::Identity(err) => identity_exit(err),
         MailError::Store(err) => super::store_exit(
             err,
             "Ensure the runtime listener is running in websocket mode and has received notifications.",
         ),
-        MailError::Internal(message) => internal_anyhow(anyhow::anyhow!(message)),
+        MailError::Internal(message) => ExitError::new("internal_error", 1, message, hint),
     }
+}
+
+fn string_value(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).map(ToOwned::to_owned)
 }

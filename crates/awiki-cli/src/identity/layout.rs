@@ -53,6 +53,14 @@ impl Manager {
         }
     }
 
+    pub fn paths_for_identity(&self, name: &str) -> Result<Paths, IdentityError> {
+        let index = self.load_index()?;
+        let (_, entry) = self
+            .resolve_entry_name(name, &index)
+            .ok_or_else(|| IdentityError::NotFound(format!("identity not found: {name}")))?;
+        Ok(self.build_paths(&entry.dir_name))
+    }
+
     pub fn load_index(&self) -> Result<IndexPayload, IdentityError> {
         load_index_from(&Path::new(self.root_dir()).join(INDEX_FILE_NAME))
     }

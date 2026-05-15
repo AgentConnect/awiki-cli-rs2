@@ -209,6 +209,15 @@ impl Manager {
         Ok(record)
     }
 
+    pub fn update_jwt(&self, name: &str, jwt_token: &str) -> Result<(), IdentityError> {
+        let record = self.load(name)?;
+        let paths = self.build_paths(&record.dir_name);
+        write_secure_json(
+            &paths.auth_path,
+            &json!({ "jwt_token": nullable_string(jwt_token) }),
+        )
+    }
+
     pub fn list(&self) -> Result<Vec<IdentitySummary>, IdentityError> {
         let index = self.load_index()?;
         let mut items = Vec::with_capacity(index.credentials.len());

@@ -3499,3 +3499,58 @@ uses existing local `../anp/rust` APIs with default features disabled and the
 existing Rustls/std transport client. It does not add `reqwest`, `hyper`,
 OpenSSL, `native-tls`, bundled OpenSSL, WebSocket crates, YAML crates, platform
 service libraries, or new SQLite dependencies.
+
+## 2026-05-15 Mail Live RPC Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test mail_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+```
+
+Go reference verification:
+
+```bash
+cd ../awiki-cli
+go test ./internal/mail ./internal/cli -run 'TestNewClientRequiresMailServiceURL|TestServiceSendValidatesRequiredFields|TestServiceAttachmentValidatesIndex|TestMail' -count=1
+```
+
+Result: passed after final full verification.
+
+Scope:
+
+- Added `mail::Client` as the Go `internal/mail/client.go` equivalent on top of
+  the existing shared Rustls/std `transportcfg::HttpClient`.
+- Wired non-dry-run `mail inbox`, `mail read`, `mail mark-read`, `mail account`,
+  `mail send`, and `mail attachment download` through the translated
+  `authsdk::Session::do_json_rpc` execution layer.
+- Preserved Go auth bootstrap behavior: active identity resolution, messaging
+  readiness gate, remembered service/did-auth/mail scopes, stored JWT bearer
+  seeding, empty-token `get_me` refresh through DID-auth, and persisted JWT
+  updates through the identity manager.
+- Preserved Go service error mapping for mail CLI commands: bad params to
+  `invalid_argument`, auth failures to `auth_required`, missing service objects
+  to `not_found`, conflict codes to `conflict`, and remaining errors with the
+  command-specific hint.
+- Implemented Go attachment download behavior: `content_base64` decode, default
+  filename fallback, optional output path, parent directory creation, output
+  write, and success payload without echoing the raw attachment body.
+
+Boundary note: this slice does not run full remote `awiki-system-test`
+acceptance, and it does not yet translate per-call profile timeout wrappers or
+trace phases around mail RPC calls. Page/site/identity/message live service
+clients remain separate slices.
+
+Dependency note: added `base64 = 0.22` as a direct pure Rust dependency for the
+mail attachment decode path. The crate was already present transitively through
+the local ANP SDK. No OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket, YAML, platform service, or new SQLite dependency is added.

@@ -1,8 +1,13 @@
+mod client;
 mod service;
 mod types;
 mod wire;
 
-pub use service::{notifications, notifications_plan, split_mail_list};
+pub use client::Client;
+pub use service::{
+    account, attachment, inbox, mark_read, notifications, notifications_plan, read, send,
+    split_mail_list,
+};
 pub use types::{
     account_plan, attachment_download_plan, inbox_plan, mark_read_plan, read_plan, send_plan,
     AccountRequest, AttachmentRequest, CommandResult, InboxRequest, MailError, MarkReadRequest,
