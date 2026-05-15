@@ -2,6 +2,64 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Message WS Proxy Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestDecodeMapIntoHandlesNilAndTypedDestination' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Adds the Go `internal/message/ws_proxy_client.go` helper boundary as
+  `message::ws_proxy`.
+- Covers `WSProxyTransport` construction with the resolved runtime config and
+  identity name.
+- Covers bridge method and parameter mapping for `direct.send`, `group.send`,
+  `inbox.get`, `direct.get_history`, `inbox.mark_read`, `group.create`,
+  `group.get_info`, `group.join`, `group.add`, `group.remove`, `group.leave`,
+  `group.get`, `group.list`, `group.list_members`,
+  `group.list_messages`, `group.update_profile`, and
+  `group.update_policy`.
+- Preserves Go's positive-only `skip` emission for direct history and group
+  message list calls.
+- Preserves Go's `ErrTransportUnavailable` wrapper as
+  `MessageError::TransportUnavailable`.
+- Preserves Go `decodeMapInto` zero-value tolerance for direct/group send
+  result structs by accepting only JSON strings for string fields, only JSON
+  bools for bool fields, and leaving mismatched or absent fields at defaults.
+
+Boundary note: this is a helper-only slice. It does not wire real
+message-service or CLI execution to WebSocket mode, implement foreground
+listener `handleBridgeRequest`, select or add a WebSocket crate, change the
+existing HTTP fallback/cache behavior, implement Windows named-pipe bridge I/O,
+or claim `awiki-system-test` acceptance.
+
+Dependency note: no dependency was added. The slice reuses the already ported
+local bridge I/O plus existing JSON types. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, YAML
+crates, platform service libraries, or new SQLite dependencies. TLS policy
+remains Rustls-first and unchanged.
+
 ## 2026-05-16 Runtime Listener Pending Secure-Session Scan Helper Slice
 
 Status: unit verified.
