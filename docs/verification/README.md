@@ -2,6 +2,63 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Bridge Dispatch Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_wire_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Adds the pure bridge dispatch helper boundary from Go
+  `internal/runtime/listener/server.go` `handleBridgeRequest`.
+- Maps local bridge methods to the same message RPC method names and existing
+  Rust message builder functions for direct send, inbox, direct history,
+  mark-read, non-E2EE group lifecycle, group send, and group local list/read
+  methods.
+- Preserves Go's weak bridge-parameter coercions for string, int, bool,
+  optional bool, optional int64, patch maps, and `message_ids`.
+- Returns `mark_read_message_ids` for the later Go-equivalent post-success
+  `store.MarkMessagesRead` side effect.
+- Takes `service_did` as explicit input for `group.create`, matching Go's
+  required `fetchMessageServiceDID` pre-step without implementing remote
+  capability fetch in this helper slice.
+- Keeps the files under the default review-size cap:
+  `listener_bridge_dispatch.rs` is 325 lines and the focused test file is 313
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a helper-only slice. It does not implement `Supervisor`,
+`ensureSession`, `client.SendRPC`, `fetchMessageServiceDID`, foreground
+WebSocket sessions, real bridge request serving, SQLite mark-read mutation,
+notification storage, host-notify dispatch, Windows named-pipe I/O, or
+`awiki-system-test` acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing message
+wire builders and `serde_json` values only. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, YAML
+crates, platform service libraries, or new SQLite dependencies. TLS policy
+remains Rustls-first and unchanged.
+
 ## 2026-05-16 Message WS Proxy Helper Slice
 
 Status: unit verified.
