@@ -409,7 +409,21 @@ impl App {
     pub fn run_msg_secure_failed(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("msg secure failed"));
+            let result = message::secure_failed(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::SecureStatusRequest {
+                    identity_name: self.globals.identity.clone(),
+                    ..message::SecureStatusRequest::default()
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Make sure the active identity exists and local storage is readable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg secure failed", &resolved, result);
         }
         self.render_success(
             "awiki-cli msg secure failed",
@@ -499,6 +513,23 @@ impl App {
         }
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
+            if action == "msg.secure.drop" {
+                let result = message::secure_drop(
+                    &resolved,
+                    &self.identity_manager(&resolved),
+                    message::SecureOutboxActionRequest {
+                        identity_name: self.globals.identity.clone(),
+                        outbox_id: command.args[0].clone(),
+                    },
+                )
+                .map_err(|err| {
+                    message_exit(
+                        err,
+                        "Make sure the outbox id exists for the active identity.",
+                    )
+                })?;
+                return self.render_message_result(command_name, &resolved, result);
+            }
             return Err(not_implemented_side_effect(
                 command_name.trim_start_matches("awiki-cli "),
             ));

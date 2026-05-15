@@ -2,6 +2,66 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Message Secure Failed/Drop Command Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_commands_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'TestServiceSecureFailedAndDropOperateOnOutbox' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Adds `message::secure_commands` for the local SQLite-backed subset of Go
+  `internal/message/secure_commands.go`.
+- Wires non-dry-run `msg secure failed` and `msg secure drop` through the app
+  handler while leaving dry-run output unchanged.
+- Preserves active/ready identity gating through the existing message service
+  helper.
+- Preserves `SecureFailed` store behavior: open the local store, ensure schema,
+  list `e2ee_outbox` rows for the active owner/credential with
+  `local_status="failed"`, return full rows without status redaction, return
+  `{ "failed": rows, "total": len }`, and summarize with
+  `Loaded N failed secure outbox record(s)`.
+- Preserves `SecureDrop` store behavior: verify the target outbox row belongs
+  to the active owner/credential before mutation, set `local_status` to
+  `dropped`, return `{ "outbox_id": id, "status": "dropped" }`, and summarize
+  with `Dropped secure outbox record <id>`.
+- Preserves missing-row parity with Go's `sql.ErrNoRows` path by surfacing the
+  store `query returned no rows` error through the generic internal-error lane
+  rather than mapping it to `message not found`.
+- Keeps files under the default review-size cap: `secure_commands.rs` is 69
+  lines and the focused test file is 327 lines.
+- A code-writing Native Agent contributed the focused test file under the
+  required GPT-5.5 xhigh configuration and a single-file write scope.
+
+Boundary note: this slice does not implement `SecureStatus` session/outbox
+redaction, `SecureRetry` queued flush execution, `SecureInit`, `SecureRepair`,
+`queueSecureOutboxRecord`, `currentSecureSessionID`, ANP SDK E2EE clients, file
+session stores, WebSocket RPC, prekey publishing, or `awiki-system-test`
+secure-direct acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing identity,
+message, store, `serde_json`, and approved `rusqlite + bundled` APIs. It does
+not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
+crates, Tokio, YAML crates, platform service libraries, ANP SDK E2EE wiring, or
+new SQLite dependencies.
+
 ## 2026-05-16 Store E2EE Outbox DAO Slice
 
 Status: unit verified.
