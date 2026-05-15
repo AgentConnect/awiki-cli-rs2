@@ -267,6 +267,25 @@ mod tests {
     }
 
     #[test]
+    fn registry_fetch_preserves_go_default_proxy_env_behavior() {
+        let proxy = TestServer::new(vec![TestResponse::ok(
+            r#"{"version":"1.0.11","awikiCli":{"minSupportedVersion":"1.0.9"}}"#,
+        )]);
+        let _proxy = EnvVar::set("HTTP_PROXY", &proxy.url(""));
+        let _urls = TestUrls::set(vec!["http://registry.example/latest".to_string()]);
+        let temp = TempDir::new();
+
+        let outcome = super::check_fresh(&resolved(temp.path()));
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.decision.latest_version, "1.0.11");
+        assert_eq!(
+            proxy.paths(),
+            vec!["http://registry.example/latest".to_string()]
+        );
+    }
+
+    #[test]
     fn check_fresh_falls_back_to_stale_cache_when_network_fails() {
         let server = TestServer::new(vec![TestResponse::status(503, "unavailable")]);
         let _urls = TestUrls::set(vec![server.url("/latest")]);
@@ -437,6 +456,7 @@ mod tests {
 
     struct TestUrls {
         _guard: MutexGuard<'static, ()>,
+        _no_proxy: EnvVar,
     }
 
     impl TestUrls {
@@ -445,7 +465,10 @@ mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             *TEST_NPM_LATEST_URLS.lock().expect("test urls mutex") = Some(urls);
-            Self { _guard: guard }
+            Self {
+                _guard: guard,
+                _no_proxy: EnvVar::set("NO_PROXY", "127.0.0.1,localhost,::1"),
+            }
         }
     }
 

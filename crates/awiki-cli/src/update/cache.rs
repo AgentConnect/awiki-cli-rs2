@@ -1,14 +1,9 @@
 use super::Metadata;
-use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+use crate::transportcfg::{new_http_client_with_proxy_env, HttpRequest};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -26,14 +21,6 @@ struct CacheFile {
 struct CacheRead {
     metadata: Metadata,
     fresh: bool,
-}
-
-#[derive(Debug)]
-struct ParsedUrl {
-    scheme: String,
-    host: String,
-    port: u16,
-    path_and_query: String,
 }
 
 pub fn load_metadata(
@@ -104,8 +91,10 @@ fn fetch_from_registry_urls(registry_urls: &[String]) -> Result<Metadata, String
 }
 
 fn fetch_from_registry_url(url: &str) -> Result<Metadata, String> {
-    let parsed = parse_url(url)?;
-    let response = http_get(&parsed)?;
+    let client = new_http_client_with_proxy_env("").map_err(|err| err.to_string())?;
+    let response = client
+        .execute(HttpRequest::new("GET", url).header("Accept", "application/json"))
+        .map_err(|err| err.to_string())?;
     if response.status_code != 200 {
         return Err(format!(
             "registry responded with status {}",
@@ -114,7 +103,7 @@ fn fetch_from_registry_url(url: &str) -> Result<Metadata, String> {
     }
 
     let body: RegistryResponse =
-        serde_json::from_str(&response.body).map_err(|err| err.to_string())?;
+        serde_json::from_slice(&response.body).map_err(|err| err.to_string())?;
     let latest = body.version.trim().to_string();
     if latest.is_empty() {
         return Err("npm metadata missing version".to_string());
@@ -125,326 +114,6 @@ fn fetch_from_registry_url(url: &str) -> Result<Metadata, String> {
         min_supported_version: body.awiki_cli.min_supported_version.trim().to_string(),
         source: "network".to_string(),
     })
-}
-
-fn parse_url(raw: &str) -> Result<ParsedUrl, String> {
-    let (scheme, rest) = raw
-        .split_once("://")
-        .ok_or_else(|| format!("registry URL missing scheme: {raw}"))?;
-    let scheme = scheme.trim().to_ascii_lowercase();
-    if scheme != "http" && scheme != "https" {
-        return Err(format!("unsupported registry URL scheme: {scheme}"));
-    }
-
-    let (authority, path) = match rest.find(['/', '?']) {
-        Some(index) => (&rest[..index], &rest[index..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = split_host_port(authority, &scheme)?;
-    let path_and_query = if path.starts_with('?') {
-        format!("/{path}")
-    } else {
-        path.to_string()
-    };
-
-    Ok(ParsedUrl {
-        scheme,
-        host,
-        port,
-        path_and_query,
-    })
-}
-
-fn split_host_port(authority: &str, scheme: &str) -> Result<(String, u16), String> {
-    let trimmed = authority.trim();
-    if trimmed.is_empty() {
-        return Err("registry URL missing host".to_string());
-    }
-    if trimmed.starts_with('[') {
-        let end = trimmed
-            .find(']')
-            .ok_or_else(|| format!("invalid bracketed host in registry URL: {authority}"))?;
-        let host = trimmed[1..end].to_string();
-        let remainder = &trimmed[end + 1..];
-        let port = if let Some(raw_port) = remainder.strip_prefix(':') {
-            raw_port
-                .parse::<u16>()
-                .map_err(|err| format!("invalid registry URL port: {err}"))?
-        } else {
-            default_port(scheme)
-        };
-        return Ok((host, port));
-    }
-
-    let mut parts = trimmed.rsplitn(2, ':');
-    let last = parts.next().unwrap_or_default();
-    let maybe_host = parts.next();
-    if let Some(host) = maybe_host {
-        if !last.is_empty() && last.chars().all(|ch| ch.is_ascii_digit()) {
-            let port = last
-                .parse::<u16>()
-                .map_err(|err| format!("invalid registry URL port: {err}"))?;
-            return Ok((host.to_string(), port));
-        }
-    }
-    Ok((trimmed.to_string(), default_port(scheme)))
-}
-
-fn default_port(scheme: &str) -> u16 {
-    if scheme == "https" {
-        443
-    } else {
-        80
-    }
-}
-
-#[derive(Debug)]
-struct HttpResponse {
-    status_code: u16,
-    body: String,
-}
-
-fn http_get(parsed: &ParsedUrl) -> Result<HttpResponse, String> {
-    let proxy = proxy_for(parsed);
-    let connect_target = proxy.as_ref().unwrap_or(parsed);
-    let mut stream = TcpStream::connect((connect_target.host.as_str(), connect_target.port))
-        .map_err(|err| err.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .map_err(|err| err.to_string())?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(3)))
-        .map_err(|err| err.to_string())?;
-
-    if parsed.scheme == "https" {
-        if proxy.is_some() {
-            establish_proxy_tunnel(&mut stream, parsed)?;
-        }
-        let config = Arc::new(rustls_client_config());
-        let server_name = ServerName::try_from(parsed.host.clone())
-            .map_err(|err| format!("invalid TLS server name: {err}"))?;
-        let conn = ClientConnection::new(config, server_name).map_err(|err| err.to_string())?;
-        let mut tls = StreamOwned::new(conn, stream);
-        write_http_request(&mut tls, parsed)?;
-        read_http_response(&mut tls)
-    } else {
-        let mut plain = stream;
-        if proxy.is_some() {
-            write_http_proxy_request(&mut plain, parsed)?;
-        } else {
-            write_http_request(&mut plain, parsed)?;
-        }
-        read_http_response(&mut plain)
-    }
-}
-
-fn proxy_for(parsed: &ParsedUrl) -> Option<ParsedUrl> {
-    if no_proxy_matches(&parsed.host) {
-        return None;
-    }
-    let raw = if parsed.scheme == "https" {
-        first_env(&["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"])
-    } else {
-        first_env(&["HTTP_PROXY", "http_proxy"])
-    }?;
-    let proxy = parse_url(&raw).ok()?;
-    if proxy.scheme == "http" {
-        Some(proxy)
-    } else {
-        None
-    }
-}
-
-fn first_env(keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| env::var(key).ok())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn no_proxy_matches(host: &str) -> bool {
-    let Some(raw) = first_env(&["NO_PROXY", "no_proxy"]) else {
-        return false;
-    };
-    let host = host.trim().trim_matches(['[', ']']).to_ascii_lowercase();
-    raw.split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .any(|entry| {
-            if entry == "*" {
-                return true;
-            }
-            let entry = entry
-                .trim_matches(['[', ']'])
-                .split(':')
-                .next()
-                .unwrap_or(entry)
-                .trim()
-                .to_ascii_lowercase();
-            if entry.is_empty() {
-                return false;
-            }
-            host == entry
-                || entry
-                    .strip_prefix('.')
-                    .map(|suffix| host.ends_with(suffix))
-                    .unwrap_or(false)
-                || host.ends_with(&format!(".{entry}"))
-        })
-}
-
-fn establish_proxy_tunnel(stream: &mut TcpStream, parsed: &ParsedUrl) -> Result<(), String> {
-    let authority = format!("{}:{}", parsed.host, parsed.port);
-    let request = format!(
-        "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nUser-Agent: awiki-cli-rs2\r\n\r\n"
-    );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|err| err.to_string())?;
-    let headers = read_http_headers(stream)?;
-    let status_line = headers
-        .lines()
-        .next()
-        .ok_or_else(|| "proxy response missing status line".to_string())?;
-    let status = parse_status_code(status_line)?;
-    if status != 200 {
-        return Err(format!("proxy CONNECT responded with status {status}"));
-    }
-    Ok(())
-}
-
-fn rustls_client_config() -> ClientConfig {
-    let root_store = RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth()
-}
-
-fn write_http_request(mut writer: impl Write, parsed: &ParsedUrl) -> Result<(), String> {
-    write_http_request_target(&mut writer, parsed, &parsed.path_and_query)
-}
-
-fn write_http_proxy_request(mut writer: impl Write, parsed: &ParsedUrl) -> Result<(), String> {
-    let target = format!(
-        "{}://{}{}",
-        parsed.scheme,
-        host_header(parsed),
-        parsed.path_and_query
-    );
-    write_http_request_target(&mut writer, parsed, &target)
-}
-
-fn write_http_request_target(
-    mut writer: impl Write,
-    parsed: &ParsedUrl,
-    target: &str,
-) -> Result<(), String> {
-    let host = host_header(parsed);
-    let request = format!(
-        "GET {target} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: awiki-cli-rs2\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
-    );
-    writer
-        .write_all(request.as_bytes())
-        .map_err(|err| err.to_string())
-}
-
-fn host_header(parsed: &ParsedUrl) -> String {
-    let host = if parsed.port == default_port(&parsed.scheme) {
-        parsed.host.clone()
-    } else {
-        format!("{}:{}", parsed.host, parsed.port)
-    };
-    host
-}
-
-fn read_http_response(mut reader: impl Read) -> Result<HttpResponse, String> {
-    let mut raw = Vec::new();
-    reader
-        .read_to_end(&mut raw)
-        .map_err(|err| err.to_string())?;
-    let split = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| "registry response missing HTTP headers".to_string())?;
-    let headers_raw =
-        std::str::from_utf8(&raw[..split]).map_err(|err| format!("invalid headers: {err}"))?;
-    let body_bytes = &raw[split + 4..];
-    let mut lines = headers_raw.lines();
-    let status_line = lines
-        .next()
-        .ok_or_else(|| "registry response missing status line".to_string())?;
-    let status_code = parse_status_code(status_line)?;
-    let chunked = lines.any(|line| {
-        line.to_ascii_lowercase()
-            .starts_with("transfer-encoding: chunked")
-    });
-    let body = if chunked {
-        decode_chunked_body(body_bytes)?
-    } else {
-        String::from_utf8_lossy(body_bytes).to_string()
-    };
-    Ok(HttpResponse { status_code, body })
-}
-
-fn read_http_headers(reader: &mut impl Read) -> Result<String, String> {
-    let mut raw = Vec::new();
-    let mut byte = [0; 1];
-    while raw.len() < 16 * 1024 {
-        let read = reader.read(&mut byte).map_err(|err| err.to_string())?;
-        if read == 0 {
-            break;
-        }
-        raw.push(byte[0]);
-        if raw.ends_with(b"\r\n\r\n") {
-            return String::from_utf8(raw).map_err(|err| err.to_string());
-        }
-    }
-    Err("proxy response missing HTTP header terminator".to_string())
-}
-
-fn parse_status_code(status_line: &str) -> Result<u16, String> {
-    let mut parts = status_line.split_whitespace();
-    let _version = parts
-        .next()
-        .ok_or_else(|| "registry response missing HTTP version".to_string())?;
-    parts
-        .next()
-        .ok_or_else(|| "registry response missing status code".to_string())?
-        .parse::<u16>()
-        .map_err(|err| format!("invalid HTTP status code: {err}"))
-}
-
-fn decode_chunked_body(bytes: &[u8]) -> Result<String, String> {
-    let mut offset = 0usize;
-    let mut decoded = Vec::new();
-    loop {
-        let line_end = find_crlf(bytes, offset)
-            .ok_or_else(|| "chunked registry response missing chunk size".to_string())?;
-        let size_line = std::str::from_utf8(&bytes[offset..line_end])
-            .map_err(|err| format!("invalid chunk size: {err}"))?;
-        let size_hex = size_line.split(';').next().unwrap_or_default().trim();
-        let size = usize::from_str_radix(size_hex, 16)
-            .map_err(|err| format!("invalid chunk size: {err}"))?;
-        offset = line_end + 2;
-        if size == 0 {
-            break;
-        }
-        if bytes.len() < offset + size + 2 {
-            return Err("chunked registry response ended early".to_string());
-        }
-        decoded.extend_from_slice(&bytes[offset..offset + size]);
-        offset += size + 2;
-    }
-    String::from_utf8(decoded).map_err(|err| err.to_string())
-}
-
-fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
-    bytes[start..]
-        .windows(2)
-        .position(|window| window == b"\r\n")
-        .map(|offset| start + offset)
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,6 +1,12 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+pub mod http;
+pub use http::{
+    new_http_client, new_http_client_with_proxy_env, HttpClient, HttpClientError, HttpRequest,
+    HttpResponse,
+};
+
 const MAX_GO_DURATION_NANOS: u128 = i64::MAX as u128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

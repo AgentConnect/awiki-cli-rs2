@@ -3387,3 +3387,60 @@ uses the existing identity manager, upgrade journal/meta/backup/lock loop, and
 approved bundled SQLite paths only. It does not introduce HTTP/TLS clients,
 OpenSSL, `native-tls`, reqwest, hyper, WebSocket, YAML, platform
 service-manager, filesystem-copy, file-lock crate, or new SQLite dependencies.
+
+## 2026-05-15 Transportcfg Rustls HTTP Client Slice
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --test transportcfg_contract --locked
+cargo +1.79.0 test -p awiki-cli update --locked
+cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml'
+```
+
+Go reference verification:
+
+```bash
+cd ../awiki-cli
+go test ./internal/transportcfg ./internal/update -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added `crates/awiki-cli/src/transportcfg/http.rs` as the Rustls/std shared
+  HTTP/1.1 client boundary for Go `internal/transportcfg.NewHTTPClient`.
+- Preserved config snapshot behavior from `transportcfg::resolve`, dial,
+  TLS-handshake, and response-header timeout use, optional CA bundle loading,
+  `read ca bundle:` / `invalid ca bundle:` error strings, default
+  `User-Agent`, status/header/body response shape, and chunked response
+  decoding.
+- Kept `transportcfg::new_http_client` proxy-free to match Go's custom
+  `http.Transport` in `NewHTTPClient`.
+- Added `transportcfg::new_http_client_with_proxy_env` for callers that need
+  Go default-client proxy semantics; the translated update registry fetch now
+  uses that explicit constructor and preserves `HTTP_PROXY`/`HTTPS_PROXY` plus
+  `NO_PROXY` bypass without duplicating the `User-Agent` header.
+- Refactored update registry fetch to use the shared client while preserving
+  existing npm metadata, fallback, cache writeback, and error-string contracts.
+
+Boundary note: this slice does not implement HTTP/2 `ForceAttemptHTTP2`, exact
+Go system-root-store parity, keepalive/pooling reuse from idle-connection
+settings, streaming request/response bodies, response-header timeout without
+reading full body, proxy authentication, HTTPS proxy integration tests, WebSocket
+transport, or service-specific auth/error mapping. Those remain in later
+service/authsdk/runtime transport slices.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This slice
+uses existing `rustls` + `webpki-roots` and standard-library sockets only; it
+does not add `reqwest`, `hyper`, OpenSSL, `native-tls`, bundled OpenSSL,
+WebSocket crates, YAML crates, platform service libraries, or new SQLite
+dependencies.
