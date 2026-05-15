@@ -2,6 +2,67 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Page Content Live RPC Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test page_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test page_contract --locked
+cargo +1.79.0 test -p awiki-cli --test content_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/content ./internal/cli -run 'Test.*Page|Test.*Content|TestService' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/page -q
+```
+
+Result: local Rust and Go reference checks passed. Focused
+`awiki-system-test` page acceptance did not pass because all three page tests
+fail in the prerequisite `id register` step before page/content RPC execution:
+the current Rust port still returns `not_implemented` for live `id register`.
+Failures: 3, skips: 0, command:
+`AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/page -q`.
+Configuration context resolved from `awiki-system-test`: `AWIKI_SYSTEM_TEST_MODE=remote`,
+`E2E_USER_SERVICE_URL=https://awiki.info`,
+`E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
+`E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`, and
+`E2E_DID_DOMAIN=awiki.info`. This is a full-port acceptance blocker outside the
+page/content slice; page/content local live contracts are covered by
+`page_live_contract`.
+
+Scope:
+
+- Added split `content::client` and `content::service` modules for the live
+  execution portion of Go `internal/content/service.go`.
+- Preserved `/content/rpc` execution for `create`, `list`, `get`, `update`,
+  `rename`, and `delete` using existing content wire builders and result
+  renderers.
+- Reused active identity loading, `authsdk::Session`, stored JWT bearer
+  seeding, empty-token DID-auth `get_me` bootstrap, persisted JWT update, and
+  the shared Rustls/std `transportcfg::HttpClient`.
+- Wired non-dry-run `page create/list/get/update/rename/delete` through the
+  live content service and mapped Go content service errors to
+  `invalid_argument`, `auth_required`, `not_found`, `conflict`, and
+  `internal_error` exits.
+- Added live contract tests for authenticated `/content/rpc` JSON-RPC payloads,
+  create param normalization, RPC not-found mapping, and initially empty JWT
+  bootstrap plus persisted token reuse.
+
+Boundary note: this slice does not implement Go's per-call profile timeout
+wrappers, trace phase emission, remote `awiki.info` content-service acceptance,
+tenant site live RPC, identity live RPC, message service RPC/WebSocket
+execution, or full `awiki-system-test` acceptance.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing Rustls-first authsdk transport and does not add
+`reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL,
+YAML crates, platform service libraries, or ANP SDK network/default features.
+
 ## 2026-05-15 Runtime Bridge Endpoint Helper Slice
 
 Local Rust and Go reference verification:

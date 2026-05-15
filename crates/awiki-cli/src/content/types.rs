@@ -11,7 +11,7 @@ pub struct CommandResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ContentError {
     SlugRequired,
     TitleRequired,
@@ -19,6 +19,9 @@ pub enum ContentError {
     NoUpdateFields,
     VisibilityInvalid,
     AuthIdentityRequired,
+    Service(crate::identity::wire::ServiceError),
+    Identity(crate::identity::IdentityError),
+    Internal(String),
 }
 
 impl fmt::Display for ContentError {
@@ -34,11 +37,20 @@ impl fmt::Display for ContentError {
                 formatter.write_str("visibility must be one of public, draft, or unlisted")
             }
             Self::AuthIdentityRequired => formatter.write_str("active identity is required"),
+            Self::Service(err) => write!(formatter, "{err}"),
+            Self::Identity(err) => write!(formatter, "{err}"),
+            Self::Internal(message) => formatter.write_str(message),
         }
     }
 }
 
 impl std::error::Error for ContentError {}
+
+impl From<crate::identity::IdentityError> for ContentError {
+    fn from(value: crate::identity::IdentityError) -> Self {
+        Self::Identity(value)
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CreatePageParams {

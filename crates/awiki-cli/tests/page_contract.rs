@@ -285,16 +285,16 @@ fn page_validation_errors_match_go_cli_boundary() {
 }
 
 #[test]
-fn page_non_dry_run_is_deferred_until_content_rpc_slice() {
+fn page_non_dry_run_requires_active_identity_for_content_rpc_slice() {
     let workspace = TempDir::new().expect("workspace");
 
     let list = awiki_cmd(&["page", "list"], workspace.path());
-    assert_code(&list, 1);
+    assert_code(&list, 5);
     let envelope = error_json(&list);
-    assert_eq!(envelope["error"]["code"], "not_implemented");
+    assert_eq!(envelope["error"]["code"], "not_found");
     assert_contains(
         &envelope["error"]["message"],
-        "page list requires non-dry-run implementation",
+        "identity not found: no active identity is configured",
     );
 
     let create = awiki_cmd(
@@ -310,9 +310,9 @@ fn page_non_dry_run_is_deferred_until_content_rpc_slice() {
         ],
         workspace.path(),
     );
-    assert_code(&create, 1);
+    assert_code(&create, 5);
     let envelope = error_json(&create);
-    assert_eq!(envelope["error"]["code"], "not_implemented");
+    assert_eq!(envelope["error"]["code"], "not_found");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
