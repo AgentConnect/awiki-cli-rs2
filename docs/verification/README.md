@@ -257,6 +257,59 @@ Dependency note: no dependency was added. The slice uses only
 `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform service
 libraries, E2EE provider dependencies, or new SQLite dependencies.
 
+## 2026-05-16 Runtime Listener Secure Inbox Poll Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_inbox_poll_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `pollUnreadSecureDirectInbox` startup sync, ticker interval, tick sync order,
+  and context-cancel exit.
+- Existing secure listener integration guards cover adjacent consumers:
+  `go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_secure_inbox_poll` as a pure polling step helper for
+  Go `pollUnreadSecureDirectInbox` before foreground WebSocket secure inbox
+  polling is wired.
+- Preserves startup ordering: call `syncUnreadSecureDirectInbox`, then
+  `syncPendingConfirmationSecureHistory`, then start the ticker.
+- Preserves current Go ticker interval as 2 seconds.
+- Preserves tick ordering: every ticker event calls
+  `syncUnreadSecureDirectInbox` before `syncPendingConfirmationSecureHistory`
+  and then continues.
+- Preserves context cancellation behavior: stop the ticker and exit without
+  another sync.
+- Keeps files under the default review-size cap:
+  `listener_secure_inbox_poll.rs` is 56 lines and the focused test file is 45
+  lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure polling-control helper. It does not implement
+real ticker/context ownership, `WSClient.SendRPC`, unread inbox RPC, pending
+history RPC, replay filtering, SQLite lookup, `handleNotification`, secure
+decrypt/ack, foreground session execution, host-notify dispatch, local bridge
+I/O, or `awiki-system-test` runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice uses only
+`std::time::Duration`. It does not add OpenSSL, `native-tls`, bundled OpenSSL,
+`reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform service
+libraries, E2EE provider dependencies, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Secure Replay Filter Helper Slice
 
 Status: unit verified.
