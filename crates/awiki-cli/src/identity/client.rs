@@ -88,6 +88,26 @@ impl Client {
             .map_err(identity_service_error)
     }
 
+    pub fn rest_post<T>(&self, call: RestCall) -> Result<T, IdentityError>
+    where
+        T: DeserializeOwned,
+    {
+        let request_url = join_base_url(&self.base_url, call.endpoint);
+        let body = serde_json::to_vec(&call.body)?;
+        let response = self
+            .http_client
+            .execute(
+                HttpRequest::new(call.method, request_url)
+                    .header("Content-Type", CONTENT_TYPE_JSON)
+                    .body(body),
+            )
+            .map_err(|err| IdentityError::Internal(err.to_string()))?;
+        if let Some(err) = http_status_error(response.status_code, &response.body) {
+            return Err(service_error(err).into());
+        }
+        decode_plain_json_response(&response.body).map_err(IdentityError::from)
+    }
+
     pub fn rest_get_with_bearer<T>(&self, call: RestCall, bearer: &str) -> Result<T, IdentityError>
     where
         T: DeserializeOwned,

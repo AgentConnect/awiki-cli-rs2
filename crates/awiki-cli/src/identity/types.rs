@@ -259,6 +259,8 @@ pub struct RegisterParams {
     pub otp: String,
     pub invite_code: String,
     pub wait: bool,
+    pub verification_timeout: i64,
+    pub poll_interval_seconds: f64,
 }
 
 #[derive(Debug, Clone, Default)]

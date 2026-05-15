@@ -18,7 +18,8 @@ use super::wire::{
     build_register_rpc_call, build_send_otp_rpc_call, build_update_me_profile_rpc_call,
     normalize_email, profile_public_result, profile_self_result, profile_update_result,
     recover_otp_result, refresh_token_result, register_completed_result, register_phone_otp_result,
-    resolve_result, HandleLookupResult, RecoverHandleRpcParams, RegisterRpcParams, ServiceError,
+    registration_email_pending_result, registration_email_sent_result, resolve_result,
+    HandleLookupResult, RecoverHandleRpcParams, RegisterRpcParams, ServiceError,
     UpdateProfileParams, DID_AUTH_RPC_ENDPOINT,
 };
 use super::Manager;
@@ -283,9 +284,39 @@ pub fn register(
     }
 
     if !email.is_empty() {
-        return Err(IdentityError::Internal(
-            "email registration is not implemented in this Rust port slice".to_string(),
-        ));
+        let (mut verified, _) =
+            check_email_verified(&client, &email, Some(&target.full_handle), false, "")?;
+        if !verified {
+            let call = build_email_send_rest_call(&email, Some(&target.full_handle), false)?;
+            let send_result: Value = client.rest_post(call)?;
+            if !params.wait {
+                return Ok(registration_email_sent_result(
+                    &alias,
+                    &target.local_part,
+                    &target.full_handle,
+                    &email,
+                    send_result,
+                ));
+            }
+            verified = wait_for_email_verification(
+                &client,
+                &email,
+                Some(&target.full_handle),
+                false,
+                "",
+                params.verification_timeout,
+                params.poll_interval_seconds,
+            )?
+            .0;
+            if !verified {
+                return Ok(registration_email_pending_result(
+                    &alias,
+                    &target.local_part,
+                    &target.full_handle,
+                    &email,
+                ));
+            }
+        }
     }
 
     let generated = generate_identity_with_path_segments(
@@ -297,8 +328,9 @@ pub fn register(
     let call = build_register_rpc_call(RegisterRpcParams {
         did_document: generated.did_document.clone(),
         handle: target.local_part.clone(),
-        phone: Some(phone.clone()),
-        otp_code: Some(params.otp.clone()),
+        phone: (!phone.is_empty()).then(|| phone.clone()),
+        otp_code: (!phone.is_empty()).then(|| params.otp.clone()),
+        email: (!email.is_empty()).then(|| email.clone()),
         invite_code: params.invite_code,
         ..RegisterRpcParams::default()
     })?;
@@ -324,7 +356,7 @@ pub fn register(
     Ok(register_completed_result(
         &summary,
         &target.full_handle,
-        "phone",
+        if phone.is_empty() { "email" } else { "phone" },
         result,
     ))
 }
@@ -392,7 +424,7 @@ pub fn bind(
         return bind_phone_completed_result(&identity, &phone, result);
     }
 
-    let (mut verified, _) = check_email_verified(&client, &email, auth.current_jwt())?;
+    let (mut verified, _) = check_email_verified(&client, &email, None, true, auth.current_jwt())?;
     if !verified {
         let call = build_email_send_rest_call(&email, None, true)?;
         let send_result: Value = client.authenticated_rest_post(call, &mut auth)?;
@@ -402,6 +434,8 @@ pub fn bind(
         verified = wait_for_email_verification(
             &client,
             &email,
+            None,
+            true,
             auth.current_jwt(),
             params.verification_timeout,
             params.poll_interval_seconds,
@@ -900,9 +934,11 @@ fn public_profile_by_did(client: &Client, did: &str) -> Result<Value, IdentityEr
 fn check_email_verified(
     client: &Client,
     email: &str,
+    handle: Option<&str>,
+    authenticated: bool,
     bearer: &str,
 ) -> Result<(bool, String), IdentityError> {
-    let call = build_email_status_rest_call(email, None, true)?;
+    let call = build_email_status_rest_call(email, handle, authenticated)?;
     let result: Value = match client.rest_get_with_bearer(call, bearer) {
         Ok(result) => result,
         Err(IdentityError::Service(err)) if service_error_is_not_found(&err) => {
@@ -925,6 +961,8 @@ fn check_email_verified(
 fn wait_for_email_verification(
     client: &Client,
     email: &str,
+    handle: Option<&str>,
+    authenticated: bool,
     bearer: &str,
     timeout_secs: i64,
     poll_interval_secs: f64,
@@ -941,7 +979,8 @@ fn wait_for_email_verification(
     };
     let deadline = Instant::now() + Duration::from_secs(timeout_secs as u64);
     loop {
-        let (verified, verified_at) = check_email_verified(client, email, bearer)?;
+        let (verified, verified_at) =
+            check_email_verified(client, email, handle, authenticated, bearer)?;
         if verified {
             return Ok((true, verified_at));
         }

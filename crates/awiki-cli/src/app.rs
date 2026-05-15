@@ -391,6 +391,8 @@ impl App {
                 .flags
                 .get("wait")
                 .is_some_and(|value| value == "true"),
+            verification_timeout: 300,
+            poll_interval_seconds: 5.0,
         };
         let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {

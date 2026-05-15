@@ -2,6 +2,60 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity Email Register Live Slice
+
+Local Rust, Go reference, dependency, and focused system-test verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test identity_register_email_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/cli ./internal/identity ./internal/cmdmeta -run 'TestServiceRegisterEmail|TestServiceRegisterFullHandleUsesExplicitDomainForDID|TestServiceRegisterPhoneSendsNormalizedOTPRequest|TestRunIDRegisterDryRun|TestCatalogPublishesIDRegister|TestMail|Test.*Register' -count=1
+cd ../awiki-system-test && AWIKI_SYSTEM_TEST_MODE=remote E2E_USER_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_URL=https://awiki.info E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws E2E_DID_DOMAIN=awiki.info NO_PROXY=awiki.info,www.awiki.info,localhost,127.0.0.1 AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/id/test_identity_cli.py::test_id_register_supports_phone_otp_send_and_email_activation -q
+```
+
+Result: Rust focused email-register live tests passed for unauthenticated
+`email-status` plus `email-send`, no-wait activation output without local
+identity writes, already-verified `--wait` registration without sending a new
+activation email, and send-then-poll-then-register ordering. Existing identity
+live, identity wire, and identity contract tests passed, preserving phone
+register and authenticated bind/profile/resolve behavior. The focused
+`awiki-system-test` selector passed against `awiki.info`, covering the system
+visible `id register --handle --email` activation bootstrap path.
+
+Scope:
+
+- Wired Go `Service.Register` email activation into Rust `identity::register`
+  using the existing identity REST/RPC builders: first
+  `/user-service/auth/email-status` with the full handle query, then
+  `/user-service/auth/email-send` when unverified, then optional wait polling
+  and final `/user-service/did-auth/rpc` `register` with `method=email`.
+- Preserved Go no-wait semantics: sending an activation email returns
+  `send_registration_email` with `verification_state=email_sent` and does not
+  create local identity state.
+- Preserved Go `--wait` semantics for already-verified and newly verified
+  email addresses, including skipping duplicate email sends and persisting the
+  final registered identity/JWT after `did-auth.register`.
+- Kept the implementation in existing split modules under the 1200-line rule:
+  `identity/service.rs` 1053 lines, `identity/client.rs` 178 lines,
+  `app.rs` 1086 lines, and new
+  `identity_register_email_live_contract.rs` 442 lines.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
+identity wire builders, and service error conversion. It does not add
+`reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL,
+YAML crates, platform service libraries, or ANP SDK network/default features.
+
+Boundary note: profile-timeout wrappers, trace phase emission, legacy
+ANP-labeled k1 PEM compatibility conversion, workspace-migration-driven k1
+replacement, and message/group service execution remain deferred parity slices.
+
 ## 2026-05-15 Identity Replace-DID Live Slice
 
 Local Rust and Go reference verification:
