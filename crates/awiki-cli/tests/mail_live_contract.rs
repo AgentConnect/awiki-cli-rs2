@@ -56,6 +56,79 @@ fn mail_inbox_live_posts_authenticated_json_rpc_like_go() {
 }
 
 #[test]
+fn mail_inbox_trace_timing_reports_remote_rpc_phase() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"total":1,"messages":[{"id":"m1"}]},"id":"req-1"}"#,
+    )]);
+    write_mail_config(workspace.path(), &server.base_url());
+
+    let output = awiki_trace_cmd(
+        &[
+            "--identity",
+            "alice-mail",
+            "mail",
+            "inbox",
+            "--folder",
+            "inbox",
+            "--limit",
+            "1",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json_with_stderr(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 messages from inbox");
+    let trace = stderr_text(&output);
+    assert_text_contains(&trace, "[awiki-cli 耗时追踪]");
+    assert_text_contains(&trace, "远端 RPC");
+    assert_text_contains(&trace, "mail getInbox");
+}
+
+#[test]
+fn mail_inbox_trace_timing_reports_bootstrap_jwt_without_nested_get_me_rpc() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "");
+    let server = TestServer::new(vec![
+        TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"access_token":"jwt-mail"},"id":"req-1"}"#),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"total":1,"messages":[{"id":"m1"}]},"id":"req-1"}"#,
+        ),
+    ]);
+    write_mail_config(workspace.path(), &server.base_url());
+
+    let output = awiki_trace_cmd(
+        &[
+            "--identity",
+            "alice-mail",
+            "mail",
+            "inbox",
+            "--folder",
+            "inbox",
+            "--limit",
+            "1",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json_with_stderr(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 messages from inbox");
+    let trace = stderr_text(&output);
+    assert_text_contains(&trace, "JWT 续期");
+    assert_text_contains(&trace, "邮件服务启动鉴权");
+    assert_text_contains(&trace, "远端 RPC / mail getInbox");
+    assert_text_not_contains(&trace, "远端 RPC / get me");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /mail/rpc HTTP/1.1"));
+}
+
+#[test]
 fn mail_read_live_maps_rpc_not_found_like_go() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
@@ -201,12 +274,36 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     )
 }
 
+fn awiki_trace_cmd(args: &[&str], workspace: &Path) -> Output {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    awiki_trace_cmd_owned(&args, workspace)
+}
+
 fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT");
+    command.output().expect("run awiki-cli binary")
+}
+
+fn awiki_trace_cmd_owned(args: &[String], workspace: &Path) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_CLI_TRACE_TIMING", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")
@@ -236,6 +333,10 @@ fn success_json(output: &Output) -> Value {
         "stderr should be empty: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    success_json_with_stderr(output)
+}
+
+fn success_json_with_stderr(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true);
@@ -254,6 +355,12 @@ fn error_json(output: &Output) -> Value {
     envelope
 }
 
+fn stderr_text(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!stderr.is_empty(), "stderr should contain trace output");
+    stderr
+}
+
 fn assert_contains(value: &Value, needle: &str) {
     let haystack = value
         .as_str()
@@ -261,6 +368,20 @@ fn assert_contains(value: &Value, needle: &str) {
     assert!(
         haystack.contains(needle),
         "expected {haystack:?} to contain {needle:?}"
+    );
+}
+
+fn assert_text_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected text to contain {needle:?}, got:\n{haystack}"
+    );
+}
+
+fn assert_text_not_contains(haystack: &str, needle: &str) {
+    assert!(
+        !haystack.contains(needle),
+        "expected text not to contain {needle:?}, got:\n{haystack}"
     );
 }
 

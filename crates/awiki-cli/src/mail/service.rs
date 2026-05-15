@@ -277,7 +277,7 @@ fn auth_session(
     }
     if token.is_empty() {
         let client = Client::new(resolved)?;
-        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url) {
+        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url, "mail_bootstrap") {
             return match err {
                 MailError::Service(err) => Err(MailError::Service(err)),
                 err => Err(MailError::Internal(format!(

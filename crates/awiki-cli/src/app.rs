@@ -7,6 +7,7 @@ use crate::doctor;
 use crate::identity::{self, IdentityError, Manager};
 use crate::output::{self, ErrorEnvelope, ExitError, Format, IdentityMeta, Meta, SuccessEnvelope};
 use crate::store::{self, StoreError};
+use crate::traceutil;
 use crate::upgrade;
 use serde_json::{json, Value};
 use std::fs;
@@ -62,27 +63,48 @@ pub fn execute() -> i32 {
         Ok(command) => command,
         Err(err) => return App::default().handle_error(err),
     };
+    let trace_run = traceutil::Run::new(&command.trace_command());
+    traceutil::set_current(Some(trace_run));
     let mut app = App {
         globals: command.globals.clone(),
         update_warning: String::new(),
     };
-    if let Err(err) = app.preflight(&command) {
-        return app.handle_error(err);
+    let exit_code = if let Err(err) = app.preflight(&command) {
+        app.handle_error(err)
+    } else {
+        match cli::dispatch(&app, &command) {
+            Ok(()) => 0,
+            Err(err) => app.handle_error(err),
+        }
+    };
+    if !command.emits_raw_output() {
+        app.emit_trace();
     }
-    match cli::dispatch(&app, &command) {
-        Ok(()) => 0,
-        Err(err) => app.handle_error(err),
+    traceutil::set_current(None);
+    exit_code
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        traceutil::set_current(None);
     }
 }
 
 impl App {
+    fn emit_trace(&self) {
+        let _ = traceutil::emit_current(&mut io::stderr());
+    }
+
     pub(super) fn resolve_config_raw(&self) -> anyhow::Result<Resolved> {
-        config::resolve(Overrides {
+        let mut phase = traceutil::start_phase("resolve_config");
+        let result = config::resolve(Overrides {
             identity: self.globals.identity.clone(),
             identity_changed: self.globals.identity_changed,
             format: self.globals.format.clone(),
             format_changed: self.globals.format_changed,
-        })
+        });
+        phase.finish();
+        result
     }
 
     pub fn run_status(&self) -> Result<(), ExitError> {

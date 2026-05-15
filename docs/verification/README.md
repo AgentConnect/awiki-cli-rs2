@@ -2,6 +2,72 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Trace Timing Integration Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract trace_timing --locked
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract mail_inbox_trace_timing_reports_remote_rpc_phase --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract mail_inbox_trace_timing_reports_bootstrap_jwt_without_nested_get_me_rpc --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+```
+
+Local result: passed. Formatting, whitespace, package check, focused trace,
+authsdk, and mail live contract tests, structure check, binary build, full
+`awiki-cli` package tests, and dependency audit passed. `xtask
+check-structure` reported no undocumented Rust files over 1200 lines.
+Dependency audit showed only existing allowed hits: `base64`, `rustls`,
+`rustls-webpki`, `webpki-roots`, `ring`, approved `rusqlite`,
+`libsqlite3-sys`, and build helpers `cc`, `pkg-config`, and `vcpkg`; no
+OpenSSL, `native-tls`, `reqwest`, `hyper`, WebSocket, YAML, platform service,
+or new SQLite dependency was introduced.
+
+Scope:
+
+- `AWIKI_CLI_TRACE_TIMING` now creates a command trace run after CLI parse,
+  records `resolve_config`, and emits the Go-compatible Chinese timing block
+  to stderr after rendered success/error output.
+- Raw completion output is exempt from trace stderr, matching Go completion
+  handlers that bypass `renderSuccess`.
+- Shared authenticated RPC/plain JSON helpers record Go-shaped remote RPC
+  phases by RPC method or REST method/endpoint.
+- DID-auth JWT refresh records caller-labeled `EnsureJWTPhase` names such as
+  `mail_bootstrap`, `content_bootstrap`, `site_bootstrap`,
+  `identity_refresh_token`, `identity_bootstrap`, `message_bootstrap`, and
+  `message_service_retry`, while suppressing a nested `business_rpc:get_me`
+  phase during the internal `get_me` request.
+- Tests cover success JSON stdout plus trace stderr, JSON error prefix plus
+  trace stderr, raw completion without trace stderr, mail RPC trace method
+  labeling, and empty-token mail bootstrap JWT labeling.
+
+Boundary note: local DB, handle lookup, contact/cache sync, and fallback trace
+phase call sites are not fully threaded through every translated Go service
+path yet. That remains trace-depth parity work and must not be mixed with
+optimizations.
+
+Parallelism note: a read-only Native Agent reviewed this trace slice and
+flagged the JWT phase-label/nested-RPC and completion raw-output regressions.
+A previous test-only code-writing Native Agent for this slice used GPT-5.5
+xhigh under a bounded non-overlapping test scope.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses local traceutil and the existing Rustls/std
+authsdk transport, and does not add OpenSSL, `native-tls`, bundled OpenSSL,
+`reqwest`, `hyper`, WebSocket crates, YAML crates, platform service libraries,
+or new SQLite dependencies.
+
 ## 2026-05-15 Direct/Group Attachment Live HTTP Slice
 
 Status: system verified.

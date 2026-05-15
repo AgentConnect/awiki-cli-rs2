@@ -39,6 +39,41 @@ fn status_reports_phase_version_paths_state_and_config() {
 }
 
 #[test]
+fn trace_timing_status_keeps_stdout_json_and_writes_trace_to_stderr() {
+    let output = awiki_trace_cmd(&["status"]);
+    assert_success(&output);
+    let envelope = success_json_with_stderr(&output);
+
+    assert_eq!(envelope["command"], "awiki-cli status");
+    let trace = stderr_text(&output);
+    assert_text_contains(&trace, "[awiki-cli 耗时追踪]");
+    assert_text_contains(&trace, "命令: awiki-cli status");
+    assert_text_contains(&trace, "阶段:");
+    assert_text_contains(&trace, "解析配置");
+}
+
+#[test]
+fn trace_timing_error_keeps_json_error_first_and_appends_trace() {
+    let output = awiki_trace_cmd(&["docs", "missing-topic"]);
+    assert_code(&output, 5);
+    assert_stdout_empty(&output);
+    let (envelope, trace) = error_json_prefix_with_trace(&output);
+
+    assert_eq!(envelope["error"]["code"], "not_found");
+    assert_contains(&envelope["error"]["message"], "Unknown docs topic");
+    assert_text_contains(&trace, "[awiki-cli 耗时追踪]");
+}
+
+#[test]
+fn trace_timing_completion_keeps_raw_stdout_without_trace_stderr() {
+    let output = awiki_trace_cmd(&["completion", "bash"]);
+    assert_success(&output);
+    assert_stderr_empty(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_text_contains(&stdout, "complete -F _awiki-cli awiki-cli");
+}
+
+#[test]
 fn version_reports_current_build_info() {
     let output = awiki_cmd(&["version"]);
     assert_success(&output);
@@ -457,12 +492,33 @@ fn awiki_cmd(args: &[&str]) -> Output {
     awiki_cmd_with_workspace(args, workspace.path().to_str().unwrap())
 }
 
+fn awiki_trace_cmd(args: &[&str]) -> Output {
+    let workspace = TempDir::new().expect("temp workspace");
+    awiki_trace_cmd_with_workspace(args, workspace.path().to_str().unwrap())
+}
+
 fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT");
+    command.output().expect("run awiki-cli binary")
+}
+
+fn awiki_trace_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_CLI_TRACE_TIMING", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")
@@ -488,6 +544,10 @@ fn assert_code(output: &Output, code: i32) {
 
 fn success_json(output: &Output) -> Value {
     assert_stderr_empty(output);
+    success_json_with_stderr(output)
+}
+
+fn success_json_with_stderr(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true, "success envelope should set ok=true");
@@ -502,6 +562,24 @@ fn error_json(output: &Output) -> Value {
     assert_eq!(envelope["error"]["retryable"], false);
     assert_success_meta(&envelope);
     envelope
+}
+
+fn error_json_prefix_with_trace(output: &Output) -> (Value, String) {
+    let mut stream = serde_json::Deserializer::from_slice(&output.stderr).into_iter::<Value>();
+    let envelope = stream
+        .next()
+        .expect("stderr should start with a JSON error envelope")
+        .expect("stderr should start with a valid JSON error envelope");
+    assert_eq!(envelope["ok"], false, "error envelope should set ok=false");
+    assert_eq!(envelope["error"]["retryable"], false);
+    assert_success_meta(&envelope);
+    let trace_offset = stream.byte_offset();
+    let trace = String::from_utf8_lossy(&output.stderr[trace_offset..]).into_owned();
+    assert!(
+        !trace.trim().is_empty(),
+        "stderr should contain trace text after JSON error envelope"
+    );
+    (envelope, trace)
 }
 
 fn assert_success_meta(envelope: &Value) {
@@ -551,10 +629,23 @@ fn assert_stderr_empty(output: &Output) {
     );
 }
 
+fn stderr_text(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!stderr.is_empty(), "stderr should contain trace output");
+    stderr
+}
+
 fn assert_contains(value: &Value, needle: &str) {
     let haystack = value
         .as_str()
         .unwrap_or_else(|| panic!("expected string containing {needle:?}, got {value:?}"));
+    assert!(
+        haystack.contains(needle),
+        "expected {haystack:?} to contain {needle:?}"
+    );
+}
+
+fn assert_text_contains(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
         "expected {haystack:?} to contain {needle:?}"

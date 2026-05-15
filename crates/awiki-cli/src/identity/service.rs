@@ -587,7 +587,10 @@ pub fn refresh_token(
     let client = Client::new(resolved)?;
     let request_url =
         crate::config::join_base_url(&resolved.service_base_url, DID_AUTH_RPC_ENDPOINT);
-    if client.ensure_jwt(&mut auth, &request_url).is_err() {
+    if client
+        .ensure_jwt(&mut auth, &request_url, "identity_refresh_token")
+        .is_err()
+    {
         return Err(refresh_token_auth_required(&record.identity_name));
     }
     let jwt = auth.current_jwt().trim().to_string();
@@ -846,7 +849,7 @@ pub(crate) fn auth_session(
     }
     if token.is_empty() {
         let client = Client::new(resolved)?;
-        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url) {
+        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url, "identity_bootstrap") {
             return match err {
                 IdentityError::Service(err) => Err(IdentityError::Service(err)),
                 err => Err(IdentityError::Internal(format!(

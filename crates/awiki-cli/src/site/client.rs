@@ -55,9 +55,19 @@ impl Client {
         .map_err(site_service_error)
     }
 
-    pub fn ensure_jwt(&self, auth: &mut Session, request_url: &str) -> Result<String, SiteError> {
-        auth.ensure_jwt_profile(&self.http_client, Profile::AuthRefresh, request_url)
-            .map_err(site_service_error)
+    pub fn ensure_jwt(
+        &self,
+        auth: &mut Session,
+        request_url: &str,
+        trace_operation: &str,
+    ) -> Result<String, SiteError> {
+        auth.ensure_jwt_profile_traced(
+            &self.http_client,
+            Profile::AuthRefresh,
+            request_url,
+            trace_operation,
+        )
+        .map_err(site_service_error)
     }
 }
 

@@ -59,9 +59,15 @@ impl Client {
         &self,
         auth: &mut Session,
         request_url: &str,
+        trace_operation: &str,
     ) -> Result<String, ContentError> {
-        auth.ensure_jwt_profile(&self.http_client, Profile::AuthRefresh, request_url)
-            .map_err(content_service_error)
+        auth.ensure_jwt_profile_traced(
+            &self.http_client,
+            Profile::AuthRefresh,
+            request_url,
+            trace_operation,
+        )
+        .map_err(content_service_error)
     }
 }
 

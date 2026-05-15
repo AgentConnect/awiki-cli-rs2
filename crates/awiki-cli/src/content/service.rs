@@ -202,7 +202,7 @@ fn auth_session(
     }
     if token.is_empty() {
         let client = Client::new(resolved)?;
-        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url) {
+        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url, "content_bootstrap") {
             return match err {
                 ContentError::Service(err) => Err(ContentError::Service(err)),
                 err => Err(ContentError::Internal(format!(

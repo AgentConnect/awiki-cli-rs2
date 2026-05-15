@@ -1,8 +1,13 @@
+use std::cell::RefCell;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 const TIMING_ENV_KEY: &str = "AWIKI_CLI_TRACE_TIMING";
+
+thread_local! {
+    static CURRENT_RUN: RefCell<Option<Run>> = RefCell::new(None);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase {
@@ -46,6 +51,63 @@ pub fn enabled() -> bool {
             .as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+pub fn set_current(run: Option<Run>) {
+    CURRENT_RUN.with(|current| {
+        *current.borrow_mut() = run;
+    });
+}
+
+pub fn current() -> Option<Run> {
+    CURRENT_RUN.with(|current| current.borrow().clone())
+}
+
+pub fn take_current() -> Option<Run> {
+    CURRENT_RUN.with(|current| current.borrow_mut().take())
+}
+
+pub fn emit_current<W: Write>(writer: &mut W) -> io::Result<()> {
+    let Some(run) = current() else {
+        return Ok(());
+    };
+    run.emit(writer)
+}
+
+pub fn start_phase(name: &str) -> PhaseFinish {
+    current()
+        .map(|run| run.start_phase(name))
+        .unwrap_or_else(PhaseFinish::inactive)
+}
+
+pub fn rpc_phase(operation: &str) -> PhaseFinish {
+    current()
+        .map(|run| run.rpc_phase(operation))
+        .unwrap_or_else(PhaseFinish::inactive)
+}
+
+pub fn local_db_phase(operation: &str) -> PhaseFinish {
+    current()
+        .map(|run| run.local_db_phase(operation))
+        .unwrap_or_else(PhaseFinish::inactive)
+}
+
+pub fn ensure_jwt_phase(operation: &str) -> PhaseFinish {
+    current()
+        .map(|run| run.ensure_jwt_phase(operation))
+        .unwrap_or_else(PhaseFinish::inactive)
+}
+
+pub fn handle_lookup_phase(operation: &str) -> PhaseFinish {
+    current()
+        .map(|run| run.handle_lookup_phase(operation))
+        .unwrap_or_else(PhaseFinish::inactive)
+}
+
+pub fn mark_fallback(stage: &str, cause: Option<&str>) {
+    if let Some(run) = current() {
+        run.mark_fallback(stage, cause);
+    }
 }
 
 impl Run {
@@ -140,6 +202,14 @@ impl Run {
 }
 
 impl PhaseFinish {
+    pub fn inactive() -> Self {
+        Self {
+            state: None,
+            index: 0,
+            started: Instant::now(),
+        }
+    }
+
     pub fn finish(&mut self) {
         let Some(state) = &self.state else {
             return;
@@ -293,6 +363,8 @@ fn known_humanized_text(value: &str) -> Option<&'static str> {
         "identity_bootstrap" => Some("身份服务启动鉴权"),
         "mail_bootstrap" => Some("邮件服务启动鉴权"),
         "content_bootstrap" => Some("内容服务启动鉴权"),
+        "site_bootstrap" => Some("站点服务启动鉴权"),
+        "message_bootstrap" => Some("消息服务启动鉴权"),
         _ => None,
     }
 }

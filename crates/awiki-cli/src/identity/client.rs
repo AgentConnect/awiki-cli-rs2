@@ -5,6 +5,7 @@ use crate::authsdk::{
     http_status_error, HttpError, RpcError, Session, CONTENT_TYPE_JSON,
 };
 use crate::config::{join_base_url, Resolved};
+use crate::traceutil;
 use crate::transportcfg::{new_http_client, HttpClient, HttpRequest, Profile};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -44,6 +45,7 @@ impl Client {
         let request_url = join_base_url(&self.base_url, endpoint);
         let payload = build_json_rpc_payload(rpc_method, params);
         let body = serde_json::to_vec(&payload)?;
+        let mut phase = traceutil::rpc_phase(rpc_method);
         let response = self
             .http_client
             .execute(
@@ -52,7 +54,9 @@ impl Client {
                     .timeout(self.http_client.config().timeout_for_profile(profile))
                     .body(body),
             )
-            .map_err(|err| IdentityError::Internal(err.to_string()))?;
+            .map_err(|err| IdentityError::Internal(err.to_string()));
+        phase.finish();
+        let response = response?;
         if let Some(err) = http_status_error(response.status_code, &response.body) {
             return Err(service_error(err).into());
         }
@@ -92,12 +96,13 @@ impl Client {
         T: DeserializeOwned,
     {
         let request_url = join_base_url(&self.base_url, call.endpoint);
-        auth.do_json_profile(
+        auth.do_json_profile_traced(
             &self.http_client,
             Profile::RpcDefault,
             call.method,
             &request_url,
             call.body,
+            &format!("{} {}", call.method, call.endpoint),
         )
         .map_err(identity_service_error)
     }
@@ -108,6 +113,7 @@ impl Client {
     {
         let request_url = join_base_url(&self.base_url, call.endpoint);
         let body = serde_json::to_vec(&call.body)?;
+        let mut phase = traceutil::rpc_phase(&format!("{} {}", call.method, call.endpoint));
         let response = self
             .http_client
             .execute(
@@ -120,7 +126,9 @@ impl Client {
                     )
                     .body(body),
             )
-            .map_err(|err| IdentityError::Internal(err.to_string()))?;
+            .map_err(|err| IdentityError::Internal(err.to_string()));
+        phase.finish();
+        let response = response?;
         if let Some(err) = http_status_error(response.status_code, &response.body) {
             return Err(service_error(err).into());
         }
@@ -142,10 +150,13 @@ impl Client {
                 .config()
                 .timeout_for_profile(Profile::RpcDefault),
         );
+        let mut phase = traceutil::rpc_phase(&format!("{} {}", call.method, call.endpoint));
         let response = self
             .http_client
             .execute(request)
-            .map_err(|err| IdentityError::Internal(err.to_string()))?;
+            .map_err(|err| IdentityError::Internal(err.to_string()));
+        phase.finish();
+        let response = response?;
         if let Some(err) = http_status_error(response.status_code, &response.body) {
             return Err(service_error(err).into());
         }
@@ -156,9 +167,15 @@ impl Client {
         &self,
         auth: &mut Session,
         request_url: &str,
+        trace_operation: &str,
     ) -> Result<String, IdentityError> {
-        auth.ensure_jwt_profile(&self.http_client, Profile::AuthRefresh, request_url)
-            .map_err(identity_service_error)
+        auth.ensure_jwt_profile_traced(
+            &self.http_client,
+            Profile::AuthRefresh,
+            request_url,
+            trace_operation,
+        )
+        .map_err(identity_service_error)
     }
 }
 

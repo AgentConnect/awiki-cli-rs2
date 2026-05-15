@@ -269,7 +269,7 @@ fn auth_session(
     }
     if token.is_empty() {
         let client = Client::new(resolved)?;
-        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url) {
+        if let Err(err) = client.ensure_jwt(&mut session, &did_auth_url, "site_bootstrap") {
             return match err {
                 SiteError::Service(err) => Err(SiteError::Service(err)),
                 err => Err(SiteError::Internal(format!(

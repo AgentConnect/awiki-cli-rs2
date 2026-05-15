@@ -310,7 +310,9 @@ pub(crate) fn auth_session(
     }
     if token.is_empty() {
         let client = Client::new(resolved)?;
-        client.ensure_jwt(&mut session, &did_auth_url).map(|_| ())?;
+        client
+            .ensure_jwt(&mut session, &did_auth_url, "message_bootstrap")
+            .map(|_| ())?;
     }
     Ok(session)
 }

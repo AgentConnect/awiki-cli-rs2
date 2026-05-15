@@ -1,4 +1,5 @@
 use crate::anpsdk::{DIDWbaAuthHeader, AUTH_MODE_HTTP_SIGNATURES};
+use crate::traceutil;
 use crate::transportcfg::{HttpClient, HttpRequest, HttpResponse, Profile};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -181,9 +182,32 @@ impl Session {
         T: DeserializeOwned,
         P: Serialize,
     {
+        self.do_json_rpc_traced(
+            client,
+            request_url,
+            http_method,
+            rpc_method,
+            params,
+            rpc_method,
+        )
+    }
+
+    fn do_json_rpc_traced<T, P>(
+        &mut self,
+        client: &HttpClient,
+        request_url: &str,
+        http_method: &str,
+        rpc_method: &str,
+        params: P,
+        trace_operation: &str,
+    ) -> anyhow::Result<T>
+    where
+        T: DeserializeOwned,
+        P: Serialize,
+    {
         let payload = build_json_rpc_payload(rpc_method, serde_json::to_value(params)?);
         let body = serde_json::to_vec(&payload)?;
-        let response = self.do_request(client, request_url, http_method, &body)?;
+        let response = self.do_request(client, request_url, http_method, &body, trace_operation)?;
         decode_json_rpc_response(&response.body)
     }
 
@@ -200,9 +224,41 @@ impl Session {
         T: DeserializeOwned,
         P: Serialize,
     {
+        self.do_json_rpc_profile_traced(
+            client,
+            profile,
+            request_url,
+            http_method,
+            rpc_method,
+            params,
+            rpc_method,
+        )
+    }
+
+    fn do_json_rpc_profile_traced<T, P>(
+        &mut self,
+        client: &HttpClient,
+        profile: Profile,
+        request_url: &str,
+        http_method: &str,
+        rpc_method: &str,
+        params: P,
+        trace_operation: &str,
+    ) -> anyhow::Result<T>
+    where
+        T: DeserializeOwned,
+        P: Serialize,
+    {
         let payload = build_json_rpc_payload(rpc_method, serde_json::to_value(params)?);
         let body = serde_json::to_vec(&payload)?;
-        let response = self.do_request_profile(client, profile, request_url, http_method, &body)?;
+        let response = self.do_request_profile(
+            client,
+            profile,
+            request_url,
+            http_method,
+            &body,
+            trace_operation,
+        )?;
         decode_json_rpc_response(&response.body)
     }
 
@@ -219,14 +275,32 @@ impl Session {
     {
         let payload = build_json_rpc_payload(rpc_method, serde_json::to_value(params)?);
         let body = serde_json::to_vec(&payload)?;
-        let response = self.do_request(client, request_url, http_method, &body)?;
+        let response = self.do_request(client, request_url, http_method, &body, rpc_method)?;
         decode_json_rpc_response_optional(&response.body)
     }
 
     pub fn ensure_jwt(&mut self, client: &HttpClient, request_url: &str) -> anyhow::Result<String> {
+        self.ensure_jwt_traced(client, request_url, "get_me")
+    }
+
+    pub fn ensure_jwt_traced(
+        &mut self,
+        client: &HttpClient,
+        request_url: &str,
+        trace_operation: &str,
+    ) -> anyhow::Result<String> {
         self.remember_scope(request_url);
-        let result: serde_json::Value =
-            self.do_json_rpc(client, request_url, "POST", "get_me", serde_json::json!({}))?;
+        let mut phase = traceutil::ensure_jwt_phase(trace_operation);
+        let result: anyhow::Result<serde_json::Value> = self.do_json_rpc_traced(
+            client,
+            request_url,
+            "POST",
+            "get_me",
+            serde_json::json!({}),
+            "",
+        );
+        phase.finish();
+        let result = result?;
         self.ensure_jwt_from_result(request_url, &result)
     }
 
@@ -236,15 +310,29 @@ impl Session {
         profile: Profile,
         request_url: &str,
     ) -> anyhow::Result<String> {
+        self.ensure_jwt_profile_traced(client, profile, request_url, "get_me")
+    }
+
+    pub fn ensure_jwt_profile_traced(
+        &mut self,
+        client: &HttpClient,
+        profile: Profile,
+        request_url: &str,
+        trace_operation: &str,
+    ) -> anyhow::Result<String> {
         self.remember_scope(request_url);
-        let result: serde_json::Value = self.do_json_rpc_profile(
+        let mut phase = traceutil::ensure_jwt_phase(trace_operation);
+        let result: anyhow::Result<serde_json::Value> = self.do_json_rpc_profile_traced(
             client,
             profile,
             request_url,
             "POST",
             "get_me",
             serde_json::json!({}),
-        )?;
+            "",
+        );
+        phase.finish();
+        let result = result?;
         self.ensure_jwt_from_result(request_url, &result)
     }
 
@@ -260,7 +348,7 @@ impl Session {
         P: Serialize,
     {
         let body = serde_json::to_vec(&payload)?;
-        let response = self.do_request(client, request_url, method, &body)?;
+        let response = self.do_request(client, request_url, method, &body, method)?;
         Ok(decode_plain_json_response(&response.body)?)
     }
 
@@ -276,8 +364,25 @@ impl Session {
         T: DeserializeOwned,
         P: Serialize,
     {
+        self.do_json_profile_traced(client, profile, method, request_url, payload, method)
+    }
+
+    pub fn do_json_profile_traced<T, P>(
+        &mut self,
+        client: &HttpClient,
+        profile: Profile,
+        method: &str,
+        request_url: &str,
+        payload: P,
+        trace_operation: &str,
+    ) -> anyhow::Result<T>
+    where
+        T: DeserializeOwned,
+        P: Serialize,
+    {
         let body = serde_json::to_vec(&payload)?;
-        let response = self.do_request_profile(client, profile, request_url, method, &body)?;
+        let response =
+            self.do_request_profile(client, profile, request_url, method, &body, trace_operation)?;
         Ok(decode_plain_json_response(&response.body)?)
     }
 
@@ -292,7 +397,7 @@ impl Session {
         P: Serialize,
     {
         let body = serde_json::to_vec(&payload)?;
-        let response = self.do_request(client, request_url, method, &body)?;
+        let response = self.do_request(client, request_url, method, &body, method)?;
         let _ = response;
         Ok(())
     }
@@ -303,8 +408,9 @@ impl Session {
         request_url: &str,
         method: &str,
         body: &[u8],
+        trace_operation: &str,
     ) -> anyhow::Result<HttpResponse> {
-        self.do_request_with_timeout(client, None, request_url, method, body)
+        self.do_request_with_timeout(client, None, request_url, method, body, trace_operation)
     }
 
     fn do_request_profile(
@@ -314,12 +420,39 @@ impl Session {
         request_url: &str,
         method: &str,
         body: &[u8],
+        trace_operation: &str,
     ) -> anyhow::Result<HttpResponse> {
         let timeout = client.config().timeout_for_profile(profile);
-        self.do_request_with_timeout(client, Some(timeout), request_url, method, body)
+        self.do_request_with_timeout(
+            client,
+            Some(timeout),
+            request_url,
+            method,
+            body,
+            trace_operation,
+        )
     }
 
     fn do_request_with_timeout(
+        &mut self,
+        client: &HttpClient,
+        timeout: Option<std::time::Duration>,
+        request_url: &str,
+        method: &str,
+        body: &[u8],
+        trace_operation: &str,
+    ) -> anyhow::Result<HttpResponse> {
+        let mut phase = if trace_operation.trim().is_empty() {
+            traceutil::PhaseFinish::inactive()
+        } else {
+            traceutil::rpc_phase(trace_operation)
+        };
+        let result = self.do_request_with_timeout_inner(client, timeout, request_url, method, body);
+        phase.finish();
+        result
+    }
+
+    fn do_request_with_timeout_inner(
         &mut self,
         client: &HttpClient,
         timeout: Option<std::time::Duration>,

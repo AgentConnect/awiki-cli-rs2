@@ -12,6 +12,21 @@ pub struct ParsedCommand {
     pub changed_flags: Vec<String>,
 }
 
+impl ParsedCommand {
+    pub fn trace_command(&self) -> String {
+        let name = self.name.trim();
+        if name.is_empty() {
+            "awiki-cli".to_string()
+        } else {
+            format!("awiki-cli {}", name.replace('.', " "))
+        }
+    }
+
+    pub fn emits_raw_output(&self) -> bool {
+        self.name.starts_with("completion.")
+    }
+}
+
 pub fn parse_env() -> Result<ParsedCommand, ExitError> {
     parse_args(std::env::args().skip(1))
 }

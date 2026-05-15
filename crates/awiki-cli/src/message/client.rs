@@ -60,9 +60,15 @@ impl Client {
         &self,
         auth: &mut Session,
         request_url: &str,
+        trace_operation: &str,
     ) -> Result<String, MessageError> {
-        auth.ensure_jwt_profile(&self.http_client, Profile::AuthRefresh, request_url)
-            .map_err(message_service_error)
+        auth.ensure_jwt_profile_traced(
+            &self.http_client,
+            Profile::AuthRefresh,
+            request_url,
+            trace_operation,
+        )
+        .map_err(message_service_error)
     }
 }
 
@@ -91,7 +97,12 @@ where
         Err(err) => match err.downcast::<RpcError>() {
             Ok(rpc_err) if rpc_err.code == 1401 => {
                 let did_auth_url = join_base_url(base_url, DID_AUTH_RPC_ENDPOINT);
-                match auth.ensure_jwt_profile(http_client, Profile::AuthRefresh, &did_auth_url) {
+                match auth.ensure_jwt_profile_traced(
+                    http_client,
+                    Profile::AuthRefresh,
+                    &did_auth_url,
+                    "message_service_retry",
+                ) {
                     Ok(_) => auth
                         .do_json_rpc_profile(
                             http_client,
