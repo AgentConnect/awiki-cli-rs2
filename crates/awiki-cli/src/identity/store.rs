@@ -1,4 +1,5 @@
 use super::handle_input::stored_handle_fields;
+use super::key_compat::ensure_identity_private_keys_compatible;
 use super::layout::{
     ensure_dir, file_exists, preferred_dir_name, read_json_value, read_text,
     sanitize_identity_name, write_secure_json, write_secure_text, Manager,
@@ -164,6 +165,7 @@ impl Manager {
             .resolve_entry_name(name, &index)
             .ok_or_else(|| IdentityError::NotFound(format!("identity not found: {name}")))?;
         let paths = self.build_paths(&entry.dir_name);
+        ensure_identity_private_keys_compatible(&paths)?;
         let mut identity_value = read_json_value(&paths.identity_path)?;
         let payload: IdentityPayload = serde_json::from_value(identity_value.clone())?;
         let auth = read_json_value(&paths.auth_path).unwrap_or(Value::Null);

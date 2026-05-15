@@ -420,11 +420,12 @@ Scope:
   count output.
 - Preserved the public dangerous warning and public output sanitization.
 
-Boundary note: legacy ANP-labeled k1 PEM compatibility conversion and
-workspace-migration-driven k1 replacement remain deferred under the existing ANP
-registry / workspace v2->v3 compatibility lanes. Live email registration/wait
-polling, profile-timeout wrappers, trace phase emission, and message/group
-service execution remain deferred identity/transport parity slices.
+Follow-up note: the 2026-05-15 identity key compatibility slice below now
+translates Go's load-time legacy ANP and SEC1 private-key PEM migration.
+Workspace-migration-driven k1 replacement remains deferred under the workspace
+v2->v3 compatibility lane. Live email registration/wait polling,
+profile-timeout wrappers, trace phase emission, and message/group service
+execution remain deferred identity/transport parity slices.
 
 No dependency was added. Cargo manifests and lockfile remain unchanged; this
 slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
@@ -954,9 +955,10 @@ Scope:
 - Preserved the `#message` ANPMessageService shape, trimmed endpoint/service
   DID values, profile list, and `transport-protected` security profile.
 
-Boundary note: this slice does not implement `identity/key_compat.go`, real
-service calls, HTTP/TLS transport, ANP SDK network/default features, or MLS
-provider execution.
+Follow-up note: the 2026-05-15 identity key compatibility slice below now
+translates `identity/key_compat.go`. This ANP service helper slice still does
+not implement real service calls, HTTP/TLS transport, ANP SDK network/default
+features, or MLS provider execution.
 
 No dependency was added. Cargo manifests and lockfile were unchanged; this
 slice reuses the existing local `../anp/rust` SDK path with default features
@@ -4569,3 +4571,63 @@ Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. This slice reuses the existing Rustls/std HTTP client and does not
 add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled
 OpenSSL, YAML crates, platform service libraries, or new SQLite dependencies.
+
+## 2026-05-15 Identity Key Compatibility Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cd ../anp/rust
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test --locked --no-default-features --test key_pem_tests
+cd ../../awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test identity_key_compat_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_replace_did_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli
+go test ./internal/identity -run 'TestManagerLoadMigratesLegacyANPPrivateKeysToPKCS8|TestReplaceDIDConvertsLegacyANPK1KeyWhenJWTMissing' -count=1
+```
+
+Result: passed after final verification.
+
+Additional ANP SDK note: the code-writing Native Agent also attempted
+`cargo +1.79.0 test --manifest-path anp/rust/Cargo.toml --test key_pem_tests`
+with default features. That broader SDK command was blocked before compilation
+by a registry mirror TLS download failure for `zerovec-derive 0.10.3`; the
+required no-default-features key PEM test above passed locally and keeps the CLI
+dependency lane on the local ANP SDK without default/network features.
+
+Scope:
+
+- Added a separate ANP Rust compatibility parser for private-key PEM inputs
+  used by Go `identity/key_compat.go`; the normal runtime
+  `PrivateKeyMaterial::from_pem` parser remains PKCS#8-only and continues to
+  reject legacy ANP labels.
+- Supported standard `PRIVATE KEY`, SEC1 `EC PRIVATE KEY`, and legacy ANP
+  private labels for Ed25519, X25519, secp256r1, and secp256k1, preserving Go
+  scalar/length validation and rewriting migrated material to standard
+  `-----BEGIN PRIVATE KEY-----` PKCS#8 PEM.
+- Added `identity/key_compat.rs` and wired `Manager::load` to normalize key-1,
+  E2EE signing, and E2EE agreement private-key files before reading stored
+  identity values, matching Go's missing-file no-op and auth-required error
+  boundary for empty/invalid/unsupported PEM files.
+- Added focused CLI contract coverage for three-file legacy ANP migration,
+  secp256k1 key-1 migration, and unsupported-label error shape.
+
+Boundary note: this is a compatibility migration path, not a broader ANP
+registry expansion. Missing Go convenience APIs such as `KeyType`,
+`GenerateKeyPairPEM`, free PEM decode functions, file-backed E2EE stores, and
+high-level message-service E2EE clients remain separate parity lanes.
+
+Dependency note: no dependency was added. Cargo manifests and lockfiles remain
+unchanged. This slice reuses existing pure Rust key/PKCS#8/base64 crates in the
+local ANP SDK plus the existing identity secure-text writer. It does not add
+OpenSSL, `native-tls`, bundled OpenSSL, HTTP/TLS crates, YAML crates, platform
+libraries, or new SQLite dependencies.

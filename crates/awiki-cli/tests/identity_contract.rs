@@ -547,6 +547,8 @@ fn identity_dry_run_and_validation_contracts_match_go() {
 fn identity_import_v1_flat_legacy_contract() {
     let workspace = TempDir::new().expect("workspace");
     let home = workspace.path().join("home");
+    let generated = awiki_cli::identity::generate_identity("example.test", "", "")
+        .expect("legacy fixture identity");
     let legacy = home
         .join(".openclaw")
         .join("credentials")
@@ -555,14 +557,14 @@ fn identity_import_v1_flat_legacy_contract() {
     std::fs::write(
         legacy.join("legacy-flat.json"),
         serde_json::to_vec_pretty(&json!({
-            "did": "did:wba:example.test:user:e1_legacy",
-            "unique_id": "e1_legacy",
+            "did": generated.did,
+            "unique_id": generated.unique_id,
             "name": "Legacy Flat",
             "handle": "legacy-flat",
             "jwt_token": "token",
-            "private_key_pem": "private",
-            "public_key_pem": "public",
-            "did_document": {"id": "did:wba:example.test:user:e1_legacy"}
+            "private_key_pem": generated.key1_private_pem,
+            "public_key_pem": generated.key1_public_pem,
+            "did_document": generated.did_document
         }))
         .unwrap(),
     )

@@ -1,6 +1,7 @@
 pub mod client;
 pub mod did;
 pub mod handle_input;
+pub mod key_compat;
 pub mod layout;
 pub mod legacy;
 pub mod recover;
@@ -19,6 +20,7 @@ pub use handle_input::{
     complete_bare_handle, default_string as default_handle_string, derive_full_handle_from_did,
     normalize_handle_input, NormalizedHandle,
 };
+pub use key_compat::ensure_key1_private_pem_compatible;
 pub use layout::Manager;
 pub use recover::{
     finalize_recovered_handle, recover_identity_ignored_warning, recover_preview,
