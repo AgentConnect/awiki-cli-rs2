@@ -2,6 +2,51 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Runtime Listener Service Local Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID' -count=1
+```
+
+Scope:
+
+- Adds `runtime::listener_service` as a split local-helper translation of Go
+  `internal/runtime/listener/service.go` deterministic helper behavior before
+  selecting platform service-manager integration.
+- Covers hashed service name generation, display-name derivation from workspace
+  basename, service-mode detection via `AWIKI_LISTENER_SERVICE_MODE` and
+  `runtime listener service-run` argv, boot-id generation/persistence/resolve
+  fallback, cleanup of runtime pid/status/socket/expected-boot artifacts, and
+  `waitForServiceStatusWith`/`serviceStatusReady` bridge plus boot-id readiness
+  gates.
+
+Dependency note: no dependency was added. The slice reuses existing `sha2`,
+`rand`, std filesystem/env/time APIs, and existing listener file helpers; it
+does not add `kardianos/service`, platform service-manager crates, OpenSSL,
+`native-tls`, bundled OpenSSL, HTTP/WebSocket crates, YAML crates, or new SQLite
+dependencies.
+
+Boundary note: Go `serviceProgram`, `newService`, install/start/stop/restart/
+uninstall execution, real OS service status, process supervision, foreground
+WebSocket/session execution, and native platform service integration remain
+deferred and dependency-reviewed.
+
 ## 2026-05-15 Runtime Hermes Host Notification Helper Slice
 
 Status: unit verified.

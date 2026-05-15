@@ -1,12 +1,10 @@
 use crate::config::Resolved;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const EXPECTED_BOOT_ID_FILE_NAME: &str = "listener.expected-boot-id";
-const SERVICE_NAME_PREFIX: &str = "awiki-cli-listener";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionStatus {
@@ -141,7 +139,7 @@ pub fn status_for(resolved: &Resolved, installed: bool, running: bool) -> anyhow
         socket_path: runtime_paths.socket_path,
         log_file: runtime_paths.log_file,
         status_file: runtime_paths.status_file,
-        service_name: service_name_for(resolved),
+        service_name: super::listener_service::service_name_for(resolved),
         service_platform: "rust-local".to_string(),
         host_notify: listener_host_notify_status(resolved),
         ..Status::default()
@@ -228,15 +226,6 @@ pub fn session_warnings(sessions: &[SessionStatus]) -> Vec<String> {
 
 pub fn has_disconnected_sessions(sessions: &[SessionStatus]) -> bool {
     sessions.iter().any(|session| !session.connected)
-}
-
-pub fn service_name_for(resolved: &Resolved) -> String {
-    let workspace = resolved.paths.workspace_home_dir.trim();
-    if workspace.is_empty() {
-        return SERVICE_NAME_PREFIX.to_string();
-    }
-    let digest = Sha256::digest(workspace.as_bytes());
-    format!("{SERVICE_NAME_PREFIX}-{}", &format!("{digest:x}")[..12])
 }
 
 pub fn bridge_endpoint_available(path: &str) -> bool {
