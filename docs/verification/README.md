@@ -2,6 +2,68 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity Recover Live Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test identity_recover_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/cli ./internal/identity ./internal/store ./internal/authsdk ./internal/cmdmeta -run 'Test.*Recover|TestRecoverStagesAndFinalizesSameHandleLiveIdentities|TestMergeRecoveredHandleLocalState|Test.*Bind|Test.*Profile|Test.*Resolve' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/id/test_identity_cli.py::test_id_register_resolve_profile_bind_and_recover_flow tests_v2/id/test_identity_cli.py::test_id_bind_email_send_requires_auth_and_supports_registered_identity tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh tests_v2/id/test_identity_cli.py::test_id_refresh_token_replaces_stale_local_jwt_for_registered_identity tests_v2/id/test_identity_cli.py::test_id_profile_set_rejects_conflicting_body_sources -q
+```
+
+Result: Rust focused recover, identity live, identity contract, identity wire,
+and full `cargo +1.79.0 test -p awiki-cli --locked` all passed. Structure
+check passed with no undocumented Rust source/test file over 1200 lines:
+`app.rs` 1102 lines, `identity/recover.rs` 652 lines,
+`identity/service.rs` 1014 lines, `identity_live_contract.rs` 1081 lines, and
+the new `identity_recover_live_contract.rs` 461 lines. Go focused
+recover/bind/profile/resolve/store/authsdk/cmdmeta tests and the focused
+`awiki-system-test` id selector passed after final verification.
+
+Scope:
+
+- Wired non-dry-run `id recover` through `identity::recover` and the split
+  `app/id_recover_handlers.rs` finalization layer, keeping `app.rs` under the
+  project file-size threshold.
+- Preserved Go no-OTP behavior: `/user-service/handle/rpc` `send_otp`, phone
+  normalization, `send_recover_otp` result shape, and no local identity writes.
+- Preserved Go OTP behavior: generate a handle-path e1 DID, create a recover
+  backup under `.legacy-backup/recover-handle`, call
+  `/user-service/did-auth/rpc` `recover_handle`, stage the recovered identity as
+  a temporary identity, and persist recovered handle/full_handle/user_id/JWT.
+- Wired CLI-owned finalization: merge old-owner SQLite state through
+  `store::merge_recovered_handle_local_state`, promote the temporary identity
+  to the final identity name, remove archived same-handle identities from the
+  live index, update active/default identity state as Go does, expose
+  `store_merge_counts` and `e2ee_cleanup_counts`, and hide `temp_identity_name`,
+  `active_before`, and `old_dids` from public output.
+- Preserved Go warnings for archived same-handle identities and ignored
+  `--identity`; recover-specific merge/finalization failures include
+  `backup_path`, `temp_identity_name`, and `new_did` details.
+- Split live recover tests into `identity_recover_live_contract.rs` instead of
+  growing `identity_live_contract.rs` past the 1200-line default.
+
+Boundary note: non-dry-run `id replace-did`, live email registration/wait
+polling, profile-timeout wrappers, trace phase emission, and message/group
+service execution remain deferred identity/transport parity slices.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
+identity wire builders, and approved `rusqlite + bundled` SQLite path. It does
+not add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled
+OpenSSL, YAML crates, platform service libraries, or ANP SDK network/default
+features.
+
 ## 2026-05-15 Identity Bind Live Slice
 
 Local Rust and Go reference verification:

@@ -1,21 +1,25 @@
 use super::client::Client;
 use super::did::{generate_identity, generate_identity_with_path_segments};
 use super::handle_input::normalize_handle_input;
+use super::recover::{build_recover_plan, recover_active_before, RecoverBackupRequest};
 use super::store::{
     choose_default_identity_name, choose_named_identity, identity_summary_from_record,
 };
-use super::types::{BindParams, IdentityError, RegisterParams, SaveInput, LEGACY_LAYOUT_HINT};
+use super::types::{
+    BindParams, IdentityError, RecoverParams, RegisterParams, SaveInput, LEGACY_LAYOUT_HINT,
+};
 use super::wire::{
     bind_email_completed_result, bind_email_pending_result, bind_email_sent_result,
     bind_phone_completed_result, bind_phone_otp_result, build_email_send_rest_call,
     build_email_status_rest_call, build_get_me_profile_rpc_call,
     build_handle_lookup_by_did_rpc_call, build_handle_lookup_by_handle_rpc_call,
     build_phone_bind_send_rest_call, build_phone_bind_verify_rest_call,
-    build_profile_resolve_rpc_call, build_public_profile_rpc_call, build_register_rpc_call,
-    build_send_otp_rpc_call, build_update_me_profile_rpc_call, normalize_email,
-    profile_public_result, profile_self_result, profile_update_result, refresh_token_result,
-    register_completed_result, register_phone_otp_result, resolve_result, HandleLookupResult,
-    RegisterRpcParams, ServiceError, UpdateProfileParams, DID_AUTH_RPC_ENDPOINT,
+    build_profile_resolve_rpc_call, build_public_profile_rpc_call, build_recover_handle_rpc_call,
+    build_register_rpc_call, build_send_otp_rpc_call, build_update_me_profile_rpc_call,
+    normalize_email, profile_public_result, profile_self_result, profile_update_result,
+    recover_otp_result, refresh_token_result, register_completed_result, register_phone_otp_result,
+    resolve_result, HandleLookupResult, RecoverHandleRpcParams, RegisterRpcParams, ServiceError,
+    UpdateProfileParams, DID_AUTH_RPC_ENDPOINT,
 };
 use super::Manager;
 use crate::authsdk::Session;
@@ -408,6 +412,93 @@ pub fn bind(
         }
     }
     Ok(bind_email_completed_result(&identity, &email))
+}
+
+pub fn recover(
+    resolved: &Resolved,
+    manager: &Manager,
+    params: RecoverParams,
+) -> Result<CommandResult, IdentityError> {
+    let phone = params.phone.trim().to_string();
+    let otp = params.otp.trim().to_string();
+    if params.handle.trim().is_empty() || phone.is_empty() {
+        return Err(IdentityError::InvalidInput(
+            "invalid input: handle and phone are required".to_string(),
+        ));
+    }
+    let plan = build_recover_plan(manager, &resolved.did_domain, &params)?;
+    let client = Client::new(resolved)?;
+
+    if otp.is_empty() {
+        let call = build_send_otp_rpc_call(&phone)?;
+        let result: Value =
+            client.rpc_call_profile(call.profile, call.endpoint, call.method, call.params)?;
+        return recover_otp_result(
+            &plan.final_identity_name,
+            &plan.target_local_part,
+            &plan.target_handle,
+            &phone,
+            result,
+        );
+    }
+
+    let generated = generate_identity_with_path_segments(
+        &plan.effective_domain,
+        [plan.target_local_part.as_str()],
+        &resolved.anp_service_endpoint,
+        &resolved.anp_service_did,
+    )?;
+    let active_before = recover_active_before(&resolved.paths.config_file)?;
+    let backup = manager.backup_identities_for_handle_recovery(RecoverBackupRequest {
+        handle: &plan.target_handle,
+        candidates: &plan.same_handle_candidates,
+        planned_final_identity_name: &plan.final_identity_name,
+        planned_temp_identity_name: &plan.temp_identity_name,
+        active_before: &active_before,
+        config_file: Some(&resolved.paths.config_file),
+    })?;
+    let call = build_recover_handle_rpc_call(RecoverHandleRpcParams {
+        did_document: generated.did_document.clone(),
+        handle: plan.target_handle.clone(),
+        phone: phone.clone(),
+        otp_code: otp,
+    })?;
+    let result: Value =
+        client.rpc_call_profile(call.profile, call.endpoint, call.method, call.params)?;
+    let record = manager.save(SaveInput {
+        identity_name: plan.temp_identity_name.clone(),
+        did: string_value(&result, "did", &generated.did),
+        unique_id: generated.unique_id,
+        user_id: string_value(&result, "user_id", ""),
+        display_name: plan.target_local_part.clone(),
+        handle: default_string_value(&result, "handle", &plan.target_local_part),
+        full_handle: default_string_value(&result, "full_handle", &plan.target_handle),
+        jwt_token: string_value(&result, "access_token", ""),
+        did_document: Some(generated.did_document),
+        key1_private_pem: generated.key1_private_pem,
+        key1_public_pem: generated.key1_public_pem,
+        e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+        e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+        ..SaveInput::default()
+    })?;
+    let summary = identity_summary_from_record(&record);
+    Ok(CommandResult {
+        data: json!({
+            "action": "recover_handle",
+            "identity": summary,
+            "backup_path": backup.backup_path,
+            "archived_identities": plan.archived_identity_names(),
+            "archived_dids": plan.archived_dids(),
+            "old_dids": plan.old_owner_dids_in_merge_order(),
+            "full_handle": plan.target_handle,
+            "final_identity_name": plan.final_identity_name,
+            "temp_identity_name": plan.temp_identity_name,
+            "active_before": active_before,
+            "result": result,
+        }),
+        summary: format!("Handle {} recovered successfully", plan.target_handle),
+        warnings: Vec::new(),
+    })
 }
 
 pub fn use_plan(identity_name: &str) -> CommandResult {

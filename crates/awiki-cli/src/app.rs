@@ -16,6 +16,7 @@ use std::path::Path;
 mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
+mod id_recover_handlers;
 mod mail_handlers;
 mod msg_handlers;
 mod page_handlers;
@@ -503,42 +504,6 @@ impl App {
         self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
     }
 
-    pub fn run_id_recover(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("id recover"));
-        }
-        let handle = required_string_flag(
-            command,
-            "handle",
-            "id recover",
-            "Usage: awiki-cli id recover --handle <handle> --phone <phone> [--otp <code>]",
-        )?;
-        let phone = required_string_flag(
-            command,
-            "phone",
-            "id recover",
-            "Usage: awiki-cli id recover --handle <handle> --phone <phone> [--otp <code>]",
-        )?;
-        let mut result = identity::recover_preview(
-            &self.identity_manager(&resolved),
-            &resolved.did_domain,
-            identity::RecoverParams {
-                identity_name: self.globals.identity.clone(),
-                handle,
-                phone,
-                otp: string_flag(command, "otp"),
-            },
-        )
-        .map_err(identity_exit)?;
-        if self.globals.identity_changed {
-            result
-                .warnings
-                .push(identity::recover_identity_ignored_warning().to_string());
-        }
-        self.render_identity_result("awiki-cli id recover", &resolved, result)
-    }
-
     pub fn run_id_replace_did(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
@@ -838,24 +803,6 @@ fn changed_string_flag(command: &ParsedCommand, name: &str) -> Option<String> {
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
-}
-
-fn required_string_flag(
-    command: &ParsedCommand,
-    name: &str,
-    command_name: &str,
-    help: &str,
-) -> Result<String, ExitError> {
-    let value = string_flag(command, name);
-    if value.trim().is_empty() {
-        return Err(ExitError::new(
-            "invalid_argument",
-            2,
-            format!("{command_name} requires --{name}."),
-            help,
-        ));
-    }
-    Ok(value)
 }
 
 fn identity_status(resolved: &Resolved) -> Value {
