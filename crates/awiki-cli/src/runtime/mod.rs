@@ -10,6 +10,7 @@ pub mod bridge;
 pub mod hermes_bridge;
 pub mod listener;
 pub mod listener_contact_sync;
+pub mod listener_message_records;
 pub mod openclaw_routes;
 pub mod openclaw_webhook;
 

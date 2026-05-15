@@ -2,6 +2,52 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Runtime Listener Message Parser Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli listener_message_records --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'TestMessageRecordFromDirectIncomingUsesProtocolFieldsOnly|TestMessageRecordFromDirectIncomingRejectsNonDirectNotification|TestMessageRecordFromGroupIncomingUsesProtocolFieldsOnly' -count=1
+```
+
+Scope:
+
+- Adds `runtime::listener_message_records` as a split helper translation of
+  Go `internal/runtime/listener/server.go` pure direct/group incoming message
+  parser functions.
+- Covers direct and group method/params gating, required field behavior,
+  direct/group thread IDs, direct content fallback order, direct E2EE flag
+  conditions, group self-sent direction/read status, group message-ID fallback
+  including the numeric-seq pitfall, server-seq parsing, Go `text/plain`
+  content-type defaults, and metadata limited to `params`.
+- Keeps the implementation parser-only because Rust does not yet implement the
+  Go foreground listener WebSocket/session notification loop from
+  `internal/runtime/listener/server.go`.
+
+Dependency note: no dependency was added. The slice uses `serde_json` and the
+existing store helpers already present in the crate; it does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, YAML
+crates, platform service libraries, or new SQLite dependencies.
+
+Boundary note: Go `handleNotification` integration remains deferred: foreground
+session processing, direct secure decryption, actual SQLite message storage,
+incoming contact sync wiring, host-notify enrichment/dispatch, local bridge I/O,
+and WebSocket runtime execution are not claimed by this helper-only slice.
+
 ## 2026-05-15 Runtime Listener Contact Sync Helper Slice
 
 Status: unit verified.
