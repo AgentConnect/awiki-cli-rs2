@@ -1,11 +1,14 @@
 use awiki_cli::message::{
     build_secure_ack_payload, build_secure_init_payload, compact_warnings,
-    flush_queued_secure_outbox_rows_plan, is_pending_confirmation_error, is_secure_ack_plaintext,
-    is_secure_init_plaintext, secure_ack_session_id, MarkSentOutcome, QueuedSecureOutboxRow,
-    SecureOutboxFlushAction, SecureOutboxFlushRowOutcome, SecureOutboxSendOutcome,
-    StoreMessageOutcome,
+    current_secure_session_id, flush_queued_secure_outbox_rows_plan, is_pending_confirmation_error,
+    is_secure_ack_plaintext, is_secure_init_plaintext, queue_secure_outbox_record,
+    secure_ack_session_id, MarkSentOutcome, QueuedSecureOutboxRow, SecureOutboxFlushAction,
+    SecureOutboxFlushRowOutcome, SecureOutboxSendOutcome, StoreMessageOutcome,
 };
+use awiki_cli::{anpsdk, config, identity, store};
 use serde_json::{json, Map, Value};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn rows_are_stably_sorted_by_created_at_before_flushing() {
@@ -489,6 +492,102 @@ fn pending_confirmation_error_detection_matches_go_string_checks() {
     assert!(!is_pending_confirmation_error(Some("confirmation pending")));
 }
 
+#[test]
+fn current_secure_session_id_reads_matching_file_session_store_like_go() {
+    let (workspace, resolved, manager, record) = secure_helper_workspace();
+
+    assert_eq!(
+        current_secure_session_id(None, Some(&record), "did:bob"),
+        ""
+    );
+    assert_eq!(
+        current_secure_session_id(Some(&manager), None, "did:bob"),
+        ""
+    );
+    assert_eq!(
+        current_secure_session_id(Some(&manager), Some(&record), "did:bob"),
+        ""
+    );
+    assert!(
+        Path::new(&manager.paths_for_identity("alice").unwrap().identity_dir)
+            .join("p5-e2ee-sessions")
+            .is_dir()
+    );
+
+    let mut session_store = anpsdk::FileSessionStore::new(
+        Path::new(&manager.paths_for_identity("alice").unwrap().identity_dir)
+            .join("p5-e2ee-sessions"),
+    )
+    .expect("session store");
+    session_store
+        .save_session(&direct_session("  session-001  ", "did:bob"))
+        .expect("save bob session");
+    session_store
+        .save_session(&direct_session("session-002", "did:bob:extra"))
+        .expect("save non-exact session");
+
+    assert_eq!(
+        current_secure_session_id(Some(&manager), Some(&record), "did:bob"),
+        "session-001"
+    );
+    assert_eq!(
+        current_secure_session_id(Some(&manager), Some(&record), "did:carol"),
+        ""
+    );
+    drop(workspace);
+    let _ = resolved;
+}
+
+#[test]
+fn queue_secure_outbox_record_uses_current_session_and_go_pending_metadata() {
+    let (_workspace, resolved, manager, record) = secure_helper_workspace();
+    let mut session_store = anpsdk::FileSessionStore::new(
+        Path::new(&manager.paths_for_identity("alice").unwrap().identity_dir)
+            .join("p5-e2ee-sessions"),
+    )
+    .expect("session store");
+    session_store
+        .save_session(&direct_session("session-queued", "did:bob"))
+        .expect("save session");
+
+    let outbox_id = queue_secure_outbox_record(
+        &resolved,
+        &manager,
+        Some(&record),
+        "did:bob",
+        " \t\n",
+        "queued plaintext",
+    )
+    .expect("queue secure outbox");
+
+    let connection = store::open(&resolved.paths).expect("open store");
+    store::ensure_schema(&connection).expect("ensure schema");
+    let row = store::get_e2ee_outbox(&connection, &outbox_id, &record.did, &record.identity_name)
+        .expect("get queued outbox");
+
+    assert_eq!(row["owner_did"], "did:alice");
+    assert_eq!(row["peer_did"], "did:bob");
+    assert_eq!(row["session_id"], "session-queued");
+    assert_eq!(row["original_type"], "text");
+    assert_eq!(row["plaintext"], "queued plaintext");
+    assert_eq!(row["local_status"], "queued");
+    assert_eq!(row["credential_name"], "alice");
+    assert_eq!(
+        row["metadata"],
+        json!(r#"{"reason":"pending_confirmation"}"#)
+    );
+}
+
+#[test]
+fn queue_secure_outbox_record_requires_identity_record() {
+    let (_workspace, resolved, manager, _record) = secure_helper_workspace();
+
+    let error = queue_secure_outbox_record(&resolved, &manager, None, "did:bob", "text", "hello")
+        .expect_err("missing record should fail");
+
+    assert_eq!(error.to_string(), "identity record is required");
+}
+
 fn row(
     outbox_id: &str,
     peer_did: &str,
@@ -548,4 +647,128 @@ fn plaintext_with_payload(payload: Value) -> Map<String, Value> {
         ),
         ("payload".to_string(), payload),
     ])
+}
+
+fn secure_helper_workspace() -> (
+    TempDir,
+    config::Resolved,
+    identity::Manager,
+    identity::types::StoredIdentity,
+) {
+    let workspace = TempDir::new().expect("workspace");
+    let resolved = test_resolved(workspace.path());
+    let manager = identity::Manager::new(resolved.paths.clone());
+    let record = manager
+        .save(identity::types::SaveInput {
+            identity_name: "alice".to_string(),
+            did: "did:alice".to_string(),
+            unique_id: "e1_alice".to_string(),
+            display_name: "Alice".to_string(),
+            ..identity::types::SaveInput::default()
+        })
+        .expect("save identity");
+    (workspace, resolved, manager, record)
+}
+
+fn direct_session(session_id: &str, peer_did: &str) -> anpsdk::DirectSessionState {
+    anpsdk::DirectSessionState {
+        session_id: session_id.to_string(),
+        suite: "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1".to_string(),
+        peer_did: peer_did.to_string(),
+        local_key_agreement_id: "did:alice#key-3".to_string(),
+        peer_key_agreement_id: "did:bob#key-3".to_string(),
+        root_key_b64u: "root".to_string(),
+        send_chain_key_b64u: Some("send".to_string()),
+        recv_chain_key_b64u: Some("recv".to_string()),
+        ratchet_private_key_b64u: "private".to_string(),
+        ratchet_public_key_b64u: "public".to_string(),
+        peer_ratchet_public_key_b64u: None,
+        send_n: 1,
+        recv_n: 2,
+        previous_send_chain_length: 0,
+        skipped_message_keys: Vec::new(),
+        is_initiator: true,
+        status: "established".to_string(),
+    }
+}
+
+fn test_resolved(root: &Path) -> config::Resolved {
+    config::Resolved {
+        paths: config::Paths {
+            workspace_home_dir: root.to_string_lossy().to_string(),
+            root_dir: root.to_string_lossy().to_string(),
+            config_dir: root.join("config").to_string_lossy().to_string(),
+            data_dir: root.join("data").to_string_lossy().to_string(),
+            state_dir: root.join("state").to_string_lossy().to_string(),
+            cache_dir: root.join("cache").to_string_lossy().to_string(),
+            logs_dir: root.join("logs").to_string_lossy().to_string(),
+            config_file: root.join("config.yaml").to_string_lossy().to_string(),
+            identity_dir: root.join("identities").to_string_lossy().to_string(),
+            database_file: root
+                .join("data")
+                .join("awiki-cli.db")
+                .to_string_lossy()
+                .to_string(),
+            legacy_credentials_dir: root.join("credentials").to_string_lossy().to_string(),
+            legacy_data_dir: root.join("legacy-data").to_string_lossy().to_string(),
+        },
+        config_schema_version: 1,
+        active_identity: "alice".to_string(),
+        runtime_mode: "websocket".to_string(),
+        runtime_socket_path: String::new(),
+        runtime_listener_enabled: true,
+        runtime_listener_auto_install: true,
+        runtime_listener_auto_start: true,
+        host_notify_enabled: true,
+        host_notify_sink: "log".to_string(),
+        host_notify_file_path: String::new(),
+        host_notify_openclaw_hook_url: String::new(),
+        host_notify_openclaw_agent_id: String::new(),
+        host_notify_openclaw_hook_name: String::new(),
+        host_notify_hermes_notify_url: String::new(),
+        host_notify_hermes_deliver: String::new(),
+        output_format: "json".to_string(),
+        no_color: false,
+        service_base_url: "https://awiki.ai".to_string(),
+        did_domain: "awiki.ai".to_string(),
+        anp_service_endpoint: "https://awiki.ai/anp-im/rpc".to_string(),
+        anp_service_did: "did:wba:awiki.ai".to_string(),
+        mail_service_url: "https://awiki.ai/mail/rpc".to_string(),
+        ca_bundle: String::new(),
+        update_disable_strict_version: false,
+        update_metadata_cache_ttl_seconds: 3600,
+        config_exists: true,
+        config_error: String::new(),
+        env_hits: Vec::new(),
+        sources: Default::default(),
+    }
+}
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new() -> std::io::Result<Self> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-secure-control-test-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }

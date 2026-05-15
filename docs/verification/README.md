@@ -165,6 +165,7 @@ Go reference verification:
   `IsSecureInitPlaintext`, `secureAckSessionID`, and
   `isPendingConfirmationError`.
 - Go source parity for `internal/message/secure_control.go`
+  `currentSecureSessionID`, `queueSecureOutboxRecord`, and
   `FlushQueuedSecureOutbox` queued-row sorting, filtering, payload handling,
   failure updates, send result handling, sent metadata, stored message shape,
   and compact warnings.
@@ -191,6 +192,17 @@ Scope:
 - Preserves `isPendingConfirmationError`: nil-equivalent false behavior plus
   case-insensitive matching for `pending confirmation` and
   `pending-confirmation`.
+- Preserves `currentSecureSessionID`: nil-equivalent manager/record cases
+  return blank, identity path/store lookup errors return blank,
+  `p5-e2ee-sessions` is opened through the Go-shaped file session store,
+  exact peer DID lookup is used, missing peers return blank, and returned
+  session IDs are trimmed.
+- Preserves `queueSecureOutboxRecord`: missing identity records return
+  `identity record is required`, the local store is opened and schema ensured,
+  current secure session ID is captured, blank `original_type` defaults to
+  `text`, plaintext/peer DID/owner DID/credential name are inserted unchanged
+  through the existing DAO normalization, `local_status` is `queued`, and
+  metadata is exactly `{"reason":"pending_confirmation"}`.
 - Adds `message::secure_outbox_flush` as a pure row-loop planning helper for Go
   `FlushQueuedSecureOutbox`.
 - Preserves stable ascending sort by raw `created_at` string, including stable
@@ -225,18 +237,20 @@ Scope:
   `secure_outbox_flush.rs`, and the focused test file are all below 1200
   lines.
 
-Boundary note: this is a pure planning slice. It does not implement real store
-open/schema/list, `queueSecureOutboxRecord`, `currentSecureSessionID`, ANP SDK
-file session stores, E2EE client construction or sending, SQLite outbox
-mutation, message store writes, WebSocket RPC, foreground listener execution,
-or `awiki-system-test` runtime listener acceptance.
+Boundary note: this slice now includes local store open/schema/insert for
+`queueSecureOutboxRecord` and local file-session lookup for
+`currentSecureSessionID`. It still does not implement real
+`FlushQueuedSecureOutbox` row listing/action execution, E2EE client
+construction or sending, message store writes outside the planner, WebSocket
+RPC, foreground listener execution, `SecureRetry`, `SecureInit`,
+`SecureRepair`, or `awiki-system-test` runtime listener acceptance.
 
 Dependency note: no dependency was added. The slice reuses existing message
-helpers, store record types, `serde_json`, and std collections. It does not
-add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
-crates, Tokio, YAML crates, platform service libraries, E2EE provider
-dependencies, file-store dependencies, ANP SDK wiring, or new SQLite
-dependencies.
+helpers, store record types, approved `rusqlite + bundled`, `serde_json`, std
+collections/filesystem APIs, and the existing local ANP facade file session
+store. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, Tokio, YAML crates, platform service libraries, new
+E2EE provider dependencies, or new SQLite dependencies.
 
 ## 2026-05-16 Runtime Listener Notification Consume Helper Slice
 
