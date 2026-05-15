@@ -310,6 +310,62 @@ Dependency note: no dependency was added. The slice uses only
 `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform service
 libraries, E2EE provider dependencies, or new SQLite dependencies.
 
+## 2026-05-16 Runtime Listener Peer Queued Secure Outbox Flush Trigger Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_outbox_flush_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `flushPeerQueuedSecureOutbox` session snapshot scan, owner-session selection,
+  nil secure-RPC return, queued outbox flush trigger, and warning log behavior.
+- Existing secure listener/message guards cover adjacent real E2EE consumers:
+  `go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation' -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_secure_outbox_flush` as a pure Supervisor-level
+  trigger helper for Go `flushPeerQueuedSecureOutbox`.
+- Preserves session snapshot behavior by scanning the supplied snapshot and
+  using that snapshot order. Go's source snapshot is built from a map, so no
+  stronger ordering guarantee is claimed.
+- Preserves nil current record and nonmatching owner DID skips.
+- Preserves exact owner DID comparison without trimming.
+- Preserves the first-owner-match nil secure-RPC behavior: return immediately
+  without scanning later sessions.
+- Preserves successful trigger behavior: call `FlushQueuedSecureOutbox` once
+  for the owner record and peer DID, then log owner DID, peer DID, and warnings,
+  then return.
+- Preserves exact peer DID forwarding without trimming.
+- Keeps files under the default review-size cap:
+  `listener_secure_outbox_flush.rs` is 72 lines and the focused test file is
+  135 lines.
+
+Boundary note: this is a pure trigger-planning slice. It does not implement
+real session locks, real `secureRPC`, `message.FlushQueuedSecureOutbox`,
+`WSClient.SendRPC`, E2EE encryption/decryption, file session stores, SQLite
+outbox mutation, foreground listener execution, host-notify dispatch, local
+bridge I/O, or `awiki-system-test` runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing identity
+types only. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, Tokio, YAML crates, platform service libraries,
+E2EE provider dependencies, file-store dependencies, or new SQLite
+dependencies.
+
 ## 2026-05-16 Runtime Listener Secure Inbox/History Sync Planning Slice
 
 Status: unit verified.

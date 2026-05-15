@@ -23,6 +23,7 @@ pub mod listener_secure_ack_delivery;
 pub mod listener_secure_inbox_poll;
 pub mod listener_secure_normalize;
 pub mod listener_secure_notifications;
+pub mod listener_secure_outbox_flush;
 pub mod listener_secure_replay;
 pub mod listener_secure_sessions;
 pub mod listener_secure_sync;
