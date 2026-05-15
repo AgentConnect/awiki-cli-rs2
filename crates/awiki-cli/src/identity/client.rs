@@ -33,7 +33,7 @@ impl Client {
 
     pub fn rpc_call_profile<T>(
         &self,
-        _profile: Profile,
+        profile: Profile,
         endpoint: &str,
         rpc_method: &str,
         params: Value,
@@ -49,6 +49,7 @@ impl Client {
             .execute(
                 HttpRequest::new("POST", request_url)
                     .header("Content-Type", CONTENT_TYPE_JSON)
+                    .timeout(self.http_client.config().timeout_for_profile(profile))
                     .body(body),
             )
             .map_err(|err| IdentityError::Internal(err.to_string()))?;
@@ -60,7 +61,7 @@ impl Client {
 
     pub fn authenticated_rpc_call_profile<T, P>(
         &self,
-        _profile: Profile,
+        profile: Profile,
         endpoint: &str,
         rpc_method: &str,
         params: P,
@@ -71,8 +72,15 @@ impl Client {
         P: Serialize,
     {
         let request_url = join_base_url(&self.base_url, endpoint);
-        auth.do_json_rpc(&self.http_client, &request_url, "POST", rpc_method, params)
-            .map_err(identity_service_error)
+        auth.do_json_rpc_profile(
+            &self.http_client,
+            profile,
+            &request_url,
+            "POST",
+            rpc_method,
+            params,
+        )
+        .map_err(identity_service_error)
     }
 
     pub fn authenticated_rest_post<T>(
@@ -84,8 +92,14 @@ impl Client {
         T: DeserializeOwned,
     {
         let request_url = join_base_url(&self.base_url, call.endpoint);
-        auth.do_json(&self.http_client, call.method, &request_url, call.body)
-            .map_err(identity_service_error)
+        auth.do_json_profile(
+            &self.http_client,
+            Profile::RpcDefault,
+            call.method,
+            &request_url,
+            call.body,
+        )
+        .map_err(identity_service_error)
     }
 
     pub fn rest_post<T>(&self, call: RestCall) -> Result<T, IdentityError>
@@ -99,6 +113,11 @@ impl Client {
             .execute(
                 HttpRequest::new(call.method, request_url)
                     .header("Content-Type", CONTENT_TYPE_JSON)
+                    .timeout(
+                        self.http_client
+                            .config()
+                            .timeout_for_profile(Profile::RpcDefault),
+                    )
                     .body(body),
             )
             .map_err(|err| IdentityError::Internal(err.to_string()))?;
@@ -118,6 +137,11 @@ impl Client {
         if !bearer.is_empty() {
             request = request.header("Authorization", format!("Bearer {bearer}"));
         }
+        request = request.timeout(
+            self.http_client
+                .config()
+                .timeout_for_profile(Profile::RpcDefault),
+        );
         let response = self
             .http_client
             .execute(request)
@@ -133,7 +157,7 @@ impl Client {
         auth: &mut Session,
         request_url: &str,
     ) -> Result<String, IdentityError> {
-        auth.ensure_jwt(&self.http_client, request_url)
+        auth.ensure_jwt_profile(&self.http_client, Profile::AuthRefresh, request_url)
             .map_err(identity_service_error)
     }
 }

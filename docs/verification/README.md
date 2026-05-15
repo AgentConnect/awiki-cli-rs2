@@ -88,8 +88,9 @@ Dependency evidence:
   service, or new SQLite dependency is introduced by this slice.
 
 Boundary note: secure direct E2EE attachments, group E2EE/MLS attachments,
-WebSocket/local bridge attachment transport, profile-timeout wrappers, trace
-phase plumbing, and optimization/refactor work remain later parity slices.
+WebSocket/local bridge attachment transport, trace phase plumbing, and
+optimization/refactor work remain later parity slices. Shared profile timeout
+caps are covered by the later service profile-timeout slice.
 
 ## 2026-05-15 Non-E2EE Group Live HTTP Slice
 
@@ -160,9 +161,10 @@ Scope:
 
 Boundary note: group attachment send/download is covered by the later
 attachment live HTTP slice recorded above. Group E2EE/MLS execution,
-WebSocket/local bridge/runtime listener fallback, OpenClaw host notify,
-profile-timeout wrappers, trace phase plumbing, and deeper cache fallback
-behavior remain later parity slices.
+WebSocket/local bridge/runtime listener fallback, OpenClaw host notify, trace
+phase plumbing, and deeper cache fallback behavior remain later parity slices.
+Shared profile timeout caps are covered by the later service profile-timeout
+slice.
 
 No dependency was added. Cargo manifests and lockfile remain unchanged; this
 slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
@@ -231,8 +233,8 @@ Scope:
 Boundary note: direct attachment send/download is covered by the later
 attachment live HTTP slice recorded above. Secure direct E2EE, group
 lifecycle/messages, WebSocket/local bridge/runtime listener transport, OpenClaw
-host notify, profile-timeout wrappers, and trace phase plumbing remain later
-parity slices.
+host notify, and trace phase plumbing remain later parity slices. Shared
+profile timeout caps are covered by the later service profile-timeout slice.
 
 No dependency was added. Cargo manifests and lockfile remain unchanged; this
 slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
@@ -4337,3 +4339,75 @@ Dependency note: added `base64 = 0.22` as a direct pure Rust dependency for the
 mail attachment decode path. The crate was already present transitively through
 the local ANP SDK. No OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
 `hyper`, WebSocket, YAML, platform service, or new SQLite dependency is added.
+Shared profile timeout caps are covered by the later service profile-timeout
+slice; trace phases around mail RPC calls remain deferred.
+
+## 2026-05-15 Shared Service Profile Timeout Slice
+
+Status: locally verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test page_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test site_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test attachment_live_contract --locked
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+```
+
+Result: passed. Formatting, whitespace, package check, structure check,
+focused transport/authsdk/service live contract tests, binary build, and
+dependency audit all passed. The full `cargo +1.79.0 test -p awiki-cli
+--locked` suite also passed with no failed tests. Focused test counts:
+`transportcfg_http_contract` 10,
+`authsdk_contract` 15, `mail_live_contract` 3, `page_live_contract` 4,
+`site_live_contract` 4, `identity_live_contract` 15, `msg_live_contract` 2,
+`group_live_contract` 3, and `attachment_live_contract` 4 all passed with zero
+failures. `xtask check-structure` reported
+`structure ok: no undocumented Rust files over 1200 lines`. Dependency audit
+showed only allowed existing hits: `base64`, `rustls`, `rustls-webpki`,
+`webpki-roots`, `ring`, approved `rusqlite`, `libsqlite3-sys`, and build
+helpers `cc`, `pkg-config`, and `vcpkg`; no OpenSSL, `native-tls`, `reqwest`,
+`hyper`, WebSocket, YAML, or platform service dependency was introduced.
+
+Scope:
+
+- Added an optional per-request timeout cap to the shared Rustls/std
+  `transportcfg::HttpRequest` and applied it after request write for HTTP and
+  HTTPS response reads.
+- Preserved Go `WithProfileTimeout`'s "shorter deadline wins" behavior by
+  making request profile timeouts shorten, not extend, the configured base
+  HTTP response timeout.
+- Added profile-aware authsdk helpers for JSON-RPC, plain JSON, and DID-auth
+  `get_me` refresh.
+- Wired mail, content, site, identity, and message clients so existing
+  `AuthRefresh`, `RpcDefault`, and `RpcReadHeavy` profile selections now reach
+  the shared HTTP request path.
+- Wired the message JSON-RPC 1401 retry path so DID-auth retry refresh uses the
+  `AuthRefresh` profile and the retried RPC keeps the original RPC profile.
+
+Boundary note: the current Rust std blocking HTTP client applies these profile
+caps to the response read path. Go context deadlines also cover dial,
+TLS handshake, and request write; exact cross-phase deadline cancellation plus
+trace phase emission remain later transport/trace parity work.
+
+Parallelism note: the focused `transportcfg_http_contract` tests were added by
+a code-writing Native Agent launched with GPT-5.5 and xhigh reasoning under a
+test-only write scope, satisfying the recorded parallel-development constraint.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing Rustls/std HTTP client and does not
+add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled
+OpenSSL, YAML crates, platform service libraries, or new SQLite dependencies.

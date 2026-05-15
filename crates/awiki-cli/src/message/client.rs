@@ -34,7 +34,7 @@ impl Client {
 
     pub fn authenticated_rpc_call_profile<T, P>(
         &self,
-        _profile: Profile,
+        profile: Profile,
         endpoint: &str,
         rpc_method: &str,
         params: P,
@@ -49,6 +49,7 @@ impl Client {
             &self.http_client,
             &self.base_url,
             &request_url,
+            profile,
             rpc_method,
             params,
             auth,
@@ -60,7 +61,7 @@ impl Client {
         auth: &mut Session,
         request_url: &str,
     ) -> Result<String, MessageError> {
-        auth.ensure_jwt(&self.http_client, request_url)
+        auth.ensure_jwt_profile(&self.http_client, Profile::AuthRefresh, request_url)
             .map_err(message_service_error)
     }
 }
@@ -69,6 +70,7 @@ pub(crate) fn authenticated_rpc_call_url<T, P>(
     http_client: &HttpClient,
     base_url: &str,
     request_url: &str,
+    profile: Profile,
     rpc_method: &str,
     params: P,
     auth: &mut Session,
@@ -77,14 +79,28 @@ where
     T: DeserializeOwned,
     P: Serialize + Clone,
 {
-    match auth.do_json_rpc(http_client, request_url, "POST", rpc_method, params.clone()) {
+    match auth.do_json_rpc_profile(
+        http_client,
+        profile,
+        request_url,
+        "POST",
+        rpc_method,
+        params.clone(),
+    ) {
         Ok(result) => Ok(result),
         Err(err) => match err.downcast::<RpcError>() {
             Ok(rpc_err) if rpc_err.code == 1401 => {
                 let did_auth_url = join_base_url(base_url, DID_AUTH_RPC_ENDPOINT);
-                match auth.ensure_jwt(http_client, &did_auth_url) {
+                match auth.ensure_jwt_profile(http_client, Profile::AuthRefresh, &did_auth_url) {
                     Ok(_) => auth
-                        .do_json_rpc(http_client, request_url, "POST", rpc_method, params)
+                        .do_json_rpc_profile(
+                            http_client,
+                            profile,
+                            request_url,
+                            "POST",
+                            rpc_method,
+                            params,
+                        )
                         .map_err(message_service_error),
                     Err(_) => Err(MessageError::Service(ServiceError::from(rpc_err))),
                 }

@@ -1,5 +1,5 @@
 use crate::anpsdk::{DIDWbaAuthHeader, AUTH_MODE_HTTP_SIGNATURES};
-use crate::transportcfg::{HttpClient, HttpRequest, HttpResponse};
+use crate::transportcfg::{HttpClient, HttpRequest, HttpResponse, Profile};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -187,6 +187,25 @@ impl Session {
         decode_json_rpc_response(&response.body)
     }
 
+    pub fn do_json_rpc_profile<T, P>(
+        &mut self,
+        client: &HttpClient,
+        profile: Profile,
+        request_url: &str,
+        http_method: &str,
+        rpc_method: &str,
+        params: P,
+    ) -> anyhow::Result<T>
+    where
+        T: DeserializeOwned,
+        P: Serialize,
+    {
+        let payload = build_json_rpc_payload(rpc_method, serde_json::to_value(params)?);
+        let body = serde_json::to_vec(&payload)?;
+        let response = self.do_request_profile(client, profile, request_url, http_method, &body)?;
+        decode_json_rpc_response(&response.body)
+    }
+
     pub fn do_json_rpc_optional<P>(
         &mut self,
         client: &HttpClient,
@@ -211,6 +230,24 @@ impl Session {
         self.ensure_jwt_from_result(request_url, &result)
     }
 
+    pub fn ensure_jwt_profile(
+        &mut self,
+        client: &HttpClient,
+        profile: Profile,
+        request_url: &str,
+    ) -> anyhow::Result<String> {
+        self.remember_scope(request_url);
+        let result: serde_json::Value = self.do_json_rpc_profile(
+            client,
+            profile,
+            request_url,
+            "POST",
+            "get_me",
+            serde_json::json!({}),
+        )?;
+        self.ensure_jwt_from_result(request_url, &result)
+    }
+
     pub fn do_json<T, P>(
         &mut self,
         client: &HttpClient,
@@ -224,6 +261,23 @@ impl Session {
     {
         let body = serde_json::to_vec(&payload)?;
         let response = self.do_request(client, request_url, method, &body)?;
+        Ok(decode_plain_json_response(&response.body)?)
+    }
+
+    pub fn do_json_profile<T, P>(
+        &mut self,
+        client: &HttpClient,
+        profile: Profile,
+        method: &str,
+        request_url: &str,
+        payload: P,
+    ) -> anyhow::Result<T>
+    where
+        T: DeserializeOwned,
+        P: Serialize,
+    {
+        let body = serde_json::to_vec(&payload)?;
+        let response = self.do_request_profile(client, profile, request_url, method, &body)?;
         Ok(decode_plain_json_response(&response.body)?)
     }
 
@@ -250,8 +304,32 @@ impl Session {
         method: &str,
         body: &[u8],
     ) -> anyhow::Result<HttpResponse> {
+        self.do_request_with_timeout(client, None, request_url, method, body)
+    }
+
+    fn do_request_profile(
+        &mut self,
+        client: &HttpClient,
+        profile: Profile,
+        request_url: &str,
+        method: &str,
+        body: &[u8],
+    ) -> anyhow::Result<HttpResponse> {
+        let timeout = client.config().timeout_for_profile(profile);
+        self.do_request_with_timeout(client, Some(timeout), request_url, method, body)
+    }
+
+    fn do_request_with_timeout(
+        &mut self,
+        client: &HttpClient,
+        timeout: Option<std::time::Duration>,
+        request_url: &str,
+        method: &str,
+        body: &[u8],
+    ) -> anyhow::Result<HttpResponse> {
         let headers = self.headers(request_url, method, body, false)?;
-        let mut response = execute_with_headers(client, method, request_url, body, headers)?;
+        let mut response =
+            execute_with_headers(client, timeout, method, request_url, body, headers)?;
         if response.status_code == 401 {
             let response_headers = response_header_map(&response);
             let headers = if self.should_retry_after_401(&response_headers) {
@@ -260,7 +338,7 @@ impl Session {
                 self.clear_token(request_url);
                 self.headers(request_url, method, body, true)?
             };
-            response = execute_with_headers(client, method, request_url, body, headers)?;
+            response = execute_with_headers(client, timeout, method, request_url, body, headers)?;
         }
         if let Some(err) = http_status_error(response.status_code, &response.body) {
             return Err(err.into());
@@ -277,12 +355,16 @@ impl Session {
 
 fn execute_with_headers(
     client: &HttpClient,
+    timeout: Option<std::time::Duration>,
     method: &str,
     request_url: &str,
     body: &[u8],
     headers: BTreeMap<String, String>,
 ) -> anyhow::Result<HttpResponse> {
     let mut request = HttpRequest::new(method, request_url).body(body.to_vec());
+    if let Some(timeout) = timeout.filter(|timeout| !timeout.is_zero()) {
+        request = request.timeout(timeout);
+    }
     for (key, value) in headers {
         request.headers.push((key, value));
     }

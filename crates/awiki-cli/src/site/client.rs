@@ -33,7 +33,7 @@ impl Client {
 
     pub fn authenticated_rpc_call_profile<T, P>(
         &self,
-        _profile: Profile,
+        profile: Profile,
         endpoint: &str,
         rpc_method: &str,
         params: P,
@@ -44,12 +44,19 @@ impl Client {
         P: Serialize,
     {
         let request_url = format!("{}{}", self.base_url, endpoint);
-        auth.do_json_rpc(&self.http_client, &request_url, "POST", rpc_method, params)
-            .map_err(site_service_error)
+        auth.do_json_rpc_profile(
+            &self.http_client,
+            profile,
+            &request_url,
+            "POST",
+            rpc_method,
+            params,
+        )
+        .map_err(site_service_error)
     }
 
     pub fn ensure_jwt(&self, auth: &mut Session, request_url: &str) -> Result<String, SiteError> {
-        auth.ensure_jwt(&self.http_client, request_url)
+        auth.ensure_jwt_profile(&self.http_client, Profile::AuthRefresh, request_url)
             .map_err(site_service_error)
     }
 }

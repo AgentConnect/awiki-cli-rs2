@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct HttpClient {
@@ -23,6 +24,7 @@ pub struct HttpRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub timeout: Option<Duration>,
 }
 
 impl HttpRequest {
@@ -32,6 +34,7 @@ impl HttpRequest {
             url: url.into(),
             headers: Vec::new(),
             body: Vec::new(),
+            timeout: None,
         }
     }
 
@@ -42,6 +45,11 @@ impl HttpRequest {
 
     pub fn body(mut self, body: impl Into<Vec<u8>>) -> Self {
         self.body = body.into();
+        self
+    }
+
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = (!timeout.is_zero()).then_some(timeout);
         self
     }
 }
@@ -116,6 +124,8 @@ impl HttpClient {
 
     pub fn execute(&self, request: HttpRequest) -> Result<HttpResponse, HttpClientError> {
         let parsed = parse_url(&request.url)?;
+        let response_timeout =
+            effective_timeout(self.config.http_response_header_timeout, request.timeout);
         let proxy = self.proxy_env.then(|| proxy_for(&parsed)).flatten();
         let connect_target = proxy.as_ref().unwrap_or(&parsed);
         let mut stream = connect_tcp(connect_target, &self.config)?;
@@ -132,8 +142,7 @@ impl HttpClient {
                 .map_err(|err| HttpClientError::Tls(err.to_string()))?;
             let mut tls = StreamOwned::new(conn, stream);
             write_http_request(&mut tls, &parsed, &request, RequestTarget::OriginForm)?;
-            tls.sock
-                .set_read_timeout(Some(self.config.http_response_header_timeout))?;
+            tls.sock.set_read_timeout(Some(response_timeout))?;
             read_http_response(&mut tls)
         } else {
             let target = if proxy.is_some() {
@@ -142,10 +151,17 @@ impl HttpClient {
                 RequestTarget::OriginForm
             };
             write_http_request(&mut stream, &parsed, &request, target)?;
-            stream.set_read_timeout(Some(self.config.http_response_header_timeout))?;
+            stream.set_read_timeout(Some(response_timeout))?;
             read_http_response(&mut stream)
         }
     }
+}
+
+fn effective_timeout(base: Duration, request: Option<Duration>) -> Duration {
+    request
+        .filter(|timeout| !timeout.is_zero())
+        .map(|timeout| std::cmp::min(base, timeout))
+        .unwrap_or(base)
 }
 
 fn rustls_client_config(ca_bundle: &str) -> Result<(ClientConfig, usize), HttpClientError> {

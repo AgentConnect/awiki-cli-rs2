@@ -1,10 +1,10 @@
-use awiki_cli::transportcfg::{self, HttpRequest};
+use awiki_cli::transportcfg::{self, HttpClientError, HttpRequest};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -127,6 +127,63 @@ fn http_client_decodes_chunked_response_body() {
 }
 
 #[test]
+fn http_client_request_timeout_overrides_default_response_header_timeout() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    unset_transport_env();
+    clear_proxy_env();
+    std::env::set_var("AWIKI_CLI_TIMEOUT_HTTP_RESPONSE_HEADER", "2500");
+
+    let server = TestServer::new_allowing_write_failure(|raw| {
+        assert_contains(&raw, "GET /slow HTTP/1.1\r\n");
+        thread::sleep(Duration::from_millis(350));
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nslow".to_vec()
+    });
+    let client = transportcfg::new_http_client("").expect("client");
+
+    let started = Instant::now();
+    let err = client
+        .execute(HttpRequest::new("GET", server.url("/slow")).timeout(Duration::from_millis(75)))
+        .expect_err("request-specific timeout should abort before delayed response");
+    let elapsed = started.elapsed();
+
+    assert_timeoutish_io_error(&err);
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "request timeout should beat high default response header timeout; elapsed={elapsed:?}, err={err}"
+    );
+}
+
+#[test]
+fn http_client_request_timeout_does_not_extend_default_response_header_timeout() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    unset_transport_env();
+    clear_proxy_env();
+    std::env::set_var("AWIKI_CLI_TIMEOUT_HTTP_RESPONSE_HEADER", "75");
+
+    let server = TestServer::new_allowing_write_failure(|raw| {
+        assert_contains(&raw, "GET /slow-default HTTP/1.1\r\n");
+        thread::sleep(Duration::from_millis(350));
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nslow".to_vec()
+    });
+    let client = transportcfg::new_http_client("").expect("client");
+
+    let started = Instant::now();
+    let err = client
+        .execute(
+            HttpRequest::new("GET", server.url("/slow-default"))
+                .timeout(Duration::from_millis(2500)),
+        )
+        .expect_err("base response-header timeout should still abort delayed response");
+    let elapsed = started.elapsed();
+
+    assert_timeoutish_io_error(&err);
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "base response-header timeout should beat longer request timeout; elapsed={elapsed:?}, err={err}"
+    );
+}
+
+#[test]
 fn http_client_default_ignores_proxy_env_like_go_transportcfg_client() {
     let _guard = ENV_LOCK.lock().expect("env lock");
     clear_proxy_env();
@@ -215,11 +272,24 @@ struct TestServer {
 
 impl TestServer {
     fn new(handler: impl FnOnce(String) -> Vec<u8> + Send + 'static) -> Self {
+        Self::new_with_write_failure(handler, false)
+    }
+
+    fn new_allowing_write_failure(
+        handler: impl FnOnce(String) -> Vec<u8> + Send + 'static,
+    ) -> Self {
+        Self::new_with_write_failure(handler, true)
+    }
+
+    fn new_with_write_failure(
+        handler: impl FnOnce(String) -> Vec<u8> + Send + 'static,
+        allow_write_failure: bool,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let address = format!("http://{}", listener.local_addr().expect("local addr"));
         let join = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept connection");
-            handle_connection(stream, handler);
+            handle_connection(stream, handler, allow_write_failure);
         });
         Self {
             address,
@@ -240,7 +310,11 @@ impl Drop for TestServer {
     }
 }
 
-fn handle_connection(mut stream: TcpStream, handler: impl FnOnce(String) -> Vec<u8>) {
+fn handle_connection(
+    mut stream: TcpStream,
+    handler: impl FnOnce(String) -> Vec<u8>,
+    allow_write_failure: bool,
+) {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set read timeout");
@@ -274,7 +348,10 @@ fn handle_connection(mut stream: TcpStream, handler: impl FnOnce(String) -> Vec<
         raw.extend_from_slice(&buffer[..read]);
     }
     let response = handler(String::from_utf8_lossy(&raw).to_string());
-    stream.write_all(&response).expect("write response");
+    let write_result = stream.write_all(&response);
+    if !allow_write_failure {
+        write_result.expect("write response");
+    }
 }
 
 fn find_header_end(raw: &[u8]) -> Option<usize> {
@@ -286,6 +363,17 @@ fn assert_contains(haystack: &str, needle: &str) {
         haystack.contains(needle),
         "expected {needle:?} in:\n{haystack}"
     );
+}
+
+fn assert_timeoutish_io_error(err: &HttpClientError) {
+    match err {
+        HttpClientError::Io(io_err)
+            if matches!(
+                io_err.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) => {}
+        _ => panic!("expected timeout-ish I/O error, got {err:?}"),
+    }
 }
 
 fn path_string(path: &Path) -> String {
