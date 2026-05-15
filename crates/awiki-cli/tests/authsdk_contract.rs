@@ -1,3 +1,6 @@
+use anp::authentication::{
+    create_did_wba_document, extract_signature_metadata, DidDocumentOptions,
+};
 use awiki_cli::anpsdk;
 use awiki_cli::authsdk::{
     auth_json_headers, auth_scope, build_json_rpc_payload, decode_json_rpc_response,
@@ -7,7 +10,10 @@ use awiki_cli::authsdk::{
 };
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn authsdk_capture_token_persists_only_configured_scopes_like_go() {
@@ -133,6 +139,146 @@ fn authsdk_session_scope_and_error_strings_match_go_boundaries() {
         .to_string(),
         "rpc error -32001: denied"
     );
+}
+
+#[test]
+fn authsdk_headers_merge_json_base_and_cached_bearer_like_go() {
+    let fixture = AuthFixture::new();
+    let mut session = Session::new(
+        &fixture.did_path,
+        &fixture.key_path,
+        "alice",
+        fixture.did.as_str(),
+        "",
+        None,
+    );
+
+    session.set_bearer("https://api.example.com/orders", " cached-token ");
+
+    let headers = session
+        .headers("https://api.example.com/orders", "GET", &[], false)
+        .expect("cached bearer headers");
+    assert_eq!(
+        headers.get("Content-Type").map(String::as_str),
+        Some(CONTENT_TYPE_JSON)
+    );
+    assert_eq!(
+        headers.get("Authorization").map(String::as_str),
+        Some("Bearer cached-token")
+    );
+    assert!(!headers.contains_key("Signature-Input"));
+    assert!(!headers.contains_key("Signature"));
+
+    let fresh = session
+        .headers(
+            "https://api.example.com/orders",
+            "POST",
+            br#"{"item":"book"}"#,
+            true,
+        )
+        .expect("force-new signed headers");
+    assert_eq!(
+        fresh.get("Content-Type").map(String::as_str),
+        Some(CONTENT_TYPE_JSON)
+    );
+    assert!(!fresh.contains_key("Authorization"));
+    assert!(fresh.contains_key("Signature-Input"));
+    assert!(fresh.contains_key("Signature"));
+    assert!(fresh.contains_key("Content-Digest"));
+}
+
+#[test]
+fn authsdk_headers_generate_signed_json_request_headers_like_go() {
+    let fixture = AuthFixture::new();
+    let mut session = Session::new(
+        &fixture.did_path,
+        &fixture.key_path,
+        "alice",
+        fixture.did.as_str(),
+        "",
+        None,
+    );
+
+    let headers = session
+        .headers(
+            "https://api.example.com/orders",
+            "POST",
+            br#"{"item":"book"}"#,
+            false,
+        )
+        .expect("signed request headers");
+    assert_eq!(
+        headers.get("Content-Type").map(String::as_str),
+        Some(CONTENT_TYPE_JSON)
+    );
+    assert!(headers.contains_key("Signature-Input"));
+    assert!(headers.contains_key("Signature"));
+    assert!(headers.contains_key("Content-Digest"));
+    let metadata = extract_signature_metadata(&headers).expect("signature metadata");
+    assert_eq!(
+        metadata.components,
+        vec![
+            "@method".to_string(),
+            "@target-uri".to_string(),
+            "@authority".to_string(),
+            "content-digest".to_string(),
+        ]
+    );
+    assert_eq!(metadata.keyid, format!("{}#key-1", fixture.did));
+
+    let empty_body = session
+        .headers("https://api.example.com/orders", "GET", &[], true)
+        .expect("empty-body signed request headers");
+    assert!(empty_body.contains_key("Signature-Input"));
+    assert!(empty_body.contains_key("Signature"));
+    assert!(!empty_body.contains_key("Content-Digest"));
+}
+
+#[test]
+fn authsdk_challenge_headers_use_response_challenge_like_go() {
+    let fixture = AuthFixture::new();
+    let mut session = Session::new(
+        &fixture.did_path,
+        &fixture.key_path,
+        "alice",
+        fixture.did.as_str(),
+        "",
+        None,
+    );
+    let response_headers = headers([
+        (
+            "WWW-Authenticate",
+            "DIDWba realm=\"api.example.com\", error=\"invalid_nonce\", nonce=\"server-nonce-123\"",
+        ),
+        (
+            "Accept-Signature",
+            "sig1=(\"@method\" \"@target-uri\" \"@authority\" \"content-digest\" \"content-type\");created;expires;nonce;keyid",
+        ),
+    ]);
+
+    let headers = session
+        .challenge_headers(
+            "https://api.example.com/orders",
+            &response_headers,
+            "POST",
+            br#"{"item":"book"}"#,
+        )
+        .expect("challenge headers");
+    assert!(!headers.contains_key("Content-Type"));
+    assert!(headers.contains_key("Signature-Input"));
+    assert!(headers.contains_key("Signature"));
+    assert!(headers.contains_key("Content-Digest"));
+
+    let metadata = extract_signature_metadata(&headers).expect("signature metadata");
+    assert_eq!(metadata.nonce.as_deref(), Some("server-nonce-123"));
+    assert!(metadata
+        .components
+        .iter()
+        .any(|value| value == "content-type"));
+    assert!(metadata
+        .components
+        .iter()
+        .any(|value| value == "content-digest"));
 }
 
 #[test]
@@ -293,4 +439,53 @@ fn headers<const N: usize>(pairs: [(&str, &str); N]) -> BTreeMap<String, String>
         .into_iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect()
+}
+
+struct AuthFixture {
+    dir: PathBuf,
+    did_path: PathBuf,
+    key_path: PathBuf,
+    did: String,
+}
+
+impl AuthFixture {
+    fn new() -> Self {
+        let dir = unique_temp_dir("authsdk-contract");
+        fs::create_dir_all(&dir).expect("create auth fixture dir");
+        let bundle = create_did_wba_document("example.com", DidDocumentOptions::default())
+            .expect("create DID document");
+        let did_path = dir.join("did.json");
+        let key_path = dir.join("key.pem");
+        fs::write(
+            &did_path,
+            serde_json::to_vec(&bundle.did_document).expect("serialize DID document"),
+        )
+        .expect("write DID document");
+        fs::write(
+            &key_path,
+            bundle.private_key_pem("key-1").expect("key-1 private PEM"),
+        )
+        .expect("write key");
+        let did = bundle.did().expect("DID id").to_string();
+        Self {
+            dir,
+            did_path,
+            key_path,
+            did,
+        }
+    }
+}
+
+impl Drop for AuthFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
 }

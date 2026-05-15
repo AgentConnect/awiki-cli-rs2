@@ -3185,3 +3185,47 @@ slice reuses the existing direct Rustls update registry path and the approved
 `rusqlite + bundled` SQLite path. It does not introduce OpenSSL,
 `native-tls`, reqwest, hyper, WebSocket, YAML, platform service-manager, or new
 SQLite dependencies.
+
+## 2026-05-15 AuthSDK Header/Challenge Helper Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli authsdk --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket|serde_yaml|yaml'
+cd ../awiki-cli && go test ./internal/authsdk -count=1
+```
+
+Result: passed. The full local Rust suite, focused Go reference test, structure
+check, build, and dependency audit all passed.
+
+Scope:
+
+- Added Go-shaped `Session::headers` and `Session::challenge_headers` wrappers
+  in `crates/awiki-cli/src/authsdk/mod.rs`.
+- Preserved Go's normal request header contract: start with
+  `Content-Type: application/json`, delegate to the local ANP Rust SDK
+  `DIDWbaAuthHeader::get_auth_header`, and merge returned auth headers into the
+  JSON base header map.
+- Preserved Go's cached bearer behavior: `force_new=false` can return cached
+  `Authorization: Bearer ...`; `force_new=true` bypasses that cache and emits
+  HTTP Message Signature headers.
+- Preserved Go's challenge helper boundary: response headers are passed to the
+  ANP helper, the JSON base headers are available for `Accept-Signature`
+  covered-component normalization, and returned challenge headers remain
+  auth-only like Go.
+- Added no-network tests that generate real local DID documents and private
+  keys through `../anp/rust`, proving `Signature-Input`, `Signature`,
+  `Content-Digest`, key id, bearer cache reuse, force-new signing, and server
+  nonce reuse without selecting an HTTP client.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This
+slice reuses the local ANP Rust SDK with default features disabled and does not
+introduce HTTP/TLS clients, OpenSSL, `native-tls`, reqwest, hyper, WebSocket,
+YAML, platform service-manager, or new SQLite dependencies.

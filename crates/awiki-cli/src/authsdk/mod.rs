@@ -76,6 +76,42 @@ impl Session {
         &self.jwt_token
     }
 
+    pub fn headers(
+        &mut self,
+        server_url: &str,
+        method: &str,
+        body: &[u8],
+        force_new: bool,
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        let mut base_headers = auth_json_headers();
+        let auth_headers = self.helper.get_auth_header(
+            server_url,
+            force_new,
+            method,
+            Some(&base_headers),
+            Some(body),
+        )?;
+        base_headers.extend(auth_headers);
+        Ok(base_headers)
+    }
+
+    pub fn challenge_headers(
+        &mut self,
+        server_url: &str,
+        headers: &BTreeMap<String, String>,
+        method: &str,
+        body: &[u8],
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        let base_headers = auth_json_headers();
+        Ok(self.helper.get_challenge_auth_header(
+            server_url,
+            headers,
+            method,
+            Some(&base_headers),
+            Some(body),
+        )?)
+    }
+
     pub fn ensure_jwt_from_result(
         &mut self,
         request_url: &str,
