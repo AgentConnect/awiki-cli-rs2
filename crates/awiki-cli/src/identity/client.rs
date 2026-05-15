@@ -2,7 +2,7 @@ use super::types::IdentityError;
 use super::wire::ServiceError;
 use crate::authsdk::{
     build_json_rpc_payload, decode_json_rpc_response, http_status_error, HttpError, RpcError,
-    CONTENT_TYPE_JSON,
+    Session, CONTENT_TYPE_JSON,
 };
 use crate::config::{join_base_url, Resolved};
 use crate::transportcfg::{new_http_client, HttpClient, HttpRequest, Profile};
@@ -55,6 +55,15 @@ impl Client {
             return Err(service_error(err).into());
         }
         decode_json_rpc_response(&response.body).map_err(identity_service_error)
+    }
+
+    pub fn ensure_jwt(
+        &self,
+        auth: &mut Session,
+        request_url: &str,
+    ) -> Result<String, IdentityError> {
+        auth.ensure_jwt(&self.http_client, request_url)
+            .map_err(identity_service_error)
     }
 }
 

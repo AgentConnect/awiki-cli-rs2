@@ -25,6 +25,7 @@ pub enum IdentityError {
     NoDefaultIdentity(String),
     Conflict(String),
     LegacyNotFound(String),
+    AuthRequired(String),
     Service(super::wire::ServiceError),
     Io(std::io::Error),
     Json(serde_json::Error),
@@ -39,6 +40,7 @@ impl fmt::Display for IdentityError {
             | Self::NoDefaultIdentity(message)
             | Self::Conflict(message)
             | Self::LegacyNotFound(message)
+            | Self::AuthRequired(message)
             | Self::Internal(message) => f.write_str(message),
             Self::Service(err) => write!(f, "{err}"),
             Self::Io(err) => write!(f, "{err}"),

@@ -2,6 +2,64 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity Refresh Token Live Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract identity_refresh_token_live_posts_signed_get_me_and_persists_jwt_like_go --locked -- --nocapture
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/cli ./internal/identity ./internal/authsdk ./internal/cmdmeta -run 'TestRunIDRefreshTokenDryRunPlansDidAuthRefresh|TestRefreshTokenUsesDIDAuthWithoutStoredBearerAndPersistsNewJWT|TestCatalogPublishesRefreshTokenCommand|TestCaptureTokenPersistsOnlyConfiguredScopes|TestCaptureTokenStillAcceptsLegacyAuthorizationResponseHeader' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh tests_v2/page -q
+```
+
+Result: passed. Focused `identity_live_contract` passed with 3 passed, 0
+failed, 0 skipped; the new refresh-token live test passed and verifies the
+signed DID-auth refresh path. Full `cargo +1.79.0 test -p awiki-cli --locked`
+passed. Focused `awiki-system-test` id/page selector passed with 4 passed, 0
+failed, 0 skipped in 6.21s.
+
+Scope:
+
+- Wired non-dry-run `id refresh-token` through a translated live identity
+  service path instead of returning `not_implemented`.
+- Preserved Go identity selection: explicit `--identity` wins, otherwise the
+  resolved active/default identity is loaded for mutation.
+- Preserved Go refresh auth behavior: create an auth session with an empty
+  initial JWT, remember service and did-auth scopes, do not seed the stale
+  stored bearer, and POST signed JSON-RPC `get_me` to
+  `/user-service/did-auth/rpc`.
+- Reused `authsdk::Session::ensure_jwt` so result `access_token`,
+  `Authentication-Info` tokens, and legacy response `Authorization: Bearer`
+  tokens follow the same capture/persistence order as Go.
+- Persisted the fresh JWT through `Manager::update_jwt` and rendered the Go
+  `refresh_token` result shape with `previous_token_present` and
+  `did_auth_get_me_without_stored_bearer`.
+- Added focused fake-server coverage that first registers a local identity,
+  rewrites `auth.json` to `stale-token`, runs `id refresh-token`, asserts the
+  refresh request has signature headers and no stale bearer, and verifies the
+  stored JWT becomes `fresh-token`.
+
+Boundary note: this slice does not implement live email registration/wait
+polling, non-dry-run `id recover`, non-dry-run `id replace-did`, real profile
+RPC execution, per-call profile-timeout wrappers, or trace phase emission. Those
+remain later identity/transport parity slices.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK plus Rustls/std transport and does
+not add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled
+OpenSSL, YAML crates, platform service libraries, or ANP SDK network/default
+features.
+
 ## 2026-05-15 Tenant Site Live RPC Slice
 
 Local Rust and Go reference verification:
@@ -108,9 +166,9 @@ Scope:
   OTP behavior.
 
 Boundary note: this slice does not implement live email registration/wait
-polling, non-dry-run `id refresh-token`, non-dry-run `id replace-did`, real
-profile RPC execution, per-call profile-timeout wrappers, or trace phase
-emission. Those remain later identity/transport parity slices.
+polling, non-dry-run `id replace-did`, real profile RPC execution, per-call
+profile-timeout wrappers, or trace phase emission. Live `id refresh-token` is
+covered by the later Identity Refresh Token Live Slice.
 
 No dependency was added. Cargo manifests and lockfile remain unchanged; this
 slice reuses the existing local ANP Rust SDK plus Rustls/std transport and does
@@ -580,6 +638,10 @@ Boundary note: this slice intentionally does not implement service transport,
 non-dry-run `id refresh-token`, real identity-store JWT persistence, or the full
 Go `internal/anpsdk/registry.go` alias surface. Those remain in later
 authsdk/Rustls service slices.
+
+Status update: the later Authsdk Rustls HTTP Execution and Identity Refresh
+Token Live slices now cover `EnsureJWT`, live `id refresh-token`, and
+identity-store JWT persistence.
 
 No dependency was added. The code reuses the existing local `../anp/rust`
 dependency with `default-features = false`; it does not enable ANP `network`,
@@ -1173,6 +1235,11 @@ cleanup. It does not implement remote identity register/bind/recover/profile/
 resolve, non-dry-run `id refresh-token`, non-dry-run `id replace-did`, message
 RPC execution, group RPC execution, authsdk session refresh, HTTP/WebSocket
 transport, MLS provider execution, or cache mutation.
+
+Status update: later identity live slices now cover phone registration and live
+`id refresh-token`; remote bind/recover/profile/resolve, non-dry-run
+`id replace-did`, message RPC execution, group RPC execution, WebSocket
+transport, MLS provider execution, and cache mutation remain deferred.
 
 No dependency was added. Cargo manifests and lockfile were unchanged, and this
 slice does not introduce HTTP/TLS, OpenSSL, `native-tls`, WebSocket, crypto,

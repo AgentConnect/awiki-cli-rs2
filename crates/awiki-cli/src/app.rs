@@ -471,11 +471,13 @@ impl App {
 
     pub fn run_id_refresh_token(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("id refresh-token"));
-        }
-        let result =
-            identity::refresh_token_plan(&self.identity_manager(&resolved), &self.globals.identity);
+        let manager = self.identity_manager(&resolved);
+        let result = if self.globals.dry_run {
+            identity::refresh_token_plan(&manager, &self.globals.identity)
+        } else {
+            identity::refresh_token(&resolved, &manager, &self.globals.identity)
+                .map_err(identity_exit)?
+        };
         self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
     }
 
@@ -912,6 +914,12 @@ fn identity_exit(err: IdentityError) -> ExitError {
             1,
             message,
             "Use a different --identity value if the alias is already occupied.",
+        ),
+        IdentityError::AuthRequired(message) => ExitError::new(
+            "auth_required",
+            3,
+            message,
+            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
         ),
         IdentityError::Service(err) => identity_service_exit(err),
         IdentityError::Io(err) => ExitError::new(

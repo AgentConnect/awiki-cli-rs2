@@ -81,6 +81,80 @@ fn identity_register_phone_otp_live_posts_register_and_persists_identity_like_go
 }
 
 #[test]
+fn identity_refresh_token_live_posts_signed_get_me_and_persists_jwt_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","message":"Registration successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#,
+        ),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token","handle":"alice"},"id":"req-1"}"#,
+        ),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+
+    let register = awiki_cmd(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+    );
+    assert_success(&register);
+    write_stored_auth_token(workspace.path(), "alice", "stale-token");
+
+    let output = awiki_cmd(
+        &["--identity", "alice", "id", "refresh-token"],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "JWT refreshed for identity alice");
+    assert_eq!(envelope["data"]["action"], "refresh_token");
+    assert_eq!(envelope["data"]["previous_token_present"], true);
+    assert_eq!(
+        envelope["data"]["auth_flow"],
+        "did_auth_get_me_without_stored_bearer"
+    );
+    assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(envelope["data"]["identity"]["handle"], "alice");
+    assert!(envelope["data"]["identity"]["has_jwt"]
+        .as_bool()
+        .expect("identity has_jwt bool"));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert!(
+        !requests[1].contains("Authorization: Bearer stale-token\r\n"),
+        "refresh must not reuse stale bearer token:\n{}",
+        requests[1]
+    );
+    assert_contains_text(&requests[1], "Signature-Input:");
+    assert_contains_text(&requests[1], "Signature:");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "get_me",
+            "params": {},
+        })
+    );
+
+    let stored = read_stored_identity(workspace.path(), "alice");
+    assert_eq!(stored.auth["jwt_token"], "fresh-token");
+}
+
+#[test]
 fn identity_register_phone_without_otp_live_posts_send_otp_and_does_not_create_identity_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![TestResponse::ok(
@@ -190,6 +264,13 @@ fn request_body(raw: &str) -> &str {
     raw.split("\r\n\r\n").nth(1).unwrap_or_default()
 }
 
+fn assert_contains_text(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected request to contain {needle:?}, got:\n{haystack}"
+    );
+}
+
 struct StoredIdentity {
     index: Value,
     identity: Value,
@@ -211,6 +292,22 @@ fn read_stored_identity(workspace: &Path, identity_name: &str) -> StoredIdentity
         auth: serde_json::from_slice(&std::fs::read(identity_dir.join("auth.json")).unwrap())
             .unwrap(),
     }
+}
+
+fn write_stored_auth_token(workspace: &Path, identity_name: &str, jwt_token: &str) {
+    let index_path = workspace.join("identities").join("index.json");
+    let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let dir_name = index["credentials"][identity_name]["dir_name"]
+        .as_str()
+        .unwrap();
+    std::fs::write(
+        workspace
+            .join("identities")
+            .join(dir_name)
+            .join("auth.json"),
+        serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
+    )
+    .unwrap();
 }
 
 #[derive(Clone)]

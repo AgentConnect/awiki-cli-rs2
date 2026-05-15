@@ -6,10 +6,11 @@ use super::store::{
 };
 use super::types::{IdentityError, RegisterParams, SaveInput, LEGACY_LAYOUT_HINT};
 use super::wire::{
-    build_register_rpc_call, build_send_otp_rpc_call, normalize_email, register_completed_result,
-    register_phone_otp_result, RegisterRpcParams,
+    build_register_rpc_call, build_send_otp_rpc_call, normalize_email, refresh_token_result,
+    register_completed_result, register_phone_otp_result, RegisterRpcParams, DID_AUTH_RPC_ENDPOINT,
 };
 use super::Manager;
+use crate::authsdk::Session;
 use crate::config::Resolved;
 use serde_json::{json, Map, Value};
 
@@ -331,6 +332,32 @@ pub fn refresh_token_plan(manager: &Manager, selected: &str) -> CommandResult {
     }
 }
 
+pub fn refresh_token(
+    resolved: &Resolved,
+    manager: &Manager,
+    identity_name: &str,
+) -> Result<CommandResult, IdentityError> {
+    let record = load_identity_for_mutation(resolved, manager, identity_name)?;
+    let previous_token_present = !record.jwt_token.trim().is_empty();
+    let mut auth = auth_session_without_stored_bearer(resolved, manager, &record)?;
+    let client = Client::new(resolved)?;
+    let request_url =
+        crate::config::join_base_url(&resolved.service_base_url, DID_AUTH_RPC_ENDPOINT);
+    if client.ensure_jwt(&mut auth, &request_url).is_err() {
+        return Err(refresh_token_auth_required(&record.identity_name));
+    }
+    let jwt = auth.current_jwt().trim().to_string();
+    if jwt.is_empty() {
+        return Err(refresh_token_auth_required(&record.identity_name));
+    }
+    let mut updated = manager.load(&record.identity_name)?;
+    updated.jwt_token = jwt;
+    Ok(refresh_token_result(
+        &identity_summary_from_record(&updated),
+        previous_token_present,
+    ))
+}
+
 pub fn replace_did_plan(
     identity_name: &str,
     is_public: Option<bool>,
@@ -381,6 +408,72 @@ pub fn replace_did_plan(
         summary: "Dry run: DID replacement planned".to_string(),
         warnings: vec![replace_did_danger_warning().to_string()],
     }
+}
+
+fn load_identity_for_mutation(
+    resolved: &Resolved,
+    manager: &Manager,
+    requested: &str,
+) -> Result<super::types::StoredIdentity, IdentityError> {
+    let identity_name = if requested.trim().is_empty() {
+        if resolved.active_identity.trim().is_empty() {
+            manager
+                .current()
+                .map_err(|err| match err {
+                    IdentityError::NoDefaultIdentity(_) => IdentityError::NotFound(
+                        "identity not found: no active identity is configured".to_string(),
+                    ),
+                    err => err,
+                })?
+                .identity_name
+        } else {
+            resolved.active_identity.clone()
+        }
+    } else {
+        requested.trim().to_string()
+    };
+    manager.load(&identity_name)
+}
+
+fn auth_session_without_stored_bearer(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &super::types::StoredIdentity,
+) -> Result<Session, IdentityError> {
+    if record.identity_name.trim().is_empty() {
+        return Err(IdentityError::AuthRequired(
+            "authentication required: active identity is required".to_string(),
+        ));
+    }
+    let paths = manager.paths_for_identity(&record.identity_name)?;
+    let identity_name = record.identity_name.clone();
+    let persist_manager = manager.clone();
+    let persist_identity_name = identity_name.clone();
+    let persist_token: crate::authsdk::PersistToken = Box::new(move |token| {
+        persist_manager.update_jwt(&persist_identity_name, token)?;
+        Ok(())
+    });
+    let mut session = Session::new(
+        &paths.did_document_path,
+        &paths.key1_private_path,
+        identity_name,
+        record.did.as_str(),
+        "",
+        Some(persist_token),
+    );
+    let base_url = resolved.service_base_url.trim();
+    let did_auth_url = crate::config::join_base_url(base_url, DID_AUTH_RPC_ENDPOINT);
+    if !base_url.is_empty() {
+        session.remember_scope(base_url);
+        session.remember_scope(&did_auth_url);
+    }
+    Ok(session)
+}
+
+fn refresh_token_auth_required(identity_name: &str) -> IdentityError {
+    IdentityError::AuthRequired(format!(
+        "authentication required: failed to refresh jwt for identity {identity_name}"
+    ))
 }
 
 pub fn replace_did_danger_warning() -> &'static str {
