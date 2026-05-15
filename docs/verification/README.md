@@ -2,6 +2,67 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Identity Bind Live Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/cli ./internal/identity ./internal/authsdk ./internal/cmdmeta -run 'Test.*Bind|Test.*Profile|Test.*Resolve|TestRunIDRefreshTokenDryRunPlansDidAuthRefresh|TestRefreshTokenUsesDIDAuthWithoutStoredBearerAndPersistsNewJWT|TestCatalogPublishesRefreshTokenCommand|TestCaptureTokenPersistsOnlyConfiguredScopes|TestCaptureTokenStillAcceptsLegacyAuthorizationResponseHeader' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 uv run --no-sync python -m pytest tests_v2/id/test_identity_cli.py::test_id_register_resolve_profile_bind_and_recover_flow tests_v2/id/test_identity_cli.py::test_id_bind_email_send_requires_auth_and_supports_registered_identity tests_v2/id/test_identity_cli.py::test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh tests_v2/id/test_identity_cli.py::test_id_refresh_token_replaces_stale_local_jwt_for_registered_identity tests_v2/id/test_identity_cli.py::test_id_profile_set_rejects_conflicting_body_sources -q
+```
+
+Result: local Rust checks passed, including the full
+`cargo +1.79.0 test -p awiki-cli --locked` run. Focused Go bind/profile/resolve,
+identity/authsdk, and cmdmeta tests passed. The dependency audit stayed on the
+existing expected paths only: `base64`, approved `rusqlite`/`libsqlite3-sys`
+with build helpers, and the existing Rustls/webpki/ring TLS path. File-size
+check passed with `identity_live_contract.rs` at 1081 lines and no undocumented
+Rust source file over the 1200-line default.
+
+Focused `awiki-system-test` result: 4 passed, 1 failed at the next Rust port
+gap. The end-to-end identity flow now progresses through live `id register`,
+profile set/get, resolve, and the `id bind --phone ... --email ...`
+`invalid_argument` validation. The focused registered-identity email bind test
+also passes. The remaining failing selector stops at non-dry-run `id recover`,
+which still returns the explicit deferred `not_implemented` error.
+
+Scope:
+
+- Wired `id bind` command parsing, cmdmeta, and dispatch for `--phone`,
+  `--email`, `--otp`, and `--wait`.
+- Preserved Go dry-run plan shape for phone OTP send, phone verify, email send,
+  and email wait flows.
+- Implemented live phone bind REST calls:
+  `POST /user-service/auth/phone-bind-send` and
+  `POST /user-service/auth/phone-bind-verify`, using authenticated DID-WBA JSON
+  requests, Go phone normalization, and whitespace-stripped OTP codes.
+- Implemented live email bind REST calls:
+  authenticated `GET /user-service/auth/email-status` with bearer auth and no
+  bind-flow `handle` query, 404-as-unverified behavior, authenticated
+  `POST /user-service/auth/email-send`, no-wait `email_sent`, wait/pending, and
+  already-verified `completed` result shapes.
+- Added focused fake-server coverage for phone send, phone verify, email send,
+  and already-verified email wait.
+
+Boundary note: non-dry-run `id recover`, non-dry-run `id replace-did`, live
+email registration/wait polling, profile-timeout wrappers, and trace phase
+emission remain deferred identity/transport parity slices.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged; this
+slice reuses the existing local ANP Rust SDK, `authsdk::Session`, and
+Rustls/std `transportcfg::HttpClient`. It does not add `reqwest`, `hyper`,
+WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, platform
+service libraries, or ANP SDK network/default features.
+
 ## 2026-05-15 Identity Profile And Resolve Live Slice
 
 Local Rust and Go reference verification:

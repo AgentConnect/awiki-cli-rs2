@@ -469,6 +469,28 @@ impl App {
         self.render_identity_result("awiki-cli id import-v1", &resolved, result)
     }
 
+    pub fn run_id_bind(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let params = identity::BindParams {
+            phone: string_flag(command, "phone"),
+            email: string_flag(command, "email"),
+            otp: string_flag(command, "otp"),
+            wait: command
+                .flags
+                .get("wait")
+                .is_some_and(|value| value == "true"),
+            verification_timeout: 300,
+            poll_interval_seconds: 5.0,
+        };
+        let manager = self.identity_manager(&resolved);
+        let result = if self.globals.dry_run {
+            identity::bind_plan(&params)
+        } else {
+            identity::bind(&resolved, &manager, params).map_err(identity_exit)?
+        };
+        self.render_identity_result("awiki-cli id bind", &resolved, result)
+    }
+
     pub fn run_id_refresh_token(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let manager = self.identity_manager(&resolved);

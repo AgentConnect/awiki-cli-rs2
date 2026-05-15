@@ -4,20 +4,27 @@ use super::handle_input::normalize_handle_input;
 use super::store::{
     choose_default_identity_name, choose_named_identity, identity_summary_from_record,
 };
-use super::types::{IdentityError, RegisterParams, SaveInput, LEGACY_LAYOUT_HINT};
+use super::types::{BindParams, IdentityError, RegisterParams, SaveInput, LEGACY_LAYOUT_HINT};
 use super::wire::{
-    build_get_me_profile_rpc_call, build_handle_lookup_by_did_rpc_call,
-    build_handle_lookup_by_handle_rpc_call, build_profile_resolve_rpc_call,
-    build_public_profile_rpc_call, build_register_rpc_call, build_send_otp_rpc_call,
-    build_update_me_profile_rpc_call, normalize_email, profile_public_result, profile_self_result,
-    profile_update_result, refresh_token_result, register_completed_result,
-    register_phone_otp_result, resolve_result, HandleLookupResult, RegisterRpcParams,
-    UpdateProfileParams, DID_AUTH_RPC_ENDPOINT,
+    bind_email_completed_result, bind_email_pending_result, bind_email_sent_result,
+    bind_phone_completed_result, bind_phone_otp_result, build_email_send_rest_call,
+    build_email_status_rest_call, build_get_me_profile_rpc_call,
+    build_handle_lookup_by_did_rpc_call, build_handle_lookup_by_handle_rpc_call,
+    build_phone_bind_send_rest_call, build_phone_bind_verify_rest_call,
+    build_profile_resolve_rpc_call, build_public_profile_rpc_call, build_register_rpc_call,
+    build_send_otp_rpc_call, build_update_me_profile_rpc_call, normalize_email,
+    profile_public_result, profile_self_result, profile_update_result, refresh_token_result,
+    register_completed_result, register_phone_otp_result, resolve_result, HandleLookupResult,
+    RegisterRpcParams, ServiceError, UpdateProfileParams, DID_AUTH_RPC_ENDPOINT,
 };
 use super::Manager;
 use crate::authsdk::Session;
 use crate::config::Resolved;
 use serde_json::{json, Map, Value};
+use std::time::{Duration, Instant};
+
+const DEFAULT_EMAIL_VERIFICATION_SECS: i64 = 300;
+const DEFAULT_EMAIL_POLL_INTERVAL_SECS: f64 = 5.0;
 
 pub struct CommandResult {
     pub data: Value,
@@ -316,6 +323,91 @@ pub fn register(
         "phone",
         result,
     ))
+}
+
+pub fn bind_plan(params: &BindParams) -> CommandResult {
+    let phone = params.phone.as_str();
+    let email = params.email.as_str();
+    let mut action = "bind_contact";
+    let mut remote_calls: Vec<&str> = Vec::new();
+    if !phone.is_empty() && params.otp.trim().is_empty() {
+        action = "send_bind_phone_otp";
+        remote_calls = vec!["POST /user-service/auth/phone-bind-send"];
+    } else if !phone.is_empty() {
+        action = "bind_phone";
+        remote_calls = vec!["POST /user-service/auth/phone-bind-verify"];
+    } else if !email.is_empty() && !params.wait {
+        action = "send_bind_email";
+        remote_calls = vec!["POST /user-service/auth/email-send"];
+    } else if !email.is_empty() {
+        action = "bind_email";
+        remote_calls = vec![
+            "GET /user-service/auth/email-status",
+            "POST /user-service/auth/email-send",
+        ];
+    }
+    CommandResult {
+        data: json!({
+            "plan": {
+                "action": action,
+                "phone": phone,
+                "email": email,
+                "remote_calls": remote_calls,
+            }
+        }),
+        summary: "Dry run: contact binding flow planned".to_string(),
+        warnings: Vec::new(),
+    }
+}
+
+pub fn bind(
+    resolved: &Resolved,
+    manager: &Manager,
+    params: BindParams,
+) -> Result<CommandResult, IdentityError> {
+    let record = load_identity_for_mutation(resolved, manager, "")?;
+    let identity = identity_summary_from_record(&record);
+    let mut auth = auth_session(resolved, manager, &record)?;
+    let phone = params.phone.trim().to_string();
+    let email = normalize_email(&params.email);
+    if (phone.is_empty() && email.is_empty()) || (!phone.is_empty() && !email.is_empty()) {
+        return Err(IdentityError::InvalidInput(
+            "exactly one of phone or email is required".to_string(),
+        ));
+    }
+    let client = Client::new(resolved)?;
+
+    if !phone.is_empty() {
+        if params.otp.trim().is_empty() {
+            let call = build_phone_bind_send_rest_call(&phone)?;
+            let result: Value = client.authenticated_rest_post(call, &mut auth)?;
+            return bind_phone_otp_result(&identity, &phone, result);
+        }
+        let call = build_phone_bind_verify_rest_call(&phone, &params.otp)?;
+        let result: Value = client.authenticated_rest_post(call, &mut auth)?;
+        return bind_phone_completed_result(&identity, &phone, result);
+    }
+
+    let (mut verified, _) = check_email_verified(&client, &email, auth.current_jwt())?;
+    if !verified {
+        let call = build_email_send_rest_call(&email, None, true)?;
+        let send_result: Value = client.authenticated_rest_post(call, &mut auth)?;
+        if !params.wait {
+            return Ok(bind_email_sent_result(&identity, &email, send_result));
+        }
+        verified = wait_for_email_verification(
+            &client,
+            &email,
+            auth.current_jwt(),
+            params.verification_timeout,
+            params.poll_interval_seconds,
+        )?
+        .0;
+        if !verified {
+            return Ok(bind_email_pending_result(&identity, &email));
+        }
+    }
+    Ok(bind_email_completed_result(&identity, &email))
 }
 
 pub fn use_plan(identity_name: &str) -> CommandResult {
@@ -712,6 +804,65 @@ fn handle_lookup_by_did(client: &Client, did: &str) -> Result<Value, IdentityErr
 fn public_profile_by_did(client: &Client, did: &str) -> Result<Value, IdentityError> {
     let call = build_public_profile_rpc_call(did)?;
     client.rpc_call_profile(call.profile, call.endpoint, call.method, call.params)
+}
+
+fn check_email_verified(
+    client: &Client,
+    email: &str,
+    bearer: &str,
+) -> Result<(bool, String), IdentityError> {
+    let call = build_email_status_rest_call(email, None, true)?;
+    let result: Value = match client.rest_get_with_bearer(call, bearer) {
+        Ok(result) => result,
+        Err(IdentityError::Service(err)) if service_error_is_not_found(&err) => {
+            return Ok((false, String::new()));
+        }
+        Err(err) => return Err(err),
+    };
+    let verified = result
+        .get("verified")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let verified_at = result
+        .get("verified_at")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok((verified, verified_at))
+}
+
+fn wait_for_email_verification(
+    client: &Client,
+    email: &str,
+    bearer: &str,
+    timeout_secs: i64,
+    poll_interval_secs: f64,
+) -> Result<(bool, String), IdentityError> {
+    let timeout_secs = if timeout_secs <= 0 {
+        DEFAULT_EMAIL_VERIFICATION_SECS
+    } else {
+        timeout_secs
+    };
+    let poll_interval_secs = if poll_interval_secs <= 0.0 {
+        DEFAULT_EMAIL_POLL_INTERVAL_SECS
+    } else {
+        poll_interval_secs
+    };
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs as u64);
+    loop {
+        let (verified, verified_at) = check_email_verified(client, email, bearer)?;
+        if verified {
+            return Ok((true, verified_at));
+        }
+        if Instant::now() >= deadline {
+            return Ok((false, String::new()));
+        }
+        std::thread::sleep(Duration::from_secs_f64(poll_interval_secs));
+    }
+}
+
+fn service_error_is_not_found(err: &ServiceError) -> bool {
+    err.status_code == 404 || err.rpc_code == -32002
 }
 
 fn refresh_token_auth_required(identity_name: &str) -> IdentityError {

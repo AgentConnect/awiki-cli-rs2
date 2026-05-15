@@ -262,6 +262,16 @@ pub struct RegisterParams {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct BindParams {
+    pub phone: String,
+    pub email: String,
+    pub otp: String,
+    pub wait: bool,
+    pub verification_timeout: i64,
+    pub poll_interval_seconds: f64,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct RecoverParams {
     pub identity_name: String,
     pub handle: String,

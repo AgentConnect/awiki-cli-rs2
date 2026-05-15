@@ -155,6 +155,187 @@ fn identity_refresh_token_live_posts_signed_get_me_and_persists_jwt_like_go() {
 }
 
 #[test]
+fn identity_bind_phone_without_otp_live_posts_authenticated_phone_bind_send_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(r#"{"sent":true}"#),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "bind",
+            "--phone",
+            "13800138000",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Phone binding OTP sent");
+    assert_eq!(envelope["data"]["action"], "send_bind_phone_otp");
+    assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(envelope["data"]["identity"]["handle"], "alice");
+    assert_eq!(envelope["data"]["phone"], "+8613800138000");
+    assert_eq!(envelope["data"]["verification_state"], "otp_sent");
+    assert_eq!(envelope["data"]["result"], json!({ "sent": true }));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/auth/phone-bind-send HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(body, json!({ "phone": "+8613800138000" }));
+}
+
+#[test]
+fn identity_bind_phone_with_otp_live_posts_authenticated_phone_bind_verify_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(r#"{"bound":true}"#),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "bind",
+            "--phone",
+            "13800138000",
+            "--otp",
+            " 12 34 56 ",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Phone bound successfully");
+    assert_eq!(envelope["data"]["action"], "bind_phone");
+    assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(envelope["data"]["identity"]["handle"], "alice");
+    assert_eq!(envelope["data"]["phone"], "+8613800138000");
+    assert_eq!(envelope["data"]["verification_state"], "completed");
+    assert_eq!(envelope["data"]["result"], json!({ "bound": true }));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/auth/phone-bind-verify HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(body, json!({ "phone": "+8613800138000", "code": "123456" }));
+}
+
+#[test]
+fn identity_bind_email_without_wait_live_checks_status_then_sends_authenticated_email_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(r#"{"email":"alice@example.com","verified":false}"#),
+        TestResponse::ok(r#"{"message":"Activation email sent."}"#),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "bind",
+            "--email",
+            "Alice@Example.COM",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Binding email sent");
+    assert_eq!(envelope["data"]["action"], "send_bind_email");
+    assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(envelope["data"]["identity"]["handle"], "alice");
+    assert_eq!(envelope["data"]["email"], "alice@example.com");
+    assert_eq!(envelope["data"]["verification_state"], "email_sent");
+    assert_eq!(
+        envelope["data"]["result"],
+        json!({ "message": "Activation email sent." })
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1]
+        .starts_with("GET /user-service/auth/email-status?email=alice%40example.com HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    assert!(
+        !requests[1].contains("handle="),
+        "bind email status request must not send a handle:\n{}",
+        requests[1]
+    );
+    assert!(requests[2].starts_with("POST /user-service/auth/email-send HTTP/1.1"));
+    assert_contains_text(&requests[2], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
+    assert_eq!(body, json!({ "email": "alice@example.com" }));
+}
+
+#[test]
+fn identity_bind_email_wait_already_verified_live_completes_without_sending_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(
+            r#"{"email":"alice@example.com","verified":true,"verified_at":"2026-01-01T00:00:00Z"}"#,
+        ),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+    register_alice(workspace.path());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "bind",
+            "--email",
+            "Alice@Example.COM",
+            "--wait",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Email binding verified successfully");
+    assert_eq!(envelope["data"]["action"], "bind_email");
+    assert_eq!(envelope["data"]["identity"]["identity_name"], "alice");
+    assert_eq!(envelope["data"]["identity"]["handle"], "alice");
+    assert_eq!(envelope["data"]["email"], "alice@example.com");
+    assert_eq!(envelope["data"]["verification_state"], "completed");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1]
+        .starts_with("GET /user-service/auth/email-status?email=alice%40example.com HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.starts_with("POST /user-service/auth/email-send HTTP/1.1")),
+        "already verified bind email --wait must not send an activation email:\n{requests:#?}"
+    );
+}
+
+#[test]
 fn identity_register_phone_without_otp_live_posts_send_otp_and_does_not_create_identity_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![TestResponse::ok(
