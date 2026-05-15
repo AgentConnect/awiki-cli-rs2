@@ -18,6 +18,7 @@ pub mod listener_message_records;
 pub mod listener_secure_notifications;
 pub mod listener_secure_sessions;
 pub mod listener_service;
+pub mod listener_service_did;
 pub mod listener_wsclient;
 pub mod openclaw_host_notify;
 pub mod openclaw_routes;
