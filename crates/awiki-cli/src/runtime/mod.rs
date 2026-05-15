@@ -3,6 +3,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
 
+pub mod bridge;
 pub mod hermes_bridge;
 pub mod listener;
 pub mod openclaw_routes;
@@ -58,7 +59,7 @@ pub fn resolve(resolved: &Resolved) -> RuntimeResolved {
     let sink = resolved.host_notify_sink.to_ascii_lowercase();
     RuntimeResolved {
         mode,
-        socket_path: resolved.runtime_socket_path.clone(),
+        socket_path: bridge::resolved_bridge_endpoint(resolved),
         listener: ListenerConfig {
             enabled: resolved.runtime_listener_enabled,
             auto_install: resolved.runtime_listener_auto_install,

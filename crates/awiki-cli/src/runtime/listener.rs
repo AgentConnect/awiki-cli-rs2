@@ -89,7 +89,7 @@ pub fn paths(resolved: &Resolved) -> anyhow::Result<RuntimePaths> {
         pid_file: path_string(&state_root.join("listener.pid")),
         log_file: path_string(&log_dir.join("listener.log")),
         status_file: path_string(&state_root.join("listener.status.json")),
-        socket_path: resolved.runtime_socket_path.clone(),
+        socket_path: super::bridge::resolved_bridge_endpoint(resolved),
     })
 }
 
@@ -240,18 +240,7 @@ pub fn service_name_for(resolved: &Resolved) -> String {
 }
 
 pub fn bridge_endpoint_available(path: &str) -> bool {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    #[cfg(windows)]
-    {
-        trimmed.starts_with(r"\\.\pipe\")
-    }
-    #[cfg(not(windows))]
-    {
-        Path::new(trimmed).exists()
-    }
+    super::bridge::bridge_endpoint_available(path.trim())
 }
 
 pub fn to_value(status: Status) -> Value {

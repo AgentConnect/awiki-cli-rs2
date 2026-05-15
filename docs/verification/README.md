@@ -2,6 +2,47 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Runtime Bridge Endpoint Helper Slice
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|reqwest|hyper|rustls|webpki|aws-lc|ring|tungstenite|websocket|serde_yaml|yaml'
+cd ../awiki-cli && go test ./internal/runtime -run 'TestResolveShortensLongSocketPath|TestResolveKeepsShortSocketPath|TestResolveDefaultsToWebSocketMode' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Added a split `runtime::bridge` module for local websocket bridge endpoint
+  helpers and request/response/error shapes.
+- Preserved Go's Unix default `<state_dir>/message-daemon.sock` endpoint with
+  workspace runtime fallback, Unix long socket path shortening to temp
+  `awiki-cli-<sha256-prefix>.sock`, endpoint preparation error prefix,
+  endpoint availability helper, and bridge error display strings.
+- Added cfg-gated Windows named-pipe default/normalization/preparation shape
+  without introducing a Windows named-pipe crate in this local helper slice.
+- Routed `runtime::resolve` and listener path/status helpers through the split
+  bridge helper so public runtime output uses the Go-shaped normalized endpoint.
+
+Boundary note: this slice does not implement `CallLocalBridge`, Unix socket
+dial/listen, Windows named-pipe I/O, bridge health probes, request deadlines,
+listener foreground server execution, or WebSocket service execution. Those
+remain in later runtime/message service slices.
+
+No dependency was added. Cargo manifests and lockfile were unchanged; this
+slice does not add HTTP/TLS clients, WebSocket crates, OpenSSL, `native-tls`,
+bundled OpenSSL, YAML crates, platform service libraries, or named-pipe crates.
+TLS policy remains Rustls-first and unchanged.
+
 ## 2026-05-15 Hermes Bridge Pure Helper Slice
 
 Local Rust and Go reference verification:
