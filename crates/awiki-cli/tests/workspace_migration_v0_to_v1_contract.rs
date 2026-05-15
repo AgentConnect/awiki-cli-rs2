@@ -1,4 +1,4 @@
-use awiki_cli::{config, store, upgrade};
+use awiki_cli::{config, identity, store, upgrade};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -883,6 +883,8 @@ fn context_with_detection(
 fn seed_flat_legacy_identity(resolved: &config::Resolved, name: &str, did: &str) {
     std::fs::create_dir_all(&resolved.paths.legacy_credentials_dir)
         .expect("create legacy credentials dir");
+    let generated = identity::generate_identity("example.test", "", "")
+        .expect("generate legacy identity key material");
     std::fs::write(
         Path::new(&resolved.paths.legacy_credentials_dir).join(format!("{name}.json")),
         serde_json::to_vec_pretty(&json!({
@@ -891,8 +893,10 @@ fn seed_flat_legacy_identity(resolved: &config::Resolved, name: &str, did: &str)
             "name": "Legacy User",
             "handle": name,
             "jwt_token": "legacy-token",
-            "private_key_pem": "private",
-            "public_key_pem": "public",
+            "private_key_pem": generated.key1_private_pem,
+            "public_key_pem": generated.key1_public_pem,
+            "e2ee_signing_private_pem": generated.e2ee_signing_private_pem,
+            "e2ee_agreement_private_pem": generated.e2ee_agreement_private_pem,
             "did_document": {"id": did}
         }))
         .expect("legacy identity json"),

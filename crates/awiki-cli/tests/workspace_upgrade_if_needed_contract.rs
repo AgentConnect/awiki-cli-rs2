@@ -1,5 +1,5 @@
-use awiki_cli::{config, upgrade};
-use serde_json::Value;
+use awiki_cli::{config, identity, upgrade};
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -292,13 +292,7 @@ fn workspace_upgrade_if_needed_defers_v0_to_v1_when_imported_k1_replacement_is_r
         TempDir::new("workspace-upgrade-if-needed-k1-deferred").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
     let paths = upgrade::resolve_paths(&resolved);
-    std::fs::create_dir_all(Path::new(&paths.legacy_credentials_dir))
-        .expect("create legacy credentials dir");
-    std::fs::write(
-        Path::new(&paths.legacy_credentials_dir).join("legacy.json"),
-        r#"{"did":"did:wba:example.test:user:k1_legacy","unique_id":"k1_legacy","name":"Legacy User","handle":"legacy","jwt_token":"legacy-token","private_key_pem":"private","public_key_pem":"public","did_document":{"id":"did:wba:example.test:user:k1_legacy"}}"#,
-    )
-    .expect("write legacy identity");
+    seed_flat_legacy_identity(&paths, "legacy", "did:wba:example.test:user:k1_legacy");
 
     let mut context = upgrade::new_context(&resolved, "1.2.5");
     let err = upgrade::new_default_upgrader()
@@ -585,6 +579,30 @@ fn test_resolved(root: &Path) -> config::Resolved {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn seed_flat_legacy_identity(paths: &upgrade::Paths, name: &str, did: &str) {
+    std::fs::create_dir_all(Path::new(&paths.legacy_credentials_dir))
+        .expect("create legacy credentials dir");
+    let generated = identity::generate_identity("example.test", "", "")
+        .expect("generate legacy identity key material");
+    std::fs::write(
+        Path::new(&paths.legacy_credentials_dir).join(format!("{name}.json")),
+        serde_json::to_vec_pretty(&json!({
+            "did": did,
+            "unique_id": did.rsplit(':').next().unwrap_or(did),
+            "name": "Legacy User",
+            "handle": name,
+            "jwt_token": "legacy-token",
+            "private_key_pem": generated.key1_private_pem,
+            "public_key_pem": generated.key1_public_pem,
+            "e2ee_signing_private_pem": generated.e2ee_signing_private_pem,
+            "e2ee_agreement_private_pem": generated.e2ee_agreement_private_pem,
+            "did_document": {"id": did}
+        }))
+        .expect("legacy identity json"),
+    )
+    .expect("write legacy identity");
 }
 
 fn assert_contains(haystack: &str, needle: &str) {
