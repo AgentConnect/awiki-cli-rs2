@@ -2,6 +2,59 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener Local Notification Queue Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_local_notifications_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `queueLocalNotification` and `flushQueuedLocalNotifications`.
+- Existing Go secure-listener integration guard:
+  `TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_local_notifications` as a helper-only translation of
+  the Go listener's in-memory local notification queue.
+- Preserves queue skip behavior for blank-after-trim recipient DID and nil
+  notification.
+- Preserves Go's original-key behavior: recipient DID is trimmed only for the
+  presence check, then queued under the original string.
+- Preserves append order per recipient DID.
+- Preserves flush skip behavior for nil session/current-record analogs and
+  blank-after-trim current DID.
+- Preserves exact-DID lookup and delete-on-flush behavior; later flushes for the
+  same key return empty.
+- Keeps files under the default review-size cap:
+  `listener_local_notifications.rs` is 42 lines and the focused test file is
+  104 lines before subsequent formatting-independent changes.
+
+Boundary note: this is a pure in-memory helper slice. It does not implement
+`Supervisor`, mutex ownership, `handleNotification`, secure ack encryption or
+decryption, queued secure outbox flushing, real WebSocket sessions, SQLite
+storage mutations, host-notify dispatch, or `awiki-system-test` runtime listener
+acceptance.
+
+Dependency note: no dependency was added. The slice uses existing
+`serde_json::Map`/`Value` and std collections only. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, Tokio, YAML
+crates, platform service libraries, E2EE provider dependencies, or new SQLite
+dependencies.
+
 ## 2026-05-16 Runtime Listener WebSocket Connect Decision Helper Slice
 
 Status: unit verified.

@@ -14,6 +14,7 @@ pub mod host_notify_sink;
 pub mod listener;
 pub mod listener_bridge_dispatch;
 pub mod listener_contact_sync;
+pub mod listener_local_notifications;
 pub mod listener_message_records;
 pub mod listener_secure_notifications;
 pub mod listener_secure_sessions;
