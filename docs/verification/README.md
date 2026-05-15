@@ -2,6 +2,58 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Runtime Listener WebSocket Client Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'TestNewWSClientDerivesIMWebSocketEndpointFromServiceBaseURL' -count=1
+```
+
+Additional parity probes:
+
+```bash
+# Go/Rust probes checked fmt("%.0f") half-even rounding and url.Parse Host/error
+# behavior used by requestIDFromAny and hostForURL.
+```
+
+Scope:
+
+- Adds `runtime::listener_wsclient` as a split helper translation of the
+  deterministic, transport-free parts of Go `internal/runtime/listener/wsclient.go`.
+- Adds `config::derive_websocket_url` to mirror Go `DeriveWebSocketURL` and
+  adjusts `join_base_url` empty-path behavior to match Go `JoinBaseURL`.
+- Covers `/im/ws` request/WebSocket endpoint derivation, DID-auth endpoint
+  derivation, the Go empty-base `/im/ws` boundary, `requestIDFromAny`
+  string/int/float formatting, `int64FromAny` truncation, and `hostForURL`
+  `url.Parse` host/fallback behavior.
+
+Dependency note: no dependency was added. This slice deliberately avoids a
+WebSocket transport crate, OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, service-manager crates, YAML crates, and new SQLite dependencies.
+Later WebSocket transport work must stay Rustls-first and receive a separate
+dependency review.
+
+Boundary note: Go `WSClient` construction with auth session side effects,
+WebSocket dial/read/write, bearer refresh retry, pending RPC channel handling,
+notification buffering, `formatDialError`, foreground listener session
+execution, local bridge I/O, host-notify dispatch, and listener SQLite side
+effects remain deferred.
+
 ## 2026-05-15 Runtime Listener Service Local Helper Slice
 
 Status: unit verified.

@@ -800,10 +800,25 @@ pub fn join_base_url(base_url: &str, path: &str) -> String {
         return path.trim().to_string();
     }
     let mut path = path.trim().to_string();
+    if path.is_empty() {
+        return base;
+    }
     if !path.starts_with('/') {
         path.insert(0, '/');
     }
     format!("{base}{path}")
+}
+
+pub fn derive_websocket_url(base_url: &str, path: &str) -> String {
+    let http_url = join_base_url(base_url, path);
+    let trimmed = http_url.trim();
+    if let Some(rest) = trimmed.strip_prefix("https://") {
+        return format!("wss://{rest}");
+    }
+    if let Some(rest) = trimmed.strip_prefix("http://") {
+        return format!("ws://{rest}");
+    }
+    trimmed.to_string()
 }
 
 fn service_host_from_base_url(service_base_url: &str) -> String {

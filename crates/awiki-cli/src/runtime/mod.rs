@@ -14,6 +14,7 @@ pub mod listener;
 pub mod listener_contact_sync;
 pub mod listener_message_records;
 pub mod listener_service;
+pub mod listener_wsclient;
 pub mod openclaw_host_notify;
 pub mod openclaw_routes;
 pub mod openclaw_webhook;
