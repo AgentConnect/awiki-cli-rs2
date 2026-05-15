@@ -1,8 +1,10 @@
 use crate::config::{self, Resolved};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::env;
 use std::fs;
 use std::net::IpAddr;
+use std::path::PathBuf;
 
 pub mod bridge;
 pub mod hermes_bridge;
@@ -12,8 +14,9 @@ pub mod openclaw_webhook;
 
 const OPENCLAW_HOOK_TOKEN_ENV: &str = "OPENCLAW_HOOK_TOKEN";
 const OPENCLAW_GATEWAY_PORT_ENV: &str = "OPENCLAW_GATEWAY_PORT";
-const DEFAULT_OPENCLAW_GATEWAY_PORT: u16 = 18789;
-const DEFAULT_OPENCLAW_HOOK_PATH: &str = "/hooks/agent";
+const OPENCLAW_CONFIG_PATH_ENV: &str = "OPENCLAW_CONFIG_PATH";
+const DEFAULT_OPENCLAW_GATEWAY_PORT: i64 = 18789;
+const DEFAULT_OPENCLAW_HOOKS_PATH: &str = "/hooks";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeResolved {
@@ -229,26 +232,20 @@ pub fn validate_openclaw_hook_url(value: &str) -> anyhow::Result<()> {
 pub(crate) struct OpenClawSettings {
     hook_url: String,
     hook_url_source: &'static str,
-    detected_webhook_port: u16,
-    detected_webhook_source: &'static str,
-    detected_webhook_path: &'static str,
-    detected_webhook_path_source: &'static str,
+    detected_webhook_port: i64,
+    detected_webhook_source: String,
+    detected_webhook_path: String,
+    detected_webhook_path_source: String,
     token: String,
     token_configured: bool,
     token_source: String,
 }
 
 pub(crate) fn effective_openclaw_settings(resolved: &Resolved) -> OpenClawSettings {
-    let env_detected_port = std::env::var(OPENCLAW_GATEWAY_PORT_ENV)
-        .ok()
-        .and_then(|value| value.trim().parse::<u16>().ok())
-        .filter(|value| *value > 0);
-    let detected_port = env_detected_port.unwrap_or(DEFAULT_OPENCLAW_GATEWAY_PORT);
-    let detected_source = if env_detected_port.is_some() {
-        "environment"
-    } else {
-        "default"
-    };
+    let probe = probe_openclaw_config(DEFAULT_OPENCLAW_GATEWAY_PORT, DEFAULT_OPENCLAW_HOOKS_PATH);
+    let detected_port = probe.gateway_port;
+    let detected_source = probe.gateway_source.clone();
+    let detected_path = build_openclaw_hook_endpoint_path(&probe.hooks_path);
     let configured = resolved.host_notify_openclaw_hook_url.trim();
     let explicit_hook_url = resolved
         .sources
@@ -258,12 +255,12 @@ pub(crate) fn effective_openclaw_settings(resolved: &Resolved) -> OpenClawSettin
         (configured.to_string(), "config_file")
     } else {
         (
-            format!("http://127.0.0.1:{detected_port}{DEFAULT_OPENCLAW_HOOK_PATH}"),
+            format!("http://127.0.0.1:{detected_port}{detected_path}"),
             "auto_detected",
         )
     };
     let (config_token, config_source) = config::read_openclaw_token(&resolved.paths);
-    let env_token = std::env::var(OPENCLAW_HOOK_TOKEN_ENV)
+    let env_token = env::var(OPENCLAW_HOOK_TOKEN_ENV)
         .unwrap_or_default()
         .trim()
         .to_string();
@@ -271,6 +268,8 @@ pub(crate) fn effective_openclaw_settings(resolved: &Resolved) -> OpenClawSettin
         (config_token, config_source)
     } else if !env_token.is_empty() {
         (env_token, "environment".to_string())
+    } else if !probe.hook_token.is_empty() {
+        (probe.hook_token, "openclaw_config".to_string())
     } else {
         (String::new(), "unset".to_string())
     };
@@ -279,12 +278,141 @@ pub(crate) fn effective_openclaw_settings(resolved: &Resolved) -> OpenClawSettin
         hook_url_source,
         detected_webhook_port: detected_port,
         detected_webhook_source: detected_source,
-        detected_webhook_path: DEFAULT_OPENCLAW_HOOK_PATH,
-        detected_webhook_path_source: "default",
+        detected_webhook_path: detected_path,
+        detected_webhook_path_source: probe.hooks_source,
         token,
         token_configured: token_source != "unset",
         token_source,
     }
+}
+
+struct OpenClawConfigProbe {
+    gateway_port: i64,
+    gateway_source: String,
+    hooks_path: String,
+    hooks_source: String,
+    hook_token: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenClawConfigFile {
+    #[serde(default)]
+    gateway: OpenClawGatewayConfigFile,
+    #[serde(default)]
+    hooks: OpenClawHooksConfigFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenClawGatewayConfigFile {
+    #[serde(default)]
+    port: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenClawHooksConfigFile {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    token: String,
+}
+
+fn probe_openclaw_config(default_port: i64, default_hooks_path: &str) -> OpenClawConfigProbe {
+    let config_path = openclaw_config_path();
+    let mut probe = OpenClawConfigProbe {
+        gateway_port: default_port,
+        gateway_source: "default".to_string(),
+        hooks_path: normalize_openclaw_hooks_base_path(default_hooks_path),
+        hooks_source: "default".to_string(),
+        hook_token: String::new(),
+    };
+    if let Ok(env_port) = env::var(OPENCLAW_GATEWAY_PORT_ENV) {
+        if let Some(port) = parse_openclaw_port(env_port.trim()) {
+            probe.gateway_port = port;
+            probe.gateway_source = "environment".to_string();
+        }
+    }
+    if let Ok(raw) = fs::read_to_string(config_path) {
+        let Ok(payload) = serde_json::from_str::<OpenClawConfigFile>(&raw) else {
+            return probe;
+        };
+        if probe.gateway_source != "environment" && payload.gateway.port > 0 {
+            let port = payload.gateway.port;
+            probe.gateway_port = port;
+            probe.gateway_source = "openclaw_config".to_string();
+        }
+        let path = payload.hooks.path.trim();
+        if !path.is_empty() {
+            probe.hooks_path = normalize_openclaw_hooks_base_path(path);
+            probe.hooks_source = "openclaw_config".to_string();
+        }
+        probe.hook_token = payload.hooks.token.trim().to_string();
+    }
+    probe
+}
+
+fn parse_openclaw_port(raw: &str) -> Option<i64> {
+    raw.parse::<i64>().ok().filter(|port| *port > 0)
+}
+
+fn openclaw_config_path() -> PathBuf {
+    env::var(OPENCLAW_CONFIG_PATH_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| openclaw_home_dir().map(|home| home.join(".openclaw/openclaw.json")))
+        .unwrap_or_else(|| PathBuf::from(".openclaw/openclaw.json"))
+}
+
+fn openclaw_home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        if let Some(home) = env::var_os("USERPROFILE") {
+            return Some(PathBuf::from(home));
+        }
+        if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
+            let mut home = PathBuf::from(drive);
+            home.push(path);
+            return Some(home);
+        }
+    }
+    env::var_os("HOME").map(PathBuf::from)
+}
+
+fn normalize_openclaw_hooks_base_path(raw: &str) -> String {
+    let mut value = raw.trim().to_string();
+    if value.is_empty() {
+        return DEFAULT_OPENCLAW_HOOKS_PATH.to_string();
+    }
+    if !value.starts_with('/') {
+        value.insert(0, '/');
+    }
+    let mut parts = Vec::new();
+    for part in value.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            segment => parts.push(segment),
+        }
+    }
+    if parts.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", parts.join("/"))
+    }
+}
+
+fn build_openclaw_hook_endpoint_path(base_path: &str) -> String {
+    let base_path = normalize_openclaw_hooks_base_path(base_path);
+    if base_path.ends_with("/agent") {
+        return base_path;
+    }
+    if base_path == "/" {
+        return "/agent".to_string();
+    }
+    format!("{}/agent", base_path.trim_end_matches('/'))
 }
 
 fn ensure_runtime_dirs(resolved: &Resolved) -> anyhow::Result<()> {

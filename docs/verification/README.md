@@ -1633,15 +1633,61 @@ Scope:
 - Preserved Go response acceptance shape: HTTP 2xx, JSON `ok=true`, and a
   non-empty `runId`, surfaced as `data.confirmation.accepted/run_id`.
 
-Boundary note: this slice does not add Go's deeper OpenClaw JSON config probing
-for `OPENCLAW_CONFIG_PATH` or `~/.openclaw/openclaw.json`; that remains a
-separate config-depth parity item.
+Follow-up note: the 2026-05-15 OpenClaw JSON config probe slice below now
+translates Go's OpenClaw config-file probing through `OPENCLAW_CONFIG_PATH` and
+`~/.openclaw/openclaw.json`. This route-confirmation slice itself remains the
+webhook POST and warning-semantics boundary.
 
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. The implementation reuses the existing Rustls/std HTTP client and
 does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`,
 bundled OpenSSL, YAML crates, platform service libraries, or new SQLite
 dependencies.
+
+## 2026-05-15 OpenClaw JSON Config Probe Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_config_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_openclaw --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+cd ../awiki-cli && go test ./internal/runtime/openclawnotify -run 'TestProbeGatewayPortReadsEnvBeforeConfig|TestProbeGatewayPortReadsOpenClawConfig|TestResolveSettingsUsesAutoDetectedHookURLWhenConfigHookURLUnset|TestResolveSettingsPrefersConfigTokenOverEnvironmentAndOpenClawConfig|TestResolveSettingsPrefersEnvironmentTokenOverOpenClawConfig' -count=1
+```
+
+Result: passed locally. The focused Rust config probe contract covers
+`OPENCLAW_GATEWAY_PORT` precedence over OpenClaw JSON port while preserving JSON
+path/token, `HOME` fallback to `.openclaw/openclaw.json`, missing and malformed
+JSON silent fallback, Go positive-`int` port behavior above `65535`, Go
+typed-JSON unmarshal all-or-nothing fallback, Go-style `path.Clean`
+normalization for hook paths including `/`, `.`, `..`, and `/a/../b/.`, token
+source redaction, and auto-detected hook URL construction. The focused
+`runtime_contract` OpenClaw tests continue to cover route confirmation with
+config-probed path/token settings.
+
+Scope:
+
+- Translates Go `ProbeOpenClawConfig`, `OpenClawConfigPath`, hook token
+  fallback, hook URL auto-detection, and hook endpoint path construction for the
+  CLI-visible OpenClaw settings boundary.
+- Keeps explicit AWiki config-file hook URL precedence over auto-detected
+  OpenClaw settings, and keeps token precedence as AWiki config file,
+  `OPENCLAW_HOOK_TOKEN`, OpenClaw JSON token, then unset.
+- Preserves Go's silent fallback for missing/unreadable/invalid OpenClaw JSON
+  config files.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The implementation uses existing `serde_json`, standard env/path
+handling, and existing OpenClaw route/config helpers; it does not add `reqwest`,
+`hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL, YAML crates,
+platform service libraries, or new SQLite dependencies.
 
 ## 2026-05-14 Listener Status Files And Saved Status Merge Slice
 

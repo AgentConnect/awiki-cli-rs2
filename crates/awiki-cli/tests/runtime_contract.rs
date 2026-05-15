@@ -513,6 +513,201 @@ fn host_notify_openclaw_route_add_uses_auto_detected_gateway_port() {
 }
 
 #[test]
+fn host_notify_openclaw_uses_openclaw_config_probe() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let openclaw_config = workspace.path().join("openclaw.json");
+    std::fs::write(
+        &openclaw_config,
+        r#"{"gateway":{"port":25307},"hooks":{"path":"/custom-hooks","token":"hook-token"}}"#,
+    )
+    .expect("write openclaw config");
+
+    let sink = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "config",
+            "set",
+            "--sink",
+            "openclaw",
+        ],
+        workspace.path(),
+    );
+    assert_success(&sink);
+
+    let show = awiki_cmd_with_workspace_env(
+        &["runtime", "host-notify", "config", "show"],
+        workspace.path(),
+        &[(
+            "OPENCLAW_CONFIG_PATH",
+            openclaw_config.to_str().expect("openclaw config path"),
+        )],
+    );
+    assert_success(&show);
+    assert_not_contains(&String::from_utf8_lossy(&show.stdout), "hook-token");
+    let envelope = success_json(&show);
+    let openclaw = &envelope["data"]["host_notify"]["openclaw"];
+    assert_eq!(
+        openclaw["hook_url"],
+        "http://127.0.0.1:25307/custom-hooks/agent"
+    );
+    assert_eq!(openclaw["hook_url_source"], "auto_detected");
+    assert_eq!(openclaw["detected_webhook_port"], 25307);
+    assert_eq!(openclaw["detected_webhook_source"], "openclaw_config");
+    assert_eq!(openclaw["detected_webhook_path"], "/custom-hooks/agent");
+    assert_eq!(openclaw["detected_webhook_path_source"], "openclaw_config");
+    assert_eq!(openclaw["token_configured"], true);
+    assert_eq!(openclaw["token_source"], "openclaw_config");
+    assert!(openclaw
+        .as_object()
+        .expect("openclaw object")
+        .get("token")
+        .is_none());
+}
+
+#[test]
+fn host_notify_openclaw_route_add_uses_openclaw_config_path_and_token() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let server = TestServer::new(vec![TestResponse::ok(r#"{"ok":true,"runId":"cfg-123"}"#)]);
+    let openclaw_config = workspace.path().join("openclaw-route.json");
+    std::fs::write(
+        &openclaw_config,
+        format!(
+            r#"{{"gateway":{{"port":{}}},"hooks":{{"path":"custom-hooks","token":"hook-token"}}}}"#,
+            server.port()
+        ),
+    )
+    .expect("write openclaw config");
+
+    let sink = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "config",
+            "set",
+            "--sink",
+            "openclaw",
+        ],
+        workspace.path(),
+    );
+    assert_success(&sink);
+
+    let add = awiki_cmd_with_workspace_env(
+        &[
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "route",
+            "add",
+            "--channel",
+            "telegram",
+            "--to",
+            "123456",
+        ],
+        workspace.path(),
+        &[(
+            "OPENCLAW_CONFIG_PATH",
+            openclaw_config.to_str().expect("openclaw config path"),
+        )],
+    );
+    assert_success(&add);
+    let envelope = success_json(&add);
+    assert_eq!(envelope["summary"], "OpenClaw route added");
+    assert_eq!(envelope["data"]["confirmation"]["accepted"], true);
+    assert_eq!(envelope["data"]["confirmation"]["run_id"], "cfg-123");
+    assert_warnings_absent_or_empty(&envelope);
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "openclaw config hook should be used once"
+    );
+    assert!(requests[0].starts_with("POST /custom-hooks/agent HTTP/1.1"));
+    assert!(requests[0].contains("Authorization: Bearer hook-token"));
+}
+
+#[test]
+fn host_notify_openclaw_token_precedence_matches_go_contract() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let openclaw_config = workspace.path().join("openclaw-token.json");
+    std::fs::write(
+        &openclaw_config,
+        r#"{"gateway":{"port":25307},"hooks":{"token":"hook-token"}}"#,
+    )
+    .expect("write openclaw config");
+
+    let sink = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "config",
+            "set",
+            "--sink",
+            "openclaw",
+        ],
+        workspace.path(),
+    );
+    assert_success(&sink);
+
+    let env_show = awiki_cmd_with_workspace_env(
+        &["runtime", "host-notify", "config", "show"],
+        workspace.path(),
+        &[
+            (
+                "OPENCLAW_CONFIG_PATH",
+                openclaw_config.to_str().expect("openclaw config path"),
+            ),
+            ("OPENCLAW_HOOK_TOKEN", "env-token"),
+        ],
+    );
+    assert_success(&env_show);
+    assert_not_contains(&String::from_utf8_lossy(&env_show.stdout), "env-token");
+    assert_not_contains(&String::from_utf8_lossy(&env_show.stdout), "hook-token");
+    let envelope = success_json(&env_show);
+    assert_eq!(
+        envelope["data"]["host_notify"]["openclaw"]["token_source"],
+        "environment"
+    );
+
+    let set_token = awiki_cmd_with_workspace(
+        &[
+            "runtime",
+            "host-notify",
+            "openclaw",
+            "set-token",
+            "--value",
+            "config-token",
+        ],
+        workspace.path(),
+    );
+    assert_success(&set_token);
+
+    let config_show = awiki_cmd_with_workspace_env(
+        &["runtime", "host-notify", "config", "show"],
+        workspace.path(),
+        &[
+            (
+                "OPENCLAW_CONFIG_PATH",
+                openclaw_config.to_str().expect("openclaw config path"),
+            ),
+            ("OPENCLAW_HOOK_TOKEN", "env-token"),
+        ],
+    );
+    assert_success(&config_show);
+    assert_not_contains(
+        &String::from_utf8_lossy(&config_show.stdout),
+        "config-token",
+    );
+    assert_not_contains(&String::from_utf8_lossy(&config_show.stdout), "env-token");
+    assert_not_contains(&String::from_utf8_lossy(&config_show.stdout), "hook-token");
+    let envelope = success_json(&config_show);
+    assert_eq!(
+        envelope["data"]["host_notify"]["openclaw"]["token_source"],
+        "config_file"
+    );
+}
+
+#[test]
 fn host_notify_openclaw_route_add_warns_when_confirmation_fails() {
     let workspace = TempDir::new().expect("temp workspace");
     let server = TestServer::new(vec![TestResponse::status(500, "boom")]);
