@@ -2,6 +2,55 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Runtime Hermes Host Notification Helper Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/runtime/listener -run 'Test(NewHermesHostNotifySinkRejectsInvalidNotifyURL|HermesHostNotifySinkNotifySignsRequest)' -count=1
+```
+
+Scope:
+
+- Adds `runtime::hermes_host_notify` as a split helper translation of Go
+  `internal/runtime/listener/hermes_host_notify.go` deterministic helper
+  behavior.
+- Covers HMAC-SHA256 over `timestamp + "." + raw_json_body`, lowercase hex
+  signatures, `sha256=` header value construction, Go notify header constants,
+  `http`/`https` notify URL validation, host requirement, malformed host/port
+  parse rejection, config-file secret precedence, legacy webhook config
+  fallback, new and legacy env secret fallback, whitespace trimming, and config
+  read-error fallback to env.
+- Corrects `host_notify_config_view` Hermes metadata so the legacy env key is
+  Go's `AWIKI_HOST_NOTIFY_WEBHOOK_SECRET`, not the older incorrect
+  `AWIKI_WEBHOOK_SECRET` label.
+
+Dependency note: no dependency was added. The slice reuses existing `sha2` for
+the fixed HMAC-SHA256 helper and the existing hand-written config parser; it
+does not add an `hmac` crate, OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, YAML crates, platform service libraries, or new
+SQLite dependencies.
+
+Boundary note: Go `newHermesHostNotifySink` and `Notify` delivery integration
+remain deferred: HTTP client construction, POST execution, response/error
+mapping, Go `handleNotification`, foreground session processing, actual SQLite
+storage, host-notify dispatch, local bridge I/O, and WebSocket runtime execution
+are not claimed by this helper-only slice.
+
 ## 2026-05-15 Runtime OpenClaw Host Notification Builder Helper Slice
 
 Status: unit verified.

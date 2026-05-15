@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 pub mod bridge;
 pub mod hermes_bridge;
+pub mod hermes_host_notify;
 pub mod host_notify;
 pub mod listener;
 pub mod listener_contact_sync;
@@ -201,7 +202,7 @@ pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
             "secret_configured": false,
             "secret_source": "unset",
             "secret_env_fallback": "AWIKI_HOST_NOTIFY_HERMES_SECRET",
-            "secret_env_legacy": "AWIKI_WEBHOOK_SECRET",
+            "secret_env_legacy": hermes_host_notify::LEGACY_WEBHOOK_NOTIFY_SECRET_ENV,
         }
     }))
 }
