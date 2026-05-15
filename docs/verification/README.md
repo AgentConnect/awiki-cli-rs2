@@ -21,19 +21,21 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 Go reference verification:
 
 ```bash
-go test ./internal/runtime/listener -run 'TestMessageRecordFromDirectIncomingUsesProtocolFieldsOnly|TestMessageRecordFromDirectIncomingRejectsNonDirectNotification|TestMessageRecordFromGroupIncomingUsesProtocolFieldsOnly' -count=1
+go test ./internal/runtime/listener -run 'TestMessageRecordFromDirectIncomingUsesProtocolFieldsOnly|TestMessageRecordFromDirectIncomingRejectsNonDirectNotification|TestMessageRecordFromMailNotificationBuildsSystemMessage|TestMessageRecordFromGroupIncomingUsesProtocolFieldsOnly|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage' -count=1
 ```
 
 Scope:
 
 - Adds `runtime::listener_message_records` as a split helper translation of
-  Go `internal/runtime/listener/server.go` pure direct/group incoming message
-  parser functions.
+  Go `internal/runtime/listener/server.go` pure direct/mail/group incoming and
+  group state-change record parser functions.
 - Covers direct and group method/params gating, required field behavior,
   direct/group thread IDs, direct content fallback order, direct E2EE flag
   conditions, group self-sent direction/read status, group message-ID fallback
   including the numeric-seq pitfall, server-seq parsing, Go `text/plain`
-  content-type defaults, and metadata limited to `params`.
+  content-type defaults, mail summary/title/source-kind metadata, local mail
+  fallback IDs, group state group/member/message record construction, membership
+  status/content-type inference, and metadata limited to the Go helper scope.
 - Keeps the implementation parser-only because Rust does not yet implement the
   Go foreground listener WebSocket/session notification loop from
   `internal/runtime/listener/server.go`.
@@ -44,9 +46,10 @@ existing store helpers already present in the crate; it does not add OpenSSL,
 crates, platform service libraries, or new SQLite dependencies.
 
 Boundary note: Go `handleNotification` integration remains deferred: foreground
-session processing, direct secure decryption, actual SQLite message storage,
-incoming contact sync wiring, host-notify enrichment/dispatch, local bridge I/O,
-and WebSocket runtime execution are not claimed by this helper-only slice.
+session processing, direct secure decryption, actual SQLite message/group/member
+storage, incoming contact sync wiring, host-notify enrichment/dispatch, local
+bridge I/O, and WebSocket runtime execution are not claimed by this helper-only
+slice.
 
 ## 2026-05-15 Runtime Listener Contact Sync Helper Slice
 
