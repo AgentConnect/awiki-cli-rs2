@@ -515,11 +515,20 @@ impl App {
         let (route, added, routes) =
             runtime::openclaw_routes::add_route(&resolved.paths, route).map_err(internal_anyhow)?;
         let mut warnings = Vec::new();
+        let mut data = json!({
+            "route": route,
+            "routes": routes,
+            "route_registry_path": route_registry_path,
+        });
         if added {
-            warnings.push(
-                "OpenClaw route confirmation webhook is deferred in this Rust port slice."
-                    .to_string(),
-            );
+            match runtime::openclaw_webhook::send_route_confirmation(&resolved, &route) {
+                Ok(confirmation) => {
+                    if let Some(object) = data.as_object_mut() {
+                        object.insert("confirmation".to_string(), confirmation);
+                    }
+                }
+                Err(warning) => warnings.push(warning),
+            }
         }
         let summary = if added {
             "OpenClaw route added"
@@ -529,11 +538,7 @@ impl App {
         self.render_success(
             "awiki-cli runtime host-notify openclaw route add",
             &resolved,
-            json!({
-                "route": route,
-                "routes": routes,
-                "route_registry_path": route_registry_path,
-            }),
+            data,
             summary,
             warnings,
         )

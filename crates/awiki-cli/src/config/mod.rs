@@ -362,8 +362,12 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
     validate_host_notify_sink(&host_notify_sink)?;
     let host_notify_file_path =
         host_notify_file_path(&paths, &file_config.runtime.host_notify, &host_notify_sink);
-    let (openclaw_hook_url, openclaw_agent_id, openclaw_hook_name) =
+    let (openclaw_hook_url, openclaw_hook_source, openclaw_agent_id, openclaw_hook_name) =
         resolve_openclaw_fields(&file_config.runtime.host_notify, &host_notify_sink);
+    sources.insert(
+        "host_notify_openclaw_hook_url".to_string(),
+        openclaw_hook_source,
+    );
     let (hermes_notify_url, hermes_deliver) =
         resolve_hermes_fields(&file_config.runtime.host_notify, &host_notify_sink);
 
@@ -687,12 +691,31 @@ fn host_notify_file_path(paths: &Paths, config: &HostNotifyConfig, sink: &str) -
         .into_owned()
 }
 
-fn resolve_openclaw_fields(config: &HostNotifyConfig, sink: &str) -> (String, String, String) {
+fn resolve_openclaw_fields(
+    config: &HostNotifyConfig,
+    sink: &str,
+) -> (String, ValueSource, String, String) {
     if sink != "openclaw" {
-        return (String::new(), String::new(), String::new());
+        return (
+            String::new(),
+            ValueSource {
+                source: "unset".to_string(),
+                key: String::new(),
+                value: String::new(),
+            },
+            String::new(),
+            String::new(),
+        );
     }
+    let (hook_url, hook_source) = choose_value(
+        "",
+        false,
+        &config.openclaw.hook_url,
+        DEFAULT_OPENCLAW_HOOK_URL,
+    );
     (
-        default_trimmed_string(&config.openclaw.hook_url, DEFAULT_OPENCLAW_HOOK_URL),
+        hook_url,
+        hook_source,
         default_trimmed_string(&config.openclaw.agent_id, DEFAULT_OPENCLAW_AGENT_ID),
         default_trimmed_string(&config.openclaw.hook_name, DEFAULT_OPENCLAW_HOOK_NAME),
     )

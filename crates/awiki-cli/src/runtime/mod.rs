@@ -2,11 +2,13 @@ use crate::config::{self, Resolved};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fs;
+use std::net::IpAddr;
 
 pub mod bridge;
 pub mod hermes_bridge;
 pub mod listener;
 pub mod openclaw_routes;
+pub mod openclaw_webhook;
 
 const OPENCLAW_HOOK_TOKEN_ENV: &str = "OPENCLAW_HOOK_TOKEN";
 const OPENCLAW_GATEWAY_PORT_ENV: &str = "OPENCLAW_GATEWAY_PORT";
@@ -214,58 +216,63 @@ pub fn validate_openclaw_hook_url(value: &str) -> anyhow::Result<()> {
     if host.is_empty() {
         anyhow::bail!("runtime.host_notify.openclaw.hook_url must include a host");
     }
-    if host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1" {
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(());
+    }
+    if host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()) {
         return Ok(());
     }
     anyhow::bail!("runtime.host_notify.openclaw.hook_url must use a loopback host")
 }
 
 #[derive(Debug)]
-struct OpenClawSettings {
+pub(crate) struct OpenClawSettings {
     hook_url: String,
     hook_url_source: &'static str,
     detected_webhook_port: u16,
     detected_webhook_source: &'static str,
     detected_webhook_path: &'static str,
     detected_webhook_path_source: &'static str,
+    token: String,
     token_configured: bool,
     token_source: String,
 }
 
-fn effective_openclaw_settings(resolved: &Resolved) -> OpenClawSettings {
-    let detected_port = std::env::var(OPENCLAW_GATEWAY_PORT_ENV)
+pub(crate) fn effective_openclaw_settings(resolved: &Resolved) -> OpenClawSettings {
+    let env_detected_port = std::env::var(OPENCLAW_GATEWAY_PORT_ENV)
         .ok()
         .and_then(|value| value.trim().parse::<u16>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_OPENCLAW_GATEWAY_PORT);
-    let detected_source = if std::env::var(OPENCLAW_GATEWAY_PORT_ENV)
-        .ok()
-        .is_some_and(|value| value.trim().parse::<u16>().is_ok())
-    {
+        .filter(|value| *value > 0);
+    let detected_port = env_detected_port.unwrap_or(DEFAULT_OPENCLAW_GATEWAY_PORT);
+    let detected_source = if env_detected_port.is_some() {
         "environment"
     } else {
         "default"
     };
     let configured = resolved.host_notify_openclaw_hook_url.trim();
-    let (hook_url, hook_url_source) = if configured.is_empty() {
+    let explicit_hook_url = resolved
+        .sources
+        .get("host_notify_openclaw_hook_url")
+        .is_some_and(|source| source.source == "config_file");
+    let (hook_url, hook_url_source) = if explicit_hook_url && !configured.is_empty() {
+        (configured.to_string(), "config_file")
+    } else {
         (
             format!("http://127.0.0.1:{detected_port}{DEFAULT_OPENCLAW_HOOK_PATH}"),
             "auto_detected",
         )
-    } else {
-        (configured.to_string(), "config_file")
     };
     let (config_token, config_source) = config::read_openclaw_token(&resolved.paths);
     let env_token = std::env::var(OPENCLAW_HOOK_TOKEN_ENV)
         .unwrap_or_default()
         .trim()
         .to_string();
-    let token_source = if !config_token.trim().is_empty() {
-        config_source
+    let (token, token_source) = if !config_token.trim().is_empty() {
+        (config_token, config_source)
     } else if !env_token.is_empty() {
-        "environment".to_string()
+        (env_token, "environment".to_string())
     } else {
-        "unset".to_string()
+        (String::new(), "unset".to_string())
     };
     OpenClawSettings {
         hook_url,
@@ -274,6 +281,7 @@ fn effective_openclaw_settings(resolved: &Resolved) -> OpenClawSettings {
         detected_webhook_source: detected_source,
         detected_webhook_path: DEFAULT_OPENCLAW_HOOK_PATH,
         detected_webhook_path_source: "default",
+        token,
         token_configured: token_source != "unset",
         token_source,
     }

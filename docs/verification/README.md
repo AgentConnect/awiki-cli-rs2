@@ -1585,17 +1585,63 @@ Structure note: the route registry was added as
 `runtime/mod.rs`. The changed Rust source and test files remain below the
 default 1200-line source limit; no file-size exception is needed.
 
-Boundary note: Go non-dry-run route add sends one OpenClaw confirmation
-webhook after persisting a new route. This slice intentionally does not
-translate `internal/runtime/openclawnotify/webhook.go`; Rust records a warning
-on new route add and defers confirmation sending to a future Rustls-first HTTP
-client slice. No HTTP/TLS, WebSocket, OpenSSL, `native-tls`, or bundled OpenSSL
-dependency was added.
+Follow-up note: the 2026-05-15 OpenClaw route confirmation slice below now
+translates Go's post-persistence confirmation webhook behavior. The registry
+slice itself still represents the earlier local route-registry boundary.
 
 Dependency audit showed only the existing Rustls/ring update path and the
 approved `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite
 path. No OpenSSL/native-tls, new HTTP client, WebSocket, or platform service
 dependency was introduced.
+
+## 2026-05-15 OpenClaw Route Confirmation Webhook Slice
+
+Status: locally verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_openclaw --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+```
+
+Result: passed locally. `runtime_contract` route tests cover successful
+confirmation POST, bearer token forwarding, Go-shaped JSON request body,
+auto-detected `OPENCLAW_GATEWAY_PORT` hook URLs, duplicate-route no-send
+behavior, Go-style loopback URL validation, validation, and post-persistence
+warning behavior when OpenClaw rejects the confirmation. `xtask
+check-structure` reported no undocumented Rust files over 1200 lines.
+
+Scope:
+
+- Added `runtime::openclaw_webhook` for Go-compatible route confirmation
+  message construction and webhook POST execution on the existing
+  Rustls/std `transportcfg::HttpClient`.
+- Wired non-dry-run `runtime host-notify openclaw route add` so newly persisted
+  routes send one confirmation webhook using either an explicit AWiki config
+  hook URL or the auto-detected `OPENCLAW_GATEWAY_PORT` default URL, while
+  duplicate routes remain local.
+- Preserved Go failure semantics: route persistence succeeds first; hook URL
+  preparation failures and send/acceptance failures become warnings rather than
+  command failures.
+- Preserved Go response acceptance shape: HTTP 2xx, JSON `ok=true`, and a
+  non-empty `runId`, surfaced as `data.confirmation.accepted/run_id`.
+
+Boundary note: this slice does not add Go's deeper OpenClaw JSON config probing
+for `OPENCLAW_CONFIG_PATH` or `~/.openclaw/openclaw.json`; that remains a
+separate config-depth parity item.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The implementation reuses the existing Rustls/std HTTP client and
+does not add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`,
+bundled OpenSSL, YAML crates, platform service libraries, or new SQLite
+dependencies.
 
 ## 2026-05-14 Listener Status Files And Saved Status Merge Slice
 
