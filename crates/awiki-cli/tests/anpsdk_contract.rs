@@ -1,4 +1,5 @@
 use awiki_cli::anpsdk;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -151,6 +152,218 @@ fn anpsdk_facade_exposes_go_registry_direct_e2ee_state_symbols() {
 }
 
 #[test]
+fn file_signed_prekey_store_creates_root_and_round_trips_go_files() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root = workspace.path().join("signed-prekeys");
+    assert!(!root.exists());
+
+    let mut store = anpsdk::FileSignedPrekeyStore::new(&root).expect("create signed prekey store");
+    assert!(root.is_dir());
+
+    let private_key = generated_x25519_private_key();
+    let metadata = signed_prekey("spk-2026", &private_key);
+    store
+        .save_signed_prekey(&metadata.key_id, &private_key, &metadata)
+        .expect("save signed prekey");
+
+    let pem = std::fs::read_to_string(root.join("spk-2026.pem")).expect("read signed prekey pem");
+    assert_eq!(pem, private_key.to_pem());
+
+    let written_json =
+        std::fs::read_to_string(root.join("spk-2026.json")).expect("read signed prekey json");
+    assert_eq!(
+        written_json,
+        serde_json::to_string_pretty(&metadata).expect("pretty signed prekey json")
+    );
+    assert!(!written_json.ends_with('\n'));
+    assert_eq!(
+        std::fs::read_to_string(root.join("latest.txt")).expect("read latest signed prekey"),
+        "spk-2026"
+    );
+
+    let (loaded_private_key, loaded_metadata) = store
+        .load_signed_prekey("spk-2026")
+        .expect("load signed prekey");
+    assert_same_private_key(&loaded_private_key, &private_key);
+    assert_eq!(loaded_metadata, metadata);
+
+    let (latest_private_key, latest_metadata) = store
+        .load_latest_signed_prekey()
+        .expect("load latest signed prekey")
+        .expect("latest signed prekey exists");
+    assert_same_private_key(&latest_private_key, &private_key);
+    assert_eq!(latest_metadata, metadata);
+}
+
+#[test]
+fn file_signed_prekey_store_latest_missing_is_none_and_latest_whitespace_trims() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root = workspace.path().join("signed-prekeys");
+    let mut store = anpsdk::FileSignedPrekeyStore::new(&root).expect("create signed prekey store");
+
+    assert!(store
+        .load_latest_signed_prekey()
+        .expect("load missing latest signed prekey")
+        .is_none());
+
+    let private_key = generated_x25519_private_key();
+    let metadata = signed_prekey("spk-current", &private_key);
+    store
+        .save_signed_prekey(&metadata.key_id, &private_key, &metadata)
+        .expect("save signed prekey");
+    std::fs::write(root.join("latest.txt"), "\n\t spk-current \r\n")
+        .expect("write whitespace latest pointer");
+
+    let (latest_private_key, latest_metadata) = store
+        .load_latest_signed_prekey()
+        .expect("load whitespace latest signed prekey")
+        .expect("latest signed prekey exists");
+    assert_same_private_key(&latest_private_key, &private_key);
+    assert_eq!(latest_metadata, metadata);
+}
+
+#[test]
+fn file_signed_prekey_store_missing_load_maps_to_go_invalid_field_message() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let store = anpsdk::FileSignedPrekeyStore::new(workspace.path().join("signed-prekeys"))
+        .expect("create signed prekey store");
+
+    let error = store
+        .load_signed_prekey("missing-spk")
+        .expect_err("missing signed prekey should fail");
+    assert_direct_invalid_field(error, "signed prekey not found: missing-spk");
+}
+
+#[test]
+fn file_one_time_prekey_store_creates_root_lists_sorted_and_round_trips_go_files() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root = workspace.path().join("one-time-prekeys");
+    assert!(!root.exists());
+
+    let mut store =
+        anpsdk::FileOneTimePrekeyStore::new(&root).expect("create one-time prekey store");
+    assert!(root.is_dir());
+
+    let private_key_a = generated_x25519_private_key();
+    let private_key_b = generated_x25519_private_key();
+    let private_key_c = generated_x25519_private_key();
+    let metadata_a = one_time_prekey("opk-a", &private_key_a);
+    let metadata_b = one_time_prekey("opk-b", &private_key_b);
+    let metadata_c = one_time_prekey("opk-c", &private_key_c);
+
+    store
+        .save_one_time_prekey(&metadata_c.key_id, &private_key_c, &metadata_c)
+        .expect("save opk c");
+    store
+        .save_one_time_prekey(&metadata_a.key_id, &private_key_a, &metadata_a)
+        .expect("save opk a");
+    store
+        .save_one_time_prekey(&metadata_b.key_id, &private_key_b, &metadata_b)
+        .expect("save opk b");
+
+    let pem = std::fs::read_to_string(root.join("opk-b.pem")).expect("read opk pem");
+    assert_eq!(pem, private_key_b.to_pem());
+
+    let written_json = std::fs::read_to_string(root.join("opk-b.json")).expect("read opk json");
+    assert_eq!(
+        written_json,
+        serde_json::to_string_pretty(&metadata_b).expect("pretty opk json")
+    );
+    assert!(!written_json.ends_with('\n'));
+
+    let (loaded_private_key, loaded_metadata) = store
+        .load_one_time_prekey("opk-b")
+        .expect("load one-time prekey");
+    assert_same_private_key(&loaded_private_key, &private_key_b);
+    assert_eq!(loaded_metadata, metadata_b);
+
+    assert_eq!(
+        store
+            .list_one_time_prekeys()
+            .expect("list one-time prekeys"),
+        vec![metadata_a, metadata_b, metadata_c]
+    );
+}
+
+#[test]
+fn file_one_time_prekey_store_delete_missing_succeeds_and_missing_load_maps_to_go_message() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root = workspace.path().join("one-time-prekeys");
+    let mut store =
+        anpsdk::FileOneTimePrekeyStore::new(&root).expect("create one-time prekey store");
+
+    let private_key = generated_x25519_private_key();
+    let metadata = one_time_prekey("opk-delete", &private_key);
+    store
+        .save_one_time_prekey(&metadata.key_id, &private_key, &metadata)
+        .expect("save one-time prekey");
+    store
+        .delete_one_time_prekey("opk-delete")
+        .expect("delete one-time prekey");
+    assert!(!root.join("opk-delete.pem").exists());
+    assert!(!root.join("opk-delete.json").exists());
+
+    store
+        .delete_one_time_prekey("missing-opk")
+        .expect("delete missing one-time prekey");
+    let error = store
+        .load_one_time_prekey("missing-opk")
+        .expect_err("missing one-time prekey should fail");
+    assert_direct_invalid_field(error, "one-time prekey not found: missing-opk");
+}
+
+#[test]
+fn file_pending_outbound_store_round_trips_json_and_delete_missing_succeeds() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let root = workspace.path().join("pending-outbound");
+    assert!(!root.exists());
+
+    let mut store =
+        anpsdk::FilePendingOutboundStore::new(&root).expect("create pending outbound store");
+    assert!(root.is_dir());
+
+    let pending = pending_outbound("op-pending-1");
+    store.save_pending(&pending).expect("save pending record");
+
+    let written_json =
+        std::fs::read_to_string(root.join("op-pending-1.json")).expect("read pending json");
+    assert_eq!(
+        written_json,
+        serde_json::to_string_pretty(&pending).expect("pretty pending json")
+    );
+    assert!(!written_json.ends_with('\n'));
+
+    assert_eq!(
+        store
+            .load_pending("op-pending-1")
+            .expect("load pending record"),
+        pending
+    );
+
+    store
+        .delete_pending("op-pending-1")
+        .expect("delete pending record");
+    assert!(!root.join("op-pending-1.json").exists());
+    store
+        .delete_pending("missing-pending")
+        .expect("delete missing pending record");
+}
+
+#[test]
+fn file_pending_outbound_store_missing_load_maps_to_pending_not_found() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let store = anpsdk::FilePendingOutboundStore::new(workspace.path().join("pending-outbound"))
+        .expect("create pending outbound store");
+
+    let error = store
+        .load_pending("missing-pending")
+        .expect_err("missing pending record should fail");
+    assert!(
+        matches!(error, anpsdk::DirectE2eeError::PendingOutboundNotFound(operation_id) if operation_id == "missing-pending")
+    );
+}
+
+#[test]
 fn file_session_store_creates_root_and_round_trips_pretty_json_without_trailing_newline() {
     let workspace = TempDir::new().expect("temp workspace");
     let root = workspace.path().join("sessions").join("direct");
@@ -274,6 +487,71 @@ fn direct_session(session_id: &str, peer_did: &str) -> anpsdk::DirectSessionStat
 fn write_session_json(root: &Path, session: &anpsdk::DirectSessionState, context: &str) {
     let json = serde_json::to_string_pretty(session).expect("serialize session");
     std::fs::write(root.join(format!("{}.json", session.session_id)), json).expect(context);
+}
+
+fn pending_outbound(operation_id: &str) -> anpsdk::PendingOutboundRecord {
+    anpsdk::PendingOutboundRecord {
+        operation_id: operation_id.to_string(),
+        message_id: "message-1".to_string(),
+        wire_content_type: "application/anp-direct-cipher+json".to_string(),
+        body_json: json!({
+            "session_id": "session-1",
+            "ratchet_header": {
+                "dh_pub_b64u": "dh",
+                "pn": "0",
+                "n": "1"
+            },
+            "ciphertext_b64u": "cipher"
+        }),
+    }
+}
+
+fn generated_x25519_private_key() -> anpsdk::PrivateKeyMaterial {
+    anpsdk::create_did_wba_document("example.com", anpsdk::DidDocumentOptions::default())
+        .expect("create DID document with E2EE key")
+        .load_private_key("key-3")
+        .expect("load generated X25519 key agreement private key")
+}
+
+fn signed_prekey(key_id: &str, private_key: &anpsdk::PrivateKeyMaterial) -> anpsdk::SignedPrekey {
+    anpsdk::SignedPrekey {
+        key_id: key_id.to_string(),
+        public_key_b64u: x25519_public_key_b64u(private_key),
+        expires_at: "2027-05-15T00:00:00Z".to_string(),
+    }
+}
+
+fn one_time_prekey(
+    key_id: &str,
+    private_key: &anpsdk::PrivateKeyMaterial,
+) -> anpsdk::OneTimePrekey {
+    anpsdk::OneTimePrekey {
+        key_id: key_id.to_string(),
+        public_key_b64u: x25519_public_key_b64u(private_key),
+    }
+}
+
+fn x25519_public_key_b64u(private_key: &anpsdk::PrivateKeyMaterial) -> String {
+    match private_key.public_key() {
+        anpsdk::PublicKeyMaterial::X25519(bytes) => URL_SAFE_NO_PAD.encode(bytes),
+        other => panic!("expected X25519 public key, got {other}"),
+    }
+}
+
+fn assert_same_private_key(
+    actual: &anpsdk::PrivateKeyMaterial,
+    expected: &anpsdk::PrivateKeyMaterial,
+) {
+    assert_eq!(actual.to_pem(), expected.to_pem());
+    assert_eq!(actual.public_key().to_pem(), expected.public_key().to_pem());
+}
+
+fn assert_direct_invalid_field(error: anpsdk::DirectE2eeError, expected: &str) {
+    assert_eq!(error.to_string(), format!("invalid field: {expected}"));
+    match error {
+        anpsdk::DirectE2eeError::InvalidField(message) => assert_eq!(message, expected),
+        other => panic!("expected DirectE2eeError::InvalidField, got {other:?}"),
+    }
 }
 
 struct TempDir {

@@ -9,8 +9,8 @@ pub use anp::authentication::{
     DidProfile, DidResolutionOptions, DidWbaVerifier, DidWbaVerifierConfig, HttpSignatureOptions,
 };
 pub use anp::direct_e2ee::{
-    DirectE2eeError, DirectE2eeSession, DirectSessionState, OneTimePrekey, PrekeyBundle,
-    SessionStore, SignedPrekey,
+    DirectE2eeError, DirectE2eeSession, DirectSessionState, OneTimePrekey, PendingOutboundRecord,
+    PendingOutboundStore, PrekeyBundle, SessionStore, SignedPrekey, SignedPrekeyStore,
 };
 pub use anp::proof::{
     build_im_content_digest, build_im_signature_input, build_logical_target_uri,
@@ -24,6 +24,8 @@ pub use anp::proof::{
     SignedRequestObject, TargetKind,
 };
 pub use anp::{PrivateKeyMaterial, PublicKeyMaterial};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -108,7 +110,214 @@ impl SessionStore for FileSessionStore {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct FileSignedPrekeyStore {
+    root: PathBuf,
+}
+
+impl FileSignedPrekeyStore {
+    pub fn new(root: impl AsRef<Path>) -> Result<Self, DirectE2eeError> {
+        let root = root.as_ref().to_path_buf();
+        create_store_dir(&root)?;
+        Ok(Self { root })
+    }
+
+    pub fn save_signed_prekey(
+        &mut self,
+        key_id: &str,
+        private_key: &PrivateKeyMaterial,
+        metadata: &SignedPrekey,
+    ) -> Result<(), DirectE2eeError> {
+        write_private_file(&self.pem_path(key_id), private_key.to_pem().as_bytes())?;
+        write_public_json(&self.json_path(key_id), metadata)?;
+        write_public_file(&self.latest_path(), key_id.as_bytes())
+    }
+
+    pub fn load_signed_prekey(
+        &self,
+        key_id: &str,
+    ) -> Result<(PrivateKeyMaterial, SignedPrekey), DirectE2eeError> {
+        let pem_path = self.pem_path(key_id);
+        let raw = match fs::read_to_string(&pem_path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(DirectE2eeError::invalid_field(format!(
+                    "signed prekey not found: {key_id}"
+                )));
+            }
+            Err(err) => return Err(store_io_error(err)),
+        };
+        let private_key = PrivateKeyMaterial::from_pem(&raw)
+            .map_err(|err| DirectE2eeError::invalid_field(err.to_string()))?;
+        let metadata = read_json_file(&self.json_path(key_id))?;
+        Ok((private_key, metadata))
+    }
+
+    pub fn load_latest_signed_prekey(
+        &self,
+    ) -> Result<Option<(PrivateKeyMaterial, SignedPrekey)>, DirectE2eeError> {
+        let raw = match fs::read_to_string(self.latest_path()) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(store_io_error(err)),
+        };
+        self.load_signed_prekey(raw.trim()).map(Some)
+    }
+
+    fn pem_path(&self, key_id: &str) -> PathBuf {
+        self.root.join(format!("{key_id}.pem"))
+    }
+
+    fn json_path(&self, key_id: &str) -> PathBuf {
+        self.root.join(format!("{key_id}.json"))
+    }
+
+    fn latest_path(&self) -> PathBuf {
+        self.root.join("latest.txt")
+    }
+}
+
+impl SignedPrekeyStore for FileSignedPrekeyStore {
+    fn save_signed_prekey(
+        &mut self,
+        key_id: &str,
+        private_key: &PrivateKeyMaterial,
+        metadata: &SignedPrekey,
+    ) -> Result<(), DirectE2eeError> {
+        Self::save_signed_prekey(self, key_id, private_key, metadata)
+    }
+
+    fn load_signed_prekey(&self, key_id: &str) -> Result<PrivateKeyMaterial, DirectE2eeError> {
+        FileSignedPrekeyStore::load_signed_prekey(self, key_id).map(|(private_key, _)| private_key)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileOneTimePrekeyStore {
+    root: PathBuf,
+}
+
+impl FileOneTimePrekeyStore {
+    pub fn new(root: impl AsRef<Path>) -> Result<Self, DirectE2eeError> {
+        let root = root.as_ref().to_path_buf();
+        create_store_dir(&root)?;
+        Ok(Self { root })
+    }
+
+    pub fn save_one_time_prekey(
+        &mut self,
+        key_id: &str,
+        private_key: &PrivateKeyMaterial,
+        metadata: &OneTimePrekey,
+    ) -> Result<(), DirectE2eeError> {
+        write_private_file(&self.pem_path(key_id), private_key.to_pem().as_bytes())?;
+        write_public_json(&self.json_path(key_id), metadata)
+    }
+
+    pub fn load_one_time_prekey(
+        &self,
+        key_id: &str,
+    ) -> Result<(PrivateKeyMaterial, OneTimePrekey), DirectE2eeError> {
+        let pem_path = self.pem_path(key_id);
+        let raw = match fs::read_to_string(&pem_path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(DirectE2eeError::invalid_field(format!(
+                    "one-time prekey not found: {key_id}"
+                )));
+            }
+            Err(err) => return Err(store_io_error(err)),
+        };
+        let private_key = PrivateKeyMaterial::from_pem(&raw)
+            .map_err(|err| DirectE2eeError::invalid_field(err.to_string()))?;
+        let metadata = read_json_file(&self.json_path(key_id))?;
+        Ok((private_key, metadata))
+    }
+
+    pub fn list_one_time_prekeys(&self) -> Result<Vec<OneTimePrekey>, DirectE2eeError> {
+        let mut result = Vec::new();
+        for path in json_paths(&self.root)? {
+            result.push(read_json_file(&path)?);
+        }
+        result.sort_by(|left: &OneTimePrekey, right| left.key_id.cmp(&right.key_id));
+        Ok(result)
+    }
+
+    pub fn delete_one_time_prekey(&mut self, key_id: &str) -> Result<(), DirectE2eeError> {
+        remove_file_if_exists(self.pem_path(key_id))?;
+        remove_file_if_exists(self.json_path(key_id))
+    }
+
+    fn pem_path(&self, key_id: &str) -> PathBuf {
+        self.root.join(format!("{key_id}.pem"))
+    }
+
+    fn json_path(&self, key_id: &str) -> PathBuf {
+        self.root.join(format!("{key_id}.json"))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FilePendingOutboundStore {
+    root: PathBuf,
+}
+
+impl FilePendingOutboundStore {
+    pub fn new(root: impl AsRef<Path>) -> Result<Self, DirectE2eeError> {
+        let root = root.as_ref().to_path_buf();
+        create_store_dir(&root)?;
+        Ok(Self { root })
+    }
+
+    pub fn save_pending(&mut self, pending: &PendingOutboundRecord) -> Result<(), DirectE2eeError> {
+        write_public_json(&self.pending_path(&pending.operation_id), pending)
+    }
+
+    pub fn load_pending(
+        &self,
+        operation_id: &str,
+    ) -> Result<PendingOutboundRecord, DirectE2eeError> {
+        let path = self.pending_path(operation_id);
+        let raw = match fs::read(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(DirectE2eeError::PendingOutboundNotFound(
+                    operation_id.to_string(),
+                ));
+            }
+            Err(err) => return Err(store_io_error(err)),
+        };
+        serde_json::from_slice(&raw).map_err(store_json_error)
+    }
+
+    pub fn delete_pending(&mut self, operation_id: &str) -> Result<(), DirectE2eeError> {
+        remove_file_if_exists(self.pending_path(operation_id))
+    }
+
+    fn pending_path(&self, operation_id: &str) -> PathBuf {
+        self.root.join(format!("{operation_id}.json"))
+    }
+}
+
+impl PendingOutboundStore for FilePendingOutboundStore {
+    fn save_pending(&mut self, pending: &PendingOutboundRecord) -> Result<(), DirectE2eeError> {
+        Self::save_pending(self, pending)
+    }
+
+    fn load_pending(&self, operation_id: &str) -> Result<PendingOutboundRecord, DirectE2eeError> {
+        Self::load_pending(self, operation_id)
+    }
+
+    fn delete_pending(&mut self, operation_id: &str) -> Result<(), DirectE2eeError> {
+        Self::delete_pending(self, operation_id)
+    }
+}
+
 fn session_json_paths(root: &Path) -> Result<Vec<PathBuf>, DirectE2eeError> {
+    json_paths(root)
+}
+
+fn json_paths(root: &Path) -> Result<Vec<PathBuf>, DirectE2eeError> {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -126,9 +335,31 @@ fn session_json_paths(root: &Path) -> Result<Vec<PathBuf>, DirectE2eeError> {
 }
 
 fn write_session_json(path: &Path, session: &DirectSessionState) -> Result<(), DirectE2eeError> {
-    let raw = serde_json::to_vec_pretty(session).map_err(store_json_error)?;
+    write_private_json(path, session)
+}
+
+fn write_private_json<T: Serialize>(path: &Path, value: &T) -> Result<(), DirectE2eeError> {
+    let raw = serde_json::to_vec_pretty(value).map_err(store_json_error)?;
     write_private_file(path, &raw)?;
     Ok(())
+}
+
+fn write_public_json<T: Serialize>(path: &Path, value: &T) -> Result<(), DirectE2eeError> {
+    let raw = serde_json::to_vec_pretty(value).map_err(store_json_error)?;
+    write_public_file(path, &raw)
+}
+
+fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<T, DirectE2eeError> {
+    let raw = fs::read(path).map_err(store_io_error)?;
+    serde_json::from_slice(&raw).map_err(store_json_error)
+}
+
+fn remove_file_if_exists(path: PathBuf) -> Result<(), DirectE2eeError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(store_io_error(err)),
+    }
 }
 
 fn store_io_error(err: std::io::Error) -> DirectE2eeError {
@@ -141,6 +372,11 @@ fn store_json_error(err: serde_json::Error) -> DirectE2eeError {
 
 #[cfg(unix)]
 fn create_session_dir(path: &Path) -> Result<(), DirectE2eeError> {
+    create_store_dir(path)
+}
+
+#[cfg(unix)]
+fn create_store_dir(path: &Path) -> Result<(), DirectE2eeError> {
     use std::os::unix::fs::DirBuilderExt;
 
     let mut builder = fs::DirBuilder::new();
@@ -150,6 +386,11 @@ fn create_session_dir(path: &Path) -> Result<(), DirectE2eeError> {
 
 #[cfg(not(unix))]
 fn create_session_dir(path: &Path) -> Result<(), DirectE2eeError> {
+    create_store_dir(path)
+}
+
+#[cfg(not(unix))]
+fn create_store_dir(path: &Path) -> Result<(), DirectE2eeError> {
     fs::create_dir_all(path).map_err(store_io_error)
 }
 
@@ -169,5 +410,24 @@ fn write_private_file(path: &Path, raw: &[u8]) -> Result<(), DirectE2eeError> {
 
 #[cfg(not(unix))]
 fn write_private_file(path: &Path, raw: &[u8]) -> Result<(), DirectE2eeError> {
+    fs::write(path, raw).map_err(store_io_error)
+}
+
+#[cfg(unix)]
+fn write_public_file(path: &Path, raw: &[u8]) -> Result<(), DirectE2eeError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o644)
+        .open(path)
+        .map_err(store_io_error)?;
+    file.write_all(raw).map_err(store_io_error)
+}
+
+#[cfg(not(unix))]
+fn write_public_file(path: &Path, raw: &[u8]) -> Result<(), DirectE2eeError> {
     fs::write(path, raw).map_err(store_io_error)
 }

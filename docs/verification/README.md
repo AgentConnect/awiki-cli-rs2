@@ -6347,6 +6347,77 @@ introduce ANP `network`/default features, `reqwest`, `hyper`, WebSocket crates,
 OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, platform service
 libraries, or new SQLite dependencies.
 
+## 2026-05-16 ANP File Prekey Store Facade Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/anpsdk -count=1
+cd ../awiki-cli && go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+```
+
+Result: passed after final verification. `anpsdk_contract` now has 14 tests.
+
+Scope:
+
+- Added `anpsdk::FileSignedPrekeyStore` as the CLI facade equivalent of Go ANP
+  SDK `NewFileSignedPrekeyStore` for the direct-E2EE signed-prekey boundary.
+- Preserved Go file behavior: constructor creates the root directory,
+  `save_signed_prekey` writes `<key_id>.pem`, `<key_id>.json`, and
+  `latest.txt`; metadata JSON is pretty without a trailing newline;
+  `load_signed_prekey` returns private PEM material plus metadata; missing PEM
+  maps to `invalid field: signed prekey not found: <key_id>`; and
+  `load_latest_signed_prekey` returns `None` for missing `latest.txt` while
+  trimming whitespace before loading the latest key.
+- Added `anpsdk::FileOneTimePrekeyStore` as the CLI facade equivalent of Go ANP
+  SDK `NewFileOneTimePrekeyStore`.
+- Preserved Go one-time-prekey behavior: constructor creates the root
+  directory, save/load round-trips PEM plus metadata JSON, missing PEM maps to
+  `invalid field: one-time prekey not found: <key_id>`, list reads `*.json` and
+  sorts by `key_id`, and delete removes both PEM and JSON while ignoring
+  missing files.
+- Added `anpsdk::FilePendingOutboundStore` as the CLI facade equivalent of Go
+  ANP SDK `NewFilePendingOutboundStore`.
+- Preserved Go pending-outbound behavior: save/load/delete
+  `<operation_id>.json`, pretty JSON without trailing newline, missing load
+  maps to `DirectE2eeError::PendingOutboundNotFound`, and delete missing
+  succeeds.
+- Implemented the local ANP Rust `SignedPrekeyStore` and
+  `PendingOutboundStore` traits where the local SDK already exposes matching
+  trait surfaces. The local SDK does not currently expose a `OneTimePrekeyStore`
+  trait, so the one-time prekey store is intentionally an inherent Go-shaped
+  facade until a consuming E2EE client slice requires a trait adapter.
+
+Boundary note: this is still a local facade helper slice, not the full Go
+`direct_e2ee` SDK client port. `NewMessageServiceDirectE2eeClient`,
+`MessageServiceE2EEClient`, prekey publishing, no-session init, DID resolution,
+secure send execution, incoming `ProcessIncoming`, WebSocket/RPC transport,
+SQLite queued flush mutation, `SecureRetry`, `SecureInit`, `SecureRepair`, and
+awiki-system-test secure-direct acceptance remain deferred parity slices.
+
+Parallelism note: part of the focused `anpsdk_contract` prekey-store tests were
+contributed by a code-writing Native Agent launched with GPT-5.5 and xhigh
+reasoning under a test-only write scope; the pending-outbound coverage and
+integration fixes were completed in the leader lane.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the local ANP Rust SDK with default features
+disabled plus std filesystem APIs and existing `serde_json`. It does not
+introduce ANP `network`/default features, `reqwest`, `hyper`, WebSocket crates,
+OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, platform service
+libraries, or new SQLite dependencies. Dependency audit showed only the
+existing Rustls/ring chain and the approved bundled SQLite `rusqlite ->
+libsqlite3-sys` path.
+
 ## 2026-05-15 Identity Recover Dry-Run Slice
 
 Local Rust verification:
