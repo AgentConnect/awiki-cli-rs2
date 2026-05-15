@@ -310,6 +310,67 @@ Dependency note: no dependency was added. The slice uses only
 `reqwest`, `hyper`, WebSocket crates, Tokio, YAML crates, platform service
 libraries, E2EE provider dependencies, or new SQLite dependencies.
 
+## 2026-05-16 Runtime Listener Secure Inbox/History Sync Planning Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_sync_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Go reference verification:
+
+- Go source parity for `internal/runtime/listener/server.go`
+  `syncUnreadSecureDirectInbox` and `syncPendingConfirmationSecureHistory`
+  request planning, 15-second timeout ownership, cancel ordering, RPC error
+  skip behavior, and replay-filter handoff.
+- Existing secure listener/message guards cover adjacent real E2EE consumers:
+  `go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1`.
+
+Result: passed.
+
+Scope:
+
+- Adds `runtime::listener_secure_sync` as a pure RPC/replay planning helper for
+  Go `syncUnreadSecureDirectInbox` and
+  `syncPendingConfirmationSecureHistory`.
+- Preserves missing-current-record behavior: no RPC and no replay.
+- Preserves unread inbox request planning: 15-second timeout, method
+  `inbox.get`, Go request intent `Scope=direct`, `UnreadOnly=true`,
+  `Limit=100`, and the current Go/Rust `BuildInboxRPCParams` behavior where
+  `scope` and `unread_only` are not serialized into params.
+- Preserves unread inbox `defer cancel` behavior by planning cancellation after
+  RPC/replay handling.
+- Preserves unread inbox RPC failure behavior by stopping before replay when no
+  RPC result is injected.
+- Preserves pending history behavior: no peers means no RPC; each peer gets a
+  15-second context; empty peer targets trigger a build-error path that cancels
+  and continues; successful builds plan `direct.get_history` with limit 50 and
+  cancel after `SendRPC`.
+- Preserves replay handoff by reusing existing secure replay filters for unread
+  inbox and pending history messages, including store lookup outcomes and
+  notification conversion.
+- Keeps files under the default review-size cap:
+  `listener_secure_sync.rs` is 142 lines and the focused test file is 198 lines.
+
+Boundary note: this is a pure sync-planning slice. It does not implement real
+`WSClient.SendRPC`, real context/timer ownership, SQLite `GetMessageByID`,
+`handleNotification`, secure decrypt/ack, foreground polling, host-notify
+dispatch, local bridge I/O, or `awiki-system-test` runtime listener acceptance.
+
+Dependency note: no dependency was added. The slice reuses existing message
+wire builders, secure replay helpers, `serde_json`, and `std::time::Duration`.
+It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`,
+WebSocket crates, Tokio, YAML crates, platform service libraries, E2EE provider
+dependencies, file-store dependencies, or new SQLite dependencies.
+
 ## 2026-05-16 Runtime Listener Secure Normalization Planning Slice
 
 Status: unit verified.

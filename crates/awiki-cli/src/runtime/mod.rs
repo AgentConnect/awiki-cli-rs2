@@ -25,6 +25,7 @@ pub mod listener_secure_normalize;
 pub mod listener_secure_notifications;
 pub mod listener_secure_replay;
 pub mod listener_secure_sessions;
+pub mod listener_secure_sync;
 pub mod listener_service;
 pub mod listener_service_did;
 pub mod listener_session_lookup;
