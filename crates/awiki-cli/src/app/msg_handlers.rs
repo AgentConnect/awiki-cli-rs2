@@ -163,7 +163,29 @@ impl App {
         }
         let resolved = self.resolve_config()?;
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("msg attachment download"));
+            let result = message::download_attachment(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::AttachmentDownloadRequest {
+                    identity_name: self.globals.identity.clone(),
+                    with,
+                    group,
+                    message_id: string_flag(command, "message-id"),
+                    attachment_id: string_flag(command, "attachment-id"),
+                    output_path: string_flag(command, "output"),
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Make sure the message id, attachment id, and target context are correct.",
+                )
+            })?;
+            return self.render_message_result(
+                "awiki-cli msg attachment download",
+                &resolved,
+                result,
+            );
         }
         let mut plan = Map::new();
         plan.insert(
@@ -618,8 +640,6 @@ pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {
     match err {
         MessageError::TargetRequired
         | MessageError::TextRequired
-        | MessageError::MessageNotFound
-        | MessageError::AttachmentNotFound
         | MessageError::AttachmentIdRequired
         | MessageError::AttachmentMessageInvalid
         | MessageError::AttachmentSenderRequired
@@ -641,6 +661,9 @@ pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {
             err.to_string(),
             "Check the message command arguments and try again.",
         ),
+        MessageError::MessageNotFound | MessageError::AttachmentNotFound => {
+            ExitError::new("not_found", 5, err.to_string(), hint)
+        }
         MessageError::IdentityRequired(message) => ExitError::new(
             "identity_required",
             3,
@@ -666,13 +689,29 @@ pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {
                     "Use an identity with a valid JWT or DID WBA auth material.",
                 )
             }
-            _ if service_err.status_code == 404 || service_err.rpc_code == -32002 => {
+            _ if service_err.rpc_code == 1401 => ExitError::new(
+                "auth_required",
+                3,
+                service_err.to_string(),
+                "Use an identity with a valid JWT or DID WBA auth material.",
+            ),
+            _ if service_err.status_code == 404
+                || service_err.rpc_code == -32002
+                || matches!(service_err.rpc_code, 6000 | 6005 | 6007 | 6012) =>
+            {
                 ExitError::new("not_found", 5, service_err.to_string(), hint)
             }
             _ if service_err.status_code == 409
                 || matches!(service_err.rpc_code, -32003 | -32004) =>
             {
                 ExitError::new("conflict", 1, service_err.to_string(), hint)
+            }
+            _ if matches!(
+                service_err.rpc_code,
+                6006 | 6008 | 6009 | 6010 | 6011 | 6013
+            ) =>
+            {
+                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
             }
             _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
         },

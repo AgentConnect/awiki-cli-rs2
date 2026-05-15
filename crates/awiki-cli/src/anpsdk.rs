@@ -3,10 +3,10 @@ pub const MODULE_VERSION: &str = "v0.8.7";
 
 pub use anp::authentication::{
     build_anp_message_service, create_did_wba_document, generate_auth_header,
-    generate_http_signature_headers, resolve_did_document, resolve_did_document_with_options,
-    AnpMessageServiceOptions, AuthMode, AuthenticationError, DIDWbaAuthHeader, DidDocumentBundle,
-    DidDocumentOptions, DidProfile, DidResolutionOptions, DidWbaVerifier, DidWbaVerifierConfig,
-    HttpSignatureOptions,
+    generate_http_signature_headers, resolve_did_document, resolve_did_document_sync,
+    resolve_did_document_with_options, validate_did_document_binding, AnpMessageServiceOptions,
+    AuthMode, AuthenticationError, DIDWbaAuthHeader, DidDocumentBundle, DidDocumentOptions,
+    DidProfile, DidResolutionOptions, DidWbaVerifier, DidWbaVerifierConfig, HttpSignatureOptions,
 };
 pub use anp::direct_e2ee::{
     DirectE2eeSession, DirectSessionState, OneTimePrekey, PrekeyBundle, SignedPrekey,

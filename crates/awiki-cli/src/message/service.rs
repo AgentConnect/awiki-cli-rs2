@@ -51,7 +51,10 @@ pub fn send(
     request: SendRequest,
 ) -> Result<CommandResult, MessageError> {
     if request.has_attachment() {
-        return Err(MessageError::AttachmentNotSupported);
+        if !request.group.trim().is_empty() {
+            return super::attachment_service::send_group_attachment(resolved, manager, request);
+        }
+        return super::attachment_service::send_direct_attachment(resolved, manager, request);
     }
     if !request.group.trim().is_empty() {
         return super::group_service::send_group(resolved, manager, request);
@@ -287,16 +290,23 @@ pub(crate) fn auth_session(
     let base_url = resolved.service_base_url.trim();
     let did_auth_url = join_base_url(base_url, DID_AUTH_RPC_ENDPOINT);
     let message_rpc_url = join_base_url(base_url, MESSAGE_RPC_ENDPOINT);
+    let anp_service_endpoint = resolved.anp_service_endpoint.trim();
     if !base_url.is_empty() {
         session.remember_scope(base_url);
         session.remember_scope(&did_auth_url);
         session.remember_scope(&message_rpc_url);
+    }
+    if !anp_service_endpoint.is_empty() {
+        session.remember_scope(anp_service_endpoint);
     }
     let token = record.jwt_token.trim();
     if !token.is_empty() && !base_url.is_empty() {
         session.set_bearer(base_url, token);
         session.set_bearer(&did_auth_url, token);
         session.set_bearer(&message_rpc_url, token);
+    }
+    if !token.is_empty() && !anp_service_endpoint.is_empty() {
+        session.set_bearer(anp_service_endpoint, token);
     }
     if token.is_empty() {
         let client = Client::new(resolved)?;

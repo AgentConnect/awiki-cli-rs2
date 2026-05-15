@@ -22,23 +22,23 @@ use crate::transportcfg::Profile;
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
-struct GroupSendResult {
+pub(crate) struct GroupSendResult {
     #[serde(default)]
-    accepted: bool,
+    pub(crate) accepted: bool,
     #[serde(default)]
-    final_acceptance: bool,
+    pub(crate) final_acceptance: bool,
     #[serde(default)]
-    group_did: String,
+    pub(crate) group_did: String,
     #[serde(default)]
-    message_id: String,
+    pub(crate) message_id: String,
     #[serde(default)]
-    operation_id: String,
+    pub(crate) operation_id: String,
     #[serde(default)]
-    group_event_seq: String,
+    pub(crate) group_event_seq: String,
     #[serde(default)]
-    group_state_version: String,
+    pub(crate) group_state_version: String,
     #[serde(default)]
-    accepted_at: String,
+    pub(crate) accepted_at: String,
 }
 
 pub fn create_group(
@@ -1006,7 +1006,7 @@ fn insert_from_object(
     }
 }
 
-fn values_from_array(value: Option<&Value>) -> Vec<Value> {
+pub(crate) fn values_from_array(value: Option<&Value>) -> Vec<Value> {
     value.and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
@@ -1031,7 +1031,7 @@ impl NonEmptyString for String {
     }
 }
 
-fn group_send_message_id(group_did: &str, result: &GroupSendResult) -> String {
+pub(crate) fn group_send_message_id(group_did: &str, result: &GroupSendResult) -> String {
     if !result.group_did.trim().is_empty() && !result.group_event_seq.trim().is_empty() {
         return format!(
             "{}:{}",
@@ -1147,7 +1147,7 @@ fn infer_group_message_content_type(message: &Value) -> String {
     }
 }
 
-fn group_storage_key(group_did: &str) -> String {
+pub(crate) fn group_storage_key(group_did: &str) -> String {
     group_did.trim().to_string()
 }
 
@@ -1176,7 +1176,7 @@ fn bool_option(value: Option<&Value>) -> Option<bool> {
     }
 }
 
-fn i64_option(value: Option<&Value>) -> Option<i64> {
+pub(crate) fn i64_option(value: Option<&Value>) -> Option<i64> {
     match value {
         Some(Value::Number(number)) => number
             .as_i64()
@@ -1187,7 +1187,7 @@ fn i64_option(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn compact_warnings(warnings: &mut Vec<String>) -> Vec<String> {
+pub(crate) fn compact_warnings(warnings: &mut Vec<String>) -> Vec<String> {
     let mut compact = Vec::new();
     for warning in warnings.drain(..) {
         let warning = warning.trim().to_string();

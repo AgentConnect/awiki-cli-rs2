@@ -2,6 +2,7 @@ use super::types::MessageError;
 use crate::authsdk::{HttpError, RpcError, Session};
 use crate::config::{join_base_url, Resolved};
 use crate::identity::wire::ServiceError;
+use crate::identity::wire::DID_AUTH_RPC_ENDPOINT;
 use crate::transportcfg::{new_http_client, HttpClient, Profile};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -41,11 +42,17 @@ impl Client {
     ) -> Result<T, MessageError>
     where
         T: DeserializeOwned,
-        P: Serialize,
+        P: Serialize + Clone,
     {
         let request_url = join_base_url(&self.base_url, endpoint);
-        auth.do_json_rpc(&self.http_client, &request_url, "POST", rpc_method, params)
-            .map_err(message_service_error)
+        authenticated_rpc_call_url(
+            &self.http_client,
+            &self.base_url,
+            &request_url,
+            rpc_method,
+            params,
+            auth,
+        )
     }
 
     pub fn ensure_jwt(
@@ -58,7 +65,37 @@ impl Client {
     }
 }
 
-fn message_service_error(err: anyhow::Error) -> MessageError {
+pub(crate) fn authenticated_rpc_call_url<T, P>(
+    http_client: &HttpClient,
+    base_url: &str,
+    request_url: &str,
+    rpc_method: &str,
+    params: P,
+    auth: &mut Session,
+) -> Result<T, MessageError>
+where
+    T: DeserializeOwned,
+    P: Serialize + Clone,
+{
+    match auth.do_json_rpc(http_client, request_url, "POST", rpc_method, params.clone()) {
+        Ok(result) => Ok(result),
+        Err(err) => match err.downcast::<RpcError>() {
+            Ok(rpc_err) if rpc_err.code == 1401 => {
+                let did_auth_url = join_base_url(base_url, DID_AUTH_RPC_ENDPOINT);
+                match auth.ensure_jwt(http_client, &did_auth_url) {
+                    Ok(_) => auth
+                        .do_json_rpc(http_client, request_url, "POST", rpc_method, params)
+                        .map_err(message_service_error),
+                    Err(_) => Err(MessageError::Service(ServiceError::from(rpc_err))),
+                }
+            }
+            Ok(rpc_err) => Err(MessageError::Service(ServiceError::from(rpc_err))),
+            Err(err) => Err(message_service_error(err)),
+        },
+    }
+}
+
+pub(crate) fn message_service_error(err: anyhow::Error) -> MessageError {
     match err.downcast::<RpcError>() {
         Ok(err) => MessageError::Service(ServiceError::from(err)),
         Err(err) => match err.downcast::<HttpError>() {

@@ -124,7 +124,7 @@ impl fmt::Display for MessageError {
                 f.write_str("secure messaging is not supported for this command yet")
             }
             Self::AttachmentNotSupported => {
-                f.write_str("direct attachment messaging is not supported for this command yet")
+                f.write_str("attachment messaging is not supported for this command yet")
             }
             Self::GroupNotSupported => {
                 f.write_str("group messaging is not supported for this command yet")

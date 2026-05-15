@@ -3,8 +3,12 @@ use crate::message::proof::{build_origin_proof, origin_auth_value};
 use crate::message::types::MessageError;
 use crate::message::wire::{message_meta, signed_message_meta};
 use crate::message::DirectPayload;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::Path;
 
 const ATTACHMENT_MANIFEST_CONTENT_TYPE: &str = "application/anp-attachment-manifest+json";
 
@@ -44,6 +48,16 @@ pub struct AttachmentCommitObjectResult {
     pub committed_at: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentDownloadTicketResult {
+    #[serde(default)]
+    pub download_ticket_b64u: String,
+    #[serde(default)]
+    pub expires_at: String,
+    #[serde(default)]
+    pub ticket_binding: Map<String, Value>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AttachmentSelection {
     pub message_id: String,
@@ -56,6 +70,105 @@ pub struct AttachmentSelection {
     pub digest_b64u: String,
     pub object_uri: String,
     pub caption: String,
+}
+
+pub fn load_attachment_file(
+    file_path: &str,
+    mime_override: &str,
+) -> Result<PreparedAttachment, MessageError> {
+    let path = file_path.trim();
+    if path.is_empty() {
+        return Err(MessageError::FilePathRequired);
+    }
+    let payload =
+        fs::read(Path::new(path)).map_err(|err| MessageError::Internal(err.to_string()))?;
+    let filename = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if filename.is_empty() {
+        return Err(MessageError::Internal(format!(
+            "attachment filename could not be derived from {path:?}"
+        )));
+    }
+    let mime_type = if mime_override.trim().is_empty() {
+        detect_attachment_mime_type(&filename, &payload)
+    } else {
+        mime_override.trim().to_string()
+    };
+    let digest = Sha256::digest(&payload);
+    Ok(PreparedAttachment {
+        file_path: path.to_string(),
+        filename,
+        mime_type,
+        size_bytes: payload.len() as i64,
+        size_string: payload.len().to_string(),
+        digest_b64u: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest),
+        payload,
+    })
+}
+
+fn detect_attachment_mime_type(filename: &str, payload: &[u8]) -> String {
+    let ext = Path::new(filename)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if let Some(mime) = mime_type_by_extension(&ext) {
+        return mime.to_string();
+    }
+    detect_attachment_content_type(payload)
+}
+
+fn mime_type_by_extension(ext: &str) -> Option<&'static str> {
+    match ext {
+        "txt" | "text" | "log" | "md" | "csv" => Some("text/plain; charset=utf-8"),
+        "json" => Some("application/json"),
+        "html" | "htm" => Some("text/html; charset=utf-8"),
+        "css" => Some("text/css; charset=utf-8"),
+        "js" | "mjs" => Some("text/javascript; charset=utf-8"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "pdf" => Some("application/pdf"),
+        "xml" => Some("text/xml; charset=utf-8"),
+        "zip" => Some("application/zip"),
+        "gz" => Some("application/gzip"),
+        "tar" => Some("application/x-tar"),
+        "wasm" => Some("application/wasm"),
+        _ => None,
+    }
+}
+
+fn detect_attachment_content_type(payload: &[u8]) -> String {
+    if payload.is_empty() {
+        return "application/octet-stream".to_string();
+    }
+    let sample = &payload[..payload.len().min(512)];
+    if sample.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return "image/png".to_string();
+    }
+    if sample.starts_with(b"\xff\xd8\xff") {
+        return "image/jpeg".to_string();
+    }
+    if sample.starts_with(b"GIF87a") || sample.starts_with(b"GIF89a") {
+        return "image/gif".to_string();
+    }
+    if sample.starts_with(b"%PDF-") {
+        return "application/pdf".to_string();
+    }
+    if sample.starts_with(b"PK\x03\x04") {
+        return "application/zip".to_string();
+    }
+    if sample
+        .iter()
+        .all(|byte| matches!(*byte, b'\t' | b'\n' | b'\r' | 0x20..=0x7e))
+    {
+        return "text/plain; charset=utf-8".to_string();
+    }
+    "application/octet-stream".to_string()
 }
 
 pub fn build_attachment_create_slot_rpc_params(
@@ -334,6 +447,28 @@ pub fn find_attachment_selection(
         });
     }
     Err(MessageError::MessageNotFound)
+}
+
+pub(crate) fn find_attachment_selection_with_paging<F>(
+    mut fetch_page: F,
+    requested_message_id: &str,
+    requested_attachment_id: &str,
+) -> Result<AttachmentSelection, MessageError>
+where
+    F: FnMut(i64) -> Result<(Vec<Value>, bool), MessageError>,
+{
+    let mut skip = 0_i64;
+    loop {
+        let (messages, has_more) = fetch_page(skip)?;
+        match find_attachment_selection(&messages, requested_message_id, requested_attachment_id) {
+            Ok(selection) => return Ok(selection),
+            Err(MessageError::MessageNotFound) if has_more && !messages.is_empty() => {
+                skip += messages.len() as i64;
+            }
+            Err(MessageError::MessageNotFound) => return Err(MessageError::MessageNotFound),
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 fn decode_attachment_content(value: Option<&Value>) -> Result<Map<String, Value>, MessageError> {

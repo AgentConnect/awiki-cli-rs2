@@ -507,7 +507,7 @@ fn response_is_complete(raw: &[u8]) -> bool {
     {
         return body.len() == content_length;
     }
-    false
+    true
 }
 
 fn parse_status_code(status_line: &str) -> Result<u16, HttpClientError> {
@@ -554,4 +554,15 @@ fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
         .windows(2)
         .position(|window| window == b"\r\n")
         .map(|offset| start + offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_is_complete;
+
+    #[test]
+    fn close_delimited_response_is_complete_after_headers_like_go_net_http() {
+        assert!(response_is_complete(b"HTTP/1.1 204 No Content\r\n\r\n"));
+        assert!(response_is_complete(b"HTTP/1.1 200 OK\r\n\r\nbody"));
+    }
 }

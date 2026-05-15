@@ -2,6 +2,95 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-15 Direct/Group Attachment Live HTTP Slice
+
+Status: system verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+git diff --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test attachment_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --lib transportcfg::http::tests::close_delimited_response_is_complete_after_headers_like_go_net_http --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 test -p awiki-cli --locked
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
+```
+
+Local result: passed. Focused attachment contract coverage passed for group
+attachment send, group attachment download, direct attachment send, attachment
+error mapping, and non-dry-run forced-HTTP warnings when `runtime.mode` is
+`websocket` for both attachment send and download. Full `awiki-cli` package
+tests passed with no failed tests and no ignored/skipped lines in the output.
+`xtask check-structure` reported
+`structure ok: no undocumented Rust files over 1200 lines`. Binary build passed.
+Dependency audit showed only allowed existing hits: `base64`, `rustls`,
+`rustls-webpki`, `webpki-roots`, `ring`, approved `rusqlite`,
+`libsqlite3-sys`, and build helpers `cc`, `pkg-config`, and `vcpkg`; no
+OpenSSL, `native-tls`, `reqwest`, `hyper`, WebSocket, YAML, or platform service
+dependency was present.
+
+Focused remote system-test verification:
+
+```bash
+cd ../awiki-system-test
+AWIKI_SYSTEM_TEST_MODE=remote \
+E2E_USER_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_URL=https://awiki.info \
+E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws \
+E2E_DID_DOMAIN=awiki.info \
+NO_PROXY=awiki.info,www.awiki.info,localhost,127.0.0.1 \
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+uv run --no-sync python -m pytest \
+  tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_can_send_and_download_group_attachments \
+  -q
+```
+
+System-test result: passed, 1 passed, 0 failed, 0 skipped in 3.23s. Failed
+cases: none. Skipped cases: none. Configuration context:
+`AWIKI_SYSTEM_TEST_MODE=remote`,
+`E2E_USER_SERVICE_URL=https://awiki.info`,
+`E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
+`E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`,
+`E2E_DID_DOMAIN=awiki.info`, `AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`, and
+`NO_PROXY=awiki.info,www.awiki.info,localhost,127.0.0.1`.
+
+Scope:
+
+- Live direct attachment send through `msg send --to ... --file ...`.
+- Live group attachment send through `msg send --group ... --file ...`.
+- Live direct/group attachment download through `msg attachment download
+  --with/--group ...`.
+- Attachment slot creation, object upload, object commit, manifest send,
+  history-page attachment selection, download-ticket request, object download,
+  output write, and direct/group cache updates where applicable.
+- Attachment send/download force HTTP transport and warn when
+  `runtime.mode=websocket`.
+
+Dependency evidence:
+
+- Reuses the existing Rustls/std `transportcfg::HttpClient` and
+  `authsdk::Session`.
+- Reuses the local ANP origin-proof helper and existing attachment wire/service
+  discovery helpers.
+- Reuses approved `rusqlite + bundled` SQLite for cache persistence.
+- No new OpenSSL, `native-tls`, `reqwest`, `hyper`, WebSocket, YAML, platform
+  service, or new SQLite dependency is introduced by this slice.
+
+Boundary note: secure direct E2EE attachments, group E2EE/MLS attachments,
+WebSocket/local bridge attachment transport, profile-timeout wrappers, trace
+phase plumbing, and optimization/refactor work remain later parity slices.
+
 ## 2026-05-15 Non-E2EE Group Live HTTP Slice
 
 Local Rust verification:
@@ -69,10 +158,11 @@ Scope:
 - Kept all touched Rust source/test files below the default 1200-line limit;
   `xtask check-structure` reports no undocumented oversized files.
 
-Boundary note: group attachments, group E2EE/MLS execution, WebSocket/local
-bridge/runtime listener fallback, OpenClaw host notify, profile-timeout
-wrappers, trace phase plumbing, and deeper cache fallback behavior remain later
-parity slices.
+Boundary note: group attachment send/download is covered by the later
+attachment live HTTP slice recorded above. Group E2EE/MLS execution,
+WebSocket/local bridge/runtime listener fallback, OpenClaw host notify,
+profile-timeout wrappers, trace phase plumbing, and deeper cache fallback
+behavior remain later parity slices.
 
 No dependency was added. Cargo manifests and lockfile remain unchanged; this
 slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,
@@ -138,10 +228,11 @@ Scope:
 - Kept all touched Rust source/test files below the default 1200-line limit;
   `xtask check-structure` reports no undocumented oversized files.
 
-Boundary note: secure direct E2EE, direct attachments, group
-lifecycle/messages, WebSocket/local bridge/runtime listener transport,
-OpenClaw host notify, profile-timeout wrappers, and trace phase plumbing remain
-later parity slices.
+Boundary note: direct attachment send/download is covered by the later
+attachment live HTTP slice recorded above. Secure direct E2EE, group
+lifecycle/messages, WebSocket/local bridge/runtime listener transport, OpenClaw
+host notify, profile-timeout wrappers, and trace phase plumbing remain later
+parity slices.
 
 No dependency was added. Cargo manifests and lockfile remain unchanged; this
 slice reuses the existing local ANP Rust SDK, shared Rustls/std HTTP client,

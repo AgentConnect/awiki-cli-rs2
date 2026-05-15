@@ -1,4 +1,5 @@
 mod attachment;
+mod attachment_service;
 mod client;
 mod group_e2ee_wire;
 mod group_service;
@@ -15,9 +16,11 @@ pub use attachment::{
     build_attachment_create_slot_rpc_params, build_attachment_download_ticket_rpc_params,
     build_attachment_manifest, build_direct_attachment_send_rpc_params,
     build_group_attachment_send_rpc_params, find_attachment_selection, manifest_content_string,
-    AttachmentCommitObjectResult, AttachmentCreateSlotResult, AttachmentSelection,
-    PreparedAttachment,
+    AttachmentCommitObjectResult, AttachmentCreateSlotResult, AttachmentDownloadTicketResult,
+    AttachmentSelection, PreparedAttachment,
 };
+pub(crate) use attachment::{find_attachment_selection_with_paging, load_attachment_file};
+pub use attachment_service::download_attachment;
 pub use client::Client;
 pub use group_e2ee_wire::{
     build_group_e2ee_add_rpc_params, build_group_e2ee_create_rpc_params,
