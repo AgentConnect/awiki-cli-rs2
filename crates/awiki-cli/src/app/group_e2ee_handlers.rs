@@ -2,7 +2,8 @@ use super::{msg_handlers::message_exit, not_implemented_side_effect, App};
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
 use crate::message::{
-    self, GroupE2eePendingRequest, GroupE2eePublishKeyPackageRequest, GroupE2eeStatusRequest,
+    self, GroupE2eePendingRequest, GroupE2eePublishKeyPackageRequest,
+    GroupE2eeRecoverMemberRequest, GroupE2eeStatusRequest,
 };
 use crate::output::ExitError;
 use serde_json::{json, Value};
@@ -280,30 +281,57 @@ impl App {
             "group e2ee recover-member",
             "Usage: awiki-cli group e2ee recover-member --group <GROUP_DID> --member <MEMBER>",
         )?;
+        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
+        let plan = json!({
+            "action": "group.e2ee.recover_member",
+            "identity": self.globals.identity,
+            "runtime_mode": resolved.runtime_mode,
+            "provider": "exec",
+            "mls_data_dir": mls_data_dir(&resolved),
+            "group": group,
+            "member": member,
+            "device": device,
+            "p4_membership_mutate": false,
+            "orchestration": [
+                "lease recovery KeyPackage",
+                "anp-mls recover-member-prepare",
+                "hidden group.e2ee.recover_member",
+                "finalize on accept",
+                "abort on deterministic rejection",
+            ],
+        });
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group e2ee recover-member"));
+            let mut result = message::recover_group_e2ee_member(
+                &resolved,
+                &self.identity_manager(&resolved),
+                GroupE2eeRecoverMemberRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    member,
+                    device_id: device,
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the target remains an active P4 member, has published a --recovery --group KeyPackage, and anp-mls/message-service PR-B3 APIs are enabled.",
+                )
+            })?;
+            if let Some(data) = result.data.as_object_mut() {
+                data.insert("plan".to_string(), plan);
+            }
+            return self.render_success(
+                "awiki-cli group e2ee recover-member",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
         }
         self.render_group_e2ee_plan(
             "awiki-cli group e2ee recover-member",
             &resolved,
-            json!({
-                "action": "group.e2ee.recover_member",
-                "identity": self.globals.identity,
-                "runtime_mode": resolved.runtime_mode,
-                "provider": "exec",
-                "mls_data_dir": mls_data_dir(&resolved),
-                "group": group,
-                "member": member,
-                "device": string_flag_or(command, "device", DEFAULT_DEVICE),
-                "p4_membership_mutate": false,
-                "orchestration": [
-                    "lease recovery KeyPackage",
-                    "anp-mls recover-member-prepare",
-                    "hidden group.e2ee.recover_member",
-                    "finalize on accept",
-                    "abort on deterministic rejection",
-                ],
-            }),
+            plan,
             "Dry run: group e2ee recover-member planned",
         )
     }

@@ -1,8 +1,9 @@
 use super::service::auth_session;
 use super::{
     build_group_e2ee_add_rpc_params, build_group_e2ee_get_key_package_rpc_params,
-    build_group_e2ee_leave_request_rpc_params, build_group_e2ee_remove_rpc_params, Client,
-    MessageError, MESSAGE_RPC_ENDPOINT,
+    build_group_e2ee_get_recovery_key_package_rpc_params, build_group_e2ee_head_rpc_params,
+    build_group_e2ee_leave_request_rpc_params, build_group_e2ee_recover_member_rpc_params,
+    build_group_e2ee_remove_rpc_params, Client, MessageError, MESSAGE_RPC_ENDPOINT,
 };
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
@@ -90,6 +91,31 @@ impl<'a> GroupE2eeTransport<'a> {
         self.rpc_call("group.e2ee.get_key_package", params)
     }
 
+    pub(crate) fn get_group_e2ee_recovery_key_package(
+        &mut self,
+        group_did: &str,
+        member_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let service_did = self.message_service_did()?;
+        let params = build_group_e2ee_get_recovery_key_package_rpc_params(
+            self.record,
+            &service_did,
+            group_did,
+            member_did,
+            device_id,
+        )?;
+        self.rpc_call("group.e2ee.get_key_package", params)
+    }
+
+    pub(crate) fn get_group_e2ee_head(
+        &mut self,
+        group_did: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let params = build_group_e2ee_head_rpc_params(self.record, group_did)?;
+        self.rpc_call("group.e2ee.head", params)
+    }
+
     pub(crate) fn add_group_e2ee(
         &mut self,
         group_did: &str,
@@ -117,6 +143,25 @@ impl<'a> GroupE2eeTransport<'a> {
             leave_request_id,
         )?;
         self.rpc_call("group.e2ee.remove", params)
+    }
+
+    pub(crate) fn recover_group_e2ee_member(
+        &mut self,
+        group_did: &str,
+        member_did: &str,
+        device_id: &str,
+        prepared_commit: Map<String, Value>,
+        leased_package: Map<String, Value>,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let params = build_group_e2ee_recover_member_rpc_params(
+            self.record,
+            group_did,
+            member_did,
+            device_id,
+            prepared_commit,
+            leased_package,
+        )?;
+        self.rpc_call("group.e2ee.recover_member", params)
     }
 
     pub(crate) fn create_group_e2ee_leave_request(

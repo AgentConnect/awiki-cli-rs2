@@ -129,7 +129,7 @@ pub(crate) fn group_member_mutation_uses_e2ee(
         || post_mutation_snapshot.is_some_and(group_snapshot_uses_e2ee)
 }
 
-fn process_local_group_welcome(
+pub(crate) fn process_local_group_welcome(
     resolved: &Resolved,
     manager: &Manager,
     member_did: &str,
@@ -260,7 +260,7 @@ fn group_e2ee_welcome_device_id(leased_package: &Map<String, Value>) -> String {
     default_string(&value_string(leased_package.get("device_id")), "default")
 }
 
-fn redacted_key_package_summary(raw: &Map<String, Value>) -> Map<String, Value> {
+pub(crate) fn redacted_key_package_summary(raw: &Map<String, Value>) -> Map<String, Value> {
     let mut summary = Map::new();
     summary.insert(
         "target_did".to_string(),

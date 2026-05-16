@@ -277,7 +277,7 @@ fn submit_prepared_group_e2ee_commit(
     Ok((result, warnings))
 }
 
-fn finalize_prepared_group_e2ee_commit(
+pub(crate) fn finalize_prepared_group_e2ee_commit(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
@@ -295,7 +295,7 @@ fn finalize_prepared_group_e2ee_commit(
     provider.commit_finalize(&request, &record.did, device_id)
 }
 
-fn abort_prepared_group_e2ee_commit(
+pub(crate) fn abort_prepared_group_e2ee_commit(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
@@ -339,7 +339,7 @@ fn pending_commit_params(
     params
 }
 
-fn should_abort_group_e2ee_pending_commit(err: &MessageError) -> bool {
+pub(crate) fn should_abort_group_e2ee_pending_commit(err: &MessageError) -> bool {
     let MessageError::Service(service_err) = err else {
         return false;
     };
