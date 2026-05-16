@@ -2,6 +2,86 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Group E2EE Decrypt Display Live Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_decrypt_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_send_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestMLSExecProviderCommands|TestHTTPTransportGroupMethodsUseExpectedRPCMethods' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+wc -l crates/awiki-cli/src/message/group_service.rs crates/awiki-cli/src/message/group_e2ee_decrypt.rs crates/awiki-cli/src/message/group_e2ee_provider.rs crates/awiki-cli/tests/group_e2ee_decrypt_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `group_e2ee_decrypt_contract`: 3 passed.
+- `group_e2ee_send_contract`: adjacent outbound group E2EE path passed.
+- `group_live_contract`: adjacent live group HTTP path passed.
+- `message_group_e2ee_wire_contract`: adjacent hidden group E2EE wire builders passed.
+- `group_e2ee_status_contract`: adjacent provider/status selection path passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `group_service.rs` 1199 lines, `group_e2ee_decrypt.rs` 217 lines,
+  `group_e2ee_provider.rs` 506 lines, and
+  `group_e2ee_decrypt_contract.rs` 737 lines. No file-size exception is needed.
+
+Scope:
+
+- Wires Go `maybeDecryptGroupMessages` into the HTTP `group messages` path:
+  `group.list_messages` results are decrypted before local persistence, and
+  the CLI then reads the same cache projection as Go.
+- Preserves Go cipher discovery shapes: top-level `group_cipher_object`, direct
+  cipher content, nested `content.group_cipher_object`, and
+  `body.group_cipher_object`.
+- Preserves Go provider boundary for decrypt:
+  `anp-mls message decrypt` receives `api_version=anp-mls/v1`, active agent
+  DID, recipient DID equal to the active DID, selected device id, group DID,
+  opaque cipher object, `private_message_b64u`, `group_state_ref`, sender DID,
+  cipher content type, `security_profile=group-e2ee`, message ID, and
+  operation ID.
+- Preserves Go successful plaintext rewrite: `application_plaintext.text`
+  becomes message content, `application_content_type` defaults to
+  `text/plain`, and `decrypted=true` is persisted in the message metadata. The
+  CLI output returns the decrypted cache projection.
+- Preserves Go warning behavior for failed decrypts by compacting
+  `Group E2EE decrypt failed for message <id>: <err>` warnings and continuing
+  other messages.
+
+Boundary note: this slice covers only HTTP `group messages` decrypt/display.
+WebSocket/local bridge group message receive/decrypt, foreground listener group
+E2EE handling, and full awiki-system-test group-E2EE acceptance remain
+separate.
+
+Parallelism note: a GPT-5.5 xhigh Native Agent was started for the independent
+test-file slice but was shut down before producing a usable result; the leader
+implemented the test locally to avoid concurrent write risk. Future
+code-writing Native Agents remain constrained to GPT-5.5 xhigh with bounded,
+non-overlapping write scopes.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `std::process::Command`, `serde_json`,
+the external local ANP Rust SDK `anp-mls` binary, and the approved
+`rusqlite + bundled` SQLite path. It does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
+crates, platform service libraries, MLS provider crates, ANP SDK
+default/network features, pure-Rust SQLite optimization work, or a new SQLite
+backend. TLS remains Rustls-first.
+
 ## 2026-05-16 Group E2EE Outbound Send Live Slice
 
 Status: locally verified.

@@ -1,6 +1,7 @@
 use super::group_e2ee_add::{
     add_group_member_e2ee, group_member_mutation_uses_e2ee, group_snapshot_uses_e2ee,
 };
+use super::group_e2ee_decrypt::maybe_decrypt_group_messages;
 use super::group_e2ee_remove::{leave_group_e2ee, remove_group_member_e2ee_result};
 use super::group_e2ee_send::maybe_send_group_e2ee;
 use super::service::{
@@ -27,22 +28,15 @@ use crate::transportcfg::Profile;
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
 pub(crate) struct GroupSendResult {
-    #[serde(default)]
     pub(crate) accepted: bool,
-    #[serde(default)]
     pub(crate) final_acceptance: bool,
-    #[serde(default)]
     pub(crate) group_did: String,
-    #[serde(default)]
     pub(crate) message_id: String,
-    #[serde(default)]
     pub(crate) operation_id: String,
-    #[serde(default)]
     pub(crate) group_event_seq: String,
-    #[serde(default)]
     pub(crate) group_state_version: String,
-    #[serde(default)]
     pub(crate) accepted_at: String,
 }
 
@@ -410,14 +404,20 @@ pub fn group_messages(
     let mut auth = auth_session(resolved, manager, &record)?;
     let client = Client::new(resolved)?;
     let params = build_group_messages_rpc_params(&record, request.clone())?;
-    let raw: Value = client.authenticated_rpc_call_profile(
+    let mut raw: Value = client.authenticated_rpc_call_profile(
         Profile::RpcReadHeavy,
         MESSAGE_RPC_ENDPOINT,
         "group.list_messages",
         params,
         &mut auth,
     )?;
-    let mut warnings = persist_group_messages(resolved, &record, &request.group, &raw);
+    let mut warnings = maybe_decrypt_group_messages(resolved, &record, &request.group, &mut raw);
+    warnings.extend(persist_group_messages(
+        resolved,
+        &record,
+        &request.group,
+        &raw,
+    ));
     let messages = cached_group_messages(
         resolved,
         &record,

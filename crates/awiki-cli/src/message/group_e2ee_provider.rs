@@ -206,6 +206,16 @@ impl MlsExecProvider {
         result_object(response)
     }
 
+    pub(crate) fn decrypt(
+        &self,
+        request: &Value,
+        agent_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let response = self.call("message", "decrypt", request, agent_did, device_id)?;
+        result_object(response)
+    }
+
     fn call(
         &self,
         domain: &str,

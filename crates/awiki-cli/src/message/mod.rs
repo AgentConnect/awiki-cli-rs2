@@ -5,6 +5,7 @@ mod contact_sync;
 mod group_create;
 mod group_e2ee_add;
 mod group_e2ee_create;
+mod group_e2ee_decrypt;
 mod group_e2ee_provider;
 mod group_e2ee_publish;
 mod group_e2ee_recover;

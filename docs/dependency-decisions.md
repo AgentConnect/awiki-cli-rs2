@@ -933,6 +933,43 @@ Do not mix that optimization with the 1:1 translation lane.
   separate translation slices. Any provider-boundary optimization should be
   recorded later and not mixed into the 1:1 translation lane.
 
+## Group E2EE Decrypt Display Live Notes
+
+2026-05-16:
+
+- Wired HTTP `group messages` group E2EE decrypt/display without adding a
+  crate, changing Cargo manifests, enabling local ANP SDK MLS features
+  in-process, or changing the approved SQLite/TLS lanes.
+- The MLS decrypt boundary remains external-provider parity:
+  `anp-mls message decrypt --json-in - --data-dir <scoped-dir>`, using the
+  same scoped data-dir and candidate-device scan as the translated status/send
+  slices. The request keeps Go fields for `agent_did`, `recipient_did`,
+  `device_id`, `group_did`, `group_cipher_object`, `private_message_b64u`,
+  `group_state_ref`, `sender_did`,
+  `content_type=application/anp-group-cipher+json`,
+  `security_profile=group-e2ee`, `message_id`, and `operation_id`.
+- `GroupMessages` now follows Go's order for the HTTP path: fetch
+  `group.list_messages`, decrypt group cipher objects in-memory, compact
+  decrypt warnings, persist the decrypted result to the existing SQLite cache,
+  then read the cache projection for CLI output.
+- Cipher extraction follows Go's accepted shapes: top-level
+  `group_cipher_object`, direct or nested `content.group_cipher_object`, and
+  `body.group_cipher_object`. Successful `application_plaintext` rewrites the
+  message `content`, `content_type`, and `decrypted=true` before persistence.
+- Local message persistence reuses the approved `rusqlite + bundled` cache
+  path. No pure-Rust SQLite optimization is mixed into this translation slice.
+- No TLS, WebSocket, platform, or ANP SDK dependency decision changed. This
+  slice does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+  `hyper`, WebSocket crates, async runtimes, YAML crates, platform service
+  libraries, MLS provider crates, ANP SDK default/network features, or a new
+  SQLite backend. TLS remains Rustls-first.
+- This slice covers only HTTP `group messages` decrypt/display. WebSocket local
+  bridge group message receive/decrypt, foreground listener group E2EE
+  handling, broader service edge-case coverage, and full awiki-system-test
+  group-E2EE acceptance remain separate translation slices. Any
+  provider-boundary optimization should be recorded later and not mixed into
+  the 1:1 translation lane.
+
 ## Group E2EE Recover-Member Live Notes
 
 2026-05-16:
