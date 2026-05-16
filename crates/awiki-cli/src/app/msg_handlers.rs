@@ -450,12 +450,38 @@ impl App {
     }
 
     pub fn run_msg_secure_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        self.run_msg_secure_peer_plan(
-            command,
+        let with = string_flag(command, "with");
+        require_flags(command, &["with"])?;
+        let resolved = self.resolve_config()?;
+        if !self.globals.dry_run {
+            let result = message::secure_repair(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::SecurePeerRequest {
+                    identity_name: self.globals.identity.clone(),
+                    with,
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Make sure the target exists and the active identity can rebuild secure state.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg secure repair", &resolved, result);
+        }
+        self.render_success(
             "awiki-cli msg secure repair",
-            "msg.secure.repair",
+            &resolved,
+            json!({
+                "plan": {
+                    "action": "msg.secure.repair",
+                    "identity": self.globals.identity,
+                    "with": with,
+                }
+            }),
             "Dry run: secure repair planned",
-            true,
+            Vec::new(),
         )
     }
 
@@ -511,39 +537,6 @@ impl App {
             "Dry run: secure drop planned",
             "msg secure drop requires one outbox id.",
             "Usage: awiki-cli msg secure drop <OUTBOX_ID>",
-        )
-    }
-
-    fn run_msg_secure_peer_plan(
-        &self,
-        command: &ParsedCommand,
-        command_name: &str,
-        action: &str,
-        summary: &str,
-        require_with: bool,
-    ) -> Result<(), ExitError> {
-        let with = string_flag(command, "with");
-        if require_with {
-            require_flags(command, &["with"])?;
-        }
-        let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect(
-                command_name.trim_start_matches("awiki-cli "),
-            ));
-        }
-        self.render_success(
-            command_name,
-            &resolved,
-            json!({
-                "plan": {
-                    "action": action,
-                    "identity": self.globals.identity,
-                    "with": with,
-                }
-            }),
-            summary,
-            Vec::new(),
         )
     }
 

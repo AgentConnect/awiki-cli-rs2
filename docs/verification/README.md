@@ -7469,6 +7469,87 @@ crates, platform service libraries, new E2EE provider dependencies, or a new
 SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
 work.
 
+## 2026-05-16 Message Secure Repair Production Sender Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test msg_secure_repair_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_commands_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestServiceSecureRepairResetsFailedOutboxAndStartsNewInit' -count=1
+wc -l crates/awiki-cli/src/message/secure_commands.rs crates/awiki-cli/src/message/service.rs crates/awiki-cli/src/app/msg_handlers.rs crates/awiki-cli/tests/msg_secure_repair_live_contract.rs crates/awiki-cli/tests/msg_live_contract.rs crates/awiki-cli/tests/message_secure_commands_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `msg_secure_repair_live_contract`: 1 passed.
+- `message_secure_commands_contract`: 11 passed.
+- `msg_contract`: 5 passed.
+- `message_secure_outbox_flush_contract`: 23 passed.
+- `message_secure_client_contract`: 14 passed.
+- `cargo check`, structure check, and whitespace check passed.
+- Go reference `TestServiceSecureRepairResetsFailedOutboxAndStartsNewInit`
+  passed.
+- Modified source/test files remain below the 1200-line review-size cap:
+  `secure_commands.rs` 688 lines, `service.rs` 1125 lines,
+  `msg_handlers.rs` 815 lines, `msg_secure_repair_live_contract.rs` 552
+  lines, `msg_live_contract.rs` 1191 lines, and
+  `message_secure_commands_contract.rs` 1150 lines.
+
+Scope:
+
+- Wires non-dry-run `msg secure repair --with <peer>` through production secure
+  repair instead of returning `not_implemented`.
+- Preserves Go `SecureRepair` ordering: shared secure peer preparation, local
+  peer-state reset, then a fresh `SecureInit` call that performs Go-equivalent
+  second preparation and prekey publishing.
+- Preserves local reset side effects: deletes one matching `p5-e2ee-sessions`
+  session when present, lists failed E2EE outbox rows by active identity, resets
+  only same-peer failed rows to `queued`, and counts each deleted session or
+  requeued row.
+- Preserves Go result shapes: original init result plus `data.repair.peer_did`,
+  `data.repair.peer_handle`, `data.repair.reset_records`, summary
+  `Repaired secure session with <peer>`, compacted warnings with repair prepare
+  warnings before init warnings, and the Go CLI repair hint.
+- Adds a focused fake-server live smoke proving old session removal, same-peer
+  failed outbox requeue, non-peer failed outbox preservation, direct-init
+  `direct.send` with `application/anp-direct-init+json`, generated
+  `secure-init-` operation/message ID, and new pending initiator session
+  creation.
+
+Boundary note: this slice still excludes WebSocket/local bridge secure
+execution, runtime listener live `ProcessIncoming`, and awiki-system-test
+secure-direct acceptance.
+
+Parallelism note: a GPT-5.5 xhigh code-writing Native Agent created only the
+new focused repair live test file inside its bounded write scope. A read-only
+verifier agent compared the Go and Rust `SecureRepair` paths and found no
+observable repair parity gap. The verifier also noted an older generic
+`message_exit` error-classification difference for `SecureNotSupported` and
+`TransportUnavailable`, but that mapper branch is not reached by the current
+repair path and remains a separate follow-up parity item.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing Rustls/std authsdk/message client,
+local ANP Rust E2EE adapter, `FileSessionStore`, secure session/status helpers,
+and the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, new E2EE provider
+dependencies, or a new SQLite backend. TLS remains Rustls-first for later
+runtime/WebSocket transport work.
+
 ## 2026-05-16 Message Secure Retry Production Sender Slice
 
 Status: locally verified.

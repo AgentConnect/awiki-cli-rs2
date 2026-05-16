@@ -1,6 +1,6 @@
 use super::service::{
     auth_session, publish_secure_prekeys_with_client, require_active_identity, resolve_target,
-    CommandResult,
+    CommandResult, TargetResolution,
 };
 use super::types::{
     MessageError, SecureOutboxActionRequest, SecurePeerRequest, SecureStatusRequest,
@@ -11,6 +11,7 @@ use super::{
     new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient, SecureE2EERpc,
     SecureOutboxSendOutcome, SecureOutboxSendRequest,
 };
+use crate::anpsdk::FileSessionStore;
 use crate::config::Resolved;
 use crate::identity::{types::StoredIdentity, Manager};
 use crate::store::{self, StoreError};
@@ -97,18 +98,51 @@ pub fn secure_init(
     manager: &Manager,
     request: SecurePeerRequest,
 ) -> Result<CommandResult, MessageError> {
-    let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    if record.e2ee_agreement_private_pem.is_empty() || record.key1_private_pem.is_empty() {
-        return Err(MessageError::Internal(
-            "secure direct messaging requires DID signing and X25519 E2EE private keys".to_string(),
-        ));
+    let (record, target, warnings) = prepare_secure_peer_action(resolved, manager, &request)?;
+    secure_init_prepared(resolved, manager, &record, target, warnings)
+}
+
+pub fn secure_repair(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: SecurePeerRequest,
+) -> Result<CommandResult, MessageError> {
+    let (record, target, warnings) = prepare_secure_peer_action(resolved, manager, &request)?;
+    let reset_count = reset_secure_peer_state(resolved, manager, &record, &target.did)?;
+    let peer_did = target.did.clone();
+    let peer_handle = target.handle.clone();
+    let mut init_result = secure_init(resolved, manager, request)?;
+    if let Some(data) = init_result.data.as_object_mut() {
+        data.insert(
+            "repair".to_string(),
+            json!({
+                "peer_did": peer_did,
+                "peer_handle": peer_handle,
+                "reset_records": reset_count,
+            }),
+        );
     }
-    if request.with.trim().is_empty() {
-        return Err(MessageError::TargetRequired);
-    }
-    let target = resolve_target(resolved, &request.with)?;
-    let warnings = publish_secure_prekeys(resolved, manager, &record);
-    if let Some(session) = load_secure_session_state(manager, &record, &target.did)? {
+    init_result.summary = format!(
+        "Repaired secure session with {}",
+        peer_handle_or_did(&target.handle, &target.did)
+    );
+    init_result.warnings = super::compact_warnings(
+        warnings
+            .into_iter()
+            .chain(init_result.warnings)
+            .collect::<Vec<_>>(),
+    );
+    Ok(init_result)
+}
+
+fn secure_init_prepared(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    target: TargetResolution,
+    warnings: Vec<String>,
+) -> Result<CommandResult, MessageError> {
+    if let Some(session) = load_secure_session_state(manager, record, &target.did)? {
         return Ok(CommandResult {
             data: json!({
                 "target": {
@@ -127,11 +161,11 @@ pub fn secure_init(
         });
     }
 
-    let auth = auth_session(resolved, manager, &record)?;
+    let auth = auth_session(resolved, manager, record)?;
     let rpc_client = Client::new(resolved)?;
     let mut client = new_secure_e2ee_client_for_record(
         Some(manager),
-        Some(&record),
+        Some(record),
         secure_retry_rpc(rpc_client, auth),
     )
     .map_err(MessageError::Internal)?;
@@ -144,7 +178,7 @@ pub fn secure_init(
             &message_id,
         )
         .map_err(MessageError::Internal)?;
-    let session = load_secure_session_state(manager, &record, &target.did)
+    let session = load_secure_session_state(manager, record, &target.did)
         .ok()
         .flatten()
         .unwrap_or(Value::Null);
@@ -170,6 +204,65 @@ pub fn secure_init(
         ),
         warnings: super::compact_warnings(warnings),
     })
+}
+
+fn prepare_secure_peer_action(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: &SecurePeerRequest,
+) -> Result<(StoredIdentity, TargetResolution, Vec<String>), MessageError> {
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    if record.e2ee_agreement_private_pem.is_empty() || record.key1_private_pem.is_empty() {
+        return Err(MessageError::Internal(
+            "secure direct messaging requires DID signing and X25519 E2EE private keys".to_string(),
+        ));
+    }
+    if request.with.trim().is_empty() {
+        return Err(MessageError::TargetRequired);
+    }
+    let target = resolve_target(resolved, &request.with)?;
+    let warnings = publish_secure_prekeys(resolved, manager, &record);
+    Ok((record, target, warnings))
+}
+
+fn reset_secure_peer_state(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    peer_did: &str,
+) -> Result<usize, MessageError> {
+    let paths = manager.paths_for_identity(&record.identity_name)?;
+    let root = Path::new(&paths.identity_dir).join(SECURE_SESSION_DIR_NAME);
+    let mut session_store = FileSessionStore::new(root).map_err(internal_error)?;
+    let mut reset_count = 0;
+    if let Some(session) = session_store
+        .find_by_peer_did(peer_did)
+        .map_err(internal_error)?
+    {
+        session_store
+            .delete_session(&session.session_id)
+            .map_err(internal_error)?;
+        reset_count += 1;
+    }
+
+    let connection = open_secure_store(resolved)?;
+    let rows = store::list_e2ee_outbox(&connection, &record.did, &record.identity_name, "failed")
+        .map_err(store_error)?;
+    for row in rows {
+        if string_from_value(row.get("peer_did")) != peer_did {
+            continue;
+        }
+        store::update_e2ee_outbox_status(
+            &connection,
+            &string_from_value(row.get("outbox_id")),
+            &record.did,
+            &record.identity_name,
+            "queued",
+        )
+        .map_err(store_error)?;
+        reset_count += 1;
+    }
+    Ok(reset_count)
 }
 
 pub fn secure_drop(
