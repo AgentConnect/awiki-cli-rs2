@@ -1,8 +1,8 @@
 use awiki_cli::config::{Paths, Resolved};
-use awiki_cli::identity::{types::SaveInput, Manager};
+use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
 use awiki_cli::message::{
-    secure_drop, secure_failed, secure_retry, secure_retry_with_sender, secure_status,
-    SecureOutboxActionRequest, SecureOutboxSendOutcome, SecureOutboxSendRequest,
+    secure_drop, secure_failed, secure_init, secure_retry, secure_retry_with_sender, secure_status,
+    SecureOutboxActionRequest, SecureOutboxSendOutcome, SecureOutboxSendRequest, SecurePeerRequest,
     SecureStatusRequest,
 };
 use awiki_cli::store::{self, get_e2ee_outbox, queue_e2ee_outbox, E2EEOutboxRecord};
@@ -460,6 +460,124 @@ fn secure_drop_missing_outbox_id_errors_without_changing_unrelated_rows() {
     assert_eq!(text(&active_row, "local_status"), "failed");
     let other_row = get_e2ee_outbox(&db, "bob-failed", &other.did, "bob").expect("other row");
     assert_eq!(text(&other_row, "local_status"), "failed");
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_init_reuses_existing_session_and_keeps_prekey_publish_warning_like_go() {
+    let (mut resolved, manager, root) = test_context("secure-init-reuse");
+    resolved.service_base_url.clear();
+    let generated = generate_identity(
+        "awiki.ai",
+        "https://awiki.ai/anp-im/rpc",
+        "did:wba:awiki.ai",
+    )
+    .expect("generate secure identity");
+    let active = manager
+        .save(SaveInput {
+            identity_name: "alice".to_string(),
+            did: generated.did,
+            unique_id: generated.unique_id,
+            user_id: "alice-user".to_string(),
+            display_name: "alice".to_string(),
+            handle: "alice".to_string(),
+            full_handle: "alice.awiki.ai".to_string(),
+            jwt_token: "test-token".to_string(),
+            did_document: Some(generated.did_document),
+            key1_private_pem: generated.key1_private_pem,
+            key1_public_pem: generated.key1_public_pem,
+            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+            ..Default::default()
+        })
+        .expect("save secure identity");
+    let peer_did = "did:wba:awiki.ai:user:bob:e1_bob";
+    let paths = manager
+        .paths_for_identity("alice")
+        .expect("paths for alice identity");
+    write_json(
+        &PathBuf::from(paths.identity_dir)
+            .join("p5-e2ee-sessions")
+            .join("bob.json"),
+        &json!({
+            "session_id": "session-existing",
+            "suite": "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1",
+            "peer_did": peer_did,
+            "status": "established",
+            "is_initiator": true,
+            "send_n": 1,
+            "recv_n": 2,
+            "previous_send_chain_length": 0,
+            "root_key_b64u": "do-not-leak-root",
+            "send_chain_key_b64u": "do-not-leak-send",
+            "skipped_message_keys": [{"message_key_b64u": "do-not-leak-skipped"}],
+        }),
+    );
+
+    let result = secure_init(
+        &resolved,
+        &manager,
+        SecurePeerRequest {
+            identity_name: active.identity_name,
+            with: peer_did.to_string(),
+        },
+    )
+    .expect("secure init should reuse existing session");
+
+    assert_eq!(
+        result.summary,
+        format!("Secure session already exists for {peer_did}")
+    );
+    assert_eq!(result.data["reused"], true);
+    assert_eq!(result.data["target"]["did"], peer_did);
+    assert_eq!(result.data["session"]["session_id"], "session-existing");
+    assert_eq!(result.data["session"]["peer_did"], peer_did);
+    assert_eq!(result.data["session"]["status"], "established");
+    assert_eq!(result.data["session"].get("root_key_b64u"), None);
+    assert_eq!(result.data["session"].get("send_chain_key_b64u"), None);
+    assert_eq!(result.data["session"]["skipped_key_count"], 1);
+    assert_eq!(result.warnings.len(), 1);
+    assert!(
+        result.warnings[0].starts_with("Failed to publish secure prekeys:"),
+        "unexpected warning: {:?}",
+        result.warnings
+    );
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_init_requires_secure_key_material_like_go() {
+    let (resolved, manager, root) = test_context("secure-init-key-material");
+    manager
+        .save(SaveInput {
+            identity_name: "alice".to_string(),
+            did: "did:wba:awiki.ai:user:alice:e1_alice".to_string(),
+            unique_id: "e1_alice".to_string(),
+            user_id: "alice-user".to_string(),
+            display_name: "alice".to_string(),
+            handle: "alice".to_string(),
+            full_handle: "alice.awiki.ai".to_string(),
+            jwt_token: "test-token".to_string(),
+            ..Default::default()
+        })
+        .expect("save identity without secure key material");
+
+    let err = secure_init(
+        &resolved,
+        &manager,
+        SecurePeerRequest {
+            identity_name: "alice".to_string(),
+            with: "did:wba:awiki.ai:user:bob:e1_bob".to_string(),
+        },
+    )
+    .expect_err("secure init should require secure key material");
+
+    assert_eq!(
+        err.to_string(),
+        "secure direct messaging requires DID signing and X25519 E2EE private keys"
+    );
 
     std::fs::remove_dir_all(root).expect("remove temp test root");
 }

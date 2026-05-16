@@ -414,12 +414,38 @@ impl App {
     }
 
     pub fn run_msg_secure_init(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        self.run_msg_secure_peer_plan(
-            command,
+        let with = string_flag(command, "with");
+        require_flags(command, &["with"])?;
+        let resolved = self.resolve_config()?;
+        if !self.globals.dry_run {
+            let result = message::secure_init(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::SecurePeerRequest {
+                    identity_name: self.globals.identity.clone(),
+                    with,
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Make sure the target exists and the active identity has secure E2EE key material.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg secure init", &resolved, result);
+        }
+        self.render_success(
             "awiki-cli msg secure init",
-            "msg.secure.init",
+            &resolved,
+            json!({
+                "plan": {
+                    "action": "msg.secure.init",
+                    "identity": self.globals.identity,
+                    "with": with,
+                }
+            }),
             "Dry run: secure init planned",
-            true,
+            Vec::new(),
         )
     }
 

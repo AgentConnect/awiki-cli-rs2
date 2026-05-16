@@ -181,6 +181,106 @@ fn msg_send_secure_on_live_posts_e2ee_rpc_and_persists_secure_row_like_go() {
 }
 
 #[test]
+fn msg_secure_init_live_posts_manual_init_and_creates_pending_session_like_go() {
+    let workspace = TempDir::new("msg-live-secure-init").expect("workspace");
+    write_msg_config(workspace.path(), "https://placeholder.invalid");
+    let manager = Manager::new(test_paths(workspace.path()));
+    let alice = register_generated_msg_identity(&manager, "alice-init", "alice", "jwt-alice");
+    let bob = register_generated_msg_identity(&manager, "bob-init", "bob", "jwt-bob");
+    let mut bob_seed = new_secure_e2ee_client_for_record(
+        Some(&manager),
+        Some(&bob),
+        Box::new(|method, _params| {
+            assert_eq!(method, "direct.e2ee.publish_prekey_bundle");
+            Ok(Map::new())
+        }),
+    )
+    .expect("construct bob seed client");
+    let bob_bundle = bob_seed
+        .ensure_fresh_prekey_bundle()
+        .expect("seed bob prekey bundle");
+    let bob_opk = first_one_time_prekey(&manager, "bob-init");
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "prekey_bundle": bob_bundle,
+            "one_time_prekey": bob_opk,
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "accepted_at": "2026-05-16T01:02:03Z",
+            "delivery_state": "accepted"
+        }))),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-init",
+            "msg",
+            "secure",
+            "init",
+            "--with",
+            &bob.did,
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["summary"],
+        format!("Initialized secure session with {}", bob.did)
+    );
+    assert_eq!(envelope["data"]["initialized"], true);
+    assert_eq!(envelope["data"]["target"]["did"], bob.did);
+    assert_eq!(envelope["data"]["session"]["peer_did"], bob.did);
+    assert_eq!(
+        envelope["data"]["session"]["status"],
+        "pending-confirmation"
+    );
+    assert_eq!(envelope["data"]["session"]["is_initiator"], true);
+    let message_id = envelope["data"]["delivery"]["message_id"]
+        .as_str()
+        .expect("delivery message id");
+    assert!(message_id.starts_with("secure-init-"));
+    assert_eq!(envelope["data"]["delivery"]["operation_id"], message_id);
+    assert_eq!(envelope["data"]["delivery"]["target_did"], bob.did);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let bodies = requests
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).expect("json body"))
+        .collect::<Vec<_>>();
+    assert_eq!(bodies[0]["method"], "direct.e2ee.publish_prekey_bundle");
+    assert_eq!(bodies[1]["method"], "direct.e2ee.publish_prekey_bundle");
+    assert_eq!(bodies[2]["method"], "direct.e2ee.get_prekey_bundle");
+    assert_eq!(bodies[2]["params"]["body"]["target_did"], bob.did);
+    assert_eq!(bodies[3]["method"], "direct.send");
+    assert_eq!(bodies[3]["params"]["meta"]["sender_did"], alice.did);
+    assert_eq!(bodies[3]["params"]["meta"]["target"]["did"], bob.did);
+    assert_eq!(
+        bodies[3]["params"]["meta"]["content_type"],
+        "application/anp-direct-init+json"
+    );
+    assert_eq!(bodies[3]["params"]["meta"]["message_id"], message_id);
+    assert_eq!(bodies[3]["params"]["meta"]["operation_id"], message_id);
+    assert_eq!(bodies[3]["params"].get("auth"), None);
+
+    let paths = manager
+        .paths_for_identity("alice-init")
+        .expect("alice identity paths");
+    let sessions = std::fs::read_dir(Path::new(&paths.identity_dir).join("p5-e2ee-sessions"))
+        .expect("read session root")
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    assert_eq!(sessions.len(), 1);
+}
+
+#[test]
 fn msg_secure_retry_live_posts_cipher_rpc_and_marks_outbox_sent_like_go() {
     let workspace = TempDir::new("msg-live-secure-retry").expect("workspace");
     write_msg_config(workspace.path(), "https://placeholder.invalid");

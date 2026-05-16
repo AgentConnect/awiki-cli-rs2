@@ -7391,6 +7391,84 @@ crates, platform service libraries, new E2EE provider dependencies, or a new
 SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
 work.
 
+## 2026-05-16 Message Secure Init Production Sender Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_commands_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestServiceSecureInitCreatesPendingSession' -count=1
+wc -l crates/awiki-cli/src/message/secure_commands.rs crates/awiki-cli/src/message/service.rs crates/awiki-cli/src/app/msg_handlers.rs crates/awiki-cli/tests/message_secure_commands_contract.rs crates/awiki-cli/tests/msg_live_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `message_secure_commands_contract`: 11 passed.
+- `msg_live_contract`: 7 passed.
+- `msg_contract`: 5 passed.
+- `message_secure_outbox_flush_contract`: 23 passed.
+- `message_secure_client_contract`: 14 passed.
+- `cargo check`, structure check, and whitespace check passed.
+- Go reference `TestServiceSecureInitCreatesPendingSession` passed.
+- Modified source/test files remain below the 1200-line review-size cap:
+  `secure_commands.rs` 595 lines, `service.rs` 1125 lines,
+  `msg_handlers.rs` 822 lines, `message_secure_commands_contract.rs` 1150
+  lines, and `msg_live_contract.rs` 1191 lines.
+
+Scope:
+
+- Wires non-dry-run `msg secure init --with <peer>` through production secure
+  init instead of returning `not_implemented`.
+- Preserves Go `SecureInit` ordering: active identity gate, key-material
+  requirement, target required/resolve, best-effort prekey publish warnings,
+  existing session lookup, early reused-session result, authenticated RPC/E2EE
+  client initialization, manual secure-init `SendJSON`, and post-send session
+  reload.
+- Preserves Go result shapes: redacted `target`, `session`, `reused=true` for
+  existing sessions, `initialized=true`, `delivery.message_id`,
+  `delivery.operation_id`, and `delivery.target_did` with fallback defaults for
+  new init sends.
+- Preserves Go CLI hint:
+  `Make sure the target exists and the active identity has secure E2EE key material.`
+- Adds service-level coverage for existing-session reuse, session redaction,
+  prekey publisher warning preservation, and missing secure key material.
+- Adds a local fake-server live smoke proving CLI production init emits
+  `direct.e2ee.publish_prekey_bundle`, `direct.e2ee.get_prekey_bundle`, and
+  `direct.send` with `application/anp-direct-init+json`, uses a generated
+  `secure-init-` operation/message ID, and creates a pending session file.
+
+Boundary note: this slice still excludes `SecureRepair`, WebSocket/local bridge
+secure execution, runtime listener live `ProcessIncoming`, and
+awiki-system-test secure-direct acceptance.
+
+Parallelism note: two read-only Native Agents mapped Go behavior and Rust gaps
+for production secure init. A follow-up verifier agent could not be spawned
+because the Native Agent thread limit was reached. No code-writing Native Agent
+changed files; the standing rule remains that any code-writing Native Agent
+must use GPT-5.5 xhigh with a bounded, non-overlapping write scope.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing Rustls/std authsdk/message client,
+local ANP Rust E2EE adapter, secure session/status helpers, and the approved
+`rusqlite + bundled` SQLite path. It does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
+crates, platform service libraries, new E2EE provider dependencies, or a new
+SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
+work.
+
 ## 2026-05-16 Message Secure Retry Production Sender Slice
 
 Status: locally verified.

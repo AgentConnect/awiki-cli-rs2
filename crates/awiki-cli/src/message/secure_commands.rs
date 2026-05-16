@@ -1,11 +1,15 @@
-use super::service::{auth_session, require_active_identity, resolve_target, CommandResult};
+use super::service::{
+    auth_session, publish_secure_prekeys_with_client, require_active_identity, resolve_target,
+    CommandResult,
+};
 use super::types::{
-    MessageError, SecureOutboxActionRequest, SecureStatusRequest, MESSAGE_RPC_ENDPOINT,
+    MessageError, SecureOutboxActionRequest, SecurePeerRequest, SecureStatusRequest,
+    MESSAGE_RPC_ENDPOINT,
 };
 use super::{
-    current_secure_session_id, flush_queued_secure_outbox_with_sender,
-    new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient, SecureOutboxSendOutcome,
-    SecureOutboxSendRequest,
+    build_secure_init_payload, current_secure_session_id, flush_queued_secure_outbox_with_sender,
+    new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient, SecureE2EERpc,
+    SecureOutboxSendOutcome, SecureOutboxSendRequest,
 };
 use crate::config::Resolved;
 use crate::identity::{types::StoredIdentity, Manager};
@@ -85,6 +89,86 @@ pub fn secure_failed(
         }),
         summary: format!("Loaded {total} failed secure outbox record(s)"),
         warnings: Vec::new(),
+    })
+}
+
+pub fn secure_init(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: SecurePeerRequest,
+) -> Result<CommandResult, MessageError> {
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    if record.e2ee_agreement_private_pem.is_empty() || record.key1_private_pem.is_empty() {
+        return Err(MessageError::Internal(
+            "secure direct messaging requires DID signing and X25519 E2EE private keys".to_string(),
+        ));
+    }
+    if request.with.trim().is_empty() {
+        return Err(MessageError::TargetRequired);
+    }
+    let target = resolve_target(resolved, &request.with)?;
+    let warnings = publish_secure_prekeys(resolved, manager, &record);
+    if let Some(session) = load_secure_session_state(manager, &record, &target.did)? {
+        return Ok(CommandResult {
+            data: json!({
+                "target": {
+                    "did": target.did,
+                    "handle": target.handle,
+                    "kind": "direct",
+                },
+                "session": session,
+                "reused": true,
+            }),
+            summary: format!(
+                "Secure session already exists for {}",
+                peer_handle_or_did(&target.handle, &target.did)
+            ),
+            warnings: super::compact_warnings(warnings),
+        });
+    }
+
+    let auth = auth_session(resolved, manager, &record)?;
+    let rpc_client = Client::new(resolved)?;
+    let mut client = new_secure_e2ee_client_for_record(
+        Some(manager),
+        Some(&record),
+        secure_retry_rpc(rpc_client, auth),
+    )
+    .map_err(MessageError::Internal)?;
+    let message_id = format!("secure-init-{}", super::wire::generate_operation_id());
+    let result = client
+        .send_json(
+            &target.did,
+            build_secure_init_payload(),
+            &message_id,
+            &message_id,
+        )
+        .map_err(MessageError::Internal)?;
+    let session = load_secure_session_state(manager, &record, &target.did)
+        .ok()
+        .flatten()
+        .unwrap_or(Value::Null);
+
+    Ok(CommandResult {
+        data: json!({
+            "target": {
+                "did": target.did,
+                "handle": target.handle,
+                "kind": "direct",
+            },
+            "session": session,
+            "delivery": {
+                "message_id": default_string(&string_from_value(result.get("message_id")), &message_id),
+                "operation_id": default_string(&string_from_value(result.get("operation_id")), &message_id),
+                "target_did": default_string(&string_from_value(result.get("target_did")), &target.did),
+            },
+            "initialized": true,
+        }),
+        summary: format!(
+            "Initialized secure session with {}",
+            peer_handle_or_did(&target.handle, &target.did)
+        ),
+        warnings: super::compact_warnings(warnings),
     })
 }
 
@@ -226,6 +310,46 @@ pub fn secure_retry(
     })
 }
 
+fn publish_secure_prekeys(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+) -> Vec<String> {
+    if record.e2ee_agreement_private_pem.is_empty() || record.key1_private_pem.is_empty() {
+        return Vec::new();
+    }
+    let auth = match auth_session(resolved, manager, record) {
+        Ok(auth) => auth,
+        Err(err) => {
+            return super::compact_warnings(vec![format!(
+                "Failed to initialize secure prekey auth: {err}"
+            )])
+        }
+    };
+    let rpc: Box<SecureE2EERpc> = if resolved.service_base_url.trim().is_empty() {
+        Box::new(|_, _| Err("message service url is required".to_string()))
+    } else {
+        let rpc_client = match Client::new(resolved) {
+            Ok(client) => client,
+            Err(err) => {
+                return super::compact_warnings(vec![format!(
+                    "Failed to initialize secure prekey publisher: {err}"
+                )])
+            }
+        };
+        secure_retry_rpc(rpc_client, auth)
+    };
+    let mut client = match new_secure_e2ee_client_for_record(Some(manager), Some(record), rpc) {
+        Ok(client) => client,
+        Err(err) => {
+            return super::compact_warnings(vec![format!(
+                "Failed to initialize secure prekey publisher: {err}"
+            )])
+        }
+    };
+    publish_secure_prekeys_with_client(&mut client)
+}
+
 fn secure_retry_client(
     resolved: &Resolved,
     manager: &Manager,
@@ -301,6 +425,16 @@ fn open_secure_store(resolved: &Resolved) -> Result<rusqlite::Connection, Messag
 
 fn store_error(err: StoreError) -> MessageError {
     MessageError::Internal(err.to_string())
+}
+
+fn load_secure_session_state(
+    manager: &Manager,
+    record: &StoredIdentity,
+    peer_did: &str,
+) -> Result<Option<Value>, MessageError> {
+    Ok(list_secure_sessions(manager, record, peer_did)?
+        .into_iter()
+        .next())
 }
 
 fn list_secure_sessions(

@@ -62,7 +62,7 @@ pub use secure_client::{
     SecureE2EERpc, SecureE2EERpcResult,
 };
 pub use secure_commands::{
-    secure_drop, secure_failed, secure_retry, secure_retry_with_sender, secure_status,
+    secure_drop, secure_failed, secure_init, secure_retry, secure_retry_with_sender, secure_status,
 };
 pub use secure_control::{
     build_secure_ack_payload, build_secure_init_payload, current_secure_session_id,
