@@ -2,6 +2,72 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Docs Topic Referenced Assets Slice
+
+Timestamp: 2026-05-17T08:30:00+0800.
+
+Scope: copy Go documentation and skill-reference assets that are directly
+referenced by the Rust `docs` topic table but were missing from the Rust
+repository.
+
+Assets copied byte-for-byte from `../awiki-cli`:
+
+```text
+docs/architecture/awiki-mail-cli.md
+docs/architecture/awiki-site-pages.md
+docs/architecture/awiki-skill-architecture.md
+docs/plan/awiki-v2-implementation-plan.md
+docs/plan/phase-0/implementation-constraints.md
+docs/plan/phase-0/capability-mapping.md
+docs/plan/phase-0/audit-findings.md
+docs/plan/phase-0/adr-index.md
+docs/harness/review-spec.md
+skills/SKILL.md
+skills/references/02-identity.md
+skills/references/03-messaging.md
+skills/references/11-site-pages.md
+```
+
+Commands run:
+
+```text
+cmp -s ../awiki-cli/docs/architecture/awiki-mail-cli.md docs/architecture/awiki-mail-cli.md
+cmp -s ../awiki-cli/docs/architecture/awiki-site-pages.md docs/architecture/awiki-site-pages.md
+cmp -s ../awiki-cli/docs/architecture/awiki-skill-architecture.md docs/architecture/awiki-skill-architecture.md
+cmp -s ../awiki-cli/docs/plan/awiki-v2-implementation-plan.md docs/plan/awiki-v2-implementation-plan.md
+cmp -s ../awiki-cli/docs/plan/phase-0/implementation-constraints.md docs/plan/phase-0/implementation-constraints.md
+cmp -s ../awiki-cli/docs/plan/phase-0/capability-mapping.md docs/plan/phase-0/capability-mapping.md
+cmp -s ../awiki-cli/docs/plan/phase-0/audit-findings.md docs/plan/phase-0/audit-findings.md
+cmp -s ../awiki-cli/docs/plan/phase-0/adr-index.md docs/plan/phase-0/adr-index.md
+cmp -s ../awiki-cli/docs/harness/review-spec.md docs/harness/review-spec.md
+cmp -s ../awiki-cli/skills/SKILL.md skills/SKILL.md
+cmp -s ../awiki-cli/skills/references/02-identity.md skills/references/02-identity.md
+cmp -s ../awiki-cli/skills/references/03-messaging.md skills/references/03-messaging.md
+cmp -s ../awiki-cli/skills/references/11-site-pages.md skills/references/11-site-pages.md
+stat -c '%a %n' <copied files>
+wc -l <copied files>
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+```
+
+Observed results:
+
+- All copied files compare byte-identical with the Go repository sources and
+  retain mode `664`.
+- The focused docs topic contract passed.
+- Format check, structure check, and whitespace check passed.
+- No Rust dependency was added.
+- Every copied asset remains below the default 1200-line cap.
+
+Boundary note: this is source documentation parity only. The copied files keep
+Go/source wording and are not rewritten for Rust implementation details in this
+translation slice. The `output` docs topic still references
+`docs/architecture/output-format.md`, while the Go repository stores that asset
+under `docs/architecture/参考文档/output-format.md`; path reconciliation remains
+a separate docs-index parity decision.
+
 ## 2026-05-17 Host Notify Listener Refresh Slice
 
 Timestamp: 2026-05-17T07:45:47+0800.
@@ -439,8 +505,9 @@ What changed:
   success payload.
 - On Unix, newly created parent directories now use mode `0700`, matching Go
   `os.MkdirAll(dir, 0o700)`.
-- On Unix, downloaded files now use mode `0600`, matching Go
-  `os.WriteFile(outPath, content, 0o600)`.
+- On Unix, newly created downloaded files now use mode `0600`, matching Go
+  `os.WriteFile(outPath, content, 0o600)`. Overwritten existing files are
+  truncated while keeping their existing permissions, also matching Go.
 - Non-Unix keeps the existing std filesystem behavior until Windows host
   validation is available.
 
