@@ -1,7 +1,8 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::identity::{types::SaveInput, Manager};
 use awiki_cli::message::{
-    secure_drop, secure_failed, secure_status, SecureOutboxActionRequest, SecureStatusRequest,
+    secure_drop, secure_failed, secure_retry_with_sender, secure_status, SecureOutboxActionRequest,
+    SecureOutboxSendOutcome, SecureOutboxSendRequest, SecureStatusRequest,
 };
 use awiki_cli::store::{self, get_e2ee_outbox, queue_e2ee_outbox, E2EEOutboxRecord};
 use rusqlite::Connection;
@@ -462,6 +463,321 @@ fn secure_drop_missing_outbox_id_errors_without_changing_unrelated_rows() {
     std::fs::remove_dir_all(root).expect("remove temp test root");
 }
 
+#[test]
+fn secure_retry_with_sender_requeues_peer_rows_marks_sent_and_stores_messages() {
+    let (resolved, manager, root) = test_context("secure-retry-success");
+    let active = save_identity(&manager, "alice", "alice-user", "alice");
+    let peer_did = "did:wba:awiki.ai:user:bob:e1_bob";
+    let other_peer_did = "did:wba:awiki.ai:user:carol:e1_carol";
+
+    let db = open_store(&resolved);
+    seed_status_outbox(
+        &db,
+        retry_outbox_record(
+            "same-peer-queued",
+            &active.did,
+            peer_did,
+            "queued",
+            "same peer queued",
+            "2026-01-01T00:00:00Z",
+        ),
+    );
+    seed_status_outbox(
+        &db,
+        retry_outbox_record(
+            "retry-me",
+            &active.did,
+            peer_did,
+            "failed",
+            "hello retry",
+            "2026-01-02T00:00:00Z",
+        ),
+    );
+    seed_status_outbox(
+        &db,
+        retry_outbox_record(
+            "other-peer-queued",
+            &active.did,
+            other_peer_did,
+            "queued",
+            "other peer queued",
+            "2026-01-03T00:00:00Z",
+        ),
+    );
+    drop(db);
+
+    let mut sent_requests = Vec::<SecureOutboxSendRequest>::new();
+    let result = secure_retry_with_sender(
+        &resolved,
+        &manager,
+        SecureOutboxActionRequest {
+            identity_name: "alice".to_string(),
+            outbox_id: "retry-me".to_string(),
+        },
+        |request| {
+            sent_requests.push(request.clone());
+            SecureOutboxSendOutcome::Success {
+                message_id: format!("msg-{}", request.outbox_id),
+                operation_id: request.outbox_id,
+                delivery_state: "accepted".to_string(),
+                accepted_at: "2026-05-16T00:00:00Z".to_string(),
+            }
+        },
+        |peer| {
+            assert_eq!(peer, peer_did);
+            "session-bob".to_string()
+        },
+    )
+    .expect("secure retry with injected sender");
+
+    assert_eq!(result.summary, "Retried secure outbox record retry-me");
+    assert!(result.warnings.is_empty());
+    assert_eq!(result.data["outbox_id"], "retry-me");
+    assert_eq!(text(&result.data["record"], "local_status"), "sent");
+    assert_eq!(text(&result.data["record"], "sent_msg_id"), "msg-retry-me");
+    assert_eq!(text(&result.data["record"], "session_id"), "session-bob");
+    assert_eq!(
+        sent_requests
+            .iter()
+            .map(|request| request.outbox_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["same-peer-queued", "retry-me"]
+    );
+    assert!(sent_requests
+        .iter()
+        .all(|request| request.target_did == peer_did));
+
+    let db = open_store(&resolved);
+    let retry_row = get_e2ee_outbox(&db, "retry-me", &active.did, "alice").expect("retry row");
+    assert_eq!(text(&retry_row, "local_status"), "sent");
+    assert_eq!(text(&retry_row, "sent_msg_id"), "msg-retry-me");
+    assert_eq!(text(&retry_row, "session_id"), "session-bob");
+    let metadata: Value = serde_json::from_str(text(&retry_row, "metadata")).expect("metadata");
+    assert_eq!(metadata["target_did"], peer_did);
+    assert_eq!(metadata["operation_id"], "retry-me");
+    assert_eq!(metadata["delivery_state"], "accepted");
+    assert_eq!(metadata["flushed_from"], "queued");
+
+    let same_peer_row =
+        get_e2ee_outbox(&db, "same-peer-queued", &active.did, "alice").expect("same peer row");
+    assert_eq!(text(&same_peer_row, "local_status"), "sent");
+    let other_peer_row =
+        get_e2ee_outbox(&db, "other-peer-queued", &active.did, "alice").expect("other peer row");
+    assert_eq!(text(&other_peer_row, "local_status"), "queued");
+
+    let messages = store::list_messages_by_ids(
+        &db,
+        &active.did,
+        &[
+            "msg-retry-me".to_string(),
+            "msg-same-peer-queued".to_string(),
+        ],
+    )
+    .expect("stored retry messages");
+    assert_eq!(messages.len(), 2);
+    let retry_message = row_by_msg_id(&messages, "msg-retry-me");
+    assert_eq!(text(retry_message, "owner_did"), active.did);
+    assert_eq!(text(retry_message, "sender_did"), active.did);
+    assert_eq!(text(retry_message, "receiver_did"), peer_did);
+    assert_eq!(text(retry_message, "content_type"), "text/plain");
+    assert_eq!(text(retry_message, "content"), "hello retry");
+    assert_eq!(int(retry_message, "direction"), 1);
+    assert_eq!(int(retry_message, "is_e2ee"), 1);
+    assert_eq!(int(retry_message, "is_read"), 1);
+    assert_eq!(text(retry_message, "credential_name"), "alice");
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_retry_with_sender_preserves_json_send_payload_and_fails_invalid_json_without_sender() {
+    let (resolved, manager, root) = test_context("secure-retry-json");
+    let active = save_identity(&manager, "alice", "alice-user", "alice");
+    let peer_did = "did:wba:awiki.ai:user:bob:e1_bob";
+
+    let mut valid_json = retry_outbox_record(
+        "json-valid",
+        &active.did,
+        peer_did,
+        "failed",
+        r#"{"kind":"ack","ok":true}"#,
+        "2026-01-01T00:00:00Z",
+    );
+    valid_json.original_type = "json".to_string();
+    let mut invalid_json = retry_outbox_record(
+        "json-invalid",
+        &active.did,
+        peer_did,
+        "queued",
+        "{bad",
+        "2026-01-02T00:00:00Z",
+    );
+    invalid_json.original_type = "json".to_string();
+
+    let db = open_store(&resolved);
+    seed_status_outbox(&db, valid_json);
+    seed_status_outbox(&db, invalid_json);
+    drop(db);
+
+    let mut sent_requests = Vec::<SecureOutboxSendRequest>::new();
+    let result = secure_retry_with_sender(
+        &resolved,
+        &manager,
+        SecureOutboxActionRequest {
+            identity_name: "alice".to_string(),
+            outbox_id: "json-valid".to_string(),
+        },
+        |request| {
+            sent_requests.push(request.clone());
+            SecureOutboxSendOutcome::Success {
+                message_id: format!("msg-{}", request.outbox_id),
+                operation_id: request.outbox_id,
+                delivery_state: "accepted".to_string(),
+                accepted_at: "2026-05-16T00:00:00Z".to_string(),
+            }
+        },
+        |_peer| "session-json".to_string(),
+    )
+    .expect("secure retry json");
+
+    assert_eq!(
+        sent_requests
+            .iter()
+            .map(|request| request.outbox_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["json-valid"]
+    );
+    let request = sent_requests.first().expect("json send request");
+    assert_eq!(request.original_type, "json");
+    assert_eq!(
+        request.json_payload.as_ref().expect("parsed JSON payload"),
+        json!({"kind": "ack", "ok": true}).as_object().unwrap()
+    );
+    assert!(
+        result.warnings.iter().any(|warning| warning
+            .starts_with("Failed to parse queued secure JSON payload json-invalid:")),
+        "expected invalid JSON warning, got {:?}",
+        result.warnings
+    );
+
+    let db = open_store(&resolved);
+    let valid_row = get_e2ee_outbox(&db, "json-valid", &active.did, "alice").expect("valid row");
+    assert_eq!(text(&valid_row, "local_status"), "sent");
+    assert_eq!(text(&valid_row, "sent_msg_id"), "msg-json-valid");
+    let invalid_row =
+        get_e2ee_outbox(&db, "json-invalid", &active.did, "alice").expect("invalid row");
+    assert_eq!(text(&invalid_row, "local_status"), "failed");
+    assert_eq!(text(&invalid_row, "last_error_code"), "invalid_payload");
+    assert_eq!(text(&invalid_row, "retry_hint"), "drop");
+    let invalid_metadata: Value =
+        serde_json::from_str(text(&invalid_row, "metadata")).expect("invalid metadata");
+    assert!(invalid_metadata["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("key"));
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_retry_with_sender_send_error_sets_failed_retry_metadata() {
+    let (resolved, manager, root) = test_context("secure-retry-send-error");
+    let active = save_identity(&manager, "alice", "alice-user", "alice");
+    let peer_did = "did:wba:awiki.ai:user:bob:e1_bob";
+
+    let db = open_store(&resolved);
+    seed_status_outbox(
+        &db,
+        retry_outbox_record(
+            "retry-fail",
+            &active.did,
+            peer_did,
+            "failed",
+            "hello fail",
+            "2026-01-01T00:00:00Z",
+        ),
+    );
+    drop(db);
+
+    let result = secure_retry_with_sender(
+        &resolved,
+        &manager,
+        SecureOutboxActionRequest {
+            identity_name: "alice".to_string(),
+            outbox_id: "retry-fail".to_string(),
+        },
+        |_request| SecureOutboxSendOutcome::Error("network down".to_string()),
+        |_peer| panic!("session lookup should not be called after send failure"),
+    )
+    .expect("secure retry returns warning result on send failure");
+
+    assert_eq!(
+        result.warnings,
+        vec!["Failed to flush queued secure outbox retry-fail: network down"]
+    );
+    assert_eq!(text(&result.data["record"], "local_status"), "failed");
+    assert_eq!(
+        text(&result.data["record"], "last_error_code"),
+        "send_failed"
+    );
+    assert_eq!(text(&result.data["record"], "retry_hint"), "retry");
+
+    let db = open_store(&resolved);
+    let row = get_e2ee_outbox(&db, "retry-fail", &active.did, "alice").expect("retry row");
+    assert_eq!(text(&row, "local_status"), "failed");
+    assert_eq!(text(&row, "last_error_code"), "send_failed");
+    assert_eq!(text(&row, "retry_hint"), "retry");
+    let metadata: Value = serde_json::from_str(text(&row, "metadata")).expect("metadata");
+    assert_eq!(metadata["detail"], "network down");
+    let messages =
+        store::list_messages_by_ids(&db, &active.did, &["retry-fail".to_string()]).unwrap();
+    assert!(messages.is_empty());
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_retry_with_sender_missing_outbox_id_errors_without_mutating_rows() {
+    let (resolved, manager, root) = test_context("secure-retry-missing");
+    let active = save_identity(&manager, "alice", "alice-user", "alice");
+
+    let db = open_store(&resolved);
+    seed_status_outbox(
+        &db,
+        retry_outbox_record(
+            "retry-existing",
+            &active.did,
+            "did:wba:awiki.ai:user:bob:e1_bob",
+            "failed",
+            "hello existing",
+            "2026-01-01T00:00:00Z",
+        ),
+    );
+    drop(db);
+
+    let err = secure_retry_with_sender(
+        &resolved,
+        &manager,
+        SecureOutboxActionRequest {
+            identity_name: "alice".to_string(),
+            outbox_id: "missing-retry".to_string(),
+        },
+        |_request| panic!("sender should not be called for missing retry row"),
+        |_peer| panic!("session lookup should not be called for missing retry row"),
+    )
+    .expect_err("missing outbox id should fail");
+    assert!(
+        err.to_string().contains("query returned no rows"),
+        "unexpected missing retry error: {err}"
+    );
+
+    let db = open_store(&resolved);
+    let row = get_e2ee_outbox(&db, "retry-existing", &active.did, "alice").expect("existing row");
+    assert_eq!(text(&row, "local_status"), "failed");
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
 fn test_context(name: &str) -> (Resolved, Manager, PathBuf) {
     let root = temp_root(name);
     std::fs::create_dir_all(root.join("data")).expect("create data dir");
@@ -576,6 +892,39 @@ fn seed_status_outbox(db: &Connection, record: E2EEOutboxRecord) {
     queue_e2ee_outbox(db, record).expect("seed secure status outbox row");
 }
 
+fn retry_outbox_record(
+    outbox_id: &str,
+    owner_did: &str,
+    peer_did: &str,
+    local_status: &str,
+    plaintext: &str,
+    created_at: &str,
+) -> E2EEOutboxRecord {
+    E2EEOutboxRecord {
+        outbox_id: outbox_id.to_string(),
+        owner_did: owner_did.to_string(),
+        peer_did: peer_did.to_string(),
+        session_id: "old-session".to_string(),
+        original_type: "text".to_string(),
+        plaintext: plaintext.to_string(),
+        local_status: local_status.to_string(),
+        last_error_code: if local_status == "failed" {
+            "send_failed".to_string()
+        } else {
+            String::new()
+        },
+        retry_hint: if local_status == "failed" {
+            "retry".to_string()
+        } else {
+            String::new()
+        },
+        created_at: created_at.to_string(),
+        updated_at: created_at.to_string(),
+        credential_name: "alice".to_string(),
+        ..Default::default()
+    }
+}
+
 fn outbox_ids(rows: &[Value]) -> Vec<&str> {
     rows.iter().map(|row| text(row, "outbox_id")).collect()
 }
@@ -592,6 +941,19 @@ fn text<'a>(record: &'a Value, field: &str) -> &'a str {
         .get(field)
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("missing string field {field}: {record:?}"))
+}
+
+fn int(record: &Value, field: &str) -> i64 {
+    record
+        .get(field)
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| panic!("missing int field {field}: {record:?}"))
+}
+
+fn row_by_msg_id<'a>(rows: &'a [Value], msg_id: &str) -> &'a Value {
+    rows.iter()
+        .find(|row| text(row, "msg_id") == msg_id)
+        .unwrap_or_else(|| panic!("missing message {msg_id}: {rows:?}"))
 }
 
 fn temp_root(name: &str) -> PathBuf {

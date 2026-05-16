@@ -1,5 +1,8 @@
 use super::service::{require_active_identity, resolve_target, CommandResult};
 use super::types::{MessageError, SecureOutboxActionRequest, SecureStatusRequest};
+use super::{
+    flush_queued_secure_outbox_with_sender, SecureOutboxSendOutcome, SecureOutboxSendRequest,
+};
 use crate::config::Resolved;
 use crate::identity::{types::StoredIdentity, Manager};
 use crate::store::{self, StoreError};
@@ -110,6 +113,58 @@ pub fn secure_drop(
         }),
         summary: format!("Dropped secure outbox record {}", request.outbox_id),
         warnings: Vec::new(),
+    })
+}
+
+pub fn secure_retry_with_sender(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: SecureOutboxActionRequest,
+    mut sender: impl FnMut(SecureOutboxSendRequest) -> SecureOutboxSendOutcome,
+    mut current_session_id: impl FnMut(&str) -> String,
+) -> Result<CommandResult, MessageError> {
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let connection = open_secure_store(resolved)?;
+    let row = store::get_e2ee_outbox(
+        &connection,
+        &request.outbox_id,
+        &record.did,
+        &record.identity_name,
+    )
+    .map_err(store_error)?;
+    store::update_e2ee_outbox_status(
+        &connection,
+        &request.outbox_id,
+        &record.did,
+        &record.identity_name,
+        "queued",
+    )
+    .map_err(store_error)?;
+
+    let peer_did = string_from_value(row.get("peer_did"));
+    let warnings = flush_queued_secure_outbox_with_sender(
+        &connection,
+        &record.did,
+        &record.identity_name,
+        &peer_did,
+        &mut sender,
+        &mut current_session_id,
+    );
+    let record_data = store::get_e2ee_outbox(
+        &connection,
+        &request.outbox_id,
+        &record.did,
+        &record.identity_name,
+    )
+    .unwrap_or(Value::Null);
+
+    Ok(CommandResult {
+        data: json!({
+            "outbox_id": request.outbox_id,
+            "record": record_data,
+        }),
+        summary: format!("Retried secure outbox record {}", request.outbox_id),
+        warnings,
     })
 }
 

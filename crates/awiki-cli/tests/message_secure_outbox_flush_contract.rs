@@ -633,7 +633,7 @@ fn stored_record(actions: &[SecureOutboxFlushAction]) -> awiki_cli::store::Messa
     actions
         .iter()
         .find_map(|action| match action {
-            SecureOutboxFlushAction::StoreMessage { record } => Some(record.clone()),
+            SecureOutboxFlushAction::StoreMessage { record, .. } => Some(record.clone()),
             _ => None,
         })
         .expect("StoreMessage action")
