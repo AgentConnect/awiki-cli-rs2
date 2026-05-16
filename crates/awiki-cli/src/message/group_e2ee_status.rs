@@ -191,7 +191,7 @@ fn group_e2ee_transport<'a>(
     })
 }
 
-fn group_e2ee_status_for_recovery(
+pub(crate) fn group_e2ee_status_for_recovery(
     provider: &MlsExecProvider,
     agent_did: &str,
     group_did: &str,
@@ -239,7 +239,7 @@ fn group_e2ee_status_for_recovery(
     Ok((empty, best_device_id))
 }
 
-fn group_e2ee_recovery_device_ids(
+pub(crate) fn group_e2ee_recovery_device_ids(
     provider: &MlsExecProvider,
     agent_did: &str,
     preferred_device_id: &str,
@@ -288,7 +288,7 @@ fn group_e2ee_status_rank(status: &Map<String, Value>) -> i32 {
     }
 }
 
-fn group_e2ee_recovery_diagnosis(
+pub(crate) fn group_e2ee_recovery_diagnosis(
     local_status: Option<&Map<String, Value>>,
     service_head: Option<&Map<String, Value>>,
     pending_notice_count: i64,
@@ -457,7 +457,7 @@ fn group_e2ee_recovery_diagnosis(
     diagnosis
 }
 
-fn group_e2ee_recovery_artifact(
+pub(crate) fn group_e2ee_recovery_artifact(
     record: &StoredIdentity,
     group_did: &str,
     device_id: &str,
@@ -522,7 +522,7 @@ fn group_e2ee_recovery_artifact(
     Value::Object(artifact)
 }
 
-fn group_e2ee_local_epoch_from_status(status: &Map<String, Value>) -> Option<i64> {
+pub(crate) fn group_e2ee_local_epoch_from_status(status: &Map<String, Value>) -> Option<i64> {
     for key in ["epoch", "local_epoch"] {
         if let Some(epoch) = i64_value(status.get(key)) {
             return Some(epoch);
@@ -536,6 +536,6 @@ fn group_e2ee_local_epoch_from_status(status: &Map<String, Value>) -> Option<i64
     None
 }
 
-fn values_from_array(value: Option<&Value>) -> Vec<Value> {
+pub(crate) fn values_from_array(value: Option<&Value>) -> Vec<Value> {
     value.and_then(Value::as_array).cloned().unwrap_or_default()
 }

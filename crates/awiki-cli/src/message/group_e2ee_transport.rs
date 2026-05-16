@@ -3,9 +3,9 @@ use super::{
     build_group_e2ee_add_rpc_params, build_group_e2ee_get_key_package_rpc_params,
     build_group_e2ee_get_recovery_key_package_rpc_params,
     build_group_e2ee_get_update_key_package_rpc_params, build_group_e2ee_head_rpc_params,
-    build_group_e2ee_leave_request_rpc_params, build_group_e2ee_recover_member_rpc_params,
-    build_group_e2ee_remove_rpc_params, build_group_e2ee_update_member_rpc_params, Client,
-    MessageError, MESSAGE_RPC_ENDPOINT,
+    build_group_e2ee_leave_request_rpc_params, build_group_e2ee_notice_rpc_params,
+    build_group_e2ee_recover_member_rpc_params, build_group_e2ee_remove_rpc_params,
+    build_group_e2ee_update_member_rpc_params, Client, MessageError, MESSAGE_RPC_ENDPOINT,
 };
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
@@ -133,6 +133,23 @@ impl<'a> GroupE2eeTransport<'a> {
     ) -> Result<Map<String, Value>, MessageError> {
         let params = build_group_e2ee_head_rpc_params(self.record, group_did)?;
         self.rpc_call("group.e2ee.head", params)
+    }
+
+    pub(crate) fn pull_group_e2ee_notices(
+        &mut self,
+        group_did: &str,
+        limit: i64,
+        mark_delivered: bool,
+        notice_ids: Vec<String>,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let params = build_group_e2ee_notice_rpc_params(
+            self.record,
+            group_did,
+            limit,
+            mark_delivered,
+            notice_ids,
+        )?;
+        self.rpc_call("group.e2ee.notice", params)
     }
 
     pub(crate) fn add_group_e2ee(

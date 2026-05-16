@@ -9,6 +9,7 @@ mod group_e2ee_provider;
 mod group_e2ee_publish;
 mod group_e2ee_recover;
 mod group_e2ee_remove;
+mod group_e2ee_repair;
 mod group_e2ee_status;
 mod group_e2ee_transport;
 mod group_e2ee_update;
@@ -47,6 +48,7 @@ pub use group_e2ee_provider::{default_mls_data_dir, ANP_MLS_BINARY_ENV};
 pub use group_e2ee_publish::{publish_group_e2ee_key_package, GroupE2eePublishKeyPackageRequest};
 pub use group_e2ee_recover::recover_group_e2ee_member;
 pub use group_e2ee_remove::process_group_e2ee_leave_request;
+pub use group_e2ee_repair::repair_group_e2ee_notices;
 pub use group_e2ee_status::{
     inspect_group_e2ee_status, pull_group_e2ee_notices, GroupE2eePendingRequest,
     GroupE2eeStatusRequest,

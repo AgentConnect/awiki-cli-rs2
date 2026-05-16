@@ -2,6 +2,97 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Group E2EE Repair Live Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_repair_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_update_key_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_recover_member_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_add_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_remove_leave_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_create_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_publish_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestInspectGroupE2EEStatusComparesLocalEpochToServiceHead|TestGroupE2EEStatusForRecoveryScansNonDefaultDevice' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+wc -l crates/awiki-cli/src/message/group_e2ee_repair.rs crates/awiki-cli/src/message/group_e2ee_status.rs crates/awiki-cli/src/message/group_e2ee_transport.rs crates/awiki-cli/src/message/group_e2ee_provider.rs crates/awiki-cli/src/app/group_e2ee_handlers.rs crates/awiki-cli/tests/group_e2ee_repair_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `group_e2ee_repair_contract`: 1 passed.
+- `group_e2ee_pending_contract`: 2 passed.
+- `group_e2ee_status_contract`: 2 passed.
+- `group_e2ee_update_key_contract`: 1 passed.
+- `group_e2ee_recover_member_contract`: 1 passed.
+- `group_e2ee_add_contract`: 6 passed.
+- `group_e2ee_remove_leave_contract`: 3 passed.
+- `group_e2ee_create_contract`: 2 passed.
+- `group_e2ee_publish_contract`: 4 passed.
+- `group_contract`: 6 passed.
+- `message_group_e2ee_wire_contract`: 7 passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `group_e2ee_repair.rs` 561 lines, `group_e2ee_status.rs` 541 lines,
+  `group_e2ee_transport.rs` 231 lines, `group_e2ee_provider.rs` 486 lines,
+  `group_e2ee_handlers.rs` 573 lines, and
+  `group_e2ee_repair_contract.rs` 578 lines. No file-size exception is needed.
+
+Scope:
+
+- Wires live hidden `group e2ee repair` through Go's pending notice repair
+  path: active identity gate, hidden `group.e2ee.head` preflight warning,
+  accepted local pending-commit finalization, hidden `group.e2ee.notice` pull,
+  commit notice replay through external MLS `anp-mls commit process`, welcome
+  notice replay through existing `anp-mls welcome process`, processed notice
+  mark-delivered, final local status scan, recovery diagnosis/artifact, and Go
+  live plan insertion.
+- Preserves Go repair result shape and summary:
+  `Replayed group E2EE pending notices`, with `processed`,
+  `processed_count`, `finalized_pending_commits`, `finalized_pending_count`,
+  `pending_count`, `delivered_result`, `group`, `local`, `local_device_id`,
+  `service_head`, `diagnosis`, and `recovery_artifact`.
+- Preserves Go mark-delivered request shape: the second hidden notice call uses
+  `limit=len(notice_ids)`, not the original repair pull limit, and includes only
+  the processed notice IDs.
+- Preserves Go pending-commit finalize request shape: accepted local pending
+  commits are finalized with only `pending_commit_id`, rather than passing the
+  full provider pending-commit object.
+
+Boundary note: this slice still excludes group E2EE send/decrypt,
+WebSocket/local bridge group E2EE transport, broader commit/welcome replay
+edge-case system coverage, and full awiki-system-test group-E2EE acceptance.
+
+Parallelism note: one read-only Native Agent reviewed the repair parity diff
+and found the mark-delivered `limit` mismatch that was fixed before final
+verification. No code-writing Native Agent edited files in this slice; future
+code-writing Native Agents remain constrained to GPT-5.5 xhigh with bounded,
+non-overlapping write scope.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `std::process::Command`, `serde_json`,
+existing authsdk/session, existing Rustls/std message HTTP transport, existing
+group E2EE wire builders, the external local ANP Rust SDK `anp-mls` binary, and
+the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, MLS provider crates, ANP SDK
+default/network features, or a new SQLite backend. TLS remains Rustls-first.
+
 ## 2026-05-16 Group E2EE Update-Key Live Slice
 
 Status: locally verified.

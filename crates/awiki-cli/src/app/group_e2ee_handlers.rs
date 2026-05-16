@@ -1,4 +1,4 @@
-use super::{msg_handlers::message_exit, not_implemented_side_effect, App};
+use super::{msg_handlers::message_exit, App};
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
 use crate::message::{
@@ -175,21 +175,44 @@ impl App {
 
     pub fn run_group_e2ee_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        let plan = json!({
+            "action": "group.e2ee.repair",
+            "identity": self.globals.identity,
+            "runtime_mode": resolved.runtime_mode,
+            "provider": "exec",
+            "mls_data_dir": mls_data_dir(&resolved),
+            "group": string_flag(command, "group"),
+            "scope": REPAIR_SCOPE,
+        });
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group e2ee repair"));
+            let mut result = message::repair_group_e2ee_notices(
+                &resolved,
+                &self.identity_manager(&resolved),
+                &self.globals.identity,
+                &string_flag(command, "group"),
+                50,
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Install anp-mls, set AWIKI_ANP_MLS_BINARY, and ensure message-service group E2EE APIs are enabled for focused validation.",
+                )
+            })?;
+            if let Some(data) = result.data.as_object_mut() {
+                data.insert("plan".to_string(), plan);
+            }
+            return self.render_success(
+                "awiki-cli group e2ee repair",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
         }
         self.render_group_e2ee_plan(
             "awiki-cli group e2ee repair",
             &resolved,
-            json!({
-                "action": "group.e2ee.repair",
-                "identity": self.globals.identity,
-                "runtime_mode": resolved.runtime_mode,
-                "provider": "exec",
-                "mls_data_dir": mls_data_dir(&resolved),
-                "group": string_flag(command, "group"),
-                "scope": REPAIR_SCOPE,
-            }),
+            plan,
             "Dry run: group e2ee repair planned",
         )
     }
