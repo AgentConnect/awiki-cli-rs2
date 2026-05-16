@@ -4180,6 +4180,64 @@ slice does not add HTTP/TLS clients, WebSocket crates, OpenSSL, `native-tls`,
 bundled OpenSSL, YAML crates, platform service libraries, or named-pipe crates.
 TLS policy remains Rustls-first and unchanged.
 
+## 2026-05-17 Runtime Bridge Windows Endpoint Helper Tightening
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime -run 'TestResolveShortensLongSocketPath|TestResolveKeepsShortSocketPath|TestResolveDefaultsToWebSocketMode' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Result: passed.
+
+Scope:
+
+- Split Windows bridge endpoint helpers into cross-platform-testable pure
+  functions for Go `internal/runtime/bridge_windows.go` behavior.
+- Locked the Windows default endpoint rule:
+  `\\.\pipe\awiki-cli-<sha256 first 8 bytes hex>` computed over the original
+  workspace string, including Go's behavior of using the untrimmed nonblank
+  workspace value.
+- Locked blank endpoint normalization against an injected fallback workspace so
+  tests can verify Go's `filepath.Join(tempDir(), "awiki-cli")` fallback shape
+  without depending on the current host temp directory.
+- Locked case-insensitive named-pipe prefix validation for `\\.\pipe\` without
+  trimming before validation, matching Go `prepareBridgeEndpoint`.
+- Corrected the current Windows `bridge_endpoint_available` cfg branch to stop
+  reporting syntactically valid named-pipe paths as available before real
+  `DialPipe`-equivalent I/O exists.
+
+Boundary note: this is still deterministic helper parity, not Windows runtime
+transport. Go's `BridgeEndpointAvailable`, `BridgeHealthProbe`, `dialBridge`,
+and `ListenBridge` use `github.com/Microsoft/go-winio` to perform real named
+pipe I/O. The Rust port still defers Windows named-pipe dial/listen/health/
+availability I/O until a dedicated dependency/platform review.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged; this slice uses existing `sha2` plus string handling and does
+not add Windows named-pipe crates, platform service libraries, OpenSSL,
+`native-tls`, bundled OpenSSL, WebSocket crates, `reqwest`, `hyper`, YAML
+crates, or new SQLite dependencies.
+
+Additional check attempted:
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+cargo +1.79.0 check -p awiki-cli --target x86_64-pc-windows-gnu --locked
+```
+
+The target-specific check did not reach Rust compilation because Cargo failed
+to download `windows-strings 0.5.1` from the configured crates mirror with an
+SSL connection error. The cross-target compile remains a verification gap for
+the cfg-gated Windows wrapper functions; the pure Windows endpoint helpers are
+compiled and tested on the host target.
+
 ## 2026-05-15 Hermes Bridge Pure Helper Slice
 
 Local Rust and Go reference verification:

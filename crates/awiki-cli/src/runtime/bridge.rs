@@ -122,15 +122,27 @@ pub fn default_bridge_endpoint_for_parts(workspace_home_dir: &str, state_dir: &s
 
 #[cfg(windows)]
 pub fn default_bridge_endpoint_for_parts(workspace_home_dir: &str, _state_dir: &str) -> String {
+    let fallback_workspace = std::env::temp_dir()
+        .join("awiki-cli")
+        .to_string_lossy()
+        .into_owned();
+    windows_default_bridge_endpoint_for_parts(workspace_home_dir, &fallback_workspace)
+}
+
+pub fn windows_default_bridge_endpoint_for_parts(
+    workspace_home_dir: &str,
+    fallback_workspace_home_dir: &str,
+) -> String {
     let workspace = if workspace_home_dir.trim().is_empty() {
-        std::env::temp_dir()
-            .join("awiki-cli")
-            .to_string_lossy()
-            .into_owned()
+        fallback_workspace_home_dir
     } else {
-        workspace_home_dir.to_string()
+        workspace_home_dir
     };
-    let digest = Sha256::digest(workspace.as_bytes());
+    windows_default_bridge_endpoint_from_workspace(workspace)
+}
+
+pub fn windows_default_bridge_endpoint_from_workspace(workspace_home_dir: &str) -> String {
+    let digest = Sha256::digest(workspace_home_dir.as_bytes());
     format!(r"\\.\pipe\awiki-cli-{}", &format!("{digest:x}")[..16])
 }
 
@@ -141,9 +153,17 @@ pub fn normalize_bridge_endpoint(path: &str) -> String {
 
 #[cfg(windows)]
 pub fn normalize_bridge_endpoint(path: &str) -> String {
+    let fallback_workspace = std::env::temp_dir()
+        .join("awiki-cli")
+        .to_string_lossy()
+        .into_owned();
+    normalize_windows_bridge_endpoint(path, &fallback_workspace)
+}
+
+pub fn normalize_windows_bridge_endpoint(path: &str, fallback_workspace_home_dir: &str) -> String {
     let trimmed = path.trim();
     if trimmed.is_empty() {
-        return default_bridge_endpoint_for_parts("", "");
+        return windows_default_bridge_endpoint_for_parts("", fallback_workspace_home_dir);
     }
     trimmed.to_string()
 }
@@ -162,10 +182,14 @@ pub fn prepare_bridge_endpoint(path: &str) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 pub fn prepare_bridge_endpoint(path: &str) -> anyhow::Result<()> {
-    if !path.to_ascii_lowercase().starts_with(r"\\.\pipe\") {
+    if !is_windows_named_pipe_endpoint(path) {
         anyhow::bail!("windows websocket bridge socket must use a named pipe path");
     }
     Ok(())
+}
+
+pub fn is_windows_named_pipe_endpoint(path: &str) -> bool {
+    path.to_ascii_lowercase().starts_with(r"\\.\pipe\")
 }
 
 #[cfg(not(windows))]
@@ -174,8 +198,8 @@ pub fn bridge_endpoint_available(path: &str) -> bool {
 }
 
 #[cfg(windows)]
-pub fn bridge_endpoint_available(path: &str) -> bool {
-    path.trim().to_ascii_lowercase().starts_with(r"\\.\pipe\")
+pub fn bridge_endpoint_available(_path: &str) -> bool {
+    false
 }
 
 #[cfg(not(windows))]

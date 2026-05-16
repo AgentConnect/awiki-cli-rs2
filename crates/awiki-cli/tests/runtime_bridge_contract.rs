@@ -202,6 +202,47 @@ fn bridge_default_endpoint_uses_state_dir_or_workspace_runtime_dir_like_go() {
 }
 
 #[test]
+fn windows_bridge_endpoint_helpers_match_go_named_pipe_rules() {
+    assert_eq!(
+        bridge::windows_default_bridge_endpoint_from_workspace(r"C:\Users\alice\.awiki-cli"),
+        r"\\.\pipe\awiki-cli-28b39b869f8ed623"
+    );
+    assert_eq!(
+        bridge::windows_default_bridge_endpoint_for_parts("", r"C:\Temp\awiki-cli"),
+        r"\\.\pipe\awiki-cli-77c3b9844ad97fe4"
+    );
+    assert_eq!(
+        bridge::windows_default_bridge_endpoint_for_parts(
+            r"  C:\Users\alice\.awiki-cli  ",
+            r"C:\Temp\awiki-cli"
+        ),
+        r"\\.\pipe\awiki-cli-5ad18bdfc9cd556b"
+    );
+
+    assert_eq!(
+        bridge::normalize_windows_bridge_endpoint("  ", r"C:\Temp\awiki-cli"),
+        r"\\.\pipe\awiki-cli-77c3b9844ad97fe4"
+    );
+    assert_eq!(
+        bridge::normalize_windows_bridge_endpoint(r"  \\.\PIPE\Awiki-Cli-Test  ", ""),
+        r"\\.\PIPE\Awiki-Cli-Test"
+    );
+
+    assert!(bridge::is_windows_named_pipe_endpoint(
+        r"\\.\pipe\awiki-cli-test"
+    ));
+    assert!(bridge::is_windows_named_pipe_endpoint(
+        r"\\.\PIPE\AWIKI-CLI-TEST"
+    ));
+    assert!(!bridge::is_windows_named_pipe_endpoint(
+        r" \\.\pipe\awiki-cli-test"
+    ));
+    assert!(!bridge::is_windows_named_pipe_endpoint(
+        r"C:\tmp\awiki.sock"
+    ));
+}
+
+#[test]
 fn bridge_resolve_shortens_long_unix_socket_path_like_go_runtime_resolve() {
     let long_state_dir = std::path::Path::new("/tmp").join("very-long-runtime-dir-".repeat(10));
     let resolved = Resolved {
