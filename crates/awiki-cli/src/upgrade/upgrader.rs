@@ -510,12 +510,7 @@ impl Migration for WorkspaceMigration {
             return migration_v1_to_v2::apply_workspace_v1_to_v2_cleanup(context);
         }
         if self.from == 2 && self.to == 3 {
-            if migration_v2_to_v3::apply_workspace_v2_to_v3_replace_existing_k1_boundary(context)?
-                .has_k1_did()
-            {
-                return Err(MigrationError::ExecutionDeferred { name: self.name });
-            }
-            return Ok(());
+            return migration_v2_to_v3::apply_workspace_v2_to_v3_replace_existing_k1_dids(context);
         }
         Err(MigrationError::ExecutionDeferred { name: self.name })
     }
@@ -528,7 +523,7 @@ impl Migration for WorkspaceMigration {
             return Ok(());
         }
         if self.from == 2 && self.to == 3 {
-            return migration_v2_to_v3::validate_workspace_v2_to_v3_replace_existing_k1_boundary(
+            return migration_v2_to_v3::validate_workspace_v2_to_v3_replace_existing_k1_dids(
                 context,
             );
         }

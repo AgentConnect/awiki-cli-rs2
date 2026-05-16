@@ -1,38 +1,82 @@
 use super::upgrader::{Context, MigrationError};
-use crate::identity::Manager;
+use crate::{identity, store};
+use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExistingK1Boundary {
-    NoK1DID,
-    HasK1DID,
-}
-
-impl ExistingK1Boundary {
-    pub(crate) fn has_k1_did(self) -> bool {
-        matches!(self, Self::HasK1DID)
-    }
-}
-
-pub(crate) fn apply_workspace_v2_to_v3_replace_existing_k1_boundary(
+pub(crate) fn apply_workspace_v2_to_v3_replace_existing_k1_dids(
     context: &mut Context,
-) -> Result<ExistingK1Boundary, MigrationError> {
-    let manager = Manager::new(context.resolved.paths.clone());
+) -> Result<(), MigrationError> {
+    let manager = identity::Manager::new(context.resolved.paths.clone());
     let identities = match manager.list() {
         Ok(identities) => identities,
         Err(err) => {
             context.warnings.push(format!(
                 "Automatic existing k1 to e1 DID replacement was skipped: {err}"
             ));
-            return Ok(ExistingK1Boundary::NoK1DID);
+            return Ok(());
         }
     };
-    if identities.iter().any(|summary| is_k1_did(&summary.did)) {
-        return Ok(ExistingK1Boundary::HasK1DID);
+    for summary in identities {
+        if !is_k1_did(&summary.did) {
+            continue;
+        }
+        let record = match manager.load(&summary.identity_name) {
+            Ok(record) => record,
+            Err(err) => {
+                context.warnings.push(format!(
+                    "Automatic DID replacement skipped for identity {} ({}): {}",
+                    summary.identity_name, summary.did, err
+                ));
+                continue;
+            }
+        };
+        if !is_k1_did(&record.did) {
+            continue;
+        }
+        if let Err(err) = validate_handle_did(&record.did) {
+            context.warnings.push(format!(
+                "Automatic DID replacement skipped for identity {} ({}): {}",
+                summary.identity_name, record.did, err
+            ));
+            continue;
+        }
+        let mut result = match identity::replace_did(
+            &context.resolved,
+            &manager,
+            identity::ReplaceDidParams {
+                identity_name: summary.identity_name.clone(),
+                ..identity::ReplaceDidParams::default()
+            },
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                context.warnings.push(format!(
+                    "Automatic DID replacement failed for identity {} ({}): {}",
+                    summary.identity_name, record.did, err
+                ));
+                continue;
+            }
+        };
+        let old_did = string_field(&result.data, "old_did");
+        let new_did = string_field(&result.data, "did");
+        if let Err(err) =
+            store::rebind_local_identity_state(&context.resolved.paths, &old_did, &new_did)
+        {
+            context.warnings.push(format!(
+                "Automatic DID replacement completed but local SQLite rebinding failed for identity {}: {}",
+                summary.identity_name, err
+            ));
+        }
+        for warning in result.warnings.drain(..) {
+            context.warnings.push(format!(
+                "Automatic DID replacement completed with warning for identity {}: {}",
+                summary.identity_name, warning
+            ));
+        }
     }
-    Ok(ExistingK1Boundary::NoK1DID)
+    Ok(())
 }
 
-pub(crate) fn validate_workspace_v2_to_v3_replace_existing_k1_boundary(
+pub(crate) fn validate_workspace_v2_to_v3_replace_existing_k1_dids(
     _context: &Context,
 ) -> Result<(), MigrationError> {
     Ok(())
@@ -46,6 +90,65 @@ pub(crate) fn is_k1_did(did: &str) -> bool {
         .starts_with("k1_")
 }
 
+fn string_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn validate_handle_did(did: &str) -> Result<(), String> {
+    let trimmed = did.trim();
+    if !trimmed.starts_with("did:wba:") {
+        return Err(format!("invalid input: invalid did {did:?}"));
+    }
+    let parts = trimmed.split(':').collect::<Vec<_>>();
+    if parts.len() < 5 {
+        return Err(format!("invalid input: invalid did {did:?}"));
+    }
+    if path_unescape(parts[2]).is_none() {
+        return Err(format!("invalid input: invalid did domain {:?}", parts[2]));
+    }
+    let Some(first_path_segment) = parts.get(3) else {
+        return Err("invalid input: missing did path segments".to_string());
+    };
+    if first_path_segment.eq_ignore_ascii_case("user") {
+        return Err("invalid input: current did is not a handle did".to_string());
+    }
+    Ok(())
+}
+
+fn path_unescape(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            output.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        if index + 2 >= bytes.len() {
+            return None;
+        }
+        let hi = hex_value(bytes[index + 1])?;
+        let lo = hex_value(bytes[index + 2])?;
+        output.push((hi << 4) | lo);
+        index += 3;
+    }
+    String::from_utf8(output).ok()
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +159,22 @@ mod tests {
         assert!(is_k1_did(" k1_direct "));
         assert!(!is_k1_did("did:wba:example.test:user:e1_current"));
         assert!(!is_k1_did("did:wba:example.test:user:xk1_legacy"));
+    }
+
+    #[test]
+    fn validate_handle_did_matches_go_replace_did_preflight() {
+        assert!(validate_handle_did("did:wba:example.test:alice:k1_legacy").is_ok());
+        assert_eq!(
+            validate_handle_did("did:wba:example.test:user:k1_legacy").unwrap_err(),
+            "invalid input: current did is not a handle did"
+        );
+        assert_eq!(
+            validate_handle_did("bad").unwrap_err(),
+            "invalid input: invalid did \"bad\""
+        );
+        assert_eq!(
+            validate_handle_did("did:wba:%zz:alice:k1_legacy").unwrap_err(),
+            "invalid input: invalid did domain \"%zz\""
+        );
     }
 }

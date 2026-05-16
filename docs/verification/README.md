@@ -10802,6 +10802,79 @@ docs-maintenance slices.
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged.
 
+## 2026-05-16 Workspace v2->v3 Existing K1 Replacement Slice
+
+Timestamp: 2026-05-16T18:15:47Z / 2026-05-17T02:15:47+0800.
+
+Scope: wire the existing-workspace side of Go
+`workspaceV2ToV3Migration.Apply` for current handle-shaped k1 identities.
+
+What changed:
+
+- `workspace_2_to_3_replace_existing_k1_handle_dids` now runs a Go-shaped
+  replacement loop instead of returning `ExecutionDeferred` for current k1
+  identities.
+- The migration lists current identities, skips non-k1 summaries and records
+  that are no longer k1, validates that k1 DIDs are handle-shaped before remote
+  replacement, calls the existing Rust `identity::replace_did`, and rebinds
+  local SQLite owner state through `store::rebind_local_identity_state`.
+- Per-identity load, handle-DID preflight, replacement, and SQLite rebind
+  failures are appended to upgrade warnings and do not stop the migration,
+  matching Go's warning policy. Successful completion stamps schema version 3
+  and clears the journal.
+- Focused tests now cover successful current k1 replacement through a fake
+  did-auth RPC server and replacement failure capture as an upgrade warning.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli upgrade::migration_v2_to_v3 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_replace_did_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_rebind_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededReplacesExistingWorkspaceK1Handles|TestUpgradeIfNeededReplacesAllImportedLegacyK1Handles|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+cd ../awiki-cli && go test ./internal/identity ./internal/store -run 'TestReplaceDID|Test.*Rebind|Test.*K1' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `workspace_upgrade_if_needed_contract` passed all 12 tests, including the new
+  v2->v3 current-k1 success and warning paths.
+- `upgrade::migration_v2_to_v3` passed the k1 suffix and handle-DID preflight
+  unit tests. The command runs the package-wide test harness with all unrelated
+  integration tests filtered out, so it is slower than the focused contract
+  tests.
+- `identity_replace_did_live_contract`, `store_rebind_contract`, and
+  `workspace_upgrade_contract` passed after the migration was wired.
+- `cargo check`, structure check, whitespace check, focused Go upgrade,
+  identity, and store tests passed.
+- Dependency audit output stayed on the existing `rustls`/`ring`,
+  `base64`/`sha2`/`hmac`, and approved `rusqlite + bundled`
+  `libsqlite3-sys` paths; no OpenSSL, `native-tls`, WebSocket, YAML, platform
+  service-manager, reqwest, hyper, or alternate SQLite dependency path
+  appeared.
+- The changed Rust source/test files stay below the default 1200-line
+  review-size cap: `migration_v2_to_v3.rs`, `upgrader.rs`, and
+  `workspace_upgrade_if_needed_contract.rs`.
+
+Boundary note: imported legacy k1 replacement during v0->v1 remains deferred at
+the existing v0->v1 boundary. The exact Go edge where an all-non-k1 but
+non-empty current identity list can still surface identity-service construction
+warnings also remains deferred. This slice does not implement rollback or
+awiki-system-test migration acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. The slice reuses the existing Rustls/authsdk identity client,
+local ANP Rust DID/key generation, and the approved `rusqlite + bundled`
+SQLite path; it does not introduce OpenSSL, `native-tls`, reqwest, hyper,
+WebSocket, YAML, platform service-manager, or alternate SQLite dependencies.
+
 ## 2026-05-16 Listener foreground/sysproc helper slice
 
 Timestamp: 2026-05-16T18:02:01Z / 2026-05-17T02:02:01+0800.
