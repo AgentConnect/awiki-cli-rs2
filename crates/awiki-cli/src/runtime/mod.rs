@@ -12,6 +12,7 @@ pub mod hermes_host_notify;
 pub mod host_notify;
 pub mod host_notify_sink;
 pub mod listener;
+pub mod listener_bridge_connection;
 pub mod listener_bridge_dispatch;
 pub mod listener_connect_session;
 pub mod listener_contact_sync;
