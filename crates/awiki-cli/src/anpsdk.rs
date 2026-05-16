@@ -9,7 +9,11 @@ pub use anp::authentication::{
     DidProfile, DidResolutionOptions, DidWbaVerifier, DidWbaVerifierConfig, HttpSignatureOptions,
 };
 pub use anp::direct_e2ee::{
-    DirectE2eeError, DirectE2eeSession, DirectSessionState, OneTimePrekey, PendingOutboundRecord,
+    build_prekey_bundle, direct_cipher_send_request, direct_init_send_request,
+    extract_x25519_public_key, message_service_did_from_document, prekey_bundle_get_request,
+    prekey_bundle_publish_request, should_retry_without_opk_message, validate_direct_send_ids,
+    verify_prekey_bundle, ApplicationPlaintext, DirectE2eeError, DirectE2eeSession,
+    DirectEnvelopeMetadata, DirectSessionState, OneTimePrekey, PendingOutboundRecord,
     PendingOutboundStore, PrekeyBundle, SessionStore, SignedPrekey, SignedPrekeyStore,
 };
 pub use anp::proof::{

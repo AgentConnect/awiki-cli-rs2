@@ -7042,3 +7042,67 @@ unchanged. This slice reuses existing pure Rust key/PKCS#8/base64 crates in the
 local ANP SDK plus the existing identity secure-text writer. It does not add
 OpenSSL, `native-tls`, bundled OpenSSL, HTTP/TLS crates, YAML crates, platform
 libraries, or new SQLite dependencies.
+
+## 2026-05-16 Message Secure E2EE Client Adapter Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_send_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSecureInitCreatesPendingSession' -count=1
+cd ../anp/golang && go test ./direct_e2ee -run 'TestClientSendAndPendingHistoryProcessing|TestClientFallsBackToSignedPrekeyWhenOPKUnavailable' -count=1
+```
+
+Result: passed after final verification. Focused Rust test counts:
+`message_secure_client_contract` 9, `anpsdk_contract` 14,
+`message_secure_send_contract` 3, and `message_secure_outbox_flush_contract`
+23 all passed with zero failures. `cargo check`, structure check, whitespace
+check, dependency audit, and focused Go reference tests passed. The first ANP
+Go command attempted with stale test names returned `[no tests to run]`; the
+recorded command above was then rerun with the actual current test names and
+passed.
+
+Scope:
+
+- Extended `message::secure_client` from the preparation-only boundary to a
+  narrow high-level direct-E2EE client adapter mirroring the Go ANP SDK v0.8.7
+  `MessageServiceDirectE2eeClient` send/publish behavior.
+- Preserved Go `NewSecureE2EEClientForRecord` setup: required manager/record
+  errors, identity path lookup, DID signing and E2EE agreement key parsing
+  prefixes, P5 store roots, key IDs, local DID document resolver precedence,
+  local-manager fallback, remote DID resolver fallback, and local
+  `ANPMessageService.serviceDid` constructor errors.
+- Added injected-RPC methods for `publish_prekey_bundle`, `send_text`, and
+  `send_json`, preserving RPC method names, `meta` profiles/security profiles,
+  service vs agent target shapes, `operation_id == message_id` validation,
+  OPK retry markers, prekey bundle verification, init `direct.send` body,
+  saved pending-confirmation sessions, and pending follow-up error handling.
+- Preserved Go's explicit publish double-call behavior: `EnsureFreshPrekeyBundle`
+  opportunistically publishes and `PublishPrekeyBundle` publishes again.
+- Added focused contract tests for constructor service-DID failures, prekey
+  generation/publication, no-session text init, JSON init with OPK fallback,
+  mismatched operation/message IDs, and pending-confirmation follow-up.
+
+Boundary note: production `msg send --secure on`, real authsdk/HTTP/WebSocket
+transport wiring, `ProcessIncoming`, incoming decrypt/ack, `SecureInit`,
+`SecureRepair`, runtime listener integration, and awiki-system-test
+secure-direct acceptance remain deferred parity slices. This is an adapter and
+contract boundary, not yet a production CLI path.
+
+Dependency note: no dependency was added. A direct `x25519-dalek` dependency was
+considered and removed; the adapter reuses the local ANP Rust SDK key material
+and direct-E2EE primitives plus existing workspace `base64`/`rand` dependencies.
+It does not enable ANP SDK default/network features and does not add HTTP/TLS,
+OpenSSL, `native-tls`, bundled OpenSSL, WebSocket crates, YAML crates, platform
+libraries, or a new SQLite dependency. TLS remains Rustls-first for later
+production transport wiring.

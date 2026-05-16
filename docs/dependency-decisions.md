@@ -496,3 +496,24 @@ Do not mix that optimization with the 1:1 translation lane.
   `rusqlite -> libsqlite3-sys`, with `cc`, `pkg-config`, and `vcpkg` as build
   helpers. No `openssl-sys` or `native-tls` path was present. This is a bundled
   native SQLite exception, not a pure Rust dependency.
+
+## Direct E2EE Client Adapter Notes
+
+2026-05-16:
+
+- Added the first high-level secure direct E2EE client adapter without adding
+  a new crate or enabling local ANP SDK default/network features.
+- The adapter reuses the existing local `../anp/rust` direct-E2EE primitives,
+  file stores, DID document builders, key material types, `base64`, and `rand`
+  dependencies already present in the workspace dependency graph.
+- A direct `x25519-dalek` dependency was considered during implementation but
+  rejected because the local ANP SDK already exposes enough key-generation and
+  key-material APIs for this slice. Avoiding the direct dependency keeps the
+  CLI manifest unchanged and preserves the "do not add dependencies unless
+  required" constraint.
+- The slice does not add HTTP/TLS, WebSocket, OpenSSL, `native-tls`, bundled
+  OpenSSL, platform service libraries, YAML crates, or a new SQLite path. TLS
+  policy remains Rustls-first for later production transport wiring.
+- `ProcessIncoming`, production `msg send --secure on` wiring, listener secure
+  decrypt/ack integration, and awiki-system-test secure-direct acceptance remain
+  separate translation slices.

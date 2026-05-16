@@ -56,8 +56,9 @@ pub use proof::{
     verification_method_id_from_document, ORIGIN_PROOF_SCHEME,
 };
 pub use secure_client::{
-    local_did_document, prepare_secure_e2ee_client_for_record, resolve_secure_e2ee_local_document,
-    PreparedSecureE2EEClient,
+    local_did_document, new_secure_e2ee_client_for_record, prepare_secure_e2ee_client_for_record,
+    resolve_secure_e2ee_local_document, MessageServiceE2EEClient, PreparedSecureE2EEClient,
+    SecureE2EERpc, SecureE2EERpcResult,
 };
 pub use secure_commands::{secure_drop, secure_failed, secure_retry_with_sender, secure_status};
 pub use secure_control::{
