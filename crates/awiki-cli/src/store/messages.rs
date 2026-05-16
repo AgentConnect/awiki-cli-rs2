@@ -104,6 +104,31 @@ WHERE owner_did = ?1
     query_rows_with_params(connection, &statement, &[&owner, &limit])
 }
 
+pub fn list_notification_inbox_messages(
+    connection: &Connection,
+    owner_did: &str,
+    limit: i64,
+    unread_only: bool,
+) -> StoreResult<Vec<Value>> {
+    let limit = if limit <= 0 { 20 } else { limit };
+    let mut statement = String::from(
+        r#"
+SELECT *
+FROM messages
+WHERE owner_did = ?1
+  AND direction = 0
+  AND ("#,
+    );
+    statement.push_str(local_mail_notification_predicate());
+    statement.push(')');
+    if unread_only {
+        statement.push_str(" AND is_read = 0");
+    }
+    statement.push_str(" ORDER BY COALESCE(sent_at, stored_at) DESC LIMIT ?2");
+    let owner = normalize_owner_did(owner_did);
+    query_rows_with_params(connection, &statement, &[&owner, &limit])
+}
+
 pub fn list_thread_messages(
     connection: &Connection,
     owner_did: &str,

@@ -32,18 +32,7 @@ pub fn inbox(
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
 
     if request.scope.trim() == "all" {
-        return inbox_http(resolved, manager, &record, request.clone()).map(|raw| {
-            inbox_result_from_remote(
-                resolved,
-                manager,
-                &record,
-                request,
-                &TargetResolution::default(),
-                false,
-                raw,
-                Vec::new(),
-            )
-        });
+        return all_inbox(resolved, manager, &record, request);
     }
 
     let original_with = request.with.trim().to_string();
@@ -111,6 +100,99 @@ pub fn inbox(
 enum InboxTransportOutcome {
     Remote { raw: Value, warnings: Vec<String> },
     LocalCache(CommandResult),
+}
+
+fn all_inbox(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    request: InboxRequest,
+) -> Result<CommandResult, MessageError> {
+    let mut warnings = Vec::new();
+    let group_messages =
+        match read_all_group_inbox_from_cache(resolved, record, request.limit, request.unread_only)
+        {
+            Ok(messages) => messages,
+            Err(err) => {
+                warnings.push(format!("Failed to read local group inbox cache: {err}"));
+                Vec::new()
+            }
+        };
+
+    let mut direct_messages = None;
+    let mut source = "local_direct_cache+local_group_cache".to_string();
+    if runtime_mode(resolved) == runtime::bridge::MODE_WEBSOCKET {
+        match read_unified_direct_inbox_from_cache(
+            resolved,
+            record,
+            request.limit,
+            request.unread_only,
+        ) {
+            Ok(messages) => direct_messages = Some(normalize_mail_notification_messages(messages)),
+            Err(err) => warnings.push(format!("Failed to read local direct inbox cache: {err}")),
+        }
+    }
+
+    let direct_messages = match direct_messages {
+        Some(messages) => messages,
+        None => {
+            let mut direct_request = request.clone();
+            direct_request.scope = "direct".to_string();
+            direct_request.group.clear();
+            let direct_result = inbox(resolved, manager, direct_request)?;
+            let mail_notifications = match read_all_mail_notifications_from_cache(
+                resolved,
+                record,
+                request.limit,
+                request.unread_only,
+            ) {
+                Ok(messages) => messages,
+                Err(err) => {
+                    warnings.push(format!(
+                        "Failed to read local mail notification cache: {err}"
+                    ));
+                    Vec::new()
+                }
+            };
+            warnings.extend(direct_result.warnings);
+            source = "remote_http+local_group_cache+local_mail_cache".to_string();
+            merge_inbox_messages(
+                request.limit,
+                normalize_mail_notification_messages(messages_from_data(&direct_result.data)),
+                normalize_mail_notification_messages(mail_notifications),
+            )
+        }
+    };
+
+    let mut merged = merge_inbox_messages(request.limit, direct_messages, group_messages);
+    if request.mark_read && !merged.is_empty() {
+        let ids = collect_message_ids(&merged);
+        if !ids.is_empty() {
+            let _ = super::mark_read(
+                resolved,
+                manager,
+                MarkReadRequest {
+                    identity_name: record.identity_name.clone(),
+                    message_ids: ids.clone(),
+                },
+            );
+            for message in &mut merged {
+                if let Some(object) = message.as_object_mut() {
+                    object.insert("is_read".to_string(), Value::Bool(true));
+                }
+            }
+        }
+    }
+    let total = merged.len();
+    Ok(CommandResult {
+        data: json!({
+            "messages": merged,
+            "total": total,
+            "source": source,
+        }),
+        summary: format!("Loaded {total} inbox messages"),
+        warnings: super::compact_warnings(warnings),
+    })
 }
 
 fn inbox_websocket(
@@ -388,6 +470,45 @@ fn read_inbox_from_cache_by_peer_dids(
     .map_err(|err| MessageError::Internal(err.to_string()))
 }
 
+fn read_unified_direct_inbox_from_cache(
+    resolved: &Resolved,
+    record: &StoredIdentity,
+    limit: i64,
+    unread_only: bool,
+) -> Result<Vec<Value>, MessageError> {
+    let connection =
+        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+    store::list_inbox_messages(&connection, &record.did, limit, "", unread_only, true)
+        .map_err(|err| MessageError::Internal(err.to_string()))
+}
+
+fn read_all_group_inbox_from_cache(
+    resolved: &Resolved,
+    record: &StoredIdentity,
+    limit: i64,
+    unread_only: bool,
+) -> Result<Vec<Value>, MessageError> {
+    let connection =
+        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+    store::list_group_inbox_messages(&connection, &record.did, limit, "", unread_only)
+        .map_err(|err| MessageError::Internal(err.to_string()))
+}
+
+fn read_all_mail_notifications_from_cache(
+    resolved: &Resolved,
+    record: &StoredIdentity,
+    limit: i64,
+    unread_only: bool,
+) -> Result<Vec<Value>, MessageError> {
+    let connection =
+        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+    store::list_notification_inbox_messages(&connection, &record.did, limit, unread_only)
+        .map_err(|err| MessageError::Internal(err.to_string()))
+}
+
 fn contains_direct_e2ee_wire_messages(messages: &[Value]) -> bool {
     messages.iter().any(|message| {
         message
@@ -408,4 +529,167 @@ fn source_with_default_for_mode(raw: &Value, mode: &str) -> String {
             "remote_http"
         })
         .to_string()
+}
+
+fn messages_from_data(data: &Value) -> Vec<Value> {
+    data.get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn merge_inbox_messages(limit: i64, left: Vec<Value>, right: Vec<Value>) -> Vec<Value> {
+    let mut all = Vec::with_capacity(left.len() + right.len());
+    all.extend(left);
+    all.extend(right);
+    if all.len() > 1 {
+        all.sort_by(|left, right| message_sort_time(right).cmp(&message_sort_time(left)));
+    }
+    if limit > 0 && all.len() > limit as usize {
+        all.truncate(limit as usize);
+    }
+    all
+}
+
+fn message_sort_time(message: &Value) -> String {
+    message
+        .get("sent_at")
+        .or_else(|| message.get("stored_at"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn normalize_mail_notification_messages(messages: Vec<Value>) -> Vec<Value> {
+    messages
+        .into_iter()
+        .map(normalize_mail_notification_message)
+        .collect()
+}
+
+fn normalize_mail_notification_message(message: Value) -> Value {
+    let Some(object) = message.as_object() else {
+        return message;
+    };
+    if !is_local_mail_notification_message(object) {
+        return Value::Object(object.clone());
+    }
+    let metadata = parse_message_metadata(object.get("metadata"));
+    let mut mailbox_address = default_string(
+        metadata.get("mailbox_address").and_then(Value::as_str),
+        object
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    if let Some(stripped) = mailbox_address.strip_prefix("mail:") {
+        mailbox_address = stripped.to_string();
+    }
+    let mut subject = default_string(
+        metadata.get("subject").and_then(Value::as_str),
+        object
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    if let Some(stripped) = subject.strip_prefix("[邮件] ") {
+        subject = stripped.to_string();
+    }
+    if subject.trim().is_empty() {
+        subject = "(no subject)".to_string();
+    }
+    let from_addr = metadata
+        .get("from_addr")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let preview = metadata
+        .get("preview")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let has_attachments = metadata.get("has_attachments").is_some_and(bool_value_ref);
+
+    let mut normalized = object.clone();
+    normalized.insert("source_kind".to_string(), json!("mail"));
+    normalized.insert("title".to_string(), json!(format!("[邮件] {subject}")));
+    normalized.insert(
+        "content".to_string(),
+        json!(build_normalized_mail_notification_content(
+            &mailbox_address,
+            from_addr,
+            &subject,
+            preview,
+            has_attachments,
+        )),
+    );
+    Value::Object(normalized)
+}
+
+fn is_local_mail_notification_message(object: &serde_json::Map<String, Value>) -> bool {
+    if object
+        .get("content_type")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.trim() == "mail.notification")
+    {
+        return true;
+    }
+    let metadata = parse_message_metadata(object.get("metadata"));
+    metadata
+        .get("source_kind")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.trim() == "mail")
+}
+
+fn parse_message_metadata(value: Option<&Value>) -> serde_json::Map<String, Value> {
+    match value {
+        Some(Value::Object(object)) => object.clone(),
+        Some(Value::String(text)) if !text.trim().is_empty() => serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default(),
+        _ => serde_json::Map::new(),
+    }
+}
+
+fn build_normalized_mail_notification_content(
+    mailbox_address: &str,
+    from_addr: &str,
+    subject: &str,
+    preview: &str,
+    has_attachments: bool,
+) -> String {
+    let mut lines = vec![format!("[邮件] 收件邮箱: {mailbox_address}")];
+    if !from_addr.is_empty() {
+        lines.push(format!("发件人: {from_addr}"));
+    }
+    if !subject.is_empty() {
+        lines.push(format!("主题: {subject}"));
+    }
+    if !preview.is_empty() {
+        lines.push(String::new());
+        lines.push(preview.to_string());
+    }
+    if has_attachments {
+        lines.push(String::new());
+        lines.push("(这封邮件包含附件)".to_string());
+    }
+    lines.join("\n")
+}
+
+fn default_string(value: Option<&str>, fallback: &str) -> String {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn bool_value_ref(value: &Value) -> bool {
+    match value {
+        Value::Bool(value) => *value,
+        Value::Number(number) => number.as_i64().unwrap_or_default() != 0,
+        Value::String(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "y" | "on"
+        ),
+        _ => false,
+    }
 }

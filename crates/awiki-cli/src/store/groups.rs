@@ -223,6 +223,36 @@ LIMIT ?3"#,
     )
 }
 
+pub fn list_group_inbox_messages(
+    connection: &Connection,
+    owner_did: &str,
+    limit: i64,
+    group_id: &str,
+    unread_only: bool,
+) -> StoreResult<Vec<Value>> {
+    let owner_did = normalize_owner_did(owner_did);
+    let group_id = group_id.trim().to_string();
+    let limit = if limit <= 0 { 20 } else { limit };
+    let mut statement = String::from(
+        r#"
+SELECT *
+FROM messages
+WHERE owner_did = ?1
+  AND direction = 0
+  AND COALESCE(group_did, group_id) IS NOT NULL"#,
+    );
+    if unread_only {
+        statement.push_str(" AND is_read = 0");
+    }
+    if !group_id.is_empty() {
+        statement.push_str(" AND (group_did = ?2 OR group_id = ?2)");
+        statement.push_str(" ORDER BY COALESCE(sent_at, stored_at) DESC LIMIT ?3");
+        return query_rows_with_params(connection, &statement, &[&owner_did, &group_id, &limit]);
+    }
+    statement.push_str(" ORDER BY COALESCE(sent_at, stored_at) DESC LIMIT ?2");
+    query_rows_with_params(connection, &statement, &[&owner_did, &limit])
+}
+
 pub fn mark_group_left(
     connection: &mut Connection,
     owner_did: &str,

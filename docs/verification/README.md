@@ -459,6 +459,95 @@ bundled` store lane. It does not add OpenSSL, `native-tls`, bundled OpenSSL,
 `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates, platform
 service libraries, ANP SDK network/default features, or a new SQLite backend.
 
+## 2026-05-16 Message All-Inbox Local Cache Merge Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/message/inbox.rs crates/awiki-cli/src/message/service.rs crates/awiki-cli/src/store/messages.rs crates/awiki-cli/src/store/groups.rs crates/awiki-cli/tests/msg_all_inbox_live_contract.rs
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'TestAllInboxMergesLocalMailNotifications|TestReadInboxFromCacheExcludesMailNotificationsForDirectInbox|TestReadUnifiedDirectInboxFromCacheIncludesNewStyleMailMetadataRows|TestNormalizeMailNotificationMessageRecognizesMetadataSourceKind' -count=1
+go test ./internal/store -run 'TestListGroupInboxMessages|TestListNotificationInboxMessages|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates|TestMessageQueryHelpersLookupAndMarkReadRespectOwner' -count=1
+go test ./internal/cli -run 'TestMsgDryRunPlansRenderStableContracts' -count=1
+```
+
+Result: passed. Rust formatting, package check, focused all-inbox contract,
+adjacent message WebSocket/direct live regressions, CLI/group regressions,
+structure check, whitespace check, Go reference selectors, and dependency audit
+all passed. The dependency audit found no OpenSSL/native-tls, `reqwest`,
+`hyper`, WebSocket crate, YAML crate, or platform service-manager dependency;
+hits remained limited to the existing Rustls/ring/base64/sha2 stack and the
+approved `rusqlite + bundled` SQLite chain.
+
+Scope:
+
+- Translates Go `Service.allInbox` for default `msg inbox` and explicit
+  `scope=all`.
+- Reads local group inbox cache first, preserving Go warning text on local
+  group-cache read failures.
+- In `runtime.mode=websocket`, reads the unified direct inbox cache with local
+  mail notifications included and returns local direct/group cache results
+  without calling local bridge or HTTP when that direct-cache read succeeds.
+- On non-websocket mode or unified direct-cache failure, recursively calls the
+  direct inbox path, reads local mail notifications separately, normalizes mail
+  rows, and merges direct/mail/group rows.
+- Preserves Go source strings:
+  `local_direct_cache+local_group_cache` for websocket cache success and
+  `remote_http+local_group_cache+local_mail_cache` for the recursive
+  direct/mail fallback path.
+- Adds Rust store helpers matching Go `ListGroupInboxMessages` and
+  `ListNotificationInboxMessages`, including unread filtering, default limit
+  20, `direction=0`, local mail notification predicate, and
+  `COALESCE(sent_at, stored_at) DESC` ordering.
+- Preserves Go mail notification normalization for rows identified by
+  `content_type='mail.notification'` or metadata `source_kind=mail`: strips
+  `mail:` and existing `[邮件] ` prefixes, defaults blank subjects to
+  `(no subject)`, emits `source_kind=mail`, and rebuilds the Chinese title and
+  content lines.
+- Merges direct/mail/group rows by `sent_at` falling back to `stored_at`, then
+  truncates by limit.
+- Preserves Go all-inbox mark-read behavior: collect merged IDs, call
+  `MarkRead` best-effort, send only direct IDs to the remote/local bridge path,
+  locally mark known direct/group/mail rows when the mark-read operation
+  succeeds, and mark returned rows read regardless of mark-read errors.
+
+Boundary note: this slice does not implement explicit Go `scope=group` inbox.
+The current Rust command still rejects group inbox scope at the already
+documented boundary; group message/list execution remains in its dedicated
+group rows.
+
+Parallelism note: Native Agent spawning was attempted for a read-only parity
+review, but the session was already at the child-agent limit. No code-writing
+Native Agent changed files in this slice.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing store/query helpers and the approved
+`rusqlite + bundled` SQLite path, plus the existing direct inbox and mark-read
+modules. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, async runtimes, YAML crates, platform service
+libraries, ANP SDK network/default features, or a new SQLite backend. TLS
+remains Rustls-first for later runtime/WebSocket transport work.
+
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 
 Status: unit verified.

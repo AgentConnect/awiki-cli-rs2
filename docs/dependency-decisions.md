@@ -289,6 +289,20 @@ substitute for a Rustls-backed stack.
   and approved `rusqlite + bundled` store reads/mutation. This records only the
   direct path; Go `scope=all` routes to `allInbox` with separate unified
   direct/group/mail cache semantics and remains a later parity slice.
+- Added the default `msg inbox` / `scope=all` `allInbox` local-cache merge
+  slice without adding a dependency. It reuses the already-approved
+  `rusqlite + bundled` store lane for unified direct inbox, group inbox, and
+  mail notification cache queries, plus existing direct inbox and mark-read
+  modules for the fallback path. No manifest or lockfile change was needed.
+- This `allInbox` slice deliberately keeps optimization separate from
+  translation. It duplicates the Go-shaped mail notification normalization in
+  the message inbox module for 1:1 parity instead of consolidating it with the
+  mail module during the port. A later optimization pass may deduplicate that
+  logic after parity evidence is complete.
+- The slice does not add `reqwest`, `hyper`, WebSocket crates, async runtimes,
+  OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, platform service
+  libraries, ANP SDK network/default features, or a new SQLite backend. TLS
+  policy remains Rustls-first for later runtime/WebSocket transport work.
 
 ## Attachment Live HTTP Slice Notes
 
