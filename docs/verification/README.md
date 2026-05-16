@@ -9612,3 +9612,96 @@ SQLite path. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
 `hyper`, WebSocket crates, async runtimes, YAML crates, platform service
 libraries, ANP SDK default/network features, or a new SQLite backend. TLS
 remains Rustls-first.
+
+## 2026-05-16 Hermes bridge service local helper slice
+
+Timestamp: 2026-05-16T14:59:57Z / 2026-05-16T22:59:57+0800.
+
+Scope: translate the deterministic local subset of Go
+`internal/runtime/hermesbridge/service.go` into Rust without introducing
+platform service-manager dependencies or wiring live Hermes setup.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+```
+
+Observed results:
+
+- `cargo fmt --check` passed.
+- `cargo check -p awiki-cli --locked` passed.
+- `runtime_hermes_bridge_service_contract`: 7 passed.
+- `runtime_hermes_bridge_contract`: 10 passed.
+- `runtime_hermes_ensure_route_contract`: 8 passed.
+- `runtime_hermes_cli_contract`: 5 passed.
+- `runtime_hermes_setup_dry_run_contract`: 11 passed.
+- `runtime_contract`: 12 passed.
+- Go `./internal/runtime/hermesbridge`: passed.
+- Structure check, whitespace check, and dependency audit passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `runtime/hermes_bridge.rs` 879 lines,
+  `runtime/hermes_bridge/route.rs` 686 lines,
+  `runtime/hermes_bridge/service.rs` 156 lines, and
+  `runtime_hermes_bridge_service_contract.rs` 291 lines. No file-size
+  exception is needed.
+
+Implemented behavior:
+
+- Adds split module `crates/awiki-cli/src/runtime/hermes_bridge/service.rs`
+  and re-exports its helper surface from `runtime::hermes_bridge`.
+- Mirrors Go service naming with `awiki-cli-hermes-bridge` and
+  `awiki-cli-hermes-bridge-<first 12 sha256 hex>` for nonblank workspaces,
+  including the Go nil/default workspace hash behavior and the blank-workspace
+  prefix fallback.
+- Mirrors Go display names with `awiki-cli Hermes Bridge` and the workspace
+  basename suffix.
+- Captures the Go `newService` config shape as a pure
+  `BridgeServiceConfigPlan`: hidden `runtime host-notify hermes bridge
+  service-run` arguments, user service, keepalive, restart-on-failure,
+  one-second failure delay, log output/log directory, workspace and
+  `HERMES_HOME` env values, and Windows empty working directory behavior.
+- Adds hidden service-run command detection for
+  `runtime host-notify hermes bridge service-run`, matching the Go service
+  argument boundary.
+- Adds injected health probing that returns true only for 2xx status codes and
+  false for blank URL, request errors, or non-2xx statuses.
+- Adds `waitForStatus`-style polling with Go readiness semantics: starting
+  requires `running && bridge_available`, stopping requires `!running`, status
+  errors are ignored until timeout, and timeout returns the last observed
+  status rather than an error.
+- Adds a pure `Apply` decision helper for the Go branch order:
+  install-then-start when not installed, restart when installed and running,
+  start when installed and stopped.
+
+Boundary note: this slice intentionally does not implement platform service
+install/start/stop/restart/uninstall, real service-manager status,
+`serviceProgram` adapter process lifecycle, owned HTTP client health probing,
+`RunService`, bridge execution, listener refresh/restart, non-dry-run
+`runtime host-notify hermes setup`, or awiki-system-test acceptance. Those
+remain later runtime parity slices and dependency decisions.
+
+Parallelism note: one GPT-5.5 xhigh Native Agent was launched with an isolated
+code-writing scope for this helper/test slice, but it timed out without a
+visible worktree change and was shut down. The leader completed the slice,
+updated docs, and owns verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `sha2` and std-only path/time/polling
+helpers. It does not add a `kardianos/service` equivalent, systemd/launchd or
+Windows service crates, `reqwest`, `hyper`, WebSocket crates, async runtimes,
+OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, ANP SDK default/network
+features, or a new SQLite backend. TLS remains Rustls-first, and the approved
+SQLite lane remains `rusqlite + bundled`.

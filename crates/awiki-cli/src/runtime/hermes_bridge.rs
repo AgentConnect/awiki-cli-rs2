@@ -3,15 +3,22 @@ use crate::runtime::hermes_host_notify;
 use anyhow::Context;
 use serde::Serialize;
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 mod route;
+mod service;
 
 pub use route::{ensure_route, EnsureRouteOptions};
+pub use service::{
+    apply_decision_for, bridge_health_available_with, bridge_status_ready,
+    running_in_bridge_service_mode, running_in_bridge_service_mode_with, service_config_plan_for,
+    service_display_name_for, service_name_for, wait_for_bridge_status_with, BridgeApplyDecision,
+    BridgeServiceConfigPlan, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX,
+    SERVICE_NAME_PREFIX,
+};
 
 pub const DEFAULT_WEBHOOK_PORT: u32 = 8644;
 pub const DEFAULT_WEBHOOK_ROUTE_NAME: &str = "notify";
@@ -203,7 +210,7 @@ pub struct BridgeConfig {
     pub python_executable: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct BridgeStatus {
     pub service_name: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -491,7 +498,7 @@ pub fn inspect_route(home: &str, route_name: &str) -> anyhow::Result<RouteState>
 
 pub fn status_for(resolved: &Resolved) -> BridgeStatus {
     let mut status = BridgeStatus {
-        service_name: service_name_for(resolved),
+        service_name: service_name_for(Some(resolved)),
         service_platform: String::new(),
         installed: false,
         running: false,
@@ -791,16 +798,6 @@ fn string_field_with_suffix(
     let mut path = prefix.to_vec();
     path.extend(suffix.iter().map(|part| part.to_string()));
     fields.get(&path).cloned().unwrap_or_default()
-}
-
-fn service_name_for(resolved: &Resolved) -> String {
-    const PREFIX: &str = "awiki-cli-hermes-bridge";
-    let workspace = resolved.paths.workspace_home_dir.trim();
-    if workspace.is_empty() {
-        return PREFIX.to_string();
-    }
-    let digest = Sha256::digest(workspace.as_bytes());
-    format!("{PREFIX}-{}", &format!("{digest:x}")[..12])
 }
 
 fn resolve_python_executable() -> anyhow::Result<String> {
