@@ -1,5 +1,8 @@
 use super::service::auth_session;
-use super::{Client, MessageError, MESSAGE_RPC_ENDPOINT};
+use super::{
+    build_group_e2ee_add_rpc_params, build_group_e2ee_get_key_package_rpc_params, Client,
+    MessageError, MESSAGE_RPC_ENDPOINT,
+};
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
 use crate::identity::Manager;
@@ -69,5 +72,30 @@ impl<'a> GroupE2eeTransport<'a> {
         )?;
         message_service_did_from_capabilities_result(&result)
             .map_err(|err| MessageError::Internal(err.to_string()))
+    }
+
+    pub(crate) fn get_group_e2ee_key_package(
+        &mut self,
+        group_did: &str,
+        member_did: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let service_did = self.message_service_did()?;
+        let params = build_group_e2ee_get_key_package_rpc_params(
+            self.record,
+            &service_did,
+            group_did,
+            member_did,
+        )?;
+        self.rpc_call("group.e2ee.get_key_package", params)
+    }
+
+    pub(crate) fn add_group_e2ee(
+        &mut self,
+        group_did: &str,
+        member_did: &str,
+        mls_head: Map<String, Value>,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let params = build_group_e2ee_add_rpc_params(self.record, group_did, member_did, mls_head)?;
+        self.rpc_call("group.e2ee.add", params)
     }
 }

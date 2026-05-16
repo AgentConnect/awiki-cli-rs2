@@ -8414,3 +8414,93 @@ group E2EE wire builders, and the approved `rusqlite + bundled` SQLite path.
 It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`,
 WebSocket crates, async runtimes, YAML crates, platform service libraries, MLS
 provider crates, or a new SQLite backend. TLS remains Rustls-first.
+
+## 2026-05-16 Group E2EE Add/Rejoin Live Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_add_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_create_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_publish_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestAddGroupMemberE2EEUsesOnlyServiceLeasedKeyPackageForMLS|TestLocalIdentityByDIDFindsStoredMemberForWelcomeProcessing|TestGroupE2EEWelcomeDeviceIDUsesPublicKeyPackageDevice' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+wc -l crates/awiki-cli/src/message/group_service.rs crates/awiki-cli/src/message/group_e2ee_add.rs crates/awiki-cli/src/message/group_e2ee_create.rs crates/awiki-cli/src/message/group_e2ee_provider.rs crates/awiki-cli/src/message/group_e2ee_transport.rs crates/awiki-cli/src/app/group_e2ee_handlers.rs crates/awiki-cli/tests/group_e2ee_add_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `group_e2ee_add_contract`: 6 passed.
+- `group_e2ee_create_contract`: 2 passed.
+- `group_e2ee_publish_contract`: 4 passed.
+- `group_e2ee_status_contract`: 2 passed.
+- `group_e2ee_pending_contract`: 2 passed.
+- `group_live_contract`: 3 passed.
+- `group_contract`: 6 passed.
+- `message_group_e2ee_wire_contract`: 7 passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `group_service.rs` 1176 lines, `group_e2ee_add.rs` 299 lines,
+  `group_e2ee_create.rs` 305 lines, `group_e2ee_provider.rs` 382 lines,
+  `group_e2ee_transport.rs` 101 lines, `group_e2ee_handlers.rs` 470 lines, and
+  `group_e2ee_add_contract.rs` 1072 lines. No file-size exception is needed.
+
+Scope:
+
+- Wires live `group add --e2ee` through the Go-shaped sequence: normal P4
+  `group.add`, group snapshot/member sync, hidden
+  `group.e2ee.get_key_package`, external MLS `anp-mls group add-member`,
+  hidden `group.e2ee.add`, local summary persistence, and optional local
+  welcome processing when the added member is a stored local identity.
+- Preserves Go automatic E2EE detection for `group add` without explicit
+  `--e2ee`: request flag, pre-mutation snapshot, and post-mutation snapshot can
+  trigger the E2EE add path. The detector now accepts both JSON-string and
+  object-valued `metadata`, matching Go `decodeMetadataMap`.
+- Preserves Go warning downgrade behavior: KeyPackage lookup failure leaves P4
+  add successful without `data.e2ee`; MLS provider failure returns redacted
+  `leased_key_package`; hidden delivery failure keeps `data.e2ee.mls` plus the
+  redacted package; all paths append the matching warning prefix.
+- Preserves service-leased KeyPackage usage: MLS add-member receives only the
+  service-returned public `group_key_package`, `key_package_id`, full
+  `target_key_package`, and cached `group_state_ref`; output redacts private
+  material.
+- Wires live hidden `group e2ee rejoin` as a wrapper over the same
+  `message::add_group_member` path with `e2ee=true`, inserts the Go rejoin
+  plan into live result data, and preserves the removed/left rejoin hint that
+  directs users to fresh normal KeyPackage publication plus owner-only
+  `group add --e2ee`.
+
+Boundary note: this slice still excludes `group remove/leave --e2ee`,
+`recover-member`, `update-key`, repair, commit replay beyond local welcome
+processing, group E2EE send/decrypt, WebSocket/local bridge group E2EE
+transport, and full awiki-system-test group-E2EE acceptance.
+
+Parallelism note: one read-only Native Agent mapped Go add/rejoin behavior; one
+GPT-5.5 xhigh code-writing Native Agent created the isolated add/rejoin test
+file under a bounded, non-overlapping test write scope; one read-only verifier
+reviewed the diff and found the metadata-object detection bug that was fixed
+before final verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `std::process::Command`, `serde_json`,
+existing authsdk/session, existing Rustls/std message HTTP transport, existing
+group E2EE wire builders, the external local ANP Rust SDK `anp-mls` binary, and
+the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, MLS provider crates, ANP SDK
+default/network features, or a new SQLite backend. TLS remains Rustls-first.

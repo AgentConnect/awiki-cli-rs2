@@ -341,25 +341,56 @@ impl App {
             "group e2ee rejoin",
             "Usage: awiki-cli group e2ee rejoin --group <GROUP_DID> --member <MEMBER>",
         )?;
+        let role = string_flag_or(command, "role", "member");
+        let plan = json!({
+            "action": "group.e2ee.rejoin",
+            "canonical_command": "group add --e2ee",
+            "identity": self.globals.identity,
+            "runtime_mode": resolved.runtime_mode,
+            "group": group,
+            "member": member,
+            "role": role,
+            "key_package_purpose": "normal",
+            "recovery_command": "group e2ee recover-member is only for active-member crypto recovery, not removed/left rejoin",
+            "external_commit": false,
+            "p4_membership_mutate": true,
+        });
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group e2ee rejoin"));
+            let request = message::GroupMemberRequest {
+                identity_name: self.globals.identity.clone(),
+                group,
+                member,
+                role,
+                reason_text: String::new(),
+                e2ee: true,
+                leave_request_id: String::new(),
+            };
+            let mut result = message::add_group_member(
+                &resolved,
+                &self.identity_manager(&resolved),
+                request,
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Removed/left rejoin requires a fresh normal KeyPackage published after removal/leave, then owner-only `group add --e2ee`; do not use recover-member for removed/left members.",
+                )
+            })?;
+            if let Some(data) = result.data.as_object_mut() {
+                data.insert("plan".to_string(), plan);
+            }
+            return self.render_success(
+                "awiki-cli group e2ee rejoin",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
         }
         self.render_group_e2ee_plan(
             "awiki-cli group e2ee rejoin",
             &resolved,
-            json!({
-                "action": "group.e2ee.rejoin",
-                "canonical_command": "group add --e2ee",
-                "identity": self.globals.identity,
-                "runtime_mode": resolved.runtime_mode,
-                "group": group,
-                "member": member,
-                "role": string_flag_or(command, "role", "member"),
-                "key_package_purpose": "normal",
-                "recovery_command": "group e2ee recover-member is only for active-member crypto recovery, not removed/left rejoin",
-                "external_commit": false,
-                "p4_membership_mutate": true,
-            }),
+            plan,
             "Dry run: group e2ee rejoin planned",
         )
     }

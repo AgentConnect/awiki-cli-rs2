@@ -1,3 +1,4 @@
+use super::group_e2ee_add::{add_group_member_e2ee, group_member_mutation_uses_e2ee};
 use super::service::{
     auth_session, bool_value, content_string, default_message_type, int_value, metadata_string,
     normalize_handle_value, require_active_identity, resolve_target, string_value, CommandResult,
@@ -137,12 +138,15 @@ fn mutate_group_member(
     if request.member.trim().is_empty() {
         return Err(MessageError::MemberRequired);
     }
-    if request.e2ee {
+    if action != "add" && request.e2ee {
         return Err(MessageError::SecureNotSupported);
     }
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
     let member = resolve_target(resolved, &request.member)?;
     request.member = member.did.clone();
+    let pre_mutation_snapshot = (action == "add")
+        .then(|| cached_group_snapshot(resolved, &record, &request.group))
+        .flatten();
     let mut auth = auth_session(resolved, manager, &record)?;
     let client = Client::new(resolved)?;
     let (method, params) = if action == "add" {
@@ -168,16 +172,31 @@ fn mutate_group_member(
         .or_else(|| normalize_group_snapshot(&raw))
         .unwrap_or_else(|| json!({ "group_did": request.group }));
     let members = cached_group_members(resolved, &record, &request.group, 100).unwrap_or_default();
+    let mut data = json!({
+        "group": snapshot,
+        "members": members,
+        "delivery": raw,
+        "member": {
+            "did": member.did,
+            "handle": member.handle,
+        },
+    });
+    if action == "add"
+        && group_member_mutation_uses_e2ee(
+            &request,
+            pre_mutation_snapshot.as_ref(),
+            data.get("group"),
+        )
+    {
+        let (candidate, e2ee_warnings) =
+            add_group_member_e2ee(resolved, manager, &record, &request.group, &request.member);
+        warnings.extend(e2ee_warnings);
+        if let (Some(e2ee), Some(object)) = (candidate, data.as_object_mut()) {
+            object.insert("e2ee".to_string(), Value::Object(e2ee));
+        }
+    }
     Ok(CommandResult {
-        data: json!({
-            "group": snapshot,
-            "members": members,
-            "delivery": raw,
-            "member": {
-                "did": member.did,
-                "handle": member.handle,
-            },
-        }),
+        data,
         summary: format!("Updated group membership via {action}"),
         warnings: compact_warnings(&mut warnings),
     })

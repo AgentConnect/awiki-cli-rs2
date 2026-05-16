@@ -90,7 +90,7 @@ pub(crate) fn create_group_e2ee(
     (Some(result), warnings)
 }
 
-fn local_group_state_ref(
+pub(crate) fn local_group_state_ref(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
@@ -101,7 +101,7 @@ fn local_group_state_ref(
     group_state_ref_from_snapshot(group_did, &snapshot)
 }
 
-fn attach_group_state_ref(
+pub(crate) fn attach_group_state_ref(
     mut input: Map<String, Value>,
     group_did: &str,
     group_state_ref: Map<String, Value>,
@@ -151,7 +151,7 @@ fn group_state_ref_from_snapshot(group_did: &str, snapshot: &Value) -> Map<Strin
     reference
 }
 
-fn persist_group_e2ee_summary(
+pub(crate) fn persist_group_e2ee_summary(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
