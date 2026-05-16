@@ -10648,6 +10648,46 @@ slices.
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged.
 
+## 2026-05-16 V2 architecture document asset slice
+
+Timestamp: 2026-05-16T17:20:07Z / 2026-05-17T01:20:07+0800.
+
+Scope: copy the Go `docs/architecture/awiki-v2-architecture.md` system
+architecture document into the Rust repository as a byte-identical asset. This
+restores the second README-linked architecture path.
+
+Commands run:
+
+```text
+cp -p ../awiki-cli/docs/architecture/awiki-v2-architecture.md docs/architecture/awiki-v2-architecture.md
+cmp -s ../awiki-cli/docs/architecture/awiki-v2-architecture.md docs/architecture/awiki-v2-architecture.md
+stat -c '%a %n' docs/architecture/awiki-v2-architecture.md
+wc -l docs/architecture/awiki-v2-architecture.md
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `docs/architecture/awiki-v2-architecture.md` is byte-identical to the Go
+  repository source.
+- Permissions were preserved from the Go repository: `664`.
+- The v2 architecture document is 1111 lines, below the default 1200-line
+  review-size cap, so no file-size exception is needed.
+
+Boundary note: this is a documentation asset parity slice. The source document
+records the Go single-binary architecture decision and Go distribution model;
+this Rust port preserves the wording as source architecture history and does
+not rewrite it for Rust-specific status in the translation lane. Rust-specific
+caveats, link cleanup, and documentation modernization remain separate
+docs-maintenance slices.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
+
 ## 2026-05-16 Config template asset slice
 
 Timestamp: 2026-05-16T17:02:08Z / 2026-05-17T01:02:08+0800.
