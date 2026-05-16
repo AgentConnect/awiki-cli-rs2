@@ -764,11 +764,25 @@ pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {
             message,
             "Complete user setup with `awiki-cli id register --handle <handle> ...` or recover an existing handle before using `awiki-cli msg` commands.",
         ),
-        MessageError::SecureNotSupported
-        | MessageError::AttachmentNotSupported
-        | MessageError::GroupNotSupported
-        | MessageError::GroupE2eeSelfLeaveUnsupported
-        | MessageError::TransportUnavailable(_) => {
+        MessageError::SecureNotSupported => ExitError::new(
+            "unsupported_mode",
+            1,
+            err.to_string(),
+            "Secure messaging is currently supported only for direct text messaging.",
+        ),
+        MessageError::GroupE2eeSelfLeaveUnsupported => ExitError::new(
+            "unsupported_mode",
+            1,
+            err.to_string(),
+            "For PR-A group E2EE, ask the group owner to remove the member; self-leave requires a future epoch-advancing leave-request flow.",
+        ),
+        MessageError::TransportUnavailable(_) => ExitError::new(
+            "transport_unavailable",
+            1,
+            err.to_string(),
+            "Start the websocket listener/daemon or switch runtime.mode back to http.",
+        ),
+        MessageError::AttachmentNotSupported | MessageError::GroupNotSupported => {
             ExitError::new("not_implemented", 1, err.to_string(), hint)
         }
         MessageError::Service(service_err) => match () {
@@ -811,5 +825,29 @@ pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {
         },
         MessageError::Identity(err) => super::identity_exit(err),
         MessageError::Internal(message) => ExitError::new("internal_error", 1, message, hint),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_exit_maps_transport_unavailable_like_go() {
+        let exit = message_exit(
+            MessageError::transport_unavailable("bridge offline"),
+            "fallback hint",
+        );
+
+        assert_eq!(exit.exit_code, 1);
+        assert_eq!(exit.detail.code, "transport_unavailable");
+        assert_eq!(
+            exit.detail.message,
+            "message transport is unavailable: bridge offline"
+        );
+        assert_eq!(
+            exit.detail.hint,
+            "Start the websocket listener/daemon or switch runtime.mode back to http."
+        );
     }
 }

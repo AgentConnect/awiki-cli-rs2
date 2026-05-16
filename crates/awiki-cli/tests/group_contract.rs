@@ -308,6 +308,37 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
 }
 
 #[test]
+fn group_e2ee_self_leave_error_matches_go_handler_boundary() {
+    let workspace = TempDir::new().expect("workspace");
+    let group = "did:wba:awiki.ai:groups:demo:e1_group";
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "leave",
+            "--group",
+            group,
+            "--e2ee",
+        ],
+        workspace.path(),
+    );
+
+    assert_code(&output, 1);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "unsupported_mode");
+    assert_contains(
+        &envelope["error"]["message"],
+        "group E2EE self-leave is not cryptographically supported yet",
+    );
+    assert_eq!(
+        envelope["error"]["hint"],
+        "For PR-A group E2EE, ask the group owner to remove the member; self-leave requires a future epoch-advancing leave-request flow."
+    );
+}
+
+#[test]
 fn group_schema_exposes_non_e2ee_group_children() {
     let workspace = TempDir::new().expect("workspace");
     let schema = success_json(&awiki_cmd(&["schema", "group"], workspace.path()));
@@ -640,6 +671,34 @@ fn success_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("success JSON")
+}
+
+fn error_json(output: &Output) -> Value {
+    assert!(
+        !output.status.success(),
+        "command should fail\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stderr).expect("error JSON")
+}
+
+fn assert_code(output: &Output, expected: i32) {
+    assert_eq!(
+        output.status.code(),
+        Some(expected),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_contains(value: &Value, needle: &str) {
+    let haystack = value.as_str().unwrap_or_default();
+    assert!(
+        haystack.contains(needle),
+        "{haystack:?} should contain {needle:?}"
+    );
 }
 
 struct TempDir {

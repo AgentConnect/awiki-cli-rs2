@@ -7550,6 +7550,65 @@ runtimes, YAML crates, platform service libraries, new E2EE provider
 dependencies, or a new SQLite backend. TLS remains Rustls-first for later
 runtime/WebSocket transport work.
 
+## 2026-05-16 Message CLI Exit Mapper Unsupported/Transport Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli app::msg_handlers::tests::message_exit_maps_transport_unavailable_like_go --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/cli -run 'TestMsg' -count=1
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `msg_contract`: 6 passed.
+- `group_contract`: 6 passed.
+- Internal mapper filter:
+  `app::msg_handlers::tests::message_exit_maps_transport_unavailable_like_go`
+  passed.
+- Go reference `./internal/cli -run TestMsg` passed.
+- `cargo fmt --check`, structure check, and whitespace check passed.
+
+Scope:
+
+- Aligns Rust message/group CLI error mapping with Go `messageExit` for
+  `ErrSecureNotSupported`, `ErrGroupE2EESelfLeaveUnsupported`, and
+  `ErrTransportUnavailable`.
+- Preserves Go exit codes and hints:
+  `unsupported_mode` for unsupported secure messaging with
+  `Secure messaging is currently supported only for direct text messaging.`,
+  `unsupported_mode` for PR-A group E2EE self-leave with the owner-removal
+  hint, and `transport_unavailable` for websocket transport errors with the
+  listener/runtime hint.
+- Adds a CLI contract for unsupported secure attachment send and group E2EE
+  self-leave, plus an internal mapper unit test for the transport-unavailable
+  branch because Rust currently exposes the websocket proxy helper but does not
+  route production CLI message commands through it.
+
+Boundary note: this slice only changes error envelope mapping. It does not wire
+WebSocket/local bridge message execution, runtime listener live
+`ProcessIncoming`, awiki-system-test secure-direct acceptance, or new command
+execution paths.
+
+Parallelism note: a read-only GPT-5.5 xhigh Native Agent compared Go and Rust
+mapper branches. It confirmed parity for the three Go sentinels changed here
+and confirmed `AttachmentNotSupported`/`GroupNotSupported` have no Go sentinel,
+so they keep the existing Rust `not_implemented` mapping.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice does not add OpenSSL, `native-tls`, bundled OpenSSL,
+`reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates, platform
+service libraries, new E2EE provider dependencies, or a new SQLite backend.
+
 ## 2026-05-16 Message Secure Retry Production Sender Slice
 
 Status: locally verified.

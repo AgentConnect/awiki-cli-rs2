@@ -507,6 +507,42 @@ fn msg_validation_errors_match_go_handler_boundary() {
 }
 
 #[test]
+fn msg_unsupported_secure_mode_errors_match_go_handler_boundary() {
+    let workspace = TempDir::new().expect("workspace");
+    let attachment = workspace.path().join("payload.txt");
+    std::fs::write(&attachment, "attachment body").expect("write attachment");
+
+    let secure_attachment = awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--text",
+            "caption",
+            "--file",
+            attachment.to_str().expect("attachment path"),
+            "--secure",
+            "on",
+        ],
+        workspace.path(),
+    );
+    assert_code(&secure_attachment, 1);
+    let envelope = error_json(&secure_attachment);
+    assert_eq!(envelope["error"]["code"], "unsupported_mode");
+    assert_contains(
+        &envelope["error"]["message"],
+        "secure messaging is not supported for this command yet",
+    );
+    assert_eq!(
+        envelope["error"]["hint"],
+        "Secure messaging is currently supported only for direct text messaging."
+    );
+}
+
+#[test]
 fn msg_required_flag_errors_match_go_cobra_boundary() {
     let workspace = TempDir::new().expect("workspace");
 
