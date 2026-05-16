@@ -1,12 +1,10 @@
 use super::group_e2ee_add::{
     add_group_member_e2ee, group_member_mutation_uses_e2ee, group_snapshot_uses_e2ee,
 };
-use super::group_e2ee_decrypt::maybe_decrypt_group_messages;
 use super::group_e2ee_remove::{leave_group_e2ee, remove_group_member_e2ee_result};
-use super::group_e2ee_send::maybe_send_group_e2ee;
 use super::service::{
-    auth_session, bool_value, content_string, default_message_type, int_value, metadata_string,
-    normalize_handle_value, require_active_identity, resolve_target, string_value, CommandResult,
+    auth_session, bool_value, content_string, int_value, metadata_string, normalize_handle_value,
+    require_active_identity, resolve_target, string_value, CommandResult,
 };
 use super::types::{
     GroupGetRequest, GroupJoinRequest, GroupLeaveRequest, GroupListRequest, GroupMemberRequest,
@@ -16,9 +14,8 @@ use super::types::{
 use super::{
     build_group_add_rpc_params, build_group_get_rpc_params, build_group_join_rpc_params,
     build_group_leave_rpc_params, build_group_list_rpc_params, build_group_members_rpc_params,
-    build_group_messages_rpc_params, build_group_remove_rpc_params, build_group_send_rpc_params,
-    build_group_update_policy_rpc_params, build_group_update_profile_rpc_params,
-    content_type_for_message_type, Client,
+    build_group_remove_rpc_params, build_group_update_policy_rpc_params,
+    build_group_update_profile_rpc_params, content_type_for_message_type, Client,
 };
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
@@ -397,49 +394,7 @@ pub fn group_messages(
     manager: &Manager,
     request: GroupMessagesRequest,
 ) -> Result<CommandResult, MessageError> {
-    if request.group.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
-    }
-    let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    let mut auth = auth_session(resolved, manager, &record)?;
-    let client = Client::new(resolved)?;
-    let params = build_group_messages_rpc_params(&record, request.clone())?;
-    let mut raw: Value = client.authenticated_rpc_call_profile(
-        Profile::RpcReadHeavy,
-        MESSAGE_RPC_ENDPOINT,
-        "group.list_messages",
-        params,
-        &mut auth,
-    )?;
-    let mut warnings = maybe_decrypt_group_messages(resolved, &record, &request.group, &mut raw);
-    warnings.extend(persist_group_messages(
-        resolved,
-        &record,
-        &request.group,
-        &raw,
-    ));
-    let messages = cached_group_messages(
-        resolved,
-        &record,
-        &request.group,
-        request.limit,
-        &request.cursor,
-    )
-    .filter(|items| !items.is_empty())
-    .unwrap_or_else(|| values_from_array(raw.get("messages")));
-    let total = int_value(raw.get("total"), messages.len() as i64);
-    Ok(CommandResult {
-        data: json!({
-            "group": request.group,
-            "messages": messages,
-            "total": total,
-            "has_more": bool_value(raw.get("has_more")),
-            "next_since_seq": raw.get("next_since_seq").cloned().unwrap_or(Value::Null),
-            "source": group_control_source(&raw),
-        }),
-        summary: format!("Loaded {total} group messages"),
-        warnings: compact_warnings(&mut warnings),
-    })
+    super::group_ws::group_messages(resolved, manager, request)
 }
 
 pub fn send_group(
@@ -447,56 +402,7 @@ pub fn send_group(
     manager: &Manager,
     request: SendRequest,
 ) -> Result<CommandResult, MessageError> {
-    if request.has_attachment() {
-        return Err(MessageError::AttachmentNotSupported);
-    }
-    if request.group.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
-    }
-    if request.text.trim().is_empty() {
-        return Err(MessageError::TextRequired);
-    }
-    let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    if let Some(result) = maybe_send_group_e2ee(resolved, manager, &record, &request)? {
-        return Ok(result);
-    }
-    let message_type = default_message_type(&request.message_type).to_string();
-    let mut auth = auth_session(resolved, manager, &record)?;
-    let client = Client::new(resolved)?;
-    let params =
-        build_group_send_rpc_params(&record, &request.group, &request.text, &message_type)?;
-    let mut result: GroupSendResult = client.authenticated_rpc_call_profile(
-        Profile::RpcDefault,
-        MESSAGE_RPC_ENDPOINT,
-        "group.send",
-        params,
-        &mut auth,
-    )?;
-    if result.group_did.trim().is_empty() {
-        result.group_did = request.group.clone();
-    }
-    let mut warnings =
-        persist_group_send_result(resolved, &record, &request, &message_type, &result);
-    let message_id = group_send_message_id(&request.group, &result);
-    Ok(CommandResult {
-        data: json!({
-            "action": "send_message",
-            "target": {
-                "kind": "group",
-                "did": request.group,
-            },
-            "message": {
-                "id": message_id,
-                "type": message_type,
-                "secure": false,
-                "sent_at": result.accepted_at,
-            },
-            "delivery": result,
-            "source": "remote_http",
-        }),
-        summary: format!("Sent a group {message_type} message"),
-        warnings: compact_warnings(&mut warnings),
-    })
+    super::group_ws::send_group(resolved, manager, request)
 }
 
 pub(crate) fn sync_group_state(
@@ -654,7 +560,7 @@ fn persist_group_members(
     Vec::new()
 }
 
-fn persist_group_messages(
+pub(crate) fn persist_group_messages(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
@@ -697,7 +603,7 @@ fn persist_group_messages(
     Vec::new()
 }
 
-fn persist_group_send_result(
+pub(crate) fn persist_group_send_result(
     resolved: &Resolved,
     record: &StoredIdentity,
     request: &SendRequest,
@@ -810,7 +716,7 @@ pub(crate) fn cached_group_members(
     .ok()
 }
 
-fn cached_group_messages(
+pub(crate) fn cached_group_messages(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,

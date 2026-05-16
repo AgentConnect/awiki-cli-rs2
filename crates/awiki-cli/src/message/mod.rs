@@ -18,6 +18,7 @@ mod group_e2ee_update;
 mod group_e2ee_wire;
 mod group_service;
 mod group_wire;
+mod group_ws;
 mod history;
 mod inbox;
 mod mark_read;

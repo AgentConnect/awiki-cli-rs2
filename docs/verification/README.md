@@ -2,6 +2,86 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Ordinary Group WebSocket Send/Messages Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_send_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_decrypt_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestHTTPTransportGroupMethodsUseExpectedRPCMethods|TestBuildGroupMessagesRPCParams' -count=1
+cd ../awiki-cli && go test ./internal/message -run 'TestTransportSource|TestSourceWithDefault|TestWebSocketFallbackWarnings' -count=1
+wc -l crates/awiki-cli/src/message/group_service.rs crates/awiki-cli/src/message/group_ws.rs crates/awiki-cli/tests/msg_ws_group_live_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `msg_ws_group_live_contract`: 7 passed.
+- Adjacent group HTTP, group E2EE send/decrypt, and low-level websocket proxy
+  contracts passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `group_service.rs` 1105 lines, `group_ws.rs` 367 lines, and
+  `msg_ws_group_live_contract.rs` 880 lines. No file-size exception is needed.
+
+Scope:
+
+- Wires ordinary non-E2EE group text send to Go's websocket-mode transport
+  branch after the existing group E2EE auto-upgrade guard. Successful bridge
+  sends call `group.send`, persist through the existing cache path, and return
+  source `local_ws_cache`. Bridge failures fall back to signed HTTP
+  `group.send`, record trace fallback `websocket_to_http`, append the visible
+  websocket HTTP fallback warning, and return source `remote_http`.
+- Wires `group messages` to Go's websocket-mode transport branch. Successful
+  bridge reads call `group.list_messages`, then run the existing group E2EE
+  decrypt hook, persistence, and cache projection with source default
+  `local_ws_cache`.
+- Preserves Go's group-message fallback order: bridge failure first returns a
+  nonempty local SQLite group-message cache as `local_ws_cache_fallback` with
+  summary `Loaded group messages from local cache` and no HTTP request; only
+  empty cache falls back to signed HTTP `group.list_messages` with the visible
+  websocket HTTP fallback warning.
+- Preserves Go's WebSocket fallback error priority for both group send and
+  group message listing: if HTTP auth/client preparation fails after a bridge
+  failure, the original bridge error is returned; after HTTP preparation
+  succeeds, RPC parameter build and RPC failures are returned as HTTP-side
+  errors.
+- Keeps group lifecycle/control commands HTTP-only in websocket mode, matching
+  the existing Go `groupControlTransport` behavior.
+
+Boundary note: this slice covers ordinary non-E2EE group send/list-message
+transport orchestration. Group E2EE websocket/local bridge transport,
+foreground listener group E2EE handling, attachment websocket transport, and
+full awiki-system-test group websocket acceptance remain separate.
+
+Parallelism note: GPT-5.5 xhigh Native Agents were launched for implementation
+and test slices with non-overlapping write scopes, but both were shut down
+before producing usable changes. The leader completed the slice locally to
+avoid asynchronous write conflicts. Future code-writing Native Agents remain
+constrained to GPT-5.5 xhigh with bounded, non-overlapping write scopes.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing std local bridge helper,
+`WSProxyTransport`, authsdk/session, Rustls/std HTTP transport, group E2EE
+decrypt hook, and approved `rusqlite + bundled` SQLite cache path. It does not
+add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
+crates, async runtimes, YAML crates, platform service libraries, ANP SDK
+default/network features, pure-Rust SQLite optimization work, or a new SQLite
+backend. TLS remains Rustls-first.
+
 ## 2026-05-16 Group E2EE Decrypt Display Live Slice
 
 Status: locally verified.
