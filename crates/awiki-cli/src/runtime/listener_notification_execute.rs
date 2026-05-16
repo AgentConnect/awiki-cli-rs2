@@ -46,6 +46,7 @@ pub struct NotificationExecutionResult {
     pub failed_effects: Vec<NotificationSideEffectFailure>,
     pub host_notify_last_error: Option<String>,
     pub host_notify_status_update: HostNotifyStatusUpdate,
+    pub host_notify_status_changed: bool,
 }
 
 pub fn execute_listener_notification(
@@ -86,6 +87,7 @@ pub fn execute_listener_notification(
         failed_effects: Vec::new(),
         host_notify_last_error: None,
         host_notify_status_update: HostNotifyStatusUpdate::Unchanged,
+        host_notify_status_changed: false,
     };
 
     for effect in plan.side_effects {
@@ -94,6 +96,29 @@ pub fn execute_listener_notification(
 
     result.applied_effect_count = result.applied_effects.len();
     result.failed_effect_count = result.failed_effects.len();
+    result
+}
+
+pub fn execute_listener_notification_with_status(
+    connection: &mut Connection,
+    host_notify_sink: &dyn HostNotifySink,
+    status: &mut Status,
+    notification: &Value,
+    session: &NotificationSessionContext,
+    secure_normalization: SecureNotificationNormalization,
+    received_at: Option<OffsetDateTime>,
+    lookup_handle_by_did: Option<IncomingContactLookup<'_>>,
+) -> NotificationExecutionResult {
+    let mut result = execute_listener_notification(
+        connection,
+        host_notify_sink,
+        notification,
+        session,
+        secure_normalization,
+        received_at,
+        lookup_handle_by_did,
+    );
+    result.host_notify_status_changed = result.host_notify_status_update.apply_to_status(status);
     result
 }
 

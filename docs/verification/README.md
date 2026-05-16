@@ -2,6 +2,63 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Notification Execute-With-Status Slice
+
+Timestamp: 2026-05-16T19:48:41Z / 2026-05-17T03:48:41+0800.
+
+Scope: add the local bridge between the single-notification executor and the
+listener status helpers so a future foreground `Supervisor.handleNotification`
+can execute one notification and apply Go-shaped host-notify `LastError`
+status changes without reinterpreting the dispatch result.
+
+What changed:
+
+- `NotificationExecutionResult` now includes `host_notify_status_changed`.
+- `execute_listener_notification_with_status` executes the existing local
+  side-effect executor, applies `host_notify_status_update` to a supplied
+  `listener::Status`, and reports whether the changed-only status helper wrote.
+- Contract coverage proves failed delivery sets `host_notify.last_error`,
+  repeated same failure is a no-op write, successful delivery clears a prior
+  error, and skipped dispatch leaves both in-memory status and status file
+  unchanged.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime/listener ./internal/store -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestHandleNotificationDispatchesMailNotificationToSink|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage|TestStoreMessageAndThreadView|Test.*Contact' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_notification_execute.rs crates/awiki-cli/tests/runtime_listener_notification_execute_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `runtime_listener_notification_execute_contract` passed all 6 tests,
+  including the new execute-with-status contract.
+- `runtime_listener_service_contract` passed all 8 adjacent listener status
+  tests, and `cargo check` passed for `awiki-cli`.
+- `xtask check-structure` reported no undocumented Rust files over 1200 lines;
+  the touched Rust files are 231 and 581 lines.
+- Focused Go listener/store parity tests passed.
+- Dependency audit found the existing expected `rusqlite`/`libsqlite3-sys`
+  bundled SQLite path and Rustls/ring/webpki stack, with no OpenSSL,
+  `native-tls`, new WebSocket stack, or platform service dependency introduced.
+- No Cargo manifests or lockfiles changed.
+
+Boundary note: this is still a local/injected execution boundary. It does not
+implement foreground `Supervisor` locks, real `Run`, WebSocket sessions,
+`normalizeDirectSecureNotification` execution, local secure-ack queue routing,
+platform service execution, Windows named-pipe I/O, or `awiki-system-test`
+listener acceptance.
+
+Dependency note: no Rust dependency was added. This slice reuses the existing
+SQLite/store helpers, `HostNotifySink`, and listener status helpers.
+
 ## 2026-05-17 Listener Notification Status Update Signal Slice
 
 Timestamp: 2026-05-16T19:42:21Z / 2026-05-17T03:42:21+0800.

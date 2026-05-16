@@ -2,7 +2,8 @@ use awiki_cli::runtime::host_notify::{HostNotificationData, HostNotificationEven
 use awiki_cli::runtime::host_notify_sink::HostNotifySink;
 use awiki_cli::runtime::listener::{self, HostNotifyStatus, Status};
 use awiki_cli::runtime::listener_notification_execute::{
-    execute_listener_notification, HostNotifyStatusUpdate,
+    execute_listener_notification, execute_listener_notification_with_status,
+    HostNotifyStatusUpdate,
 };
 use awiki_cli::runtime::listener_notification_plan::{
     NotificationRoute, NotificationSessionContext, SecureNotificationEffect,
@@ -243,6 +244,119 @@ fn host_notify_status_update_applies_go_changed_only_status_semantics() -> anyho
 }
 
 #[test]
+fn execute_with_status_applies_host_notify_outcome_like_go_dispatch() -> anyhow::Result<()> {
+    let mut db = open_db()?;
+    let status_file = temp_status_file("host-notify-execute-status");
+    let mut status = execution_status(&status_file, "old sink error");
+
+    let mut lookup =
+        |_did: &str| -> anyhow::Result<Option<String>> { Ok(Some("bob.remote".to_string())) };
+    let failing = RecordingSink::failing("sink boom");
+    let result = execute_listener_notification_with_status(
+        &mut db,
+        &failing,
+        &mut status,
+        &direct_notification("direct-msg-status-fail"),
+        &session("alice"),
+        SecureNotificationNormalization::KeepOriginal,
+        Some(fixed_received_at()),
+        Some(&mut lookup),
+    );
+
+    assert_eq!(
+        result.host_notify_status_update,
+        HostNotifyStatusUpdate::SetError("sink boom".to_string())
+    );
+    assert!(result.host_notify_status_changed);
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.host_notify.last_error, "sink boom");
+
+    status.mode = "same-error-not-written".to_string();
+    let mut lookup =
+        |_did: &str| -> anyhow::Result<Option<String>> { Ok(Some("bob.remote".to_string())) };
+    let result = execute_listener_notification_with_status(
+        &mut db,
+        &failing,
+        &mut status,
+        &direct_notification("direct-msg-status-repeat"),
+        &session("alice"),
+        SecureNotificationNormalization::KeepOriginal,
+        Some(fixed_received_at()),
+        Some(&mut lookup),
+    );
+    assert_eq!(
+        result.host_notify_status_update,
+        HostNotifyStatusUpdate::SetError("sink boom".to_string())
+    );
+    assert!(!result.host_notify_status_changed);
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.mode, "websocket");
+    assert_eq!(loaded.host_notify.last_error, "sink boom");
+
+    status.mode = "clear-written".to_string();
+    let success = RecordingSink::new();
+    let mut lookup =
+        |_did: &str| -> anyhow::Result<Option<String>> { Ok(Some("bob.remote".to_string())) };
+    let result = execute_listener_notification_with_status(
+        &mut db,
+        &success,
+        &mut status,
+        &direct_notification("direct-msg-status-success"),
+        &session("alice"),
+        SecureNotificationNormalization::KeepOriginal,
+        Some(fixed_received_at()),
+        Some(&mut lookup),
+    );
+    assert_eq!(
+        result.host_notify_status_update,
+        HostNotifyStatusUpdate::ClearError
+    );
+    assert!(result.host_notify_status_changed);
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.mode, "clear-written");
+    assert!(loaded.host_notify.last_error.is_empty());
+
+    status.host_notify.last_error = "keep old error".to_string();
+    status.mode = "skipped-not-written".to_string();
+    let skipped = execute_listener_notification_with_status(
+        &mut db,
+        &success,
+        &mut status,
+        &json!({
+            "method": "group.incoming",
+            "params": {
+                "meta": {
+                    "message_id": "group-msg-status-skipped",
+                    "created_at": "2026-04-07T00:00:00Z",
+                    "content_type": "text/plain",
+                    "target": {"did": "did:alice"}
+                },
+                "body": {
+                    "group_did": "did:group",
+                    "group_event_seq": 9,
+                    "text": "hello without sender"
+                }
+            }
+        }),
+        &session("alice"),
+        SecureNotificationNormalization::KeepOriginal,
+        Some(fixed_received_at()),
+        None,
+    );
+    assert_eq!(
+        skipped.host_notify_status_update,
+        HostNotifyStatusUpdate::Unchanged
+    );
+    assert!(!skipped.host_notify_status_changed);
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.mode, "clear-written");
+    assert!(loaded.host_notify.last_error.is_empty());
+    assert_eq!(status.host_notify.last_error, "keep old error");
+
+    Ok(())
+}
+
+#[test]
 fn group_state_changed_upserts_group_member_and_message_before_dispatch() -> anyhow::Result<()> {
     let mut db = open_db()?;
     let sink = RecordingSink::new();
@@ -438,6 +552,20 @@ fn temp_status_file(prefix: &str) -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&root).expect("create temp status root");
     root.join("listener.status.json")
+}
+
+fn execution_status(status_file: &std::path::Path, last_error: &str) -> Status {
+    Status {
+        mode: "websocket".to_string(),
+        status_file: path_string(status_file),
+        host_notify: HostNotifyStatus {
+            enabled: true,
+            sink: "capture".to_string(),
+            last_error: last_error.to_string(),
+            ..HostNotifyStatus::default()
+        },
+        ..Status::default()
+    }
 }
 
 fn path_string(path: &std::path::Path) -> String {
