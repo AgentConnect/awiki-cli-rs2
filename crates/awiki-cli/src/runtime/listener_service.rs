@@ -1,9 +1,10 @@
 use crate::config::Resolved;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::bridge::MODE_WEBSOCKET;
@@ -11,6 +12,10 @@ use super::listener::{self, Status};
 
 pub const SERVICE_NAME_PREFIX: &str = "awiki-cli-listener";
 pub const SERVICE_DISPLAY_NAME_PREFIX: &str = "awiki-cli Listener";
+pub const SERVICE_DESCRIPTION: &str = "awiki-cli realtime websocket listener";
+pub const SERVICE_ARGUMENTS: &[&str] = &["runtime", "listener", "service-run"];
+pub const SERVICE_PID_FILE_NAME: &str = "listener.service.pid";
+pub const WORKSPACE_HOME_ENV: &str = "AWIKI_CLI_WORKSPACE_HOME_DIR";
 pub const LISTENER_SERVICE_MODE_ENV: &str = "AWIKI_LISTENER_SERVICE_MODE";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,6 +27,23 @@ pub enum ForegroundSignal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ListenerChildProcessPlan {
     pub setsid: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerServiceConfigValue {
+    Bool(bool),
+    String(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListenerServiceConfigPlan {
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub arguments: Vec<String>,
+    pub working_directory: String,
+    pub options: BTreeMap<String, ListenerServiceConfigValue>,
+    pub env_vars: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,6 +264,79 @@ pub fn service_display_name_for(resolved: Option<&Resolved>) -> String {
         return SERVICE_DISPLAY_NAME_PREFIX.to_string();
     }
     format!("{SERVICE_DISPLAY_NAME_PREFIX} ({base})")
+}
+
+pub fn service_config_plan_for(resolved: &Resolved, is_windows: bool) -> ListenerServiceConfigPlan {
+    let mut options = BTreeMap::new();
+    options.insert(
+        "RunAtLoad".to_string(),
+        ListenerServiceConfigValue::Bool(true),
+    );
+    options.insert(
+        "KeepAlive".to_string(),
+        ListenerServiceConfigValue::Bool(true),
+    );
+    options.insert(
+        "UserService".to_string(),
+        ListenerServiceConfigValue::Bool(true),
+    );
+    options.insert(
+        "DelayedAutoStart".to_string(),
+        ListenerServiceConfigValue::Bool(true),
+    );
+    options.insert(
+        "StartType".to_string(),
+        ListenerServiceConfigValue::String("automatic".to_string()),
+    );
+    options.insert(
+        "OnFailure".to_string(),
+        ListenerServiceConfigValue::String("restart".to_string()),
+    );
+    options.insert(
+        "OnFailureDelayDuration".to_string(),
+        ListenerServiceConfigValue::String("1s".to_string()),
+    );
+    options.insert(
+        "LogOutput".to_string(),
+        ListenerServiceConfigValue::Bool(true),
+    );
+    options.insert(
+        "LogDirectory".to_string(),
+        ListenerServiceConfigValue::String(resolved.paths.logs_dir.clone()),
+    );
+    options.insert(
+        "PIDFile".to_string(),
+        ListenerServiceConfigValue::String(
+            PathBuf::from(&resolved.paths.state_dir)
+                .join(SERVICE_PID_FILE_NAME)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    );
+
+    let mut env_vars = BTreeMap::new();
+    env_vars.insert(
+        WORKSPACE_HOME_ENV.to_string(),
+        resolved.paths.workspace_home_dir.clone(),
+    );
+    env_vars.insert(LISTENER_SERVICE_MODE_ENV.to_string(), "1".to_string());
+
+    ListenerServiceConfigPlan {
+        name: service_name_for(resolved),
+        display_name: service_display_name_for(Some(resolved)),
+        description: SERVICE_DESCRIPTION.to_string(),
+        arguments: SERVICE_ARGUMENTS
+            .iter()
+            .map(|argument| (*argument).to_string())
+            .collect(),
+        working_directory: if is_windows {
+            String::new()
+        } else {
+            resolved.paths.workspace_home_dir.clone()
+        },
+        options,
+        env_vars,
+    }
 }
 
 pub fn service_status_ready(

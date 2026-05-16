@@ -1,10 +1,12 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::runtime::listener::{self, Status};
 use awiki_cli::runtime::listener_service::{
-    self, ListenerRuntimePolicy, ListenerServiceLifecycleOperation as Op,
-    ListenerServiceProgramAction as ProgramAction, ListenerServiceProgramDecision,
-    ListenerServiceProgramRunAction, ListenerServiceProgramState, ListenerServiceStatusSnapshot,
+    self, ListenerRuntimePolicy, ListenerServiceConfigValue as ConfigValue,
+    ListenerServiceLifecycleOperation as Op, ListenerServiceProgramAction as ProgramAction,
+    ListenerServiceProgramDecision, ListenerServiceProgramRunAction, ListenerServiceProgramState,
+    ListenerServiceStatusSnapshot,
 };
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -36,6 +38,97 @@ fn listener_service_names_match_go_contract() {
                 .unwrap()
                 .to_string_lossy()
         )
+    );
+}
+
+#[test]
+fn listener_service_config_plan_matches_go_new_service_config_shape() {
+    let resolved = test_resolved();
+    let plan = listener_service::service_config_plan_for(&resolved, false);
+
+    assert_eq!(plan.name, listener_service::service_name_for(&resolved));
+    assert_eq!(
+        plan.display_name,
+        listener_service::service_display_name_for(Some(&resolved))
+    );
+    assert_eq!(plan.description, "awiki-cli realtime websocket listener");
+    assert_eq!(
+        plan.arguments,
+        vec![
+            "runtime".to_string(),
+            "listener".to_string(),
+            "service-run".to_string()
+        ]
+    );
+    assert_eq!(plan.working_directory, resolved.paths.workspace_home_dir);
+
+    let mut expected_options = BTreeMap::new();
+    expected_options.insert("RunAtLoad".to_string(), ConfigValue::Bool(true));
+    expected_options.insert("KeepAlive".to_string(), ConfigValue::Bool(true));
+    expected_options.insert("UserService".to_string(), ConfigValue::Bool(true));
+    expected_options.insert("DelayedAutoStart".to_string(), ConfigValue::Bool(true));
+    expected_options.insert(
+        "StartType".to_string(),
+        ConfigValue::String("automatic".to_string()),
+    );
+    expected_options.insert(
+        "OnFailure".to_string(),
+        ConfigValue::String("restart".to_string()),
+    );
+    expected_options.insert(
+        "OnFailureDelayDuration".to_string(),
+        ConfigValue::String("1s".to_string()),
+    );
+    expected_options.insert("LogOutput".to_string(), ConfigValue::Bool(true));
+    expected_options.insert(
+        "LogDirectory".to_string(),
+        ConfigValue::String(resolved.paths.logs_dir.clone()),
+    );
+    expected_options.insert(
+        "PIDFile".to_string(),
+        ConfigValue::String(path_string(
+            &std::path::Path::new(&resolved.paths.state_dir).join("listener.service.pid"),
+        )),
+    );
+    assert_eq!(plan.options, expected_options);
+
+    let mut expected_env = BTreeMap::new();
+    expected_env.insert(
+        "AWIKI_CLI_WORKSPACE_HOME_DIR".to_string(),
+        resolved.paths.workspace_home_dir.clone(),
+    );
+    expected_env.insert("AWIKI_LISTENER_SERVICE_MODE".to_string(), "1".to_string());
+    assert_eq!(plan.env_vars, expected_env);
+
+    let windows_plan = listener_service::service_config_plan_for(&resolved, true);
+    assert_eq!(windows_plan.working_directory, "");
+    assert_eq!(windows_plan.options, plan.options);
+    assert_eq!(windows_plan.env_vars, plan.env_vars);
+
+    let mut spaced = resolved.clone();
+    spaced.paths.workspace_home_dir = format!("  {}  ", resolved.paths.workspace_home_dir);
+    let spaced_plan = listener_service::service_config_plan_for(&spaced, false);
+    assert_eq!(
+        spaced_plan.name,
+        format!(
+            "awiki-cli-listener-{}",
+            first_12_sha256_hex(spaced.paths.workspace_home_dir.trim())
+        )
+    );
+    assert_eq!(
+        spaced_plan.display_name,
+        listener_service::service_display_name_for(Some(&spaced))
+    );
+    assert_eq!(
+        spaced_plan.working_directory,
+        spaced.paths.workspace_home_dir
+    );
+    assert_eq!(
+        spaced_plan
+            .env_vars
+            .get("AWIKI_CLI_WORKSPACE_HOME_DIR")
+            .expect("workspace env"),
+        &spaced.paths.workspace_home_dir
     );
 }
 
