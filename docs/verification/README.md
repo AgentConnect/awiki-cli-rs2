@@ -2,6 +2,70 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Service Lifecycle Planner Slice
+
+Timestamp: 2026-05-17T08:28:00+0800.
+
+Scope: extend the listener service helper boundary for Go
+`internal/runtime/listener/service.go` with pure lifecycle branch plans for
+`EnsureInstalled`, `StartService`, `StopService`, `RestartService`,
+`Uninstall`, and `ApplyRuntimePolicy`, without selecting or executing a Rust
+platform service-manager implementation.
+
+What changed:
+
+- Added `ListenerServiceLifecycleOperation`,
+  `ListenerServiceStatusSnapshot`, and `ListenerRuntimePolicy`.
+- Added pure planners for listener service lifecycle functions.
+- Preserved Go `EnsureInstalled` branch order: construct service, read status,
+  install only when missing, then return status.
+- Preserved Go `StartService` branch order: reject non-websocket mode before
+  service work, auto-install and recheck missing services, error if still
+  missing, return status when already running, otherwise prepare boot id, start,
+  and wait for running.
+- Preserved Go `StopService`, `RestartService`, and `Uninstall` branching,
+  including cleanup-before-wait and not-installed error/return boundaries.
+- Preserved `ApplyRuntimePolicy` selection: stop when not websocket or listener
+  disabled, ensure/install plus optional start for auto-install, status-check
+  before auto-start when auto-install is disabled, and status-only fallback.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_service_contract` passed all 10 tests.
+- Adjacent listener foreground and supervisor-init contracts passed.
+- Go listener service readiness/start guard passed.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path; no platform service-manager,
+  WebSocket, YAML, or new HTTP client dependency was added.
+- Changed Rust files remain below the default 1200-line cap.
+
+Boundary note: this is a planner-only service lifecycle slice. It does not call
+`svc.Install`, `svc.Start`, `svc.Stop`, `svc.Restart`, or `svc.Uninstall`, does
+not translate `kardianos/service` ownership, does not run a real
+`serviceProgram`, and does not implement foreground WebSocket session runtime
+or listener system-test acceptance.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Mail Attachment Filesystem Mode Slice
 
 Timestamp: 2026-05-17T08:03:00+0800.

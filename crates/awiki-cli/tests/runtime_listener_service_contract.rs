@@ -1,6 +1,9 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::runtime::listener::{self, Status};
-use awiki_cli::runtime::listener_service;
+use awiki_cli::runtime::listener_service::{
+    self, ListenerRuntimePolicy, ListenerServiceLifecycleOperation as Op,
+    ListenerServiceStatusSnapshot,
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -167,6 +170,221 @@ fn child_process_plan_matches_go_sysproc_platform_files() {
 }
 
 #[test]
+fn listener_service_lifecycle_plans_match_go_branching() {
+    assert_eq!(
+        listener_service::ensure_installed_plan(status(false, false)),
+        vec![
+            Op::NewService,
+            Op::CheckStatus,
+            Op::InstallIfMissing,
+            Op::ReturnStatus
+        ]
+    );
+    assert_eq!(
+        listener_service::ensure_installed_plan(status(true, true)),
+        vec![Op::NewService, Op::CheckStatus, Op::ReturnStatus]
+    );
+
+    assert_eq!(
+        listener_service::start_service_plan("http", status(false, false), None, "boot-new"),
+        vec![Op::ValidateWebSocketMode]
+    );
+    assert_eq!(
+        listener_service::start_service_plan(
+            "websocket",
+            status(false, false),
+            Some(status(false, false)),
+            "boot-new"
+        ),
+        vec![
+            Op::ValidateWebSocketMode,
+            Op::NewService,
+            Op::CheckStatus,
+            Op::CallEnsureInstalled,
+            Op::RecheckStatus,
+            Op::ErrorNotInstalledAfterAutoInstall,
+        ]
+    );
+    assert_eq!(
+        listener_service::start_service_plan(
+            "websocket",
+            status(false, false),
+            Some(status(true, false)),
+            "boot-new"
+        ),
+        vec![
+            Op::ValidateWebSocketMode,
+            Op::NewService,
+            Op::CheckStatus,
+            Op::CallEnsureInstalled,
+            Op::RecheckStatus,
+            Op::PrepareBootId,
+            Op::ServiceStart,
+            Op::WaitForRunning {
+                expected_boot_id: "boot-new".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        listener_service::start_service_plan(" websocket ", status(true, true), None, "boot-new"),
+        vec![
+            Op::ValidateWebSocketMode,
+            Op::NewService,
+            Op::CheckStatus,
+            Op::ReturnStatus,
+        ]
+    );
+    assert_eq!(
+        listener_service::start_service_plan("websocket", status(true, false), None, "boot-new"),
+        vec![
+            Op::ValidateWebSocketMode,
+            Op::NewService,
+            Op::CheckStatus,
+            Op::PrepareBootId,
+            Op::ServiceStart,
+            Op::WaitForRunning {
+                expected_boot_id: "boot-new".to_string(),
+            },
+        ]
+    );
+
+    assert_eq!(
+        listener_service::stop_service_plan(status(false, false)),
+        vec![Op::NewService, Op::CheckStatus, Op::ReturnStatus]
+    );
+    assert_eq!(
+        listener_service::stop_service_plan(status(true, false)),
+        vec![
+            Op::NewService,
+            Op::CheckStatus,
+            Op::CleanupRuntimeArtifacts,
+            Op::WaitForStopped,
+        ]
+    );
+    assert_eq!(
+        listener_service::stop_service_plan(status(true, true)),
+        vec![
+            Op::NewService,
+            Op::CheckStatus,
+            Op::ServiceStop,
+            Op::CleanupRuntimeArtifacts,
+            Op::WaitForStopped,
+        ]
+    );
+
+    assert_eq!(
+        listener_service::restart_service_plan(status(false, false), "boot-new"),
+        vec![Op::NewService, Op::CheckStatus, Op::ErrorNotInstalled]
+    );
+    assert_eq!(
+        listener_service::restart_service_plan(status(true, false), "boot-new"),
+        vec![
+            Op::NewService,
+            Op::CheckStatus,
+            Op::PrepareBootId,
+            Op::ServiceRestart,
+            Op::WaitForRunning {
+                expected_boot_id: "boot-new".to_string(),
+            },
+        ]
+    );
+
+    assert_eq!(
+        listener_service::uninstall_service_plan(status(false, false)),
+        vec![
+            Op::NewService,
+            Op::CheckStatus,
+            Op::CleanupRuntimeArtifacts,
+            Op::ReturnStatus,
+        ]
+    );
+    assert_eq!(
+        listener_service::uninstall_service_plan(status(true, false)),
+        vec![
+            Op::NewService,
+            Op::CheckStatus,
+            Op::ServiceUninstall,
+            Op::CleanupRuntimeArtifacts,
+            Op::ReturnStatus,
+        ]
+    );
+    assert_eq!(
+        listener_service::uninstall_service_plan(status(true, true)),
+        vec![
+            Op::NewService,
+            Op::CheckStatus,
+            Op::ServiceStop,
+            Op::ServiceUninstall,
+            Op::CleanupRuntimeArtifacts,
+            Op::ReturnStatus,
+        ]
+    );
+}
+
+#[test]
+fn listener_apply_runtime_policy_plan_matches_go_branching() {
+    assert_eq!(
+        listener_service::apply_runtime_policy_plan(
+            policy(false, true, true, true),
+            status(true, true)
+        ),
+        vec![Op::CallStopService]
+    );
+    assert_eq!(
+        listener_service::apply_runtime_policy_plan(
+            policy(true, false, true, true),
+            status(true, true)
+        ),
+        vec![Op::CallStopService]
+    );
+    assert_eq!(
+        listener_service::apply_runtime_policy_plan(
+            policy(true, true, true, true),
+            status(false, false)
+        ),
+        vec![Op::CallEnsureInstalled, Op::CallStartService]
+    );
+    assert_eq!(
+        listener_service::apply_runtime_policy_plan(
+            policy(true, true, true, false),
+            status(false, false)
+        ),
+        vec![Op::CallEnsureInstalled, Op::ReturnStatus]
+    );
+    assert_eq!(
+        listener_service::apply_runtime_policy_plan(
+            policy(true, true, false, true),
+            status(false, false)
+        ),
+        vec![Op::CheckStatus, Op::ReturnStatus]
+    );
+    assert_eq!(
+        listener_service::apply_runtime_policy_plan(
+            policy(true, true, false, true),
+            status(true, false)
+        ),
+        vec![Op::CheckStatus, Op::CallStartService]
+    );
+    assert_eq!(
+        listener_service::apply_runtime_policy_plan(
+            policy(true, true, false, false),
+            status(true, false)
+        ),
+        vec![Op::ReturnStatus]
+    );
+
+    let mut resolved = test_resolved();
+    resolved.runtime_mode = "WEBSOCKET".to_string();
+    resolved.runtime_listener_enabled = true;
+    resolved.runtime_listener_auto_install = false;
+    resolved.runtime_listener_auto_start = true;
+    assert_eq!(
+        ListenerRuntimePolicy::from_resolved(&resolved),
+        policy(true, true, false, true)
+    );
+}
+
+#[test]
 fn boot_id_helpers_and_cleanup_runtime_artifacts_match_go_boundary() {
     let resolved = test_resolved();
     let boot_id = listener_service::prepare_expected_boot_id(&resolved).expect("prepare boot id");
@@ -312,6 +530,24 @@ fn test_resolved() -> Resolved {
         config_error: String::new(),
         env_hits: Vec::new(),
         sources: Default::default(),
+    }
+}
+
+fn status(installed: bool, running: bool) -> ListenerServiceStatusSnapshot {
+    ListenerServiceStatusSnapshot { installed, running }
+}
+
+fn policy(
+    websocket_mode: bool,
+    listener_enabled: bool,
+    auto_install: bool,
+    auto_start: bool,
+) -> ListenerRuntimePolicy {
+    ListenerRuntimePolicy {
+        websocket_mode,
+        listener_enabled,
+        auto_install,
+        auto_start,
     }
 }
 

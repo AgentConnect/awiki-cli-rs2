@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::bridge::MODE_WEBSOCKET;
 use super::listener::{self, Status};
 
 pub const SERVICE_NAME_PREFIX: &str = "awiki-cli-listener";
@@ -21,6 +22,57 @@ pub enum ForegroundSignal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ListenerChildProcessPlan {
     pub setsid: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerServiceLifecycleOperation {
+    ValidateWebSocketMode,
+    NewService,
+    CheckStatus,
+    InstallIfMissing,
+    CallEnsureInstalled,
+    RecheckStatus,
+    ErrorNotInstalledAfterAutoInstall,
+    ErrorNotInstalled,
+    PrepareBootId,
+    ServiceStart,
+    ServiceStop,
+    ServiceRestart,
+    ServiceUninstall,
+    CleanupRuntimeArtifacts,
+    WaitForRunning { expected_boot_id: String },
+    WaitForStopped,
+    ReturnStatus,
+    CallStartService,
+    CallStopService,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ListenerServiceStatusSnapshot {
+    pub installed: bool,
+    pub running: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ListenerRuntimePolicy {
+    pub websocket_mode: bool,
+    pub listener_enabled: bool,
+    pub auto_install: bool,
+    pub auto_start: bool,
+}
+
+impl ListenerRuntimePolicy {
+    pub fn from_resolved(resolved: &Resolved) -> Self {
+        Self {
+            websocket_mode: resolved
+                .runtime_mode
+                .trim()
+                .eq_ignore_ascii_case(MODE_WEBSOCKET),
+            listener_enabled: resolved.runtime_listener_enabled,
+            auto_install: resolved.runtime_listener_auto_install,
+            auto_start: resolved.runtime_listener_auto_start,
+        }
+    }
 }
 
 pub fn service_name_for(resolved: &Resolved) -> String {
@@ -157,6 +209,142 @@ pub fn listener_child_process_plan_for_platform(is_windows: bool) -> ListenerChi
 
 pub fn listener_child_process_plan() -> ListenerChildProcessPlan {
     listener_child_process_plan_for_platform(cfg!(windows))
+}
+
+pub fn ensure_installed_plan(
+    status: ListenerServiceStatusSnapshot,
+) -> Vec<ListenerServiceLifecycleOperation> {
+    let mut operations = vec![
+        ListenerServiceLifecycleOperation::NewService,
+        ListenerServiceLifecycleOperation::CheckStatus,
+    ];
+    if !status.installed {
+        operations.push(ListenerServiceLifecycleOperation::InstallIfMissing);
+    }
+    operations.push(ListenerServiceLifecycleOperation::ReturnStatus);
+    operations
+}
+
+pub fn start_service_plan(
+    runtime_mode: &str,
+    before: ListenerServiceStatusSnapshot,
+    after_auto_install: Option<ListenerServiceStatusSnapshot>,
+    expected_boot_id: &str,
+) -> Vec<ListenerServiceLifecycleOperation> {
+    let mut operations = vec![ListenerServiceLifecycleOperation::ValidateWebSocketMode];
+    if !runtime_mode.trim().eq_ignore_ascii_case(MODE_WEBSOCKET) {
+        return operations;
+    }
+    operations.push(ListenerServiceLifecycleOperation::NewService);
+    operations.push(ListenerServiceLifecycleOperation::CheckStatus);
+    let mut status = before;
+    if !status.installed {
+        operations.push(ListenerServiceLifecycleOperation::CallEnsureInstalled);
+        operations.push(ListenerServiceLifecycleOperation::RecheckStatus);
+        status = after_auto_install.unwrap_or(status);
+        if !status.installed {
+            operations.push(ListenerServiceLifecycleOperation::ErrorNotInstalledAfterAutoInstall);
+            return operations;
+        }
+    }
+    if status.running {
+        operations.push(ListenerServiceLifecycleOperation::ReturnStatus);
+        return operations;
+    }
+    operations.push(ListenerServiceLifecycleOperation::PrepareBootId);
+    operations.push(ListenerServiceLifecycleOperation::ServiceStart);
+    operations.push(ListenerServiceLifecycleOperation::WaitForRunning {
+        expected_boot_id: expected_boot_id.to_string(),
+    });
+    operations
+}
+
+pub fn stop_service_plan(
+    status: ListenerServiceStatusSnapshot,
+) -> Vec<ListenerServiceLifecycleOperation> {
+    let mut operations = vec![
+        ListenerServiceLifecycleOperation::NewService,
+        ListenerServiceLifecycleOperation::CheckStatus,
+    ];
+    if !status.installed {
+        operations.push(ListenerServiceLifecycleOperation::ReturnStatus);
+        return operations;
+    }
+    if status.running {
+        operations.push(ListenerServiceLifecycleOperation::ServiceStop);
+    }
+    operations.push(ListenerServiceLifecycleOperation::CleanupRuntimeArtifacts);
+    operations.push(ListenerServiceLifecycleOperation::WaitForStopped);
+    operations
+}
+
+pub fn restart_service_plan(
+    status: ListenerServiceStatusSnapshot,
+    expected_boot_id: &str,
+) -> Vec<ListenerServiceLifecycleOperation> {
+    let mut operations = vec![
+        ListenerServiceLifecycleOperation::NewService,
+        ListenerServiceLifecycleOperation::CheckStatus,
+    ];
+    if !status.installed {
+        operations.push(ListenerServiceLifecycleOperation::ErrorNotInstalled);
+        return operations;
+    }
+    operations.push(ListenerServiceLifecycleOperation::PrepareBootId);
+    operations.push(ListenerServiceLifecycleOperation::ServiceRestart);
+    operations.push(ListenerServiceLifecycleOperation::WaitForRunning {
+        expected_boot_id: expected_boot_id.to_string(),
+    });
+    operations
+}
+
+pub fn uninstall_service_plan(
+    status: ListenerServiceStatusSnapshot,
+) -> Vec<ListenerServiceLifecycleOperation> {
+    let mut operations = vec![
+        ListenerServiceLifecycleOperation::NewService,
+        ListenerServiceLifecycleOperation::CheckStatus,
+    ];
+    if !status.installed {
+        operations.push(ListenerServiceLifecycleOperation::CleanupRuntimeArtifacts);
+        operations.push(ListenerServiceLifecycleOperation::ReturnStatus);
+        return operations;
+    }
+    if status.running {
+        operations.push(ListenerServiceLifecycleOperation::ServiceStop);
+    }
+    operations.push(ListenerServiceLifecycleOperation::ServiceUninstall);
+    operations.push(ListenerServiceLifecycleOperation::CleanupRuntimeArtifacts);
+    operations.push(ListenerServiceLifecycleOperation::ReturnStatus);
+    operations
+}
+
+pub fn apply_runtime_policy_plan(
+    policy: ListenerRuntimePolicy,
+    status: ListenerServiceStatusSnapshot,
+) -> Vec<ListenerServiceLifecycleOperation> {
+    if !policy.websocket_mode || !policy.listener_enabled {
+        return vec![ListenerServiceLifecycleOperation::CallStopService];
+    }
+    if policy.auto_install {
+        let mut operations = vec![ListenerServiceLifecycleOperation::CallEnsureInstalled];
+        if policy.auto_start {
+            operations.push(ListenerServiceLifecycleOperation::CallStartService);
+        } else {
+            operations.push(ListenerServiceLifecycleOperation::ReturnStatus);
+        }
+        return operations;
+    }
+    if policy.auto_start {
+        let mut operations = vec![ListenerServiceLifecycleOperation::CheckStatus];
+        if status.installed {
+            operations.push(ListenerServiceLifecycleOperation::CallStartService);
+        } else {
+            operations.push(ListenerServiceLifecycleOperation::ReturnStatus);
+        }
+        return operations;
+    }
+    vec![ListenerServiceLifecycleOperation::ReturnStatus]
 }
 
 pub fn generate_boot_id() -> String {
