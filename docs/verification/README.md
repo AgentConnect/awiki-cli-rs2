@@ -2,6 +2,75 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Message Secure E2EE Client Preparation Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/message/secure_client.rs crates/awiki-cli/tests/message_secure_client_contract.rs
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSecureInitCreatesPendingSession|TestServiceSecureRetryMarksQueuedRecordSent|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Adds `message::secure_client` as a focused local preparation translation for
+  Go `NewSecureE2EEClientForRecord` before high-level client construction.
+- Preserves Go manager/record required errors.
+- Preserves identity path lookup through `Manager::paths_for_identity`.
+- Preserves DID signing private-key parsing and E2EE agreement private-key
+  parsing through the local ANP facade, including Go error prefixes:
+  `parse DID signing private key:` and
+  `parse E2EE agreement private key:`.
+- Preserves Go P5 file-store root creation under the identity directory:
+  `p5-e2ee-sessions`, `p5-signed-prekeys`, and `p5-one-time-prekeys`.
+- Preserves returned owner DID and Go key ID construction:
+  `<did>#key-1` and `<did>#key-3`.
+- Preserves local DID document resolver precedence: current record document
+  first for the current DID, then local manager list/load fallback for matching
+  summaries.
+- Preserves local resolver nil-equivalent behavior: missing manager, empty DID,
+  list/load errors, missing identity, or missing DID document return no local
+  document.
+- Avoids deriving `Debug` for the prepared client context because it carries
+  private key material.
+- Keeps files under the default review-size cap:
+  `secure_client.rs` and `message_secure_client_contract.rs` are both well
+  below 1200 lines.
+
+Boundary note: this slice intentionally stops before production
+`MessageServiceE2EEClient` construction. It does not implement real
+`SendText`, `SendJSON`, `PublishPrekeyBundle`, `ProcessIncoming`, remote DID
+resolution through `anpsdk.ResolveDidDocument`, RPC/WebSocket transport,
+production `msg secure retry/send/init/repair`, or awiki-system-test
+secure-direct acceptance.
+
+Parallelism note: a read-only Native Agent reviewed this slice for Go/Rust
+boundary drift. No code-writing Native Agent changed code for this slice.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing local `../anp/rust` key material APIs
+through the CLI facade and the existing CLI-side file-store facades. It does
+not enable ANP SDK `network`/default features and does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, new E2EE provider
+dependencies, or a new SQLite backend.
+
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 
 Status: unit verified.
