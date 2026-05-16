@@ -10569,6 +10569,44 @@ that link because link cleanup is separate from byte-for-byte translation.
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged.
 
+## 2026-05-16 Publish guide asset slice
+
+Timestamp: 2026-05-16T17:15:17Z / 2026-05-17T01:15:17+0800.
+
+Scope: copy the Go `docs/publish.md` release and rollback handbook into the
+Rust repository as a byte-identical asset. This preserves the same documented
+version/tag conventions, stable/prerelease flows, npm publication notes, Gitee
+sync instructions, rollback guidance, and CI expectations.
+
+Commands run:
+
+```text
+cp -p ../awiki-cli/docs/publish.md docs/publish.md
+cmp -s ../awiki-cli/docs/publish.md docs/publish.md
+stat -c '%a %n' docs/publish.md
+wc -l docs/publish.md
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `docs/publish.md` is byte-identical to the Go repository source.
+- Permissions were preserved from the Go repository: `664`.
+- The publish guide is 251 lines, below the default 1200-line review-size cap,
+  so no file-size exception is needed.
+
+Boundary note: this is a documentation asset parity slice. It does not copy or
+execute `.goreleaser.yml`, GitHub workflows, or `scripts/release/*`, and it
+does not change Rust package metadata, npm publishing behavior, or release
+archive contents.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
+
 ## 2026-05-16 Config template asset slice
 
 Timestamp: 2026-05-16T17:02:08Z / 2026-05-17T01:02:08+0800.
