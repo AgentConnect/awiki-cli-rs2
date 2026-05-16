@@ -2,6 +2,8 @@ mod attachment;
 mod attachment_service;
 mod client;
 mod contact_sync;
+mod group_e2ee_provider;
+mod group_e2ee_publish;
 mod group_e2ee_status;
 mod group_e2ee_wire;
 mod group_service;
@@ -33,9 +35,11 @@ pub use attachment::{
 pub(crate) use attachment::{find_attachment_selection_with_paging, load_attachment_file};
 pub use attachment_service::download_attachment;
 pub use client::Client;
+pub use group_e2ee_provider::{default_mls_data_dir, ANP_MLS_BINARY_ENV};
+pub use group_e2ee_publish::{publish_group_e2ee_key_package, GroupE2eePublishKeyPackageRequest};
 pub use group_e2ee_status::{
-    default_mls_data_dir, inspect_group_e2ee_status, pull_group_e2ee_notices,
-    GroupE2eePendingRequest, GroupE2eeStatusRequest, ANP_MLS_BINARY_ENV,
+    inspect_group_e2ee_status, pull_group_e2ee_notices, GroupE2eePendingRequest,
+    GroupE2eeStatusRequest,
 };
 pub use group_e2ee_wire::{
     build_group_e2ee_add_rpc_params, build_group_e2ee_create_rpc_params,

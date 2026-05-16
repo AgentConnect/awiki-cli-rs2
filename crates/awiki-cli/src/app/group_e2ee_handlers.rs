@@ -1,7 +1,9 @@
 use super::{msg_handlers::message_exit, not_implemented_side_effect, App};
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
-use crate::message::{self, GroupE2eePendingRequest, GroupE2eeStatusRequest};
+use crate::message::{
+    self, GroupE2eePendingRequest, GroupE2eePublishKeyPackageRequest, GroupE2eeStatusRequest,
+};
 use crate::output::ExitError;
 use serde_json::{json, Value};
 
@@ -65,31 +67,62 @@ impl App {
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(not_implemented_side_effect(
-                "group e2ee publish-key-package",
-            ));
-        }
         let mut purpose = string_flag_or(command, "purpose", "normal");
         if bool_flag(command, "recovery")? {
             purpose = "recovery".to_string();
         }
+        if purpose.trim().is_empty() {
+            purpose = "normal".to_string();
+        }
+        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
+        let group = string_flag(command, "group");
+        let contract_test = bool_flag(command, "contract-test")?;
+        let plan = json!({
+            "action": "group.e2ee.publish_key_package",
+            "identity": self.globals.identity,
+            "runtime_mode": resolved.runtime_mode,
+            "provider": "exec",
+            "binary": provider_binary(),
+            "mls_data_dir": mls_data_dir(&resolved),
+            "device": device,
+            "group": group,
+            "recovery": purpose == "recovery",
+            "purpose": purpose,
+            "contract_test_only": contract_test,
+        });
+        if !self.globals.dry_run {
+            let mut result = message::publish_group_e2ee_key_package(
+                &resolved,
+                &self.identity_manager(&resolved),
+                GroupE2eePublishKeyPackageRequest {
+                    identity_name: self.globals.identity.clone(),
+                    device_id: string_flag_or(command, "device", DEFAULT_DEVICE),
+                    group: string_flag(command, "group"),
+                    purpose,
+                    contract_test,
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Install anp-mls, set AWIKI_ANP_MLS_BINARY, pass --group when --recovery is used, and ensure message-service group E2EE APIs are enabled.",
+                )
+            })?;
+            if let Some(data) = result.data.as_object_mut() {
+                data.insert("plan".to_string(), plan);
+            }
+            return self.render_success(
+                "awiki-cli group e2ee publish-key-package",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
+        }
         self.render_group_e2ee_plan(
             "awiki-cli group e2ee publish-key-package",
             &resolved,
-            json!({
-                "action": "group.e2ee.publish_key_package",
-                "identity": self.globals.identity,
-                "runtime_mode": resolved.runtime_mode,
-                "provider": "exec",
-                "binary": provider_binary(),
-                "mls_data_dir": mls_data_dir(&resolved),
-                "device": string_flag_or(command, "device", DEFAULT_DEVICE),
-                "group": string_flag(command, "group"),
-                "recovery": purpose == "recovery",
-                "purpose": purpose,
-                "contract_test_only": bool_flag(command, "contract-test")?,
-            }),
+            plan,
             "Dry run: group e2ee key package publish planned",
         )
     }

@@ -8238,3 +8238,94 @@ bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
 crates, platform service libraries, new E2EE provider dependencies, or a new
 SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
 work.
+
+## 2026-05-16 Group E2EE KeyPackage Publish Live Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_publish_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+cd ../awiki-cli && go test ./internal/message -run 'TestBuildGroupE2EEPublishKeyPackageRPCParamsStripsProviderOnlyFields|TestInspectGroupE2EEStatusComparesLocalEpochToServiceHead|TestGroupE2EEStatusForRecoveryScansNonDefaultDevice' -count=1
+wc -l crates/awiki-cli/src/message/group_e2ee_status.rs crates/awiki-cli/src/message/group_e2ee_provider.rs crates/awiki-cli/src/message/group_e2ee_publish.rs crates/awiki-cli/src/app/group_e2ee_handlers.rs crates/awiki-cli/tests/group_e2ee_publish_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `group_e2ee_publish_contract`: 4 passed.
+- `group_e2ee_status_contract`: 2 passed.
+- `group_e2ee_pending_contract`: 2 passed.
+- `group_contract`: 6 passed.
+- `message_group_e2ee_wire_contract`: 7 passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `group_e2ee_status.rs` 541 lines, `group_e2ee_provider.rs` 352 lines,
+  `group_e2ee_publish.rs` 293 lines, `group_e2ee_handlers.rs` 439 lines, and
+  `group_e2ee_publish_contract.rs` 676 lines. No file-size exception is
+  needed.
+
+Scope:
+
+- Replaces the non-dry-run `group e2ee publish-key-package` `not_implemented`
+  boundary with Go-shaped KeyPackage publish execution.
+- Extracts the reusable external `anp-mls` exec provider into
+  `message/group_e2ee_provider.rs` so status and publish share binary lookup,
+  data-dir scoping, timeout, JSON response handling, and error mapping.
+- Preserves Go publish validation and provider request behavior: active
+  identity gate, blank device defaulting to `default`, purpose normalization
+  for `normal|recovery|update`, group requirement for `recovery`/`update`,
+  top-level `contract_test_enabled` only when true, provider params
+  `agent_did`, `device_id`, `owner_did`, and non-normal `purpose`/`group_did`.
+- Preserves Go post-processing before service publish: tags non-normal
+  KeyPackages with `purpose`, `group_did`, and defaulted `device_id`; verifies
+  owner/binding DID match the active identity; requires
+  `did_wba_binding.leaf_signature_key_b64u`, `issued_at`, and `expires_at`;
+  signs the binding locally with the active DID document verification method
+  and key-1 private key.
+- Preserves service publish through the existing Rustls/std authenticated
+  message client and existing wire builder: service DID is selected from
+  resolved config when present with a capabilities fallback for empty configs,
+  `group.e2ee.publish_key_package` is signed with transport-protected metadata,
+  and private provider-only KeyPackage fields are stripped by the sanitizer.
+- Preserves Go CLI output shape and strings: summary
+  `Published group E2EE KeyPackage`, `data.mls`, `data.published`,
+  `recovery`, `purpose`, `group`, `device_id`, `argv_safe`, `p4_mutates`,
+  inserted `plan`, and the Go publish error hint.
+- Adds fake-MLS/fake-server live CLI coverage for normal publish, recovery
+  publish with `--contract-test`, missing recovery group, invalid purpose, and
+  no leakage of `private_key_package_b64u` into the service publish body.
+
+Boundary note: this slice still excludes `repair`, `recover-member`,
+`update-key`, `rejoin`, `group add --e2ee`, commit/welcome replay,
+service-head mutation, MLS cache mutation, WebSocket/local bridge group E2EE
+transport, and awiki-system-test group-E2EE acceptance.
+
+Parallelism note: two read-only Native Agents mapped Go publish behavior and
+Rust/ANP reusable capabilities. One GPT-5.5 xhigh code-writing Native Agent
+created the focused publish test file under a bounded, non-overlapping test
+write scope; the leader implemented production code, corrected the tests to
+Go/Rust config and ANP binding details, integrated documentation, and ran final
+verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `std::process::Command`, `serde_json`,
+`sha2`/`base64`, local ANP Rust proof/key APIs, existing authsdk/session,
+existing Rustls/std message HTTP transport, existing group E2EE wire builders,
+and the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, MLS provider crates, or a
+new SQLite backend. TLS remains Rustls-first.

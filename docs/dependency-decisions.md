@@ -671,3 +671,31 @@ Do not mix that optimization with the 1:1 translation lane.
 - `publish-key-package`, `repair`, `recover-member`, `update-key`, `rejoin`,
   commit/welcome replay, and MLS state mutation remain separate translation
   slices.
+
+## Group E2EE KeyPackage Publish Live Notes
+
+2026-05-16:
+
+- Wired non-dry-run `group e2ee publish-key-package` without adding a crate,
+  changing Cargo manifests, or enabling local ANP SDK MLS features in-process.
+- The MLS provider boundary remains the external local ANP Rust SDK binary:
+  `anp-mls key-package generate --json-in - --data-dir <scoped-dir>`. The
+  shared exec provider now lives in `message/group_e2ee_provider.rs` so status
+  and publish reuse the same binary resolution order, scoped data-dir layout,
+  executable checks, stdin/stdout JSON contract, and 15-second timeout without
+  growing `group_e2ee_status.rs`.
+- The publish slice reuses existing local ANP Rust proof/key APIs through the
+  CLI facade for DID-WBA binding signing: `load_private_key_material`,
+  `verification_method_id_from_document`, and `generate_did_wba_binding`.
+- Service publish reuses the existing authsdk/session and Rustls/std message
+  HTTP client, plus the existing `group.e2ee.publish_key_package` wire builder
+  and sanitizer. No TLS dependency decision changed; TLS remains Rustls-first.
+- No SQLite, WebSocket, platform, or ANP SDK dependency decision changed. This
+  slice does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+  `hyper`, WebSocket crates, async runtimes, YAML crates, platform service
+  libraries, MLS provider crates, or a new SQLite backend. SQLite remains on
+  the approved `rusqlite + bundled` path.
+- `repair`, `recover-member`, `update-key`, `rejoin`, `group add --e2ee`,
+  commit/welcome replay, service-head mutation, and MLS cache mutation remain
+  separate translation slices. Any later optimization of the provider boundary
+  must be recorded separately and not mixed into the 1:1 translation lane.
