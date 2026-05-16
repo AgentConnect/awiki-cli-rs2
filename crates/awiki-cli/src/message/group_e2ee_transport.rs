@@ -1,6 +1,7 @@
 use super::service::auth_session;
 use super::{
-    build_group_e2ee_add_rpc_params, build_group_e2ee_get_key_package_rpc_params, Client,
+    build_group_e2ee_add_rpc_params, build_group_e2ee_get_key_package_rpc_params,
+    build_group_e2ee_leave_request_rpc_params, build_group_e2ee_remove_rpc_params, Client,
     MessageError, MESSAGE_RPC_ENDPOINT,
 };
 use crate::config::Resolved;
@@ -97,5 +98,34 @@ impl<'a> GroupE2eeTransport<'a> {
     ) -> Result<Map<String, Value>, MessageError> {
         let params = build_group_e2ee_add_rpc_params(self.record, group_did, member_did, mls_head)?;
         self.rpc_call("group.e2ee.add", params)
+    }
+
+    pub(crate) fn remove_group_e2ee(
+        &mut self,
+        group_did: &str,
+        member_did: &str,
+        prepared_commit: Map<String, Value>,
+        reason_text: &str,
+        leave_request_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let params = build_group_e2ee_remove_rpc_params(
+            self.record,
+            group_did,
+            member_did,
+            prepared_commit,
+            reason_text,
+            leave_request_id,
+        )?;
+        self.rpc_call("group.e2ee.remove", params)
+    }
+
+    pub(crate) fn create_group_e2ee_leave_request(
+        &mut self,
+        group_did: &str,
+        reason_text: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let params =
+            build_group_e2ee_leave_request_rpc_params(self.record, group_did, reason_text)?;
+        self.rpc_call("group.e2ee.leave_request", params)
     }
 }

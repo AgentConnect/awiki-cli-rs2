@@ -308,7 +308,7 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
 }
 
 #[test]
-fn group_e2ee_self_leave_error_matches_go_handler_boundary() {
+fn group_e2ee_leave_loads_identity_before_live_leave_request_flow() {
     let workspace = TempDir::new().expect("workspace");
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
 
@@ -325,16 +325,13 @@ fn group_e2ee_self_leave_error_matches_go_handler_boundary() {
         workspace.path(),
     );
 
-    assert_code(&output, 1);
+    assert_code(&output, 5);
     let envelope = error_json(&output);
-    assert_eq!(envelope["error"]["code"], "unsupported_mode");
-    assert_contains(
-        &envelope["error"]["message"],
-        "group E2EE self-leave is not cryptographically supported yet",
-    );
+    assert_eq!(envelope["error"]["code"], "not_found");
+    assert_contains(&envelope["error"]["message"], "identity not found: alice");
     assert_eq!(
         envelope["error"]["hint"],
-        "For PR-A group E2EE, ask the group owner to remove the member; self-leave requires a future epoch-advancing leave-request flow."
+        "Run `awiki-cli id list` to inspect available identities."
     );
 }
 

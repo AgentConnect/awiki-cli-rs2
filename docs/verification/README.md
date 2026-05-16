@@ -8504,3 +8504,100 @@ the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
 `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
 runtimes, YAML crates, platform service libraries, MLS provider crates, ANP SDK
 default/network features, or a new SQLite backend. TLS remains Rustls-first.
+
+## 2026-05-16 Group E2EE Remove/Leave Live Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_remove_leave_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_add_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_create_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_publish_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestLeaveGroupRejectsActiveOwnerFromCachedSnapshot|TestLeaveGroupE2EECreatesLeaveRequestWithoutLocalMLSLeave|TestUnsupportedGroupE2EESelfLeaveReasonDetectsNonAdvancingEpoch|TestGroupMemberMutationUsesPreMutationE2EESnapshot|TestShouldAbortGroupE2EEPendingCommitOnlyForDeterministicServiceRejection|TestPendingCommitTerminalParamsDoNotReusePrepareOperationID|TestBuildGroupE2EERemoveRPCParams|TestHTTPTransportGroupMethods|TestMLSExecProviderCommands' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+wc -l crates/awiki-cli/src/message/group_service.rs crates/awiki-cli/src/message/group_e2ee_remove.rs crates/awiki-cli/src/message/group_e2ee_provider.rs crates/awiki-cli/src/message/group_e2ee_transport.rs crates/awiki-cli/src/app/group_e2ee_handlers.rs crates/awiki-cli/tests/group_e2ee_remove_leave_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `group_e2ee_remove_leave_contract`: 3 passed.
+- `group_e2ee_add_contract`: 6 passed.
+- `group_e2ee_create_contract`: 2 passed.
+- `group_e2ee_publish_contract`: 4 passed.
+- `group_e2ee_status_contract`: 2 passed.
+- `group_e2ee_pending_contract`: 2 passed.
+- `group_live_contract`: 3 passed.
+- `group_contract`: 6 passed.
+- `message_group_e2ee_wire_contract`: 7 passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `group_service.rs` 1198 lines, `group_e2ee_remove.rs` 368 lines,
+  `group_e2ee_provider.rs` 412 lines, `group_e2ee_transport.rs` 131 lines,
+  `group_e2ee_handlers.rs` 495 lines, and
+  `group_e2ee_remove_leave_contract.rs` 843 lines. No file-size exception is
+  needed.
+
+Scope:
+
+- Wires live `group remove --e2ee` through Go's epoch-advancing remove path:
+  active identity, member DID resolution, pre-mutation E2EE snapshot detection,
+  external MLS `anp-mls group remove-member`, hidden `group.e2ee.remove`,
+  local `group commit-finalize`, E2EE summary persistence, group state sync,
+  and no normal P4 `group.remove`.
+- Preserves Go app/service summary behavior: the service summary is
+  `Removed member from group with group E2EE`, while the public CLI command
+  keeps the Go `group remove` summary override `Removed member from group`.
+- Wires live `group leave --e2ee` through Go's leave-request path only:
+  cached active owners are rejected, P4 `group.leave` is not called, local MLS
+  leave is not called, hidden `group.e2ee.leave_request` uses
+  `transport-protected` security, and the owner-processing warning is returned.
+- Wires live hidden `group e2ee process-leave-request` by defaulting the reason
+  to `leave request processed by owner`, trimming `leave_request_id`, delegating
+  to the same E2EE remove path, syncing group state, returning the Go summary
+  `Processed group E2EE leave request with epoch-advancing remove`, and
+  inserting the Go plan into live result data.
+- Preserves Go terminal pending-commit params: finalize/abort include
+  `agent_did`, `actor_did`, `device_id`, `group_did`, `commit_b64u`, and
+  optional `pending_commit_id`, `subject_did`, `subject_status`, `from_epoch`,
+  and `to_epoch`; they do not reuse the prepare `operation_id`.
+- Preserves Go abort policy shape: abort is attempted only for deterministic
+  service rejection, meaning HTTP 4xx or RPC code >= 2000, not HTTP 5xx,
+  lower RPC codes, transport errors, or internal errors.
+
+Boundary note: Go can return warnings/data alongside some failed
+pending-commit submit paths through multiple return values. The current Rust
+message service API returns `Result<CommandResult, MessageError>` and cannot
+expose those side-channel warnings on error without a broader result type
+change. This slice keeps the existing Rust error model and verifies the
+success-path parity.
+
+Parallelism note: one read-only Native Agent mapped the Go remove/leave
+behavior. One GPT-5.5 xhigh code-writing Native Agent corrected the isolated
+remove/leave test file under a bounded, non-overlapping test write scope. The
+leader implemented production code, corrected remaining test fixture parity,
+updated documentation, and ran final verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `std::process::Command`, `serde_json`,
+existing authsdk/session, existing Rustls/std message HTTP transport, existing
+group E2EE wire builders, the external local ANP Rust SDK `anp-mls` binary, and
+the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, MLS provider crates, ANP SDK
+default/network features, or a new SQLite backend. TLS remains Rustls-first.

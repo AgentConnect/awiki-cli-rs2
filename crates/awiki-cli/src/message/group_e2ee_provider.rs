@@ -82,6 +82,36 @@ impl MlsExecProvider {
         result_object(response)
     }
 
+    pub(crate) fn remove_member(
+        &self,
+        request: &Value,
+        agent_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let response = self.call("group", "remove-member", request, agent_did, device_id)?;
+        result_object(response)
+    }
+
+    pub(crate) fn commit_finalize(
+        &self,
+        request: &Value,
+        agent_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let response = self.call("group", "commit-finalize", request, agent_did, device_id)?;
+        result_object(response)
+    }
+
+    pub(crate) fn commit_abort(
+        &self,
+        request: &Value,
+        agent_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let response = self.call("group", "commit-abort", request, agent_did, device_id)?;
+        result_object(response)
+    }
+
     pub(crate) fn process_welcome(
         &self,
         request: &Value,

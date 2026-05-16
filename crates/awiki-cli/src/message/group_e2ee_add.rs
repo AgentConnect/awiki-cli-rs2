@@ -217,7 +217,7 @@ fn e2ee_notice_object(delivery: &Map<String, Value>) -> Option<&Map<String, Valu
     delivery.get("e2ee_notice").and_then(Value::as_object)
 }
 
-fn group_snapshot_uses_e2ee(snapshot: &Value) -> bool {
+pub(crate) fn group_snapshot_uses_e2ee(snapshot: &Value) -> bool {
     if snapshot.is_null() {
         return false;
     }

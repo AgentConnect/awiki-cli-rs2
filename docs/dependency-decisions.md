@@ -185,6 +185,7 @@ substitute for a Rustls-backed stack.
 | Group E2EE dry-run CLI slice | Add no dependency for `group e2ee ... --dry-run`; model provider metadata and plans without invoking `anp-mls`. | Go dry-run plans expose the intended MLS/provider orchestration without executing the provider. Real MLS execution should be implemented with the local ANP Rust tooling and focused security/system tests, not hidden inside static CLI plan translation. | `crates/awiki-cli/tests/group_contract.rs` passed. Dependency tree unchanged. |
 | Group E2EE status/pending live slice | Add no dependency for non-dry-run `group e2ee status` or `group e2ee pending`; use `std::process::Command` only for the external status `anp-mls group status --json-in -` boundary and the existing authsdk + Rustls/std message HTTP client for hidden `group.e2ee.head` and `group.e2ee.notice`. | Go status is a diagnostic/recovery-inspection command around the external `anp-mls` CLI plus existing message-service RPCs. Go pending is only an authenticated hidden `group.e2ee.notice` pull with limit `50`, `mark_delivered=false`, no `notice_ids`, and optional group filtering; it does not invoke MLS. Reusing `std::process`, existing `serde_json`, existing `sha2`/`base64`, existing authsdk/session, existing Rustls/std transport, and the existing group E2EE wire builders avoids adding MLS provider crates, async runtimes, `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, platform service libraries, or a new SQLite backend. The slice deliberately keeps publish/repair/recover/update/rejoin provider mutations separate. | `cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked`; `cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked`; `cargo +1.79.0 test -p awiki-cli --test group_contract --locked`; `cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked`; Go focused status and dry-run references passed. Cargo manifests and lockfile are unchanged; dependency audit remains limited to existing Rustls/webpki/ring and approved bundled SQLite paths. |
 | Group E2EE add/rejoin live slice | Add no dependency for live `group add --e2ee` or hidden `group e2ee rejoin`; reuse the existing external local ANP Rust SDK binary boundary, authsdk/session, Rustls/std message HTTP client, group E2EE wire builders, and approved `rusqlite + bundled` store path. | Go add/rejoin does not require a new in-process MLS crate or transport stack. It performs normal P4 `group.add`, syncs group state, leases a service-verified KeyPackage through hidden `group.e2ee.get_key_package`, invokes `anp-mls group add-member --json-in - --data-dir <scoped-dir>`, submits hidden `group.e2ee.add`, persists local summary metadata, and optionally runs `anp-mls welcome process` only for a local added identity. Reusing the existing provider and transport helpers keeps TLS Rustls-first and avoids adding `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL, async runtimes, YAML crates, platform service libraries, MLS provider crates, ANP SDK default/network features, or a new SQLite backend. | `cargo +1.79.0 test -p awiki-cli --test group_e2ee_add_contract --locked`; adjacent group-E2EE/group/wire tests, structure check, Go focused references, whitespace check, and dependency audit passed. Cargo manifests and lockfile are unchanged; audit remained limited to existing Rustls/webpki/ring/sha2/base64 and approved bundled SQLite paths. |
+| Group E2EE remove/leave live slice | Add no dependency for live `group remove --e2ee`, live `group leave --e2ee`, or hidden `group e2ee process-leave-request`; reuse the existing external local ANP Rust SDK binary boundary, authsdk/session, Rustls/std message HTTP client, group E2EE wire builders, and approved `rusqlite + bundled` store path. | Go remove/leave does not require a new in-process MLS crate or transport stack. Removal prepares an epoch-advancing commit through `anp-mls group remove-member --json-in - --data-dir <scoped-dir>`, submits hidden `group.e2ee.remove`, finalizes with `group commit-finalize`, persists local summary metadata, and syncs group state. E2EE self-leave creates only hidden `group.e2ee.leave_request`; it does not run local MLS leave or P4 `group.leave`. Reusing the existing provider and transport helpers keeps TLS Rustls-first and avoids adding `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL, async runtimes, YAML crates, platform service libraries, MLS provider crates, ANP SDK default/network features, or a new SQLite backend. | `cargo +1.79.0 test -p awiki-cli --test group_e2ee_remove_leave_contract --locked`; adjacent group-E2EE/group/wire tests, structure check, Go focused references, whitespace check, and dependency audit passed. Cargo manifests and lockfile are unchanged; audit remained limited to existing Rustls/webpki/ring/sha2/base64 and approved bundled SQLite paths. |
 | Local CLI validation selector slice | Add no dependency for Go-shaped `msg attachment download` target validation and `id profile set` body-source validation. Keep real profile RPC and attachment transfer deferred. | These checks are command/service-boundary argument validation in Go and can run before auth, HTTP/TLS, WebSocket, or attachment transfer code. Translating them separately unlocks offline `awiki-system-test` selectors without forcing a shared service transport dependency decision. | `crates/awiki-cli/tests/msg_contract.rs`, `crates/awiki-cli/tests/identity_contract.rs`, and the focused offline system-test selector batch passed. Dependency tree unchanged except existing approved bundled SQLite and existing Rustls/update paths; no OpenSSL/native-tls, HTTP/TLS client, WebSocket, or bundled OpenSSL path was added. |
 | Mail remote wire contract slice | Add no dependency for the pure `internal/mail/client.go` and `service.go` RPC wire/error/summary contract. Keep `NewClient`, HTTP execution, DID-auth session construction, JWT refresh, CA bundle handling, and attachment file writes deferred. | The Go mail service methods have a useful pure boundary: endpoint, method names, transport profiles, JSON params, validation errors, result summaries, and RPC/HTTP `ServiceError` display can be translated and unit-tested before selecting the shared Rustls HTTP stack. Wiring fake non-dry-run mail execution would break parity, and wiring real execution here would duplicate the pending authsdk/session transport decision. | `cargo +1.79.0 test -p awiki-cli --test mail_wire_contract --locked` passed before full verification. Cargo manifests and lockfile are unchanged; this slice adds no `reqwest`, `hyper`, WebSocket crate, OpenSSL, `native-tls`, bundled OpenSSL, or ANP SDK network/default feature. Future live mail RPC must reuse these builders with the Rustls-first shared client. |
 | Page dry-run CLI slice | Add no HTTP/TLS dependency for `page create/list/get/update/rename/delete --dry-run`; use static plan builders and local markdown-file reads only. | Go dry-run page contracts expose `/content/rpc` request metadata without making network calls. Real page CRUD requires active identity auth, DID-auth JWT refresh, and content RPC over HTTP, so it belongs in the shared authsdk + Rustls HTTP slice rather than this CLI-contract translation. | `crates/awiki-cli/tests/page_contract.rs` passed. Dependency tree unchanged. |
@@ -771,3 +772,49 @@ Do not mix that optimization with the 1:1 translation lane.
   acceptance remain separate translation slices. Any provider-boundary
   optimization should be recorded later and not mixed into the 1:1 translation
   lane.
+
+## Group E2EE Remove/Leave Live Notes
+
+2026-05-16:
+
+- Wired live `group remove --e2ee`, live `group leave --e2ee`, and live hidden
+  `group e2ee process-leave-request` without adding a crate, changing Cargo
+  manifests, enabling local ANP SDK MLS features in-process, or changing the
+  approved SQLite/TLS lanes.
+- The MLS remove boundary remains external-provider parity:
+  `anp-mls group remove-member --json-in - --data-dir <scoped-dir>`, followed
+  by `anp-mls group commit-finalize --json-in - --data-dir <scoped-dir>` after
+  hidden service acceptance. The existing `message/group_e2ee_provider.rs`
+  now also exposes `remove_member`, `commit_finalize`, and `commit_abort`
+  wrappers while preserving binary resolution order, scoped data-dir layout,
+  executable checks, stdin/stdout JSON contract, and 15-second timeout.
+- Hidden RPC delivery reuses the existing authsdk/session and Rustls/std
+  message HTTP client through `message/group_e2ee_transport.rs`; TLS remains
+  Rustls-first. `group.e2ee.remove` uses `group-e2ee` security, while
+  `group.e2ee.leave_request` uses `transport-protected` security like Go.
+- Local E2EE summary persistence and post-remove sync reuse the existing group
+  SQLite cache and the approved `rusqlite + bundled` lane. No pure-Rust SQLite
+  optimization is mixed into this translation slice.
+- E2EE self-leave follows Go's owner-mediated request model: it does not call
+  P4 `group.leave`, does not run local MLS leave, and only creates a hidden
+  leave request with the owner-processing warning.
+- Hidden `group e2ee process-leave-request` follows Go by defaulting the
+  reason to `leave request processed by owner`, trimming the leave request id,
+  delegating to epoch-advancing remove, and inserting the Go plan into the live
+  result data.
+- No TLS, WebSocket, platform, or ANP SDK dependency decision changed. This
+  slice does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+  `hyper`, WebSocket crates, async runtimes, YAML crates, platform service
+  libraries, MLS provider crates, ANP SDK default/network features, or a new
+  SQLite backend.
+- Residual Rust API-shape note: Go can return warnings/data alongside some
+  failed pending-commit submit paths through multiple return values. The
+  current Rust message-service API returns `Result<CommandResult, MessageError>`
+  and cannot expose those side-channel warnings on error without a broader
+  error-result type change, so this slice keeps the existing error model and
+  verifies the success-path parity.
+- `recover-member`, `update-key`, repair, commit replay beyond finalize/abort,
+  group E2EE send/decrypt, WebSocket local bridge group E2EE transport, and
+  full awiki-system-test group-E2EE acceptance remain separate translation
+  slices. Any provider-boundary optimization should be recorded later and not
+  mixed into the 1:1 translation lane.

@@ -212,31 +212,56 @@ impl App {
         )?;
         let leave_request_id = string_flag(command, "leave-request-id");
         let reason = string_flag(command, "reason");
+        let plan = json!({
+            "action": "group.e2ee.process_leave_request",
+            "identity": self.globals.identity,
+            "runtime_mode": resolved.runtime_mode,
+            "provider": "exec",
+            "mls_data_dir": mls_data_dir(&resolved),
+            "group": group,
+            "member": member,
+            "leave_request_id": leave_request_id,
+            "request": {
+                "IdentityName": self.globals.identity,
+                "Group": group,
+                "Member": member,
+                "LeaveRequestID": leave_request_id,
+                "ReasonText": reason,
+            },
+        });
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect(
-                "group e2ee process-leave-request",
-            ));
+            let mut result = message::process_group_e2ee_leave_request(
+                &resolved,
+                &self.identity_manager(&resolved),
+                message::GroupE2eeProcessLeaveRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    member,
+                    leave_request_id,
+                    reason_text: reason,
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the leave request exists, the active identity can remove members, and anp-mls/message-service group E2EE APIs are enabled.",
+                )
+            })?;
+            if let Some(data) = result.data.as_object_mut() {
+                data.insert("plan".to_string(), plan);
+            }
+            return self.render_success(
+                "awiki-cli group e2ee process-leave-request",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
         }
         self.render_group_e2ee_plan(
             "awiki-cli group e2ee process-leave-request",
             &resolved,
-            json!({
-                "action": "group.e2ee.process_leave_request",
-                "identity": self.globals.identity,
-                "runtime_mode": resolved.runtime_mode,
-                "provider": "exec",
-                "mls_data_dir": mls_data_dir(&resolved),
-                "group": group,
-                "member": member,
-                "leave_request_id": leave_request_id,
-                "request": {
-                    "IdentityName": self.globals.identity,
-                    "Group": group,
-                    "Member": member,
-                    "LeaveRequestID": leave_request_id,
-                    "ReasonText": reason,
-                },
-            }),
+            plan,
             "Dry run: group e2ee leave request process planned",
         )
     }

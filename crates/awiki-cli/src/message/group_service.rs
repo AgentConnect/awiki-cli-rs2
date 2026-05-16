@@ -1,4 +1,7 @@
-use super::group_e2ee_add::{add_group_member_e2ee, group_member_mutation_uses_e2ee};
+use super::group_e2ee_add::{
+    add_group_member_e2ee, group_member_mutation_uses_e2ee, group_snapshot_uses_e2ee,
+};
+use super::group_e2ee_remove::{leave_group_e2ee, remove_group_member_e2ee_result};
 use super::service::{
     auth_session, bool_value, content_string, default_message_type, int_value, metadata_string,
     normalize_handle_value, require_active_identity, resolve_target, string_value, CommandResult,
@@ -138,15 +141,23 @@ fn mutate_group_member(
     if request.member.trim().is_empty() {
         return Err(MessageError::MemberRequired);
     }
-    if action != "add" && request.e2ee {
-        return Err(MessageError::SecureNotSupported);
-    }
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
     let member = resolve_target(resolved, &request.member)?;
     request.member = member.did.clone();
-    let pre_mutation_snapshot = (action == "add")
+    let pre_mutation_snapshot = (action == "add" || action == "remove")
         .then(|| cached_group_snapshot(resolved, &record, &request.group))
         .flatten();
+    if action == "remove"
+        && group_member_mutation_uses_e2ee(&request, pre_mutation_snapshot.as_ref(), None)
+    {
+        return remove_group_member_e2ee_result(
+            resolved,
+            manager,
+            &record,
+            &request,
+            &member.handle,
+        );
+    }
     let mut auth = auth_session(resolved, manager, &record)?;
     let client = Client::new(resolved)?;
     let (method, params) = if action == "add" {
@@ -210,15 +221,26 @@ pub fn leave_group(
     if request.group.trim().is_empty() {
         return Err(MessageError::GroupRequired);
     }
-    if request.e2ee {
-        return Err(MessageError::GroupE2eeSelfLeaveUnsupported);
-    }
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    if cached_group_snapshot(resolved, &record, &request.group)
-        .as_ref()
-        .is_some_and(is_active_group_owner)
-    {
+    let cached_snapshot = cached_group_snapshot(resolved, &record, &request.group);
+    if cached_snapshot.as_ref().is_some_and(is_active_group_owner) {
         return Err(MessageError::GroupOwnerCannotLeave);
+    }
+    if request.e2ee
+        || cached_snapshot
+            .as_ref()
+            .is_some_and(group_snapshot_uses_e2ee)
+    {
+        let (e2ee_result, mut warnings) = leave_group_e2ee(resolved, manager, &record, &request)?;
+        return Ok(CommandResult {
+            data: json!({
+                "delivery": e2ee_result.get("delivery").cloned().unwrap_or(Value::Null),
+                "group": request.group,
+                "e2ee": e2ee_result,
+            }),
+            summary: format!("Requested group E2EE leave for {}", request.group),
+            warnings: compact_warnings(&mut warnings),
+        });
     }
     let mut auth = auth_session(resolved, manager, &record)?;
     let client = Client::new(resolved)?;
