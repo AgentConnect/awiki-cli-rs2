@@ -372,6 +372,93 @@ bundled` store lane. It does not add OpenSSL, `native-tls`, bundled OpenSSL,
 `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates, platform
 service libraries, ANP SDK network/default features, or a new SQLite backend.
 
+## 2026-05-16 Message Inbox WebSocket Bridge Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/message/service.rs crates/awiki-cli/src/message/inbox.rs crates/awiki-cli/src/message/history.rs crates/awiki-cli/tests/msg_ws_inbox_live_contract.rs
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestAllInboxMergesLocalMailNotifications|TestReadInboxFromCacheExcludesMailNotificationsForDirectInbox|TestReadUnifiedDirectInboxFromCacheIncludesNewStyleMailMetadataRows|Test.*Inbox|TestReadHistoryFromCacheByPeerDIDs' -count=1
+go test ./internal/store -run 'TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates|TestMessageQueryHelpersLookupAndMarkReadRespectOwner' -count=1
+go test ./internal/cli -run 'TestMsgDryRunPlansRenderStableContracts' -count=1
+```
+
+Result: passed. Rust formatting, package check, focused inbox WebSocket
+contract, adjacent message WebSocket/direct live regressions, CLI/group
+regressions, structure check, whitespace check, Go reference selectors, and
+dependency audit all passed. The dependency audit found no OpenSSL/native-tls,
+`reqwest`, `hyper`, WebSocket crate, YAML crate, or platform service-manager
+dependency; hits remained limited to the existing Rustls/ring/base64/sha2 stack
+and approved `rusqlite + bundled` SQLite chain.
+
+Scope:
+
+- Extracted ordinary direct `msg inbox` production behavior into
+  `message::inbox`, keeping `service.rs` below the default 1200-line file
+  guideline.
+- Preserves Go direct/non-`all` `Service.Inbox` default limit/scope handling,
+  active identity gating, group-scope rejection, target resolution, and
+  handle-resolution-failure fallback to `local_handle_history_cache` when local
+  historical handle bindings can satisfy the request.
+- In `runtime.mode=websocket`, direct inbox first calls local bridge method
+  `inbox.get` with Go-shaped params and selected identity name.
+- Bridge success uses Go source defaulting for websocket mode:
+  `local_ws_cache` when the bridge result has no source.
+- Bridge failure checks local SQLite direct inbox first; handle targets widen to
+  all cached historical DIDs for the handle when available.
+- Usable local cache returns immediately with summary
+  `Loaded inbox from local websocket cache`, source `local_ws_cache_fallback`,
+  and Go's cache fallback warning. Pending direct E2EE wire rows suppress this
+  cache fallback like Go.
+- If no usable cache exists, the service falls back to signed HTTP `/im/rpc`
+  `inbox.get`, records trace fallback `websocket_to_http`, and appends Go's
+  visible WebSocket HTTP fallback warning.
+- If bridge and HTTP fallback both fail, the HTTP-side error is returned,
+  matching Go inbox behavior.
+- Successful remote bridge/HTTP results reuse existing inbox persistence,
+  direct E2EE display filtering, contact sync, handle-history cache merge,
+  direct inbox filters, and `--mark-read` result mutation.
+
+Boundary note: this slice covers ordinary direct/non-`all` inbox only. Go
+defaults empty `scope` to `all`, then routes that path to `allInbox`, which has
+separate unified direct inbox, local group, and mail-notification cache merge
+semantics. Rust `scope=all` remains a later parity slice and is not claimed by
+this entry.
+
+Parallelism note: a read-only Native Agent mapped the Go/Rust inbox behavior,
+all-inbox boundary, and docs update points. A GPT-5.5 xhigh code-writing Native
+Agent was launched with a bounded test-file scope but was stopped before
+producing changes; the leader completed the production module, test file, docs,
+and verification locally.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing std local bridge helper,
+`WSProxyTransport`, Rustls/std HTTP fallback path, authsdk/session, direct E2EE
+display filtering, contact-handle cache helpers, and approved `rusqlite +
+bundled` store lane. It does not add OpenSSL, `native-tls`, bundled OpenSSL,
+`reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates, platform
+service libraries, ANP SDK network/default features, or a new SQLite backend.
+
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 
 Status: unit verified.

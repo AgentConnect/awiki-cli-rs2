@@ -1,9 +1,7 @@
-use super::types::{
-    InboxRequest, MarkReadRequest, MessageError, SendRequest, MESSAGE_RPC_ENDPOINT,
-};
+use super::types::{MessageError, SendRequest, MESSAGE_RPC_ENDPOINT};
 use super::{
-    build_direct_send_rpc_params, build_inbox_rpc_params, content_type_for_message_type,
-    new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient,
+    build_direct_send_rpc_params, content_type_for_message_type, new_secure_e2ee_client_for_record,
+    Client, MessageServiceE2EEClient,
 };
 use crate::authsdk::Session;
 use crate::config::{join_base_url, Resolved};
@@ -371,99 +369,6 @@ pub(crate) fn publish_secure_prekeys_with_client(
     }
 }
 
-pub fn inbox(
-    resolved: &Resolved,
-    manager: &Manager,
-    mut request: InboxRequest,
-) -> Result<CommandResult, MessageError> {
-    if request.limit <= 0 {
-        request.limit = 20;
-    }
-    if request.scope.trim().is_empty() {
-        request.scope = "all".to_string();
-    }
-    if request.scope.trim() == "group" || !request.group.trim().is_empty() {
-        return Err(MessageError::GroupNotSupported);
-    }
-    let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    let original_with = request.with.trim().to_string();
-    let target_is_handle = !original_with.is_empty() && !original_with.starts_with("did:");
-    let target = if original_with.is_empty() {
-        TargetResolution::default()
-    } else {
-        resolve_target(resolved, &original_with)?
-    };
-    request.with = target.did.clone();
-    let mut auth = auth_session(resolved, manager, &record)?;
-    let client = Client::new(resolved)?;
-    let params = build_inbox_rpc_params(&record, request.clone());
-    let raw: Value = client.authenticated_rpc_call_profile(
-        Profile::RpcReadHeavy,
-        MESSAGE_RPC_ENDPOINT,
-        "inbox.get",
-        params,
-        &mut auth,
-    )?;
-    let mut warnings = Vec::new();
-    let mut messages = persist_inbox_messages(
-        resolved,
-        manager,
-        &record,
-        &raw,
-        &target.handle,
-        &mut warnings,
-    );
-    let mut source = source_with_default(&raw);
-    if target_is_handle {
-        merge_handle_history_messages(
-            resolved,
-            &record.did,
-            &target,
-            request.limit,
-            request.unread_only,
-            true,
-            &mut messages,
-            &mut source,
-            &mut warnings,
-        );
-    }
-    let filter_peer_did = if target_is_handle { "" } else { &target.did };
-    messages = apply_inbox_filters(
-        messages,
-        filter_peer_did,
-        request.unread_only,
-        request.limit,
-    );
-    let total = messages.len();
-    if request.mark_read && !messages.is_empty() {
-        let ids = collect_message_ids(&messages);
-        if !ids.is_empty() {
-            if super::mark_read(
-                resolved,
-                manager,
-                MarkReadRequest {
-                    identity_name: record.identity_name.clone(),
-                    message_ids: ids.clone(),
-                },
-            )
-            .is_ok()
-            {
-                mark_messages_read_in_result(&mut messages, &ids);
-            }
-        }
-    }
-    Ok(CommandResult {
-        data: json!({
-            "messages": messages,
-            "total": total,
-            "source": source,
-            "with": peer_handle_or_did(&target),
-        }),
-        summary: format!("Loaded {total} direct inbox messages"),
-        warnings,
-    })
-}
-
 pub(crate) fn require_active_identity(
     resolved: &Resolved,
     manager: &Manager,
@@ -662,7 +567,7 @@ fn secure_rpc(client: Client, mut auth: Session) -> Box<super::SecureE2EERpc> {
     })
 }
 
-fn persist_inbox_messages(
+pub(crate) fn persist_inbox_messages(
     resolved: &Resolved,
     manager: &Manager,
     record: &StoredIdentity,
@@ -812,7 +717,7 @@ fn history_record(
     })
 }
 
-fn apply_inbox_filters(
+pub(crate) fn apply_inbox_filters(
     messages: Vec<Value>,
     peer_did: &str,
     unread_only: bool,
@@ -958,7 +863,7 @@ fn messages_from_result(value: Option<&Value>) -> Vec<Value> {
     value.and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
-fn collect_message_ids(messages: &[Value]) -> Vec<String> {
+pub(crate) fn collect_message_ids(messages: &[Value]) -> Vec<String> {
     let mut ids = Vec::new();
     for message in messages {
         let id = message_identity(message);
@@ -969,7 +874,7 @@ fn collect_message_ids(messages: &[Value]) -> Vec<String> {
     ids
 }
 
-fn mark_messages_read_in_result(messages: &mut [Value], ids: &[String]) {
+pub(crate) fn mark_messages_read_in_result(messages: &mut [Value], ids: &[String]) {
     for message in messages {
         let id = message_identity(message);
         if id.is_empty() || !ids.iter().any(|known| known == &id) {
@@ -992,14 +897,6 @@ fn message_identity(message: &Value) -> String {
         })
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_string()
-}
-
-fn source_with_default(raw: &Value) -> String {
-    raw.get("source")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("remote_http")
         .to_string()
 }
 
