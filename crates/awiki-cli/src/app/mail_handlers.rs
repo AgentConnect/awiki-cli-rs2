@@ -4,7 +4,10 @@ use crate::mail::{self, CommandResult, MailError};
 use crate::output::ExitError;
 use base64::Engine;
 use serde_json::{json, Value};
+use std::io::Write;
 use std::path::Path;
+#[cfg(unix)]
+use std::{fs::DirBuilder, os::unix::fs::DirBuilderExt, os::unix::fs::OpenOptionsExt};
 
 impl App {
     pub fn run_mail_inbox(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -315,7 +318,7 @@ impl App {
         };
         if let Some(parent) = Path::new(&final_path).parent() {
             if parent != Path::new("") && parent != Path::new(".") {
-                std::fs::create_dir_all(parent).map_err(|err| {
+                create_attachment_parent_dir(parent).map_err(|err| {
                     ExitError::new(
                         "internal_error",
                         1,
@@ -325,7 +328,7 @@ impl App {
                 })?;
             }
         }
-        std::fs::write(&final_path, content).map_err(|err| {
+        write_attachment_file(Path::new(&final_path), &content).map_err(|err| {
             ExitError::new(
                 "internal_error",
                 1,
@@ -348,6 +351,32 @@ impl App {
             result.warnings,
         )
     }
+}
+
+#[cfg(unix)]
+fn create_attachment_parent_dir(path: &Path) -> std::io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_attachment_parent_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+#[cfg(unix)]
+fn write_attachment_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(content)
+}
+
+#[cfg(not(unix))]
+fn write_attachment_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, content)
 }
 
 fn int_flag(command: &ParsedCommand, name: &str, fallback: i64) -> Result<i64, ExitError> {

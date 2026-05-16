@@ -2,6 +2,63 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Mail Attachment Filesystem Mode Slice
+
+Timestamp: 2026-05-17T08:03:00+0800.
+
+Scope: preserve the local filesystem mode behavior in Go
+`internal/cli/mail.go` `runMailAttachmentDownload` after remote
+`mail.getAttachment` returns decoded content.
+
+What changed:
+
+- `mail attachment download` still decodes `content_base64`, chooses the Go
+  default filename, writes the requested output path, and renders the same
+  success payload.
+- On Unix, newly created parent directories now use mode `0700`, matching Go
+  `os.MkdirAll(dir, 0o700)`.
+- On Unix, downloaded files now use mode `0600`, matching Go
+  `os.WriteFile(outPath, content, 0o600)`.
+- Non-Unix keeps the existing std filesystem behavior until Windows host
+  validation is available.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract mail_attachment_live_decodes_base64_and_writes_output_like_go --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_wire_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/cli ./internal/mail -run 'TestMail|TestServiceAttachmentValidatesIndex|TestNewClientRequiresMailServiceURL' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/app/mail_handlers.rs crates/awiki-cli/tests/mail_live_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- Focused mail attachment test passed and asserted the Unix directory/file
+  modes.
+- Full `mail_live_contract`, `mail_contract`, and `mail_wire_contract` passed.
+- Adjacent Go mail/CLI guard passed.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path; no new dependency was added.
+- Changed Rust files remain below the default 1200-line cap.
+
+Boundary note: this slice only covers local attachment output filesystem modes.
+It does not prove remote mail system acceptance against `awiki.info`, deepen
+`mail notify` local DB trace phases, or change mail RPC/auth transport.
+
+Dependency note: no Rust dependency was added. The Unix mode implementation uses
+standard library Unix extension traits only.
+
 ## 2026-05-17 Runtime Listener WebSocket JSON Frame Helper Slice
 
 Timestamp: 2026-05-17T07:44:00+0800.

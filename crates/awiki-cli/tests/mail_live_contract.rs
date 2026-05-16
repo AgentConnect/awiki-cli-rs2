@@ -1,6 +1,8 @@
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
@@ -205,6 +207,21 @@ fn mail_attachment_live_decodes_base64_and_writes_output_like_go() {
         std::fs::read_to_string(&output_path).expect("attachment output"),
         "Hello mail\n"
     );
+    #[cfg(unix)]
+    {
+        let dir_mode = std::fs::metadata(output_path.parent().expect("download dir"))
+            .expect("download dir metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let file_mode = std::fs::metadata(&output_path)
+            .expect("attachment metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
+    }
 }
 
 fn register_ready_mail_identity(
