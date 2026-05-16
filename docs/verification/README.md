@@ -9513,3 +9513,102 @@ dependency paths, and the approved `rusqlite + bundled` SQLite path. It does
 not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
 crates, async runtimes, YAML crates, platform service libraries, ANP SDK
 default/network features, or a new SQLite backend. TLS remains Rustls-first.
+
+## 2026-05-16 Runtime Hermes EnsureRoute Local Writer Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/tests/runtime_hermes_ensure_route_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `runtime_hermes_ensure_route_contract`: 8 passed.
+- `runtime_hermes_bridge_contract`: 10 passed.
+- `runtime_hermes_setup_dry_run_contract`: 11 passed.
+- `runtime_hermes_config_write_contract`: 11 passed.
+- `runtime_hermes_cli_contract`: 5 passed.
+- `runtime_hermes_host_notify_contract`: 8 passed.
+- `runtime_contract`: 12 passed.
+- `runtime_host_notify_sink_contract`: 10 passed.
+- `runtime_host_notify_enable_disable_contract`: 2 passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  Hermes bridge reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `runtime/hermes_bridge.rs` 882 lines,
+  `runtime/hermes_bridge/route.rs` 686 lines, and
+  `runtime_hermes_ensure_route_contract.rs` 401 lines. No file-size exception
+  is needed.
+
+Scope:
+
+- Adds `runtime::hermes_bridge::EnsureRouteOptions` and
+  `runtime::hermes_bridge::ensure_route` in a split
+  `crates/awiki-cli/src/runtime/hermes_bridge/route.rs` module so the main
+  Hermes bridge source file stays below the 1200-line review-size cap.
+- Mirrors Go `EnsureRoute` option defaulting for Hermes home, route name,
+  deliver target, webhook port, and prompt.
+- Creates missing local Hermes `config.yaml` route state with
+  `platforms.webhook.enabled=true`, default/positive webhook port handling,
+  generated 24-byte hex route secrets, `events: []` when absent, current
+  mail-aware Chinese notify prompt, and requested `deliver`.
+- Preserves existing route secret, existing positive port, existing route
+  events, custom prompt, custom non-notify skills, unmanaged top-level blocks,
+  unmanaged platform blocks, unmanaged webhook/extra fields, and unmanaged
+  sibling routes covered by the focused contract tests.
+- Migrates legacy Go default prompts to the current default, removes only the
+  single legacy `skills: ["notify"]` stanza, removes fixed
+  `deliver_extra.chat_id`, `thread_id`, and `message_thread_id`, and preserves
+  unrelated `deliver_extra` keys sorted through `BTreeMap` output.
+- Writes through a same-directory `.hermes-config-*.tmp` file, syncs it,
+  applies Unix `0600` temp-file permissions, renames atomically over
+  `config.yaml`, creates the config directory with Unix `0700` when missing,
+  and cleans up temporary files on failure.
+- Returns the existing `InspectRoute` state so route warnings, home-channel
+  readiness, Feishu credential detection, and notify webhook URL remain shared
+  with the read-only status/guide path.
+
+Boundary note: this is a pure local helper slice. It does not wire non-dry-run
+`runtime host-notify hermes setup`, awiki config writes, listener
+refresh/restart, bridge `Apply`, bridge process/service execution, platform
+service-manager status, health probing, hidden bridge `service-run`, or
+awiki-system-test acceptance. The narrow renderer does not claim full Go
+`yaml.v3` round-trip parity for comments, anchors, complex scalars, or arbitrary
+formatting; full Hermes YAML parser/serializer parity remains a separate
+recorded dependency/format decision.
+
+Parallelism note: two read-only Native Agents mapped the Go `EnsureRoute`
+contract and the existing Rust helper surface. One GPT-5.5 xhigh code-writing
+Native Agent created the isolated ensure-route contract test file under a
+bounded non-overlapping write scope. The leader implemented the production
+helper, added follow-up preservation guards, updated docs, and runs final
+verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses std filesystem/string handling, the existing
+hand-written scalar inspection helper, existing `rand`, existing
+Rustls/ring/base64/sha2 dependency paths, and the approved `rusqlite + bundled`
+SQLite path. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, async runtimes, YAML crates, platform service
+libraries, ANP SDK default/network features, or a new SQLite backend. TLS
+remains Rustls-first.

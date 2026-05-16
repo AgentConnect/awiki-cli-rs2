@@ -9,6 +9,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod route;
+
+pub use route::{ensure_route, EnsureRouteOptions};
+
 pub const DEFAULT_WEBHOOK_PORT: u32 = 8644;
 pub const DEFAULT_WEBHOOK_ROUTE_NAME: &str = "notify";
 pub const DEFAULT_NOTIFY_URL: &str = "http://127.0.0.1:8765/notify/host-event";
