@@ -801,6 +801,129 @@ impl App {
             dedupe_strings(warnings),
         )
     }
+
+    pub fn run_runtime_host_notify_hermes_set(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let notify_url = changed_flag(command, "notify-url");
+        let deliver = changed_flag(command, "deliver")
+            .map(|value| resolve_hermes_deliver_target(&resolved, &value));
+        if notify_url.is_none() && deliver.is_none() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "hermes set requires at least one changed flag.",
+                "Use --notify-url or --deliver.",
+            ));
+        }
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli runtime host-notify hermes set",
+                &resolved,
+                json!({ "plan": { "action": "host_notify_hermes_set", "notify_url": notify_url, "deliver": deliver, "config_file": resolved.paths.config_file } }),
+                "Dry run: Hermes host notify config change planned",
+                Vec::new(),
+            );
+        }
+        if let Some(deliver) = deliver.as_deref() {
+            if !runtime::hermes_bridge::is_supported_deliver_target(deliver) {
+                return Err(ExitError::new(
+                    "invalid_argument",
+                    2,
+                    format!("unsupported Hermes deliver target {deliver:?}"),
+                    format!(
+                        "Use --deliver with one of: {}.",
+                        runtime::hermes_bridge::supported_deliver_targets().join(", ")
+                    ),
+                ));
+            }
+        }
+        config::update_hermes_settings(&resolved.paths, notify_url.as_deref(), deliver.as_deref())
+            .map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        let warnings = host_notify_guidance_warnings_for(
+            &resolved,
+            &resolve_hermes_deliver_target(&resolved, ""),
+        );
+        self.render_success(
+            "awiki-cli runtime host-notify hermes set",
+            &resolved,
+            json!({
+                "hermes": runtime::resolve(&resolved).host_notify.hermes.map(|hermes| json!(hermes)).unwrap_or_else(|| json!({})),
+                "listener": runtime::current_listener_status(&resolved),
+            }),
+            "Hermes host notify config updated",
+            warnings,
+        )
+    }
+
+    pub fn run_runtime_host_notify_hermes_set_secret(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let value = command.flags.get("value").cloned().unwrap_or_default();
+        if value.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "hermes set-secret requires --value.",
+                "Use --value <secret>.",
+            ));
+        }
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli runtime host-notify hermes set-secret",
+                &resolved,
+                json!({ "plan": { "action": "host_notify_hermes_set_secret", "configured": true, "config_file": resolved.paths.config_file } }),
+                "Dry run: Hermes secret update planned",
+                Vec::new(),
+            );
+        }
+        config::set_hermes_secret(&resolved.paths, &value).map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        let warnings = host_notify_guidance_warnings_for(
+            &resolved,
+            &resolve_hermes_deliver_target(&resolved, ""),
+        );
+        self.render_success(
+            "awiki-cli runtime host-notify hermes set-secret",
+            &resolved,
+            json!({
+                "hermes": { "secret_configured": true },
+                "listener": runtime::current_listener_status(&resolved),
+            }),
+            "Hermes secret updated",
+            warnings,
+        )
+    }
+
+    pub fn run_runtime_host_notify_hermes_clear_secret(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        if self.globals.dry_run {
+            return self.render_success(
+                "awiki-cli runtime host-notify hermes clear-secret",
+                &resolved,
+                json!({ "plan": { "action": "host_notify_hermes_clear_secret", "config_file": resolved.paths.config_file } }),
+                "Dry run: Hermes secret clear planned",
+                Vec::new(),
+            );
+        }
+        config::clear_hermes_secret(&resolved.paths).map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        self.render_success(
+            "awiki-cli runtime host-notify hermes clear-secret",
+            &resolved,
+            json!({
+                "hermes": { "secret_configured": false },
+                "listener": runtime::current_listener_status(&resolved),
+            }),
+            "Hermes secret cleared",
+            Vec::new(),
+        )
+    }
 }
 
 fn listener_config_snapshot(resolved: &Resolved) -> Value {
@@ -850,6 +973,14 @@ fn parse_optional_bool(command: &ParsedCommand, name: &str) -> Result<Option<boo
             })
         })
         .transpose()
+}
+
+fn changed_flag(command: &ParsedCommand, name: &str) -> Option<String> {
+    command
+        .changed_flags
+        .iter()
+        .any(|flag| flag == name)
+        .then(|| command.flags.get(name).cloned().unwrap_or_default())
 }
 
 fn resolve_openclaw_route_from_flags(

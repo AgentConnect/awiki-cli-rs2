@@ -196,6 +196,13 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         }
         "runtime.host-notify.hermes.guide" => app.run_runtime_host_notify_hermes_guide(command),
         "runtime.host-notify.hermes.status" => app.run_runtime_host_notify_hermes_status(),
+        "runtime.host-notify.hermes.set" => app.run_runtime_host_notify_hermes_set(command),
+        "runtime.host-notify.hermes.set-secret" => {
+            app.run_runtime_host_notify_hermes_set_secret(command)
+        }
+        "runtime.host-notify.hermes.clear-secret" => {
+            app.run_runtime_host_notify_hermes_clear_secret()
+        }
         "debug.db.query" => app.run_debug_db_query(command),
         "debug.db.import-v1" => app.run_debug_db_import_v1(command),
         "debug.db.handle-history" => app.run_debug_db_handle_history(command),
@@ -330,6 +337,15 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         }
         ["runtime", "host-notify", "hermes" | "webhook", "status", ..] => {
             "runtime.host-notify.hermes.status"
+        }
+        ["runtime", "host-notify", "hermes" | "webhook", "set", ..] => {
+            "runtime.host-notify.hermes.set"
+        }
+        ["runtime", "host-notify", "hermes" | "webhook", "set-secret", ..] => {
+            "runtime.host-notify.hermes.set-secret"
+        }
+        ["runtime", "host-notify", "hermes" | "webhook", "clear-secret", ..] => {
+            "runtime.host-notify.hermes.clear-secret"
         }
         ["runtime", "host-notify", "hermes", "bridge", "service-run", ..] => {
             "runtime.host-notify.hermes.bridge.service-run"

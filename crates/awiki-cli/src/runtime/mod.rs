@@ -202,6 +202,7 @@ pub fn uninstall_listener(resolved: &Resolved) -> anyhow::Result<Value> {
 }
 
 pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
+    let (file_config, _, _) = config::read_file_config(&resolved.paths.config_file);
     let settings = effective_openclaw_settings(resolved);
     let routes = openclaw_routes::load_routes(&resolved.paths)?;
     let hermes_notify_url = resolved.host_notify_hermes_notify_url.trim();
@@ -209,6 +210,21 @@ pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
         Some(resolved),
         hermes_notify_url,
     );
+    let hermes_deliver = if resolved.host_notify_hermes_deliver.is_empty()
+        && !file_config
+            .runtime
+            .host_notify
+            .hermes
+            .deliver
+            .trim()
+            .is_empty()
+    {
+        file_config.runtime.host_notify.hermes.deliver.trim()
+    } else if resolved.host_notify_hermes_deliver.is_empty() {
+        hermes_bridge::DEFAULT_DELIVER_TARGET
+    } else {
+        &resolved.host_notify_hermes_deliver
+    };
     Ok(json!({
         "enabled": resolved.host_notify_enabled,
         "sink": resolved.host_notify_sink,
@@ -227,7 +243,7 @@ pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
         },
         "hermes": {
             "notify_url": resolved.host_notify_hermes_notify_url,
-            "deliver": if resolved.host_notify_hermes_deliver.is_empty() { hermes_bridge::DEFAULT_DELIVER_TARGET } else { &resolved.host_notify_hermes_deliver },
+            "deliver": hermes_deliver,
             "secret_configured": hermes_secret_source != "unset",
             "secret_source": hermes_secret_source,
             "secret_env_fallback": "AWIKI_HOST_NOTIFY_HERMES_SECRET",

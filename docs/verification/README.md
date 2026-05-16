@@ -9323,3 +9323,93 @@ helpers, existing Rustls/ring/base64/sha2 dependency paths, and the approved
 bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
 crates, platform service libraries, ANP SDK default/network features, or a new
 SQLite backend. TLS remains Rustls-first.
+
+## 2026-05-16 Runtime Hermes Host-Notify Local Write Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
+cd ../awiki-cli && go test ./internal/config -run 'TestUpdateHermesSettingsDualWritesLegacyWebhook|TestSetAndClearHermesSecretDualWritesLegacyWebhook|TestHostNotifyMutatorsWriteSinkAndHermesConfig' -count=1
+wc -l crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/runtime/mod.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/runtime_hermes_config_write_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `runtime_hermes_config_write_contract`: 11 passed.
+- `runtime_hermes_cli_contract`: 5 passed.
+- `runtime_hermes_bridge_contract`: 10 passed.
+- `runtime_hermes_host_notify_contract`: 8 passed.
+- `runtime_contract`: 12 passed.
+- `runtime_host_notify_sink_contract`: 10 passed.
+- `runtime_host_notify_enable_disable_contract`: 2 passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `runtime_handlers.rs` 1134 lines, `runtime/mod.rs` 521 lines,
+  `cli/mod.rs` 475 lines, `cmdmeta/mod.rs` 307 lines, and
+  `runtime_hermes_config_write_contract.rs` 542 lines. No file-size exception
+  is needed.
+- No active `awiki-system-test` selector currently covers
+  `runtime host-notify hermes set/set-secret/clear-secret`; `rg` under
+  `tests_v2` found no host-notify Hermes write selector.
+
+Scope:
+
+- Adds command catalog, parser aliases, and dispatch for `runtime host-notify
+  hermes set`, `runtime host-notify webhook set`, `runtime host-notify hermes
+  set-secret`, `runtime host-notify webhook set-secret`, `runtime host-notify
+  hermes clear-secret`, and `runtime host-notify webhook clear-secret`.
+- Preserves Go `set` behavior: changed-flag detection, missing-flag
+  `invalid_argument` exit 2 with hint `Use --notify-url or --deliver.`,
+  `--deliver` normalization, dry-run `host_notify_hermes_set` plan before
+  live deliver validation, non-dry-run unsupported-deliver rejection, persistent
+  `notify_url`/`deliver` writes, summary `Hermes host notify config updated`,
+  and local listener status context.
+- Preserves Go sink boundary: `set` does not switch `runtime.host_notify.sink`.
+  With the default `log` sink, Go returns an empty Hermes runtime object and
+  the Rust command now does the same; with sink `hermes`, the runtime object
+  includes the written `notify_url` and `deliver`.
+- Preserves Go secret behavior: `set-secret` requires nonblank `--value`,
+  dry-run reports only `configured=true`, live output never echoes the secret,
+  and `clear-secret` reports `secret_configured=false`.
+- Extends `host_notify_config_view` to preserve Go's file-config Hermes
+  `deliver` fallback when the sink is not Hermes.
+
+Boundary note: this slice intentionally implements only local awiki config
+write commands. It does not implement `runtime host-notify hermes setup`, local
+Hermes route mutation, generated route secrets, full YAML parser/serializer
+parity, listener refresh/restart, platform service-manager status, bridge
+health probing, bridge process execution, or hidden bridge `service-run`.
+
+Parallelism note: one GPT-5.5 xhigh Native Agent created the isolated Hermes
+write contract test file under a bounded non-overlapping write scope. A second
+GPT-5.5 xhigh Native Agent added CLI metadata/parser/dispatch wiring under a
+separate bounded source write scope. The leader implemented handlers, corrected
+tests against Go source and live Go CLI probes, updated docs, and ran final
+verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `serde_json`, std filesystem/env/path
+handling, the existing hand-written awiki config parser/writer, existing Hermes
+secret helpers, existing Rustls/ring/base64/sha2 dependency paths, and the
+approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, ANP SDK default/network
+features, or a new SQLite backend. TLS remains Rustls-first.
