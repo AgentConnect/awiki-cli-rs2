@@ -190,8 +190,8 @@ Scope:
   field to direct send results.
 
 Boundary note: this slice is intentionally narrow. It does not wire
-WebSocket/local bridge execution for direct inbox/history/mark-read, group
-send/messages, group lifecycle, attachments, or secure direct E2EE. It also does
+WebSocket/local bridge execution for direct inbox/history, group send/messages,
+group lifecycle, attachments, or secure direct E2EE. It also does
 not implement foreground listener bridge dispatch, local-cache fallback, runtime
 listener live `ProcessIncoming`, or awiki-system-test secure-direct acceptance.
 
@@ -208,6 +208,85 @@ origin-proof helper, and approved `rusqlite + bundled` store lane. It does not
 add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
 crates, async runtimes, YAML crates, platform service libraries, ANP SDK
 network/default features, or a new SQLite backend.
+
+## 2026-05-16 Message Mark-Read WebSocket Bridge Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/message/service.rs crates/awiki-cli/src/message/mark_read.rs crates/awiki-cli/tests/msg_ws_mark_read_live_contract.rs
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'TestBuildMarkReadRPCParamsValidatesMessageIDs|TestBuildMarkReadRPCParamsRequiresMessageIDs|TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures' -count=1
+go test ./internal/store -run 'TestMessageQueryHelpersLookupAndMarkReadRespectOwner|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates' -count=1
+go test ./internal/cli -run 'TestMsgDryRunPlansRenderStableContracts' -count=1
+```
+
+Result: passed. Rust formatting, package check, focused mark-read WebSocket
+contract, adjacent message WebSocket/direct live regressions, CLI/group
+regressions, structure check, whitespace check, Go reference selectors, and
+dependency audit all passed. The dependency audit found no OpenSSL/native-tls,
+`reqwest`, `hyper`, WebSocket crate, YAML crate, or platform service-manager
+dependency; hits remained limited to the existing Rustls/ring/base64/sha2 stack
+and approved `rusqlite + bundled` SQLite chain.
+
+Scope:
+
+- Extracted ordinary `msg mark-read` production behavior into
+  `message::mark_read`, keeping `service.rs` below the default 1200-line file
+  guideline.
+- Preserves Go `Service.MarkRead` local ID classification: known group rows and
+  local mail notification rows are handled locally, while direct/unknown rows go
+  through the selected remote transport.
+- In `runtime.mode=websocket`, direct IDs call the local bridge method
+  `inbox.mark_read` with Go-shaped `message_ids` params and the selected
+  identity name.
+- If the bridge is unavailable, the service falls back to signed HTTP `/im/rpc`
+  `inbox.mark_read`, records trace fallback `websocket_to_http`, and appends
+  Go's visible WebSocket HTTP fallback warning.
+- If bridge and HTTP fallback both fail, the original bridge/transport error is
+  returned.
+- After successful bridge or HTTP handling, local SQLite rows are marked read for
+  direct, group, and local-only IDs. The Go `updated_count` fallback/addition
+  rules are preserved.
+- The focused live contract covers bridge success, HTTP fallback warning,
+  double-failure error precedence, and group/mail local-only classification.
+
+Boundary note: this slice does not wire WebSocket/local bridge execution for
+direct inbox/history, non-E2EE group send/messages, group lifecycle, cache
+fallback, foreground listener bridge serving, attachments, secure direct E2EE,
+runtime listener live `ProcessIncoming`, or awiki-system-test secure-direct
+acceptance.
+
+Parallelism note: one GPT-5.5 xhigh code-writing Native Agent created the
+initial focused test file under a bounded single-file write scope. A read-only
+Native Agent mapped the Go mark-read tests and documentation update points. The
+leader implemented the production module, added the local-only classification
+case, integrated docs, and owned final verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing std local bridge helper,
+`WSProxyTransport`, Rustls/std HTTP fallback path, authsdk/session, and approved
+`rusqlite + bundled` store lane. It does not add OpenSSL, `native-tls`, bundled
+OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates,
+platform service libraries, ANP SDK network/default features, or a new SQLite
+backend.
 
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 

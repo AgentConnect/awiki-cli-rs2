@@ -3,8 +3,8 @@ use super::types::{
 };
 use super::{
     build_direct_send_rpc_params, build_history_rpc_params, build_inbox_rpc_params,
-    build_mark_read_rpc_params, content_type_for_message_type, new_secure_e2ee_client_for_record,
-    Client, MessageServiceE2EEClient,
+    content_type_for_message_type, new_secure_e2ee_client_for_record, Client,
+    MessageServiceE2EEClient,
 };
 use crate::authsdk::Session;
 use crate::config::{join_base_url, Resolved};
@@ -439,7 +439,7 @@ pub fn inbox(
     if request.mark_read && !messages.is_empty() {
         let ids = collect_message_ids(&messages);
         if !ids.is_empty() {
-            if mark_read(
+            if super::mark_read(
                 resolved,
                 manager,
                 MarkReadRequest {
@@ -529,47 +529,6 @@ pub fn history(
             "resolved_dids": resolved_dids,
         }),
         summary: format!("Loaded {total} direct history messages"),
-        warnings,
-    })
-}
-
-pub fn mark_read(
-    resolved: &Resolved,
-    manager: &Manager,
-    request: MarkReadRequest,
-) -> Result<CommandResult, MessageError> {
-    if request.message_ids.is_empty() {
-        return Err(MessageError::MessageNotFound);
-    }
-    let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    let mut auth = auth_session(resolved, manager, &record)?;
-    let client = Client::new(resolved)?;
-    let params = build_mark_read_rpc_params(&record, request.clone())?;
-    let raw: Value = client.authenticated_rpc_call_profile(
-        Profile::RpcDefault,
-        MESSAGE_RPC_ENDPOINT,
-        "inbox.mark_read",
-        params,
-        &mut auth,
-    )?;
-    let mut warnings = Vec::new();
-    let mut updated_count = int_value(raw.get("updated_count"), request.message_ids.len() as i64);
-    if let Ok(connection) = store::open(&resolved.paths) {
-        if store::ensure_schema(&connection).is_ok() {
-            match store::mark_messages_read(&connection, &record.did, &request.message_ids) {
-                Ok(count) if updated_count == 0 => updated_count = count,
-                Ok(_) => {}
-                Err(err) => warnings.push(format!("Failed to mark local messages read: {err}")),
-            }
-        }
-    }
-    Ok(CommandResult {
-        data: json!({
-            "action": "mark_read",
-            "updated_count": updated_count,
-            "message_ids": request.message_ids,
-        }),
-        summary: format!("Marked {updated_count} messages as read"),
         warnings,
     })
 }
@@ -1056,7 +1015,7 @@ fn fill_direct_send_result(result: &mut DirectSendResult, meta: &Value, target_d
     }
 }
 
-fn runtime_mode(resolved: &Resolved) -> &'static str {
+pub(crate) fn runtime_mode(resolved: &Resolved) -> &'static str {
     if resolved.runtime_mode.trim().eq_ignore_ascii_case("http") {
         runtime::bridge::MODE_HTTP
     } else {
