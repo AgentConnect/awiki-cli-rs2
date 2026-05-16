@@ -18,6 +18,7 @@ pub mod listener_connect_session;
 pub mod listener_contact_sync;
 pub mod listener_foreground;
 pub mod listener_identity_watch;
+pub mod listener_json_helpers;
 pub mod listener_local_notification_flush;
 pub mod listener_local_notifications;
 pub mod listener_message_records;

@@ -2,6 +2,71 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener JSON Helper Slice
+
+Timestamp: 2026-05-17T06:12:55+0800.
+
+Scope: add a narrow Rust helper for Go listener `structToMap` at
+`internal/runtime/listener/server.go:917-927`, then route the local secure ack
+in-process notification body through that helper before real ANP encrypted ack
+execution is wired.
+
+What changed:
+
+- Added `runtime::listener_json_helpers::struct_to_map`.
+- JSON object values preserve fields, including null fields.
+- Serialization failures return an empty object.
+- Non-object JSON values that fail Go map unmarshalling return an empty object.
+- JSON null is preserved as the Go nil-map equivalent.
+- `runtime::listener_secure_ack_in_process` now uses this helper when building
+  the encrypted ack notification body, matching Go `structToMap(ackBody)`.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_json_helpers_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_in_process_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_delivery_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_notifications_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+go run /tmp/struct_to_map_probe_*.go
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_json_helpers.rs crates/awiki-cli/tests/runtime_listener_json_helpers_contract.rs crates/awiki-cli/src/runtime/listener_secure_ack_in_process.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_json_helpers_contract` passed all 4 tests.
+- Adjacent `runtime_listener_secure_ack_in_process_contract` passed all 13 tests.
+- Adjacent secure-notification guards passed:
+  `runtime_listener_secure_ack_delivery_contract` all 6 tests and
+  `runtime_listener_secure_notifications_contract` all 6 tests.
+- Adjacent Go listener guard passed.
+- The temporary Go probe confirmed `json.Unmarshal` into `map[string]any`
+  errors for string/number/bool/array, leaving the map nil; `null` unmarshals
+  without error to a nil map. The Rust helper represents non-object errors as
+  `{}` and preserves `null` for the nil-map equivalent.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path.
+- No Cargo manifests or lockfiles changed.
+- New Rust files are 13 and 70 lines, below the default 1200-line cap.
+
+Boundary note: this is a helper-only slice. It does not implement real ANP
+`DirectCipherBody` encryption, real Go SDK struct tags beyond the serialized
+shape passed in, recipient `ProcessIncoming`, foreground sessions, SQLite
+writes, WebSocket RPC, or host-notify dispatch.
+
+Dependency note: no Rust dependency was added. This slice uses existing
+`serde`/`serde_json` only.
+
 ## 2026-05-17 Listener Session Methods Slice
 
 Timestamp: 2026-05-17T06:02:45+0800.

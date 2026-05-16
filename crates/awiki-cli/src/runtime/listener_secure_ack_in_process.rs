@@ -1,3 +1,4 @@
+use super::listener_json_helpers::struct_to_map;
 use super::listener_secure_ack_delivery::build_secure_ack_payload;
 use crate::identity::types::StoredIdentity;
 use serde_json::{json, Map, Value};
@@ -442,7 +443,7 @@ fn encrypted_ack_notification(
             "security_profile": "direct-e2ee",
             "content_type": "application/anp-direct-cipher+json",
         },
-        "body": ack_body,
+        "body": struct_to_map(ack_body),
     })
 }
 
