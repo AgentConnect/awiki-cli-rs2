@@ -291,35 +291,71 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
 }
 
 #[test]
-fn workspace_upgrade_if_needed_defers_v0_to_v1_when_imported_k1_replacement_is_required() {
-    let workspace =
-        TempDir::new("workspace-upgrade-if-needed-k1-deferred").expect("temp workspace");
-    let resolved = test_resolved(workspace.path());
+fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
+    let workspace = TempDir::new("workspace-upgrade-if-needed-k1-import").expect("temp workspace");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"handle":"legacy","full_handle":"legacy.example.test","access_token":"jwt-replaced"},"id":"req-1"}"#,
+    )]);
+    let mut resolved = test_resolved(workspace.path());
+    resolved.service_base_url = server.base_url();
     let paths = upgrade::resolve_paths(&resolved);
-    seed_flat_legacy_identity(&paths, "legacy", "did:wba:example.test:user:k1_legacy");
+    std::fs::create_dir_all(Path::new(&paths.legacy_settings_path).parent().unwrap())
+        .expect("create legacy settings dir");
+    std::fs::write(
+        &paths.legacy_settings_path,
+        format!(
+            r#"{{"user_service_url":"{}","molt_message_url":"{}","did_domain":"example.test","message_transport":{{"receive_mode":"websocket"}}}}"#,
+            server.base_url(),
+            server.base_url()
+        ),
+    )
+    .expect("write legacy settings");
+    seed_flat_legacy_identity(&paths, "legacy", "did:wba:example.test:legacy:k1_legacy");
 
     let mut context = upgrade::new_context(&resolved, "1.2.5");
-    let err = upgrade::new_default_upgrader()
+    upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
-        .expect_err("imported k1 replacement remains deferred");
-    assert_eq!(
-        err.to_string(),
-        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+        .expect("imported handle k1 replacement should complete like Go");
+
+    let meta = upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .expect("meta after imported k1 replacement");
+    assert_eq!(meta.workspace_schema_version, 3);
+    assert!(meta.warnings.is_empty());
+    assert!(
+        upgrade::load_journal(&paths.journal_path)
+            .expect("load cleared journal")
+            .is_none(),
+        "journal should clear after imported k1 replacement"
     );
 
-    let journal = upgrade::load_journal(&paths.journal_path)
-        .expect("load deferred journal")
-        .expect("journal remains after deferred v0 to v1 apply");
-    assert_eq!(journal.from_version, 0);
-    assert_eq!(journal.to_version, 1);
-    assert_eq!(
-        journal.current_step,
-        "workspace_0_to_1_bootstrap_local_state_upgrade"
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert_contains(&requests[0], "Authorization: Bearer legacy-token\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(body["method"], "replace_did");
+    let new_did = body["params"]["new_did_document"]["id"]
+        .as_str()
+        .expect("new did");
+    assert!(
+        new_did.starts_with("did:wba:example.test:legacy:e1_"),
+        "new DID should preserve imported handle path and use e1 suffix: {new_did}"
     );
-    assert_eq!(journal.phase, "applying");
-    assert!(upgrade::load_meta(&paths.meta_path)
-        .expect("load meta")
-        .is_none());
+
+    let stored = read_stored_identity(&resolved, "legacy");
+    assert_eq!(stored["did"], new_did);
+    assert_eq!(stored["handle"], "legacy");
+    assert_eq!(stored["full_handle"], "legacy.example.test");
+    let auth = read_stored_auth(&resolved, "legacy");
+    assert_eq!(auth["jwt_token"], "jwt-replaced");
+    let backup_manifest = read_single_replace_did_backup_manifest(&resolved);
+    assert_eq!(backup_manifest["identity_name"], "legacy");
+    assert_eq!(
+        backup_manifest["old_did"],
+        "did:wba:example.test:legacy:k1_legacy"
+    );
+    assert_eq!(backup_manifest["planned_new_did"], new_did);
 }
 
 #[test]

@@ -15,6 +15,14 @@ pub(crate) fn apply_workspace_v2_to_v3_replace_existing_k1_dids(
             return Ok(());
         }
     };
+    replace_k1_dids_for_summaries(context, identities)
+}
+
+pub(crate) fn replace_k1_dids_for_summaries(
+    context: &mut Context,
+    identities: Vec<identity::IdentitySummary>,
+) -> Result<(), MigrationError> {
+    let manager = identity::Manager::new(context.resolved.paths.clone());
     for summary in identities {
         if !is_k1_did(&summary.did) {
             continue;

@@ -740,7 +740,7 @@ fn workspace_v0_to_v1_local_state_ensures_existing_target_schema_without_legacy_
 }
 
 #[test]
-fn workspace_v0_to_v1_local_state_keeps_guards_and_defers_k1_replacement_boundary() {
+fn workspace_v0_to_v1_local_state_keeps_guards_and_warns_on_non_handle_k1_replacement() {
     let missing = upgrade::apply_workspace_v0_to_v1_local_state_optional(None)
         .expect_err("missing context should match Go guard");
     assert_eq!(
@@ -787,12 +787,17 @@ fn workspace_v0_to_v1_local_state_keeps_guards_and_defers_k1_replacement_boundar
         detection.has_legacy = true;
         detection.legacy_identity_exists = true;
     });
-    let apply_err = plan[0]
+    plan[0]
         .apply(&mut k1_context)
-        .expect_err("imported k1 replacement still requires a dedicated service lane");
-    assert_eq!(
-        apply_err.to_string(),
-        "workspace migration execution is not implemented: workspace_0_to_1_bootstrap_local_state_upgrade"
+        .expect("imported non-handle k1 replacement should warn and continue like Go");
+    assert_eq!(k1_context.warnings.len(), 1);
+    assert_contains(
+        &k1_context.warnings[0],
+        "Automatic DID replacement skipped for identity legacy (did:wba:example.test:user:k1_legacy):",
+    );
+    assert_contains(
+        &k1_context.warnings[0],
+        "invalid input: current did is not a handle did",
     );
 }
 
