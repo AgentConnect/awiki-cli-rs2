@@ -2,6 +2,65 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Identity Discovery Slice
+
+Timestamp: 2026-05-16T20:20:50Z / 2026-05-17T04:20:50+0800.
+
+Scope: add a pure identity-discovery control-flow helper for Go
+`Supervisor.startKnownSessions` and `Supervisor.watchNewIdentities` before
+real foreground session bootstrap is wired.
+
+What changed:
+
+- Added `runtime::listener_identity_watch` with a 3-second watch interval and
+  event-to-action planners for known-session startup and new-identity polling.
+- Known-session startup returns manager list errors directly, checks context
+  cancellation before each identity, ensures identities in listed order, records
+  original ensure error text plus summary DID, refreshes immediately after each
+  recorded error like Go `recordSessionError`, and refreshes status once more
+  after a completed pass.
+- New-identity polling stops on context cancellation, ignores manager list
+  errors without refresh, skips identities already present in the session map,
+  treats identities ensured earlier in the same tick as present, records ensure
+  errors, refreshes immediately after each recorded error, and refreshes status
+  after a successful list pass.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_identity_watch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_state_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestSessionWarnings|TestHasDisconnectedSessions|TestMergeSavedRuntimeStatus' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_identity_watch.rs crates/awiki-cli/tests/runtime_listener_identity_watch_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `runtime_listener_identity_watch_contract` passed all 8 tests.
+- Adjacent listener session-state and session-loop contracts passed, and
+  `cargo check` passed for `awiki-cli`.
+- Focused Go listener session/reconnect/status guard tests passed.
+- `xtask check-structure` reported no undocumented Rust files over 1200 lines;
+  the new Rust source/test files are 180 and 183 lines.
+- Dependency audit found the existing expected `rusqlite`/`libsqlite3-sys`
+  bundled SQLite path and Rustls/ring/webpki stack, with no OpenSSL,
+  `native-tls`, new WebSocket stack, or platform service dependency introduced.
+- No Cargo manifests or lockfiles changed.
+
+Boundary note: this is still a pure planning helper. It does not implement real
+`identity.Manager`, `ensureSession`, session locks, ticker/context/goroutine
+ownership, status-file writes, WebSocket clients, or message RPC execution.
+
+Dependency note: no Rust dependency was added. This slice uses only std
+collections/time plus local action/result types.
+
 ## 2026-05-17 Listener Notification Handler Slice
 
 Timestamp: 2026-05-16T20:07:23Z / 2026-05-17T04:07:23+0800.
