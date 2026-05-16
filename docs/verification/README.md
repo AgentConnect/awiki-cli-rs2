@@ -9832,3 +9832,81 @@ unchanged. This extension uses existing structs and injected closures only; it
 does not add platform service libraries, HTTP/TLS clients, OpenSSL/native-tls,
 bundled OpenSSL, YAML crates, WebSocket crates, process supervision crates, ANP
 SDK network features, or SQLite dependencies.
+
+## 2026-05-16 Hermes bridge lifecycle planner extension
+
+Timestamp: 2026-05-16T15:21:49Z / 2026-05-16T23:21:49+0800.
+
+Scope: extend the Hermes bridge service helper slice with pure lifecycle branch
+plans for Go `EnsureInstalled`, `StartService`, `StopService`,
+`RestartService`, `Uninstall`, and `Apply` without executing service-manager
+operations.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
+  check-structure`, and `git diff --check` passed.
+- `runtime_hermes_bridge_service_contract`: 14 passed.
+- `runtime_hermes_bridge_contract`: 10 passed.
+- `runtime_hermes_ensure_route_contract`: 8 passed.
+- `runtime_hermes_cli_contract`: 5 passed.
+- `runtime_hermes_setup_dry_run_contract`: 11 passed.
+- Go `internal/runtime/hermesbridge` tests passed.
+- Dependency audit output showed only existing allowed hits: Rustls/ring
+  transport dependencies, `base64`/`sha2`, and the approved
+  `rusqlite`/`libsqlite3-sys` bundled-SQLite toolchain entries
+  (`cc`, `pkg-config`, `vcpkg`). No OpenSSL, `native-tls`, bundled OpenSSL,
+  platform service, YAML, WebSocket, or new HTTP-client dependency was added.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `runtime/hermes_bridge.rs` 867 lines,
+  `runtime/hermes_bridge/route.rs` 686 lines,
+  `runtime/hermes_bridge/service.rs` 336 lines, and
+  `runtime_hermes_bridge_service_contract.rs` 581 lines. No file-size
+  exception is needed.
+
+Implemented behavior:
+
+- Adds `BridgeServiceLifecycleOperation` and pure operation planners:
+  `ensure_installed_plan`, `start_service_plan`, `stop_service_plan`,
+  `restart_service_plan`, `uninstall_service_plan`, and `apply_service_plan`.
+- Preserves Go `EnsureInstalled` branching: install only when missing, then
+  return status.
+- Preserves Go `StartService` branching: ensure install when missing, return
+  status if already running, otherwise start then wait for running.
+- Preserves Go `StopService` branching: return status when not installed, stop
+  only when running, then wait for stopped.
+- Preserves Go `RestartService` branching: fail when not installed, otherwise
+  restart then wait for running.
+- Preserves Go `Uninstall` branching: return status when not installed, stop
+  first when running, uninstall, then return status.
+- Preserves Go `Apply` branch selection as an operation plan:
+  ensure-install/start when missing, restart when running, start when stopped.
+
+Boundary note: this remains a pure planner. It does not call
+`svc.Install/Start/Stop/Restart/Uninstall`, does not implement the
+`exists`/`ErrNotInstalled` error exceptions, does not run `waitForStatus`
+against a real service, does not perform platform service lookup/control, and
+does not wire non-dry-run Hermes setup.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This extension is enum/vector planning only and does not add
+platform service libraries, process supervisors, HTTP/TLS clients,
+OpenSSL/native-tls, bundled OpenSSL, YAML crates, WebSocket crates, ANP SDK
+network features, or SQLite dependencies.

@@ -3,6 +3,7 @@ use awiki_cli::runtime::hermes_bridge::{
     self, BridgeApplyDecision, BridgeConfig, BridgeStatus, RouteState, DEFAULT_WEBHOOK_PORT,
     SERVICE_ARGUMENTS, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
 };
+use hermes_bridge::BridgeServiceLifecycleOperation as Op;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -370,6 +371,98 @@ fn apply_decision_matches_go_apply_branching() {
             ..BridgeStatus::default()
         }),
         BridgeApplyDecision::Start
+    );
+}
+
+#[test]
+fn lifecycle_operation_plans_match_go_service_branching() {
+    assert_eq!(
+        hermes_bridge::ensure_installed_plan(false),
+        vec![Op::InstallIfMissing, Op::ReturnStatus]
+    );
+    assert_eq!(
+        hermes_bridge::ensure_installed_plan(true),
+        vec![Op::ReturnStatus]
+    );
+
+    assert_eq!(
+        hermes_bridge::start_service_plan(false, false),
+        vec![Op::EnsureInstalled, Op::Start, Op::WaitForRunning]
+    );
+    assert_eq!(
+        hermes_bridge::start_service_plan(false, true),
+        vec![Op::EnsureInstalled, Op::ReturnStatus]
+    );
+    assert_eq!(
+        hermes_bridge::start_service_plan(true, false),
+        vec![Op::Start, Op::WaitForRunning]
+    );
+    assert_eq!(
+        hermes_bridge::start_service_plan(true, true),
+        vec![Op::ReturnStatus]
+    );
+
+    assert_eq!(
+        hermes_bridge::stop_service_plan(false, false),
+        vec![Op::ReturnStatus]
+    );
+    assert_eq!(
+        hermes_bridge::stop_service_plan(true, false),
+        vec![Op::WaitForStopped]
+    );
+    assert_eq!(
+        hermes_bridge::stop_service_plan(true, true),
+        vec![Op::Stop, Op::WaitForStopped]
+    );
+
+    assert_eq!(
+        hermes_bridge::restart_service_plan(false),
+        vec![Op::ErrorNotInstalled]
+    );
+    assert_eq!(
+        hermes_bridge::restart_service_plan(true),
+        vec![Op::Restart, Op::WaitForRunning]
+    );
+
+    assert_eq!(
+        hermes_bridge::uninstall_service_plan(false, false),
+        vec![Op::ReturnStatus]
+    );
+    assert_eq!(
+        hermes_bridge::uninstall_service_plan(true, false),
+        vec![Op::Uninstall, Op::ReturnStatus]
+    );
+    assert_eq!(
+        hermes_bridge::uninstall_service_plan(true, true),
+        vec![Op::Stop, Op::Uninstall, Op::ReturnStatus]
+    );
+}
+
+#[test]
+fn apply_service_plan_matches_go_apply_branching() {
+    assert_eq!(
+        hermes_bridge::apply_service_plan(&BridgeStatus {
+            installed: false,
+            running: false,
+            ..BridgeStatus::default()
+        }),
+        vec![Op::EnsureInstalled, Op::Start]
+    );
+    assert_eq!(
+        hermes_bridge::apply_service_plan(&BridgeStatus {
+            installed: true,
+            running: true,
+            ..BridgeStatus::default()
+        }),
+        vec![Op::Restart]
+    );
+    assert_eq!(
+        hermes_bridge::apply_service_plan(&BridgeStatus {
+            installed: true,
+            running: false,
+            ..BridgeStatus::default()
+        }),
+        vec![Op::Start]
     );
 }
 

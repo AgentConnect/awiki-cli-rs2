@@ -51,6 +51,20 @@ pub enum BridgeApplyDecision {
     Start,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeServiceLifecycleOperation {
+    EnsureInstalled,
+    InstallIfMissing,
+    Start,
+    Stop,
+    Restart,
+    Uninstall,
+    ReturnStatus,
+    WaitForRunning,
+    WaitForStopped,
+    ErrorNotInstalled,
+}
+
 pub fn status_from_parts(
     service_name: String,
     config_result: anyhow::Result<BridgeConfig>,
@@ -245,4 +259,78 @@ pub fn apply_decision_for(status: &BridgeStatus) -> BridgeApplyDecision {
         return BridgeApplyDecision::Restart;
     }
     BridgeApplyDecision::Start
+}
+
+pub fn ensure_installed_plan(installed: bool) -> Vec<BridgeServiceLifecycleOperation> {
+    let mut operations = Vec::new();
+    if !installed {
+        operations.push(BridgeServiceLifecycleOperation::InstallIfMissing);
+    }
+    operations.push(BridgeServiceLifecycleOperation::ReturnStatus);
+    operations
+}
+
+pub fn start_service_plan(installed: bool, running: bool) -> Vec<BridgeServiceLifecycleOperation> {
+    let mut operations = Vec::new();
+    if !installed {
+        operations.push(BridgeServiceLifecycleOperation::EnsureInstalled);
+    }
+    if running {
+        operations.push(BridgeServiceLifecycleOperation::ReturnStatus);
+    } else {
+        operations.push(BridgeServiceLifecycleOperation::Start);
+        operations.push(BridgeServiceLifecycleOperation::WaitForRunning);
+    }
+    operations
+}
+
+pub fn stop_service_plan(installed: bool, running: bool) -> Vec<BridgeServiceLifecycleOperation> {
+    let mut operations = Vec::new();
+    if !installed {
+        operations.push(BridgeServiceLifecycleOperation::ReturnStatus);
+        return operations;
+    }
+    if running {
+        operations.push(BridgeServiceLifecycleOperation::Stop);
+    }
+    operations.push(BridgeServiceLifecycleOperation::WaitForStopped);
+    operations
+}
+
+pub fn restart_service_plan(installed: bool) -> Vec<BridgeServiceLifecycleOperation> {
+    if !installed {
+        return vec![BridgeServiceLifecycleOperation::ErrorNotInstalled];
+    }
+    vec![
+        BridgeServiceLifecycleOperation::Restart,
+        BridgeServiceLifecycleOperation::WaitForRunning,
+    ]
+}
+
+pub fn uninstall_service_plan(
+    installed: bool,
+    running: bool,
+) -> Vec<BridgeServiceLifecycleOperation> {
+    let mut operations = Vec::new();
+    if !installed {
+        operations.push(BridgeServiceLifecycleOperation::ReturnStatus);
+        return operations;
+    }
+    if running {
+        operations.push(BridgeServiceLifecycleOperation::Stop);
+    }
+    operations.push(BridgeServiceLifecycleOperation::Uninstall);
+    operations.push(BridgeServiceLifecycleOperation::ReturnStatus);
+    operations
+}
+
+pub fn apply_service_plan(status: &BridgeStatus) -> Vec<BridgeServiceLifecycleOperation> {
+    match apply_decision_for(status) {
+        BridgeApplyDecision::EnsureInstalledThenStart => vec![
+            BridgeServiceLifecycleOperation::EnsureInstalled,
+            BridgeServiceLifecycleOperation::Start,
+        ],
+        BridgeApplyDecision::Restart => vec![BridgeServiceLifecycleOperation::Restart],
+        BridgeApplyDecision::Start => vec![BridgeServiceLifecycleOperation::Start],
+    }
 }
