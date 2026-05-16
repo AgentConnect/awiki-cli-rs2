@@ -9910,3 +9910,85 @@ unchanged. This extension is enum/vector planning only and does not add
 platform service libraries, process supervisors, HTTP/TLS clients,
 OpenSSL/native-tls, bundled OpenSSL, YAML crates, WebSocket crates, ANP SDK
 network features, or SQLite dependencies.
+
+## 2026-05-16 Hermes setup local transaction slice
+
+Timestamp: 2026-05-16T15:38:09Z / 2026-05-16T23:38:09+0800.
+
+Scope: extend `runtime host-notify hermes setup` beyond dry-run validation to
+perform the local-file half of Go setup: write awiki host-notify config and
+ensure the local Hermes notify route. This slice still does not execute
+listener refresh/restart or bridge service install/start/restart.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/cli -run 'TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue|TestRuntimeDryRunPlansCoverStableActions' -count=1
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/runtime_hermes_setup_dry_run_contract.rs
+```
+
+Observed results:
+
+- `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
+  check-structure`, and `git diff --check` passed.
+- `runtime_hermes_setup_dry_run_contract`: 12 passed.
+- `runtime_hermes_config_write_contract`: 11 passed.
+- `runtime_hermes_ensure_route_contract`: 8 passed.
+- `runtime_hermes_bridge_service_contract`: 14 passed.
+- `runtime_hermes_cli_contract`: 5 passed.
+- Go focused `internal/cli` Hermes tests passed.
+- Go `internal/runtime/hermesbridge` tests passed.
+- Dependency audit output showed only existing allowed hits: Rustls/ring
+  transport dependencies, `base64`/`sha2`, and the approved
+  `rusqlite`/`libsqlite3-sys` bundled-SQLite toolchain entries
+  (`cc`, `pkg-config`, `vcpkg`). No OpenSSL, `native-tls`, bundled OpenSSL,
+  platform service, YAML, WebSocket, or new HTTP-client dependency was added.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `runtime_hermes_handlers.rs` 705 lines and
+  `runtime_hermes_setup_dry_run_contract.rs` 612 lines. No file-size exception
+  is needed.
+
+Implemented behavior:
+
+- Non-dry-run setup now calls the existing Rust
+  `configure_hermes_host_notify` parity writer, preserving Go's
+  `runtime.host_notify.enabled=true`, `sink=hermes`, Hermes notify URL,
+  Hermes deliver target, and legacy webhook notify URL/secret mirroring.
+- Setup re-resolves config after the awiki write, then calls the existing
+  `ensure_route` parity helper for the default `notify` route under
+  `$HERMES_HOME/config.yaml`.
+- Output keeps Go's completed summary shape and includes `host_notify`,
+  `local_hermes`, current `listener`, passive `bridge`, and `next_steps`.
+- Secret values are persisted where Go persists them, but remain redacted from
+  stdout/stderr and serialized route/status objects.
+- Contract tests assert that non-dry-run setup creates awiki config and Hermes
+  route files, supports explicit notify URL/deliver/secret flags, preserves
+  Telegram's Go home-channel key `TELEGRAM_HOME_CHANNEL`, and does not create
+  listener PID/status/expected-boot/socket artifacts.
+
+Boundary note: this slice intentionally does not call Go-equivalent
+`refreshListenerForHostNotifyChange` or `hermesbridge.Apply`. Rust setup emits
+explicit warnings that listener refresh/restart and bridge service
+install/start are deferred. Real platform service status/control, adapter
+process lifecycle, owned HTTP health probing, hidden bridge `service-run`, and
+full awiki-system-test Hermes setup acceptance remain deferred.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing std filesystem/env/path handling, the
+existing awiki config writer, existing Hermes route writer, existing passive
+status helpers, and existing `rand` for generated secrets. It does not add
+platform service libraries, process supervisors, HTTP/TLS clients,
+OpenSSL/native-tls, bundled OpenSSL, YAML crates, WebSocket crates, ANP SDK
+network features, or SQLite dependencies.

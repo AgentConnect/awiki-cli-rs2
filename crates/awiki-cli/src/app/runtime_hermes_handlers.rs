@@ -1,4 +1,4 @@
-use super::{internal_anyhow, not_implemented_side_effect, App};
+use super::{internal_anyhow, App};
 use crate::cli::ParsedCommand;
 use crate::config::{self, Resolved};
 use crate::output::ExitError;
@@ -256,10 +256,99 @@ impl App {
             );
         }
 
-        let _ = secret_value;
-        Err(not_implemented_side_effect(
-            "runtime host-notify hermes setup",
-        ))
+        config::configure_hermes_host_notify(
+            &resolved.paths,
+            &notify_url,
+            Some(&secret_value),
+            &deliver,
+            true,
+        )
+        .map_err(|err| {
+            ExitError::new(
+                "internal_error",
+                1,
+                err.to_string(),
+                "Check write permissions for config.yaml.",
+            )
+        })?;
+        let resolved = self.resolve_config().map_err(|err| {
+            ExitError::new(
+                "internal_error",
+                1,
+                err.detail.message,
+                "Run `awiki-cli config show` to inspect the updated configuration.",
+            )
+        })?;
+        let route_state =
+            runtime::hermes_bridge::ensure_route(runtime::hermes_bridge::EnsureRouteOptions {
+                hermes_home: resolve_hermes_home_dir(),
+                route_name: runtime::hermes_bridge::DEFAULT_WEBHOOK_ROUTE_NAME.to_string(),
+                deliver: deliver.clone(),
+                webhook_port: 0,
+                prompt: String::new(),
+            })
+            .map_err(|err| {
+                ExitError::new(
+                    "internal_error",
+                    1,
+                    err.to_string(),
+                    "Check local Hermes installation and ~/.hermes/config.yaml permissions.",
+                )
+            })?;
+        let host_notify_view = runtime::host_notify_config_view(&resolved).map_err(|err| {
+            ExitError::new(
+                "internal_error",
+                1,
+                err.to_string(),
+                "Check host notify configuration and local OpenClaw route registry state.",
+            )
+        })?;
+        let listener_status = runtime::current_listener_status(&resolved);
+        let bridge_status = runtime::hermes_bridge::status_for(&resolved);
+        let mut warnings = host_notify_guidance_warnings_for(&resolved, &deliver);
+        warnings.extend(route_state.warnings.clone());
+        warnings.extend(bridge_status.warnings.clone());
+        warnings.push(
+            "Hermes bridge service install/start is deferred in this Rust parity slice; run `awiki-cli runtime host-notify hermes status` after the bridge execution slice lands."
+                .to_string(),
+        );
+        warnings.push(
+            "Listener refresh/restart is deferred in this Rust parity slice; host notify changes will apply the next time the listener starts."
+                .to_string(),
+        );
+        if deliver != "log" && !route_state.home_channel_configured {
+            if route_state.home_channel_key.is_empty() {
+                warnings.push(format!(
+                    "Hermes route is ready, but awiki-cli could not verify a home channel for {}. Set a home channel in Hermes before expecting delivery.",
+                    runtime::hermes_bridge::deliver_display_name(&deliver)
+                ));
+            } else {
+                warnings.push(format!(
+                    "Hermes route is ready, but {} is still missing. Run /sethome in {} to complete delivery targeting.",
+                    route_state.home_channel_key,
+                    runtime::hermes_bridge::deliver_display_name(&deliver)
+                ));
+            }
+        }
+        self.render_success(
+            "awiki-cli runtime host-notify hermes setup",
+            &resolved,
+            json!({
+                "host_notify": host_notify_view,
+                "local_hermes": route_state,
+                "listener": listener_status,
+                "bridge": bridge_status,
+                "next_steps": [
+                    format!(
+                        "If you have not done it yet, send `/sethome` to Hermes from the desired {} chat.",
+                        runtime::hermes_bridge::deliver_display_name(&deliver)
+                    ),
+                    "Use `awiki-cli runtime host-notify hermes status` to verify end-to-end readiness.".to_string(),
+                ],
+            }),
+            "Hermes host notify setup completed",
+            dedupe_strings(warnings),
+        )
     }
 
     pub fn run_runtime_host_notify_hermes_set(

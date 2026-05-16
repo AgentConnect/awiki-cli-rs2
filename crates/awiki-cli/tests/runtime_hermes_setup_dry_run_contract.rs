@@ -224,25 +224,156 @@ fn hermes_setup_dry_run_reports_environment_secret_sources_like_go_contract() {
 }
 
 #[test]
-fn hermes_setup_non_dry_run_stays_deferred_to_side_effect_slice() {
-    let workspace = TempDir::new("setup-non-dry-run-deferred").expect("temp workspace");
+fn hermes_setup_non_dry_run_writes_local_awiki_and_hermes_files_without_bridge_side_effects() {
+    let workspace = TempDir::new("setup-non-dry-run-local").expect("temp workspace");
 
     let output = awiki_cmd(
         &["runtime", "host-notify", "hermes", "setup"],
         workspace.path(),
     );
-    assert_code(&output, 1);
-    let envelope = error_json(&output);
+    assert_success(&output);
+    let envelope = success_json(&output);
 
-    assert_eq!(envelope["error"]["code"], "not_implemented");
     assert_eq!(
-        envelope["error"]["message"],
-        "runtime host-notify hermes setup requires non-dry-run implementation in a later port slice."
+        envelope["command"],
+        "awiki-cli runtime host-notify hermes setup"
+    );
+    assert_eq!(envelope["summary"], "Hermes host notify setup completed");
+    assert_eq!(
+        envelope["data"]["host_notify"]["sink"], "hermes",
+        "setup switches awiki-cli to the Hermes sink like Go"
+    );
+    assert_eq!(envelope["data"]["host_notify"]["enabled"], true);
+    assert_eq!(
+        envelope["data"]["host_notify"]["hermes"]["notify_url"],
+        DEFAULT_NOTIFY_URL
     );
     assert_eq!(
-        envelope["error"]["hint"],
-        "Use --dry-run for this first Rust parity slice."
+        envelope["data"]["host_notify"]["hermes"]["deliver"],
+        "feishu"
     );
+    assert_eq!(
+        envelope["data"]["host_notify"]["hermes"]["secret_configured"],
+        true
+    );
+    assert_eq!(envelope["data"]["local_hermes"]["route_configured"], true);
+    assert_eq!(envelope["data"]["local_hermes"]["deliver"], "feishu");
+    assert_eq!(
+        envelope["data"]["local_hermes"]["route_secret_configured"],
+        true
+    );
+    assert_eq!(envelope["data"]["bridge"]["installed"], false);
+    assert_eq!(envelope["data"]["bridge"]["running"], false);
+    assert_eq!(envelope["data"]["bridge"]["bridge_available"], false);
+    assert!(
+        envelope["data"]["listener"].is_object(),
+        "setup should report the current listener status without restarting it"
+    );
+    assert!(
+        envelope["data"]["next_steps"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value
+                .as_str()
+                .unwrap_or_default()
+                .contains("awiki-cli runtime host-notify hermes status"))),
+        "Go setup returns status verification guidance"
+    );
+    assert!(
+        envelope["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|value| value
+                .as_str()
+                .unwrap_or_default()
+                .contains("Hermes bridge service install/start is deferred"))),
+        "this Rust slice must not imply the bridge service was started"
+    );
+
+    let config = std::fs::read_to_string(workspace.path().join("config.yaml"))
+        .expect("awiki config should be written");
+    assert_contains(&config, "    enabled: true\n");
+    assert_contains(&config, "    sink: hermes\n");
+    assert_contains(
+        &config,
+        "      notify_url: http://127.0.0.1:8765/notify/host-event\n",
+    );
+    assert_contains(&config, "      deliver: feishu\n");
+    assert_contains(&config, "      secret: ");
+
+    let hermes_config = read_hermes_config(workspace.path());
+    assert_contains(&hermes_config, "platforms:\n");
+    assert_contains(&hermes_config, "  webhook:\n");
+    assert_contains(&hermes_config, "    enabled: true\n");
+    assert_contains(&hermes_config, "      port: 8644\n");
+    assert_contains(&hermes_config, "        notify:\n");
+    assert_contains(&hermes_config, "          secret: ");
+    assert_contains(&hermes_config, "          deliver: feishu\n");
+    assert!(!workspace.path().join("runtime/listener.pid").exists());
+    assert!(!workspace
+        .path()
+        .join("runtime/listener.status.json")
+        .exists());
+    assert!(!workspace
+        .path()
+        .join("runtime/listener.expected-boot-id")
+        .exists());
+    assert!(!workspace
+        .path()
+        .join("runtime/message-daemon.sock")
+        .exists());
+}
+
+#[test]
+fn hermes_setup_non_dry_run_accepts_explicit_flags_and_redacts_secret() {
+    let workspace = TempDir::new("setup-non-dry-run-explicit").expect("temp workspace");
+
+    let output = awiki_cmd(
+        &[
+            "runtime",
+            "host-notify",
+            "hermes",
+            "setup",
+            "--notify-url",
+            "http://127.0.0.1:9999/hook",
+            "--deliver",
+            "telegram",
+            "--secret",
+            EXPLICIT_SECRET,
+        ],
+        workspace.path(),
+    );
+    assert_success(&output);
+    assert_not_contains(&String::from_utf8_lossy(&output.stdout), EXPLICIT_SECRET);
+    assert_not_contains(&String::from_utf8_lossy(&output.stderr), EXPLICIT_SECRET);
+    let envelope = success_json(&output);
+
+    assert_eq!(
+        envelope["data"]["host_notify"]["hermes"]["notify_url"],
+        "http://127.0.0.1:9999/hook"
+    );
+    assert_eq!(
+        envelope["data"]["host_notify"]["hermes"]["deliver"],
+        "telegram"
+    );
+    assert_eq!(
+        envelope["data"]["host_notify"]["hermes"]["secret_configured"],
+        true
+    );
+    assert_eq!(envelope["data"]["local_hermes"]["deliver"], "telegram");
+    assert_eq!(
+        envelope["data"]["local_hermes"]["home_channel_key"],
+        "TELEGRAM_HOME_CHANNEL"
+    );
+    assert_eq!(envelope["data"]["bridge"]["running"], false);
+
+    let config = std::fs::read_to_string(workspace.path().join("config.yaml"))
+        .expect("awiki config should be written");
+    assert_contains(&config, "      notify_url: http://127.0.0.1:9999/hook\n");
+    assert_contains(&config, "      deliver: telegram\n");
+    assert_contains(&config, "      secret: explicit-secret\n");
+
+    let hermes_config = read_hermes_config(workspace.path());
+    assert_contains(&hermes_config, "          deliver: telegram\n");
+    assert_contains(&hermes_config, "          secret: ");
 }
 
 #[test]
@@ -436,9 +567,18 @@ fn assert_not_contains(haystack: &str, needle: &str) {
 fn assert_config_contains(workspace: &Path, needle: &str) {
     let config =
         std::fs::read_to_string(workspace.join("config.yaml")).expect("config should exist");
+    assert_contains(&config, needle);
+}
+
+fn read_hermes_config(workspace: &Path) -> String {
+    std::fs::read_to_string(workspace.join("hermes-home").join("config.yaml"))
+        .expect("Hermes config should be written")
+}
+
+fn assert_contains(haystack: &str, needle: &str) {
     assert!(
-        config.contains(needle),
-        "{config:?} should contain {needle:?}"
+        haystack.contains(needle),
+        "{haystack:?} should contain {needle:?}"
     );
 }
 
