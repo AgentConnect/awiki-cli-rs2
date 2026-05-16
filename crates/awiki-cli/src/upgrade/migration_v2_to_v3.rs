@@ -22,6 +22,15 @@ pub(crate) fn replace_k1_dids_for_summaries(
     context: &mut Context,
     identities: Vec<identity::IdentitySummary>,
 ) -> Result<(), MigrationError> {
+    if identities.is_empty() {
+        return Ok(());
+    }
+    if let Err(err) = crate::transportcfg::new_http_client(&context.resolved.ca_bundle) {
+        context.warnings.push(format!(
+            "Automatic k1 to e1 DID replacement was skipped: {err}"
+        ));
+        return Ok(());
+    }
     let manager = identity::Manager::new(context.resolved.paths.clone());
     for summary in identities {
         if !is_k1_did(&summary.did) {

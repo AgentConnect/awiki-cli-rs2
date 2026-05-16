@@ -2,6 +2,68 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Workspace K1 Service-Construction Warning Edge Slice
+
+Timestamp: 2026-05-16T18:50:07Z / 2026-05-17T02:50:07+0800.
+
+Scope: preserve Go's `replaceK1DIDsForSummaries` ordering edge where identity
+service construction happens for every non-empty summary list before non-k1
+summaries are filtered.
+
+What changed:
+
+- The shared imported/current k1 replacement helper now preflights the existing
+  Rustls/std identity HTTP client CA-bundle construction before filtering
+  non-k1 summaries.
+- If that preflight fails, the migration appends Go-shaped warning text:
+  `Automatic k1 to e1 DID replacement was skipped: ...`.
+- A focused `UpgradeIfNeeded` test covers an all-non-k1 current identity index
+  with an invalid CA bundle and verifies that schema version 3 is still stamped
+  and the journal is cleared with the warning preserved.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 test -p awiki-cli upgrade::migration_v2_to_v3 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_replace_did_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_rebind_contract --locked
+cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededReplacesAllImportedLegacyK1Handles|TestUpgradeIfNeededReplacesExistingWorkspaceK1Handles|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+cd ../awiki-cli && go test ./internal/transportcfg ./internal/identity ./internal/store -run 'Test.*CABundle|TestReplaceDID|Test.*Rebind|Test.*K1' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/upgrade/migration_v2_to_v3.rs crates/awiki-cli/tests/workspace_upgrade_if_needed_contract.rs
+```
+
+Observed results:
+
+- `workspace_upgrade_if_needed_contract` passed all 13 tests, including the
+  new all-non-k1 invalid-CA warning edge.
+- Adjacent migration, identity replacement, store rebind, and transport CA
+  bundle tests passed.
+- Focused Go upgrade, transportcfg, identity, and store reference tests passed.
+- Dependency audit output stayed on the existing `rustls`/`ring`,
+  `base64`/`sha2`/`hmac`, and approved `rusqlite + bundled`
+  `libsqlite3-sys` paths; no OpenSSL, `native-tls`, WebSocket, YAML, platform
+  service-manager, reqwest, hyper, or alternate SQLite dependency path
+  appeared.
+- The touched source/test files stay below the default 1200-line review-size
+  cap.
+
+Boundary note: this is a warning-ordering parity slice only. It does not add a
+Rust `identity::Service` object, change remote replacement behavior, implement
+rollback, or run full awiki-system-test migration acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. The slice reuses the existing Rustls/std HTTP client CA
+bundle parser and the approved `rusqlite + bundled` SQLite path.
+
 ## 2026-05-16 Workspace Shared Imported/Current K1 Replacement Slice
 
 Timestamp: 2026-05-16T18:37:13Z / 2026-05-17T02:37:13+0800.

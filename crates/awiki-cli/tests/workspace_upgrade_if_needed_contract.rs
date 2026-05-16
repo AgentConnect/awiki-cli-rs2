@@ -641,6 +641,74 @@ fn workspace_upgrade_if_needed_completes_v2_to_v3_when_current_identity_index_ha
 }
 
 #[test]
+fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fails_like_go() {
+    let workspace =
+        TempDir::new("workspace-upgrade-if-needed-v2-v3-e1-ca").expect("temp workspace");
+    let mut resolved = test_resolved(workspace.path());
+    let paths = upgrade::resolve_paths(&resolved);
+    let invalid_ca = workspace.path().join("invalid-ca.pem");
+    std::fs::write(&invalid_ca, "not a certificate").expect("write invalid ca");
+    resolved.ca_bundle = path_string(&invalid_ca);
+    std::fs::write(
+        &paths.config_file,
+        format!(
+            "schema_version: 1\nservices:\n  ca_bundle: {}\n",
+            path_string(&invalid_ca)
+        ),
+    )
+    .expect("write config");
+    upgrade::save_meta(
+        &paths.meta_path,
+        &upgrade::Meta {
+            workspace_schema_version: 2,
+            app_version: "1.0.0".to_string(),
+            updated_at: "2026-05-15T00:00:00Z".to_string(),
+            last_upgrade_id: String::new(),
+            last_backup_dir: String::new(),
+            warnings: Vec::new(),
+        },
+    )
+    .expect("save v2 meta");
+    std::fs::create_dir_all(&paths.identity_dir).expect("create identity dir");
+    std::fs::write(
+        Path::new(&paths.identity_dir).join("index.json"),
+        r#"{"schema_version":3,"default_credential_name":"current","credentials":{"current":{"credential_name":"current","dir_name":"current","did":"did:wba:example.test:user:e1_current","unique_id":"e1_current","name":"Current User","handle":"current","full_handle":"current.example.test","is_default":true}}}"#,
+    )
+    .expect("write e1 identity index");
+
+    let mut context = upgrade::new_context(&resolved, "1.2.12");
+    upgrade::new_default_upgrader()
+        .upgrade_if_needed(&mut context)
+        .expect("service-construction failure should be captured as a warning");
+
+    let meta = upgrade::load_meta(&paths.meta_path)
+        .expect("load meta")
+        .expect("meta saved after v2 to v3");
+    assert_eq!(meta.workspace_schema_version, 3);
+    assert_eq!(meta.app_version, "1.2.12");
+    assert_eq!(meta.warnings.len(), 1);
+    assert_contains(
+        &meta.warnings[0],
+        "Automatic k1 to e1 DID replacement was skipped: invalid ca bundle:",
+    );
+    assert_contains(&meta.warnings[0], &path_string(&invalid_ca));
+    assert_eq!(
+        context
+            .current_meta
+            .as_ref()
+            .expect("context meta after service-construction warning")
+            .warnings,
+        meta.warnings
+    );
+    assert!(
+        upgrade::load_journal(&paths.journal_path)
+            .expect("load cleared journal")
+            .is_none(),
+        "journal should be cleared after completed v2 to v3 with warning"
+    );
+}
+
+#[test]
 fn workspace_upgrade_if_needed_rejects_concurrent_lock_before_migration_like_go() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-lock-held").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
