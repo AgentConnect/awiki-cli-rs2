@@ -10490,6 +10490,46 @@ remain unchanged. The copied helper uses Python stdlib modules only, matching
 the Go repository behavior and staying outside the Rust binary dependency
 graph.
 
+## 2026-05-16 README asset slice
+
+Timestamp: 2026-05-16T17:09:07Z / 2026-05-17T01:09:07+0800.
+
+Scope: copy the Go `README.md` public repository documentation into the Rust
+repository as a byte-identical asset. This preserves the same project overview,
+installation/onboarding commands, quick links, layout notes, config-template
+pointer, and support guidance without rewriting documentation for Rust-specific
+architecture.
+
+Commands run:
+
+```text
+cp -p ../awiki-cli/README.md README.md
+cmp -s ../awiki-cli/README.md README.md
+stat -c '%a %n' README.md
+wc -l README.md
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `README.md` is byte-identical to the Go repository source.
+- Permissions were preserved from the Go repository: `664`.
+- The README is 65 lines, below the default 1200-line review-size cap, so no
+  file-size exception is needed.
+
+Boundary note: this is a documentation asset parity slice. It does not modify
+Rust CLI behavior, command schema, config parsing, package install scripts, or
+release packaging. README links to onboarding and architecture documents are
+left unchanged for 1:1 parity; copying those linked documents remains a
+separate docs parity lane.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
+
 ## 2026-05-16 Config template asset slice
 
 Timestamp: 2026-05-16T17:02:08Z / 2026-05-17T01:02:08+0800.
