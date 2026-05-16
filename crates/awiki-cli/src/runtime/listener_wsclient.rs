@@ -1,6 +1,7 @@
 use crate::config::{self, Resolved};
 use crate::identity::wire::DID_AUTH_RPC_ENDPOINT;
 use crate::message::MESSAGE_WS_ENDPOINT;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{Map, Value};
 
 pub const DIAL_ERROR_BODY_LIMIT: usize = 4096;
@@ -257,6 +258,35 @@ pub fn classify_incoming_message(message: &Map<String, Value>) -> IncomingWsMess
         },
         None => IncomingWsMessage::Notification,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenerWsFrameKind {
+    Text,
+    Binary,
+}
+
+pub trait ListenerWsJsonConnection {
+    fn write_frame(&mut self, kind: ListenerWsFrameKind, raw: Vec<u8>) -> anyhow::Result<()>;
+    fn read_frame(&mut self) -> anyhow::Result<(ListenerWsFrameKind, Vec<u8>)>;
+}
+
+pub fn ws_json_write<C, T>(conn: &mut C, payload: &T) -> anyhow::Result<()>
+where
+    C: ListenerWsJsonConnection,
+    T: Serialize,
+{
+    let raw = serde_json::to_vec(payload)?;
+    conn.write_frame(ListenerWsFrameKind::Text, raw)
+}
+
+pub fn ws_json_read<C, T>(conn: &mut C) -> anyhow::Result<T>
+where
+    C: ListenerWsJsonConnection,
+    T: DeserializeOwned,
+{
+    let (_, raw) = conn.read_frame()?;
+    Ok(serde_json::from_slice(&raw)?)
 }
 
 pub fn format_dial_error_message(

@@ -1,5 +1,6 @@
 use awiki_cli::config::{self, Paths, Resolved};
 use awiki_cli::runtime::listener_wsclient;
+use serde::ser::{Serialize, Serializer};
 use serde_json::json;
 
 #[test]
@@ -486,6 +487,120 @@ fn pending_failure_and_incoming_classification_match_go_read_loop_helpers() {
 }
 
 #[test]
+fn ws_json_write_marshals_then_writes_text_frame_like_go_helper() {
+    let mut conn = RecordingJsonConnection::default();
+
+    listener_wsclient::ws_json_write(
+        &mut conn,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "direct.send",
+            "params": {"body": {"text": "hello"}},
+        }),
+    )
+    .expect("write frame");
+
+    assert_eq!(
+        conn.writes,
+        vec![(
+            listener_wsclient::ListenerWsFrameKind::Text,
+            br#"{"id":"req-1","jsonrpc":"2.0","method":"direct.send","params":{"body":{"text":"hello"}}}"#
+                .to_vec(),
+        )]
+    );
+}
+
+#[test]
+fn ws_json_write_returns_marshal_error_before_writing_like_go_helper() {
+    let mut conn = RecordingJsonConnection::default();
+
+    let err =
+        listener_wsclient::ws_json_write(&mut conn, &FailingSerialize).expect_err("marshal error");
+
+    assert!(
+        err.to_string().contains("forced serialize error"),
+        "unexpected error: {err}"
+    );
+    assert!(conn.writes.is_empty());
+}
+
+#[test]
+fn ws_json_write_propagates_write_error_after_successful_marshal() {
+    let mut conn = RecordingJsonConnection {
+        write_error: Some("websocket write failed".to_string()),
+        ..RecordingJsonConnection::default()
+    };
+
+    let err =
+        listener_wsclient::ws_json_write(&mut conn, &json!({"ok": true})).expect_err("write error");
+
+    assert_eq!(err.to_string(), "websocket write failed");
+    assert_eq!(
+        conn.writes,
+        vec![(
+            listener_wsclient::ListenerWsFrameKind::Text,
+            br#"{"ok":true}"#.to_vec(),
+        )]
+    );
+}
+
+#[test]
+fn ws_json_read_reads_frame_then_unmarshals_like_go_helper() {
+    let mut conn = RecordingJsonConnection {
+        reads: vec![(
+            listener_wsclient::ListenerWsFrameKind::Text,
+            br#"{"result":{"accepted":true}}"#.to_vec(),
+        )],
+        ..RecordingJsonConnection::default()
+    };
+
+    let value: serde_json::Value = listener_wsclient::ws_json_read(&mut conn).expect("read json");
+
+    assert_eq!(value["result"]["accepted"], true);
+    assert_eq!(conn.read_count, 1);
+}
+
+#[test]
+fn ws_json_read_propagates_read_error_before_unmarshal() {
+    let mut conn = RecordingJsonConnection {
+        read_error: Some("websocket read failed".to_string()),
+        reads: vec![(
+            listener_wsclient::ListenerWsFrameKind::Text,
+            br#"{"ignored":true}"#.to_vec(),
+        )],
+        ..RecordingJsonConnection::default()
+    };
+
+    let err: anyhow::Error =
+        listener_wsclient::ws_json_read::<_, serde_json::Value>(&mut conn).expect_err("read error");
+
+    assert_eq!(err.to_string(), "websocket read failed");
+    assert_eq!(conn.read_count, 1);
+}
+
+#[test]
+fn ws_json_read_returns_unmarshal_error_after_read_like_go_helper() {
+    let mut conn = RecordingJsonConnection {
+        reads: vec![(
+            listener_wsclient::ListenerWsFrameKind::Binary,
+            b"{not-json".to_vec(),
+        )],
+        ..RecordingJsonConnection::default()
+    };
+
+    let err: anyhow::Error = listener_wsclient::ws_json_read::<_, serde_json::Value>(&mut conn)
+        .expect_err("json decode error");
+
+    assert!(
+        err.to_string().contains("expected ident")
+            || err.to_string().contains("key must be a string"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(conn.read_count, 1);
+}
+
+#[test]
 fn format_dial_error_message_matches_go_response_body_boundary() {
     assert_eq!(
         listener_wsclient::format_dial_error_message(None, Some(b"body")),
@@ -612,5 +727,49 @@ fn test_resolved() -> Resolved {
         config_error: String::new(),
         env_hits: Vec::new(),
         sources: std::collections::BTreeMap::new(),
+    }
+}
+
+#[derive(Default)]
+struct RecordingJsonConnection {
+    writes: Vec<(listener_wsclient::ListenerWsFrameKind, Vec<u8>)>,
+    reads: Vec<(listener_wsclient::ListenerWsFrameKind, Vec<u8>)>,
+    write_error: Option<String>,
+    read_error: Option<String>,
+    read_count: usize,
+}
+
+impl listener_wsclient::ListenerWsJsonConnection for RecordingJsonConnection {
+    fn write_frame(
+        &mut self,
+        kind: listener_wsclient::ListenerWsFrameKind,
+        raw: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        self.writes.push((kind, raw));
+        if let Some(error) = &self.write_error {
+            anyhow::bail!(error.clone());
+        }
+        Ok(())
+    }
+
+    fn read_frame(&mut self) -> anyhow::Result<(listener_wsclient::ListenerWsFrameKind, Vec<u8>)> {
+        self.read_count += 1;
+        if let Some(error) = &self.read_error {
+            anyhow::bail!(error.clone());
+        }
+        self.reads
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("no frame queued"))
+    }
+}
+
+struct FailingSerialize;
+
+impl Serialize for FailingSerialize {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Err(serde::ser::Error::custom("forced serialize error"))
     }
 }

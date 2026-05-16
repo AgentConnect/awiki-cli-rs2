@@ -2,6 +2,65 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Runtime Listener WebSocket JSON Frame Helper Slice
+
+Timestamp: 2026-05-17T07:44:00+0800.
+
+Scope: extend the existing Rust listener wsclient helper boundary for Go
+`internal/runtime/listener/wsclient.go` with injected equivalents of
+`wsjsonWrite` and `wsjsonRead`, before a real Rust WebSocket transport crate is
+selected.
+
+What changed:
+
+- Added `ListenerWsFrameKind` and `ListenerWsJsonConnection`.
+- Added `ws_json_write`: JSON marshals first, then writes a text frame.
+- Added `ws_json_read`: reads one injected frame, then unmarshals its raw bytes.
+- Contract tests cover marshal-before-write errors, write-error propagation,
+  read-error-before-unmarshal behavior, decode errors after a successful read,
+  and text-frame write shape.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_connect_session_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestNewWSClientDerivesIMWebSocketEndpointFromServiceBaseURL|TestWSClientConnectRefreshesExpiredBearerBeforeRetryingWebSocket|TestWSClientConnectBootstrapsBearerBeforeOpeningWebSocket' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_wsclient.rs crates/awiki-cli/tests/runtime_listener_wsclient_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_wsclient_contract` passed all 25 tests.
+- Adjacent listener guards passed:
+  `runtime_listener_connect_session_contract` all 9 tests and
+  `runtime_listener_notification_consume_contract` all 7 tests.
+- Adjacent Go listener wsclient guard passed. Go has focused tests for
+  construction/connect behavior; `wsjsonWrite`/`wsjsonRead` remain source-parity
+  verified because Go does not expose standalone helper tests for them.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path.
+- No Cargo manifests or lockfiles changed.
+- Changed Rust files remain below the default 1200-line cap.
+
+Boundary note: this is still helper-only WebSocket client work. It does not
+implement real `WSClient`, real `coder/websocket`/Rust WebSocket transport
+selection, pending channel ownership, notification buffering, foreground
+session execution, local bridge I/O, host-notify dispatch, SQLite listener
+side effects, or listener system-test acceptance.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Listener Message-Service DID Execution Slice
 
 Timestamp: 2026-05-17T07:12:00+0800.
