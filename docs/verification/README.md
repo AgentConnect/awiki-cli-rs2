@@ -10530,6 +10530,45 @@ separate docs parity lane.
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged.
 
+## 2026-05-16 Onboarding guide asset slice
+
+Timestamp: 2026-05-16T17:12:26Z / 2026-05-17T01:12:26+0800.
+
+Scope: copy the Go `onboarding.md` first-install guide into the Rust
+repository as a byte-identical asset. This preserves the same installation,
+Skill installation, workspace initialization, identity setup/recovery, runtime
+setup, and status-check procedure documentation.
+
+Commands run:
+
+```text
+cp -p ../awiki-cli/onboarding.md onboarding.md
+cmp -s ../awiki-cli/onboarding.md onboarding.md
+stat -c '%a %n' onboarding.md
+wc -l onboarding.md
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `onboarding.md` is byte-identical to the Go repository source.
+- Permissions were preserved from the Go repository: `664`.
+- The onboarding guide is 295 lines, below the default 1200-line review-size
+  cap, so no file-size exception is needed.
+
+Boundary note: this is a documentation asset parity slice. It does not modify
+Rust CLI behavior, command schema, config parsing, package install scripts, or
+release packaging. The Go README currently points to `onboarding.en.md`, which
+is also absent in the Go repository; this slice intentionally does not repair
+that link because link cleanup is separate from byte-for-byte translation.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
+
 ## 2026-05-16 Config template asset slice
 
 Timestamp: 2026-05-16T17:02:08Z / 2026-05-17T01:02:08+0800.
