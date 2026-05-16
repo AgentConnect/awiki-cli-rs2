@@ -699,3 +699,34 @@ Do not mix that optimization with the 1:1 translation lane.
   commit/welcome replay, service-head mutation, and MLS cache mutation remain
   separate translation slices. Any later optimization of the provider boundary
   must be recorded separately and not mixed into the 1:1 translation lane.
+
+## Group E2EE Create Live Notes
+
+2026-05-16:
+
+- Wired live `group create --e2ee` without adding a crate, changing Cargo
+  manifests, enabling local ANP SDK MLS features in-process, or changing the
+  approved SQLite/TLS lanes.
+- The MLS bootstrap remains an external-provider parity boundary:
+  `anp-mls group create --json-in - --data-dir <scoped-dir>`. It reuses the
+  same `message/group_e2ee_provider.rs` binary resolution order, scoped data-dir
+  layout, executable checks, stdin/stdout JSON contract, and 15-second timeout
+  as the status and publish slices.
+- Hidden create delivery reuses the existing authsdk/session and Rustls/std
+  message HTTP client. A small shared `group_e2ee_transport` helper now owns the
+  configured-service-DID-first plus capabilities-fallback behavior used by both
+  publish and create; this is a translation-support extraction, not a broader
+  transport redesign.
+- Local E2EE summary persistence reuses the existing group SQLite cache and the
+  approved `rusqlite + bundled` lane. No pure-Rust SQLite optimization is mixed
+  into this translation slice.
+- No TLS, WebSocket, platform, or ANP SDK dependency decision changed. This
+  slice does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`,
+  WebSocket crates, async runtimes, YAML crates, platform service libraries, MLS
+  provider crates, or a new SQLite backend. TLS remains Rustls-first for
+  message-service HTTP and future WebSocket/local bridge work.
+- `group add/remove/leave --e2ee`, `rejoin`, `recover-member`, `update-key`,
+  repair, commit/welcome replay, group E2EE send/decrypt, and full
+  awiki-system-test group-E2EE acceptance remain separate translation slices.
+  Any provider-boundary optimization should be recorded later and not mixed into
+  the 1:1 translation lane.

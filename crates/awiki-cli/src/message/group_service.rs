@@ -3,16 +3,16 @@ use super::service::{
     normalize_handle_value, require_active_identity, resolve_target, string_value, CommandResult,
 };
 use super::types::{
-    GroupCreateRequest, GroupGetRequest, GroupJoinRequest, GroupLeaveRequest, GroupListRequest,
-    GroupMemberRequest, GroupMembersRequest, GroupMessagesRequest, GroupUpdateRequest,
-    MessageError, SendRequest, MESSAGE_RPC_ENDPOINT,
+    GroupGetRequest, GroupJoinRequest, GroupLeaveRequest, GroupListRequest, GroupMemberRequest,
+    GroupMembersRequest, GroupMessagesRequest, GroupUpdateRequest, MessageError, SendRequest,
+    MESSAGE_RPC_ENDPOINT,
 };
 use super::{
-    build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_rpc_params,
-    build_group_join_rpc_params, build_group_leave_rpc_params, build_group_list_rpc_params,
-    build_group_members_rpc_params, build_group_messages_rpc_params, build_group_remove_rpc_params,
-    build_group_send_rpc_params, build_group_update_policy_rpc_params,
-    build_group_update_profile_rpc_params, content_type_for_message_type, Client,
+    build_group_add_rpc_params, build_group_get_rpc_params, build_group_join_rpc_params,
+    build_group_leave_rpc_params, build_group_list_rpc_params, build_group_members_rpc_params,
+    build_group_messages_rpc_params, build_group_remove_rpc_params, build_group_send_rpc_params,
+    build_group_update_policy_rpc_params, build_group_update_profile_rpc_params,
+    content_type_for_message_type, Client,
 };
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
@@ -39,49 +39,6 @@ pub(crate) struct GroupSendResult {
     pub(crate) group_state_version: String,
     #[serde(default)]
     pub(crate) accepted_at: String,
-}
-
-pub fn create_group(
-    resolved: &Resolved,
-    manager: &Manager,
-    request: GroupCreateRequest,
-) -> Result<CommandResult, MessageError> {
-    if request.name.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
-    }
-    let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    let mut auth = auth_session(resolved, manager, &record)?;
-    let client = Client::new(resolved)?;
-    let params = build_group_create_rpc_params(&record, &resolved.anp_service_did, request)?;
-    let raw: Value = client.authenticated_rpc_call_profile(
-        Profile::RpcDefault,
-        MESSAGE_RPC_ENDPOINT,
-        "group.create",
-        params,
-        &mut auth,
-    )?;
-    let mut warnings = sync_group_state(
-        resolved,
-        manager,
-        &record,
-        &group_did_from_result(&raw),
-        true,
-    );
-    let group_did = group_did_from_result(&raw);
-    let snapshot = cached_group_snapshot(resolved, &record, &group_did)
-        .or_else(|| normalize_group_snapshot(&raw))
-        .unwrap_or(Value::Null);
-    let members = cached_group_members(resolved, &record, &group_did, 100).unwrap_or_default();
-    Ok(CommandResult {
-        data: json!({
-            "group": snapshot,
-            "members": members,
-            "delivery": raw,
-            "source": group_control_source(&raw),
-        }),
-        summary: format!("Created group {group_did}"),
-        warnings: compact_warnings(&mut warnings),
-    })
 }
 
 pub fn get_group(
@@ -500,7 +457,7 @@ pub fn send_group(
     })
 }
 
-fn sync_group_state(
+pub(crate) fn sync_group_state(
     resolved: &Resolved,
     manager: &Manager,
     record: &StoredIdentity,
@@ -782,7 +739,7 @@ fn mark_cached_group_left(
     warnings
 }
 
-fn cached_group_snapshot(
+pub(crate) fn cached_group_snapshot(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
@@ -794,7 +751,7 @@ fn cached_group_snapshot(
         .map(enrich_cached_group_snapshot)
 }
 
-fn cached_group_members(
+pub(crate) fn cached_group_members(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
@@ -906,7 +863,7 @@ fn group_message_record(
     })
 }
 
-fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
+pub(crate) fn normalize_group_snapshot(raw: &Value) -> Option<Value> {
     if raw.is_null() {
         return None;
     }
@@ -1010,7 +967,7 @@ pub(crate) fn values_from_array(value: Option<&Value>) -> Vec<Value> {
     value.and_then(Value::as_array).cloned().unwrap_or_default()
 }
 
-fn group_did_from_result(raw: &Value) -> String {
+pub(crate) fn group_did_from_result(raw: &Value) -> String {
     string_value(raw.get("group_did"))
         .trim()
         .to_string()
@@ -1151,11 +1108,11 @@ pub(crate) fn group_storage_key(group_did: &str) -> String {
     group_did.trim().to_string()
 }
 
-fn group_control_source(raw: &Value) -> String {
+pub(crate) fn group_control_source(raw: &Value) -> String {
     string_value(raw.get("source")).or_else_nonempty(|| "remote_http".to_string())
 }
 
-fn default_string(value: &str, fallback: &str) -> String {
+pub(crate) fn default_string(value: &str, fallback: &str) -> String {
     if value.trim().is_empty() {
         fallback.to_string()
     } else {

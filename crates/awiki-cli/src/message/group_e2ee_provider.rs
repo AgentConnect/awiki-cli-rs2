@@ -62,6 +62,16 @@ impl MlsExecProvider {
         result_object(response)
     }
 
+    pub(crate) fn create_group(
+        &self,
+        request: &Value,
+        agent_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let response = self.call("group", "create", request, agent_did, device_id)?;
+        result_object(response)
+    }
+
     fn call(
         &self,
         domain: &str,

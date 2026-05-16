@@ -2,9 +2,12 @@ mod attachment;
 mod attachment_service;
 mod client;
 mod contact_sync;
+mod group_create;
+mod group_e2ee_create;
 mod group_e2ee_provider;
 mod group_e2ee_publish;
 mod group_e2ee_status;
+mod group_e2ee_transport;
 mod group_e2ee_wire;
 mod group_service;
 mod group_wire;
@@ -35,6 +38,7 @@ pub use attachment::{
 pub(crate) use attachment::{find_attachment_selection_with_paging, load_attachment_file};
 pub use attachment_service::download_attachment;
 pub use client::Client;
+pub use group_create::create_group;
 pub use group_e2ee_provider::{default_mls_data_dir, ANP_MLS_BINARY_ENV};
 pub use group_e2ee_publish::{publish_group_e2ee_key_package, GroupE2eePublishKeyPackageRequest};
 pub use group_e2ee_status::{
@@ -53,8 +57,8 @@ pub use group_e2ee_wire::{
     GROUP_E2EE_CIPHER_CONTENT_TYPE,
 };
 pub use group_service::{
-    add_group_member, create_group, get_group, group_members, group_messages, join_group,
-    leave_group, list_groups, remove_group_member, update_group,
+    add_group_member, get_group, group_members, group_messages, join_group, leave_group,
+    list_groups, remove_group_member, update_group,
 };
 pub use group_wire::{
     build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_info_rpc_params,

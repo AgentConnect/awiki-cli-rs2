@@ -1,16 +1,12 @@
 use super::group_e2ee_provider::{default_string, MlsExecProvider, ANP_MLS_API_VERSION};
-use super::service::{auth_session, require_active_identity, string_value};
-use super::{
-    build_group_e2ee_publish_key_package_rpc_params, Client, CommandResult, MessageError,
-    MESSAGE_RPC_ENDPOINT,
-};
+use super::group_e2ee_transport::GroupE2eeTransport;
+use super::service::{require_active_identity, string_value};
+use super::{build_group_e2ee_publish_key_package_rpc_params, CommandResult, MessageError};
 use crate::anpsdk::generate_did_wba_binding;
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
 use crate::identity::Manager;
 use crate::message::{load_private_key_material, verification_method_id_from_document};
-use crate::runtime::listener_service_did::message_service_did_from_capabilities_result;
-use crate::transportcfg::Profile;
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -223,9 +219,7 @@ fn publish_error(message: impl Into<String>) -> MessageError {
 }
 
 struct GroupE2eePublishTransport<'a> {
-    resolved: &'a Resolved,
-    client: Client,
-    auth: crate::authsdk::Session,
+    inner: GroupE2eeTransport<'a>,
     record: &'a StoredIdentity,
 }
 
@@ -236,9 +230,7 @@ impl<'a> GroupE2eePublishTransport<'a> {
         record: &'a StoredIdentity,
     ) -> Result<Self, MessageError> {
         Ok(Self {
-            resolved,
-            client: Client::new(resolved)?,
-            auth: auth_session(resolved, manager, record)?,
+            inner: GroupE2eeTransport::new(resolved, manager, record)?,
             record,
         })
     }
@@ -247,47 +239,13 @@ impl<'a> GroupE2eePublishTransport<'a> {
         &mut self,
         package_result: Map<String, Value>,
     ) -> Result<Map<String, Value>, MessageError> {
-        let service_did = self.message_service_did()?;
+        let service_did = self.inner.message_service_did()?;
         let params = build_group_e2ee_publish_key_package_rpc_params(
             self.record,
             &service_did,
             package_result,
         )?;
-        self.client.authenticated_rpc_call_profile(
-            Profile::RpcDefault,
-            MESSAGE_RPC_ENDPOINT,
-            "group.e2ee.publish_key_package",
-            params,
-            &mut self.auth,
-        )
-    }
-
-    fn message_service_did(&mut self) -> Result<String, MessageError> {
-        let configured = self.resolved.anp_service_did.trim();
-        if !configured.is_empty() {
-            return Ok(configured.to_string());
-        }
-        let result: Map<String, Value> = self.client.authenticated_rpc_call_profile(
-            Profile::RpcDefault,
-            MESSAGE_RPC_ENDPOINT,
-            "anp.get_capabilities",
-            json!({
-                "meta": {
-                    "anp_version": "1.0",
-                    "profile": "anp.core.binding.v1",
-                    "security_profile": "transport-protected",
-                    "sender_did": self.record.did,
-                    "operation_id": format!("op-{}", super::wire::generate_operation_id()),
-                    "created_at": super::wire::now_rfc3339(),
-                },
-                "body": {},
-                "client": {
-                    "response_mode": "wait-final",
-                },
-            }),
-            &mut self.auth,
-        )?;
-        message_service_did_from_capabilities_result(&result)
-            .map_err(|err| MessageError::Internal(err.to_string()))
+        self.inner
+            .rpc_call("group.e2ee.publish_key_package", params)
     }
 }

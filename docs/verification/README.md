@@ -8329,3 +8329,88 @@ and the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
 `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
 runtimes, YAML crates, platform service libraries, MLS provider crates, or a
 new SQLite backend. TLS remains Rustls-first.
+
+## 2026-05-16 Group E2EE Create Live Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_create_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_publish_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+cd ../awiki-cli && go test ./internal/message -run 'TestBuildGroupE2EECreateRPCParams|TestBuildGroupE2EEPublishKeyPackageRPCParamsStripsProviderOnlyFields|TestInspectGroupE2EEStatusComparesLocalEpochToServiceHead|TestGroupE2EEStatusForRecoveryScansNonDefaultDevice' -count=1
+wc -l crates/awiki-cli/src/message/group_service.rs crates/awiki-cli/src/message/group_create.rs crates/awiki-cli/src/message/group_e2ee_create.rs crates/awiki-cli/src/message/group_e2ee_transport.rs crates/awiki-cli/src/message/group_e2ee_provider.rs crates/awiki-cli/src/message/group_e2ee_publish.rs crates/awiki-cli/tests/group_e2ee_create_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `group_e2ee_create_contract`: 2 passed.
+- `group_live_contract`: 3 passed.
+- `group_e2ee_publish_contract`: 4 passed.
+- `group_e2ee_status_contract`: 2 passed.
+- `group_e2ee_pending_contract`: 2 passed.
+- `group_contract`: 6 passed.
+- `message_group_e2ee_wire_contract`: 7 passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `group_service.rs` 1157 lines, `group_create.rs` 66 lines,
+  `group_e2ee_create.rs` 305 lines, `group_e2ee_transport.rs` 73 lines,
+  `group_e2ee_provider.rs` 362 lines, `group_e2ee_publish.rs` 251 lines, and
+  `group_e2ee_create_contract.rs` 674 lines. No file-size exception is needed.
+
+Scope:
+
+- Wires live `group create --e2ee` through the Go-shaped sequence: normal
+  service `group.create`, group snapshot/member sync, external MLS
+  `anp-mls group create`, hidden service `group.e2ee.create`, and local E2EE
+  summary persistence.
+- Splits `message/group_create.rs` out of `group_service.rs` to keep the large
+  group service file under the default line-count cap while preserving the
+  existing public `message::create_group` entry point.
+- Extends the shared external MLS provider with `create_group` while preserving
+  the previous `status` and `key-package generate` behavior.
+- Adds a small shared `group_e2ee_transport` helper so publish and create share
+  configured-service-DID-first behavior plus capabilities fallback without
+  introducing a broad transport abstraction.
+- Preserves Go warning downgrade behavior: MLS provider failure returns a
+  successful created group with a warning and without `data.e2ee`; transport or
+  delivery failure keeps `data.e2ee.mls` and records a create-delivery warning.
+- Persists the Go-shaped group E2EE summary metadata into the existing group
+  cache, including `message_security_profile`, `group_e2ee`, and
+  `group_state_version` when available.
+- Adds fake-MLS/fake-server live CLI coverage for successful create bootstrap
+  and provider-failure warning parity.
+
+Boundary note: this slice still excludes `group add/remove/leave --e2ee`,
+`group e2ee rejoin`, `recover-member`, `update-key`, repair, commit/welcome
+replay, group E2EE send/decrypt, WebSocket/local bridge group E2EE transport,
+and full awiki-system-test group-E2EE acceptance.
+
+Parallelism note: two read-only Native Agents confirmed `group create --e2ee`
+as the smallest next group-E2EE live slice and ranked the remaining commands.
+One GPT-5.5 xhigh code-writing Native Agent created the isolated create test
+file under a bounded, non-overlapping test write scope; the leader implemented
+production code, integrated documentation, and ran final verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `std::process::Command`, `serde_json`,
+existing authsdk/session, existing Rustls/std message HTTP transport, existing
+group E2EE wire builders, and the approved `rusqlite + bundled` SQLite path.
+It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`,
+WebSocket crates, async runtimes, YAML crates, platform service libraries, MLS
+provider crates, or a new SQLite backend. TLS remains Rustls-first.
