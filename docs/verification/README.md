@@ -2,6 +2,59 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener EnsureInstalled Install Error Slice
+
+Timestamp: 2026-05-17T13:05:00+0800.
+
+Scope: extend the listener service helper boundary for Go
+`internal/runtime/listener/service.go` `EnsureInstalled` by modeling its
+`svc.Install()` error decision as pure Rust data. This keeps real
+`svc.Install` and platform service-manager integration deferred.
+
+What changed:
+
+- Added `ListenerEnsureInstallDecision`.
+- Added `ensure_installed_install_decision` to preserve Go's install-error
+  branch: no install error returns status; any error whose lowercased text
+  contains the literal substring `exists` is tolerated and still returns
+  status; every other install error is returned unchanged.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_service_contract` passed with the new `EnsureInstalled`
+  install-error tolerance assertions.
+- Adjacent listener supervisor-init and foreground contracts passed.
+- Go focused listener service readiness/start guards passed.
+- Dependency audit matched the existing policy: no OpenSSL or `native-tls`, no
+  platform service-manager crate, no WebSocket crate, no YAML crate, and no new
+  dependency was added. Rustls/webpki/ring remain the existing TLS path, and
+  SQLite remains on the accepted `rusqlite` plus `libsqlite3-sys` path.
+- Changed Rust source/test files remain below the default 1200-line cap.
+
+Boundary note: this slice models the `svc.Install()` error decision only. It
+does not call `servicepkg.New`, query or install a real platform service,
+execute `svc.Install`, or satisfy listener system-test acceptance.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Listener Service Status Mapping Slice
 
 Timestamp: 2026-05-17T12:45:00+0800.

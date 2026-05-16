@@ -72,6 +72,12 @@ pub struct ListenerServiceStatusForPlan {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerEnsureInstallDecision {
+    ReturnStatus,
+    ReturnError(String),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ListenerServiceProgramState {
     pub has_supervisor: bool,
@@ -411,6 +417,18 @@ pub fn service_status_for_plan(
     }
 
     plan
+}
+
+pub fn ensure_installed_install_decision(
+    install_error: Option<&str>,
+) -> ListenerEnsureInstallDecision {
+    let Some(error) = install_error else {
+        return ListenerEnsureInstallDecision::ReturnStatus;
+    };
+    if error.to_lowercase().contains("exists") {
+        return ListenerEnsureInstallDecision::ReturnStatus;
+    }
+    ListenerEnsureInstallDecision::ReturnError(error.to_string())
 }
 
 pub fn service_status_ready(

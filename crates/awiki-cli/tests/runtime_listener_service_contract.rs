@@ -1,7 +1,7 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::runtime::listener::{self, Status};
 use awiki_cli::runtime::listener_service::{
-    self, ListenerPlatformStatusResult, ListenerRuntimePolicy,
+    self, ListenerEnsureInstallDecision, ListenerPlatformStatusResult, ListenerRuntimePolicy,
     ListenerServiceConfigValue as ConfigValue, ListenerServiceLifecycleOperation as Op,
     ListenerServiceProgramAction as ProgramAction, ListenerServiceProgramDecision,
     ListenerServiceProgramRunAction, ListenerServiceProgramState, ListenerServiceStatusForAction,
@@ -223,6 +223,34 @@ fn listener_service_status_for_plan_matches_go_status_mapping() {
             service_name,
             error: Some("permission denied".to_string()),
         }
+    );
+}
+
+#[test]
+fn ensure_installed_install_decision_matches_go_exists_error_tolerance() {
+    assert_eq!(
+        listener_service::ensure_installed_install_decision(None),
+        ListenerEnsureInstallDecision::ReturnStatus
+    );
+    assert_eq!(
+        listener_service::ensure_installed_install_decision(Some("service already exists")),
+        ListenerEnsureInstallDecision::ReturnStatus
+    );
+    assert_eq!(
+        listener_service::ensure_installed_install_decision(Some("SERVICE EXISTS")),
+        ListenerEnsureInstallDecision::ReturnStatus
+    );
+    assert_eq!(
+        listener_service::ensure_installed_install_decision(Some("service exists in registry")),
+        ListenerEnsureInstallDecision::ReturnStatus
+    );
+    assert_eq!(
+        listener_service::ensure_installed_install_decision(Some("permission denied")),
+        ListenerEnsureInstallDecision::ReturnError("permission denied".to_string())
+    );
+    assert_eq!(
+        listener_service::ensure_installed_install_decision(Some("")),
+        ListenerEnsureInstallDecision::ReturnError(String::new())
     );
 }
 
