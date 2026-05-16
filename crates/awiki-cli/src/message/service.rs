@@ -1,10 +1,9 @@
 use super::types::{
-    HistoryRequest, InboxRequest, MarkReadRequest, MessageError, SendRequest, MESSAGE_RPC_ENDPOINT,
+    InboxRequest, MarkReadRequest, MessageError, SendRequest, MESSAGE_RPC_ENDPOINT,
 };
 use super::{
-    build_direct_send_rpc_params, build_history_rpc_params, build_inbox_rpc_params,
-    content_type_for_message_type, new_secure_e2ee_client_for_record, Client,
-    MessageServiceE2EEClient,
+    build_direct_send_rpc_params, build_inbox_rpc_params, content_type_for_message_type,
+    new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient,
 };
 use crate::authsdk::Session;
 use crate::config::{join_base_url, Resolved};
@@ -465,74 +464,6 @@ pub fn inbox(
     })
 }
 
-pub fn history(
-    resolved: &Resolved,
-    manager: &Manager,
-    mut request: HistoryRequest,
-) -> Result<CommandResult, MessageError> {
-    if request.with.trim().is_empty() {
-        return Err(MessageError::TargetRequired);
-    }
-    if request.limit <= 0 {
-        request.limit = 50;
-    }
-    let record = require_active_identity(resolved, manager, &request.identity_name)?;
-    let original_with = request.with.trim().to_string();
-    let target_is_handle = !original_with.is_empty() && !original_with.starts_with("did:");
-    let target = resolve_target(resolved, &original_with)?;
-    request.with = target.did.clone();
-    let mut auth = auth_session(resolved, manager, &record)?;
-    let client = Client::new(resolved)?;
-    let params = build_history_rpc_params(&record, request.clone())?;
-    let raw: Value = client.authenticated_rpc_call_profile(
-        Profile::RpcReadHeavy,
-        MESSAGE_RPC_ENDPOINT,
-        "direct.get_history",
-        params,
-        &mut auth,
-    )?;
-    let mut warnings = Vec::new();
-    let mut messages = persist_history_messages(
-        resolved,
-        manager,
-        &record,
-        &target.did,
-        &target.handle,
-        &raw,
-        &mut warnings,
-    );
-    let mut source = source_with_default(&raw);
-    let mut resolved_dids = resolved_dids_value(&raw);
-    if target_is_handle {
-        let dids = merge_handle_history_messages(
-            resolved,
-            &record.did,
-            &target,
-            request.limit,
-            false,
-            false,
-            &mut messages,
-            &mut source,
-            &mut warnings,
-        );
-        if let Some(dids) = dids {
-            resolved_dids = json!(dids);
-        }
-    }
-    let total = messages.len();
-    Ok(CommandResult {
-        data: json!({
-            "messages": messages,
-            "total": total,
-            "source": source,
-            "with": peer_handle_or_did(&target),
-            "resolved_dids": resolved_dids,
-        }),
-        summary: format!("Loaded {total} direct history messages"),
-        warnings,
-    })
-}
-
 pub(crate) fn require_active_identity(
     resolved: &Resolved,
     manager: &Manager,
@@ -773,7 +704,7 @@ fn persist_inbox_messages(
     super::secure_incoming::filter_displayable_direct_e2ee_messages(messages)
 }
 
-fn persist_history_messages(
+pub(crate) fn persist_history_messages(
     resolved: &Resolved,
     manager: &Manager,
     record: &StoredIdentity,
@@ -914,7 +845,7 @@ fn apply_inbox_filters(
         .collect()
 }
 
-fn merge_handle_history_messages(
+pub(crate) fn merge_handle_history_messages(
     resolved: &Resolved,
     owner_did: &str,
     target: &TargetResolution,
@@ -1072,11 +1003,11 @@ fn source_with_default(raw: &Value) -> String {
         .to_string()
 }
 
-fn resolved_dids_value(raw: &Value) -> Value {
+pub(crate) fn resolved_dids_value(raw: &Value) -> Value {
     raw.get("resolved_dids").cloned().unwrap_or(Value::Null)
 }
 
-fn peer_handle_or_did(target: &TargetResolution) -> String {
+pub(crate) fn peer_handle_or_did(target: &TargetResolution) -> String {
     if target.handle.trim().is_empty() {
         target.did.clone()
     } else {

@@ -5,6 +5,7 @@ mod contact_sync;
 mod group_e2ee_wire;
 mod group_service;
 mod group_wire;
+mod history;
 mod mark_read;
 mod proof;
 mod secure_client;
@@ -53,6 +54,7 @@ pub use group_wire::{
     build_group_update_policy_rpc_params, build_group_update_profile_rpc_params,
     GROUP_E2EE_PROFILE, GROUP_E2EE_SECURITY_PROFILE, GROUP_E2EE_TRANSPORT_PROFILE,
 };
+pub use history::history;
 pub use mark_read::mark_read;
 pub use proof::{
     build_origin_proof, load_private_key_material, origin_auth_value,
@@ -89,7 +91,7 @@ pub use secure_outbox_flush::{
     StoreMessageOutcome,
 };
 pub use service::{
-    history, inbox, send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,
+    inbox, send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,
     SecureDirectSendRequest,
 };
 pub use service_discovery::{

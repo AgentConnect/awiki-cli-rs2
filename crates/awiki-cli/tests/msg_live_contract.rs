@@ -762,7 +762,7 @@ fn register_generated_msg_identity(
 fn write_msg_config(workspace: &Path, base_url: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
-        format!("services:\n  service_base_url: {base_url}\n"),
+        format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
     )
     .unwrap();
 }

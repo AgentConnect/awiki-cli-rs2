@@ -288,6 +288,90 @@ OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates,
 platform service libraries, ANP SDK network/default features, or a new SQLite
 backend.
 
+## 2026-05-16 Message History WebSocket Bridge Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/message/service.rs crates/awiki-cli/src/message/history.rs crates/awiki-cli/tests/msg_ws_history_live_contract.rs
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestReadHistoryFromCacheByPeerDIDs|Test.*History' -count=1
+go test ./internal/store -run 'TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates|TestMessageQueryHelpersLookupAndMarkReadRespectOwner' -count=1
+go test ./internal/cli -run 'TestMsgDryRunPlansRenderStableContracts' -count=1
+```
+
+Result: passed. Rust formatting, package check, focused history WebSocket
+contract, adjacent message WebSocket/direct live regressions, CLI/group
+regressions, structure check, whitespace check, Go reference selectors, and
+dependency audit all passed. The dependency audit found no OpenSSL/native-tls,
+`reqwest`, `hyper`, WebSocket crate, YAML crate, or platform service-manager
+dependency; hits remained limited to the existing Rustls/ring/base64/sha2 stack
+and approved `rusqlite + bundled` SQLite chain.
+
+Scope:
+
+- Extracted ordinary `msg history --with` production behavior into
+  `message::history`, keeping `service.rs` below the default 1200-line file
+  guideline.
+- Preserves Go `Service.History` validation and default limit behavior.
+- Preserves active identity gating and target resolution, including the Go
+  handle-resolution-failure fallback to `local_handle_history_cache` when local
+  historical handle bindings can satisfy the request.
+- In `runtime.mode=websocket`, history first calls local bridge method
+  `direct.get_history` with Go-shaped params and selected identity name.
+- Bridge success uses Go source defaulting for websocket mode:
+  `local_ws_cache` when the bridge result has no source.
+- Bridge failure checks local SQLite direct history first; handle targets widen
+  to all cached historical DIDs for the handle when available.
+- Usable local cache returns immediately with summary
+  `Loaded history from local websocket cache`, source
+  `local_ws_cache_fallback`, and Go's cache fallback warning. Pending direct
+  E2EE wire rows suppress this cache fallback like Go.
+- If no usable cache exists, the service falls back to signed HTTP `/im/rpc`
+  `direct.get_history`, records trace fallback `websocket_to_http`, and appends
+  Go's visible WebSocket HTTP fallback warning.
+- If bridge and HTTP fallback both fail, the HTTP-side error is returned,
+  matching Go history behavior.
+- Successful remote bridge/HTTP results reuse the existing history persistence,
+  direct E2EE display filtering, contact sync, and handle-history cache merge.
+
+Boundary note: this slice does not wire WebSocket/local bridge execution for
+direct inbox, non-E2EE group send/messages, group lifecycle, foreground listener
+bridge serving, attachments, secure direct E2EE WebSocket execution, runtime
+listener live `ProcessIncoming`, or awiki-system-test secure-direct acceptance.
+
+Parallelism note: a read-only Native Agent mapped the Go/Rust history behavior
+and tests. A GPT-5.5 xhigh code-writing Native Agent was launched with a
+bounded single-test-file scope but was stopped before producing changes to avoid
+write-scope collision; the leader completed the production module, test file,
+docs, and verification locally.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing std local bridge helper,
+`WSProxyTransport`, Rustls/std HTTP fallback path, authsdk/session, direct E2EE
+display filtering, contact-handle cache helpers, and approved `rusqlite +
+bundled` store lane. It does not add OpenSSL, `native-tls`, bundled OpenSSL,
+`reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates, platform
+service libraries, ANP SDK network/default features, or a new SQLite backend.
+
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 
 Status: unit verified.
