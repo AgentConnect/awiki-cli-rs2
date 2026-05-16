@@ -259,6 +259,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "debug.db", use_: "db", short: "Debug the local SQLite store", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "debug.db.query", use_: "query <sql>", short: "Run a safe single-statement SQLite query", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "debug.db.query", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "debug.db.import-v1", use_: "import-v1", short: "Import a legacy v1 SQLite database", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "debug.db.import-v1", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("path", "string", "Legacy data root or sqlite file path")] },
+        CommandSpec { name: "debug.db.handle-history", use_: "handle-history <HANDLE>", short: "Show the local DID history recorded for one handle", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "debug.db.handle-history", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
     ]
 }
 

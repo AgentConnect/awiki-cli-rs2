@@ -194,6 +194,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         }
         "debug.db.query" => app.run_debug_db_query(command),
         "debug.db.import-v1" => app.run_debug_db_import_v1(command),
+        "debug.db.handle-history" => app.run_debug_db_handle_history(command),
         other => Err(stub_error(other)),
     }
 }
@@ -323,6 +324,7 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         }
         ["debug", "db", "query", ..] => "debug.db.query",
         ["debug", "db", "import-v1", ..] => "debug.db.import-v1",
+        ["debug", "db", "handle-history", ..] => "debug.db.handle-history",
         [head, ..] => head,
     };
     if name.is_empty() {

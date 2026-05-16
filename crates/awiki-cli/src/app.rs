@@ -14,6 +14,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+mod debug_handlers;
 mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
@@ -610,91 +611,6 @@ impl App {
         )
         .map_err(identity_exit)?;
         self.render_identity_result("awiki-cli id resolve", &resolved, result)
-    }
-
-    pub fn run_debug_db_query(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        if command.args.len() != 1 {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "debug db query requires exactly one SQL statement.",
-                "Usage: awiki-cli debug db query \"SELECT * FROM messages LIMIT 5\"",
-            ));
-        }
-        let resolved = self.resolve_config()?;
-        let db = self.open_store(
-            &resolved,
-            "Run `awiki-cli doctor` to inspect the database path and configuration.",
-        )?;
-        store::ensure_schema(&db)
-            .map_err(|err| store_exit(err, "Initialize the local store before querying it."))?;
-        let rows = store::execute_sql(&db, &command.args[0]).map_err(|err| {
-            store_exit(
-                err,
-                "Only single-statement safe SQL is allowed. Avoid destructive statements.",
-            )
-        })?;
-        self.render_success(
-            "awiki-cli debug db query",
-            &resolved,
-            json!({ "database_file": resolved.paths.database_file, "rows": rows }),
-            "SQLite query executed",
-            Vec::new(),
-        )
-    }
-
-    pub fn run_debug_db_import_v1(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        let mut db = self.open_store(
-            &resolved,
-            "Run `awiki-cli doctor` to inspect the database path and configuration.",
-        )?;
-        store::ensure_schema(&db).map_err(|err| {
-            store_exit(
-                err,
-                "Initialize the local store before importing legacy data.",
-            )
-        })?;
-        let mut paths = resolved.paths.clone();
-        if let Some(path) = command
-            .flags
-            .get("path")
-            .filter(|value| !value.trim().is_empty())
-        {
-            paths.legacy_data_dir = path.trim().to_string();
-        }
-        if self.globals.dry_run {
-            let scan = store::scan_legacy_database(&paths)
-                .map_err(|err| store_exit(err, "Make sure the legacy database path is correct."))?;
-            return self.render_success(
-                "awiki-cli debug db import-v1",
-                &resolved,
-                json!({
-                    "plan": {
-                        "action": "import_v1_sqlite",
-                        "source_scan": scan,
-                        "target": resolved.paths.database_file,
-                    }
-                }),
-                "Dry run: legacy SQLite import planned",
-                Vec::new(),
-            );
-        }
-        let owners = legacy_owner_lookup(&self.identity_manager(&resolved));
-        let report = store::import_legacy_database(&mut db, &paths, &owners).map_err(|err| {
-            store_exit(
-                err,
-                "Make sure the v1 database exists and identities were imported first.",
-            )
-        })?;
-        let warnings = report.warnings.clone();
-        self.render_success(
-            "awiki-cli debug db import-v1",
-            &resolved,
-            json!({ "database_file": resolved.paths.database_file, "import_report": report }),
-            "Legacy SQLite import completed",
-            warnings,
-        )
     }
 
     fn resolve_config(&self) -> Result<Resolved, ExitError> {

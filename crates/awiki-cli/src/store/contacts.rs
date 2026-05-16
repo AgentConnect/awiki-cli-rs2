@@ -147,6 +147,27 @@ ORDER BY is_current DESC, last_seen_at DESC"#,
     }
 }
 
+pub fn list_contact_handle_history(
+    connection: &Connection,
+    handle: &str,
+) -> StoreResult<Vec<Value>> {
+    let handle = handle.trim().to_string();
+    let mut statement = connection.prepare(
+        r#"
+SELECT owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata
+FROM contact_handle_bindings
+WHERE handle = ?1
+ORDER BY owner_did ASC, is_current DESC, last_seen_at DESC"#,
+    )?;
+    let names = column_names(&statement);
+    let mut rows = statement.query(params![handle.as_str()])?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.next()? {
+        result.push(row_to_json(row, &names)?);
+    }
+    Ok(result)
+}
+
 pub fn upsert_contact(connection: &mut Connection, record: ContactRecord) -> StoreResult<()> {
     if record.did.trim().is_empty() {
         return Err(StoreError::Invalid("contact did is required".to_string()));

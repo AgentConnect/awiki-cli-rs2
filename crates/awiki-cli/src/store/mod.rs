@@ -12,8 +12,8 @@ mod schema;
 mod types;
 
 pub use contacts::{
-    get_contact_by_did, get_current_contact_by_handle, list_dids_by_handle,
-    resolve_contact_handle_by_did, upsert_contact, ContactRecord,
+    get_contact_by_did, get_current_contact_by_handle, list_contact_handle_history,
+    list_dids_by_handle, resolve_contact_handle_by_did, upsert_contact, ContactRecord,
 };
 pub use e2ee_outbox::{
     get_e2ee_outbox, list_e2ee_outbox, mark_e2ee_outbox_failed, mark_e2ee_outbox_sent,

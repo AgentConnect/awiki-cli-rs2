@@ -355,6 +355,56 @@ the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
 runtimes, YAML crates, platform service libraries, MLS provider crates, ANP SDK
 default/network features, or a new SQLite backend. TLS remains Rustls-first.
 
+## 2026-05-16 Debug DB Handle-History Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test debug_contract --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/cli -run 'TestNormalizeDebugHandleTrimsPrefixesAndDomains|TestBuildHandleHistoryOwnersAggregatesByOwner' -count=1
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `debug_contract`: 4 passed.
+- `core_contract`: 15 passed.
+- Go focused `internal/cli` selector passed.
+- Changed Rust source/test files remain below the default 1200-line
+  review-size cap: `app.rs` 1024 lines, `app/debug_handlers.rs` 253 lines,
+  `store/contacts.rs` 444 lines, and `debug_contract.rs` 310 lines.
+
+Scope:
+
+- Adds the Go `debug db handle-history <HANDLE>` command to the Rust command
+  catalog and dispatcher.
+- Preserves Go argument validation, handle normalization, empty-handle error,
+  ordered `contact_handle_bindings` lookup, no-row `not_found` mapping with
+  `sql: no rows in result set`, and success envelope data containing
+  `database_file`, normalized `handle`, raw `rows`, and aggregated `owners`.
+- Extracts existing debug DB CLI handlers into `app/debug_handlers.rs` so the
+  main `app.rs` file remains below the 1200-line default while preserving the
+  existing `debug db query` and `debug db import-v1` behavior.
+
+Boundary note: `awiki-system-test` currently has no active
+`debug db handle-history` selector under `tests_v2/debug`; this slice is
+covered by Rust CLI integration tests plus the focused Go unit reference tests.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The command uses the existing approved `rusqlite + bundled` SQLite
+lane and does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, async runtimes, YAML crates, platform service
+libraries, ANP SDK network/default features, or a new SQLite backend. TLS
+policy remains Rustls-first.
+
 ## 2026-05-16 Group E2EE Update-Key Live Slice
 
 Status: locally verified.
