@@ -439,11 +439,11 @@ Scope:
   direct E2EE display filtering, contact sync, handle-history cache merge,
   direct inbox filters, and `--mark-read` result mutation.
 
-Boundary note: this slice covers ordinary direct/non-`all` inbox only. Go
-defaults empty `scope` to `all`, then routes that path to `allInbox`, which has
-separate unified direct inbox, local group, and mail-notification cache merge
-semantics. Rust `scope=all` remains a later parity slice and is not claimed by
-this entry.
+Boundary note: this slice covers ordinary direct/non-`all`/non-`group` inbox
+only. Go defaults empty `scope` to `all`, then routes that path to `allInbox`,
+which has separate unified direct inbox, local group, and mail-notification
+cache merge semantics. Explicit `scope=group` is covered by the later group
+inbox local-cache slice.
 
 Parallelism note: a read-only Native Agent mapped the Go/Rust inbox behavior,
 all-inbox boundary, and docs update points. A GPT-5.5 xhigh code-writing Native
@@ -531,10 +531,9 @@ Scope:
   locally mark known direct/group/mail rows when the mark-read operation
   succeeds, and mark returned rows read regardless of mark-read errors.
 
-Boundary note: this slice does not implement explicit Go `scope=group` inbox.
-The current Rust command still rejects group inbox scope at the already
-documented boundary; group message/list execution remains in its dedicated
-group rows.
+Boundary note: this slice does not claim explicit Go `scope=group` inbox.
+That path is covered by the later group inbox local-cache slice; group
+message/list execution remains in its dedicated group rows.
 
 Parallelism note: Native Agent spawning was attempted for a read-only parity
 review, but the session was already at the child-agent limit. No code-writing
@@ -547,6 +546,74 @@ modules. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
 `hyper`, WebSocket crates, async runtimes, YAML crates, platform service
 libraries, ANP SDK network/default features, or a new SQLite backend. TLS
 remains Rustls-first for later runtime/WebSocket transport work.
+
+## 2026-05-16 Message Explicit Group Inbox Local Cache Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+wc -l crates/awiki-cli/src/message/inbox.rs crates/awiki-cli/tests/msg_all_inbox_live_contract.rs
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'Test.*Inbox|TestMergeInboxMessagesSortsAndLimits' -count=1
+go test ./internal/store -run 'TestListGroupInboxMessages|TestMessageQueryHelpersLookupAndMarkReadRespectOwner' -count=1
+go test ./internal/cli -run 'TestMsgDryRunPlansRenderStableContracts' -count=1
+```
+
+Result: passed. Rust formatting, package check, focused group/all inbox
+contract, adjacent message and group regressions, structure check, whitespace
+check, Go reference selectors, and line-count checks all passed. Files remain
+under the default review-size cap: `inbox.rs` is 761 lines and
+`msg_all_inbox_live_contract.rs` is 859 lines after this slice.
+
+Scope:
+
+- Translates Go `Service.groupInbox` for explicit `msg inbox --scope group`.
+- Preserves default limit/scope normalization before group routing and active
+  identity gating before local cache access.
+- Reads only local SQLite group inbox rows through `ListGroupInboxMessages`
+  with `groupStorageKey(request.Group)`.
+- Preserves empty `--group` behavior under `--scope group`: blank storage key
+  returns all local group inbox rows, not an error.
+- Preserves nonempty `--group` filtering by matching `group_did` or `group_id`.
+- Preserves `--unread` filtering through the store helper.
+- Preserves Go output shape: `messages`, `total`, `source=local_group_cache`,
+  `group=request.Group`, and summary `Loaded N group inbox messages`.
+- Preserves `--mark-read` behavior: collect returned IDs, call `MarkRead`
+  best-effort only when IDs exist, mark every returned message `is_read=true`
+  after that call, and rely on existing local group-row classification so group
+  IDs are mutated locally without remote bridge/HTTP sends.
+- Preserves Go routing for the subtle CLI boundary: `--group <did>` without
+  `--scope group` still follows default `scope=all` and does not implicitly
+  route to `groupInbox`.
+
+Boundary note: this slice is local-cache only. It does not add group RPC,
+WebSocket group transport, foreground listener dispatch, group E2EE/MLS,
+attachment behavior, or system-test acceptance for remaining message runtime
+lanes. Optimization was not mixed into the translation; any later consolidation
+of inbox helpers should wait until broader parity is complete.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `rusqlite + bundled`, the translated
+group storage key helper, and existing mark-read classification. It does not
+add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
+crates, async runtimes, YAML crates, platform service libraries, ANP SDK
+network/default features, or a new SQLite backend.
 
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 

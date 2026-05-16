@@ -1,3 +1,4 @@
+use super::group_service::group_storage_key;
 use super::service::{
     apply_inbox_filters, auth_session, collect_message_ids, mark_messages_read_in_result,
     merge_handle_history_messages, peer_handle_or_did, persist_inbox_messages,
@@ -26,10 +27,11 @@ pub fn inbox(
     if request.scope.trim().is_empty() {
         request.scope = "all".to_string();
     }
-    if request.scope.trim() == "group" || !request.group.trim().is_empty() {
-        return Err(MessageError::GroupNotSupported);
-    }
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
+
+    if request.scope.trim() == "group" {
+        return group_inbox(resolved, manager, &record, request);
+    }
 
     if request.scope.trim() == "all" {
         return all_inbox(resolved, manager, &record, request);
@@ -100,6 +102,50 @@ pub fn inbox(
 enum InboxTransportOutcome {
     Remote { raw: Value, warnings: Vec<String> },
     LocalCache(CommandResult),
+}
+
+fn group_inbox(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    request: InboxRequest,
+) -> Result<CommandResult, MessageError> {
+    let mut group_messages = read_group_inbox_from_cache(
+        resolved,
+        record,
+        &request.group,
+        request.limit,
+        request.unread_only,
+    )?;
+    if request.mark_read && !group_messages.is_empty() {
+        let ids = collect_message_ids(&group_messages);
+        if !ids.is_empty() {
+            let _ = super::mark_read(
+                resolved,
+                manager,
+                MarkReadRequest {
+                    identity_name: record.identity_name.clone(),
+                    message_ids: ids.clone(),
+                },
+            );
+            for message in &mut group_messages {
+                if let Some(object) = message.as_object_mut() {
+                    object.insert("is_read".to_string(), Value::Bool(true));
+                }
+            }
+        }
+    }
+    let total = group_messages.len();
+    Ok(CommandResult {
+        data: json!({
+            "messages": group_messages,
+            "total": total,
+            "source": "local_group_cache",
+            "group": request.group,
+        }),
+        summary: format!("Loaded {total} group inbox messages"),
+        warnings: Vec::new(),
+    })
 }
 
 fn all_inbox(
@@ -494,6 +540,26 @@ fn read_all_group_inbox_from_cache(
     store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
     store::list_group_inbox_messages(&connection, &record.did, limit, "", unread_only)
         .map_err(|err| MessageError::Internal(err.to_string()))
+}
+
+fn read_group_inbox_from_cache(
+    resolved: &Resolved,
+    record: &StoredIdentity,
+    group_did: &str,
+    limit: i64,
+    unread_only: bool,
+) -> Result<Vec<Value>, MessageError> {
+    let connection =
+        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+    store::list_group_inbox_messages(
+        &connection,
+        &record.did,
+        limit,
+        &group_storage_key(group_did),
+        unread_only,
+    )
+    .map_err(|err| MessageError::Internal(err.to_string()))
 }
 
 fn read_all_mail_notifications_from_cache(

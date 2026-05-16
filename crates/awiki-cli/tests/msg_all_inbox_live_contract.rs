@@ -253,6 +253,287 @@ fn msg_inbox_default_scope_all_mark_read_ignores_rows_without_ids_like_go() {
     assert_eq!(envelope["data"]["messages"][0]["is_read"], 0);
 }
 
+#[test]
+fn msg_inbox_scope_group_reads_local_group_cache_like_go() {
+    let workspace = TempDir::new("msg-group-inbox-filter").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "alice-group-filter", "alice", "jwt-alice");
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    let group_a = "did:wba:awiki.ai:groups:alpha:e1_group";
+    let group_b = "did:wba:awiki.ai:groups:beta:e1_group";
+    seed_direct_message(
+        workspace.path(),
+        alice_did,
+        "did:wba:awiki.ai:bob:e1_bob",
+        "direct-not-group",
+        "not group",
+        "2026-05-16T10:00:00Z",
+        false,
+    );
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        group_a,
+        "group-alpha",
+        "alpha group",
+        "2026-05-16T10:01:00Z",
+        false,
+    );
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        group_b,
+        "group-beta",
+        "beta group",
+        "2026-05-16T10:02:00Z",
+        false,
+    );
+    write_msg_ws_config(workspace.path(), "https://placeholder.invalid");
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-group-filter",
+            "msg",
+            "inbox",
+            "--scope",
+            "group",
+            "--group",
+            group_a,
+            "--limit",
+            "10",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 group inbox messages");
+    assert_eq!(envelope["data"]["source"], "local_group_cache");
+    assert_eq!(envelope["data"]["group"], group_a);
+    assert_eq!(envelope["data"]["total"], 1);
+    assert_eq!(message_id(&envelope["data"]["messages"][0]), "group-alpha");
+}
+
+#[test]
+fn msg_inbox_scope_group_without_group_reads_all_group_cache_like_go() {
+    let workspace = TempDir::new("msg-group-inbox-all-groups").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "alice-group-all", "alice", "jwt-alice");
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    seed_direct_message(
+        workspace.path(),
+        alice_did,
+        "did:wba:awiki.ai:bob:e1_bob",
+        "direct-not-returned",
+        "not group",
+        "2026-05-16T10:00:00Z",
+        false,
+    );
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        "did:wba:awiki.ai:groups:alpha:e1_group",
+        "group-alpha-all",
+        "alpha group",
+        "2026-05-16T10:01:00Z",
+        false,
+    );
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        "did:wba:awiki.ai:groups:beta:e1_group",
+        "group-beta-all",
+        "beta group",
+        "2026-05-16T10:02:00Z",
+        false,
+    );
+    write_msg_ws_config(workspace.path(), "https://placeholder.invalid");
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-group-all",
+            "msg",
+            "inbox",
+            "--scope",
+            "group",
+            "--limit",
+            "10",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 2 group inbox messages");
+    assert_eq!(envelope["data"]["source"], "local_group_cache");
+    assert_eq!(envelope["data"]["group"], "");
+    assert_eq!(envelope["data"]["total"], 2);
+    assert_eq!(
+        message_id(&envelope["data"]["messages"][0]),
+        "group-beta-all"
+    );
+    assert_eq!(
+        message_id(&envelope["data"]["messages"][1]),
+        "group-alpha-all"
+    );
+}
+
+#[test]
+fn msg_inbox_scope_group_unread_filters_local_group_cache_like_go() {
+    let workspace = TempDir::new("msg-group-inbox-unread").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "alice-group-unread", "alice", "jwt-alice");
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    let group = "did:wba:awiki.ai:groups:demo:e1_group";
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        group,
+        "group-read",
+        "already read",
+        "2026-05-16T10:01:00Z",
+        true,
+    );
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        group,
+        "group-unread",
+        "unread group",
+        "2026-05-16T10:02:00Z",
+        false,
+    );
+    write_msg_ws_config(workspace.path(), "https://placeholder.invalid");
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-group-unread",
+            "msg",
+            "inbox",
+            "--scope",
+            "group",
+            "--group",
+            group,
+            "--unread",
+            "--limit",
+            "10",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 group inbox messages");
+    assert_eq!(envelope["data"]["total"], 1);
+    assert_eq!(message_id(&envelope["data"]["messages"][0]), "group-unread");
+}
+
+#[test]
+fn msg_inbox_scope_group_mark_read_updates_local_rows_like_go() {
+    let workspace = TempDir::new("msg-group-inbox-mark-read").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "alice-group-mark", "alice", "jwt-alice");
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    let group = "did:wba:awiki.ai:groups:demo:e1_group";
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        group,
+        "group-mark-read",
+        "mark group",
+        "2026-05-16T10:01:00Z",
+        false,
+    );
+    write_msg_ws_config(workspace.path(), "https://placeholder.invalid");
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-group-mark",
+            "msg",
+            "inbox",
+            "--scope",
+            "group",
+            "--group",
+            group,
+            "--mark-read",
+            "--limit",
+            "10",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 group inbox messages");
+    assert_eq!(envelope["data"]["messages"][0]["is_read"], true);
+
+    let rows = query_rows(
+        workspace.path(),
+        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'group-mark-read'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["msg_id"], "group-mark-read");
+    assert_eq!(rows[0]["is_read"], 1);
+}
+
+#[test]
+fn msg_inbox_group_flag_without_group_scope_keeps_default_all_route_like_go() {
+    let workspace = TempDir::new("msg-group-flag-default-all").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "alice-group-flag", "alice", "jwt-alice");
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    let group_a = "did:wba:awiki.ai:groups:alpha:e1_group";
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        group_a,
+        "group-alpha-default",
+        "alpha group",
+        "2026-05-16T10:01:00Z",
+        false,
+    );
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        "did:wba:awiki.ai:groups:beta:e1_group",
+        "group-beta-default",
+        "beta group",
+        "2026-05-16T10:02:00Z",
+        false,
+    );
+    write_msg_ws_config(workspace.path(), "https://placeholder.invalid");
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-group-flag",
+            "msg",
+            "inbox",
+            "--group",
+            group_a,
+            "--limit",
+            "10",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 2 inbox messages");
+    assert_eq!(
+        envelope["data"]["source"],
+        "local_direct_cache+local_group_cache"
+    );
+    assert!(envelope["data"].get("group").is_none());
+    assert_eq!(
+        message_id(&envelope["data"]["messages"][0]),
+        "group-beta-default"
+    );
+    assert_eq!(
+        message_id(&envelope["data"]["messages"][1]),
+        "group-alpha-default"
+    );
+}
+
 fn register_ready_msg_identity(
     workspace: &Path,
     identity_name: &str,
