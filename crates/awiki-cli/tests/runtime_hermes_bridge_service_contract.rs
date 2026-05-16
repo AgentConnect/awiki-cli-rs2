@@ -1,9 +1,11 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::runtime::hermes_bridge::{
-    self, BridgeApplyDecision, BridgeConfig, BridgeStatus, RouteState, DEFAULT_WEBHOOK_PORT,
-    SERVICE_ARGUMENTS, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
+    self, BridgeAdapterCommandPlan, BridgeAdapterProcess, BridgeApplyDecision, BridgeConfig,
+    BridgeStatus, RouteState, DEFAULT_WEBHOOK_PORT, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION,
+    SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
 };
 use hermes_bridge::BridgeServiceLifecycleOperation as Op;
+use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -102,6 +104,68 @@ fn hermes_bridge_adapter_command_plan_matches_go_service_program_start() {
     let no_home = test_bridge_config("");
     let plan = hermes_bridge::adapter_command_plan_for(&no_home);
     assert_eq!(plan.env_hermes_home, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn hermes_bridge_adapter_process_runs_plan_with_inherited_env_override() {
+    let temp = TempDir::new("adapter-process-env").expect("temp dir");
+    let output = temp.path().join("adapter-output.txt");
+    let hermes_home = temp.path().join("hermes-home");
+    let script = r#"printf 'home=%s\n' "$HERMES_HOME" > "$1"
+printf 'arg=%s\n' "$2" >> "$1"
+"#;
+    let plan = BridgeAdapterCommandPlan {
+        executable: "/bin/sh".to_string(),
+        arguments: vec![
+            "-c".to_string(),
+            script.to_string(),
+            "awiki-test-sh".to_string(),
+            path_string(&output),
+            "adapter-script.py".to_string(),
+        ],
+        env_hermes_home: Some(path_string(&hermes_home)),
+        stdout_inherits_parent: false,
+        stderr_inherits_parent: false,
+    };
+
+    let mut process = BridgeAdapterProcess::start(&plan).expect("start adapter process");
+    let exit = process.wait().expect("wait adapter process").expect("exit");
+
+    assert!(exit.success);
+    assert_eq!(exit.code, Some(0));
+    assert_eq!(
+        fs::read_to_string(&output).expect("adapter output"),
+        format!(
+            "home={}\narg=adapter-script.py\n",
+            path_string(&hermes_home)
+        )
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn hermes_bridge_adapter_process_stop_kills_running_child_like_go_stop() {
+    let plan = BridgeAdapterCommandPlan {
+        executable: "/bin/sh".to_string(),
+        arguments: vec![
+            "-c".to_string(),
+            "exec sleep 30".to_string(),
+            "awiki-test-sh".to_string(),
+        ],
+        env_hermes_home: None,
+        stdout_inherits_parent: false,
+        stderr_inherits_parent: false,
+    };
+    let mut process = BridgeAdapterProcess::start(&plan).expect("start adapter process");
+
+    assert!(process.is_running().expect("running child"));
+    process
+        .stop_with_timeout(Duration::from_secs(2), Duration::from_millis(10))
+        .expect("stop adapter process");
+
+    assert!(!process.is_running().expect("stopped child"));
+    assert_eq!(process.wait().expect("wait after stop"), None);
 }
 
 #[test]
@@ -531,6 +595,35 @@ fn test_resolved() -> Resolved {
 
 fn path_string(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+struct TempDir {
+    path: std::path::PathBuf,
+}
+
+impl TempDir {
+    fn new(name: &str) -> std::io::Result<Self> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "awiki-cli-rs2-hermes-bridge-service-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn test_bridge_config(hermes_home: &str) -> BridgeConfig {

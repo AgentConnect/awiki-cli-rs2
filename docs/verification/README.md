@@ -10171,3 +10171,71 @@ probing, and does not claim full Go `RunService` parity.
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. The slice reuses existing CLI dispatch, config resolution, and error
 envelope code.
+
+## 2026-05-16 Hermes bridge adapter process lifecycle helper slice
+
+Timestamp: 2026-05-16T16:09:09Z / 2026-05-17T00:09:09+0800.
+
+Scope: extend the Hermes bridge service helper slice with a std-only child
+process helper for the local adapter portion of Go
+`serviceProgram.Start`/`Stop`, without adding a platform service-manager
+dependency or wiring hidden `RunService` execution.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli runtime::hermes_bridge::tests --lib --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+```
+
+Observed results:
+
+- `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
+  check-structure`, and `git diff --check` passed.
+- `runtime_hermes_bridge_service_contract`: 16 passed, including adapter
+  process env/argument consumption and stop/kill behavior tests.
+- Focused library `runtime::hermes_bridge::tests`: 4 passed.
+- Go `internal/runtime/hermesbridge` tests passed.
+- Dependency audit output showed only existing allowed hits: Rustls/ring
+  transport dependencies, `base64`/`sha2`, and the approved
+  `rusqlite`/`libsqlite3-sys` bundled-SQLite toolchain entries
+  (`cc`, `pkg-config`, `vcpkg`). No OpenSSL, `native-tls`, bundled OpenSSL,
+  platform service, YAML, WebSocket, or new HTTP-client dependency was added.
+- Source/test files remain below the default 1200-line review-size cap:
+  `runtime/hermes_bridge.rs` 1025 lines, `runtime/hermes_bridge/service.rs`
+  471 lines, and `runtime_hermes_bridge_service_contract.rs` 674 lines. No
+  file-size exception is needed.
+
+Implemented behavior:
+
+- Adds `BridgeAdapterProcess`, a zero-value/defaultable helper that spawns the
+  existing `BridgeAdapterCommandPlan`, matching the Go adapter child process
+  shape without resolving config or service-manager state.
+- Preserves Go `serviceProgram.Start` process semantics that are local to the
+  adapter: executable plus arguments, inherited parent environment, optional
+  `HERMES_HOME` override only when configured, and parent stdout/stderr
+  inheritance when requested by the command plan.
+- Adds wait/try-wait/running inspection and a stop path that kills a running
+  child and waits until it exits, using the Go 15-second stop timeout and
+  `Hermes bridge stop timed out` error text.
+- Focused Unix contract tests use `/bin/sh` and `sleep` instead of Python or
+  Hermes so the slice verifies lifecycle behavior without requiring a real
+  Hermes installation.
+
+Boundary note: this is still a helper slice. It does not implement
+`kardianos/service` parity, platform service install/start/stop/restart/
+uninstall, real service status lookup, lifecycle operation execution, owned
+HTTP health probing, hidden `RunService` integration, or non-dry-run setup
+bridge execution.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The slice uses only `std::process`, `std::env` inheritance semantics,
+and std time/thread polling.

@@ -18,9 +18,10 @@ pub use service::{
     running_in_bridge_service_mode, running_in_bridge_service_mode_with, service_config_plan_for,
     service_display_name_for, service_name_for, start_service_plan, status_from_parts,
     stop_service_plan, uninstall_service_plan, wait_for_bridge_status_with,
-    BridgeAdapterCommandPlan, BridgeApplyDecision, BridgeServiceConfigPlan,
-    BridgeServiceLifecycleOperation, BridgeServiceStatusSnapshot, SERVICE_ARGUMENTS,
-    SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
+    BridgeAdapterCommandPlan, BridgeAdapterExit, BridgeAdapterProcess, BridgeApplyDecision,
+    BridgeServiceConfigPlan, BridgeServiceLifecycleOperation, BridgeServiceStatusSnapshot,
+    BRIDGE_ADAPTER_STOP_TIMEOUT, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION,
+    SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
 };
 
 pub const DEFAULT_WEBHOOK_PORT: u32 = 8644;

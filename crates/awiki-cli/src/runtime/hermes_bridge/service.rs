@@ -2,6 +2,7 @@ use super::{BridgeConfig, BridgeStatus};
 use crate::config::Resolved;
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub const SERVICE_NAME_PREFIX: &str = "awiki-cli-hermes-bridge";
@@ -9,6 +10,8 @@ pub const SERVICE_DISPLAY_NAME_PREFIX: &str = "awiki-cli Hermes Bridge";
 pub const SERVICE_DESCRIPTION: &str = "awiki-cli Hermes notify bridge";
 pub const SERVICE_ARGUMENTS: &[&str] =
     &["runtime", "host-notify", "hermes", "bridge", "service-run"];
+pub const BRIDGE_ADAPTER_STOP_TIMEOUT: Duration = Duration::from_secs(15);
+const BRIDGE_ADAPTER_STOP_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeServiceConfigPlan {
@@ -34,6 +37,16 @@ pub struct BridgeAdapterCommandPlan {
     pub env_hermes_home: Option<String>,
     pub stdout_inherits_parent: bool,
     pub stderr_inherits_parent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeAdapterExit {
+    pub success: bool,
+    pub code: Option<i32>,
+}
+
+pub struct BridgeAdapterProcess {
+    child: Option<Child>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +205,128 @@ pub fn adapter_command_plan_for(config: &BridgeConfig) -> BridgeAdapterCommandPl
         env_hermes_home: (!config.hermes_home.is_empty()).then(|| config.hermes_home.clone()),
         stdout_inherits_parent: true,
         stderr_inherits_parent: true,
+    }
+}
+
+impl BridgeAdapterProcess {
+    pub fn new() -> Self {
+        Self { child: None }
+    }
+
+    pub fn start(plan: &BridgeAdapterCommandPlan) -> anyhow::Result<Self> {
+        let mut process = Self::new();
+        process.start_with_plan(plan)?;
+        Ok(process)
+    }
+
+    pub fn start_with_plan(&mut self, plan: &BridgeAdapterCommandPlan) -> anyhow::Result<()> {
+        if self.child.is_some() {
+            return Ok(());
+        }
+        let child = command_for_adapter_plan(plan)
+            .spawn()
+            .map_err(|err| anyhow::anyhow!("start Hermes notify adapter: {err}"))?;
+        self.child = Some(child);
+        Ok(())
+    }
+
+    pub fn is_running(&mut self) -> anyhow::Result<bool> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(false);
+        };
+        Ok(child.try_wait()?.is_none())
+    }
+
+    pub fn try_wait(&mut self) -> anyhow::Result<Option<BridgeAdapterExit>> {
+        let status = match self.child.as_mut() {
+            Some(child) => child.try_wait()?,
+            None => return Ok(None),
+        };
+        let Some(status) = status else {
+            return Ok(None);
+        };
+        self.child = None;
+        Ok(Some(status.into()))
+    }
+
+    pub fn wait(&mut self) -> anyhow::Result<Option<BridgeAdapterExit>> {
+        let Some(mut child) = self.child.take() else {
+            return Ok(None);
+        };
+        let status = child.wait()?;
+        Ok(Some(status.into()))
+    }
+
+    pub fn stop(&mut self) -> anyhow::Result<()> {
+        self.stop_with_timeout(
+            BRIDGE_ADAPTER_STOP_TIMEOUT,
+            BRIDGE_ADAPTER_STOP_POLL_INTERVAL,
+        )
+    }
+
+    pub fn stop_with_timeout(
+        &mut self,
+        timeout: Duration,
+        interval: Duration,
+    ) -> anyhow::Result<()> {
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+        if child.try_wait()?.is_none() {
+            let _ = child.kill();
+        }
+        wait_for_adapter_child_exit(&mut child, timeout, interval).map(|_| ())
+    }
+}
+
+impl Default for BridgeAdapterProcess {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<std::process::ExitStatus> for BridgeAdapterExit {
+    fn from(status: std::process::ExitStatus) -> Self {
+        Self {
+            success: status.success(),
+            code: status.code(),
+        }
+    }
+}
+
+fn command_for_adapter_plan(plan: &BridgeAdapterCommandPlan) -> Command {
+    let mut command = Command::new(&plan.executable);
+    command.args(&plan.arguments);
+    if let Some(hermes_home) = plan.env_hermes_home.as_ref() {
+        command.env("HERMES_HOME", hermes_home);
+    }
+    if plan.stdout_inherits_parent {
+        command.stdout(Stdio::inherit());
+    } else {
+        command.stdout(Stdio::null());
+    }
+    if plan.stderr_inherits_parent {
+        command.stderr(Stdio::inherit());
+    } else {
+        command.stderr(Stdio::null());
+    }
+    command
+}
+
+fn wait_for_adapter_child_exit(
+    child: &mut Child,
+    timeout: Duration,
+    interval: Duration,
+) -> anyhow::Result<BridgeAdapterExit> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status.into());
+        }
+        if started.elapsed() >= timeout {
+            anyhow::bail!("Hermes bridge stop timed out");
+        }
+        std::thread::sleep(interval);
     }
 }
 
