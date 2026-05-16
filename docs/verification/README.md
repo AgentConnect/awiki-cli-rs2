@@ -10239,3 +10239,71 @@ bridge execution.
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. The slice uses only `std::process`, `std::env` inheritance semantics,
 and std time/thread polling.
+
+## 2026-05-16 Hermes bridge service-run preflight slice
+
+Timestamp: 2026-05-16T16:18:20Z / 2026-05-17T00:18:20+0800.
+
+Scope: make the hidden Hermes bridge `service-run` CLI entry follow Go
+`runRuntimeHostNotifyHermesBridgeServiceRun` / `hermesbridge.RunService`
+preflight before the still-deferred Rust execution boundary.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+git diff --check
+cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
+```
+
+Observed results:
+
+- `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
+  check-structure`, and `git diff --check` passed.
+- `runtime_hermes_cli_contract`: 7 passed, including missing-secret preflight
+  before the deferred boundary and the configured preflight path that reaches
+  the dedicated `not_implemented` boundary.
+- `update_contract`: 6 passed, preserving update-preflight exemptions for
+  hidden service commands.
+- `runtime_hermes_bridge_service_contract`: 16 passed.
+- Go focused `internal/cli` Hermes tests passed.
+- Go `internal/runtime/hermesbridge` tests passed.
+- Dependency audit output showed only existing allowed hits: Rustls/ring
+  transport dependencies, `base64`/`sha2`, and the approved
+  `rusqlite`/`libsqlite3-sys` bundled-SQLite toolchain entries
+  (`cc`, `pkg-config`, `vcpkg`). No OpenSSL, `native-tls`, bundled OpenSSL,
+  platform service, YAML, WebSocket, or new HTTP-client dependency was added.
+- Touched source/test files remain below the default 1200-line review-size
+  cap: `runtime_hermes_handlers.rs` 725 lines and
+  `runtime_hermes_cli_contract.rs` 445 lines. No file-size exception is needed.
+
+Implemented behavior:
+
+- Hidden `runtime host-notify hermes bridge service-run` now resolves bridge
+  config through `runtime::hermes_bridge::resolve_bridge_config` before it
+  returns the Rust deferred execution boundary.
+- The handler builds the adapter command plan from the resolved bridge config,
+  matching the Go `RunService -> newService -> ResolveBridgeConfig` entry path
+  far enough to surface missing notify secret, missing route secret, missing
+  Python, or missing adapter script errors before `not_implemented`.
+- The configured-path test provides a temporary Hermes route, temporary
+  executable `python3`, and temporary adapter-script candidate, but still
+  asserts that no process is launched and the handler returns the explicit
+  deferred `RunService` boundary.
+
+Boundary note: this is still preflight-only. It does not launch the adapter
+process, does not call `BridgeAdapterProcess`, does not implement
+`kardianos/service` parity, does not run owned health probing, and does not
+claim full hidden `RunService` execution parity.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The test creates temporary local files only.

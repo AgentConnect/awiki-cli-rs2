@@ -211,13 +211,69 @@ fn hermes_status_reports_configured_sink_and_env_secret_when_available() {
 }
 
 #[test]
-fn hermes_bridge_service_run_dispatches_to_deferred_bridge_boundary() {
+fn hermes_bridge_service_run_validates_bridge_config_before_deferred_boundary() {
     let workspace = TempDir::new("bridge-service-run").expect("temp workspace");
 
     let output = awiki_cmd(
         &["runtime", "host-notify", "hermes", "bridge", "service-run"],
         workspace.path(),
         &[],
+    );
+    assert_code(&output, 1);
+    let envelope = error_json(&output);
+
+    assert_eq!(
+        envelope["error"]["code"],
+        "internal_error",
+        "hidden service-run should run Go-equivalent bridge config preflight before the deferred boundary"
+    );
+    assert_eq!(
+        envelope["error"]["message"],
+        "Hermes host notify secret is not configured in awiki-cli"
+    );
+    assert!(envelope["error"].get("hint").is_none());
+    assert!(
+        !envelope["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("schema"),
+        "hidden service-run should not fall through to the generic schema stub"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn hermes_bridge_service_run_dispatches_to_deferred_boundary_after_preflight() {
+    let workspace = TempDir::new("bridge-service-run-ready").expect("temp workspace");
+    let hermes_home = workspace.path().join("hermes-home");
+    std::fs::create_dir_all(&hermes_home).expect("Hermes home dir");
+    std::fs::write(
+        hermes_home.join("config.yaml"),
+        r#"platforms:
+  webhook:
+    enabled: true
+    extra:
+      port: 8644
+      routes:
+        notify:
+          secret: route-secret
+          deliver: log
+"#,
+    )
+    .expect("write Hermes config");
+    install_adapter_script_candidate();
+    let bin = workspace.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("bin dir");
+    make_executable(&bin.join("python3")).expect("python3 executable");
+    let path_env = path_string(&bin);
+
+    let output = awiki_cmd(
+        &["runtime", "host-notify", "hermes", "bridge", "service-run"],
+        workspace.path(),
+        &[
+            ("AWIKI_HOST_NOTIFY_HERMES_SECRET", "notify-secret"),
+            ("PATH", path_env.as_str()),
+        ],
     );
     assert_code(&output, 1);
     let envelope = error_json(&output);
@@ -334,6 +390,29 @@ fn assert_warning_contains(envelope: &Value, needle: &str) {
             .any(|warning| warning.as_str().unwrap_or_default().contains(needle)),
         "warnings should contain {needle:?}; got {warnings:?}"
     );
+}
+
+fn path_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+#[cfg(unix)]
+fn install_adapter_script_candidate() {
+    let exe = Path::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    let exe_dir = exe.parent().expect("binary parent");
+    let script = exe_dir
+        .join("..")
+        .join("scripts")
+        .join("hermes_notify_adapter.py");
+    std::fs::create_dir_all(script.parent().expect("script parent")).expect("script dir");
+    std::fs::write(&script, "#!/usr/bin/env python3\n").expect("adapter script");
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> std::io::Result<()> {
+    std::fs::write(path, b"#!/bin/sh\nexit 0\n")?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
 struct TempDir {
