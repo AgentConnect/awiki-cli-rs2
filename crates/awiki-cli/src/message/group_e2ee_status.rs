@@ -30,6 +30,13 @@ pub struct GroupE2eeStatusRequest {
     pub limit: i64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupE2eePendingRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub limit: i64,
+}
+
 #[derive(Debug, Clone)]
 struct MlsExecProvider {
     binary_path: String,
@@ -244,7 +251,7 @@ pub fn inspect_group_e2ee_status(
 
     let mut service_head: Option<Map<String, Value>> = None;
     let mut pending: Option<Map<String, Value>> = None;
-    match group_e2ee_status_transport(resolved, manager, &record) {
+    match group_e2ee_transport(resolved, manager, &record) {
         Ok(mut transport) => {
             match transport.get_group_e2ee_head(&request.group) {
                 Ok(head) => service_head = Some(head),
@@ -309,13 +316,37 @@ pub fn inspect_group_e2ee_status(
     })
 }
 
-struct GroupE2eeStatusTransport<'a> {
+pub fn pull_group_e2ee_notices(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: GroupE2eePendingRequest,
+) -> Result<CommandResult, MessageError> {
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let limit = if request.limit <= 0 {
+        50
+    } else {
+        request.limit
+    };
+    let mut transport = group_e2ee_transport(resolved, manager, &record)?;
+    let result = transport.pull_group_e2ee_notices(&request.group, limit, false)?;
+    Ok(CommandResult {
+        data: json!({
+            "notices": values_from_array(result.get("notices")),
+            "pending_count": result.get("pending_count").cloned().unwrap_or(Value::Null),
+            "group": request.group,
+        }),
+        summary: "Pulled group E2EE pending notices".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+struct GroupE2eeTransport<'a> {
     client: Client,
     auth: crate::authsdk::Session,
     record: &'a StoredIdentity,
 }
 
-impl<'a> GroupE2eeStatusTransport<'a> {
+impl<'a> GroupE2eeTransport<'a> {
     fn get_group_e2ee_head(&mut self, group_did: &str) -> Result<Map<String, Value>, MessageError> {
         let params = build_group_e2ee_head_rpc_params(self.record, group_did)?;
         self.client.authenticated_rpc_call_profile(
@@ -350,12 +381,12 @@ impl<'a> GroupE2eeStatusTransport<'a> {
     }
 }
 
-fn group_e2ee_status_transport<'a>(
+fn group_e2ee_transport<'a>(
     resolved: &Resolved,
     manager: &Manager,
     record: &'a StoredIdentity,
-) -> Result<GroupE2eeStatusTransport<'a>, MessageError> {
-    Ok(GroupE2eeStatusTransport {
+) -> Result<GroupE2eeTransport<'a>, MessageError> {
+    Ok(GroupE2eeTransport {
         client: Client::new(resolved)?,
         auth: auth_session(resolved, manager, record)?,
         record,

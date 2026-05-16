@@ -7863,7 +7863,7 @@ crates, platform service libraries, new E2EE provider dependencies, or a new
 SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
 work.
 
-## 2026-05-16 Group E2EE Status Live Slice
+## 2026-05-16 Group E2EE Status/Pending Live Slice
 
 Status: locally verified.
 
@@ -7873,6 +7873,7 @@ Local Rust and Go reference verification:
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked
 cargo +1.79.0 test -p awiki-cli --test group_contract --locked
 cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -7886,14 +7887,16 @@ Result: passed for the commands listed above.
 Observed results:
 
 - `group_e2ee_status_contract`: 2 passed.
+- `group_e2ee_pending_contract`: 2 passed.
 - `group_contract`: 6 passed.
 - `message_group_e2ee_wire_contract`: 7 passed.
 - `cargo check`, structure check, and whitespace check passed.
 - Go focused status and dry-run references passed.
 - Modified source/test files remain below the default 1200-line review-size
-  cap: `group_e2ee_status.rs` 842 lines,
-  `group_e2ee_handlers.rs` 381 lines, and
-  `group_e2ee_status_contract.rs` 507 lines.
+  cap: `group_e2ee_status.rs` 873 lines,
+  `group_e2ee_handlers.rs` 406 lines,
+  `group_e2ee_status_contract.rs` 507 lines, and
+  `group_e2ee_pending_contract.rs` 404 lines.
 
 Scope:
 
@@ -7917,17 +7920,29 @@ Scope:
   local/service warning prefixes.
 - Adds fake-server/fake-MLS CLI coverage for the service-head vs local-epoch
   pending-notice diagnosis and non-default device scan.
+- Replaces the non-dry-run `group e2ee pending` `not_implemented` boundary
+  with Go-shaped pending notice pulling.
+- Preserves the pending CLI plan shape and Go live result shape: active
+  identity gate, hidden `group.e2ee.notice` RPC through the existing
+  authsdk/session Rustls/std message client, limit `50`,
+  `mark_delivered=false`, no `notice_ids`, optional trimmed group filter,
+  `notices`, raw `pending_count`, `group`, `plan`, and summary
+  `Pulled group E2EE pending notices`.
+- Adds fake-server CLI coverage for a group-filtered pending pull and for the
+  blank-group behavior where the RPC body omits `group_did`.
 
 Boundary note: this slice does not implement non-dry-run
-`publish-key-package`, `pending`, `repair`, `recover-member`, `update-key`,
-`rejoin`, commit/welcome replay, service-head mutation, MLS cache mutation,
+`publish-key-package`, `repair`, `recover-member`, `update-key`, `rejoin`,
+commit/welcome replay, service-head mutation, MLS cache mutation,
 WebSocket/local bridge group E2EE transport, or awiki-system-test group-E2EE
 acceptance.
 
 Parallelism note: read-only Native Agents mapped Go/Rust group E2EE status
-surfaces, and one GPT-5.5 xhigh code-writing Native Agent added the isolated
-new test file `group_e2ee_status_contract.rs`. The leader implemented and
-integrated source changes and final verification.
+surfaces for the previous status slice, and one GPT-5.5 xhigh code-writing
+Native Agent added the isolated status test file. The pending slice was small
+enough to finish locally; an attempted read-only Native Agent check was blocked
+by the current session's agent limit, so the leader performed the parity check
+and final verification.
 
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. The slice uses only `std::process::Command`, existing `serde_json`,

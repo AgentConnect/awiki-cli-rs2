@@ -1,7 +1,7 @@
 use super::{msg_handlers::message_exit, not_implemented_side_effect, App};
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
-use crate::message::{self, GroupE2eeStatusRequest};
+use crate::message::{self, GroupE2eePendingRequest, GroupE2eeStatusRequest};
 use crate::output::ExitError;
 use serde_json::{json, Value};
 
@@ -96,20 +96,45 @@ impl App {
 
     pub fn run_group_e2ee_pending(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        let plan = json!({
+            "action": "group.e2ee.pending",
+            "identity": self.globals.identity,
+            "runtime_mode": resolved.runtime_mode,
+            "provider": "exec",
+            "mls_data_dir": mls_data_dir(&resolved),
+            "group": string_flag(command, "group"),
+        });
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group e2ee pending"));
+            let mut result = message::pull_group_e2ee_notices(
+                &resolved,
+                &self.identity_manager(&resolved),
+                GroupE2eePendingRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group: string_flag(command, "group"),
+                    limit: 50,
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure message-service group E2EE test flag is enabled for focused validation; discovery remains hidden by default.",
+                )
+            })?;
+            if let Some(data) = result.data.as_object_mut() {
+                data.insert("plan".to_string(), plan);
+            }
+            return self.render_success(
+                "awiki-cli group e2ee pending",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
         }
         self.render_group_e2ee_plan(
             "awiki-cli group e2ee pending",
             &resolved,
-            json!({
-                "action": "group.e2ee.pending",
-                "identity": self.globals.identity,
-                "runtime_mode": resolved.runtime_mode,
-                "provider": "exec",
-                "mls_data_dir": mls_data_dir(&resolved),
-                "group": string_flag(command, "group"),
-            }),
+            plan,
             "Dry run: group e2ee pending planned",
         )
     }

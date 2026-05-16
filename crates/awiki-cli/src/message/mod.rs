@@ -34,7 +34,8 @@ pub(crate) use attachment::{find_attachment_selection_with_paging, load_attachme
 pub use attachment_service::download_attachment;
 pub use client::Client;
 pub use group_e2ee_status::{
-    default_mls_data_dir, inspect_group_e2ee_status, GroupE2eeStatusRequest, ANP_MLS_BINARY_ENV,
+    default_mls_data_dir, inspect_group_e2ee_status, pull_group_e2ee_notices,
+    GroupE2eePendingRequest, GroupE2eeStatusRequest, ANP_MLS_BINARY_ENV,
 };
 pub use group_e2ee_wire::{
     build_group_e2ee_add_rpc_params, build_group_e2ee_create_rpc_params,
