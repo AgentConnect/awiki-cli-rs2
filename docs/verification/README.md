@@ -11062,6 +11062,62 @@ side-effect dispatch.
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged.
 
+## 2026-05-17 Listener Notification Executor Slice
+
+Timestamp: 2026-05-16T19:19:51Z / 2026-05-17T03:19:51+0800.
+
+Scope: translate the local side-effect execution subset of Go
+`internal/runtime/listener/server.go` `handleNotification` after injected
+secure-direct normalization. Rust now has `runtime::listener_notification_execute`
+to apply one notification's planned contact sync, SQLite message/group writes,
+and host notification sink delivery in Go order.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_plan_contract --locked
+cargo +1.79.0 test -p awiki-cli listener_contact_sync --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_contact_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_groups_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime/listener ./internal/store -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestHandleNotificationDispatchesMailNotificationToSink|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage|TestStoreMessageAndThreadView|Test.*Contact' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_notification_execute.rs crates/awiki-cli/tests/runtime_listener_notification_execute_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- New Rust contract coverage passes for direct notification execution, host sink
+  failure preserving stored messages while reporting the sink error, and
+  group-state group/member/message mutation before dispatch.
+- Adjacent planner, listener contact-sync, host notify sink, contact-store, and
+  group-store tests passed.
+- Focused Go listener/store tests passed for host-notify dispatch, host-notify
+  failure preserving message storage, mail dispatch, group-state record
+  construction, message storage, and contact helpers.
+- The executor reuses the existing route planner, listener contact sync helper,
+  store DAO helpers, and `HostNotifySink`; no dependency was added.
+- Store/upsert and host-sink failures are summarized without aborting later
+  side effects, matching Go's best-effort listener behavior.
+- Structure check reported no undocumented Rust source files over the 1200-line
+  soft cap. The new executor is 167 lines, and the new contract test is 307
+  lines.
+
+Boundary note: this slice does not implement the foreground WebSocket session
+loop, real `normalizeDirectSecureNotification` E2EE decrypt/ack/session-store
+execution, `WSClient` transport, listener status-file writes, local secure-ack
+queue routing, platform service-manager behavior, Windows named-pipe I/O, or
+`awiki-system-test` listener acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path, and
+TLS/WebSocket transport choices remain deferred and Rustls-first.
+
 ## 2026-05-16 Installation guide asset slice
 
 Timestamp: 2026-05-16T17:23:43Z / 2026-05-17T01:23:43+0800.
