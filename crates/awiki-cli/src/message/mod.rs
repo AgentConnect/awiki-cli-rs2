@@ -9,6 +9,7 @@ mod proof;
 mod secure_client;
 mod secure_commands;
 mod secure_control;
+mod secure_incoming;
 mod secure_outbox_flush;
 mod service;
 mod service_discovery;
@@ -66,6 +67,12 @@ pub use secure_control::{
     is_pending_confirmation_error, is_secure_ack_plaintext, is_secure_init_plaintext,
     queue_secure_outbox_record, secure_ack_session_id, SECURE_ACK_SYSTEM_TYPE,
     SECURE_INIT_SYSTEM_TYPE,
+};
+pub use secure_incoming::{
+    apply_direct_e2ee_processing_result, direct_e2ee_notification_from_message_view,
+    filter_displayable_direct_e2ee_messages, is_direct_e2ee_control_or_undisplayable,
+    is_direct_e2ee_wire_content_type, maybe_decrypt_direct_e2ee_messages_with_processor,
+    SecureIncomingProcessor, SecureIncomingRpc, SecureIncomingRpcResult,
 };
 pub use secure_outbox_flush::{
     compact_warnings, flush_queued_secure_outbox_rows_plan, flush_queued_secure_outbox_with_sender,

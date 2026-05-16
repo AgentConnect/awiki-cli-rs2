@@ -249,8 +249,14 @@ pub fn inbox(
         &mut auth,
     )?;
     let mut warnings = Vec::new();
-    let mut messages =
-        persist_inbox_messages(resolved, &record, &raw, &target.handle, &mut warnings);
+    let mut messages = persist_inbox_messages(
+        resolved,
+        manager,
+        &record,
+        &raw,
+        &target.handle,
+        &mut warnings,
+    );
     let mut source = source_with_default(&raw);
     if target_is_handle {
         merge_handle_history_messages(
@@ -331,6 +337,7 @@ pub fn history(
     let mut warnings = Vec::new();
     let mut messages = persist_history_messages(
         resolved,
+        manager,
         &record,
         &target.did,
         &target.handle,
@@ -595,12 +602,13 @@ fn persist_send_result(
 
 fn persist_inbox_messages(
     resolved: &Resolved,
+    manager: &Manager,
     record: &StoredIdentity,
     raw: &Value,
     known_handle: &str,
     warnings: &mut Vec<String>,
 ) -> Vec<Value> {
-    let messages = messages_from_result(raw.get("messages"));
+    let mut messages = messages_from_result(raw.get("messages"));
     if messages.is_empty() {
         return messages;
     }
@@ -610,6 +618,12 @@ fn persist_inbox_messages(
     if store::ensure_schema(&connection).is_err() {
         return messages;
     }
+    warnings.extend(super::secure_incoming::maybe_decrypt_direct_e2ee_messages(
+        resolved,
+        manager,
+        record,
+        &mut messages,
+    ));
     let records = messages
         .iter()
         .filter_map(|message| inbound_record(record, message))
@@ -625,18 +639,19 @@ fn persist_inbox_messages(
         known_handle,
         "msg.inbox",
     ));
-    messages
+    super::secure_incoming::filter_displayable_direct_e2ee_messages(messages)
 }
 
 fn persist_history_messages(
     resolved: &Resolved,
+    manager: &Manager,
     record: &StoredIdentity,
     peer_did: &str,
     known_handle: &str,
     raw: &Value,
     warnings: &mut Vec<String>,
 ) -> Vec<Value> {
-    let messages = messages_from_result(raw.get("messages"));
+    let mut messages = messages_from_result(raw.get("messages"));
     if messages.is_empty() {
         return messages;
     }
@@ -646,6 +661,12 @@ fn persist_history_messages(
     if store::ensure_schema(&connection).is_err() {
         return messages;
     }
+    warnings.extend(super::secure_incoming::maybe_decrypt_direct_e2ee_messages(
+        resolved,
+        manager,
+        record,
+        &mut messages,
+    ));
     let records = messages
         .iter()
         .filter_map(|message| history_record(record, peer_did, message))
@@ -661,7 +682,7 @@ fn persist_history_messages(
         known_handle,
         "msg.history",
     ));
-    messages
+    super::secure_incoming::filter_displayable_direct_e2ee_messages(messages)
 }
 
 fn inbound_record(record: &StoredIdentity, message: &Value) -> Option<MessageRecord> {
@@ -803,6 +824,10 @@ fn merge_handle_history_messages(
         inbox_only,
     ) {
         Ok(cached) if !cached.is_empty() => {
+            let cached = super::secure_incoming::filter_displayable_direct_e2ee_messages(cached);
+            if cached.is_empty() {
+                return Some(dids);
+            }
             let merged = merge_direct_history_messages(messages, cached, limit);
             if merged.len() > messages.len() || !merged.is_empty() {
                 *messages = merged;

@@ -7171,3 +7171,86 @@ direct-E2EE session primitives and existing file-store facades. It does not add
 or enable HTTP/TLS, WebSocket, OpenSSL, `native-tls`, bundled OpenSSL, YAML,
 platform service libraries, or a new SQLite path. TLS remains Rustls-first for
 later production transport wiring.
+
+## 2026-05-16 Message Secure Incoming Application Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_incoming_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestPollingInboxDecryptsDirectInitAndSendsSecureAck|TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation' -count=1
+```
+
+Result: passed after final verification. Focused Rust test counts:
+`message_secure_incoming_contract` 8, `msg_live_contract` 4,
+`message_secure_client_contract` 14, and `anpsdk_contract` 14 all passed with
+zero failures. `cargo check`, structure check, whitespace check, dependency
+audit, and focused Go reference tests passed.
+
+Scope:
+
+- Adds `message::secure_incoming` as the direct translation of the application
+  helper subset of Go `internal/message/secure_incoming.go`.
+- Preserves exact secure wire content-type detection:
+  `application/anp-direct-init+json` and
+  `application/anp-direct-cipher+json`.
+- Preserves Go notification conversion from message views:
+  `meta.sender_did`, agent target DID, `message_id`,
+  `profile=anp.direct.e2ee.v1`, `security_profile=direct-e2ee`,
+  `content_type`, `body`, and optional numeric-only `server_seq`.
+- Preserves Go's numeric-only `server_seq` coercion. String values such as
+  `"1"` are treated like zero/absent for notification shape and processing
+  order.
+- Preserves secure processing order in inbox/history pages: stable sort by
+  numeric `server_seq` ascending, zero last, and top-level message `id`
+  lexicographic tie-break.
+- Preserves warning behavior:
+  `Skipped secure direct message <id>: <err>` for malformed user messages,
+  `Failed to decrypt secure direct message <id>: <err>` for processor errors,
+  compact duplicate warnings, and suppress warnings for secure wire control
+  messages.
+- Preserves decrypted application rewrites: text becomes `type=text`, JSON
+  payload becomes `type=json`, attachment manifest payload becomes
+  `type=attachment_manifest`, binary payload becomes `type=binary`, and secure
+  ack/init plaintext becomes hidden `secure_control`.
+- Preserves display filtering: secure controls and secure wire messages with
+  empty, `undecryptable`, or `failed` decryption state are hidden; Go's current
+  `pending` state remains displayable.
+- Wires `persist_inbox_messages` and `persist_history_messages` to process
+  direct E2EE wire messages after local store/schema open, persist post-decrypt
+  records while skipping secure control records, then return only displayable
+  rows.
+- Filters secure wire/control rows from handle-history cache merges before
+  merging local cached rows with remote inbox/history results.
+
+Boundary note: this slice intentionally does not port the Go side effects in
+`maybeFlushPollingSecureAck` or `maybeAckPollingDirectInit`. Real secure ACK
+network/local delivery, queued outbox flush after secure ACK/init,
+`SecureInit`, `SecureRepair`, runtime listener real `ProcessIncoming` wiring,
+WebSocket/local bridge execution, and awiki-system-test secure-direct
+acceptance remain deferred parity slices.
+
+Parallelism note: a read-only Native Agent reviewed Go/Rust parity for this
+slice and found two concrete risks: handle-history cached secure wire rows
+could leak through merge results, and string `server_seq` was parsed more
+permissively than Go. Both were fixed and locked with focused Rust tests. No
+code-writing Native Agent changed files for this slice.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing authsdk/message client infrastructure,
+the local ANP Rust E2EE adapter, `serde_json`, store helpers, and the approved
+`rusqlite + bundled` SQLite path. It does not enable ANP SDK
+`network`/default features and does not add OpenSSL, `native-tls`, bundled
+OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates,
+platform service libraries, new E2EE provider dependencies, or a new SQLite
+backend. TLS remains Rustls-first for later runtime/WebSocket transport work.

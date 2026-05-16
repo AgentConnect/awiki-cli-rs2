@@ -519,3 +519,25 @@ Do not mix that optimization with the 1:1 translation lane.
   `msg send --secure on` wiring, inbox/history secure decrypt application,
   listener secure decrypt/ack integration, and awiki-system-test secure-direct
   acceptance remain separate translation slices.
+
+## Direct E2EE Incoming Application Notes
+
+2026-05-16:
+
+- Added the message-service incoming direct E2EE application layer without
+  adding a new crate, changing Cargo manifests, or enabling local ANP SDK
+  default/network features.
+- The slice reuses the existing Rustls/std authsdk/message client for
+  authenticated `/im/rpc` calls, the existing high-level
+  `MessageServiceE2EEClient` adapter, existing `serde_json`, existing message
+  store helpers, and the approved `rusqlite + bundled` SQLite lane.
+- No TLS/WebSocket dependency decision changed. The slice does not add
+  OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
+  async runtimes, YAML crates, platform service libraries, new E2EE provider
+  crates, or a new SQLite backend. TLS remains Rustls-first for later
+  WebSocket/runtime transport work.
+- ACK delivery and queued outbox flush side effects from Go
+  `maybeFlushPollingSecureAck` and `maybeAckPollingDirectInit` are deliberately
+  not mixed into this application slice. They remain a later parity slice on
+  the already-selected dependency stack unless a real transport requirement
+  forces a documented dependency decision.

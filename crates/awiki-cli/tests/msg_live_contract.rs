@@ -304,6 +304,90 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     assert_eq!(bindings[1]["did"], alice_old);
 }
 
+#[test]
+fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_cache_like_go() {
+    let workspace = TempDir::new("msg-live-secure-handle-history").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let alice_old = "did:wba:awiki.ai:alice:e1_old";
+    let alice_new = "did:wba:awiki.ai:alice:e1_new";
+    seed_contact(
+        workspace.path(),
+        bob_did,
+        alice_old,
+        "alice",
+        "2026-04-07T01:00:00Z",
+    );
+    seed_direct_message_with_type(
+        workspace.path(),
+        bob_did,
+        alice_old,
+        "msg-wire",
+        "application/anp-direct-cipher+json",
+        r#"{"session_id":"sid-1"}"#,
+        "2026-04-07T02:00:00Z",
+    );
+    seed_direct_message_with_type(
+        workspace.path(),
+        bob_did,
+        alice_old,
+        "msg-plain",
+        "text/plain",
+        "hello from old DID",
+        "2026-04-07T01:00:00Z",
+    );
+    let remote_message = json!({
+        "id": "msg-new",
+        "type": "text",
+        "sender_did": alice_new,
+        "receiver_did": bob_did,
+        "content_type": "text/plain",
+        "content": "hello from new DID",
+        "sent_at": "2026-04-07T03:00:00Z",
+        "is_read": false,
+    });
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "did": alice_new,
+            "handle": "alice.awiki.ai",
+            "full_handle": "alice.awiki.ai"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "messages": [remote_message],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let history = awiki_cmd(
+        &[
+            "--identity",
+            "bob-msg",
+            "msg",
+            "history",
+            "--with",
+            "alice",
+            "--limit",
+            "5",
+        ],
+        workspace.path(),
+    );
+    assert_success(&history);
+    let messages = success_json(&history)["data"]["messages"]
+        .as_array()
+        .cloned()
+        .unwrap();
+
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["id"], "msg-new");
+    assert_eq!(messages[1]["msg_id"], "msg-plain");
+    assert!(!messages.iter().any(|message| {
+        message["msg_id"] == "msg-wire"
+            || message["content_type"] == "application/anp-direct-cipher+json"
+    }));
+}
+
 fn register_ready_msg_identity(
     workspace: &Path,
     identity_name: &str,
@@ -473,9 +557,29 @@ fn seed_direct_message(
     content: &str,
     sent_at: &str,
 ) {
+    seed_direct_message_with_type(
+        workspace,
+        owner_did,
+        peer_did,
+        msg_id,
+        "text/plain",
+        content,
+        sent_at,
+    );
+}
+
+fn seed_direct_message_with_type(
+    workspace: &Path,
+    owner_did: &str,
+    peer_did: &str,
+    msg_id: &str,
+    content_type: &str,
+    content: &str,
+    sent_at: &str,
+) {
     let thread_id = format!("dm:{owner_did}:{peer_did}");
     let statement = format!(
-        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', '{thread_id}', 0, '{peer_did}', '{owner_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', 0, 'bob-msg')",
+        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', '{thread_id}', 0, '{peer_did}', '{owner_did}', '{content_type}', '{content}', '{sent_at}', '{sent_at}', 0, 'bob-msg')",
     );
     execute_sql(workspace, statement);
 }
