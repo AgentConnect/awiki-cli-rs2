@@ -2,6 +2,78 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Message Secure Direct Injectable Send Slice
+
+Status: unit verified.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_send_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/message/service.rs crates/awiki-cli/tests/message_secure_send_contract.rs
+```
+
+Go reference verification:
+
+```bash
+go test ./internal/message -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation' -count=1
+```
+
+Result: passed.
+
+Scope:
+
+- Adds `message::send_secure_direct_with_sender` as an injectable service-level
+  boundary for the local behavior of Go `sendSecureDirect`.
+- Preserves active identity gating through the existing message identity helper.
+- Preserves the exact Go missing-key error:
+  `secure direct messaging requires DID signing and X25519 E2EE private keys`.
+- Preserves target and text validation before invoking the injected sender.
+- Preserves target DID resolution and passes the resolved DID plus generated
+  `msg-` message/operation IDs to the injected sender.
+- Preserves pending-confirmation error handling: queue one local E2EE outbox row
+  through `queue_secure_outbox_record`, keep original plaintext/type, set
+  `local_status=queued`, set credential name, and record
+  `{"reason":"pending_confirmation"}` metadata.
+- Preserves the Go queued result shape and summary:
+  `Queued secure direct message pending peer confirmation`.
+- Preserves successful secure direct send result shape with `secure=true`.
+- Updates the shared direct-send persistence helper to match Go
+  `persistSendResult`: `request.secure_mode == "on"` drives
+  `message.secure=true` and `messages.is_e2ee=1`; ordinary direct live tests
+  cover the unchanged non-secure path.
+- Keeps files under the default review-size cap:
+  `service.rs` and `message_secure_send_contract.rs` are both below 1200
+  lines.
+
+Boundary note: this slice intentionally does not wire production
+`msg send --secure on`. The public CLI path still remains blocked by the
+existing `SecureNotSupported` branch until the real secure sender is available.
+It also does not construct or use a production `MessageServiceE2EEClient`, does
+not publish/retrieve prekeys, does not encrypt `SendText`, does not mutate real
+E2EE sessions, does not wire `msg secure init/repair/retry` production senders,
+and does not implement incoming secure decrypt.
+
+Parallelism note: a read-only Native Agent mapped the next secure-direct gaps.
+A code-writing Native Agent was launched with GPT-5.5 xhigh under a bounded
+test-file scope but was stopped before it produced changes because the leader
+completed the source/test slice locally to avoid write-scope collision.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing identity, message, store, `serde_json`,
+and approved `rusqlite + bundled` paths. It does not enable ANP SDK
+`network`/default features and does not add OpenSSL, `native-tls`, bundled
+OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates,
+platform service libraries, new E2EE provider dependencies, or a new SQLite
+backend.
+
 ## 2026-05-16 Message Secure E2EE Client Preparation Slice
 
 Status: unit verified.

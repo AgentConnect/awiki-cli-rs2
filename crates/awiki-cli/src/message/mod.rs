@@ -72,7 +72,10 @@ pub use secure_outbox_flush::{
     SecureOutboxFlushRowOutcome, SecureOutboxSendOutcome, SecureOutboxSendRequest,
     StoreMessageOutcome,
 };
-pub use service::{history, inbox, mark_read, send, CommandResult};
+pub use service::{
+    history, inbox, mark_read, send, send_secure_direct_with_sender, CommandResult,
+    SecureDirectSendOutcome, SecureDirectSendRequest,
+};
 pub use service_discovery::{
     select_attachment_rpc_service_from_document, DiscoveredAttachmentService,
 };

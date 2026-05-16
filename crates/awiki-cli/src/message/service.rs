@@ -45,6 +45,30 @@ struct DirectSendResult {
     delivery_state: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecureDirectSendRequest {
+    pub target_did: String,
+    pub target_handle: String,
+    pub plaintext: String,
+    pub message_type: String,
+    pub message_id: String,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecureDirectSendOutcome {
+    Success {
+        accepted: bool,
+        message_id: String,
+        operation_id: String,
+        target_did: String,
+        accepted_at: String,
+        final_acceptance: bool,
+        delivery_state: String,
+    },
+    Error(String),
+}
+
 pub fn send(
     resolved: &Resolved,
     manager: &Manager,
@@ -88,6 +112,106 @@ pub fn send(
         &mut auth,
     )?;
     fill_direct_send_result(&mut result, &meta, &target.did);
+    persist_send_result(resolved, &record, &target, &request, &result)
+}
+
+pub fn send_secure_direct_with_sender(
+    resolved: &Resolved,
+    manager: &Manager,
+    mut request: SendRequest,
+    mut sender: impl FnMut(SecureDirectSendRequest) -> SecureDirectSendOutcome,
+) -> Result<CommandResult, MessageError> {
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    if record.e2ee_agreement_private_pem.is_empty() || record.key1_private_pem.is_empty() {
+        return Err(MessageError::Internal(
+            "secure direct messaging requires DID signing and X25519 E2EE private keys".to_string(),
+        ));
+    }
+    if request.target.trim().is_empty() {
+        return Err(MessageError::TargetRequired);
+    }
+    if request.text.trim().is_empty() {
+        return Err(MessageError::TextRequired);
+    }
+
+    let target = resolve_target(resolved, &request.target)?;
+    let message_type = default_message_type(&request.message_type).to_string();
+    let generated_message_id = format!("msg-{}", super::wire::generate_operation_id());
+    let outcome = sender(SecureDirectSendRequest {
+        target_did: target.did.clone(),
+        target_handle: target.handle.clone(),
+        plaintext: request.text.clone(),
+        message_type: message_type.clone(),
+        message_id: generated_message_id.clone(),
+        operation_id: generated_message_id.clone(),
+    });
+
+    let result = match outcome {
+        SecureDirectSendOutcome::Success {
+            accepted,
+            mut message_id,
+            mut operation_id,
+            mut target_did,
+            accepted_at,
+            final_acceptance,
+            delivery_state,
+        } => {
+            if message_id.is_empty() {
+                message_id = generated_message_id.clone();
+            }
+            if operation_id.is_empty() {
+                operation_id = generated_message_id.clone();
+            }
+            if target_did.is_empty() {
+                target_did = target.did.clone();
+            }
+            DirectSendResult {
+                accepted,
+                message_id,
+                operation_id,
+                target_did,
+                accepted_at,
+                final_acceptance,
+                delivery_state,
+            }
+        }
+        SecureDirectSendOutcome::Error(err) if super::is_pending_confirmation_error(Some(&err)) => {
+            let outbox_id = super::queue_secure_outbox_record(
+                resolved,
+                manager,
+                Some(&record),
+                &target.did,
+                &message_type,
+                &request.text,
+            )?;
+            return Ok(CommandResult {
+                data: json!({
+                    "action": "queue_secure_message",
+                    "target": {
+                        "did": target.did,
+                        "handle": target.handle,
+                        "kind": "direct",
+                    },
+                    "message": {
+                        "type": message_type,
+                        "secure": true,
+                        "queued": true,
+                    },
+                    "delivery": {
+                        "delivery_state": "queued",
+                        "outbox_id": outbox_id,
+                        "target_did": target.did,
+                    },
+                }),
+                summary: "Queued secure direct message pending peer confirmation".to_string(),
+                warnings: Vec::new(),
+            });
+        }
+        SecureDirectSendOutcome::Error(err) => return Err(MessageError::Internal(err)),
+    };
+
+    request.target = target.did.clone();
+    request.secure_mode = "on".to_string();
     persist_send_result(resolved, &record, &target, &request, &result)
 }
 
@@ -416,6 +540,7 @@ fn persist_send_result(
     result: &DirectSendResult,
 ) -> Result<CommandResult, MessageError> {
     let message_type = default_message_type(&request.message_type).to_string();
+    let secure = request.secure_mode.trim() == "on";
     let mut warnings = Vec::new();
     if let Ok(connection) = store::open(&resolved.paths) {
         if store::ensure_schema(&connection).is_ok() {
@@ -432,7 +557,7 @@ fn persist_send_result(
                     content: request.text.clone(),
                     sent_at: result.accepted_at.clone(),
                     is_read: true,
-                    is_e2ee: false,
+                    is_e2ee: secure,
                     metadata: metadata_string(json!({
                         "delivery_state": result.delivery_state,
                         "operation_id": result.operation_id,
@@ -458,7 +583,7 @@ fn persist_send_result(
             "message": {
                 "id": result.message_id,
                 "type": message_type,
-                "secure": false,
+                "secure": secure,
                 "sent_at": result.accepted_at,
             },
             "delivery": result,
