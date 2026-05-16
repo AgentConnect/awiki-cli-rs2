@@ -78,6 +78,25 @@ pub enum ListenerEnsureInstallDecision {
     ReturnError(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerRunServiceAction {
+    CreateServiceProgram,
+    NewService,
+    ServiceRun,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerRunServiceDecision {
+    ReturnOk,
+    ReturnError(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListenerRunServicePlan {
+    pub actions: Vec<ListenerRunServiceAction>,
+    pub decision: ListenerRunServiceDecision,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ListenerServiceProgramState {
     pub has_supervisor: bool,
@@ -429,6 +448,32 @@ pub fn ensure_installed_install_decision(
         return ListenerEnsureInstallDecision::ReturnStatus;
     }
     ListenerEnsureInstallDecision::ReturnError(error.to_string())
+}
+
+pub fn run_service_plan(
+    new_service_error: Option<&str>,
+    run_error: Option<&str>,
+) -> ListenerRunServicePlan {
+    let mut actions = vec![
+        ListenerRunServiceAction::CreateServiceProgram,
+        ListenerRunServiceAction::NewService,
+    ];
+
+    if let Some(error) = new_service_error {
+        return ListenerRunServicePlan {
+            actions,
+            decision: ListenerRunServiceDecision::ReturnError(error.to_string()),
+        };
+    }
+
+    actions.push(ListenerRunServiceAction::ServiceRun);
+
+    let decision = match run_error {
+        Some(error) => ListenerRunServiceDecision::ReturnError(error.to_string()),
+        None => ListenerRunServiceDecision::ReturnOk,
+    };
+
+    ListenerRunServicePlan { actions, decision }
 }
 
 pub fn service_status_ready(

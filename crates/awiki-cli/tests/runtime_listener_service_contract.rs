@@ -1,11 +1,11 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::runtime::listener::{self, Status};
 use awiki_cli::runtime::listener_service::{
-    self, ListenerEnsureInstallDecision, ListenerPlatformStatusResult, ListenerRuntimePolicy,
-    ListenerServiceConfigValue as ConfigValue, ListenerServiceLifecycleOperation as Op,
-    ListenerServiceProgramAction as ProgramAction, ListenerServiceProgramDecision,
-    ListenerServiceProgramRunAction, ListenerServiceProgramState, ListenerServiceStatusForAction,
-    ListenerServiceStatusForPlan, ListenerServiceStatusSnapshot,
+    self, ListenerEnsureInstallDecision, ListenerPlatformStatusResult, ListenerRunServiceAction,
+    ListenerRunServiceDecision, ListenerRuntimePolicy, ListenerServiceConfigValue as ConfigValue,
+    ListenerServiceLifecycleOperation as Op, ListenerServiceProgramAction as ProgramAction,
+    ListenerServiceProgramDecision, ListenerServiceProgramRunAction, ListenerServiceProgramState,
+    ListenerServiceStatusForAction, ListenerServiceStatusForPlan, ListenerServiceStatusSnapshot,
 };
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -252,6 +252,35 @@ fn ensure_installed_install_decision_matches_go_exists_error_tolerance() {
         listener_service::ensure_installed_install_decision(Some("")),
         ListenerEnsureInstallDecision::ReturnError(String::new())
     );
+}
+
+#[test]
+fn run_service_plan_matches_go_outer_service_run_ordering() {
+    use ListenerRunServiceAction::{CreateServiceProgram, NewService, ServiceRun};
+
+    let new_error = listener_service::run_service_plan(Some("new failed"), Some("must not run"));
+    assert_eq!(new_error.actions, vec![CreateServiceProgram, NewService]);
+    assert_eq!(
+        new_error.decision,
+        ListenerRunServiceDecision::ReturnError("new failed".to_string())
+    );
+
+    let run_error = listener_service::run_service_plan(None, Some("run failed"));
+    assert_eq!(
+        run_error.actions,
+        vec![CreateServiceProgram, NewService, ServiceRun]
+    );
+    assert_eq!(
+        run_error.decision,
+        ListenerRunServiceDecision::ReturnError("run failed".to_string())
+    );
+
+    let ok = listener_service::run_service_plan(None, None);
+    assert_eq!(
+        ok.actions,
+        vec![CreateServiceProgram, NewService, ServiceRun]
+    );
+    assert_eq!(ok.decision, ListenerRunServiceDecision::ReturnOk);
 }
 
 #[test]
