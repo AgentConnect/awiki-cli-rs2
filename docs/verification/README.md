@@ -10802,6 +10802,54 @@ docs-maintenance slices.
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged.
 
+## 2026-05-16 Listener foreground/sysproc helper slice
+
+Timestamp: 2026-05-16T18:02:01Z / 2026-05-17T02:02:01+0800.
+
+Scope: extend the listener service helper boundary to cover the small Go
+platform files `internal/runtime/listener/run_foreground_unix.go`,
+`run_foreground_windows.go`, `sysproc_unix.go`, and `sysproc_windows.go`.
+Rust now records the Go platform rules as pure helper plans:
+
+- Windows foreground signals: `os.Interrupt`.
+- Unix foreground signals: `os.Interrupt` plus `syscall.SIGTERM`.
+- Unix child process setup: `setsid=true`.
+- Windows child process setup: no-op.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `runtime_listener_service_contract` passed all 7 tests, including the new
+  foreground signal and child-process platform-plan contracts.
+- `cargo check`, structure check, whitespace check, and the focused Go listener
+  service readiness tests passed.
+- Dependency audit output stayed on the existing `rustls`/`ring`,
+  `base64`/`sha2`/`hmac`, and approved `rusqlite + bundled`
+  `libsqlite3-sys` paths; no OpenSSL, `native-tls`, WebSocket, YAML, or
+  platform service-manager dependency path appeared.
+- The touched files remain below the default 1200-line review-size cap:
+  `listener_service.rs` and `runtime_listener_service_contract.rs`.
+
+Boundary note: this is helper parity only. It does not implement real
+`signal.NotifyContext`, supervisor execution under a cancellation context,
+actual child process spawning or `SysProcAttr` mutation, platform service
+control, foreground WebSocket/session execution, or listener notification
+side-effect dispatch.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
+
 ## 2026-05-16 Installation guide asset slice
 
 Timestamp: 2026-05-16T17:23:43Z / 2026-05-17T01:23:43+0800.

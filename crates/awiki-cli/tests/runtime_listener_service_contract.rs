@@ -139,6 +139,34 @@ fn listener_service_mode_detection_matches_go_contract() {
 }
 
 #[test]
+fn foreground_signal_plan_matches_go_platform_files() {
+    use listener_service::ForegroundSignal::{Interrupt, Sigterm};
+
+    assert_eq!(
+        listener_service::foreground_signal_plan_for_platform(false),
+        vec![Interrupt, Sigterm]
+    );
+    assert_eq!(
+        listener_service::foreground_signal_plan_for_platform(true),
+        vec![Interrupt]
+    );
+    assert_eq!(
+        listener_service::foreground_signal_plan(),
+        listener_service::foreground_signal_plan_for_platform(cfg!(windows))
+    );
+}
+
+#[test]
+fn child_process_plan_matches_go_sysproc_platform_files() {
+    assert!(listener_service::listener_child_process_plan_for_platform(false).setsid);
+    assert!(!listener_service::listener_child_process_plan_for_platform(true).setsid);
+    assert_eq!(
+        listener_service::listener_child_process_plan(),
+        listener_service::listener_child_process_plan_for_platform(cfg!(windows))
+    );
+}
+
+#[test]
 fn boot_id_helpers_and_cleanup_runtime_artifacts_match_go_boundary() {
     let resolved = test_resolved();
     let boot_id = listener_service::prepare_expected_boot_id(&resolved).expect("prepare boot id");

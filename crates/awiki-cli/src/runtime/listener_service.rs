@@ -12,6 +12,17 @@ pub const SERVICE_NAME_PREFIX: &str = "awiki-cli-listener";
 pub const SERVICE_DISPLAY_NAME_PREFIX: &str = "awiki-cli Listener";
 pub const LISTENER_SERVICE_MODE_ENV: &str = "AWIKI_LISTENER_SERVICE_MODE";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForegroundSignal {
+    Interrupt,
+    Sigterm,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ListenerChildProcessPlan {
+    pub setsid: bool,
+}
+
 pub fn service_name_for(resolved: &Resolved) -> String {
     let workspace = resolved.paths.workspace_home_dir.trim();
     if workspace.is_empty() {
@@ -125,6 +136,27 @@ pub fn running_in_listener_service_mode_with(env_value: Option<&str>, args: &[St
     args[1].trim().eq_ignore_ascii_case("runtime")
         && args[2].trim().eq_ignore_ascii_case("listener")
         && args[3].trim().eq_ignore_ascii_case("service-run")
+}
+
+pub fn foreground_signal_plan_for_platform(is_windows: bool) -> Vec<ForegroundSignal> {
+    if is_windows {
+        return vec![ForegroundSignal::Interrupt];
+    }
+    vec![ForegroundSignal::Interrupt, ForegroundSignal::Sigterm]
+}
+
+pub fn foreground_signal_plan() -> Vec<ForegroundSignal> {
+    foreground_signal_plan_for_platform(cfg!(windows))
+}
+
+pub fn listener_child_process_plan_for_platform(is_windows: bool) -> ListenerChildProcessPlan {
+    ListenerChildProcessPlan {
+        setsid: !is_windows,
+    }
+}
+
+pub fn listener_child_process_plan() -> ListenerChildProcessPlan {
+    listener_child_process_plan_for_platform(cfg!(windows))
 }
 
 pub fn generate_boot_id() -> String {
