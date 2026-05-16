@@ -10444,3 +10444,48 @@ dependencies, `base64`/`sha2`, and the approved
 `rusqlite`/`libsqlite3-sys` bundled-SQLite toolchain entries
 (`cc`, `pkg-config`, `vcpkg`), plus pre-existing transitive `libc` under ANP
 crypto/random dependencies.
+
+## 2026-05-16 Host-notify webhook helper script asset slice
+
+Timestamp: 2026-05-16T16:53:27Z / 2026-05-17T00:53:27+0800.
+
+Scope: copy the Go `scripts/host_notify_webhook_server.py` helper into the
+Rust repository as a byte-identical local host-notify webhook/callback fan-out
+asset. This follows the Go repository asset used by Hermes host-notify
+architecture notes and local/manual testing without rewriting the helper in
+Rust or wiring it into runtime listener/service-manager behavior.
+
+Commands run:
+
+```text
+cp -p ../awiki-cli/scripts/host_notify_webhook_server.py scripts/host_notify_webhook_server.py
+cmp -s ../awiki-cli/scripts/host_notify_webhook_server.py scripts/host_notify_webhook_server.py
+stat -c '%a %n' scripts/host_notify_webhook_server.py
+wc -l scripts/host_notify_webhook_server.py
+python3 -m py_compile scripts/host_notify_webhook_server.py
+cd ../awiki-cli && python3 -m py_compile scripts/host_notify_webhook_server.py
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- The copied `host_notify_webhook_server.py` file is byte-identical to the Go
+  repository source.
+- Permissions were preserved from the Go repository: `664`.
+- The script is 535 lines, below the default 1200-line review-size cap, so no
+  file-size exception is needed.
+- Python compile checks passed in both the Rust and Go repositories.
+
+Boundary note: this script is a dev/test helper asset. It does not implement
+Rust runtime listener foreground dispatch, OpenClaw/Hermes sink delivery,
+platform service-manager behavior, Hermes bridge orchestration, owned health
+probing, or release archive verification.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. The copied helper uses Python stdlib modules only, matching
+the Go repository behavior and staying outside the Rust binary dependency
+graph.
