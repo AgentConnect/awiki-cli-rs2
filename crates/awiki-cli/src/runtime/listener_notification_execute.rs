@@ -1,13 +1,34 @@
 use super::host_notify_sink::HostNotifySink;
+use super::listener::{clear_host_notify_error_if_present, write_host_notify_error_if_changed};
 use super::listener_contact_sync::{sync_incoming_contact, IncomingContactLookup};
 use super::listener_notification_plan::{
     handle_notification_plan, NotificationRoute, NotificationSessionContext,
     NotificationSideEffect, SecureNotificationEffect, SecureNotificationNormalization,
 };
+use crate::runtime::listener::Status;
 use crate::store::{store_message, upsert_group, upsert_group_member};
 use rusqlite::Connection;
 use serde_json::Value;
 use time::OffsetDateTime;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostNotifyStatusUpdate {
+    Unchanged,
+    ClearError,
+    SetError(String),
+}
+
+impl HostNotifyStatusUpdate {
+    pub fn apply_to_status(&self, status: &mut Status) -> bool {
+        match self {
+            HostNotifyStatusUpdate::Unchanged => false,
+            HostNotifyStatusUpdate::ClearError => clear_host_notify_error_if_present(status),
+            HostNotifyStatusUpdate::SetError(error) => {
+                write_host_notify_error_if_changed(status, error)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationSideEffectFailure {
@@ -24,6 +45,7 @@ pub struct NotificationExecutionResult {
     pub applied_effects: Vec<String>,
     pub failed_effects: Vec<NotificationSideEffectFailure>,
     pub host_notify_last_error: Option<String>,
+    pub host_notify_status_update: HostNotifyStatusUpdate,
 }
 
 pub fn execute_listener_notification(
@@ -63,6 +85,7 @@ pub fn execute_listener_notification(
         applied_effects: Vec::new(),
         failed_effects: Vec::new(),
         host_notify_last_error: None,
+        host_notify_status_update: HostNotifyStatusUpdate::Unchanged,
     };
 
     for effect in plan.side_effects {
@@ -81,6 +104,7 @@ fn execute_side_effect(
     result: &mut NotificationExecutionResult,
 ) {
     let description = describe_side_effect(&effect);
+    let success_update = host_notify_success_update(&effect);
     let outcome = match effect {
         NotificationSideEffect::SyncIncomingContact(_) => Ok(()),
         NotificationSideEffect::ApplyHostNotificationHandles { .. } => Ok(()),
@@ -113,20 +137,35 @@ fn execute_side_effect(
 
     match outcome {
         Ok(()) => {
-            if description.starts_with("dispatch_host_notification ") {
+            if let Some(update) = success_update {
                 result.host_notify_last_error = None;
+                result.host_notify_status_update = update;
             }
             result.applied_effects.push(description);
         }
         Err(error) => {
             if description.starts_with("dispatch_host_notification ") {
                 result.host_notify_last_error = Some(error.clone());
+                result.host_notify_status_update = HostNotifyStatusUpdate::SetError(error.clone());
             }
             result.failed_effects.push(NotificationSideEffectFailure {
                 effect: description,
                 error,
             });
         }
+    }
+}
+
+fn host_notify_success_update(effect: &NotificationSideEffect) -> Option<HostNotifyStatusUpdate> {
+    match effect {
+        NotificationSideEffect::DispatchHostNotification {
+            event,
+            should_notify,
+        } if *should_notify && event.is_some() => Some(HostNotifyStatusUpdate::ClearError),
+        NotificationSideEffect::DispatchHostNotification { .. } => {
+            Some(HostNotifyStatusUpdate::Unchanged)
+        }
+        _ => None,
     }
 }
 

@@ -2,6 +2,56 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Notification Status Update Signal Slice
+
+Timestamp: 2026-05-16T19:42:21Z / 2026-05-17T03:42:21+0800.
+
+Scope: tighten the single-notification listener executor so its host-notify
+dispatch result can drive the Go-shaped listener status mutation helpers
+without confusing skipped dispatches with successful delivery.
+
+What changed:
+
+- `runtime::listener_notification_execute` now exposes
+  `HostNotifyStatusUpdate::{Unchanged, ClearError, SetError}`.
+- Successful real host-notify delivery maps to `ClearError`, matching Go
+  `dispatchHostNotification` calling `clearHostNotifyError()`.
+- Host sink failure maps to `SetError(error)`, matching Go
+  `setHostNotifyError(err.Error())`.
+- Skipped dispatches (`shouldNotify=false` or no normalized event) map to
+  `Unchanged`, matching Go's early return for `!shouldNotify || event == nil`.
+- The update signal can apply itself to `listener::Status` through the existing
+  changed-only status helpers, preserving Go's ignored status-write errors.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
+```
+
+Observed results:
+
+- `runtime_listener_notification_execute_contract` passed all 5 tests:
+  direct success, sink failure, skipped no-event dispatch, status-update helper
+  application, and group-state execution.
+- The skipped-dispatch test uses a routable `group.incoming` notification that
+  still stores locally but lacks the sender needed to normalize a host event, so
+  it proves `shouldNotify=false` leaves host-notify status unchanged.
+- The status-update helper test proves `SetError` writes only on changed error,
+  repeated same error no-ops, `Unchanged` preserves the old error and does not
+  rewrite, `ClearError` writes only when non-empty, and unwritable status paths
+  still update memory without surfacing a write error.
+
+Boundary note: this slice still does not implement the foreground `Supervisor`,
+locks, foreground WebSocket/session ownership, real direct-secure decrypt/ack
+execution, local secure-ack queue delivery, platform service execution, Windows
+named-pipe I/O, or `awiki-system-test` listener acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
+
 ## 2026-05-17 Listener Host Notify Status Mutation Slice
 
 Timestamp: 2026-05-16T19:33:01Z / 2026-05-17T03:33:01+0800.

@@ -1,6 +1,9 @@
 use awiki_cli::runtime::host_notify::{HostNotificationData, HostNotificationEvent};
 use awiki_cli::runtime::host_notify_sink::HostNotifySink;
-use awiki_cli::runtime::listener_notification_execute::execute_listener_notification;
+use awiki_cli::runtime::listener::{self, HostNotifyStatus, Status};
+use awiki_cli::runtime::listener_notification_execute::{
+    execute_listener_notification, HostNotifyStatusUpdate,
+};
 use awiki_cli::runtime::listener_notification_plan::{
     NotificationRoute, NotificationSessionContext, SecureNotificationEffect,
     SecureNotificationNormalization,
@@ -9,6 +12,7 @@ use awiki_cli::store::{self, StoreResult};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::cell::RefCell;
+use std::time::{SystemTime, UNIX_EPOCH};
 use time::{Date, Month, OffsetDateTime, Time, UtcOffset};
 
 #[test]
@@ -35,6 +39,10 @@ fn direct_notification_stores_syncs_enriches_and_dispatches_after_storage() -> a
     assert_eq!(result.route, NotificationRoute::DirectIncoming);
     assert_eq!(result.secure_effect, SecureNotificationEffect::NotSecure);
     assert_eq!(result.host_notify_last_error, None);
+    assert_eq!(
+        result.host_notify_status_update,
+        HostNotifyStatusUpdate::ClearError
+    );
     assert_eq!(result.failed_effect_count, 0);
     assert_eq!(
         result.applied_effects,
@@ -97,6 +105,10 @@ fn host_sink_failure_still_stores_message_and_reports_last_error() -> anyhow::Re
 
     assert_eq!(result.route, NotificationRoute::DirectIncoming);
     assert_eq!(result.host_notify_last_error.as_deref(), Some("sink boom"));
+    assert_eq!(
+        result.host_notify_status_update,
+        HostNotifyStatusUpdate::SetError("sink boom".to_string())
+    );
     assert_eq!(result.failed_effect_count, 1);
     assert_eq!(
         result.failed_effects[0].effect,
@@ -113,6 +125,119 @@ fn host_sink_failure_still_stores_message_and_reports_last_error() -> anyhow::Re
     assert_eq!(messages.len(), 1);
     assert_eq!(text(&messages[0], "msg_id"), "direct-msg-002");
     assert_eq!(sink.events.borrow().len(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn routable_notification_without_host_event_leaves_host_notify_status_unchanged(
+) -> anyhow::Result<()> {
+    let mut db = open_db()?;
+    let sink = RecordingSink::new();
+
+    let result = execute_listener_notification(
+        &mut db,
+        &sink,
+        &json!({
+            "method": "group.incoming",
+            "params": {
+                "meta": {
+                    "message_id": "group-msg-no-sender",
+                    "created_at": "2026-04-07T00:00:00Z",
+                    "content_type": "text/plain",
+                    "target": {"did": "did:alice"}
+                },
+                "body": {
+                    "group_did": "did:group",
+                    "group_event_seq": 8,
+                    "text": "hello without sender"
+                }
+            }
+        }),
+        &session("alice"),
+        SecureNotificationNormalization::KeepOriginal,
+        Some(fixed_received_at()),
+        None,
+    );
+
+    assert_eq!(result.route, NotificationRoute::GroupIncoming);
+    assert_eq!(result.host_notify_last_error, None);
+    assert_eq!(
+        result.host_notify_status_update,
+        HostNotifyStatusUpdate::Unchanged
+    );
+    assert_eq!(result.failed_effect_count, 0);
+    assert_eq!(sink.events.borrow().len(), 0);
+    assert!(result
+        .applied_effects
+        .iter()
+        .any(|effect| effect == "dispatch_host_notification should_notify=false event_id="));
+
+    let messages = store::list_group_messages(&db, "did:alice", "did:group", 10, None)?;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(text(&messages[0], "msg_id"), "group-msg-no-sender");
+
+    Ok(())
+}
+
+#[test]
+fn host_notify_status_update_applies_go_changed_only_status_semantics() -> anyhow::Result<()> {
+    let status_file = temp_status_file("host-notify-status-update");
+    let mut status = Status {
+        mode: "websocket".to_string(),
+        status_file: path_string(&status_file),
+        host_notify: HostNotifyStatus {
+            enabled: true,
+            sink: "capture".to_string(),
+            last_error: "old sink error".to_string(),
+            ..HostNotifyStatus::default()
+        },
+        ..Status::default()
+    };
+
+    assert!(HostNotifyStatusUpdate::SetError("sink boom".to_string()).apply_to_status(&mut status));
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.host_notify.last_error, "sink boom");
+
+    status.mode = "same-error-not-written".to_string();
+    assert!(!HostNotifyStatusUpdate::SetError("sink boom".to_string()).apply_to_status(&mut status));
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.mode, "websocket");
+    assert_eq!(loaded.host_notify.last_error, "sink boom");
+
+    status.mode = "skipped-not-written".to_string();
+    assert!(!HostNotifyStatusUpdate::Unchanged.apply_to_status(&mut status));
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.mode, "websocket");
+    assert_eq!(loaded.host_notify.last_error, "sink boom");
+
+    status.mode = "clear-written".to_string();
+    assert!(HostNotifyStatusUpdate::ClearError.apply_to_status(&mut status));
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.mode, "clear-written");
+    assert!(loaded.host_notify.last_error.is_empty());
+
+    status.mode = "empty-clear-not-written".to_string();
+    assert!(!HostNotifyStatusUpdate::ClearError.apply_to_status(&mut status));
+    let loaded = listener::read_status(&status.status_file)?;
+    assert_eq!(loaded.mode, "clear-written");
+    assert!(loaded.host_notify.last_error.is_empty());
+
+    let mut unwritable = Status {
+        status_file: path_string(
+            &status_file
+                .parent()
+                .expect("status parent")
+                .join("missing")
+                .join("listener.status.json"),
+        ),
+        ..Status::default()
+    };
+    assert!(
+        HostNotifyStatusUpdate::SetError("ignored write error".to_string())
+            .apply_to_status(&mut unwritable)
+    );
+    assert_eq!(unwritable.host_notify.last_error, "ignored write error");
 
     Ok(())
 }
@@ -148,6 +273,10 @@ fn group_state_changed_upserts_group_member_and_message_before_dispatch() -> any
     );
 
     assert_eq!(result.route, NotificationRoute::GroupStateChanged);
+    assert_eq!(
+        result.host_notify_status_update,
+        HostNotifyStatusUpdate::ClearError
+    );
     assert_eq!(result.failed_effect_count, 0);
     assert_eq!(
         result.applied_effects,
@@ -296,6 +425,23 @@ fn assert_applied_before(effects: &[String], before: &str, after: &str) {
         before_index < after_index,
         "{before} must be applied before {after}: {effects:?}"
     );
+}
+
+fn temp_status_file(prefix: &str) -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "awiki-cli-rs2-{prefix}-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).expect("create temp status root");
+    root.join("listener.status.json")
+}
+
+fn path_string(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 fn fixed_received_at() -> OffsetDateTime {
