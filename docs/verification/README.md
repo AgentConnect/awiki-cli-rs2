@@ -9992,3 +9992,57 @@ status helpers, and existing `rand` for generated secrets. It does not add
 platform service libraries, process supervisors, HTTP/TLS clients,
 OpenSSL/native-tls, bundled OpenSSL, YAML crates, WebSocket crates, ANP SDK
 network features, or SQLite dependencies.
+
+## 2026-05-16 Hermes bridge Python executable lookup slice
+
+Timestamp: 2026-05-16T15:49:47Z / 2026-05-16T23:49:47+0800.
+
+Scope: adjust the Rust Hermes bridge `resolve_python_executable` helper to
+match Go `exec.LookPath` behavior more closely before real bridge process
+execution is wired.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli runtime::hermes_bridge::tests --lib --locked
+cargo +1.79.0 test -p awiki-cli hermes_bridge::tests --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs
+```
+
+Observed results:
+
+- `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, and `xtask
+  check-structure` passed.
+- Focused library `runtime::hermes_bridge::tests`: 2 passed.
+- Broader filtered `hermes_bridge::tests` run passed the same 2 focused library
+  tests; integration test binaries were compiled and had all unrelated tests
+  filtered.
+- `runtime_hermes_bridge_service_contract`: 14 passed.
+- Go `internal/runtime/hermesbridge` tests passed.
+- `runtime/hermes_bridge.rs` is 975 lines, below the default 1200-line
+  review-size cap. No file-size exception is needed.
+
+Implemented behavior:
+
+- `resolve_python_executable` now returns the resolved executable path from the
+  PATH search rather than the bare `python3` or `python` command name.
+- Search priority remains Go-compatible: `python3` is preferred before
+  `python`, even when `python` appears earlier in PATH.
+- Unix lookup now ignores non-executable regular files, matching the important
+  `exec.LookPath` permission boundary for local bridge adapter startup.
+- Tests keep the lookup seam private to the module and avoid changing public
+  CLI/API surface.
+
+Boundary note: this is still a local helper. It does not start the Python
+adapter, does not implement `serviceProgram.Start`/`Stop`, and does not add
+platform service execution. Windows currently checks direct candidate plus
+`.exe` candidate and does not claim full Go `PATHEXT` parity.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The slice uses only std PATH, filesystem, and Unix permission APIs.

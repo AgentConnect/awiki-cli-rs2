@@ -789,34 +789,64 @@ fn string_field_with_suffix(
 }
 
 fn resolve_python_executable() -> anyhow::Result<String> {
-    for candidate in ["python3", "python"] {
-        if command_on_path(candidate) {
-            return Ok(candidate.to_string());
-        }
+    let Some(paths) = env::var_os("PATH") else {
+        anyhow::bail!("python3 or python was not found in PATH")
+    };
+    let search_paths = env::split_paths(&paths).collect::<Vec<_>>();
+    if let Some(path) = resolve_python_executable_from_paths(&search_paths) {
+        return Ok(path.to_string_lossy().into_owned());
     }
     anyhow::bail!("python3 or python was not found in PATH")
 }
 
-fn command_on_path(candidate: &str) -> bool {
-    let Some(paths) = env::var_os("PATH") else {
-        return false;
-    };
-    env::split_paths(&paths).any(|dir| executable_candidate_exists(&dir, candidate))
-}
-
-fn executable_candidate_exists(dir: &Path, candidate: &str) -> bool {
-    let path = dir.join(candidate);
-    if path.is_file() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        let exe = dir.join(format!("{candidate}.exe"));
-        if exe.is_file() {
-            return true;
+fn resolve_python_executable_from_paths(paths: &[PathBuf]) -> Option<PathBuf> {
+    for candidate in ["python3", "python"] {
+        if let Some(path) = command_on_path(candidate, paths) {
+            return Some(path);
         }
     }
-    false
+    None
+}
+
+fn command_on_path(candidate: &str, paths: &[PathBuf]) -> Option<PathBuf> {
+    paths
+        .iter()
+        .flat_map(|dir| executable_candidate_paths(dir, candidate))
+        .find(|path| executable_candidate_exists(path))
+}
+
+fn executable_candidate_paths(dir: &Path, candidate: &str) -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut paths = vec![dir.join(candidate)];
+        let has_extension = Path::new(candidate).extension().is_some();
+        if !has_extension {
+            paths.push(dir.join(format!("{candidate}.exe")));
+        }
+        paths
+    }
+    #[cfg(not(windows))]
+    {
+        vec![dir.join(candidate)]
+    }
+}
+
+fn executable_candidate_exists(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return path
+            .metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn resolve_adapter_script_path() -> anyhow::Result<String> {
@@ -864,4 +894,82 @@ fn health_url_for(notify_url: &str) -> String {
         return String::new();
     }
     format!("{scheme}://{authority}/healthz")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_python_executable_from_paths;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn resolve_python_executable_from_paths_prefers_python3_like_go() {
+        let temp = TempDir::new("python-path-priority").expect("temp dir");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir_all(&first).expect("first dir");
+        fs::create_dir_all(&second).expect("second dir");
+        make_executable(&first.join("python")).expect("python executable");
+        make_executable(&second.join("python3")).expect("python3 executable");
+
+        let resolved = resolve_python_executable_from_paths(&[first.clone(), second.clone()])
+            .expect("resolved python");
+
+        assert_eq!(resolved, second.join("python3"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_python_executable_from_paths_ignores_non_executable_files_like_go() {
+        let temp = TempDir::new("python-path-permissions").expect("temp dir");
+        let bin = temp.path().join("bin");
+        fs::create_dir_all(&bin).expect("bin dir");
+        fs::write(bin.join("python3"), b"not executable").expect("python3 file");
+        make_executable(&bin.join("python")).expect("python executable");
+
+        let resolved =
+            resolve_python_executable_from_paths(std::slice::from_ref(&bin)).expect("python");
+
+        assert_eq!(resolved, bin.join("python"));
+    }
+
+    fn make_executable(path: &Path) -> std::io::Result<()> {
+        fs::write(path, b"#!/bin/sh\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        }
+        Ok(())
+    }
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(name: &str) -> std::io::Result<Self> {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "awiki-cli-rs2-hermes-bridge-{name}-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 }
