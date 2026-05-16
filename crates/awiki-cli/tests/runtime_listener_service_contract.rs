@@ -199,6 +199,59 @@ fn boot_id_helpers_and_cleanup_runtime_artifacts_match_go_boundary() {
         .starts_with("boot-"));
 }
 
+#[test]
+fn host_notify_error_status_writes_only_when_changed_like_go() {
+    let resolved = test_resolved();
+    let paths = listener::paths(&resolved).expect("runtime paths");
+    let mut status = Status {
+        mode: "websocket".to_string(),
+        running: true,
+        status_file: paths.status_file.clone(),
+        host_notify: listener::HostNotifyStatus {
+            enabled: true,
+            sink: "capture".to_string(),
+            ..listener::HostNotifyStatus::default()
+        },
+        ..Status::default()
+    };
+
+    assert!(listener::write_host_notify_error_if_changed(
+        &mut status,
+        "sink boom"
+    ));
+    let loaded = listener::read_status(&paths.status_file).expect("read first status");
+    assert_eq!(loaded.host_notify.last_error, "sink boom");
+
+    status.mode = "changed-but-not-written".to_string();
+    assert!(!listener::write_host_notify_error_if_changed(
+        &mut status,
+        "sink boom"
+    ));
+    let loaded = listener::read_status(&paths.status_file).expect("read unchanged status");
+    assert_eq!(loaded.mode, "websocket");
+    assert_eq!(loaded.host_notify.last_error, "sink boom");
+
+    assert!(listener::write_host_notify_error_if_changed(
+        &mut status,
+        "sink retry failed"
+    ));
+    let loaded = listener::read_status(&paths.status_file).expect("read changed status");
+    assert_eq!(loaded.mode, "changed-but-not-written");
+    assert_eq!(loaded.host_notify.last_error, "sink retry failed");
+
+    status.mode = "clear-written".to_string();
+    assert!(listener::clear_host_notify_error_if_present(&mut status));
+    let loaded = listener::read_status(&paths.status_file).expect("read cleared status");
+    assert_eq!(loaded.mode, "clear-written");
+    assert!(loaded.host_notify.last_error.is_empty());
+
+    status.mode = "clear-not-written".to_string();
+    assert!(!listener::clear_host_notify_error_if_present(&mut status));
+    let loaded = listener::read_status(&paths.status_file).expect("read no-op clear status");
+    assert_eq!(loaded.mode, "clear-written");
+    assert!(loaded.host_notify.last_error.is_empty());
+}
+
 fn first_12_sha256_hex(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(value.as_bytes());

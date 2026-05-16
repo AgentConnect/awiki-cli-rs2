@@ -114,6 +114,36 @@ pub fn write_status(path: &str, status: &Status) -> anyhow::Result<()> {
     write_restricted_file(path, &raw)
 }
 
+pub fn set_host_notify_error(status: &mut Status, last_error: &str) -> bool {
+    let changed = status.host_notify.last_error != last_error;
+    status.host_notify.last_error = last_error.to_string();
+    changed
+}
+
+pub fn clear_host_notify_error(status: &mut Status) -> bool {
+    if status.host_notify.last_error.is_empty() {
+        return false;
+    }
+    status.host_notify.last_error.clear();
+    true
+}
+
+pub fn write_host_notify_error_if_changed(status: &mut Status, last_error: &str) -> bool {
+    let changed = set_host_notify_error(status, last_error);
+    if changed {
+        let _ = write_status(&status.status_file, status);
+    }
+    changed
+}
+
+pub fn clear_host_notify_error_if_present(status: &mut Status) -> bool {
+    let changed = clear_host_notify_error(status);
+    if changed {
+        let _ = write_status(&status.status_file, status);
+    }
+    changed
+}
+
 pub fn read_status(path: &str) -> anyhow::Result<Status> {
     let raw = fs::read(path).map_err(|err| anyhow::anyhow!(err))?;
     serde_json::from_slice(&raw).map_err(|err| anyhow::anyhow!(err))

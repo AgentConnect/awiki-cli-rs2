@@ -2,6 +2,71 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Host Notify Status Mutation Slice
+
+Timestamp: 2026-05-16T19:33:01Z / 2026-05-17T03:33:01+0800.
+
+Scope: translate the changed-only host notification `LastError` status mutation
+helpers from Go `internal/runtime/listener/server.go` without wiring the full
+foreground `Supervisor`.
+
+What changed:
+
+- `runtime::listener` now exposes Go-shaped helpers to set and clear
+  `host_notify.last_error`.
+- Setting an error updates the in-memory status and writes
+  `listener.status.json` only when the string changed.
+- Clearing an error writes only when the previous value was non-empty.
+- Status-file write errors are ignored at this helper boundary, matching Go's
+  `_ = writeStatus(...)` behavior in `setHostNotifyError` and
+  `clearHostNotifyError`.
+- A focused listener service contract test proves first-error write, same-error
+  no-op, changed-error write, clear write, and already-empty clear no-op.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestMergeSavedRuntimeStatus|TestSessionWarnings|TestHasDisconnectedSessions' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `runtime_listener_service_contract` passed all 8 tests, including the new
+  changed-only host-notify status mutation test.
+- `runtime_listener_notification_execute_contract` still passed, preserving the
+  single-notification side-effect executor behavior while foreground status
+  wiring remains deferred.
+- `runtime_contract` confirmed saved `host_notify.last_error` still merges into
+  listener status output.
+- Focused Go listener tests passed for host-notify dispatch/failure behavior and
+  adjacent saved-status/session warning helpers.
+- Structure check reported no undocumented Rust files over the default
+  1200-line review-size cap. The touched Rust files are 579 and 320 lines.
+- Dependency audit stayed on existing `rustls`/`ring`, `base64`/`sha2`/`hmac`,
+  and approved `rusqlite + bundled` `libsqlite3-sys` paths. No OpenSSL,
+  `native-tls`, WebSocket, YAML, platform service-manager, reqwest, hyper, or
+  alternate SQLite dependency path appeared.
+
+Boundary note: this slice only translates the local status mutation helper
+semantics. It does not implement foreground `Supervisor` locks, actual
+`dispatchHostNotification` wiring to these helpers, foreground WebSocket session
+ownership, real direct-secure decrypt/ack execution, local secure-ack queue
+delivery, platform service execution, Windows named-pipe I/O, or
+`awiki-system-test` listener acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. TLS policy stays Rustls-first, and SQLite stays on the
+approved `rusqlite + bundled` path.
+
 ## 2026-05-16 Workspace K1 Service-Construction Warning Edge Slice
 
 Timestamp: 2026-05-16T18:50:07Z / 2026-05-17T02:50:07+0800.
