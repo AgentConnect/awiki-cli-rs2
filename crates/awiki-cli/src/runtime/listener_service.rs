@@ -24,6 +24,54 @@ pub struct ListenerChildProcessPlan {
     pub setsid: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ListenerServiceProgramState {
+    pub has_supervisor: bool,
+    pub has_cancel: bool,
+    pub has_done: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerServiceProgramAction {
+    LockProgram,
+    NewSupervisor,
+    CreateCancelContext,
+    CreateDoneChannel,
+    StoreSupervisor,
+    StoreCancel,
+    StoreDone,
+    SpawnRunLoop,
+    SnapshotState,
+    ClearCancel,
+    ClearDone,
+    ClearSupervisor,
+    UnlockProgram,
+    CancelContext,
+    CloseSupervisor,
+    WaitDone { timeout: Duration },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerServiceProgramRunAction {
+    RunSupervisor,
+    SendRunResult,
+    CleanupRuntimeArtifacts,
+    CloseDone,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerServiceProgramDecision {
+    ReturnOk,
+    ReturnError(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListenerServiceProgramPlan {
+    pub actions: Vec<ListenerServiceProgramAction>,
+    pub run_loop_actions: Vec<ListenerServiceProgramRunAction>,
+    pub decision: ListenerServiceProgramDecision,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ListenerServiceLifecycleOperation {
     ValidateWebSocketMode,
@@ -72,6 +120,103 @@ impl ListenerRuntimePolicy {
             auto_install: resolved.runtime_listener_auto_install,
             auto_start: resolved.runtime_listener_auto_start,
         }
+    }
+}
+
+pub fn service_program_start_plan(
+    state: ListenerServiceProgramState,
+    new_supervisor_error: Option<&str>,
+) -> ListenerServiceProgramPlan {
+    let mut actions = vec![ListenerServiceProgramAction::LockProgram];
+    if state.has_done {
+        actions.push(ListenerServiceProgramAction::UnlockProgram);
+        return service_program_plan(
+            actions,
+            Vec::new(),
+            ListenerServiceProgramDecision::ReturnOk,
+        );
+    }
+
+    actions.push(ListenerServiceProgramAction::NewSupervisor);
+    if let Some(error) = new_supervisor_error {
+        actions.push(ListenerServiceProgramAction::UnlockProgram);
+        return service_program_plan(
+            actions,
+            Vec::new(),
+            ListenerServiceProgramDecision::ReturnError(error.to_string()),
+        );
+    }
+
+    actions.push(ListenerServiceProgramAction::CreateCancelContext);
+    actions.push(ListenerServiceProgramAction::CreateDoneChannel);
+    actions.push(ListenerServiceProgramAction::StoreSupervisor);
+    actions.push(ListenerServiceProgramAction::StoreCancel);
+    actions.push(ListenerServiceProgramAction::StoreDone);
+    actions.push(ListenerServiceProgramAction::SpawnRunLoop);
+    actions.push(ListenerServiceProgramAction::UnlockProgram);
+
+    service_program_plan(
+        actions,
+        vec![
+            ListenerServiceProgramRunAction::RunSupervisor,
+            ListenerServiceProgramRunAction::SendRunResult,
+            ListenerServiceProgramRunAction::CleanupRuntimeArtifacts,
+            ListenerServiceProgramRunAction::CloseDone,
+        ],
+        ListenerServiceProgramDecision::ReturnOk,
+    )
+}
+
+pub fn service_program_stop_plan(
+    state: ListenerServiceProgramState,
+    done_completed_before_timeout: bool,
+) -> ListenerServiceProgramPlan {
+    let mut actions = vec![
+        ListenerServiceProgramAction::LockProgram,
+        ListenerServiceProgramAction::SnapshotState,
+        ListenerServiceProgramAction::ClearCancel,
+        ListenerServiceProgramAction::ClearDone,
+        ListenerServiceProgramAction::ClearSupervisor,
+        ListenerServiceProgramAction::UnlockProgram,
+    ];
+
+    if state.has_cancel {
+        actions.push(ListenerServiceProgramAction::CancelContext);
+    }
+    if state.has_supervisor {
+        actions.push(ListenerServiceProgramAction::CloseSupervisor);
+    }
+    if state.has_done {
+        actions.push(ListenerServiceProgramAction::WaitDone {
+            timeout: Duration::from_secs(15),
+        });
+        if !done_completed_before_timeout {
+            return service_program_plan(
+                actions,
+                Vec::new(),
+                ListenerServiceProgramDecision::ReturnError(
+                    "listener service stop timed out".to_string(),
+                ),
+            );
+        }
+    }
+
+    service_program_plan(
+        actions,
+        Vec::new(),
+        ListenerServiceProgramDecision::ReturnOk,
+    )
+}
+
+fn service_program_plan(
+    actions: Vec<ListenerServiceProgramAction>,
+    run_loop_actions: Vec<ListenerServiceProgramRunAction>,
+    decision: ListenerServiceProgramDecision,
+) -> ListenerServiceProgramPlan {
+    ListenerServiceProgramPlan {
+        actions,
+        run_loop_actions,
+        decision,
     }
 }
 

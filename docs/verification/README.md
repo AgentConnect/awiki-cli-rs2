@@ -2,6 +2,68 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Service Program Planner Slice
+
+Timestamp: 2026-05-17T11:20:00+0800.
+
+Scope: extend the listener service helper boundary for Go
+`internal/runtime/listener/service.go` `serviceProgram.Start` and
+`serviceProgram.Stop` with pure state/action plans. This keeps real supervisor
+execution, goroutine ownership, and platform service-manager integration
+deferred.
+
+What changed:
+
+- Added `ListenerServiceProgramState`, `ListenerServiceProgramAction`,
+  `ListenerServiceProgramRunAction`, `ListenerServiceProgramDecision`, and
+  `ListenerServiceProgramPlan`.
+- Added `service_program_start_plan` for Go start branches:
+  already-running idempotence, `NewSupervisor` error propagation, cancel
+  context creation, done-channel creation, supervisor/cancel/done storage, and
+  run-loop spawn under the program lock.
+- Added `service_program_stop_plan` for Go stop branches:
+  lock/snapshot/clear/unlock ordering, optional cancel, optional supervisor
+  close, optional done wait, and the exact 15-second timeout error text.
+- Modeled Go goroutine defer ordering explicitly: run supervisor, send the run
+  result to `done`, clean runtime artifacts, then close `done`.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_service_contract` passed with the new service-program
+  start/stop planner assertions.
+- Adjacent listener supervisor-shutdown and foreground contracts passed.
+- Go focused listener service readiness/start guards passed.
+- Dependency audit matched the existing policy: no OpenSSL or `native-tls`, no
+  platform service-manager crate, no WebSocket crate, no YAML crate, and no new
+  dependency was added. Rustls/webpki/ring remain the existing TLS path, and
+  SQLite remains on the accepted `rusqlite` plus `libsqlite3-sys` path.
+- Changed Rust source/test files remain below the default 1200-line cap.
+
+Boundary note: this slice plans `serviceProgram.Start`/`Stop` ordering only.
+It does not execute a real `Supervisor`, run a goroutine, allocate a real
+context/channel, call `cleanupRuntimeArtifacts`, own OS signals, call
+platform service-manager APIs, or satisfy listener system-test acceptance.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Listener Service Lifecycle Planner Slice
 
 Timestamp: 2026-05-17T08:28:00+0800.

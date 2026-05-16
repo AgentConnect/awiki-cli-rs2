@@ -2,7 +2,8 @@ use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::runtime::listener::{self, Status};
 use awiki_cli::runtime::listener_service::{
     self, ListenerRuntimePolicy, ListenerServiceLifecycleOperation as Op,
-    ListenerServiceStatusSnapshot,
+    ListenerServiceProgramAction as ProgramAction, ListenerServiceProgramDecision,
+    ListenerServiceProgramRunAction, ListenerServiceProgramState, ListenerServiceStatusSnapshot,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -166,6 +167,146 @@ fn child_process_plan_matches_go_sysproc_platform_files() {
     assert_eq!(
         listener_service::listener_child_process_plan(),
         listener_service::listener_child_process_plan_for_platform(cfg!(windows))
+    );
+}
+
+#[test]
+fn service_program_start_plan_matches_go_state_and_run_loop_ordering() {
+    let already_running = listener_service::service_program_start_plan(
+        program_state(true, true, true),
+        Some("must not construct supervisor"),
+    );
+    assert_eq!(
+        already_running.actions,
+        vec![ProgramAction::LockProgram, ProgramAction::UnlockProgram]
+    );
+    assert!(already_running.run_loop_actions.is_empty());
+    assert_eq!(
+        already_running.decision,
+        ListenerServiceProgramDecision::ReturnOk
+    );
+
+    let init_error = listener_service::service_program_start_plan(
+        program_state(false, false, false),
+        Some("open store failed"),
+    );
+    assert_eq!(
+        init_error.actions,
+        vec![
+            ProgramAction::LockProgram,
+            ProgramAction::NewSupervisor,
+            ProgramAction::UnlockProgram,
+        ]
+    );
+    assert!(init_error.run_loop_actions.is_empty());
+    assert_eq!(
+        init_error.decision,
+        ListenerServiceProgramDecision::ReturnError("open store failed".to_string())
+    );
+
+    let started =
+        listener_service::service_program_start_plan(program_state(false, false, false), None);
+    assert_eq!(
+        started.actions,
+        vec![
+            ProgramAction::LockProgram,
+            ProgramAction::NewSupervisor,
+            ProgramAction::CreateCancelContext,
+            ProgramAction::CreateDoneChannel,
+            ProgramAction::StoreSupervisor,
+            ProgramAction::StoreCancel,
+            ProgramAction::StoreDone,
+            ProgramAction::SpawnRunLoop,
+            ProgramAction::UnlockProgram,
+        ]
+    );
+    assert_eq!(
+        started.run_loop_actions,
+        vec![
+            ListenerServiceProgramRunAction::RunSupervisor,
+            ListenerServiceProgramRunAction::SendRunResult,
+            ListenerServiceProgramRunAction::CleanupRuntimeArtifacts,
+            ListenerServiceProgramRunAction::CloseDone,
+        ]
+    );
+    assert_eq!(started.decision, ListenerServiceProgramDecision::ReturnOk);
+}
+
+#[test]
+fn service_program_stop_plan_matches_go_clear_cancel_close_wait_ordering() {
+    let stopped_empty =
+        listener_service::service_program_stop_plan(program_state(false, false, false), false);
+    assert_eq!(
+        stopped_empty.actions,
+        vec![
+            ProgramAction::LockProgram,
+            ProgramAction::SnapshotState,
+            ProgramAction::ClearCancel,
+            ProgramAction::ClearDone,
+            ProgramAction::ClearSupervisor,
+            ProgramAction::UnlockProgram,
+        ]
+    );
+    assert_eq!(
+        stopped_empty.decision,
+        ListenerServiceProgramDecision::ReturnOk
+    );
+
+    let stopped =
+        listener_service::service_program_stop_plan(program_state(true, true, true), true);
+    assert_eq!(
+        stopped.actions,
+        vec![
+            ProgramAction::LockProgram,
+            ProgramAction::SnapshotState,
+            ProgramAction::ClearCancel,
+            ProgramAction::ClearDone,
+            ProgramAction::ClearSupervisor,
+            ProgramAction::UnlockProgram,
+            ProgramAction::CancelContext,
+            ProgramAction::CloseSupervisor,
+            ProgramAction::WaitDone {
+                timeout: Duration::from_secs(15),
+            },
+        ]
+    );
+    assert_eq!(stopped.decision, ListenerServiceProgramDecision::ReturnOk);
+
+    let timeout =
+        listener_service::service_program_stop_plan(program_state(true, true, true), false);
+    assert_eq!(
+        timeout.decision,
+        ListenerServiceProgramDecision::ReturnError("listener service stop timed out".to_string())
+    );
+
+    let cancel_only =
+        listener_service::service_program_stop_plan(program_state(false, true, false), false);
+    assert_eq!(
+        cancel_only.actions,
+        vec![
+            ProgramAction::LockProgram,
+            ProgramAction::SnapshotState,
+            ProgramAction::ClearCancel,
+            ProgramAction::ClearDone,
+            ProgramAction::ClearSupervisor,
+            ProgramAction::UnlockProgram,
+            ProgramAction::CancelContext,
+        ]
+    );
+
+    let supervisor_only =
+        listener_service::service_program_stop_plan(program_state(true, false, false), false);
+    assert_eq!(
+        supervisor_only.actions,
+        vec![
+            ProgramAction::LockProgram,
+            ProgramAction::SnapshotState,
+            ProgramAction::ClearCancel,
+            ProgramAction::ClearDone,
+            ProgramAction::ClearSupervisor,
+            ProgramAction::UnlockProgram,
+            ProgramAction::CloseSupervisor,
+        ]
     );
 }
 
@@ -548,6 +689,18 @@ fn policy(
         listener_enabled,
         auto_install,
         auto_start,
+    }
+}
+
+fn program_state(
+    has_supervisor: bool,
+    has_cancel: bool,
+    has_done: bool,
+) -> ListenerServiceProgramState {
+    ListenerServiceProgramState {
+        has_supervisor,
+        has_cancel,
+        has_done,
     }
 }
 
