@@ -2,6 +2,64 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Local Notification Flush Slice
+
+Timestamp: 2026-05-17T06:24:00+0800.
+
+Scope: add an injected execution adapter for Go
+`flushQueuedLocalNotifications` after the existing in-memory local notification
+queue helper, before real foreground `Supervisor` session ownership is wired.
+
+What changed:
+
+- Added `runtime::listener_local_notification_flush`.
+- Nil target session returns without touching the queue.
+- Missing or blank-after-trim current record DID returns without touching the
+  queue.
+- Exact current DID flushes and deletes the exact DID queue before dispatch.
+- Queued notifications are handed to an injected void handler callback in append
+  order with the supplied target session context.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_local_notification_flush_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_local_notifications_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_local_notification_flush.rs crates/awiki-cli/tests/runtime_listener_local_notification_flush_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check` and `cargo check` passed.
+- `runtime_listener_local_notification_flush_contract` passed all 5 tests.
+- Adjacent Rust guards passed: `runtime_listener_local_notifications_contract`
+  all 5 tests and `runtime_listener_notification_handler_contract` all 3 tests.
+- `xtask check-structure` reported no undocumented Rust files over 1200 lines.
+- `git diff --check` passed.
+- Adjacent Go listener guard passed:
+  `ok github.com/agentconnect/awiki-cli/internal/runtime/listener 0.144s`.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path.
+- No Cargo manifests or lockfiles changed.
+- New Rust files are 40 and 180 lines, below the default 1200-line cap.
+
+Boundary note: this is an injected adapter only. It does not implement real
+`Supervisor` locks, `session.currentRecord`, `targetSession.ctx`,
+owned `handleNotification`, secure ack encryption/decryption, queued outbox
+flushing, real WebSocket sessions, SQLite writes, or host-notify dispatch.
+
+Dependency note: no Rust dependency was added. This slice uses existing local
+queue and JSON types plus an injected callback.
+
 ## 2026-05-17 Listener Bridge Connection Execution Slice
 
 Timestamp: 2026-05-17T06:02:00+0800.
