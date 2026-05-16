@@ -1,16 +1,30 @@
 use super::types::MessageError;
-use super::{new_secure_e2ee_client_for_record, Client};
+use super::{
+    build_secure_ack_payload, current_secure_session_id, flush_queued_secure_outbox_with_sender,
+    new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient, SecureOutboxSendOutcome,
+};
 use crate::authsdk::Session;
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
 use crate::identity::Manager;
 use crate::message::service::auth_session;
+use crate::store;
 use crate::transportcfg::Profile;
 use serde_json::{json, Map, Value};
+use std::cell::RefCell;
 
 pub type SecureIncomingRpcResult = Result<Map<String, Value>, String>;
 pub type SecureIncomingRpc = dyn FnMut(&str, Map<String, Value>) -> SecureIncomingRpcResult;
 pub type SecureIncomingProcessor = dyn FnMut(Map<String, Value>) -> SecureIncomingRpcResult;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PollingDirectInitAckRequest {
+    pub peer_did: String,
+    pub session_id: String,
+    pub message_id: String,
+    pub ack_id: String,
+    pub payload: Map<String, Value>,
+}
 
 pub fn maybe_decrypt_direct_e2ee_messages(
     resolved: &Resolved,
@@ -38,7 +52,7 @@ pub fn maybe_decrypt_direct_e2ee_messages(
         }
     };
     let rpc = secure_rpc(client, auth);
-    let mut client = match new_secure_e2ee_client_for_record(Some(manager), Some(record), rpc) {
+    let client = match new_secure_e2ee_client_for_record(Some(manager), Some(record), rpc) {
         Ok(client) => client,
         Err(err) => {
             return compact_warnings(vec![format!(
@@ -46,14 +60,39 @@ pub fn maybe_decrypt_direct_e2ee_messages(
             )]);
         }
     };
-    maybe_decrypt_direct_e2ee_messages_with_processor(messages, |notification| {
-        client.process_incoming(notification)
-    })
+    let client = RefCell::new(client);
+    maybe_decrypt_direct_e2ee_messages_with_processor_and_side_effects(
+        messages,
+        |notification| client.borrow_mut().process_incoming(notification),
+        |message, result| {
+            let mut client = client.borrow_mut();
+            apply_polling_secure_side_effects(
+                resolved,
+                manager,
+                record,
+                &mut client,
+                message,
+                result,
+            )
+        },
+    )
 }
 
 pub fn maybe_decrypt_direct_e2ee_messages_with_processor(
     messages: &mut Vec<Value>,
     mut process_incoming: impl FnMut(Map<String, Value>) -> SecureIncomingRpcResult,
+) -> Vec<String> {
+    maybe_decrypt_direct_e2ee_messages_with_processor_and_side_effects(
+        messages,
+        &mut process_incoming,
+        |_message, _result| Vec::new(),
+    )
+}
+
+pub fn maybe_decrypt_direct_e2ee_messages_with_processor_and_side_effects(
+    messages: &mut Vec<Value>,
+    mut process_incoming: impl FnMut(Map<String, Value>) -> SecureIncomingRpcResult,
+    mut side_effects: impl FnMut(&Value, &Map<String, Value>) -> Vec<String>,
 ) -> Vec<String> {
     if messages.is_empty() || !contains_direct_e2ee_messages(messages) {
         return Vec::new();
@@ -90,9 +129,161 @@ pub fn maybe_decrypt_direct_e2ee_messages_with_processor(
                 continue;
             }
         };
+        warnings.extend(side_effects(&messages[index], &result));
         apply_direct_e2ee_processing_result(&mut messages[index], &Value::Object(result));
     }
     compact_warnings(warnings)
+}
+
+pub fn polling_secure_ack_flush_peer(
+    local_did: &str,
+    message: &Value,
+    result: &Map<String, Value>,
+) -> Option<String> {
+    if string_value(result.get("state")) != "decrypted" {
+        return None;
+    }
+    let plaintext = content_object_value(result.get("plaintext"))?;
+    let plaintext = plaintext.as_object()?;
+    if !is_secure_control_plaintext(plaintext, "awiki.direct.secure_ack.v1") {
+        return None;
+    }
+    let peer_did = string_from_message(message, "sender_did");
+    if peer_did.is_empty() || peer_did == local_did {
+        return None;
+    }
+    Some(peer_did)
+}
+
+pub fn polling_direct_init_ack_request(
+    local_did: &str,
+    message: &Value,
+    result: &Map<String, Value>,
+) -> Option<PollingDirectInitAckRequest> {
+    if string_from_message(message, "content_type") != "application/anp-direct-init+json" {
+        return None;
+    }
+    if string_value(result.get("state")) != "decrypted" {
+        return None;
+    }
+    let session_id = direct_init_session_id_from_message(message);
+    let message_id = string_from_message(message, "id");
+    let peer_did = string_from_message(message, "sender_did");
+    if session_id.is_empty()
+        || message_id.is_empty()
+        || peer_did.is_empty()
+        || peer_did == local_did
+    {
+        return None;
+    }
+    let ack_id = format!("ack-{session_id}");
+    Some(PollingDirectInitAckRequest {
+        peer_did,
+        session_id: session_id.clone(),
+        message_id: message_id.clone(),
+        ack_id,
+        payload: build_secure_ack_payload(&session_id, &message_id),
+    })
+}
+
+pub fn direct_init_session_id_from_message(message: &Value) -> String {
+    message
+        .as_object()
+        .and_then(|object| content_object_value(object.get("content")))
+        .and_then(|value| {
+            value
+                .as_object()
+                .map(|object| string_value(object.get("session_id")))
+        })
+        .unwrap_or_default()
+}
+
+fn apply_polling_secure_side_effects(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    client: &mut MessageServiceE2EEClient,
+    message: &Value,
+    result: &Map<String, Value>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let Some(peer_did) = polling_secure_ack_flush_peer(&record.did, message, result) {
+        warnings.extend(flush_queued_secure_outbox(
+            resolved, manager, record, client, &peer_did,
+        ));
+    }
+    if let Some(ack) = polling_direct_init_ack_request(&record.did, message, result) {
+        match client.send_json(&ack.peer_did, ack.payload.clone(), &ack.ack_id, &ack.ack_id) {
+            Ok(_) => warnings.extend(flush_queued_secure_outbox(
+                resolved,
+                manager,
+                record,
+                client,
+                &ack.peer_did,
+            )),
+            Err(err) => warnings.push(format!(
+                "Failed to send secure direct ACK for {}: {err}",
+                ack.message_id
+            )),
+        }
+    }
+    compact_warnings(warnings)
+}
+
+fn flush_queued_secure_outbox(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    client: &mut MessageServiceE2EEClient,
+    peer_did: &str,
+) -> Vec<String> {
+    let connection = match store::open(&resolved.paths) {
+        Ok(connection) => connection,
+        Err(err) => {
+            return compact_warnings(vec![format!("Failed to open secure outbox store: {err}")]);
+        }
+    };
+    if let Err(err) = store::ensure_schema(&connection) {
+        return compact_warnings(vec![format!(
+            "Failed to ensure secure outbox schema: {err}"
+        )]);
+    }
+    flush_queued_secure_outbox_with_sender(
+        &connection,
+        &record.did,
+        &record.identity_name,
+        peer_did,
+        |request| {
+            let result = match request.original_type.as_str() {
+                "text" | "" => client.send_text(
+                    &request.target_did,
+                    &request.plaintext,
+                    &request.outbox_id,
+                    &request.outbox_id,
+                ),
+                "json" => client.send_json(
+                    &request.target_did,
+                    request.json_payload.unwrap_or_default(),
+                    &request.outbox_id,
+                    &request.outbox_id,
+                ),
+                _ => Err(format!(
+                    "unsupported original_type: {}",
+                    request.original_type
+                )),
+            };
+            match result {
+                Ok(result) => SecureOutboxSendOutcome::Success {
+                    message_id: string_value(result.get("message_id")),
+                    operation_id: string_value(result.get("operation_id")),
+                    delivery_state: string_value(result.get("delivery_state")),
+                    accepted_at: string_value(result.get("accepted_at")),
+                },
+                Err(err) => SecureOutboxSendOutcome::Error(err),
+            }
+        },
+        |peer_did| current_secure_session_id(Some(manager), Some(record), peer_did),
+    )
 }
 
 pub fn is_direct_e2ee_wire_content_type(content_type: &str) -> bool {

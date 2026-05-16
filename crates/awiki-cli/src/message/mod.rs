@@ -70,8 +70,11 @@ pub use secure_control::{
 };
 pub use secure_incoming::{
     apply_direct_e2ee_processing_result, direct_e2ee_notification_from_message_view,
-    filter_displayable_direct_e2ee_messages, is_direct_e2ee_control_or_undisplayable,
-    is_direct_e2ee_wire_content_type, maybe_decrypt_direct_e2ee_messages_with_processor,
+    direct_init_session_id_from_message, filter_displayable_direct_e2ee_messages,
+    is_direct_e2ee_control_or_undisplayable, is_direct_e2ee_wire_content_type,
+    maybe_decrypt_direct_e2ee_messages_with_processor,
+    maybe_decrypt_direct_e2ee_messages_with_processor_and_side_effects,
+    polling_direct_init_ack_request, polling_secure_ack_flush_peer, PollingDirectInitAckRequest,
     SecureIncomingProcessor, SecureIncomingRpc, SecureIncomingRpcResult,
 };
 pub use secure_outbox_flush::{

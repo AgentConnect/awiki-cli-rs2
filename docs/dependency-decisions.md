@@ -536,8 +536,14 @@ Do not mix that optimization with the 1:1 translation lane.
   async runtimes, YAML crates, platform service libraries, new E2EE provider
   crates, or a new SQLite backend. TLS remains Rustls-first for later
   WebSocket/runtime transport work.
-- ACK delivery and queued outbox flush side effects from Go
-  `maybeFlushPollingSecureAck` and `maybeAckPollingDirectInit` are deliberately
-  not mixed into this application slice. They remain a later parity slice on
-  the already-selected dependency stack unless a real transport requirement
-  forces a documented dependency decision.
+- The polling secure ACK/flush follow-up wires the Go
+  `maybeFlushPollingSecureAck`, `maybeAckPollingDirectInit`, and
+  `directInitSessionIDFromMessage` side effects onto the same selected stack:
+  existing Rustls/std authsdk/message client, existing local ANP E2EE adapter,
+  existing secure outbox flush helper, and approved `rusqlite + bundled`
+  SQLite lane.
+- No TLS/WebSocket dependency decision changed for that follow-up. It still does
+  not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
+  crates, async runtimes, YAML crates, platform service libraries, new E2EE
+  provider crates, or a new SQLite backend. TLS remains Rustls-first for later
+  WebSocket/runtime transport work.

@@ -7233,11 +7233,11 @@ Scope:
 - Filters secure wire/control rows from handle-history cache merges before
   merging local cached rows with remote inbox/history results.
 
-Boundary note: this slice intentionally does not port the Go side effects in
-`maybeFlushPollingSecureAck` or `maybeAckPollingDirectInit`. Real secure ACK
-network/local delivery, queued outbox flush after secure ACK/init,
-`SecureInit`, `SecureRepair`, runtime listener real `ProcessIncoming` wiring,
-WebSocket/local bridge execution, and awiki-system-test secure-direct
+Boundary note: the initial application slice did not port the Go side effects in
+`maybeFlushPollingSecureAck` or `maybeAckPollingDirectInit`; the follow-up below
+adds them on the same dependency stack. `SecureInit`, `SecureRepair`, runtime
+listener real `ProcessIncoming` wiring, WebSocket/local bridge execution,
+production `msg send --secure on`, and awiki-system-test secure-direct
 acceptance remain deferred parity slices.
 
 Parallelism note: a read-only Native Agent reviewed Go/Rust parity for this
@@ -7254,3 +7254,67 @@ the local ANP Rust E2EE adapter, `serde_json`, store helpers, and the approved
 OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML crates,
 platform service libraries, new E2EE provider dependencies, or a new SQLite
 backend. TLS remains Rustls-first for later runtime/WebSocket transport work.
+
+## 2026-05-16 Message Secure Incoming Polling ACK/Flush Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_incoming_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestPollingInboxDecryptsDirectInitAndSendsSecureAck|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation' -count=1
+```
+
+Result: passed after final verification. Focused Rust test counts:
+`message_secure_incoming_contract` 12, `message_secure_client_contract` 14,
+`message_secure_outbox_flush_contract` 23, `msg_live_contract` 4, and
+`anpsdk_contract` 14 all passed with zero failures. `cargo check`, structure
+check, whitespace check, dependency audit, and focused Go reference tests passed.
+
+Scope:
+
+- Adds the Go polling side effects to `message::secure_incoming` without
+  changing the public inbox/history contract.
+- Preserves Go's side-effect order inside `maybeDecryptDirectE2EEMessages`:
+  process incoming, run polling ACK/flush side effects, then apply the decrypted
+  result to the message row.
+- Preserves `maybeFlushPollingSecureAck`: only decrypted secure ACK plaintext
+  flushes queued secure outbox rows, only the original `sender_did` is used as
+  the peer DID, and blank/self peers are ignored.
+- Preserves `maybeAckPollingDirectInit`: only decrypted
+  `application/anp-direct-init+json` messages create `ack-<session_id>`, ACK is
+  sent with `BuildSecureAckPayload(session_id, message_id)` via `SendJSON`, ACK
+  send failure returns `Failed to send secure direct ACK for <message_id>: <err>`
+  and does not flush queued rows, and flush runs only after ACK send success.
+- Preserves `directInitSessionIDFromMessage`: reads object content or non-empty
+  JSON object strings through the same map-like boundary, returns only string
+  `session_id`, and does not trim the session ID.
+- Production flush side effects reuse the existing secure outbox helper and the
+  same high-level `MessageServiceE2EEClient` used for direct E2EE sends.
+
+Boundary note: this slice still excludes `SecureInit`, `SecureRepair`, runtime
+listener real `ProcessIncoming` wiring, WebSocket/local bridge execution,
+production `msg send --secure on`, and awiki-system-test secure-direct
+acceptance.
+
+Parallelism note: a read-only Native Agent mapped Go/Rust side-effect parity for
+this slice. No code-writing Native Agent changed files.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing Rustls/std authsdk/message client,
+local ANP Rust E2EE adapter, secure outbox flush helper, store helpers, and the
+approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, new E2EE provider
+dependencies, or a new SQLite backend. TLS remains Rustls-first for later
+runtime/WebSocket transport work.

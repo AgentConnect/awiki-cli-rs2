@@ -1,7 +1,10 @@
 use awiki_cli::message::{
     apply_direct_e2ee_processing_result, direct_e2ee_notification_from_message_view,
-    filter_displayable_direct_e2ee_messages, is_direct_e2ee_control_or_undisplayable,
-    is_direct_e2ee_wire_content_type, maybe_decrypt_direct_e2ee_messages_with_processor,
+    direct_init_session_id_from_message, filter_displayable_direct_e2ee_messages,
+    is_direct_e2ee_control_or_undisplayable, is_direct_e2ee_wire_content_type,
+    maybe_decrypt_direct_e2ee_messages_with_processor,
+    maybe_decrypt_direct_e2ee_messages_with_processor_and_side_effects,
+    polling_direct_init_ack_request, polling_secure_ack_flush_peer,
 };
 use serde_json::{json, Map, Value};
 
@@ -330,6 +333,227 @@ fn maybe_decrypt_direct_secure_messages_suppresses_control_message_warnings_like
         warnings,
         vec!["Skipped secure direct message msg-user: content is not a direct-e2ee object"]
     );
+}
+
+#[test]
+fn direct_init_session_id_from_message_matches_go_map_from_any_boundaries() {
+    assert_eq!(
+        direct_init_session_id_from_message(&message(
+            "msg-init",
+            "application/anp-direct-init+json",
+            json!({"session_id": " session-1 "}),
+            1,
+        )),
+        " session-1 "
+    );
+    assert_eq!(
+        direct_init_session_id_from_message(&message(
+            "msg-init",
+            "application/anp-direct-init+json",
+            json!(r#"{"session_id":"session-from-json-string"}"#),
+            1,
+        )),
+        "session-from-json-string"
+    );
+    for content in [
+        json!(""),
+        json!("not-json"),
+        json!([]),
+        json!({}),
+        json!({"session_id": 123}),
+    ] {
+        assert_eq!(
+            direct_init_session_id_from_message(&message(
+                "msg-init",
+                "application/anp-direct-init+json",
+                content,
+                1,
+            )),
+            ""
+        );
+    }
+}
+
+#[test]
+fn polling_secure_ack_flush_peer_matches_go_conditions() {
+    let ack_result = Map::from_iter([
+        ("state".to_string(), json!("decrypted")),
+        (
+            "plaintext".to_string(),
+            json!({
+                "application_content_type": "application/json",
+                "payload": r#"{"system_type":"awiki.direct.secure_ack.v1","session_id":"sid-1"}"#
+            }),
+        ),
+    ]);
+    assert_eq!(
+        polling_secure_ack_flush_peer(
+            "did:bob",
+            &message("ack-1", "application/anp-direct-cipher+json", json!({}), 1),
+            &ack_result
+        ),
+        Some("did:alice".to_string())
+    );
+
+    let mut not_decrypted = ack_result.clone();
+    not_decrypted.insert("state".to_string(), json!("pending"));
+    assert_eq!(
+        polling_secure_ack_flush_peer(
+            "did:bob",
+            &message("ack-1", "application/anp-direct-cipher+json", json!({}), 1),
+            &not_decrypted,
+        ),
+        None
+    );
+    let self_sender = json!({
+        "id": "ack-1",
+        "sender_did": "did:bob",
+        "receiver_did": "did:bob",
+        "content_type": "application/anp-direct-cipher+json",
+        "content": {},
+    });
+    assert_eq!(
+        polling_secure_ack_flush_peer("did:bob", &self_sender, &ack_result),
+        None
+    );
+    let non_ack = Map::from_iter([
+        ("state".to_string(), json!("decrypted")),
+        (
+            "plaintext".to_string(),
+            json!({
+                "application_content_type": "application/json",
+                "payload": {"system_type": "awiki.direct.secure_init.v1"}
+            }),
+        ),
+    ]);
+    assert_eq!(
+        polling_secure_ack_flush_peer(
+            "did:bob",
+            &message(
+                "msg-init",
+                "application/anp-direct-init+json",
+                json!({"session_id": "sid-1"}),
+                1,
+            ),
+            &non_ack,
+        ),
+        None
+    );
+}
+
+#[test]
+fn polling_direct_init_ack_request_matches_go_conditions_and_payload() {
+    let decrypted = Map::from_iter([("state".to_string(), json!("decrypted"))]);
+    let request = polling_direct_init_ack_request(
+        "did:bob",
+        &message(
+            "secure-init-1",
+            "application/anp-direct-init+json",
+            json!({"session_id": "sid-1"}),
+            1,
+        ),
+        &decrypted,
+    )
+    .expect("ack request");
+
+    assert_eq!(request.peer_did, "did:alice");
+    assert_eq!(request.session_id, "sid-1");
+    assert_eq!(request.message_id, "secure-init-1");
+    assert_eq!(request.ack_id, "ack-sid-1");
+    assert_eq!(
+        Value::Object(request.payload),
+        json!({
+            "system_type": "awiki.direct.secure_ack.v1",
+            "session_id": "sid-1",
+            "acked_message_id": "secure-init-1"
+        })
+    );
+
+    let mut pending = decrypted.clone();
+    pending.insert("state".to_string(), json!("pending"));
+    assert!(polling_direct_init_ack_request(
+        "did:bob",
+        &message(
+            "secure-init-1",
+            "application/anp-direct-init+json",
+            json!({"session_id": "sid-1"}),
+            1,
+        ),
+        &pending,
+    )
+    .is_none());
+    assert!(polling_direct_init_ack_request(
+        "did:bob",
+        &message(
+            "secure-init-1",
+            "application/anp-direct-cipher+json",
+            json!({"session_id": "sid-1"}),
+            1,
+        ),
+        &decrypted,
+    )
+    .is_none());
+    assert!(polling_direct_init_ack_request(
+        "did:bob",
+        &message(
+            "secure-init-1",
+            "application/anp-direct-init+json",
+            json!({}),
+            1,
+        ),
+        &decrypted,
+    )
+    .is_none());
+    assert!(polling_direct_init_ack_request(
+        "did:alice",
+        &message(
+            "secure-init-1",
+            "application/anp-direct-init+json",
+            json!({"session_id": "sid-1"}),
+            1,
+        ),
+        &decrypted,
+    )
+    .is_none());
+}
+
+#[test]
+fn maybe_decrypt_direct_secure_messages_runs_side_effects_before_applying_result() {
+    let mut messages = vec![message(
+        "msg-init",
+        "application/anp-direct-init+json",
+        json!({"session_id": "sid-1"}),
+        1,
+    )];
+    let warnings = maybe_decrypt_direct_e2ee_messages_with_processor_and_side_effects(
+        &mut messages,
+        |_notification| {
+            Ok(Map::from_iter([
+                ("state".to_string(), json!("decrypted")),
+                (
+                    "plaintext".to_string(),
+                    json!({
+                        "application_content_type": "text/plain",
+                        "text": "plain-after-side-effect"
+                    }),
+                ),
+            ]))
+        },
+        |message, result| {
+            assert_eq!(message["content_type"], "application/anp-direct-init+json");
+            assert_eq!(message["content"], json!({"session_id": "sid-1"}));
+            assert_eq!(result["state"], "decrypted");
+            vec![
+                "side-effect warning".to_string(),
+                "side-effect warning".to_string(),
+            ]
+        },
+    );
+
+    assert_eq!(warnings, vec!["side-effect warning"]);
+    assert_eq!(messages[0]["content_type"], "text/plain");
+    assert_eq!(messages[0]["content"], "plain-after-side-effect");
+    assert_eq!(messages[0]["decryption_state"], "decrypted");
 }
 
 fn message(id: &str, content_type: &str, content: Value, server_seq: i64) -> Value {
