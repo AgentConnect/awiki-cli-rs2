@@ -2,6 +2,68 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Message-Service DID Execution Slice
+
+Timestamp: 2026-05-17T07:12:00+0800.
+
+Scope: extend the Rust helper for Go listener `fetchMessageServiceDID` in
+`internal/runtime/listener/server.go` from request/parse helpers into an
+injected execution wrapper. This remains a narrow helper slice before real
+`Supervisor` session ownership and real `WSClient.SendRPC` are wired.
+
+What changed:
+
+- Added `ListenerServiceDidSession` and `ListenerServiceDidRpc`.
+- Added `fetch_message_service_did`.
+- Disconnected sessions return
+  `websocket session is not connected for identity <identity>` before any RPC.
+- Connected sessions send `anp.get_capabilities` with empty params through the
+  injected RPC trait.
+- Injected send errors propagate before `service_did` decoding.
+- Decoding still uses the existing Go-shaped helper: only string
+  `service_did` values are accepted, empty/missing/non-string values return
+  `message service capabilities response is missing service_did`, and
+  whitespace-only strings remain non-empty like Go `stringValue`.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_did_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_service_did.rs crates/awiki-cli/tests/runtime_listener_service_did_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_service_did_contract` passed all 9 tests.
+- Adjacent bridge guards passed:
+  `runtime_listener_bridge_connection_contract` all 10 tests and
+  `runtime_listener_bridge_dispatch_contract` all 10 tests.
+- Adjacent Go listener bridge guard passed.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path.
+- No Cargo manifests or lockfiles changed.
+- Changed Rust files remain below the default 1200-line cap.
+
+Boundary note: this slice does not implement real `Supervisor.currentClient`
+locking, real `WSClient.SendRPC`, foreground WebSocket session ownership,
+configured HTTP transport `anp_service_did` precedence, core-binding
+capability params, bridge dispatch ownership, SQLite mutation, or listener
+system-test acceptance.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Listener JSON Helper Slice
 
 Timestamp: 2026-05-17T06:12:55+0800.

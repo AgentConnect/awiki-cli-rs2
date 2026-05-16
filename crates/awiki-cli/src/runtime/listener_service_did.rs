@@ -31,3 +31,35 @@ pub fn message_service_did_from_capabilities_result(
     }
     Ok(service_did)
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListenerServiceDidSession {
+    pub identity_name: String,
+    pub has_current_client: bool,
+}
+
+pub trait ListenerServiceDidRpc {
+    fn send_rpc(
+        &mut self,
+        method: &str,
+        params: Map<String, Value>,
+    ) -> anyhow::Result<Map<String, Value>>;
+}
+
+pub fn fetch_message_service_did<R>(
+    session: &ListenerServiceDidSession,
+    rpc: &mut R,
+) -> anyhow::Result<String>
+where
+    R: ListenerServiceDidRpc,
+{
+    if !session.has_current_client {
+        anyhow::bail!(
+            "{}",
+            disconnected_websocket_session_error(&session.identity_name)
+        );
+    }
+    let call = build_message_service_capabilities_call();
+    let result = rpc.send_rpc(call.method, call.params)?;
+    message_service_did_from_capabilities_result(&result)
+}
