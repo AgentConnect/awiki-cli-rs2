@@ -44,6 +44,64 @@ fn anpsdk_facade_exposes_go_registry_authentication_symbols() {
 }
 
 #[test]
+fn anpsdk_facade_exposes_go_key_material_helpers() {
+    for key_type in [
+        anpsdk::KEY_TYPE_ED25519,
+        anpsdk::KEY_TYPE_SECP256K1,
+        anpsdk::KEY_TYPE_SECP256R1,
+        anpsdk::KEY_TYPE_X25519,
+    ] {
+        let (private_key, public_key, pair) =
+            anpsdk::GenerateKeyPairPEM(key_type).expect("generate key pair through facade");
+        assert_eq!(
+            first_line(&pair.private_key_pem),
+            "-----BEGIN PRIVATE KEY-----"
+        );
+        assert_eq!(
+            first_line(&pair.public_key_pem),
+            "-----BEGIN PUBLIC KEY-----"
+        );
+        assert!(
+            !pair.private_key_pem.contains("ANP ") && !pair.public_key_pem.contains("ANP "),
+            "generated PEM must not use legacy ANP labels"
+        );
+
+        let parsed_private =
+            anpsdk::PrivateKeyFromPEM(&pair.private_key_pem).expect("parse private PEM");
+        let parsed_public =
+            anpsdk::PublicKeyFromPEM(&pair.public_key_pem).expect("parse public PEM");
+
+        assert_eq!(key_type, private_key_type(&private_key));
+        assert_eq!(key_type, public_key_type(&public_key));
+        assert_eq!(key_type, private_key_type(&parsed_private));
+        assert_eq!(key_type, public_key_type(&parsed_public));
+        assert_eq!(parsed_private.to_pem(), pair.private_key_pem);
+        assert_eq!(parsed_public.to_pem(), pair.public_key_pem);
+    }
+}
+
+#[test]
+fn anpsdk_facade_runtime_pem_parsers_reject_legacy_anp_labels() {
+    let legacy_private = concat!(
+        "-----BEGIN ANP ED25519 PRIVATE KEY-----\n",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+        "-----END ANP ED25519 PRIVATE KEY-----\n"
+    );
+    let private_error =
+        anpsdk::PrivateKeyFromPEM(legacy_private).expect_err("legacy private label rejected");
+    assert_eq!(private_error, "Invalid PEM label: ANP ED25519 PRIVATE KEY");
+
+    let legacy_public = concat!(
+        "-----BEGIN ANP ED25519 PUBLIC KEY-----\n",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n",
+        "-----END ANP ED25519 PUBLIC KEY-----\n"
+    );
+    let public_error =
+        anpsdk::PublicKeyFromPEM(legacy_public).expect_err("legacy public label rejected");
+    assert_eq!(public_error, "Invalid PEM label: ANP ED25519 PUBLIC KEY");
+}
+
+#[test]
 fn anpsdk_facade_exposes_go_registry_proof_symbols() {
     let digest = anpsdk::build_im_content_digest(br#"{"hello":"world"}"#);
     assert!(digest.starts_with("sha-256=:"));
@@ -544,6 +602,28 @@ fn assert_same_private_key(
 ) {
     assert_eq!(actual.to_pem(), expected.to_pem());
     assert_eq!(actual.public_key().to_pem(), expected.public_key().to_pem());
+}
+
+fn private_key_type(private_key: &anpsdk::PrivateKeyMaterial) -> anpsdk::KeyType {
+    match private_key {
+        anpsdk::PrivateKeyMaterial::Secp256k1(_) => anpsdk::KEY_TYPE_SECP256K1,
+        anpsdk::PrivateKeyMaterial::Secp256r1(_) => anpsdk::KEY_TYPE_SECP256R1,
+        anpsdk::PrivateKeyMaterial::Ed25519(_) => anpsdk::KeyTypeEd25519,
+        anpsdk::PrivateKeyMaterial::X25519(_) => anpsdk::KeyTypeX25519,
+    }
+}
+
+fn public_key_type(public_key: &anpsdk::PublicKeyMaterial) -> anpsdk::KeyType {
+    match public_key {
+        anpsdk::PublicKeyMaterial::Secp256k1(_) => anpsdk::KeyTypeSecp256k1,
+        anpsdk::PublicKeyMaterial::Secp256r1(_) => anpsdk::KeyTypeSecp256r1,
+        anpsdk::PublicKeyMaterial::Ed25519(_) => anpsdk::KEY_TYPE_ED25519,
+        anpsdk::PublicKeyMaterial::X25519(_) => anpsdk::KEY_TYPE_X25519,
+    }
+}
+
+fn first_line(value: &str) -> &str {
+    value.split_once('\n').map_or(value, |(line, _)| line)
 }
 
 fn assert_direct_invalid_field(error: anpsdk::DirectE2eeError, expected: &str) {

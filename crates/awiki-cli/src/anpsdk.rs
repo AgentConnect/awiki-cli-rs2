@@ -30,7 +30,7 @@ pub use anp::proof::{
 };
 pub use anp::{PrivateKeyMaterial, PublicKeyMaterial};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -42,6 +42,109 @@ pub const DID_PROFILE_K1: DidProfile = DidProfile::K1;
 pub const TARGET_KIND_AGENT: TargetKind = TargetKind::Agent;
 pub const TARGET_KIND_GROUP: TargetKind = TargetKind::Group;
 pub const TARGET_KIND_SERVICE: TargetKind = TargetKind::Service;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyType {
+    #[serde(rename = "secp256k1")]
+    Secp256k1,
+    #[serde(rename = "secp256r1")]
+    Secp256r1,
+    #[serde(rename = "ed25519")]
+    Ed25519,
+    #[serde(rename = "x25519")]
+    X25519,
+}
+
+impl KeyType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Secp256k1 => "secp256k1",
+            Self::Secp256r1 => "secp256r1",
+            Self::Ed25519 => "ed25519",
+            Self::X25519 => "x25519",
+        }
+    }
+}
+
+impl std::fmt::Display for KeyType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+pub const KEY_TYPE_SECP256R1: KeyType = KeyType::Secp256r1;
+pub const KEY_TYPE_SECP256K1: KeyType = KeyType::Secp256k1;
+pub const KEY_TYPE_ED25519: KeyType = KeyType::Ed25519;
+pub const KEY_TYPE_X25519: KeyType = KeyType::X25519;
+
+#[allow(non_upper_case_globals)]
+pub const KeyTypeSecp256r1: KeyType = KEY_TYPE_SECP256R1;
+#[allow(non_upper_case_globals)]
+pub const KeyTypeSecp256k1: KeyType = KEY_TYPE_SECP256K1;
+#[allow(non_upper_case_globals)]
+pub const KeyTypeEd25519: KeyType = KEY_TYPE_ED25519;
+#[allow(non_upper_case_globals)]
+pub const KeyTypeX25519: KeyType = KEY_TYPE_X25519;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GeneratedKeyPairPEM {
+    pub private_key_pem: String,
+    pub public_key_pem: String,
+}
+
+pub fn generate_key_pair_pem(
+    key_type: KeyType,
+) -> Result<(PrivateKeyMaterial, PublicKeyMaterial, GeneratedKeyPairPEM), String> {
+    let (profile, fragment) = match key_type {
+        KeyType::Ed25519 => (DidProfile::E1, "key-1"),
+        KeyType::Secp256k1 => (DidProfile::K1, "key-1"),
+        KeyType::Secp256r1 => (DidProfile::E1, "key-2"),
+        KeyType::X25519 => (DidProfile::E1, "key-3"),
+    };
+    let bundle = create_did_wba_document(
+        "example.com",
+        DidDocumentOptions::default().with_profile(profile),
+    )
+    .map_err(|err| err.to_string())?;
+    let private_key = bundle
+        .private_key_pem(fragment)
+        .ok_or_else(|| format!("missing generated key: {fragment}"))
+        .and_then(private_key_from_pem)?;
+    let public_key = bundle
+        .public_key_pem(fragment)
+        .ok_or_else(|| format!("missing generated public key: {fragment}"))
+        .and_then(public_key_from_pem)?;
+    let pair = GeneratedKeyPairPEM {
+        private_key_pem: private_key.to_pem(),
+        public_key_pem: public_key.to_pem(),
+    };
+    Ok((private_key, public_key, pair))
+}
+
+pub fn private_key_from_pem(input: impl AsRef<str>) -> Result<PrivateKeyMaterial, String> {
+    PrivateKeyMaterial::from_pem(input.as_ref()).map_err(|err| err.to_string())
+}
+
+pub fn public_key_from_pem(input: impl AsRef<str>) -> Result<PublicKeyMaterial, String> {
+    PublicKeyMaterial::from_pem(input.as_ref()).map_err(|err| err.to_string())
+}
+
+#[allow(non_snake_case)]
+pub fn GenerateKeyPairPEM(
+    key_type: KeyType,
+) -> Result<(PrivateKeyMaterial, PublicKeyMaterial, GeneratedKeyPairPEM), String> {
+    generate_key_pair_pem(key_type)
+}
+
+#[allow(non_snake_case)]
+pub fn PrivateKeyFromPEM(input: impl AsRef<str>) -> Result<PrivateKeyMaterial, String> {
+    private_key_from_pem(input)
+}
+
+#[allow(non_snake_case)]
+pub fn PublicKeyFromPEM(input: impl AsRef<str>) -> Result<PublicKeyMaterial, String> {
+    public_key_from_pem(input)
+}
 
 #[derive(Debug, Clone)]
 pub struct FileSessionStore {

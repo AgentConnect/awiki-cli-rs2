@@ -8056,6 +8056,62 @@ local ANP SDK plus the existing identity secure-text writer. It does not add
 OpenSSL, `native-tls`, bundled OpenSSL, HTTP/TLS crates, YAML crates, platform
 libraries, or new SQLite dependencies.
 
+## 2026-05-16 ANP SDK Key-Material Facade Helper Slice
+
+Timestamp: 2026-05-16T17:36:13Z / 2026-05-17T01:36:13+0800.
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/anpsdk -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/anpsdk.rs crates/awiki-cli/tests/anpsdk_contract.rs
+```
+
+Observed results:
+
+- `anpsdk_contract`: 16 passed, including the new key-material facade helper
+  coverage.
+- `crates/awiki-cli/src/anpsdk.rs` is 541 lines and
+  `crates/awiki-cli/tests/anpsdk_contract.rs` is 664 lines, both below the
+  default 1200-line review-size cap.
+
+Scope:
+
+- Added Go-shaped ANP facade symbols for `KeyType`, `KeyTypeSecp256r1`,
+  `KeyTypeSecp256k1`, `KeyTypeEd25519`, `KeyTypeX25519`,
+  `GeneratedKeyPairPEM`, `GenerateKeyPairPEM`, `PrivateKeyFromPEM`, and
+  `PublicKeyFromPEM`, plus Rust-style constants/functions for local use.
+- `GenerateKeyPairPEM` returns standard PKCS#8 private-key PEM and SPKI
+  public-key PEM for ed25519, secp256k1, secp256r1, and x25519 by composing
+  existing local ANP Rust SDK DID-document/key APIs. No new key-generation
+  dependency was added.
+- `PrivateKeyFromPEM` and `PublicKeyFromPEM` keep the normal runtime parser
+  behavior: only standard `PRIVATE KEY` / `PUBLIC KEY` PEM labels are accepted,
+  and legacy `ANP ...` labels are rejected. Identity legacy-key migration
+  remains the only compatibility path for legacy private labels.
+
+Boundary note: this is a facade/helper parity slice for Go
+`internal/anpsdk/registry.go`. It does not change identity key compatibility,
+message secure client execution, ANP network/default features, WebSocket
+transport, platform service behavior, or local SQLite behavior. The high-level
+message-service E2EE adapter remains tracked under the secure client rows, not
+as a simple registry alias.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The slice reuses the local `../anp/rust` path dependency with
+default features disabled and does not introduce OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, YAML crates, platform
+service libraries, or a new SQLite backend.
+
 ## 2026-05-16 Message Secure E2EE Client Adapter Slice
 
 Status: locally verified.
