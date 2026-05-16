@@ -46,6 +46,32 @@ pub struct ListenerServiceConfigPlan {
     pub env_vars: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerPlatformStatusResult {
+    Running,
+    NotRunning,
+    ErrNotInstalled,
+    ErrOther(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListenerServiceStatusForAction {
+    NewService,
+    ServiceStatus,
+    ServicePlatform,
+    ServiceName,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListenerServiceStatusForPlan {
+    pub actions: Vec<ListenerServiceStatusForAction>,
+    pub installed: bool,
+    pub running: bool,
+    pub platform: String,
+    pub service_name: String,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ListenerServiceProgramState {
     pub has_supervisor: bool,
@@ -337,6 +363,54 @@ pub fn service_config_plan_for(resolved: &Resolved, is_windows: bool) -> Listene
         options,
         env_vars,
     }
+}
+
+pub fn service_status_for_plan(
+    resolved: &Resolved,
+    platform: &str,
+    new_service_error: Option<&str>,
+    status_result: ListenerPlatformStatusResult,
+) -> ListenerServiceStatusForPlan {
+    if let Some(error) = new_service_error {
+        return ListenerServiceStatusForPlan {
+            actions: vec![ListenerServiceStatusForAction::NewService],
+            installed: false,
+            running: false,
+            platform: String::new(),
+            service_name: String::new(),
+            error: Some(error.to_string()),
+        };
+    }
+
+    let mut plan = ListenerServiceStatusForPlan {
+        actions: vec![
+            ListenerServiceStatusForAction::NewService,
+            ListenerServiceStatusForAction::ServiceStatus,
+            ListenerServiceStatusForAction::ServicePlatform,
+            ListenerServiceStatusForAction::ServiceName,
+        ],
+        installed: false,
+        running: false,
+        platform: platform.to_string(),
+        service_name: service_name_for(resolved),
+        error: None,
+    };
+
+    match status_result {
+        ListenerPlatformStatusResult::Running => {
+            plan.installed = true;
+            plan.running = true;
+        }
+        ListenerPlatformStatusResult::NotRunning => {
+            plan.installed = true;
+        }
+        ListenerPlatformStatusResult::ErrNotInstalled => {}
+        ListenerPlatformStatusResult::ErrOther(error) => {
+            plan.error = Some(error);
+        }
+    }
+
+    plan
 }
 
 pub fn service_status_ready(

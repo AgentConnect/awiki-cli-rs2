@@ -1,10 +1,11 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::runtime::listener::{self, Status};
 use awiki_cli::runtime::listener_service::{
-    self, ListenerRuntimePolicy, ListenerServiceConfigValue as ConfigValue,
-    ListenerServiceLifecycleOperation as Op, ListenerServiceProgramAction as ProgramAction,
-    ListenerServiceProgramDecision, ListenerServiceProgramRunAction, ListenerServiceProgramState,
-    ListenerServiceStatusSnapshot,
+    self, ListenerPlatformStatusResult, ListenerRuntimePolicy,
+    ListenerServiceConfigValue as ConfigValue, ListenerServiceLifecycleOperation as Op,
+    ListenerServiceProgramAction as ProgramAction, ListenerServiceProgramDecision,
+    ListenerServiceProgramRunAction, ListenerServiceProgramState, ListenerServiceStatusForAction,
+    ListenerServiceStatusForPlan, ListenerServiceStatusSnapshot,
 };
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -129,6 +130,99 @@ fn listener_service_config_plan_matches_go_new_service_config_shape() {
             .get("AWIKI_CLI_WORKSPACE_HOME_DIR")
             .expect("workspace env"),
         &spaced.paths.workspace_home_dir
+    );
+}
+
+#[test]
+fn listener_service_status_for_plan_matches_go_status_mapping() {
+    use ListenerServiceStatusForAction::{NewService, ServiceName, ServicePlatform, ServiceStatus};
+
+    let resolved = test_resolved();
+    let service_name = listener_service::service_name_for(&resolved);
+
+    assert_eq!(
+        listener_service::service_status_for_plan(
+            &resolved,
+            "linux-systemd",
+            Some("construct failed"),
+            ListenerPlatformStatusResult::Running,
+        ),
+        ListenerServiceStatusForPlan {
+            actions: vec![NewService],
+            installed: false,
+            running: false,
+            platform: String::new(),
+            service_name: String::new(),
+            error: Some("construct failed".to_string()),
+        }
+    );
+
+    assert_eq!(
+        listener_service::service_status_for_plan(
+            &resolved,
+            "linux-systemd",
+            None,
+            ListenerPlatformStatusResult::Running,
+        ),
+        ListenerServiceStatusForPlan {
+            actions: vec![NewService, ServiceStatus, ServicePlatform, ServiceName],
+            installed: true,
+            running: true,
+            platform: "linux-systemd".to_string(),
+            service_name: service_name.clone(),
+            error: None,
+        }
+    );
+
+    assert_eq!(
+        listener_service::service_status_for_plan(
+            &resolved,
+            "launchd",
+            None,
+            ListenerPlatformStatusResult::NotRunning,
+        ),
+        ListenerServiceStatusForPlan {
+            actions: vec![NewService, ServiceStatus, ServicePlatform, ServiceName],
+            installed: true,
+            running: false,
+            platform: "launchd".to_string(),
+            service_name: service_name.clone(),
+            error: None,
+        }
+    );
+
+    assert_eq!(
+        listener_service::service_status_for_plan(
+            &resolved,
+            "windows-service",
+            None,
+            ListenerPlatformStatusResult::ErrNotInstalled,
+        ),
+        ListenerServiceStatusForPlan {
+            actions: vec![NewService, ServiceStatus, ServicePlatform, ServiceName],
+            installed: false,
+            running: false,
+            platform: "windows-service".to_string(),
+            service_name: service_name.clone(),
+            error: None,
+        }
+    );
+
+    assert_eq!(
+        listener_service::service_status_for_plan(
+            &resolved,
+            "linux-systemd",
+            None,
+            ListenerPlatformStatusResult::ErrOther("permission denied".to_string()),
+        ),
+        ListenerServiceStatusForPlan {
+            actions: vec![NewService, ServiceStatus, ServicePlatform, ServiceName],
+            installed: false,
+            running: false,
+            platform: "linux-systemd".to_string(),
+            service_name,
+            error: Some("permission denied".to_string()),
+        }
     );
 }
 

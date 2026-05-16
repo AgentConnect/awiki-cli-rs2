@@ -2,6 +2,63 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Service Status Mapping Slice
+
+Timestamp: 2026-05-17T12:45:00+0800.
+
+Scope: extend the listener service helper boundary for Go
+`internal/runtime/listener/service.go` `serviceStatusFor` by modeling its
+return mapping as pure Rust data. This keeps real `servicepkg.New`,
+`svc.Status`, `svc.Platform`, and platform service-manager integration
+deferred.
+
+What changed:
+
+- Added `ListenerPlatformStatusResult` for injected platform status outcomes:
+  running, not running, `ErrNotInstalled`, and other status error.
+- Added `ListenerServiceStatusForAction` and `ListenerServiceStatusForPlan`.
+- Added `service_status_for_plan` to preserve Go branch order and return
+  shape for `newService` errors, status success, not-installed status errors,
+  other status errors, platform strings, service names, and installed/running
+  booleans.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_service_contract` passed with the new `serviceStatusFor`
+  mapping assertions.
+- Adjacent listener supervisor-init and foreground contracts passed.
+- Go focused listener service readiness/start guards passed.
+- Dependency audit matched the existing policy: no OpenSSL or `native-tls`, no
+  platform service-manager crate, no WebSocket crate, no YAML crate, and no new
+  dependency was added. Rustls/webpki/ring remain the existing TLS path, and
+  SQLite remains on the accepted `rusqlite` plus `libsqlite3-sys` path.
+- Changed Rust source/test files remain below the default 1200-line cap.
+
+Boundary note: this slice models `serviceStatusFor` result mapping only. It
+does not call `servicepkg.New`, query a real platform service, invoke
+`svc.Platform`, install/start/stop/restart/uninstall a service, or satisfy
+listener system-test acceptance.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Listener Service Config Shape Slice
 
 Timestamp: 2026-05-17T12:15:00+0800.
