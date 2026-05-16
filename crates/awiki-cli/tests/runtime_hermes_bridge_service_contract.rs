@@ -1,7 +1,7 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::runtime::hermes_bridge::{
-    self, BridgeApplyDecision, BridgeStatus, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION,
-    SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
+    self, BridgeApplyDecision, BridgeConfig, BridgeStatus, RouteState, DEFAULT_WEBHOOK_PORT,
+    SERVICE_ARGUMENTS, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -68,6 +68,39 @@ fn hermes_bridge_service_config_plan_matches_go_new_service_config() {
 
     let windows_plan = hermes_bridge::service_config_plan_for(&resolved, "/tmp/hermes-home", true);
     assert_eq!(windows_plan.working_directory, "");
+}
+
+#[test]
+fn hermes_bridge_adapter_command_plan_matches_go_service_program_start() {
+    let config = test_bridge_config("/workspace/.hermes");
+    let plan = hermes_bridge::adapter_command_plan_for(&config);
+
+    assert_eq!(plan.executable, "/usr/bin/python3");
+    assert_eq!(
+        plan.arguments,
+        vec![
+            "/opt/awiki/scripts/hermes_notify_adapter.py",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8765",
+            "--notify-secret",
+            "notify-secret",
+            "--hermes-webhook-url",
+            "http://127.0.0.1:8644/webhooks/notify",
+            "--hermes-route-secret",
+            "route-secret",
+            "--log-level",
+            "INFO",
+        ]
+    );
+    assert_eq!(plan.env_hermes_home.as_deref(), Some("/workspace/.hermes"));
+    assert!(plan.stdout_inherits_parent);
+    assert!(plan.stderr_inherits_parent);
+
+    let no_home = test_bridge_config("");
+    let plan = hermes_bridge::adapter_command_plan_for(&no_home);
+    assert_eq!(plan.env_hermes_home, None);
 }
 
 #[test]
@@ -288,4 +321,47 @@ fn test_resolved() -> Resolved {
 
 fn path_string(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn test_bridge_config(hermes_home: &str) -> BridgeConfig {
+    BridgeConfig {
+        notify_url: "http://127.0.0.1:8765/notify/host-event".to_string(),
+        health_url: "http://127.0.0.1:8765/healthz".to_string(),
+        adapter_host: "127.0.0.1".to_string(),
+        adapter_port: 8765,
+        notify_secret: "notify-secret".to_string(),
+        notify_secret_source: "config_file".to_string(),
+        hermes_home: hermes_home.to_string(),
+        hermes_config_file: "/workspace/.hermes/config.yaml".to_string(),
+        hermes_webhook_url: "http://127.0.0.1:8644/webhooks/notify".to_string(),
+        route_name: "notify".to_string(),
+        route_secret: "route-secret".to_string(),
+        route_state: test_route_state(hermes_home),
+        adapter_script: "/opt/awiki/scripts/hermes_notify_adapter.py".to_string(),
+        python_executable: "/usr/bin/python3".to_string(),
+    }
+}
+
+fn test_route_state(hermes_home: &str) -> RouteState {
+    RouteState {
+        hermes_home: hermes_home.to_string(),
+        config_file: "/workspace/.hermes/config.yaml".to_string(),
+        env_file: "/workspace/.hermes/.env".to_string(),
+        config_exists: true,
+        webhook_enabled: true,
+        webhook_port: DEFAULT_WEBHOOK_PORT,
+        route_name: "notify".to_string(),
+        route_configured: true,
+        route_secret: "route-secret".to_string(),
+        route_secret_configured: true,
+        deliver: "feishu".to_string(),
+        deliver_uses_home_channel: true,
+        home_channel_key: "FEISHU_HOME_CHANNEL".to_string(),
+        home_channel: "chat-id".to_string(),
+        home_channel_configured: true,
+        home_channel_supported: true,
+        feishu_credentials_configured: true,
+        notify_webhook_url: "http://127.0.0.1:8644/webhooks/notify".to_string(),
+        warnings: Vec::new(),
+    }
 }

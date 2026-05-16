@@ -9705,3 +9705,64 @@ Windows service crates, `reqwest`, `hyper`, WebSocket crates, async runtimes,
 OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, ANP SDK default/network
 features, or a new SQLite backend. TLS remains Rustls-first, and the approved
 SQLite lane remains `rusqlite + bundled`.
+
+## 2026-05-16 Hermes bridge adapter command plan extension
+
+Timestamp: 2026-05-16T15:09:48Z / 2026-05-16T23:09:48+0800.
+
+Scope: extend the Hermes bridge service helper slice with a pure command plan
+for Go `serviceProgram.Start` without starting the adapter process or selecting
+platform service-management dependencies.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+```
+
+Observed results:
+
+- `cargo fmt --check` passed.
+- `cargo check -p awiki-cli --locked` passed.
+- `runtime_hermes_bridge_service_contract`: 8 passed.
+- `runtime_hermes_bridge_contract`: 10 passed.
+- Go `./internal/runtime/hermesbridge`: passed.
+- Structure check, whitespace check, and dependency audit passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `runtime/hermes_bridge.rs` 880 lines,
+  `runtime/hermes_bridge/route.rs` 686 lines,
+  `runtime/hermes_bridge/service.rs` 189 lines, and
+  `runtime_hermes_bridge_service_contract.rs` 367 lines. No file-size
+  exception is needed.
+
+Implemented behavior:
+
+- Adds `BridgeAdapterCommandPlan` and
+  `runtime::hermes_bridge::adapter_command_plan_for`.
+- Mirrors the Go `exec.CommandContext` shape used by
+  `internal/runtime/hermesbridge/service.go` `serviceProgram.Start`:
+  Python executable, adapter script, `--host`, `--port`, `--notify-secret`,
+  `--hermes-webhook-url`, `--hermes-route-secret`, and `--log-level INFO`.
+- Preserves Go's environment behavior by planning `HERMES_HOME` only when
+  `BridgeConfig.HermesHome` is nonempty.
+- Records Go stdout/stderr behavior as parent-inherited stream flags.
+
+Boundary note: this is still a pure helper. It does not implement
+`exec.CommandContext`, adapter process start/wait/stop/kill, cancellation,
+15-second stop timeout, `RunService`, platform service install/start/stop,
+owned HTTP health probing, non-dry-run Hermes setup, or awiki-system-test
+Hermes setup acceptance.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This extension reuses existing structs/std types and does not add a
+process-supervision crate, platform service library, HTTP/TLS client,
+OpenSSL/native-tls path, YAML crate, WebSocket crate, ANP SDK network feature,
+or SQLite dependency.

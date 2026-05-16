@@ -1,4 +1,4 @@
-use super::BridgeStatus;
+use super::{BridgeConfig, BridgeStatus};
 use crate::config::Resolved;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -25,6 +25,15 @@ pub struct BridgeServiceConfigPlan {
     pub on_failure_delay_duration: String,
     pub log_output: bool,
     pub log_directory: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeAdapterCommandPlan {
+    pub executable: String,
+    pub arguments: Vec<String>,
+    pub env_hermes_home: Option<String>,
+    pub stdout_inherits_parent: bool,
+    pub stderr_inherits_parent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +95,30 @@ pub fn service_config_plan_for(
         on_failure_delay_duration: "1s".to_string(),
         log_output: true,
         log_directory: resolved.paths.logs_dir.clone(),
+    }
+}
+
+pub fn adapter_command_plan_for(config: &BridgeConfig) -> BridgeAdapterCommandPlan {
+    BridgeAdapterCommandPlan {
+        executable: config.python_executable.clone(),
+        arguments: vec![
+            config.adapter_script.clone(),
+            "--host".to_string(),
+            config.adapter_host.clone(),
+            "--port".to_string(),
+            config.adapter_port.to_string(),
+            "--notify-secret".to_string(),
+            config.notify_secret.clone(),
+            "--hermes-webhook-url".to_string(),
+            config.hermes_webhook_url.clone(),
+            "--hermes-route-secret".to_string(),
+            config.route_secret.clone(),
+            "--log-level".to_string(),
+            "INFO".to_string(),
+        ],
+        env_hermes_home: (!config.hermes_home.is_empty()).then(|| config.hermes_home.clone()),
+        stdout_inherits_parent: true,
+        stderr_inherits_parent: true,
     }
 }
 

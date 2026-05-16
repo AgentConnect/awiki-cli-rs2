@@ -13,9 +13,10 @@ mod service;
 
 pub use route::{ensure_route, EnsureRouteOptions};
 pub use service::{
-    apply_decision_for, bridge_health_available_with, bridge_status_ready,
-    running_in_bridge_service_mode, running_in_bridge_service_mode_with, service_config_plan_for,
-    service_display_name_for, service_name_for, wait_for_bridge_status_with, BridgeApplyDecision,
+    adapter_command_plan_for, apply_decision_for, bridge_health_available_with,
+    bridge_status_ready, running_in_bridge_service_mode, running_in_bridge_service_mode_with,
+    service_config_plan_for, service_display_name_for, service_name_for,
+    wait_for_bridge_status_with, BridgeAdapterCommandPlan, BridgeApplyDecision,
     BridgeServiceConfigPlan, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX,
     SERVICE_NAME_PREFIX,
 };
