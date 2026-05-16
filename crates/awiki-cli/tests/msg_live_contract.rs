@@ -1,4 +1,7 @@
-use serde_json::{json, Value};
+use awiki_cli::config::Paths;
+use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
+use awiki_cli::message::new_secure_e2ee_client_for_record;
+use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -82,6 +85,98 @@ fn msg_send_live_posts_direct_rpc_and_persists_outbound_row_like_go() {
     assert_eq!(rows[0]["content"], "hello direct");
     assert_eq!(rows[0]["direction"], 1);
     assert_eq!(rows[0]["is_read"], 1);
+}
+
+#[test]
+fn msg_send_secure_on_live_posts_e2ee_rpc_and_persists_secure_row_like_go() {
+    let workspace = TempDir::new("msg-live-secure-send").expect("workspace");
+    write_msg_config(workspace.path(), "https://placeholder.invalid");
+    let manager = Manager::new(test_paths(workspace.path()));
+    let alice = register_generated_msg_identity(&manager, "alice-secure", "alice", "jwt-alice");
+    let bob = register_generated_msg_identity(&manager, "bob-secure", "bob", "jwt-bob");
+    let mut bob_seed = new_secure_e2ee_client_for_record(
+        Some(&manager),
+        Some(&bob),
+        Box::new(|method, _params| {
+            assert_eq!(method, "direct.e2ee.publish_prekey_bundle");
+            Ok(Map::new())
+        }),
+    )
+    .expect("construct bob seed client");
+    let bob_bundle = bob_seed
+        .ensure_fresh_prekey_bundle()
+        .expect("seed bob prekey bundle");
+    let bob_opk = first_one_time_prekey(&manager, "bob-secure");
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "prekey_bundle": bob_bundle,
+            "one_time_prekey": bob_opk,
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "accepted_at": "2026-04-07T01:02:03Z",
+            "delivery_state": "accepted"
+        }))),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-secure",
+            "msg",
+            "send",
+            "--to",
+            &bob.did,
+            "--text",
+            "hello secure live",
+            "--secure",
+            "on",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Sent a direct text message");
+    assert_eq!(envelope["data"]["action"], "send_message");
+    assert_eq!(envelope["data"]["target"]["did"], bob.did);
+    assert_eq!(envelope["data"]["message"]["secure"], true);
+    let message_id = envelope["data"]["message"]["id"]
+        .as_str()
+        .expect("message id");
+    assert!(message_id.starts_with("msg-"));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let bodies = requests
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).expect("json body"))
+        .collect::<Vec<_>>();
+    assert_eq!(bodies[0]["method"], "direct.e2ee.publish_prekey_bundle");
+    assert_eq!(bodies[1]["method"], "direct.e2ee.publish_prekey_bundle");
+    assert_eq!(bodies[2]["method"], "direct.e2ee.get_prekey_bundle");
+    assert_eq!(bodies[2]["params"]["body"]["target_did"], bob.did);
+    assert_eq!(bodies[3]["method"], "direct.send");
+    assert_eq!(bodies[3]["params"]["meta"]["sender_did"], alice.did);
+    assert_eq!(bodies[3]["params"]["meta"]["target"]["did"], bob.did);
+    assert_eq!(
+        bodies[3]["params"]["meta"]["content_type"],
+        "application/anp-direct-init+json"
+    );
+    assert_eq!(bodies[3]["params"]["meta"]["message_id"], message_id);
+    assert_eq!(bodies[3]["params"]["meta"]["operation_id"], message_id);
+    assert_eq!(bodies[3]["params"].get("auth"), None);
+
+    let rows = query_rows(
+        workspace.path(),
+        &format!("SELECT msg_id, content, is_e2ee FROM messages WHERE msg_id = '{message_id}'"),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["content"], "hello secure live");
+    assert_eq!(rows[0]["is_e2ee"], 1);
 }
 
 #[test]
@@ -451,12 +546,86 @@ fn register_ready_msg_identity(
     .unwrap();
 }
 
+fn register_generated_msg_identity(
+    manager: &Manager,
+    identity_name: &str,
+    handle: &str,
+    jwt_token: &str,
+) -> awiki_cli::identity::types::StoredIdentity {
+    let generated = generate_identity(
+        "awiki.ai",
+        "https://awiki.ai/anp-im/rpc",
+        "did:wba:awiki.ai",
+    )
+    .expect("generate identity");
+    manager
+        .save(SaveInput {
+            identity_name: identity_name.to_string(),
+            did: generated.did,
+            unique_id: generated.unique_id,
+            user_id: format!("user-{handle}"),
+            display_name: identity_name.to_string(),
+            handle: handle.to_string(),
+            full_handle: format!("{handle}.awiki.ai"),
+            jwt_token: jwt_token.to_string(),
+            did_document: Some(generated.did_document),
+            key1_private_pem: generated.key1_private_pem,
+            key1_public_pem: generated.key1_public_pem,
+            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+            ..SaveInput::default()
+        })
+        .expect("save generated message identity")
+}
+
 fn write_msg_config(workspace: &Path, base_url: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
         format!("services:\n  service_base_url: {base_url}\n"),
     )
     .unwrap();
+}
+
+fn test_paths(workspace: &Path) -> Paths {
+    for directory in ["data", "runtime", "cache", "logs"] {
+        std::fs::create_dir_all(workspace.join(directory)).expect("create workspace subdir");
+    }
+    Paths {
+        workspace_home_dir: path_string(workspace),
+        root_dir: path_string(workspace),
+        config_dir: path_string(workspace),
+        data_dir: path_string(&workspace.join("data")),
+        state_dir: path_string(&workspace.join("runtime")),
+        cache_dir: path_string(&workspace.join("cache")),
+        logs_dir: path_string(&workspace.join("logs")),
+        config_file: path_string(&workspace.join("config.yaml")),
+        identity_dir: path_string(&workspace.join("identities")),
+        database_file: path_string(&workspace.join("data").join("awiki-cli.db")),
+        legacy_credentials_dir: path_string(&workspace.join("legacy-credentials")),
+        legacy_data_dir: path_string(&workspace.join("legacy-data")),
+    }
+}
+
+fn first_one_time_prekey(
+    manager: &Manager,
+    identity_name: &str,
+) -> awiki_cli::anpsdk::OneTimePrekey {
+    let paths = manager
+        .paths_for_identity(identity_name)
+        .expect("identity paths");
+    let mut prekeys = std::fs::read_dir(Path::new(&paths.identity_dir).join("p5-one-time-prekeys"))
+        .expect("read one-time prekey root")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .map(|path| {
+            serde_json::from_slice(&std::fs::read(&path).expect("read one-time prekey json"))
+                .expect("parse one-time prekey json")
+        })
+        .collect::<Vec<_>>();
+    prekeys
+        .sort_by(|left: &awiki_cli::anpsdk::OneTimePrekey, right| left.key_id.cmp(&right.key_id));
+    prekeys.into_iter().next().expect("at least one OPK")
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -508,6 +677,10 @@ fn success_json(output: &Output) -> Value {
 
 fn request_body(raw: &str) -> &str {
     raw.split("\r\n\r\n").nth(1).unwrap_or_default()
+}
+
+fn path_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
 }
 
 fn assert_contains_text(haystack: &str, needle: &str) {

@@ -547,3 +547,21 @@ Do not mix that optimization with the 1:1 translation lane.
   crates, async runtimes, YAML crates, platform service libraries, new E2EE
   provider crates, or a new SQLite backend. TLS remains Rustls-first for later
   WebSocket/runtime transport work.
+
+## Direct E2EE Production Send Notes
+
+2026-05-16:
+
+- Wired production `msg send --secure on` to the existing high-level direct E2EE
+  adapter and the existing Rustls/std authenticated message HTTP client without
+  adding a new crate, changing Cargo manifests, or enabling local ANP SDK
+  default/network features.
+- The slice reuses the same selected dependency stack as the incoming
+  application/ACK slices: local `../anp/rust` E2EE primitives and file stores,
+  existing authsdk/session/Rustls HTTP transport, existing `serde_json`, existing
+  store helpers, and the approved `rusqlite + bundled` SQLite lane.
+- No TLS/WebSocket dependency decision changed. This slice does not add
+  OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
+  async runtimes, YAML crates, platform service libraries, new E2EE provider
+  crates, or a new SQLite backend. TLS remains Rustls-first for later
+  WebSocket/local bridge secure transport work.

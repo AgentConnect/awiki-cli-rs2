@@ -421,7 +421,6 @@ fn is_bool_local_flag(name: &str) -> bool {
             | "all"
             | "wait"
             | "self"
-            | "secure"
             | "unread"
             | "mark-read"
             | "is-public"

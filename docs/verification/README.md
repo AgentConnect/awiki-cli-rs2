@@ -7318,3 +7318,75 @@ approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
 runtimes, YAML crates, platform service libraries, new E2EE provider
 dependencies, or a new SQLite backend. TLS remains Rustls-first for later
 runtime/WebSocket transport work.
+
+## 2026-05-16 Message Secure Direct Production Send Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_send_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/message -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation' -count=1
+```
+
+Result: passed.
+
+Observed results:
+
+- `message_secure_send_contract`: 4 passed.
+- `msg_contract`: 5 passed.
+- `msg_live_contract`: 5 passed.
+- `message_secure_client_contract`: 14 passed.
+- `message_secure_outbox_flush_contract`: 23 passed.
+- `cargo check`, structure check, and whitespace check passed.
+- Dependency audit showed only existing allowed crypto/TLS/SQLite build
+  dependencies: `rustls`, `webpki`, `ring`, `base64`, `sha2`, approved
+  `rusqlite`/`libsqlite3-sys`, and build helpers `cc`, `pkg-config`, `vcpkg`;
+  no OpenSSL, `native-tls`, `reqwest`, `hyper`, WebSocket, YAML, or platform
+  service dependency was introduced.
+- Go reference tests in `./internal/message` passed.
+
+Scope:
+
+- Wires `msg send --secure on` through the production direct send path instead
+  of returning `SecureNotSupported`.
+- Preserves Go's string-valued `--secure on` and `--secure=on` CLI parsing and
+  passes `SecureMode` into `SendRequest`.
+- Preserves Go's secure send ordering: entry-level target/text validation before
+  `SecureMode == "on"` routing, active identity/key-material gate inside the
+  secure path, target resolution, auth/RPC transport initialization,
+  best-effort prekey publish warning collection, E2EE client construction,
+  `SendText`, then success persistence or pending-confirmation queue.
+- Reuses the verified `MessageServiceE2EEClient` adapter and existing Rustls/std
+  authenticated `/im/rpc` client for production secure RPCs.
+- Adds a local fake-server live smoke that proves CLI production secure send
+  emits `direct.e2ee.publish_prekey_bundle`, `direct.e2ee.get_prekey_bundle`,
+  and `direct.send` with `application/anp-direct-init+json`, returns
+  `message.secure=true`, and persists `messages.is_e2ee=1`.
+
+Boundary note: this slice still excludes production `msg secure retry` sender
+wiring, `SecureInit`, `SecureRepair`, WebSocket/local bridge secure execution,
+runtime listener live `ProcessIncoming`, and awiki-system-test secure-direct
+acceptance.
+
+Parallelism note: two read-only Native Agents mapped Go behavior and Rust gaps
+for production secure send. No code-writing Native Agent changed files.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing Rustls/std authsdk/message client,
+local ANP Rust E2EE adapter, secure outbox/store helpers, and the approved
+`rusqlite + bundled` SQLite path. It does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
+crates, platform service libraries, new E2EE provider dependencies, or a new
+SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
+work.

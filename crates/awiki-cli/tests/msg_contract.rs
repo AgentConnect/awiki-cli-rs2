@@ -83,6 +83,50 @@ fn msg_dry_run_plans_match_go_contracts() {
         json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
     );
 
+    let secure_direct = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--text",
+            "hello secure",
+            "--secure",
+            "on",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(secure_direct["summary"], "Dry run: message send planned");
+    assert_eq!(secure_direct["data"]["plan"]["action"], "direct.send");
+    assert_eq!(secure_direct["data"]["plan"]["message_type"], "text");
+    assert_eq!(
+        secure_direct["data"]["plan"]["target"]["handle"],
+        "bob.awiki.ai"
+    );
+
+    let secure_direct_equals = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--text",
+            "hello secure",
+            "--secure=on",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(
+        secure_direct_equals["data"]["plan"],
+        secure_direct["data"]["plan"]
+    );
+
     let attachment_send = success_json(&awiki_cmd(
         &[
             "--dry-run",

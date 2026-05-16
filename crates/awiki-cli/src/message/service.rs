@@ -3,7 +3,8 @@ use super::types::{
 };
 use super::{
     build_direct_send_rpc_params, build_history_rpc_params, build_inbox_rpc_params,
-    build_mark_read_rpc_params, content_type_for_message_type, Client,
+    build_mark_read_rpc_params, content_type_for_message_type, new_secure_e2ee_client_for_record,
+    Client, MessageServiceE2EEClient,
 };
 use crate::authsdk::Session;
 use crate::config::{join_base_url, Resolved};
@@ -89,8 +90,8 @@ pub fn send(
     if request.text.trim().is_empty() {
         return Err(MessageError::TextRequired);
     }
-    if request.secure_mode.trim().eq_ignore_ascii_case("on") {
-        return Err(MessageError::SecureNotSupported);
+    if request.secure_mode == "on" {
+        return send_secure_direct(resolved, manager, request);
     }
 
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
@@ -118,9 +119,36 @@ pub fn send(
 pub fn send_secure_direct_with_sender(
     resolved: &Resolved,
     manager: &Manager,
-    mut request: SendRequest,
+    request: SendRequest,
+    sender: impl FnMut(SecureDirectSendRequest) -> SecureDirectSendOutcome,
+) -> Result<CommandResult, MessageError> {
+    send_secure_direct_with_sender_and_warnings(resolved, manager, request, Vec::new(), sender)
+}
+
+pub(crate) fn send_secure_direct_with_sender_and_warnings(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: SendRequest,
+    initial_warnings: Vec<String>,
     mut sender: impl FnMut(SecureDirectSendRequest) -> SecureDirectSendOutcome,
 ) -> Result<CommandResult, MessageError> {
+    let (record, target) = prepare_secure_direct_send(resolved, manager, &request)?;
+    send_secure_direct_resolved(
+        resolved,
+        manager,
+        request,
+        &record,
+        target,
+        initial_warnings,
+        &mut sender,
+    )
+}
+
+fn prepare_secure_direct_send(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: &SendRequest,
+) -> Result<(StoredIdentity, TargetResolution), MessageError> {
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
     if record.e2ee_agreement_private_pem.is_empty() || record.key1_private_pem.is_empty() {
         return Err(MessageError::Internal(
@@ -135,8 +163,21 @@ pub fn send_secure_direct_with_sender(
     }
 
     let target = resolve_target(resolved, &request.target)?;
+    Ok((record, target))
+}
+
+fn send_secure_direct_resolved(
+    resolved: &Resolved,
+    manager: &Manager,
+    mut request: SendRequest,
+    record: &StoredIdentity,
+    target: TargetResolution,
+    initial_warnings: Vec<String>,
+    sender: &mut impl FnMut(SecureDirectSendRequest) -> SecureDirectSendOutcome,
+) -> Result<CommandResult, MessageError> {
     let message_type = default_message_type(&request.message_type).to_string();
     let generated_message_id = format!("msg-{}", super::wire::generate_operation_id());
+    let warnings = super::compact_warnings(initial_warnings);
     let outcome = sender(SecureDirectSendRequest {
         target_did: target.did.clone(),
         target_handle: target.handle.clone(),
@@ -204,7 +245,7 @@ pub fn send_secure_direct_with_sender(
                     },
                 }),
                 summary: "Queued secure direct message pending peer confirmation".to_string(),
-                warnings: Vec::new(),
+                warnings,
             });
         }
         SecureDirectSendOutcome::Error(err) => return Err(MessageError::Internal(err)),
@@ -212,7 +253,65 @@ pub fn send_secure_direct_with_sender(
 
     request.target = target.did.clone();
     request.secure_mode = "on".to_string();
-    persist_send_result(resolved, &record, &target, &request, &result)
+    persist_send_result(resolved, &record, &target, &request, &result).map(|mut result| {
+        result.warnings = super::compact_warnings(
+            warnings
+                .into_iter()
+                .chain(result.warnings)
+                .collect::<Vec<_>>(),
+        );
+        result
+    })
+}
+
+fn send_secure_direct(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: SendRequest,
+) -> Result<CommandResult, MessageError> {
+    let (record, target) = prepare_secure_direct_send(resolved, manager, &request)?;
+    let auth = auth_session(resolved, manager, &record)?;
+    let client = Client::new(resolved)?;
+    let rpc = secure_rpc(client, auth);
+    let mut e2ee_client = new_secure_e2ee_client_for_record(Some(manager), Some(&record), rpc)
+        .map_err(MessageError::Internal)?;
+    let warnings = publish_secure_prekeys_with_client(&mut e2ee_client);
+    send_secure_direct_resolved(
+        resolved,
+        manager,
+        request,
+        &record,
+        target,
+        warnings,
+        &mut |request| match e2ee_client.send_text(
+            &request.target_did,
+            &request.plaintext,
+            &request.operation_id,
+            &request.message_id,
+        ) {
+            Ok(result) => SecureDirectSendOutcome::Success {
+                accepted: bool_value(result.get("accepted")),
+                message_id: string_value(result.get("message_id")),
+                operation_id: string_value(result.get("operation_id")),
+                target_did: string_value(result.get("target_did")),
+                accepted_at: string_value(result.get("accepted_at")),
+                final_acceptance: bool_value(result.get("final_acceptance")),
+                delivery_state: string_value(result.get("delivery_state")),
+            },
+            Err(err) => SecureDirectSendOutcome::Error(err),
+        },
+    )
+}
+
+pub(crate) fn publish_secure_prekeys_with_client(
+    client: &mut MessageServiceE2EEClient,
+) -> Vec<String> {
+    match client.publish_prekey_bundle() {
+        Ok(_) => Vec::new(),
+        Err(err) => {
+            super::compact_warnings(vec![format!("Failed to publish secure prekeys: {err}")])
+        }
+    }
 }
 
 pub fn inbox(
@@ -597,6 +696,20 @@ fn persist_send_result(
         }),
         summary: format!("Sent a direct {message_type} message"),
         warnings,
+    })
+}
+
+fn secure_rpc(client: Client, mut auth: Session) -> Box<super::SecureE2EERpc> {
+    Box::new(move |method, params| {
+        client
+            .authenticated_rpc_call_profile::<serde_json::Map<String, Value>, _>(
+                Profile::RpcDefault,
+                MESSAGE_RPC_ENDPOINT,
+                method,
+                params,
+                &mut auth,
+            )
+            .map_err(|err| err.to_string())
     })
 }
 

@@ -15,6 +15,7 @@ impl App {
         let file_path = string_flag(command, "file");
         let mime_type = string_flag(command, "mime-type");
         let message_type = string_flag(command, "type");
+        let secure_mode = string_flag(command, "secure");
         let has_attachment = !file_path.trim().is_empty();
 
         if group.trim().is_empty() && to.trim().is_empty() {
@@ -67,6 +68,7 @@ impl App {
                     group,
                     text,
                     message_type,
+                    secure_mode,
                     file_path,
                     mime_type,
                     ..message::SendRequest::default()

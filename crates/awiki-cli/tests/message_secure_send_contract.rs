@@ -1,7 +1,8 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
 use awiki_cli::message::{
-    send_secure_direct_with_sender, SecureDirectSendOutcome, SecureDirectSendRequest, SendRequest,
+    send, send_secure_direct_with_sender, SecureDirectSendOutcome, SecureDirectSendRequest,
+    SendRequest,
 };
 use awiki_cli::store;
 use serde_json::Value;
@@ -39,6 +40,26 @@ fn secure_send_with_sender_requires_e2ee_keys_before_sender_or_store_side_effect
     )
     .expect("list e2ee outbox");
     assert!(rows.is_empty());
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn production_send_routes_secure_on_to_secure_key_gate_like_go() {
+    let (resolved, manager, root) = test_context("secure-send-production-route");
+    save_identity_without_e2ee_keys(&manager, "alice", "alice-user", "alice");
+
+    let err = send(
+        &resolved,
+        &manager,
+        send_request("alice", "did:wba:awiki.ai:user:bob:e1_bob", "hello secure"),
+    )
+    .expect_err("secure production send should reach key gate");
+
+    assert_eq!(
+        err.to_string(),
+        "secure direct messaging requires DID signing and X25519 E2EE private keys"
+    );
 
     std::fs::remove_dir_all(root).expect("remove temp test root");
 }
