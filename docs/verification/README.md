@@ -10688,6 +10688,43 @@ docs-maintenance slices.
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged.
 
+## 2026-05-16 Installation guide asset slice
+
+Timestamp: 2026-05-16T17:23:43Z / 2026-05-17T01:23:43+0800.
+
+Scope: copy the Go `docs/installation.md` installation and local-development
+guide into the Rust repository as a byte-identical asset.
+
+Commands run:
+
+```text
+cp -p ../awiki-cli/docs/installation.md docs/installation.md
+cmp -s ../awiki-cli/docs/installation.md docs/installation.md
+stat -c '%a %n' docs/installation.md
+wc -l docs/installation.md
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `docs/installation.md` is byte-identical to the Go repository source.
+- Permissions were preserved from the Go repository: `664`.
+- The installation guide is 591 lines, below the default 1200-line review-size
+  cap, so no file-size exception is needed.
+
+Boundary note: this is a documentation asset parity slice. The source guide is
+Go-specific, including Go 1.22, pure-Go SQLite, Go build/test commands, and Go
+release assumptions. This Rust port preserves the wording for source parity and
+does not change Rust dependency choices, Cargo metadata, SQLite implementation,
+TLS policy, runtime behavior, package scripts, or release packaging.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
+
 ## 2026-05-16 Config template asset slice
 
 Timestamp: 2026-05-16T17:02:08Z / 2026-05-17T01:02:08+0800.
