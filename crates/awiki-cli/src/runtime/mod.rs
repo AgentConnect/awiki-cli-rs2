@@ -204,6 +204,11 @@ pub fn uninstall_listener(resolved: &Resolved) -> anyhow::Result<Value> {
 pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
     let settings = effective_openclaw_settings(resolved);
     let routes = openclaw_routes::load_routes(&resolved.paths)?;
+    let hermes_notify_url = resolved.host_notify_hermes_notify_url.trim();
+    let (_, hermes_secret_source) = hermes_host_notify::resolve_hermes_notify_secret_with_source(
+        Some(resolved),
+        hermes_notify_url,
+    );
     Ok(json!({
         "enabled": resolved.host_notify_enabled,
         "sink": resolved.host_notify_sink,
@@ -223,8 +228,8 @@ pub fn host_notify_config_view(resolved: &Resolved) -> anyhow::Result<Value> {
         "hermes": {
             "notify_url": resolved.host_notify_hermes_notify_url,
             "deliver": if resolved.host_notify_hermes_deliver.is_empty() { hermes_bridge::DEFAULT_DELIVER_TARGET } else { &resolved.host_notify_hermes_deliver },
-            "secret_configured": false,
-            "secret_source": "unset",
+            "secret_configured": hermes_secret_source != "unset",
+            "secret_source": hermes_secret_source,
             "secret_env_fallback": "AWIKI_HOST_NOTIFY_HERMES_SECRET",
             "secret_env_legacy": hermes_host_notify::LEGACY_WEBHOOK_NOTIFY_SECRET_ENV,
         }

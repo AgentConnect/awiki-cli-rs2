@@ -194,6 +194,8 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "runtime.host-notify.openclaw.route.remove" => {
             app.run_runtime_host_notify_openclaw_route_remove(command)
         }
+        "runtime.host-notify.hermes.guide" => app.run_runtime_host_notify_hermes_guide(command),
+        "runtime.host-notify.hermes.status" => app.run_runtime_host_notify_hermes_status(),
         "debug.db.query" => app.run_debug_db_query(command),
         "debug.db.import-v1" => app.run_debug_db_import_v1(command),
         "debug.db.handle-history" => app.run_debug_db_handle_history(command),
@@ -322,6 +324,12 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         }
         ["runtime", "host-notify", "openclaw", "route", "remove", ..] => {
             "runtime.host-notify.openclaw.route.remove"
+        }
+        ["runtime", "host-notify", "hermes" | "webhook", "guide", ..] => {
+            "runtime.host-notify.hermes.guide"
+        }
+        ["runtime", "host-notify", "hermes" | "webhook", "status", ..] => {
+            "runtime.host-notify.hermes.status"
         }
         ["runtime", "host-notify", "hermes", "bridge", "service-run", ..] => {
             "runtime.host-notify.hermes.bridge.service-run"

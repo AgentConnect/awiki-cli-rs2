@@ -1,8 +1,13 @@
+use crate::config::Resolved;
+use crate::runtime::hermes_host_notify;
 use anyhow::Context;
+use serde::Serialize;
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_WEBHOOK_PORT: u32 = 8644;
 pub const DEFAULT_WEBHOOK_ROUTE_NAME: &str = "notify";
@@ -147,6 +152,69 @@ pub struct LocalNotifyUrl {
     pub port: u32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteState {
+    pub hermes_home: String,
+    pub config_file: String,
+    pub env_file: String,
+    pub config_exists: bool,
+    pub webhook_enabled: bool,
+    pub webhook_port: u32,
+    pub route_name: String,
+    pub route_configured: bool,
+    #[serde(skip_serializing)]
+    pub route_secret: String,
+    pub route_secret_configured: bool,
+    pub deliver: String,
+    pub deliver_uses_home_channel: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub home_channel_key: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub home_channel: String,
+    pub home_channel_configured: bool,
+    pub home_channel_supported: bool,
+    pub feishu_credentials_configured: bool,
+    pub notify_webhook_url: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BridgeConfig {
+    pub notify_url: String,
+    pub health_url: String,
+    pub adapter_host: String,
+    pub adapter_port: u32,
+    #[serde(skip_serializing)]
+    pub notify_secret: String,
+    pub notify_secret_source: String,
+    pub hermes_home: String,
+    pub hermes_config_file: String,
+    pub hermes_webhook_url: String,
+    pub route_name: String,
+    #[serde(skip_serializing)]
+    pub route_secret: String,
+    pub route_state: RouteState,
+    pub adapter_script: String,
+    pub python_executable: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BridgeStatus {
+    pub service_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub service_platform: String,
+    pub installed: bool,
+    pub running: bool,
+    pub bridge_available: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub health_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<BridgeConfig>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
 pub fn default_notify_prompt() -> &'static str {
     DEFAULT_NOTIFY_PROMPT.trim()
 }
@@ -281,6 +349,205 @@ pub fn read_env_file(path: impl AsRef<Path>) -> std::io::Result<BTreeMap<String,
         );
     }
     Ok(values)
+}
+
+pub fn resolve_hermes_home() -> anyhow::Result<String> {
+    if let Ok(value) = env::var("HERMES_HOME") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return Ok(value.to_string());
+        }
+    }
+    let home = env::var("HOME").context("resolve user home: HOME is not set")?;
+    Ok(Path::new(home.trim())
+        .join(".hermes")
+        .to_string_lossy()
+        .into_owned())
+}
+
+pub fn inspect_route(home: &str, route_name: &str) -> anyhow::Result<RouteState> {
+    let route_name = default_string(route_name, DEFAULT_WEBHOOK_ROUTE_NAME);
+    let config_path = Path::new(home).join("config.yaml");
+    let env_path = Path::new(home).join(".env");
+    let mut state = RouteState {
+        hermes_home: home.to_string(),
+        config_file: config_path.to_string_lossy().into_owned(),
+        env_file: env_path.to_string_lossy().into_owned(),
+        config_exists: false,
+        webhook_enabled: false,
+        webhook_port: DEFAULT_WEBHOOK_PORT,
+        route_name: route_name.clone(),
+        route_configured: false,
+        route_secret: String::new(),
+        route_secret_configured: false,
+        deliver: String::new(),
+        deliver_uses_home_channel: true,
+        home_channel_key: String::new(),
+        home_channel: String::new(),
+        home_channel_configured: false,
+        home_channel_supported: false,
+        feishu_credentials_configured: false,
+        notify_webhook_url: String::new(),
+        warnings: Vec::new(),
+    };
+
+    let fields = match fs::read_to_string(&config_path) {
+        Ok(raw) => {
+            state.config_exists = true;
+            parse_yaml_scalar_fields(&raw)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(err) => {
+            anyhow::bail!("read Hermes config.yaml: {err}");
+        }
+    };
+
+    state.webhook_enabled = bool_field(&fields, &["platforms", "webhook", "enabled"], false);
+    state.webhook_port = int_field(
+        &fields,
+        &["platforms", "webhook", "extra", "port"],
+        DEFAULT_WEBHOOK_PORT,
+    );
+    let route_prefix = vec![
+        "platforms".to_string(),
+        "webhook".to_string(),
+        "extra".to_string(),
+        "routes".to_string(),
+        route_name.clone(),
+    ];
+    state.route_configured = fields
+        .keys()
+        .any(|path| path.len() > route_prefix.len() && path.starts_with(&route_prefix));
+    state.route_secret = string_field_with_prefix(&fields, &route_prefix, "secret");
+    state.route_secret_configured = !state.route_secret.trim().is_empty();
+    state.deliver = string_field_with_prefix(&fields, &route_prefix, "deliver");
+    if state.deliver.trim().is_empty() {
+        state.deliver = "log".to_string();
+    }
+    let fixed_chat_id =
+        string_field_with_suffix(&fields, &route_prefix, &["deliver_extra", "chat_id"]);
+    state.deliver_uses_home_channel = fixed_chat_id.trim().is_empty();
+    state.home_channel_key = home_channel_env_key(&state.deliver).to_string();
+    state.home_channel_supported = !state.home_channel_key.is_empty();
+    if state.home_channel_supported {
+        state.home_channel = fields
+            .get(&vec![state.home_channel_key.clone()])
+            .cloned()
+            .unwrap_or_default();
+        state.home_channel_configured = !state.home_channel.trim().is_empty();
+    }
+
+    match read_env_file_context(&env_path) {
+        Ok(env_values) => {
+            state.feishu_credentials_configured = env_values
+                .get("FEISHU_APP_ID")
+                .is_some_and(|value| !value.trim().is_empty())
+                && env_values
+                    .get("FEISHU_APP_SECRET")
+                    .is_some_and(|value| !value.trim().is_empty());
+        }
+        Err(err) => state
+            .warnings
+            .push(format!("Failed to read Hermes .env: {err}")),
+    }
+
+    state.notify_webhook_url = format!(
+        "http://127.0.0.1:{}/webhooks/{}",
+        state.webhook_port, state.route_name
+    );
+    if state.deliver != "log" && !state.deliver_uses_home_channel {
+        if !state.home_channel_key.is_empty() {
+            state.warnings.push(format!(
+                "Hermes notify route still has deliver_extra.chat_id; notifications will not follow {} until that fixed target is removed.",
+                state.home_channel_key
+            ));
+        } else {
+            state.warnings.push(
+                "Hermes notify route still has deliver_extra.chat_id; notifications will not follow the platform home channel until that fixed target is removed."
+                    .to_string(),
+            );
+        }
+    }
+    if state.deliver_uses_home_channel && state.deliver != "log" {
+        if !state.home_channel_supported {
+            state.warnings.push(format!(
+                "Hermes notify route deliver target {:?} does not have a known home-channel config key. Use an explicitly supported messaging platform or set deliver_extra.chat_id manually.",
+                state.deliver
+            ));
+        } else if !state.home_channel_configured {
+            state.warnings.push(format!(
+                "{} is not configured in Hermes yet. Run /sethome from the desired {} chat before expecting auto delivery.",
+                state.home_channel_key,
+                deliver_display_name(&state.deliver)
+            ));
+        }
+    }
+    Ok(state)
+}
+
+pub fn status_for(resolved: &Resolved) -> BridgeStatus {
+    let mut status = BridgeStatus {
+        service_name: service_name_for(resolved),
+        service_platform: String::new(),
+        installed: false,
+        running: false,
+        bridge_available: false,
+        health_url: String::new(),
+        config: None,
+        warnings: Vec::new(),
+    };
+    match resolve_bridge_config(resolved) {
+        Ok(config) => {
+            status.health_url = config.health_url.clone();
+            status.config = Some(config);
+            status.service_platform = "rust-local".to_string();
+        }
+        Err(err) => {
+            status.warnings.push(err.to_string());
+        }
+    }
+    status
+}
+
+pub fn resolve_bridge_config(resolved: &Resolved) -> anyhow::Result<BridgeConfig> {
+    let notify_url = default_string(
+        &super::resolve(resolved)
+            .host_notify
+            .hermes
+            .as_ref()
+            .map(|config| config.notify_url.as_str())
+            .unwrap_or_default(),
+        DEFAULT_NOTIFY_URL,
+    );
+    let local = validate_local_notify_url(&notify_url)?;
+    let (notify_secret, notify_secret_source) =
+        hermes_host_notify::resolve_hermes_notify_secret_with_source(Some(resolved), &notify_url);
+    if notify_secret.trim().is_empty() {
+        anyhow::bail!("Hermes host notify secret is not configured in awiki-cli");
+    }
+    let hermes_home = resolve_hermes_home()?;
+    let route_state = inspect_route(&hermes_home, DEFAULT_WEBHOOK_ROUTE_NAME)?;
+    if route_state.route_secret.trim().is_empty() {
+        anyhow::bail!("Hermes notify route secret is not configured");
+    }
+    let python_executable = resolve_python_executable()?;
+    let adapter_script = resolve_adapter_script_path()?;
+    Ok(BridgeConfig {
+        notify_url: notify_url.clone(),
+        health_url: health_url_for(&notify_url),
+        adapter_host: normalize_adapter_bind_host(&local.host),
+        adapter_port: local.port,
+        notify_secret,
+        notify_secret_source,
+        hermes_home,
+        hermes_config_file: route_state.config_file.clone(),
+        hermes_webhook_url: route_state.notify_webhook_url.clone(),
+        route_name: route_state.route_name.clone(),
+        route_secret: route_state.route_secret.clone(),
+        route_state,
+        adapter_script,
+        python_executable,
+    })
 }
 
 pub fn cleanup_deliver_extra(route: &mut Map<String, Value>) {
@@ -445,4 +712,167 @@ fn string_value(value: &Value) -> String {
 pub fn read_env_file_context(path: impl AsRef<Path>) -> anyhow::Result<BTreeMap<String, String>> {
     read_env_file(path.as_ref())
         .with_context(|| format!("read Hermes .env: {}", path.as_ref().to_string_lossy()))
+}
+
+fn parse_yaml_scalar_fields(raw: &str) -> BTreeMap<Vec<String>, String> {
+    let mut fields = BTreeMap::new();
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    for line in raw.lines() {
+        let without_comment = line.split('#').next().unwrap_or("").trim_end();
+        if without_comment.trim().is_empty() {
+            continue;
+        }
+        let indent = without_comment.chars().take_while(|ch| *ch == ' ').count();
+        while stack.last().is_some_and(|(level, _)| *level >= indent) {
+            stack.pop();
+        }
+        let trimmed = without_comment.trim_start();
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_string();
+        let value = strip_yaml_scalar(value.trim());
+        if value.is_empty() {
+            stack.push((indent, key));
+            continue;
+        }
+        let mut path: Vec<String> = stack.iter().map(|(_, key)| key.clone()).collect();
+        path.push(key);
+        fields.insert(path, value);
+    }
+    fields
+}
+
+fn strip_yaml_scalar(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'')
+        .to_string()
+}
+
+fn bool_field(fields: &BTreeMap<Vec<String>, String>, path: &[&str], default: bool) -> bool {
+    fields
+        .get(&path.iter().map(|part| part.to_string()).collect::<Vec<_>>())
+        .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
+}
+
+fn int_field(fields: &BTreeMap<Vec<String>, String>, path: &[&str], default: u32) -> u32 {
+    fields
+        .get(&path.iter().map(|part| part.to_string()).collect::<Vec<_>>())
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn string_field_with_prefix(
+    fields: &BTreeMap<Vec<String>, String>,
+    prefix: &[String],
+    leaf: &str,
+) -> String {
+    let mut path = prefix.to_vec();
+    path.push(leaf.to_string());
+    fields.get(&path).cloned().unwrap_or_default()
+}
+
+fn string_field_with_suffix(
+    fields: &BTreeMap<Vec<String>, String>,
+    prefix: &[String],
+    suffix: &[&str],
+) -> String {
+    let mut path = prefix.to_vec();
+    path.extend(suffix.iter().map(|part| part.to_string()));
+    fields.get(&path).cloned().unwrap_or_default()
+}
+
+fn service_name_for(resolved: &Resolved) -> String {
+    const PREFIX: &str = "awiki-cli-hermes-bridge";
+    let workspace = resolved.paths.workspace_home_dir.trim();
+    if workspace.is_empty() {
+        return PREFIX.to_string();
+    }
+    let digest = Sha256::digest(workspace.as_bytes());
+    format!("{PREFIX}-{}", &format!("{digest:x}")[..12])
+}
+
+fn resolve_python_executable() -> anyhow::Result<String> {
+    for candidate in ["python3", "python"] {
+        if command_on_path(candidate) {
+            return Ok(candidate.to_string());
+        }
+    }
+    anyhow::bail!("python3 or python was not found in PATH")
+}
+
+fn command_on_path(candidate: &str) -> bool {
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&paths).any(|dir| executable_candidate_exists(&dir, candidate))
+}
+
+fn executable_candidate_exists(dir: &Path, candidate: &str) -> bool {
+    let path = dir.join(candidate);
+    if path.is_file() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        let exe = dir.join(format!("{candidate}.exe"));
+        if exe.is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+fn resolve_adapter_script_path() -> anyhow::Result<String> {
+    let exe_path = env::current_exe().context("resolve awiki-cli executable path")?;
+    let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new(""));
+    let candidates: [PathBuf; 3] = [
+        exe_dir
+            .join("..")
+            .join("scripts")
+            .join("hermes_notify_adapter.py"),
+        exe_dir.join("scripts").join("hermes_notify_adapter.py"),
+        exe_dir
+            .join("..")
+            .join("..")
+            .join("scripts")
+            .join("hermes_notify_adapter.py"),
+    ];
+    for candidate in candidates {
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+    }
+    anyhow::bail!(
+        "could not locate scripts/hermes_notify_adapter.py next to the awiki-cli installation"
+    )
+}
+
+fn normalize_adapter_bind_host(host: &str) -> String {
+    match host.trim().to_ascii_lowercase().as_str() {
+        "" | "localhost" => "127.0.0.1".to_string(),
+        _ => host.to_string(),
+    }
+}
+
+fn health_url_for(notify_url: &str) -> String {
+    let Some((scheme, rest)) = notify_url.split_once("://") else {
+        return String::new();
+    };
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if authority.is_empty() {
+        return String::new();
+    }
+    format!("{scheme}://{authority}/healthz")
 }

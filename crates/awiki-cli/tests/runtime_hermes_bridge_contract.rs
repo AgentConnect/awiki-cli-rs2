@@ -179,6 +179,65 @@ FEISHU_APP_ID=last-wins
 }
 
 #[test]
+fn inspect_route_reads_local_config_and_env_like_go_status_view() {
+    let workspace = TempDir::new().expect("temp workspace");
+    std::fs::write(
+        workspace.path().join("config.yaml"),
+        r#"
+TELEGRAM_HOME_CHANNEL: chat-123
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      port: 8644
+      routes:
+        notify:
+          secret: route-secret
+          events: []
+          prompt: "{notify_payload}"
+          skills: ["notify"]
+          deliver: telegram
+"#,
+    )
+    .expect("write Hermes config");
+    std::fs::write(
+        workspace.path().join(".env"),
+        "FEISHU_APP_ID=app-id\nFEISHU_APP_SECRET=app-secret\n",
+    )
+    .expect("write Hermes env");
+
+    let state =
+        hermes_bridge::inspect_route(&path_string(workspace.path()), "notify").expect("route");
+    assert_eq!(state.hermes_home, path_string(workspace.path()));
+    assert_eq!(
+        state.config_file,
+        path_string(&workspace.path().join("config.yaml"))
+    );
+    assert_eq!(state.config_exists, true);
+    assert_eq!(state.webhook_enabled, true);
+    assert_eq!(state.webhook_port, 8644);
+    assert_eq!(state.route_name, "notify");
+    assert_eq!(state.route_configured, true);
+    assert_eq!(state.route_secret_configured, true);
+    assert_eq!(state.deliver, "telegram");
+    assert_eq!(state.deliver_uses_home_channel, true);
+    assert_eq!(state.home_channel_key, "TELEGRAM_HOME_CHANNEL");
+    assert_eq!(state.home_channel, "chat-123");
+    assert_eq!(state.home_channel_configured, true);
+    assert_eq!(state.home_channel_supported, true);
+    assert_eq!(state.feishu_credentials_configured, true);
+    assert_eq!(
+        state.notify_webhook_url,
+        "http://127.0.0.1:8644/webhooks/notify"
+    );
+    assert!(
+        state.warnings.is_empty(),
+        "configured route should not warn: {:?}",
+        state.warnings
+    );
+}
+
+#[test]
 fn cleanup_deliver_extra_removes_fixed_targets_and_preserves_unrelated_keys() {
     let mut route = object(json!({
         "deliver_extra": {
@@ -304,4 +363,8 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+fn path_string(path: &std::path::Path) -> String {
+    path.to_string_lossy().into_owned()
 }

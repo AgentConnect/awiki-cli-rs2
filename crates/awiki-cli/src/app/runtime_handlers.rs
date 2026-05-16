@@ -643,6 +643,164 @@ impl App {
             Vec::new(),
         )
     }
+
+    pub fn run_runtime_host_notify_hermes_guide(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let deliver = resolve_hermes_deliver_target(
+            &resolved,
+            command
+                .flags
+                .get("deliver")
+                .map(String::as_str)
+                .unwrap_or_default(),
+        );
+        if !runtime::hermes_bridge::is_supported_deliver_target(&deliver) {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                format!("unsupported Hermes deliver target {deliver:?}"),
+                format!(
+                    "Use --deliver with one of: {}.",
+                    runtime::hermes_bridge::supported_deliver_targets().join(", ")
+                ),
+            ));
+        }
+        let notify_url = resolve_hermes_notify_url(&resolved);
+        let (_, secret_source) =
+            runtime::hermes_host_notify::resolve_hermes_notify_secret_with_source(
+                Some(&resolved),
+                &notify_url,
+            );
+        let mut data = json!({
+            "hermes_guide": build_hermes_host_notify_guide_view(
+                &resolved,
+                &notify_url,
+                &deliver,
+                &secret_source,
+            )
+        });
+        if let Ok(home) = runtime::hermes_bridge::resolve_hermes_home() {
+            if let Ok(route_state) = runtime::hermes_bridge::inspect_route(
+                &home,
+                runtime::hermes_bridge::DEFAULT_WEBHOOK_ROUTE_NAME,
+            ) {
+                if let Some(object) = data.as_object_mut() {
+                    object.insert("local_hermes".to_string(), json!(route_state));
+                }
+            }
+        }
+        let mut warnings = host_notify_guidance_warnings_for(&resolved, &deliver);
+        let current_host_notify = runtime::resolve(&resolved).host_notify;
+        if current_host_notify.sink != "hermes" {
+            warnings.push(format!(
+                "Current host notify sink is {:?}. Run `awiki-cli runtime host-notify hermes setup` to switch awiki-cli over to the fully managed local Hermes flow.",
+                current_host_notify.sink
+            ));
+        }
+        if secret_source == "unset" {
+            warnings.push("awiki-cli does not have a Hermes notify secret yet. `awiki-cli runtime host-notify hermes setup` will generate and persist one automatically.".to_string());
+        }
+        if deliver == "log" {
+            warnings.push("This guide is using `deliver: \"log\"` for probe-only verification. Switch to a real messaging platform such as `feishu` or `telegram` for end-user delivery.".to_string());
+        }
+        self.render_success(
+            "awiki-cli runtime host-notify hermes guide",
+            &resolved,
+            data,
+            "Hermes host notify guide generated",
+            warnings,
+        )
+    }
+
+    pub fn run_runtime_host_notify_hermes_status(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let host_notify_view =
+            runtime::host_notify_config_view(&resolved).map_err(internal_anyhow)?;
+        let home = runtime::hermes_bridge::resolve_hermes_home().unwrap_or_else(|_| {
+            std::path::Path::new("")
+                .join(".hermes")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let route_result = runtime::hermes_bridge::inspect_route(
+            &home,
+            runtime::hermes_bridge::DEFAULT_WEBHOOK_ROUTE_NAME,
+        );
+        let bridge_status = runtime::hermes_bridge::status_for(&resolved);
+        let expected_deliver = resolve_hermes_deliver_target(&resolved, "");
+        let host_notify = runtime::resolve(&resolved).host_notify;
+        let (_, secret_source) =
+            runtime::hermes_host_notify::resolve_hermes_notify_secret_with_source(
+                Some(&resolved),
+                &resolve_hermes_notify_url(&resolved),
+            );
+        let route_state = route_result.as_ref().ok();
+        let readiness = json!({
+            "awiki_sink_is_hermes": host_notify.sink == "hermes",
+            "awiki_host_notify_enabled": host_notify.enabled,
+            "awiki_secret_configured": secret_source != "unset",
+            "hermes_route_configured": route_state.is_some_and(|state| state.route_configured),
+            "hermes_route_matches_deliver": route_state.is_some_and(|state| state.deliver == expected_deliver),
+            "hermes_route_uses_home_channel": route_state.is_some_and(|state| state.deliver_uses_home_channel),
+            "home_channel_configured": route_state.is_some_and(|state| expected_deliver == "log" || state.home_channel_configured),
+            "bridge_running": bridge_status.running,
+            "bridge_available": bridge_status.bridge_available,
+        });
+        let mut data = json!({
+            "host_notify": host_notify_view,
+            "readiness": readiness,
+        });
+        let mut warnings = host_notify_guidance_warnings_for(&resolved, &expected_deliver);
+        match route_result {
+            Ok(route_state) => {
+                warnings.extend(route_state.warnings.clone());
+                if let Some(object) = data.as_object_mut() {
+                    object.insert("local_hermes".to_string(), json!(route_state));
+                }
+            }
+            Err(err) => warnings.push(format!("Failed to inspect local Hermes config: {err}")),
+        }
+        warnings.extend(bridge_status.warnings.clone());
+        if let Some(object) = data.as_object_mut() {
+            object.insert("bridge".to_string(), json!(bridge_status));
+        }
+        let route_state = data.get("local_hermes");
+        let ready = host_notify.sink == "hermes"
+            && host_notify.enabled
+            && secret_source != "unset"
+            && route_state.is_some_and(|state| state["route_configured"].as_bool() == Some(true))
+            && route_state.is_some_and(|state| {
+                state["deliver"].as_str().unwrap_or_default() == expected_deliver
+            })
+            && (expected_deliver == "log"
+                || route_state.is_some_and(|state| {
+                    state["deliver_uses_home_channel"].as_bool() == Some(true)
+                        && state["home_channel_configured"].as_bool() == Some(true)
+                }))
+            && bridge_status.running
+            && bridge_status.bridge_available;
+        if let Some(object) = data.as_object_mut() {
+            object.insert("ready".to_string(), json!(ready));
+        }
+        let summary = if ready {
+            format!(
+                "Hermes host notify is ready for awiki -> Hermes -> {} delivery",
+                runtime::hermes_bridge::deliver_display_name(&expected_deliver)
+            )
+        } else {
+            "Hermes host notify readiness loaded".to_string()
+        };
+        self.render_success(
+            "awiki-cli runtime host-notify hermes status",
+            &resolved,
+            data,
+            &summary,
+            dedupe_strings(warnings),
+        )
+    }
 }
 
 fn listener_config_snapshot(resolved: &Resolved) -> Value {
@@ -718,4 +876,128 @@ fn resolve_openclaw_route_from_flags(
             "Use --channel and --to, or use --session-key.",
         )
     })
+}
+
+fn resolve_hermes_deliver_target(resolved: &Resolved, override_value: &str) -> String {
+    let value = override_value.trim();
+    if !value.is_empty() {
+        return value.to_ascii_lowercase();
+    }
+    let value = resolved.host_notify_hermes_deliver.trim();
+    if !value.is_empty() {
+        return value.to_ascii_lowercase();
+    }
+    runtime::hermes_bridge::normalize_deliver_target("")
+}
+
+fn resolve_hermes_notify_url(resolved: &Resolved) -> String {
+    let value = resolved.host_notify_hermes_notify_url.trim();
+    if !value.is_empty() {
+        return value.to_string();
+    }
+    runtime::hermes_bridge::DEFAULT_NOTIFY_URL.to_string()
+}
+
+fn host_notify_guidance_warnings_for(resolved: &Resolved, deliver_override: &str) -> Vec<String> {
+    let config = runtime::resolve(resolved).host_notify;
+    if config.sink != "hermes" {
+        return Vec::new();
+    }
+    let deliver = resolve_hermes_deliver_target(resolved, deliver_override);
+    let home_channel_key = runtime::hermes_bridge::home_channel_env_key(&deliver);
+    let target_warning = if deliver != "log" && !home_channel_key.is_empty() {
+        format!(
+            "For {} delivery, prefer setting {} (or using /sethome in Hermes) instead of hard-coding deliver_extra.chat_id in Hermes routes.",
+            runtime::hermes_bridge::deliver_display_name(&deliver),
+            home_channel_key
+        )
+    } else {
+        "Prefer the platform home channel (or /sethome in Hermes) instead of hard-coding deliver_extra.chat_id in Hermes routes.".to_string()
+    };
+    vec![
+        "Hermes sink only forwards notifications to the Hermes adapter. Final delivery targets are configured in Hermes, not in awiki-cli.".to_string(),
+        target_warning,
+        "`awiki-cli runtime host-notify hermes setup` now also updates the local Hermes notify route and starts the local bridge automatically.".to_string(),
+    ]
+}
+
+fn build_hermes_host_notify_guide_view(
+    resolved: &Resolved,
+    notify_url: &str,
+    deliver: &str,
+    secret_source: &str,
+) -> Value {
+    let current_host_notify = runtime::resolve(resolved).host_notify;
+    let current_deliver = resolve_hermes_deliver_target(resolved, "");
+    let home_channel_key = runtime::hermes_bridge::home_channel_env_key(deliver);
+    let mut targeting = Vec::new();
+    if !home_channel_key.is_empty() {
+        targeting.push(format!(
+            "Prefer {home_channel_key} for the default delivery target."
+        ));
+    }
+    if deliver != "log" {
+        targeting.push(format!(
+            "Or send /sethome or /set-home to Hermes from the desired {} chat.",
+            runtime::hermes_bridge::deliver_display_name(deliver)
+        ));
+    }
+    targeting.push(
+        "Avoid hard-coding deliver_extra.chat_id unless you explicitly want a fixed destination."
+            .to_string(),
+    );
+    let route_yaml = format!(
+        "platforms:\n  webhook:\n    enabled: true\n    extra:\n      port: 8644\n      secret: \"${{HERMES_WEBHOOK_SECRET}}\"\n      routes:\n        notify:\n          secret: \"${{HERMES_ROUTE_SECRET}}\"\n          events: []\n          prompt: \"{{notify_payload}}\"\n          skills: [\"notify\"]\n          deliver: {deliver:?}\n"
+    );
+    let adapter_command = "python3 scripts/hermes_notify_adapter.py \\\n  --host 0.0.0.0 \\\n  --port 8765 \\\n  --notify-secret \"<NOTIFY_SECRET>\" \\\n  --hermes-webhook-url \"http://127.0.0.1:8644/webhooks/notify\" \\\n  --hermes-route-secret \"<HERMES_ROUTE_SECRET>\" \\\n  --log-level INFO";
+    let mut setup_command = "awiki-cli runtime host-notify hermes setup".to_string();
+    if deliver != current_deliver {
+        setup_command.push_str(" --deliver ");
+        setup_command.push_str(deliver);
+    }
+    json!({
+        "delivery_model": "awiki-cli only forwards host notify events to the Hermes adapter. Final delivery targets are configured in Hermes.",
+        "awiki_cli": {
+            "current": {
+                "enabled": current_host_notify.enabled,
+                "sink": current_host_notify.sink,
+                "notify_url": notify_url,
+                "deliver": current_deliver,
+                "secret_configured": secret_source != "unset",
+                "secret_source": secret_source,
+            },
+            "recommended_setup_command": setup_command,
+            "verify_commands": [
+                "awiki-cli runtime host-notify config show",
+                "awiki-cli runtime host-notify hermes status",
+            ],
+        },
+        "hermes": {
+            "notify_route_name": "notify",
+            "webhook_port": 8644,
+            "webhook_secret_env": "HERMES_WEBHOOK_SECRET",
+            "route_secret_env": "HERMES_ROUTE_SECRET",
+            "recommended_route": route_yaml,
+            "adapter_notify_url": "http://127.0.0.1:8765/notify/host-event",
+            "adapter_healthcheck": "curl -sS http://127.0.0.1:8765/healthz",
+            "adapter_run_command": adapter_command,
+            "deliver_target": deliver,
+            "awiki_expected_url": notify_url,
+            "managed_by_setup": "awiki-cli runtime host-notify hermes setup will write the local Hermes notify route and restart the local bridge for you.",
+            "targeting": targeting,
+        }
+    })
+}
+
+fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut result = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || !seen.insert(trimmed.to_string()) {
+            continue;
+        }
+        result.push(trimmed.to_string());
+    }
+    result
 }

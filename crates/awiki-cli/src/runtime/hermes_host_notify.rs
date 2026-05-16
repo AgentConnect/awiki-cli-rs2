@@ -123,6 +123,13 @@ pub fn validate_hermes_notify_url(raw_url: &str) -> anyhow::Result<()> {
 }
 
 pub fn resolve_hermes_notify_secret(resolved: Option<&Resolved>) -> String {
+    resolve_hermes_notify_secret_with_source(resolved, super::hermes_bridge::DEFAULT_NOTIFY_URL).0
+}
+
+pub fn resolve_hermes_notify_secret_with_source(
+    resolved: Option<&Resolved>,
+    notify_url: &str,
+) -> (String, String) {
     if let Some(resolved) = resolved {
         let config_file = resolved.paths.config_file.trim();
         if !config_file.is_empty() {
@@ -130,25 +137,30 @@ pub fn resolve_hermes_notify_secret(resolved: Option<&Resolved>) -> String {
             if error.is_empty() {
                 let secret = file_config.runtime.host_notify.hermes.secret.trim();
                 if !secret.is_empty() {
-                    return secret.to_string();
+                    return (secret.to_string(), "config_file".to_string());
                 }
                 let secret = file_config.runtime.host_notify.webhook.secret.trim();
                 if !secret.is_empty() {
-                    return secret.to_string();
+                    return (secret.to_string(), "config_file".to_string());
                 }
             }
         }
     }
-    if let Ok(secret) = env::var(HERMES_NOTIFY_SECRET_ENV) {
-        let secret = secret.trim();
-        if !secret.is_empty() {
-            return secret.to_string();
+    if !notify_url.trim().is_empty() {
+        if let Ok(secret) = env::var(HERMES_NOTIFY_SECRET_ENV) {
+            let secret = secret.trim();
+            if !secret.is_empty() {
+                return (secret.to_string(), "environment".to_string());
+            }
+        }
+        if let Ok(secret) = env::var(LEGACY_WEBHOOK_NOTIFY_SECRET_ENV) {
+            let secret = secret.trim();
+            if !secret.is_empty() {
+                return (secret.to_string(), "environment".to_string());
+            }
         }
     }
-    env::var(LEGACY_WEBHOOK_NOTIFY_SECRET_ENV)
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+    (String::new(), "unset".to_string())
 }
 
 fn hostname(authority: &str) -> anyhow::Result<&str> {
