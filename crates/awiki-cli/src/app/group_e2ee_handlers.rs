@@ -1,6 +1,7 @@
-use super::{not_implemented_side_effect, App};
+use super::{msg_handlers::message_exit, not_implemented_side_effect, App};
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
+use crate::message::{self, GroupE2eeStatusRequest};
 use crate::output::ExitError;
 use serde_json::{json, Value};
 
@@ -12,24 +13,49 @@ const REPAIR_SCOPE: &str = "compare local MLS status to service head, safely fin
 impl App {
     pub fn run_group_e2ee_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        let plan = json!({
+            "action": "group.e2ee.status",
+            "identity": self.globals.identity,
+            "runtime_mode": resolved.runtime_mode,
+            "profile": GROUP_E2EE_PROFILE,
+            "security_profile": GROUP_E2EE_SECURITY_PROFILE,
+            "provider": "exec",
+            "binary": provider_binary(),
+            "mls_data_dir": mls_data_dir(&resolved),
+            "group": string_flag(command, "group"),
+            "discovery_advertised": false,
+        });
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group e2ee status"));
+            let mut result = message::inspect_group_e2ee_status(
+                &resolved,
+                &self.identity_manager(&resolved),
+                GroupE2eeStatusRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group: string_flag(command, "group"),
+                    limit: 50,
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Install anp-mls, set AWIKI_ANP_MLS_BINARY, and ensure message-service group E2EE APIs are enabled for focused validation.",
+                )
+            })?;
+            if let Some(data) = result.data.as_object_mut() {
+                data.insert("plan".to_string(), plan);
+            }
+            return self.render_success(
+                "awiki-cli group e2ee status",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
         }
         self.render_group_e2ee_plan(
             "awiki-cli group e2ee status",
             &resolved,
-            json!({
-                "action": "group.e2ee.status",
-                "identity": self.globals.identity,
-                "runtime_mode": resolved.runtime_mode,
-                "profile": GROUP_E2EE_PROFILE,
-                "security_profile": GROUP_E2EE_SECURITY_PROFILE,
-                "provider": "exec",
-                "binary": provider_binary(),
-                "mls_data_dir": mls_data_dir(&resolved),
-                "group": string_flag(command, "group"),
-                "discovery_advertised": false,
-            }),
+            plan,
             "Dry run: group e2ee status planned",
         )
     }
@@ -349,11 +375,7 @@ fn provider_binary() -> String {
 }
 
 fn mls_data_dir(resolved: &Resolved) -> String {
-    if resolved.paths.workspace_home_dir.trim().is_empty() {
-        return ".awiki-cli/mls".to_string();
-    }
-    std::path::Path::new(&resolved.paths.workspace_home_dir)
-        .join("mls")
+    message::default_mls_data_dir(resolved)
         .to_string_lossy()
         .into_owned()
 }

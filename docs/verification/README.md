@@ -7863,6 +7863,81 @@ crates, platform service libraries, new E2EE provider dependencies, or a new
 SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
 work.
 
+## 2026-05-16 Group E2EE Status Live Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/message -run 'TestInspectGroupE2EEStatusComparesLocalEpochToServiceHead|TestGroupE2EEStatusForRecoveryScansNonDefaultDevice' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `group_e2ee_status_contract`: 2 passed.
+- `group_contract`: 6 passed.
+- `message_group_e2ee_wire_contract`: 7 passed.
+- `cargo check`, structure check, and whitespace check passed.
+- Go focused status and dry-run references passed.
+- Modified source/test files remain below the default 1200-line review-size
+  cap: `group_e2ee_status.rs` 842 lines,
+  `group_e2ee_handlers.rs` 381 lines, and
+  `group_e2ee_status_contract.rs` 507 lines.
+
+Scope:
+
+- Replaces the non-dry-run `group e2ee status` `not_implemented` boundary with
+  Go-shaped status inspection.
+- Preserves dry-run plan shape for all `group e2ee ...` commands and keeps
+  sibling non-dry-run commands deferred.
+- Implements the Go status provider subset: active identity gate, local
+  `anp-mls group status --json-in -` execution, `AWIKI_ANP_MLS_BINARY`/PATH
+  binary resolution, scoped MLS data dir
+  `<workspace>/mls/agents/<mlsAgentKey(agentDID)>/<device>`, device candidate
+  scan, status rank/epoch tie-break, default empty status, `device_id` mutation,
+  and 15-second provider timeout.
+- Reuses the existing Rustls/std message HTTP client for hidden
+  `group.e2ee.head` and `group.e2ee.notice`, including auth session/JWT
+  behavior through the shared client and the existing E2EE wire builders.
+- Preserves Go result shape and strings: summary
+  `Group E2EE recovery status inspected`, `available`, `mls`, `local`,
+  `local_device_id`, `service_head`, `pending_notices`,
+  `pending_notice_count`, `diagnosis`, `recovery_artifact`, `plan`, and the
+  local/service warning prefixes.
+- Adds fake-server/fake-MLS CLI coverage for the service-head vs local-epoch
+  pending-notice diagnosis and non-default device scan.
+
+Boundary note: this slice does not implement non-dry-run
+`publish-key-package`, `pending`, `repair`, `recover-member`, `update-key`,
+`rejoin`, commit/welcome replay, service-head mutation, MLS cache mutation,
+WebSocket/local bridge group E2EE transport, or awiki-system-test group-E2EE
+acceptance.
+
+Parallelism note: read-only Native Agents mapped Go/Rust group E2EE status
+surfaces, and one GPT-5.5 xhigh code-writing Native Agent added the isolated
+new test file `group_e2ee_status_contract.rs`. The leader implemented and
+integrated source changes and final verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The slice uses only `std::process::Command`, existing `serde_json`,
+existing `sha2`/`base64`, existing authsdk/session, existing Rustls/std
+transport, existing group E2EE wire builders, and the approved
+`rusqlite + bundled` SQLite path. It does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
+crates, platform service libraries, MLS provider crates, or a new SQLite
+backend. TLS remains Rustls-first.
+
 ## 2026-05-16 Message Secure Init Production Sender Slice
 
 Status: locally verified.
