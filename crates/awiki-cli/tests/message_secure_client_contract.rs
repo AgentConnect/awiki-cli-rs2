@@ -2,9 +2,9 @@ use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
 use awiki_cli::message::{
     new_secure_e2ee_client_for_record, prepare_secure_e2ee_client_for_record,
-    resolve_secure_e2ee_local_document,
+    resolve_secure_e2ee_local_document, MessageServiceE2EEClient,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -462,6 +462,379 @@ fn secure_e2ee_client_rejects_mismatched_ids_and_pending_follow_up_like_go() {
     std::fs::remove_dir_all(root).expect("remove temp test root");
 }
 
+#[test]
+fn secure_e2ee_client_process_incoming_init_consumes_opk_and_saves_responder_session() {
+    let (_resolved, manager, root) = test_context("secure-client-process-init");
+    let alice = generated_identity_record(&manager, "alice", "alice-user", "alice");
+    let bob = generated_identity_record(&manager, "bob", "bob-user", "bob");
+    let mut bob_client = new_secure_e2ee_client_for_record(
+        Some(&manager),
+        Some(&bob),
+        recording_rpc(Rc::new(RefCell::new(Vec::new())), |method, _params| {
+            assert_eq!(method, "direct.e2ee.publish_prekey_bundle");
+            Ok(Map::new())
+        }),
+    )
+    .expect("construct bob secure client");
+    bob_client
+        .ensure_fresh_prekey_bundle()
+        .expect("create bob local prekeys");
+    let bob_bundle = bob_client
+        .ensure_fresh_prekey_bundle()
+        .expect("load bob bundle from local stores");
+    let bob_opk = first_one_time_prekey(&manager, "bob");
+    let mut alice_client = new_secure_e2ee_client_for_record(
+        Some(&manager),
+        Some(&alice),
+        recording_rpc(
+            Rc::new(RefCell::new(Vec::new())),
+            move |method, params| match method {
+                "direct.e2ee.get_prekey_bundle" => Ok(json_map!({
+                    "prekey_bundle": serde_json::to_value(&bob_bundle).expect("bundle json"),
+                    "one_time_prekey": serde_json::to_value(&bob_opk).expect("opk json")
+                })),
+                "direct.send" => Ok(json_map!({
+                    "body": params["body"].clone()
+                })),
+                other => panic!("unexpected rpc method {other}"),
+            },
+        ),
+    )
+    .expect("construct alice secure client");
+
+    let init_response = alice_client
+        .send_text(&bob.did, "hello bob", "msg-init", "msg-init")
+        .expect("alice sends init");
+    let init_body = init_response
+        .get("body")
+        .cloned()
+        .expect("init response body");
+    let init_opk_id = init_body["recipient_one_time_prekey_id"]
+        .as_str()
+        .expect("init OPK id")
+        .to_string();
+    let decrypted = bob_client
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-init",
+            "application/anp-direct-init+json",
+            init_body,
+            1.0,
+        ))
+        .expect("bob processes init");
+
+    assert_eq!(decrypted["state"], "decrypted");
+    assert_eq!(
+        decrypted["plaintext"]["application_content_type"],
+        "text/plain"
+    );
+    assert_eq!(decrypted["plaintext"]["text"], "hello bob");
+    assert!(
+        one_time_prekeys(&manager, "bob")
+            .iter()
+            .all(|prekey| prekey.key_id != init_opk_id),
+        "Go deletes the OPK after a successful init"
+    );
+    let responder_session =
+        session_for_peer(&manager, "bob", &alice.did).expect("responder session exists");
+    assert_eq!(responder_session.peer_did, alice.did);
+    assert_eq!(responder_session.status, "established");
+    assert!(!responder_session.is_initiator);
+    assert_eq!(responder_session.recv_n, 1);
+    assert_eq!(responder_session.send_n, 0);
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_e2ee_client_process_incoming_confirms_first_reply_and_decrypts_follow_up_like_go() {
+    let (_resolved, manager, root) = test_context("secure-client-process-roundtrip");
+    let alice = generated_identity_record(&manager, "alice", "alice-user", "alice");
+    let bob = generated_identity_record(&manager, "bob", "bob-user", "bob");
+    let mut clients = connected_clients(&manager, &alice, &bob);
+    let init_body = clients
+        .alice
+        .send_text(&bob.did, "hello bob", "msg-init", "msg-init")
+        .expect("alice init")["body"]
+        .clone();
+    clients
+        .bob
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-init",
+            "application/anp-direct-init+json",
+            init_body,
+            1.0,
+        ))
+        .expect("bob accepts init");
+    let reply_body = clients
+        .bob
+        .send_json(
+            &alice.did,
+            Map::from_iter([("ack".to_string(), Value::String("ok".to_string()))]),
+            "msg-reply",
+            "msg-reply",
+        )
+        .expect("bob first reply")["body"]
+        .clone();
+
+    let confirmed = clients
+        .alice
+        .process_incoming(notification(
+            &bob.did,
+            &alice.did,
+            "msg-reply",
+            "application/anp-direct-cipher+json",
+            reply_body,
+            2.0,
+        ))
+        .expect("alice confirms first reply");
+
+    assert_eq!(confirmed["state"], "decrypted");
+    assert_eq!(
+        confirmed["plaintext"]["application_content_type"],
+        "application/json"
+    );
+    assert_eq!(confirmed["plaintext"]["payload"]["ack"], "ok");
+    let alice_session =
+        session_for_peer(&manager, "alice", &bob.did).expect("alice session exists");
+    assert_eq!(alice_session.status, "established");
+
+    let follow_up_body = clients
+        .alice
+        .send_json(
+            &bob.did,
+            Map::from_iter([("event".to_string(), Value::String("wave".to_string()))]),
+            "msg-2",
+            "msg-2",
+        )
+        .expect("alice follow-up")["body"]
+        .clone();
+    let follow_up = clients
+        .bob
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-2",
+            "application/anp-direct-cipher+json",
+            follow_up_body,
+            3.0,
+        ))
+        .expect("bob decrypts follow-up");
+
+    assert_eq!(follow_up["state"], "decrypted");
+    assert_eq!(follow_up["plaintext"]["payload"]["event"], "wave");
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_e2ee_client_process_incoming_queues_cipher_until_init_replays_pending_in_order() {
+    let (_resolved, manager, root) = test_context("secure-client-pending-replay");
+    let alice = generated_identity_record(&manager, "alice", "alice-user", "alice");
+    let bob = generated_identity_record(&manager, "bob", "bob-user", "bob");
+    let mut clients = connected_clients(&manager, &alice, &bob);
+    let init_body = clients
+        .alice
+        .send_text(&bob.did, "hello bob", "msg-init", "msg-init")
+        .expect("alice init")["body"]
+        .clone();
+    let pending_one = clients
+        .bob
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-2",
+            "application/anp-direct-cipher+json",
+            pending_cipher_body("missing-session-1", "1"),
+            2.0,
+        ))
+        .expect("pending missing session");
+    let pending_two = clients
+        .bob
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-3",
+            "application/anp-direct-cipher+json",
+            pending_cipher_body("missing-session-2", "2"),
+            3.0,
+        ))
+        .expect("second pending missing session");
+
+    assert_eq!(pending_one, json_map!({"state": "pending"}));
+    assert_eq!(pending_two, json_map!({"state": "pending"}));
+    let result = clients
+        .bob
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-init",
+            "application/anp-direct-init+json",
+            init_body,
+            1.0,
+        ))
+        .expect("init replays pending");
+
+    assert_eq!(result["state"], "decrypted");
+    let pending_results = result["pending_results"]
+        .as_array()
+        .expect("pending replay results");
+    assert_eq!(
+        pending_results
+            .iter()
+            .map(|result| result["state"].as_str().expect("state"))
+            .collect::<Vec<_>>(),
+        vec!["pending", "pending"],
+        "Go replays pending messages in insertion order and includes non-error results"
+    );
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_e2ee_client_process_incoming_returns_undecryptable_and_unsupported_like_go() {
+    let (_resolved, manager, root) = test_context("secure-client-undecryptable");
+    let alice = generated_identity_record(&manager, "alice", "alice-user", "alice");
+    let bob = generated_identity_record(&manager, "bob", "bob-user", "bob");
+    let mut clients = connected_clients(&manager, &alice, &bob);
+    let init_body = clients
+        .alice
+        .send_text(&bob.did, "hello bob", "msg-init", "msg-init")
+        .expect("alice init")["body"]
+        .clone();
+    clients
+        .bob
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-init",
+            "application/anp-direct-init+json",
+            init_body,
+            1.0,
+        ))
+        .expect("bob accepts init");
+    let reply_body = clients
+        .bob
+        .send_json(
+            &alice.did,
+            Map::from_iter([("ack".to_string(), Value::String("ok".to_string()))]),
+            "msg-reply",
+            "msg-reply",
+        )
+        .expect("bob first reply")["body"]
+        .clone();
+    clients
+        .alice
+        .process_incoming(notification(
+            &bob.did,
+            &alice.did,
+            "msg-reply",
+            "application/anp-direct-cipher+json",
+            reply_body,
+            2.0,
+        ))
+        .expect("alice confirms first reply");
+    let mut corrupted_body = clients
+        .alice
+        .send_json(
+            &bob.did,
+            Map::from_iter([("event".to_string(), Value::String("wave".to_string()))]),
+            "msg-2",
+            "msg-2",
+        )
+        .expect("alice follow-up")["body"]
+        .clone();
+    let ciphertext = corrupted_body["ciphertext_b64u"]
+        .as_str()
+        .expect("ciphertext");
+    corrupted_body["ciphertext_b64u"] = Value::String(corrupt_b64u_tail(ciphertext));
+
+    let undecryptable = clients
+        .bob
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-2",
+            "application/anp-direct-cipher+json",
+            corrupted_body,
+            2.0,
+        ))
+        .expect("decrypt failures return undecryptable");
+    assert_eq!(undecryptable, json_map!({"state": "undecryptable"}));
+
+    let unsupported = clients
+        .bob
+        .process_incoming(notification(
+            &alice.did,
+            &bob.did,
+            "msg-x",
+            "text/plain",
+            json!({}),
+            3.0,
+        ))
+        .expect_err("unsupported content type should fail");
+    assert_eq!(unsupported, "unsupported content type: text/plain");
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_e2ee_client_decrypt_history_page_sorts_by_server_seq_then_message_id_like_go() {
+    let (_resolved, manager, root) = test_context("secure-client-history-sort");
+    let alice = generated_identity_record(&manager, "alice", "alice-user", "alice");
+    let bob = generated_identity_record(&manager, "bob", "bob-user", "bob");
+    let mut clients = connected_clients(&manager, &alice, &bob);
+    let first = notification(
+        &alice.did,
+        &bob.did,
+        "msg-b",
+        "application/seq-one-b",
+        json!({}),
+        1.0,
+    );
+    let mut earlier_tie = first.clone();
+    earlier_tie
+        .get_mut("meta")
+        .and_then(Value::as_object_mut)
+        .expect("meta")
+        .insert("message_id".to_string(), Value::String("msg-a".to_string()));
+    earlier_tie
+        .get_mut("meta")
+        .and_then(Value::as_object_mut)
+        .expect("meta")
+        .insert(
+            "content_type".to_string(),
+            Value::String("application/seq-one-a".to_string()),
+        );
+    let mut later = first.clone();
+    later
+        .get_mut("meta")
+        .and_then(Value::as_object_mut)
+        .expect("meta")
+        .insert("message_id".to_string(), Value::String("msg-c".to_string()));
+    later
+        .get_mut("meta")
+        .and_then(Value::as_object_mut)
+        .expect("meta")
+        .insert(
+            "content_type".to_string(),
+            Value::String("application/seq-two".to_string()),
+        );
+    later.insert("server_seq".to_string(), json!(2.0));
+
+    let error = clients
+        .bob
+        .decrypt_history_page(vec![later, first, earlier_tie])
+        .expect_err("sorted first unsupported message should stop history processing");
+
+    assert_eq!(error, "unsupported content type: application/seq-one-a");
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
 fn generated_identity_record(
     manager: &Manager,
     identity_name: &str,
@@ -598,12 +971,174 @@ where
     })
 }
 
+struct ConnectedClients {
+    alice: MessageServiceE2EEClient,
+    bob: MessageServiceE2EEClient,
+}
+
+fn connected_clients(
+    manager: &Manager,
+    alice: &awiki_cli::identity::types::StoredIdentity,
+    bob: &awiki_cli::identity::types::StoredIdentity,
+) -> ConnectedClients {
+    let mut bob_seed = new_secure_e2ee_client_for_record(
+        Some(manager),
+        Some(bob),
+        recording_rpc(Rc::new(RefCell::new(Vec::new())), |method, _params| {
+            assert_eq!(method, "direct.e2ee.publish_prekey_bundle");
+            Ok(Map::new())
+        }),
+    )
+    .expect("construct bob seed client");
+    let bob_bundle = bob_seed
+        .ensure_fresh_prekey_bundle()
+        .expect("seed bob prekey bundle");
+    let bob_opk = first_one_time_prekey(manager, "bob");
+    let bob_bundle_for_alice = bob_bundle.clone();
+    let bob_opk_for_alice = bob_opk.clone();
+    let alice_client = new_secure_e2ee_client_for_record(
+        Some(manager),
+        Some(alice),
+        recording_rpc(Rc::new(RefCell::new(Vec::new())), move |method, params| match method {
+            "direct.e2ee.get_prekey_bundle" => Ok(json_map!({
+                "prekey_bundle": serde_json::to_value(&bob_bundle_for_alice).expect("bob bundle json"),
+                "one_time_prekey": serde_json::to_value(&bob_opk_for_alice).expect("bob opk json"),
+            })),
+            "direct.send" => Ok(json_map!({
+                "body": params["body"].clone()
+            })),
+            other => panic!("unexpected alice rpc method {other}"),
+        }),
+    )
+    .expect("construct alice client");
+    let bob_client = new_secure_e2ee_client_for_record(
+        Some(manager),
+        Some(bob),
+        recording_rpc(
+            Rc::new(RefCell::new(Vec::new())),
+            |method, params| match method {
+                "direct.send" => Ok(json_map!({
+                    "body": params["body"].clone()
+                })),
+                other => panic!("unexpected bob rpc method {other}"),
+            },
+        ),
+    )
+    .expect("construct bob client");
+    ConnectedClients {
+        alice: alice_client,
+        bob: bob_client,
+    }
+}
+
+fn notification(
+    sender_did: &str,
+    recipient_did: &str,
+    message_id: &str,
+    content_type: &str,
+    body: Value,
+    server_seq: f64,
+) -> Map<String, Value> {
+    json_map!({
+        "meta": {
+            "sender_did": sender_did,
+            "target": {
+                "kind": "agent",
+                "did": recipient_did,
+            },
+            "message_id": message_id,
+            "profile": "anp.direct.e2ee.v1",
+            "security_profile": "direct-e2ee",
+            "content_type": content_type,
+        },
+        "body": body,
+        "server_seq": server_seq,
+    })
+}
+
+fn first_one_time_prekey(
+    manager: &Manager,
+    identity_name: &str,
+) -> awiki_cli::anpsdk::OneTimePrekey {
+    one_time_prekeys(manager, identity_name)
+        .into_iter()
+        .next()
+        .expect("at least one OPK")
+}
+
+fn one_time_prekeys(
+    manager: &Manager,
+    identity_name: &str,
+) -> Vec<awiki_cli::anpsdk::OneTimePrekey> {
+    let paths = manager
+        .paths_for_identity(identity_name)
+        .expect("identity paths");
+    let mut prekeys = std::fs::read_dir(Path::new(&paths.identity_dir).join("p5-one-time-prekeys"))
+        .expect("read OPK root")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .map(|path| {
+            serde_json::from_slice(&std::fs::read(&path).expect("read OPK json"))
+                .expect("parse OPK json")
+        })
+        .collect::<Vec<_>>();
+    prekeys
+        .sort_by(|left: &awiki_cli::anpsdk::OneTimePrekey, right| left.key_id.cmp(&right.key_id));
+    prekeys
+}
+
+fn session_for_peer(
+    manager: &Manager,
+    identity_name: &str,
+    peer_did: &str,
+) -> Option<awiki_cli::anpsdk::DirectSessionState> {
+    let paths = manager
+        .paths_for_identity(identity_name)
+        .expect("identity paths");
+    let mut session_paths =
+        std::fs::read_dir(Path::new(&paths.identity_dir).join("p5-e2ee-sessions"))
+            .expect("read session root")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+            .collect::<Vec<_>>();
+    session_paths.sort();
+    for path in session_paths {
+        let session: awiki_cli::anpsdk::DirectSessionState =
+            serde_json::from_slice(&std::fs::read(&path).expect("read session json"))
+                .expect("parse session json");
+        if session.peer_did == peer_did {
+            return Some(session);
+        }
+    }
+    None
+}
+
+fn pending_cipher_body(session_id: &str, n: &str) -> Value {
+    json!({
+        "session_id": session_id,
+        "suite": "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1",
+        "ratchet_header": {
+            "dh_pub_b64u": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "pn": "0",
+            "n": n,
+        },
+        "ciphertext_b64u": "AAAAAAAAAAAAAAAAAAAAAA",
+    })
+}
+
+fn corrupt_b64u_tail(value: &str) -> String {
+    if value.is_empty() {
+        return "A".to_string();
+    }
+    let replacement = if value.ends_with('A') { 'B' } else { 'A' };
+    format!("{}{}", &value[..value.len() - 1], replacement)
+}
+
 fn remote_prekey_bundle(record: &awiki_cli::identity::types::StoredIdentity) -> Value {
     let signing_private = awiki_cli::anpsdk::PrivateKeyMaterial::from_pem(&record.key1_private_pem)
         .expect("record signing private key");
-    let _agreement_private =
-        awiki_cli::anpsdk::PrivateKeyMaterial::from_pem(&record.e2ee_agreement_private_pem)
-            .expect("record agreement private key");
     let signed_prekey_private = generated_x25519_private_key();
     let signed_prekey = awiki_cli::anpsdk::SignedPrekey {
         key_id: "spk-bob-001".to_string(),

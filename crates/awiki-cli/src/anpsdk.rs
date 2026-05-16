@@ -10,11 +10,12 @@ pub use anp::authentication::{
 };
 pub use anp::direct_e2ee::{
     build_prekey_bundle, direct_cipher_send_request, direct_init_send_request,
-    extract_x25519_public_key, message_service_did_from_document, prekey_bundle_get_request,
-    prekey_bundle_publish_request, should_retry_without_opk_message, validate_direct_send_ids,
-    verify_prekey_bundle, ApplicationPlaintext, DirectE2eeError, DirectE2eeSession,
-    DirectEnvelopeMetadata, DirectSessionState, OneTimePrekey, PendingOutboundRecord,
-    PendingOutboundStore, PrekeyBundle, SessionStore, SignedPrekey, SignedPrekeyStore,
+    extract_x25519_public_key, message_service_did_from_document, plaintext_to_value,
+    prekey_bundle_get_request, prekey_bundle_publish_request, should_retry_without_opk_message,
+    validate_direct_send_ids, verify_prekey_bundle, ApplicationPlaintext, DirectCipherBody,
+    DirectE2eeError, DirectE2eeSession, DirectEnvelopeMetadata, DirectInitBody, DirectSessionState,
+    OneTimePrekey, PendingOutboundRecord, PendingOutboundStore, PrekeyBundle, RatchetHeader,
+    SessionStore, SignedPrekey, SignedPrekeyStore,
 };
 pub use anp::proof::{
     build_im_content_digest, build_im_signature_input, build_logical_target_uri,

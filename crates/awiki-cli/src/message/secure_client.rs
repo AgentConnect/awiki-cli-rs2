@@ -4,6 +4,7 @@ use crate::anpsdk::{
 };
 use crate::identity::{types::StoredIdentity, Manager};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,6 +41,7 @@ pub struct MessageServiceE2EEClient {
     one_time_prekey_store: FileOneTimePrekeyStore,
     rpc: Box<SecureE2EERpc>,
     resolver: Box<SecureE2EEDidResolver>,
+    pending_by_peer: HashMap<String, Vec<Map<String, Value>>>,
 }
 
 pub fn prepare_secure_e2ee_client_for_record(
@@ -117,6 +119,7 @@ impl MessageServiceE2EEClient {
             one_time_prekey_store: prepared.one_time_prekey_store,
             rpc,
             resolver,
+            pending_by_peer: HashMap::new(),
         })
     }
 
@@ -184,6 +187,46 @@ impl MessageServiceE2EEClient {
             operation_id,
             message_id,
         )
+    }
+
+    pub fn process_incoming(&mut self, message: Map<String, Value>) -> SecureE2EERpcResult {
+        let meta = message.get("meta").and_then(Value::as_object);
+        let sender_did = string_value(meta.and_then(|value| value.get("sender_did")));
+        let recipient_did = meta
+            .and_then(|value| value.get("target"))
+            .and_then(Value::as_object)
+            .and_then(|value| value.get("did"))
+            .map(string_value_from_value)
+            .unwrap_or_default();
+        let content_type = string_value(meta.and_then(|value| value.get("content_type")));
+        let metadata = DirectEnvelopeMetadata {
+            sender_did: sender_did.clone(),
+            recipient_did,
+            message_id: string_value(meta.and_then(|value| value.get("message_id"))),
+            profile: string_value(meta.and_then(|value| value.get("profile"))),
+            security_profile: string_value(meta.and_then(|value| value.get("security_profile"))),
+        };
+        let body = message.get("body").cloned().unwrap_or(Value::Null);
+        match content_type.as_str() {
+            "application/anp-direct-init+json" => {
+                self.process_incoming_init(&message, &sender_did, &metadata, &body)
+            }
+            "application/anp-direct-cipher+json" => {
+                self.process_incoming_cipher(message, &sender_did, &metadata, &body)
+            }
+            _ => Err(format!("unsupported content type: {content_type}")),
+        }
+    }
+
+    pub fn decrypt_history_page(
+        &mut self,
+        mut messages: Vec<Map<String, Value>>,
+    ) -> Result<Vec<Map<String, Value>>, String> {
+        messages.sort_by(|left, right| compare_history_messages(left, right));
+        messages
+            .into_iter()
+            .map(|message| self.process_incoming(message))
+            .collect()
     }
 
     fn send_application_plaintext(
@@ -280,6 +323,138 @@ impl MessageServiceE2EEClient {
         )
         .map_err(|err| err.to_string())?;
         self.call_request(request)
+    }
+
+    fn process_incoming_init(
+        &mut self,
+        _message: &Map<String, Value>,
+        sender_did: &str,
+        metadata: &DirectEnvelopeMetadata,
+        body: &Value,
+    ) -> SecureE2EERpcResult {
+        let init_body = direct_init_body_from_go_map_value(body);
+        let sender_document = (self.resolver)(sender_did)?;
+        let sender_static_public = anpsdk::extract_x25519_public_key(
+            &sender_document,
+            &init_body.sender_static_key_agreement_id,
+        )
+        .map_err(|err| err.to_string())?;
+        let (signed_prekey_material, _metadata) = self
+            .signed_prekey_store
+            .load_signed_prekey(&init_body.recipient_signed_prekey_id)
+            .map_err(|err| err.to_string())?;
+        let signed_prekey_private = match &signed_prekey_material {
+            PrivateKeyMaterial::X25519(key) => key,
+            _ => return Err("invalid field: expected 32-byte private key".to_string()),
+        };
+        let one_time_prekey_id = init_body
+            .recipient_one_time_prekey_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let one_time_prekey_material = if let Some(key_id) = one_time_prekey_id.as_deref() {
+            let (material, _metadata) = self
+                .one_time_prekey_store
+                .load_one_time_prekey(key_id)
+                .map_err(|err| err.to_string())?;
+            Some(material)
+        } else {
+            None
+        };
+        let one_time_prekey_private = match one_time_prekey_material.as_ref() {
+            Some(PrivateKeyMaterial::X25519(key)) => Some(key),
+            Some(_) => return Err("invalid field: expected 32-byte private key".to_string()),
+            None => None,
+        };
+        let agreement_private = match &self.agreement_private {
+            PrivateKeyMaterial::X25519(key) => key,
+            _ => return Err("invalid field: expected 32-byte private key".to_string()),
+        };
+        let (session, plaintext) = anpsdk::DirectE2eeSession::accept_incoming_init_with_opk(
+            metadata,
+            &self.agreement_key_id,
+            agreement_private,
+            &signed_prekey_private,
+            one_time_prekey_private,
+            &sender_static_public,
+            &init_body,
+        )
+        .map_err(|err| err.to_string())?;
+        if let Some(key_id) = one_time_prekey_id {
+            self.one_time_prekey_store
+                .delete_one_time_prekey(&key_id)
+                .map_err(|err| err.to_string())?;
+        }
+        self.session_store
+            .save_session(&session)
+            .map_err(|err| err.to_string())?;
+        let mut result = Map::from_iter([
+            ("state".to_string(), Value::String("decrypted".to_string())),
+            (
+                "plaintext".to_string(),
+                anpsdk::plaintext_to_value(&plaintext),
+            ),
+        ]);
+        if let Some(pending) = self.pending_by_peer.get(sender_did).cloned() {
+            if !pending.is_empty() {
+                let mut pending_results = Vec::new();
+                for pending_message in pending {
+                    if let Ok(result) = self.process_incoming(pending_message) {
+                        pending_results.push(Value::Object(result));
+                    }
+                }
+                self.pending_by_peer.remove(sender_did);
+                result.insert("pending_results".to_string(), Value::Array(pending_results));
+            }
+        }
+        Ok(result)
+    }
+
+    fn process_incoming_cipher(
+        &mut self,
+        message: Map<String, Value>,
+        sender_did: &str,
+        metadata: &DirectEnvelopeMetadata,
+        body: &Value,
+    ) -> SecureE2EERpcResult {
+        let cipher_body = direct_cipher_body_from_go_map_value(body);
+        let mut session = match self.session_store.load_session(&cipher_body.session_id) {
+            Ok(session) => session,
+            Err(_) => {
+                self.pending_by_peer
+                    .entry(sender_did.to_string())
+                    .or_default()
+                    .push(message);
+                return Ok(Map::from_iter([(
+                    "state".to_string(),
+                    Value::String("pending".to_string()),
+                )]));
+            }
+        };
+        match anpsdk::DirectE2eeSession::decrypt_follow_up(&mut session, metadata, &cipher_body, "")
+        {
+            Ok(plaintext) => {
+                self.session_store
+                    .save_session(&session)
+                    .map_err(|err| err.to_string())?;
+                Ok(Map::from_iter([
+                    ("state".to_string(), Value::String("decrypted".to_string())),
+                    (
+                        "plaintext".to_string(),
+                        anpsdk::plaintext_to_value(&plaintext),
+                    ),
+                ]))
+            }
+            Err(_) => {
+                self.session_store
+                    .save_session(&session)
+                    .map_err(|err| err.to_string())?;
+                Ok(Map::from_iter([(
+                    "state".to_string(),
+                    Value::String("undecryptable".to_string()),
+                )]))
+            }
+        }
     }
 
     fn get_verified_prekey_bundle(
@@ -504,6 +679,98 @@ fn validate_one_time_prekey(prekey: &OneTimePrekey) -> Result<(), String> {
         return Err("missing field: one_time_prekey.public_key_b64u".to_string());
     }
     Ok(())
+}
+
+fn string_value(value: Option<&Value>) -> String {
+    value.map(string_value_from_value).unwrap_or_default()
+}
+
+fn string_value_from_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Number(number) => number.to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn optional_nonempty_string(value: Option<&Value>) -> Option<String> {
+    let value = string_value(value);
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn direct_init_body_from_go_map_value(value: &Value) -> anpsdk::DirectInitBody {
+    let object = value.as_object();
+    anpsdk::DirectInitBody {
+        session_id: string_value(object.and_then(|value| value.get("session_id"))),
+        suite: string_value(object.and_then(|value| value.get("suite"))),
+        sender_static_key_agreement_id: string_value(
+            object.and_then(|value| value.get("sender_static_key_agreement_id")),
+        ),
+        recipient_bundle_id: string_value(
+            object.and_then(|value| value.get("recipient_bundle_id")),
+        ),
+        recipient_signed_prekey_id: string_value(
+            object.and_then(|value| value.get("recipient_signed_prekey_id")),
+        ),
+        recipient_one_time_prekey_id: optional_nonempty_string(
+            object.and_then(|value| value.get("recipient_one_time_prekey_id")),
+        ),
+        sender_ephemeral_pub_b64u: string_value(
+            object.and_then(|value| value.get("sender_ephemeral_pub_b64u")),
+        ),
+        ciphertext_b64u: string_value(object.and_then(|value| value.get("ciphertext_b64u"))),
+    }
+}
+
+fn direct_cipher_body_from_go_map_value(value: &Value) -> anpsdk::DirectCipherBody {
+    let object = value.as_object();
+    let ratchet_header = object
+        .and_then(|value| value.get("ratchet_header"))
+        .and_then(Value::as_object);
+    anpsdk::DirectCipherBody {
+        session_id: string_value(object.and_then(|value| value.get("session_id"))),
+        suite: optional_nonempty_string(object.and_then(|value| value.get("suite"))),
+        ratchet_header: anpsdk::RatchetHeader {
+            dh_pub_b64u: string_value(ratchet_header.and_then(|value| value.get("dh_pub_b64u"))),
+            pn: string_value(ratchet_header.and_then(|value| value.get("pn"))),
+            n: string_value(ratchet_header.and_then(|value| value.get("n"))),
+        },
+        ciphertext_b64u: string_value(object.and_then(|value| value.get("ciphertext_b64u"))),
+    }
+}
+
+fn history_server_seq(message: &Map<String, Value>) -> f64 {
+    message
+        .get("server_seq")
+        .and_then(Value::as_f64)
+        .unwrap_or_default()
+}
+
+fn history_message_id(message: &Map<String, Value>) -> String {
+    message
+        .get("meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("message_id"))
+        .map(string_value_from_value)
+        .unwrap_or_default()
+}
+
+fn compare_history_messages(
+    left: &Map<String, Value>,
+    right: &Map<String, Value>,
+) -> std::cmp::Ordering {
+    let left_seq = history_server_seq(left);
+    let right_seq = history_server_seq(right);
+    left_seq
+        .partial_cmp(&right_seq)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| history_message_id(left).cmp(&history_message_id(right)))
 }
 
 fn unix_seconds() -> u64 {

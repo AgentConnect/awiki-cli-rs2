@@ -514,6 +514,8 @@ Do not mix that optimization with the 1:1 translation lane.
 - The slice does not add HTTP/TLS, WebSocket, OpenSSL, `native-tls`, bundled
   OpenSSL, platform service libraries, YAML crates, or a new SQLite path. TLS
   policy remains Rustls-first for later production transport wiring.
-- `ProcessIncoming`, production `msg send --secure on` wiring, listener secure
-  decrypt/ack integration, and awiki-system-test secure-direct acceptance remain
-  separate translation slices.
+- The incoming `ProcessIncoming`/`DecryptHistoryPage` adapter was added in a
+  follow-up slice without changing the dependency graph. Production
+  `msg send --secure on` wiring, inbox/history secure decrypt application,
+  listener secure decrypt/ack integration, and awiki-system-test secure-direct
+  acceptance remain separate translation slices.

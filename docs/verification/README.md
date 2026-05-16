@@ -7106,3 +7106,68 @@ It does not enable ANP SDK default/network features and does not add HTTP/TLS,
 OpenSSL, `native-tls`, bundled OpenSSL, WebSocket crates, YAML crates, platform
 libraries, or a new SQLite dependency. TLS remains Rustls-first for later
 production transport wiring.
+
+## 2026-05-16 Message Secure E2EE Incoming Client Adapter Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_normalize_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_sync_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_in_process_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../anp/golang && go test ./direct_e2ee -run 'TestClientSendAndPendingHistoryProcessing|TestJSONRoundTripForPendingResult|TestSessionInitAndFollowUpRoundTrip|TestSkippedMessageKeySurvivesFailedAuthentication|TestClientFallsBackToSignedPrekeyWhenOPKUnavailable|TestDirectInitBodyOmitsAbsentOPKAndLegacyStaticField|TestSharedP5Vectors|TestSharedP5VectorAADDoesNotContainApplicationContentType' -count=1
+```
+
+Result: passed. Focused Rust test counts: `message_secure_client_contract`
+14, `anpsdk_contract` 14, `runtime_listener_secure_normalize_contract` 10,
+`runtime_listener_secure_sync_contract` 7, and
+`runtime_listener_secure_ack_in_process_contract` 13 all passed with zero
+failures. `cargo check`, structure check, whitespace check, dependency audit,
+and focused Go ANP SDK reference tests passed.
+
+Scope:
+
+- Extended the injected high-level `MessageServiceE2EEClient` adapter with
+  `process_incoming` and `decrypt_history_page`, mirroring Go ANP SDK v0.8.7
+  `MessageServiceDirectE2eeClient` inbound behavior.
+- Preserved direct init decrypt: Go-style map parsing, sender DID document
+  resolution, sender static X25519 extraction, signed-prekey private load,
+  optional OPK private load, `AcceptIncomingInitWithOPK`, OPK deletion after
+  successful decrypt, responder session save, and `{state:"decrypted",
+  plaintext:{...}}` result shape.
+- Preserved direct cipher decrypt: any session load error queues the original
+  message in in-memory `pending_by_peer[sender_did]` and returns
+  `{state:"pending"}`; decrypt failures save the possibly mutated session and
+  return `{state:"undecryptable"}`; decrypt successes save the session and
+  return decrypted plaintext.
+- Preserved pending replay semantics: queues are keyed by sender DID, replay in
+  insertion order after a successful init from that sender, include only
+  recursive non-error results, and delete the sender queue after replay.
+- Preserved unsupported content-type error text:
+  `unsupported content type: <contentType>`.
+- Preserved Go v0.8.7 `DecryptHistoryPage` behavior as implemented in the
+  SDK: copy, stable-sort by numeric `server_seq` ascending, tie-break by
+  `meta.message_id` lexicographically ascending, process in that sorted order,
+  and return results in sorted processing order. There is no final reverse in
+  the Go v0.8.7 implementation.
+
+Boundary note: this slice is still an adapter/contract boundary. Production
+`msg send --secure on`, inbox/history secure decrypt application, runtime
+listener real `ProcessIncoming` wiring, network/local secure ACK delivery,
+`SecureInit`, `SecureRepair`, and awiki-system-test secure-direct acceptance
+remain deferred parity slices.
+
+Dependency note: no dependency was added. The slice reuses local `../anp/rust`
+direct-E2EE session primitives and existing file-store facades. It does not add
+or enable HTTP/TLS, WebSocket, OpenSSL, `native-tls`, bundled OpenSSL, YAML,
+platform service libraries, or a new SQLite path. TLS remains Rustls-first for
+later production transport wiring.
