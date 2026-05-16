@@ -10489,3 +10489,44 @@ Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged. The copied helper uses Python stdlib modules only, matching
 the Go repository behavior and staying outside the Rust binary dependency
 graph.
+
+## 2026-05-16 Config template asset slice
+
+Timestamp: 2026-05-16T17:02:08Z / 2026-05-17T01:02:08+0800.
+
+Scope: copy the Go `config.template.yaml` public user-config template into the
+Rust repository as a byte-identical asset. This preserves the documented
+canonical `config.yaml` shape and defaults without changing Rust config parsing
+or runtime behavior.
+
+Commands run:
+
+```text
+cp -p ../awiki-cli/config.template.yaml config.template.yaml
+cmp -s ../awiki-cli/config.template.yaml config.template.yaml
+stat -c '%a %n' config.template.yaml
+wc -l config.template.yaml
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+tmp="$(mktemp -d)" && mkdir -p "$tmp" && cp config.template.yaml "$tmp/config.yaml" && AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_CLI_WORKSPACE_HOME_DIR="$tmp" target/debug/awiki-cli config show --format json
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `config.template.yaml` is byte-identical to the Go repository source.
+- Permissions were preserved from the Go repository: `664`.
+- The template is 35 lines.
+- The copied template can be used as `<workspace>/config.yaml` by the current
+  Rust CLI `config show --format json` path.
+
+Boundary note: this is a repository asset parity slice. It does not implement
+full Go `yaml.v3` parser/serializer parity, does not change init/config writer
+behavior, and does not copy Go `Makefile`, release scripts, GitHub workflows,
+or architecture docs; those remain separate tooling/docs lanes.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
