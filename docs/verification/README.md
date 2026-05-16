@@ -2,6 +2,67 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Notification Handler Slice
+
+Timestamp: 2026-05-16T20:07:23Z / 2026-05-17T04:07:23+0800.
+
+Scope: add the local composition boundary that future foreground
+`Supervisor.handleNotification` wiring can call once it owns a database
+connection, mutable listener status snapshot, optional host-notify sink,
+session context, secure-normalization result, and optional incoming-contact
+lookup.
+
+What changed:
+
+- Added `runtime::listener_notification_handler::handle_listener_notification`
+  as a thin wrapper over the existing single-notification executor.
+- `Some(host_notify_sink)` applies the executor's Go-shaped set/clear/unchanged
+  host-notify status outcome through the listener status helpers.
+- `None` models Go `s.hostNotify == nil`: local SQLite/contact side effects
+  still run, but host-notify `LastError` and the status file remain unchanged.
+- Added contract coverage for failed delivery set, repeated same failure no-op
+  write, successful delivery clear, ignored/skipped notifications unchanged,
+  deterministic injected `received_at`, and nil-sink local persistence without
+  status mutation.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime/listener ./internal/store -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestHandleNotificationDispatchesMailNotificationToSink|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage|TestStoreMessageAndThreadView|Test.*Contact' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_notification_handler.rs crates/awiki-cli/tests/runtime_listener_notification_handler_contract.rs crates/awiki-cli/src/runtime/listener_notification_execute.rs crates/awiki-cli/tests/runtime_listener_notification_execute_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `runtime_listener_notification_handler_contract` passed all 3 tests.
+- Adjacent executor and listener service status contracts passed, and
+  `cargo check` passed for `awiki-cli`.
+- `xtask check-structure` reported no undocumented Rust files over 1200 lines;
+  the new Rust files are 54 and 338 lines.
+- Focused Go listener/store parity tests passed.
+- Dependency audit found the existing expected `rusqlite`/`libsqlite3-sys`
+  bundled SQLite path and Rustls/ring/webpki stack, with no OpenSSL,
+  `native-tls`, new WebSocket stack, or platform service dependency introduced.
+- No Cargo manifests or lockfiles changed.
+
+Boundary note: this is still a local/injected execution boundary. It does not
+implement foreground `Supervisor` locks or status mutex ownership, real `Run`,
+WebSocket sessions, `normalizeDirectSecureNotification` execution, local
+secure-ack queue routing, platform service execution, Windows named-pipe I/O,
+or `awiki-system-test` listener acceptance.
+
+Dependency note: no Rust dependency was added. This slice reuses the existing
+SQLite/store helpers, host-notify sink trait/noop sink, executor, and listener
+status helpers.
+
 ## 2026-05-17 Listener Notification Execute-With-Status Slice
 
 Timestamp: 2026-05-16T19:48:41Z / 2026-05-17T03:48:41+0800.

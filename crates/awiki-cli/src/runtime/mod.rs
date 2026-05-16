@@ -19,6 +19,7 @@ pub mod listener_local_notifications;
 pub mod listener_message_records;
 pub mod listener_notification_consume;
 pub mod listener_notification_execute;
+pub mod listener_notification_handler;
 pub mod listener_notification_plan;
 pub mod listener_secure_ack_delivery;
 pub mod listener_secure_ack_in_process;
