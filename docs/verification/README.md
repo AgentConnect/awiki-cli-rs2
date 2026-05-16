@@ -2,6 +2,66 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Session Bootstrap Slice
+
+Timestamp: 2026-05-16T20:31:46Z / 2026-05-17T04:31:46+0800.
+
+Scope: add a pure decision helper for Go `Supervisor.ensureSession` before
+real foreground session locks, context/channel allocation, goroutine start, and
+WebSocket runtime are wired.
+
+What changed:
+
+- Added `runtime::listener_session_bootstrap` with
+  `SESSION_BOOTSTRAP_TIMEOUT = 15s`.
+- Requested identity names are trimmed; blank requests resolve current identity
+  and use the returned `IdentityName` without retrimming.
+- Current identity errors return before session lookup.
+- Existing sessions return without creating a session or starting the loop.
+- New sessions plan create/insert/start-loop/wait actions in Go order, with
+  insertion before loop start.
+- Initial success returns the new session; initial error returns the new session
+  plus the original error text; timeout returns the new session plus Go's
+  `websocket session bootstrap timed out for identity <identity>` text.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_bootstrap_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_identity_watch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_connect_session_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestWSClientConnectRefreshesExpiredBearerBeforeRetryingWebSocket|TestWSClientConnectBootstrapsBearerBeforeOpeningWebSocket' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_session_bootstrap.rs crates/awiki-cli/tests/runtime_listener_session_bootstrap_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `runtime_listener_session_bootstrap_contract` passed all 7 tests.
+- Adjacent identity-watch, session-loop, and connect-session contracts passed,
+  and `cargo check` passed for `awiki-cli`.
+- Focused Go listener session/connect guard tests passed.
+- `xtask check-structure` reported no undocumented Rust files over 1200 lines;
+  the new Rust source/test files are 142 and 208 lines.
+- Dependency audit found the existing expected `rusqlite`/`libsqlite3-sys`
+  bundled SQLite path and Rustls/ring/webpki stack, with no OpenSSL,
+  `native-tls`, new WebSocket stack, or platform service dependency introduced.
+- No Cargo manifests or lockfiles changed.
+
+Boundary note: this is still a pure planning helper. It does not implement real
+`identity.Manager`, session locks, context/cancel/channel allocation, goroutine
+spawning, timer ownership, `runSessionLoop`, WebSocket clients, or message RPC
+execution.
+
+Dependency note: no Rust dependency was added. This slice uses only std time
+plus local action/result types.
+
 ## 2026-05-17 Listener Identity Discovery Slice
 
 Timestamp: 2026-05-16T20:20:50Z / 2026-05-17T04:20:50+0800.

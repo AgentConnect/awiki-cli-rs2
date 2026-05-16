@@ -33,6 +33,7 @@ pub mod listener_secure_sessions;
 pub mod listener_secure_sync;
 pub mod listener_service;
 pub mod listener_service_did;
+pub mod listener_session_bootstrap;
 pub mod listener_session_lookup;
 pub mod listener_session_loop;
 pub mod listener_session_state;
