@@ -39,6 +39,7 @@ pub mod listener_service_did;
 pub mod listener_session_bootstrap;
 pub mod listener_session_lookup;
 pub mod listener_session_loop;
+pub mod listener_session_methods;
 pub mod listener_session_state;
 pub mod listener_supervisor_init;
 pub mod listener_supervisor_shutdown;

@@ -2,6 +2,70 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Session Methods Slice
+
+Timestamp: 2026-05-17T06:02:45+0800.
+
+Scope: add a pure state/action helper for Go listener `session` methods at
+`internal/runtime/listener/server.go:1714-1784`, before real foreground
+`Supervisor` session ownership is wired.
+
+What changed:
+
+- Added `runtime::listener_session_methods`.
+- Current record/client/snapshot accessors expose stored session state.
+- `secureRPC` chooses an injected override before the current client, then none.
+- `markConnected` closes only a different existing client, stores record/client,
+  marks connected, and clears `lastError`.
+- `markDisconnected` closes and clears the current client, marks disconnected,
+  and records only non-cancel errors.
+- `closeCurrentClient` closes and clears only the current client while leaving
+  `lastError` unchanged.
+- `signalInitial` sends exactly once and closes the init-channel analog.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_methods_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_state_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_session_methods.rs crates/awiki-cli/tests/runtime_listener_session_methods_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check` and `cargo check` passed.
+- `runtime_listener_session_methods_contract` passed all 8 tests.
+- Adjacent Rust guards passed: `runtime_listener_session_state_contract`,
+  `runtime_listener_session_loop_contract`, and
+  `runtime_listener_bridge_connection_contract`.
+- `xtask check-structure` reported no undocumented Rust files over 1200 lines.
+- `git diff --check` passed.
+- Adjacent Go listener guard passed.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path.
+- No Cargo manifests or lockfiles changed.
+- New Rust files are 155 and 249 lines, below the default 1200-line cap.
+
+Boundary note: this is a pure session-method helper. It models Go pointer
+replacement with injected client IDs and Go cancel-error branching with an
+injected reason. It does not implement real `sync.RWMutex`, real `WSClient`
+pointers or `SendRPC`, real `context.Canceled` error matching, actual channel
+send/close, foreground session loop ownership, WebSocket transport, SQLite
+writes, or host-notify dispatch.
+
+Dependency note: no Rust dependency was added. This slice uses local state types
+and existing identity records only.
+
 ## 2026-05-17 Listener Local Notification Flush Slice
 
 Timestamp: 2026-05-17T06:24:00+0800.
