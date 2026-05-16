@@ -1,7 +1,11 @@
 use awiki_cli::identity::generate_identity;
 use awiki_cli::identity::types::{GeneratedIdentity, StoredIdentity};
 use awiki_cli::runtime::bridge::BridgeRequest;
-use awiki_cli::runtime::listener_bridge_dispatch::build_bridge_rpc_call;
+use awiki_cli::runtime::listener_bridge_dispatch::{
+    bridge_request_flow_plan, build_bridge_rpc_call, BridgeEnsureSessionOutcome,
+    BridgeRequestFlowAction, BridgeRequestFlowDecision, BridgeRpcBuildOutcome,
+    BridgeSendRpcOutcome, BridgeServiceDidOutcome, BridgeSessionSnapshot,
+};
 use serde_json::{json, Map, Value};
 
 #[test]
@@ -278,6 +282,307 @@ fn listener_bridge_dispatch_preserves_go_error_boundaries() {
         .contains("message service did is required"));
 }
 
+#[test]
+fn bridge_request_flow_returns_ensure_session_error_before_current_session_reads() {
+    let plan = bridge_request_flow_plan(
+        &bridge_request("direct.send", json!({})),
+        BridgeEnsureSessionOutcome::Error("identity missing".to_string()),
+        unused_service_did(),
+        unused_build_rpc(),
+        unused_send_rpc(),
+    );
+
+    assert_eq!(
+        plan.actions,
+        vec![BridgeRequestFlowAction::EnsureSession {
+            identity_name: "alice".to_string(),
+        }]
+    );
+    assert_eq!(
+        plan.decision,
+        BridgeRequestFlowDecision::ReturnError("identity missing".to_string())
+    );
+}
+
+#[test]
+fn bridge_request_flow_requires_current_record_and_client_like_go() {
+    let missing_record = bridge_request_flow_plan(
+        &bridge_request("direct.send", json!({})),
+        BridgeEnsureSessionOutcome::Ok(session("alice", None, true)),
+        unused_service_did(),
+        unused_build_rpc(),
+        unused_send_rpc(),
+    );
+
+    assert_eq!(
+        missing_record.actions,
+        vec![
+            BridgeRequestFlowAction::EnsureSession {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentRecord {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentClient {
+                identity_name: "alice".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        missing_record.decision,
+        BridgeRequestFlowDecision::ReturnError(
+            "websocket session is not connected for identity alice".to_string(),
+        )
+    );
+
+    let missing_client = bridge_request_flow_plan(
+        &bridge_request("direct.send", json!({})),
+        BridgeEnsureSessionOutcome::Ok(session("bob", Some("did:bob"), false)),
+        unused_service_did(),
+        unused_build_rpc(),
+        unused_send_rpc(),
+    );
+    assert_eq!(
+        missing_client.decision,
+        BridgeRequestFlowDecision::ReturnError(
+            "websocket session is not connected for identity bob".to_string(),
+        )
+    );
+}
+
+#[test]
+fn bridge_request_flow_fetches_group_create_service_did_before_building_rpc() {
+    let plan = bridge_request_flow_plan(
+        &bridge_request("group.create", json!({ "name": "Bridge Group" })),
+        BridgeEnsureSessionOutcome::Ok(session("alice", Some("did:alice"), true)),
+        BridgeServiceDidOutcome::Ok {
+            service_did: "did:service".to_string(),
+        },
+        build_rpc("group.create", &[]),
+        send_rpc_ok(json!({ "group_did": "did:group" })),
+    );
+
+    assert_eq!(
+        plan.actions,
+        vec![
+            BridgeRequestFlowAction::EnsureSession {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentRecord {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentClient {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::FetchMessageServiceDID {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::BuildRpcCall {
+                method: "group.create".to_string(),
+                service_did: Some("did:service".to_string()),
+            },
+            BridgeRequestFlowAction::SendRpc {
+                method: "group.create".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.decision,
+        BridgeRequestFlowDecision::ReturnOk {
+            result: object_map(json!({ "group_did": "did:group" })),
+        }
+    );
+}
+
+#[test]
+fn bridge_request_flow_returns_group_create_service_did_error_before_building_rpc() {
+    let plan = bridge_request_flow_plan(
+        &bridge_request("group.create", json!({ "name": "Bridge Group" })),
+        BridgeEnsureSessionOutcome::Ok(session("alice", Some("did:alice"), true)),
+        BridgeServiceDidOutcome::Error("capabilities missing service did".to_string()),
+        unused_build_rpc(),
+        unused_send_rpc(),
+    );
+
+    assert_eq!(
+        plan.actions,
+        vec![
+            BridgeRequestFlowAction::EnsureSession {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentRecord {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentClient {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::FetchMessageServiceDID {
+                identity_name: "alice".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.decision,
+        BridgeRequestFlowDecision::ReturnError("capabilities missing service did".to_string())
+    );
+}
+
+#[test]
+fn bridge_request_flow_returns_build_or_send_errors_before_later_side_effects() {
+    let build_error = bridge_request_flow_plan(
+        &bridge_request("group.unknown", json!({})),
+        BridgeEnsureSessionOutcome::Ok(session("alice", Some("did:alice"), true)),
+        unused_service_did(),
+        BridgeRpcBuildOutcome::Error(
+            "unsupported websocket bridge method: group.unknown".to_string(),
+        ),
+        unused_send_rpc(),
+    );
+
+    assert_eq!(
+        build_error.actions,
+        vec![
+            BridgeRequestFlowAction::EnsureSession {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentRecord {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentClient {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::BuildRpcCall {
+                method: "group.unknown".to_string(),
+                service_did: None,
+            },
+        ]
+    );
+    assert_eq!(
+        build_error.decision,
+        BridgeRequestFlowDecision::ReturnError(
+            "unsupported websocket bridge method: group.unknown".to_string(),
+        )
+    );
+
+    let send_error = bridge_request_flow_plan(
+        &bridge_request("inbox.mark_read", json!({ "message_ids": ["msg-1"] })),
+        BridgeEnsureSessionOutcome::Ok(session("alice", Some("did:alice"), true)),
+        unused_service_did(),
+        build_rpc("inbox.mark_read", &["msg-1"]),
+        BridgeSendRpcOutcome::Error("rpc failed".to_string()),
+    );
+    assert_eq!(
+        send_error.actions,
+        vec![
+            BridgeRequestFlowAction::EnsureSession {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentRecord {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentClient {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::BuildRpcCall {
+                method: "inbox.mark_read".to_string(),
+                service_did: None,
+            },
+            BridgeRequestFlowAction::SendRpc {
+                method: "inbox.mark_read".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        send_error.decision,
+        BridgeRequestFlowDecision::ReturnError("rpc failed".to_string())
+    );
+}
+
+#[test]
+fn bridge_request_flow_marks_messages_read_only_after_successful_mark_read_rpc() {
+    let plan = bridge_request_flow_plan(
+        &bridge_request(
+            "inbox.mark_read",
+            json!({ "message_ids": ["msg-1", "msg-2"] }),
+        ),
+        BridgeEnsureSessionOutcome::Ok(session("alice", Some("did:alice"), true)),
+        unused_service_did(),
+        build_rpc("inbox.mark_read", &["msg-1", "msg-2"]),
+        send_rpc_ok(json!({ "updated": 2 })),
+    );
+
+    assert_eq!(
+        plan.actions,
+        vec![
+            BridgeRequestFlowAction::EnsureSession {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentRecord {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentClient {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::BuildRpcCall {
+                method: "inbox.mark_read".to_string(),
+                service_did: None,
+            },
+            BridgeRequestFlowAction::SendRpc {
+                method: "inbox.mark_read".to_string(),
+            },
+            BridgeRequestFlowAction::MarkMessagesRead {
+                owner_did: "did:alice".to_string(),
+                message_ids: vec!["msg-1".to_string(), "msg-2".to_string()],
+            },
+        ]
+    );
+    assert_eq!(
+        plan.decision,
+        BridgeRequestFlowDecision::ReturnOk {
+            result: object_map(json!({ "updated": 2 })),
+        }
+    );
+}
+
+#[test]
+fn bridge_request_flow_success_without_mark_read_returns_rpc_result_only() {
+    let plan = bridge_request_flow_plan(
+        &bridge_request("direct.send", json!({ "text": "hello" })),
+        BridgeEnsureSessionOutcome::Ok(session("alice", Some("did:alice"), true)),
+        unused_service_did(),
+        build_rpc("direct.send", &[]),
+        send_rpc_ok(json!({ "message_id": "msg-1" })),
+    );
+
+    assert_eq!(
+        plan.actions,
+        vec![
+            BridgeRequestFlowAction::EnsureSession {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentRecord {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::ReadCurrentClient {
+                identity_name: "alice".to_string(),
+            },
+            BridgeRequestFlowAction::BuildRpcCall {
+                method: "direct.send".to_string(),
+                service_did: None,
+            },
+            BridgeRequestFlowAction::SendRpc {
+                method: "direct.send".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.decision,
+        BridgeRequestFlowDecision::ReturnOk {
+            result: object_map(json!({ "message_id": "msg-1" })),
+        }
+    );
+}
+
 fn bridge_request(method: &str, params: Value) -> BridgeRequest {
     BridgeRequest {
         method: method.to_string(),
@@ -302,6 +607,46 @@ fn generated_record(identity_name: &str, generated: &GeneratedIdentity) -> Store
         key1_private_pem: generated.key1_private_pem.clone(),
         key1_public_pem: generated.key1_public_pem.clone(),
         ..StoredIdentity::default()
+    }
+}
+
+fn session(
+    identity_name: &str,
+    record_did: Option<&str>,
+    has_client: bool,
+) -> BridgeSessionSnapshot {
+    BridgeSessionSnapshot {
+        identity_name: identity_name.to_string(),
+        record_did: record_did.map(str::to_string),
+        has_client,
+    }
+}
+
+fn unused_service_did() -> BridgeServiceDidOutcome {
+    BridgeServiceDidOutcome::Error("service did should not be used".to_string())
+}
+
+fn unused_build_rpc() -> BridgeRpcBuildOutcome {
+    BridgeRpcBuildOutcome::Error("build rpc should not be used".to_string())
+}
+
+fn unused_send_rpc() -> BridgeSendRpcOutcome {
+    BridgeSendRpcOutcome::Error("send rpc should not be used".to_string())
+}
+
+fn build_rpc(method: &str, mark_read_message_ids: &[&str]) -> BridgeRpcBuildOutcome {
+    BridgeRpcBuildOutcome::Ok {
+        method: method.to_string(),
+        mark_read_message_ids: mark_read_message_ids
+            .iter()
+            .map(|message_id| (*message_id).to_string())
+            .collect(),
+    }
+}
+
+fn send_rpc_ok(result: Value) -> BridgeSendRpcOutcome {
+    BridgeSendRpcOutcome::Ok {
+        result: object_map(result),
     }
 }
 

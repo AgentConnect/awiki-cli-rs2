@@ -20,6 +20,172 @@ pub struct BridgeRpcCall {
     pub mark_read_message_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BridgeSessionSnapshot {
+    pub identity_name: String,
+    pub record_did: Option<String>,
+    pub has_client: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeEnsureSessionOutcome {
+    Ok(BridgeSessionSnapshot),
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeServiceDidOutcome {
+    Ok { service_did: String },
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeRpcBuildOutcome {
+    Ok {
+        method: String,
+        mark_read_message_ids: Vec<String>,
+    },
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeSendRpcOutcome {
+    Ok { result: Map<String, Value> },
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeRequestFlowAction {
+    EnsureSession {
+        identity_name: String,
+    },
+    ReadCurrentRecord {
+        identity_name: String,
+    },
+    ReadCurrentClient {
+        identity_name: String,
+    },
+    FetchMessageServiceDID {
+        identity_name: String,
+    },
+    BuildRpcCall {
+        method: String,
+        service_did: Option<String>,
+    },
+    SendRpc {
+        method: String,
+    },
+    MarkMessagesRead {
+        owner_did: String,
+        message_ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeRequestFlowDecision {
+    ReturnOk { result: Map<String, Value> },
+    ReturnError(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeRequestFlowPlan {
+    pub actions: Vec<BridgeRequestFlowAction>,
+    pub decision: BridgeRequestFlowDecision,
+}
+
+pub fn bridge_request_flow_plan(
+    request: &BridgeRequest,
+    ensure_session: BridgeEnsureSessionOutcome,
+    service_did: BridgeServiceDidOutcome,
+    build_rpc: BridgeRpcBuildOutcome,
+    send_rpc: BridgeSendRpcOutcome,
+) -> BridgeRequestFlowPlan {
+    let mut actions = vec![BridgeRequestFlowAction::EnsureSession {
+        identity_name: request.identity_name.clone(),
+    }];
+    let session = match ensure_session {
+        BridgeEnsureSessionOutcome::Ok(session) => session,
+        BridgeEnsureSessionOutcome::Error(error) => {
+            return BridgeRequestFlowPlan {
+                actions,
+                decision: BridgeRequestFlowDecision::ReturnError(error),
+            };
+        }
+    };
+
+    actions.push(BridgeRequestFlowAction::ReadCurrentRecord {
+        identity_name: session.identity_name.clone(),
+    });
+    actions.push(BridgeRequestFlowAction::ReadCurrentClient {
+        identity_name: session.identity_name.clone(),
+    });
+    let Some(record_did) = session.record_did else {
+        return disconnected_bridge_session_plan(actions, &session.identity_name);
+    };
+    if !session.has_client {
+        return disconnected_bridge_session_plan(actions, &session.identity_name);
+    }
+
+    let service_did = if request.method == "group.create" {
+        actions.push(BridgeRequestFlowAction::FetchMessageServiceDID {
+            identity_name: session.identity_name.clone(),
+        });
+        match service_did {
+            BridgeServiceDidOutcome::Ok { service_did } => Some(service_did),
+            BridgeServiceDidOutcome::Error(error) => {
+                return BridgeRequestFlowPlan {
+                    actions,
+                    decision: BridgeRequestFlowDecision::ReturnError(error),
+                };
+            }
+        }
+    } else {
+        None
+    };
+
+    actions.push(BridgeRequestFlowAction::BuildRpcCall {
+        method: request.method.clone(),
+        service_did,
+    });
+    let (method, mark_read_message_ids) = match build_rpc {
+        BridgeRpcBuildOutcome::Ok {
+            method,
+            mark_read_message_ids,
+        } => (method, mark_read_message_ids),
+        BridgeRpcBuildOutcome::Error(error) => {
+            return BridgeRequestFlowPlan {
+                actions,
+                decision: BridgeRequestFlowDecision::ReturnError(error),
+            };
+        }
+    };
+
+    actions.push(BridgeRequestFlowAction::SendRpc {
+        method: method.clone(),
+    });
+    let result = match send_rpc {
+        BridgeSendRpcOutcome::Ok { result } => result,
+        BridgeSendRpcOutcome::Error(error) => {
+            return BridgeRequestFlowPlan {
+                actions,
+                decision: BridgeRequestFlowDecision::ReturnError(error),
+            };
+        }
+    };
+
+    if request.method == "inbox.mark_read" {
+        actions.push(BridgeRequestFlowAction::MarkMessagesRead {
+            owner_did: record_did,
+            message_ids: mark_read_message_ids,
+        });
+    }
+
+    BridgeRequestFlowPlan {
+        actions,
+        decision: BridgeRequestFlowDecision::ReturnOk { result },
+    }
+}
+
 pub fn build_bridge_rpc_call(
     record: &StoredIdentity,
     service_did: &str,
@@ -252,6 +418,18 @@ pub fn build_bridge_rpc_call(
         params: rpc_params,
         mark_read_message_ids,
     })
+}
+
+fn disconnected_bridge_session_plan(
+    actions: Vec<BridgeRequestFlowAction>,
+    identity_name: &str,
+) -> BridgeRequestFlowPlan {
+    BridgeRequestFlowPlan {
+        actions,
+        decision: BridgeRequestFlowDecision::ReturnError(format!(
+            "websocket session is not connected for identity {identity_name}"
+        )),
+    }
 }
 
 fn string_value(value: Option<&Value>) -> String {

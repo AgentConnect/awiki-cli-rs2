@@ -2,6 +2,73 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Bridge Request Flow Slice
+
+Timestamp: 2026-05-16T21:11:28Z / 2026-05-17T05:11:28+0800.
+
+Scope: extend `runtime::listener_bridge_dispatch` with a pure outer flow helper
+for Go `Supervisor.handleBridgeRequest` before real session ownership,
+WebSocket `SendRPC`, and SQLite mark-read mutation are wired.
+
+What changed:
+
+- Added `bridge_request_flow_plan`.
+- `ensureSession` errors return before current record/client reads.
+- Missing current record or current client returns Go's
+  `websocket session is not connected for identity <identity>` text.
+- `group.create` fetches message-service DID before RPC build and returns fetch
+  errors before build.
+- RPC build errors return before `SendRPC`.
+- `SendRPC` errors return before local mark-read side effects.
+- Successful `inbox.mark_read` plans best-effort local `MarkMessagesRead` after
+  `SendRPC`, using the current record DID and the filtered message IDs produced
+  by the RPC builder.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_bootstrap_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_did_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_bridge_dispatch.rs crates/awiki-cli/tests/runtime_listener_bridge_dispatch_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_bridge_dispatch_contract` passed all 10 tests.
+- Adjacent Rust guards passed: `runtime_bridge_contract` all 17 tests,
+  `runtime_listener_session_bootstrap_contract` all 7 tests, and
+  `runtime_listener_service_did_contract` all 5 tests.
+- Adjacent Go listener guard passed:
+  `ok github.com/agentconnect/awiki-cli/internal/runtime/listener 0.004s`.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path.
+- Read-only Native Agent parity review found no issues and approved the slice.
+- No Cargo manifests or lockfiles changed.
+- `listener_bridge_dispatch.rs` is 503 lines and
+  `runtime_listener_bridge_dispatch_contract.rs` is 658 lines, below the
+  default 1200-line cap; project structure check reported no undocumented Rust
+  files over 1200 lines.
+
+Boundary note: this is still a pure planning helper. It does not implement real
+`Supervisor`, real `ensureSession`, real current record/client locks, WebSocket
+`SendRPC`, real message-service DID fetch, SQLite `MarkMessagesRead`, host
+notification dispatch, notification storage, or foreground service runtime.
+
+Dependency note: no Rust dependency was added. This slice uses only local
+action/result types plus existing bridge request/message builder data.
+
 ## 2026-05-17 Listener Accept Loop Slice
 
 Timestamp: 2026-05-16T21:01:22Z / 2026-05-17T05:01:22+0800.
