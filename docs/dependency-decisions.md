@@ -255,6 +255,26 @@ substitute for a Rustls-backed stack.
   slice, and shared profile timeout caps are covered by the service
   profile-timeout slice.
 
+2026-05-16:
+
+- Added the first production WebSocket/local bridge execution slice for
+  ordinary direct text `msg send --to --text` only.
+- No dependency was added. The slice reuses the already-translated std Unix
+  local bridge helper, existing `WSProxyTransport`, existing Rustls/std HTTP
+  fallback path, authsdk/session, local ANP origin-proof helper, and approved
+  `rusqlite + bundled` store path.
+- The direct-send fallback preserves Go's visible asymmetry: bridge failure
+  followed by successful HTTP fallback records trace fallback
+  `websocket_to_http` but does not add the `websocketHTTPFallbackWarning`
+  warning used by inbox/history/mark-read/group paths.
+- This slice does not add `reqwest`, `hyper`, WebSocket crates, async runtimes,
+  OpenSSL, `native-tls`, bundled OpenSSL, YAML crates, platform service
+  libraries, ANP SDK network/default features, or a new SQLite backend.
+- Remaining WebSocket work stays split into later parity slices: direct
+  inbox/history/mark-read local bridge and cache fallback, non-E2EE group
+  send/messages fallback, foreground listener bridge dispatch, secure direct
+  runtime acceptance, and awiki-system-test secure-direct coverage.
+
 ## Attachment Live HTTP Slice Notes
 
 2026-05-15:

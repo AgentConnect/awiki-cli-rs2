@@ -143,6 +143,72 @@ not enable ANP SDK `network`/default features and does not add OpenSSL,
 runtimes, YAML crates, platform service libraries, new E2EE provider
 dependencies, or a new SQLite backend.
 
+## 2026-05-16 Message Direct WebSocket Send Production Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+wc -l /home/ecs-user/awiki-space/awiki-cli/internal/message/service.go crates/awiki-cli/src/message/service.rs crates/awiki-cli/tests/msg_ws_proxy_live_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `msg_ws_proxy_live_contract`: 2 passed.
+- `msg_live_contract`: 7 passed.
+- `message_ws_proxy_contract`: 3 passed.
+- `msg_contract`: 6 passed.
+- `group_live_contract`: 3 passed.
+- `cargo check` and `cargo fmt --check` passed.
+- File-size check: Go `internal/message/service.go` is 1372 lines, Rust
+  `service.rs` is 1192 lines, and the new focused test file is 524 lines.
+
+Scope:
+
+- Wires ordinary direct text `msg send --to --text` through the local
+  WebSocket bridge when `runtime.mode=websocket`.
+- Preserves Go bridge request shape: local bridge method `direct.send`, identity
+  name copied from the selected identity, and params `target`, `text`, and
+  `type`.
+- Preserves Go HTTP fallback behavior for this direct-send branch: if bridge
+  send fails, the service attempts the existing signed HTTP `/im/rpc`
+  `direct.send`; successful fallback records trace fallback `websocket_to_http`
+  but does not add `websocketHTTPFallbackWarning` to the user-visible result.
+- Preserves Go double-failure behavior: if bridge send fails and HTTP fallback
+  also fails, the original bridge/transport error is returned.
+- Keeps direct send output shape compatible with Go by not adding a `data.source`
+  field to direct send results.
+
+Boundary note: this slice is intentionally narrow. It does not wire
+WebSocket/local bridge execution for direct inbox/history/mark-read, group
+send/messages, group lifecycle, attachments, or secure direct E2EE. It also does
+not implement foreground listener bridge dispatch, local-cache fallback, runtime
+listener live `ProcessIncoming`, or awiki-system-test secure-direct acceptance.
+
+Parallelism note: a read-only Native Agent mapped the Go WebSocket transport and
+fallback behavior, and one GPT-5.5 xhigh code-writing Native Agent created the
+focused test file under a bounded write scope. The leader corrected the test to
+Go's actual `--to` flag and no-`data.source` direct-send shape after integrating
+the Go parity mapping.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing std local bridge helper,
+`WSProxyTransport`, Rustls/std HTTP fallback path, authsdk/session, local ANP
+origin-proof helper, and approved `rusqlite + bundled` store lane. It does not
+add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
+crates, async runtimes, YAML crates, platform service libraries, ANP SDK
+network/default features, or a new SQLite backend.
+
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 
 Status: unit verified.

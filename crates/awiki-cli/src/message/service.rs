@@ -11,6 +11,7 @@ use crate::config::{join_base_url, Resolved};
 use crate::identity::types::StoredIdentity;
 use crate::identity::wire::{build_handle_lookup_by_handle_rpc_call, DID_AUTH_RPC_ENDPOINT};
 use crate::identity::Manager;
+use crate::runtime;
 use crate::store::{self, MessageRecord};
 use crate::transportcfg::Profile;
 use serde_json::{json, Value};
@@ -44,6 +45,20 @@ struct DirectSendResult {
     final_acceptance: bool,
     #[serde(default)]
     delivery_state: String,
+}
+
+impl From<super::ws_proxy::DirectSendResult> for DirectSendResult {
+    fn from(value: super::ws_proxy::DirectSendResult) -> Self {
+        Self {
+            accepted: value.accepted,
+            message_id: value.message_id,
+            operation_id: value.operation_id,
+            target_did: value.target_did,
+            accepted_at: value.accepted_at,
+            final_acceptance: value.final_acceptance,
+            delivery_state: value.delivery_state,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +111,57 @@ pub fn send(
 
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
     let target = resolve_target(resolved, &request.target)?;
+    let source_mode = runtime_mode(resolved);
+    if source_mode == runtime::bridge::MODE_WEBSOCKET {
+        let bridge = super::WSProxyTransport::new(resolved, &record.identity_name);
+        let mut bridge_request = request.clone();
+        bridge_request.target = target.did.clone();
+        match bridge.send_direct(bridge_request) {
+            Ok(result) => {
+                let mut result = DirectSendResult::from(result);
+                fill_direct_send_result(&mut result, &Value::Null, &target.did);
+                return persist_send_result(
+                    resolved,
+                    &record,
+                    &target,
+                    &request,
+                    &result,
+                    Vec::new(),
+                );
+            }
+            Err(bridge_err) => {
+                match send_direct_http(resolved, manager, &record, &target, &request) {
+                    Ok(mut result) => {
+                        crate::traceutil::mark_fallback(
+                            "websocket_to_http",
+                            Some(&bridge_err.to_string()),
+                        );
+                        fill_direct_send_result(&mut result, &Value::Null, &target.did);
+                        return persist_send_result(
+                            resolved,
+                            &record,
+                            &target,
+                            &request,
+                            &result,
+                            Vec::new(),
+                        );
+                    }
+                    Err(_) => return Err(bridge_err),
+                }
+            }
+        }
+    }
+    let result = send_direct_http(resolved, manager, &record, &target, &request)?;
+    persist_send_result(resolved, &record, &target, &request, &result, Vec::new())
+}
+
+fn send_direct_http(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    target: &TargetResolution,
+    request: &SendRequest,
+) -> Result<DirectSendResult, MessageError> {
     let mut auth = auth_session(resolved, manager, &record)?;
     let client = Client::new(resolved)?;
     let params = build_direct_send_rpc_params(
@@ -113,7 +179,7 @@ pub fn send(
         &mut auth,
     )?;
     fill_direct_send_result(&mut result, &meta, &target.did);
-    persist_send_result(resolved, &record, &target, &request, &result)
+    Ok(result)
 }
 
 pub fn send_secure_direct_with_sender(
@@ -253,15 +319,7 @@ fn send_secure_direct_resolved(
 
     request.target = target.did.clone();
     request.secure_mode = "on".to_string();
-    persist_send_result(resolved, &record, &target, &request, &result).map(|mut result| {
-        result.warnings = super::compact_warnings(
-            warnings
-                .into_iter()
-                .chain(result.warnings)
-                .collect::<Vec<_>>(),
-        );
-        result
-    })
+    persist_send_result(resolved, &record, &target, &request, &result, warnings)
 }
 
 fn send_secure_direct(
@@ -644,10 +702,11 @@ fn persist_send_result(
     target: &TargetResolution,
     request: &SendRequest,
     result: &DirectSendResult,
+    initial_warnings: Vec<String>,
 ) -> Result<CommandResult, MessageError> {
     let message_type = default_message_type(&request.message_type).to_string();
     let secure = request.secure_mode.trim() == "on";
-    let mut warnings = Vec::new();
+    let mut warnings = initial_warnings;
     if let Ok(connection) = store::open(&resolved.paths) {
         if store::ensure_schema(&connection).is_ok() {
             let stored = store::store_message(
@@ -695,7 +754,7 @@ fn persist_send_result(
             "delivery": result,
         }),
         summary: format!("Sent a direct {message_type} message"),
-        warnings,
+        warnings: super::compact_warnings(warnings),
     })
 }
 
@@ -994,6 +1053,14 @@ fn fill_direct_send_result(result: &mut DirectSendResult, meta: &Value, target_d
     }
     if result.target_did.is_empty() {
         result.target_did = target_did.to_string();
+    }
+}
+
+fn runtime_mode(resolved: &Resolved) -> &'static str {
+    if resolved.runtime_mode.trim().eq_ignore_ascii_case("http") {
+        runtime::bridge::MODE_HTTP
+    } else {
+        runtime::bridge::MODE_WEBSOCKET
     }
 }
 
