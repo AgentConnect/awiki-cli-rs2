@@ -557,6 +557,23 @@ impl App {
                 })?;
                 return self.render_message_result(command_name, &resolved, result);
             }
+            if action == "msg.secure.retry" {
+                let result = message::secure_retry(
+                    &resolved,
+                    &self.identity_manager(&resolved),
+                    message::SecureOutboxActionRequest {
+                        identity_name: self.globals.identity.clone(),
+                        outbox_id: command.args[0].clone(),
+                    },
+                )
+                .map_err(|err| {
+                    message_exit(
+                        err,
+                        "Make sure the outbox id exists and the active identity can reach the target service.",
+                    )
+                })?;
+                return self.render_message_result(command_name, &resolved, result);
+            }
             return Err(not_implemented_side_effect(
                 command_name.trim_start_matches("awiki-cli "),
             ));

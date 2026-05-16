@@ -1,6 +1,7 @@
 use awiki_cli::config::Paths;
 use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
 use awiki_cli::message::new_secure_e2ee_client_for_record;
+use awiki_cli::store::{self, E2EEOutboxRecord};
 use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -177,6 +178,86 @@ fn msg_send_secure_on_live_posts_e2ee_rpc_and_persists_secure_row_like_go() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["content"], "hello secure live");
     assert_eq!(rows[0]["is_e2ee"], 1);
+}
+
+#[test]
+fn msg_secure_retry_live_posts_cipher_rpc_and_marks_outbox_sent_like_go() {
+    let workspace = TempDir::new("msg-live-secure-retry").expect("workspace");
+    write_msg_config(workspace.path(), "https://placeholder.invalid");
+    let manager = Manager::new(test_paths(workspace.path()));
+    let alice = register_generated_msg_identity(&manager, "alice-retry", "alice", "jwt-alice");
+    let bob = register_generated_msg_identity(&manager, "bob-retry", "bob", "jwt-bob");
+    seed_established_secure_session(&manager, "alice-retry", &alice, &bob);
+    seed_secure_outbox_row(
+        workspace.path(),
+        &alice.did,
+        &bob.did,
+        "retry-live-1",
+        "failed",
+        "hello retry live",
+        "2026-05-16T00:00:00Z",
+        "alice-retry",
+    );
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "accepted": true,
+        "message_id": "msg-retry-live-1",
+        "operation_id": "retry-live-1",
+        "accepted_at": "2026-05-16T01:02:03Z",
+        "delivery_state": "accepted"
+    })))]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-retry",
+            "msg",
+            "secure",
+            "retry",
+            "retry-live-1",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["summary"],
+        "Retried secure outbox record retry-live-1"
+    );
+    assert_eq!(envelope["data"]["outbox_id"], "retry-live-1");
+    assert_eq!(envelope["data"]["record"]["local_status"], "sent");
+    assert_eq!(
+        envelope["data"]["record"]["sent_msg_id"],
+        "msg-retry-live-1"
+    );
+    assert_eq!(
+        envelope["data"]["record"]["session_id"],
+        "session-retry-live"
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("json body");
+    assert_eq!(body["method"], "direct.send");
+    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
+    assert_eq!(body["params"]["meta"]["target"]["did"], bob.did);
+    assert_eq!(
+        body["params"]["meta"]["content_type"],
+        "application/anp-direct-cipher+json"
+    );
+    assert_eq!(body["params"]["meta"]["message_id"], "retry-live-1");
+    assert_eq!(body["params"]["meta"]["operation_id"], "retry-live-1");
+    assert_eq!(body["params"].get("auth"), None);
+
+    let rows = query_rows(
+        workspace.path(),
+        "SELECT msg_id, content, is_e2ee, credential_name FROM messages WHERE msg_id = 'msg-retry-live-1'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["content"], "hello retry live");
+    assert_eq!(rows[0]["is_e2ee"], 1);
+    assert_eq!(rows[0]["credential_name"], "alice-retry");
 }
 
 #[test]
@@ -626,6 +707,76 @@ fn first_one_time_prekey(
     prekeys
         .sort_by(|left: &awiki_cli::anpsdk::OneTimePrekey, right| left.key_id.cmp(&right.key_id));
     prekeys.into_iter().next().expect("at least one OPK")
+}
+
+fn seed_established_secure_session(
+    manager: &Manager,
+    identity_name: &str,
+    owner: &awiki_cli::identity::types::StoredIdentity,
+    peer: &awiki_cli::identity::types::StoredIdentity,
+) {
+    let paths = manager
+        .paths_for_identity(identity_name)
+        .expect("identity paths");
+    let root = Path::new(&paths.identity_dir).join("p5-e2ee-sessions");
+    let mut store = awiki_cli::anpsdk::FileSessionStore::new(&root).expect("session store");
+    store
+        .save_session(&awiki_cli::anpsdk::DirectSessionState {
+            session_id: "session-retry-live".to_string(),
+            suite: "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1".to_string(),
+            peer_did: peer.did.clone(),
+            local_key_agreement_id: format!("{}#key-3", owner.did),
+            peer_key_agreement_id: format!("{}#key-3", peer.did),
+            root_key_b64u: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+            send_chain_key_b64u: Some("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".to_string()),
+            recv_chain_key_b64u: Some("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI".to_string()),
+            ratchet_private_key_b64u: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM".to_string(),
+            ratchet_public_key_b64u: "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ".to_string(),
+            peer_ratchet_public_key_b64u: Some(
+                "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU".to_string(),
+            ),
+            send_n: 0,
+            recv_n: 0,
+            previous_send_chain_length: 0,
+            skipped_message_keys: Vec::new(),
+            is_initiator: true,
+            status: "established".to_string(),
+        })
+        .expect("save established session");
+}
+
+fn seed_secure_outbox_row(
+    workspace: &Path,
+    owner_did: &str,
+    peer_did: &str,
+    outbox_id: &str,
+    local_status: &str,
+    plaintext: &str,
+    created_at: &str,
+    credential_name: &str,
+) {
+    let paths = test_paths(workspace);
+    let connection = store::open(&paths).expect("open store");
+    store::ensure_schema(&connection).expect("ensure store schema");
+    store::queue_e2ee_outbox(
+        &connection,
+        E2EEOutboxRecord {
+            outbox_id: outbox_id.to_string(),
+            owner_did: owner_did.to_string(),
+            peer_did: peer_did.to_string(),
+            session_id: "old-session".to_string(),
+            original_type: "text".to_string(),
+            plaintext: plaintext.to_string(),
+            local_status: local_status.to_string(),
+            last_error_code: "send_failed".to_string(),
+            retry_hint: "retry".to_string(),
+            created_at: created_at.to_string(),
+            updated_at: created_at.to_string(),
+            credential_name: credential_name.to_string(),
+            ..E2EEOutboxRecord::default()
+        },
+    )
+    .expect("seed secure outbox row");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

@@ -565,3 +565,23 @@ Do not mix that optimization with the 1:1 translation lane.
   async runtimes, YAML crates, platform service libraries, new E2EE provider
   crates, or a new SQLite backend. TLS remains Rustls-first for later
   WebSocket/local bridge secure transport work.
+
+## Direct E2EE Production Retry Notes
+
+2026-05-16:
+
+- Wired production `msg secure retry <OUTBOX_ID>` to the same high-level direct
+  E2EE adapter and existing Rustls/std authenticated message HTTP client used by
+  production secure direct send.
+- No new crate, manifest change, or local ANP SDK feature change was needed.
+  The slice reuses local `../anp/rust` E2EE session/prekey stores, existing
+  authsdk/session/Rustls HTTP transport, existing `serde_json`, existing secure
+  outbox/store helpers, and the approved `rusqlite + bundled` SQLite lane.
+- Go's initialization boundary is preserved: if the secure outbox sender cannot
+  be initialized after the selected row is reset to `queued`, retry returns a
+  warning and leaves the row queued instead of marking it as send-failed.
+- No TLS/WebSocket dependency decision changed. This slice does not add
+  OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
+  async runtimes, YAML crates, platform service libraries, new E2EE provider
+  crates, or a new SQLite backend. TLS remains Rustls-first for later
+  WebSocket/local bridge secure transport work.

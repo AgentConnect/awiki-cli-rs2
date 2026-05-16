@@ -61,7 +61,9 @@ pub use secure_client::{
     resolve_secure_e2ee_local_document, MessageServiceE2EEClient, PreparedSecureE2EEClient,
     SecureE2EERpc, SecureE2EERpcResult,
 };
-pub use secure_commands::{secure_drop, secure_failed, secure_retry_with_sender, secure_status};
+pub use secure_commands::{
+    secure_drop, secure_failed, secure_retry, secure_retry_with_sender, secure_status,
+};
 pub use secure_control::{
     build_secure_ack_payload, build_secure_init_payload, current_secure_session_id,
     is_pending_confirmation_error, is_secure_ack_plaintext, is_secure_init_plaintext,

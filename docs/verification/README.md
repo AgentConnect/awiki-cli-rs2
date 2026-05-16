@@ -7390,3 +7390,71 @@ bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
 crates, platform service libraries, new E2EE provider dependencies, or a new
 SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
 work.
+
+## 2026-05-16 Message Secure Retry Production Sender Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test message_secure_commands_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+go test ./internal/message -run 'TestServiceSecureRetryMarksQueuedRecordSent|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation' -count=1
+wc -l crates/awiki-cli/src/message/secure_commands.rs crates/awiki-cli/src/message/service.rs crates/awiki-cli/src/app/msg_handlers.rs crates/awiki-cli/tests/message_secure_commands_contract.rs crates/awiki-cli/tests/msg_live_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `message_secure_commands_contract`: 9 passed.
+- `msg_live_contract`: 6 passed.
+- `msg_contract`: 5 passed.
+- `message_secure_outbox_flush_contract`: 23 passed.
+- `message_secure_client_contract`: 14 passed.
+- `cargo check` and whitespace check passed.
+- Go reference tests in `./internal/message` passed.
+- Modified source/test files remain below the 1200-line review-size cap:
+  `secure_commands.rs` 461 lines, `service.rs` 1125 lines,
+  `msg_handlers.rs` 796 lines, `message_secure_commands_contract.rs` 1032
+  lines, and `msg_live_contract.rs` 1091 lines.
+
+Scope:
+
+- Wires non-dry-run `msg secure retry <OUTBOX_ID>` through the production retry
+  sender instead of returning `not_implemented`.
+- Preserves Go `SecureRetry` ordering: active identity gate, store open/schema,
+  selected outbox row lookup, selected row status reset to `queued`, peer filter
+  from the selected row, secure outbox sender initialization, queued peer-row
+  flush, selected row reload, and Go summary/data shape.
+- Preserves the Go initialization-failure boundary: sender initialization
+  failure is returned as a warning after the selected row has been reset to
+  `queued`; it does not mark the row as `send_failed`.
+- Reuses the existing verified `MessageServiceE2EEClient` adapter and existing
+  Rustls/std authenticated `/im/rpc` client for retry sends.
+- Adds a local fake-server live smoke proving CLI production retry emits
+  `direct.send` with `application/anp-direct-cipher+json`, uses the outbox ID as
+  operation/message ID, marks the outbox row sent, records the current secure
+  session ID, and persists a local E2EE outbound message.
+
+Boundary note: this slice still excludes `SecureInit`, `SecureRepair`,
+WebSocket/local bridge secure retry execution, runtime listener live
+`ProcessIncoming`, and awiki-system-test secure-direct acceptance.
+
+Parallelism note: two read-only Native Agents mapped Go behavior and Rust gaps
+for production secure retry. No code-writing Native Agent changed files.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses the existing Rustls/std authsdk/message client,
+local ANP Rust E2EE adapter, secure outbox/store helpers, and the approved
+`rusqlite + bundled` SQLite path. It does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
+crates, platform service libraries, new E2EE provider dependencies, or a new
+SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
+work.

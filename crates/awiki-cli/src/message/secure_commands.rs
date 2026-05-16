@@ -1,11 +1,16 @@
-use super::service::{require_active_identity, resolve_target, CommandResult};
-use super::types::{MessageError, SecureOutboxActionRequest, SecureStatusRequest};
+use super::service::{auth_session, require_active_identity, resolve_target, CommandResult};
+use super::types::{
+    MessageError, SecureOutboxActionRequest, SecureStatusRequest, MESSAGE_RPC_ENDPOINT,
+};
 use super::{
-    flush_queued_secure_outbox_with_sender, SecureOutboxSendOutcome, SecureOutboxSendRequest,
+    current_secure_session_id, flush_queued_secure_outbox_with_sender,
+    new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient, SecureOutboxSendOutcome,
+    SecureOutboxSendRequest,
 };
 use crate::config::Resolved;
 use crate::identity::{types::StoredIdentity, Manager};
 use crate::store::{self, StoreError};
+use crate::transportcfg::Profile;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -166,6 +171,126 @@ pub fn secure_retry_with_sender(
         summary: format!("Retried secure outbox record {}", request.outbox_id),
         warnings,
     })
+}
+
+pub fn secure_retry(
+    resolved: &Resolved,
+    manager: &Manager,
+    request: SecureOutboxActionRequest,
+) -> Result<CommandResult, MessageError> {
+    let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let connection = open_secure_store(resolved)?;
+    let row = store::get_e2ee_outbox(
+        &connection,
+        &request.outbox_id,
+        &record.did,
+        &record.identity_name,
+    )
+    .map_err(store_error)?;
+    store::update_e2ee_outbox_status(
+        &connection,
+        &request.outbox_id,
+        &record.did,
+        &record.identity_name,
+        "queued",
+    )
+    .map_err(store_error)?;
+
+    let peer_did = string_from_value(row.get("peer_did"));
+    let warnings = match secure_retry_client(resolved, manager, &record) {
+        Ok(mut client) => flush_queued_secure_outbox_with_sender(
+            &connection,
+            &record.did,
+            &record.identity_name,
+            &peer_did,
+            |request| secure_retry_send(&mut client, request),
+            |peer_did| current_secure_session_id(Some(manager), Some(&record), peer_did),
+        ),
+        Err(err) => super::compact_warnings(vec![err]),
+    };
+    let record_data = store::get_e2ee_outbox(
+        &connection,
+        &request.outbox_id,
+        &record.did,
+        &record.identity_name,
+    )
+    .unwrap_or(Value::Null);
+
+    Ok(CommandResult {
+        data: json!({
+            "outbox_id": request.outbox_id,
+            "record": record_data,
+        }),
+        summary: format!("Retried secure outbox record {}", request.outbox_id),
+        warnings,
+    })
+}
+
+fn secure_retry_client(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+) -> Result<MessageServiceE2EEClient, String> {
+    let auth = auth_session(resolved, manager, record)
+        .map_err(|err| format!("Failed to initialize secure outbox sender: {err}"))?;
+    let rpc_client = Client::new(resolved)
+        .map_err(|err| format!("Failed to initialize secure outbox sender: {err}"))?;
+    new_secure_e2ee_client_for_record(
+        Some(manager),
+        Some(record),
+        secure_retry_rpc(rpc_client, auth),
+    )
+    .map_err(|err| format!("Failed to initialize secure outbox sender: {err}"))
+}
+
+fn secure_retry_rpc(
+    client: Client,
+    mut auth: crate::authsdk::Session,
+) -> Box<super::SecureE2EERpc> {
+    Box::new(move |method, params| {
+        client
+            .authenticated_rpc_call_profile::<Map<String, Value>, _>(
+                Profile::RpcDefault,
+                MESSAGE_RPC_ENDPOINT,
+                method,
+                params,
+                &mut auth,
+            )
+            .map_err(|err| err.to_string())
+    })
+}
+
+fn secure_retry_send(
+    client: &mut MessageServiceE2EEClient,
+    request: SecureOutboxSendRequest,
+) -> SecureOutboxSendOutcome {
+    let result = match request.original_type.as_str() {
+        "text" | "" => client.send_text(
+            &request.target_did,
+            &request.plaintext,
+            &request.outbox_id,
+            &request.outbox_id,
+        ),
+        "json" => client.send_json(
+            &request.target_did,
+            request.json_payload.unwrap_or_default(),
+            &request.outbox_id,
+            &request.outbox_id,
+        ),
+        _ => Err(format!(
+            "unsupported original_type: {}",
+            request.original_type
+        )),
+    };
+    match result {
+        Ok(result) => SecureOutboxSendOutcome::Success {
+            message_id: string_from_value(result.get("message_id")),
+            operation_id: string_from_value(result.get("operation_id")),
+            delivery_state: string_from_value(result.get("delivery_state")),
+            accepted_at: string_from_value(result.get("accepted_at")),
+        },
+        Err(err) => SecureOutboxSendOutcome::Error(err),
+    }
 }
 
 fn open_secure_store(resolved: &Resolved) -> Result<rusqlite::Connection, MessageError> {

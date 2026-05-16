@@ -1,8 +1,9 @@
 use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::identity::{types::SaveInput, Manager};
 use awiki_cli::message::{
-    secure_drop, secure_failed, secure_retry_with_sender, secure_status, SecureOutboxActionRequest,
-    SecureOutboxSendOutcome, SecureOutboxSendRequest, SecureStatusRequest,
+    secure_drop, secure_failed, secure_retry, secure_retry_with_sender, secure_status,
+    SecureOutboxActionRequest, SecureOutboxSendOutcome, SecureOutboxSendRequest,
+    SecureStatusRequest,
 };
 use awiki_cli::store::{self, get_e2ee_outbox, queue_e2ee_outbox, E2EEOutboxRecord};
 use rusqlite::Connection;
@@ -732,6 +733,60 @@ fn secure_retry_with_sender_send_error_sets_failed_retry_metadata() {
     let messages =
         store::list_messages_by_ids(&db, &active.did, &["retry-fail".to_string()]).unwrap();
     assert!(messages.is_empty());
+
+    std::fs::remove_dir_all(root).expect("remove temp test root");
+}
+
+#[test]
+fn secure_retry_production_sender_init_failure_warns_and_keeps_row_queued_like_go() {
+    let (resolved, manager, root) = test_context("secure-retry-production-init-failure");
+    let active = save_identity(&manager, "alice", "alice-user", "alice");
+    let peer_did = "did:wba:awiki.ai:user:bob:e1_bob";
+
+    let db = open_store(&resolved);
+    seed_status_outbox(
+        &db,
+        retry_outbox_record(
+            "retry-init-fail",
+            &active.did,
+            peer_did,
+            "failed",
+            "hello retry init fail",
+            "2026-01-01T00:00:00Z",
+        ),
+    );
+    drop(db);
+
+    let result = secure_retry(
+        &resolved,
+        &manager,
+        SecureOutboxActionRequest {
+            identity_name: "alice".to_string(),
+            outbox_id: "retry-init-fail".to_string(),
+        },
+    )
+    .expect("secure retry should return warning result");
+
+    assert_eq!(
+        result.summary,
+        "Retried secure outbox record retry-init-fail"
+    );
+    assert_eq!(text(&result.data["record"], "local_status"), "queued");
+    assert!(
+        result.warnings.iter().any(|warning| {
+            warning.starts_with(
+                "Failed to initialize secure outbox sender: parse DID signing private key:",
+            )
+        }),
+        "unexpected warnings: {:?}",
+        result.warnings
+    );
+
+    let db = open_store(&resolved);
+    let row = get_e2ee_outbox(&db, "retry-init-fail", &active.did, "alice").expect("retry row");
+    assert_eq!(text(&row, "local_status"), "queued");
+    assert_eq!(text(&row, "last_error_code"), "send_failed");
+    assert_eq!(text(&row, "retry_hint"), "retry");
 
     std::fs::remove_dir_all(root).expect("remove temp test root");
 }
