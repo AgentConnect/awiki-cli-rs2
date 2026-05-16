@@ -196,6 +196,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         }
         "runtime.host-notify.hermes.guide" => app.run_runtime_host_notify_hermes_guide(command),
         "runtime.host-notify.hermes.status" => app.run_runtime_host_notify_hermes_status(),
+        "runtime.host-notify.hermes.setup" => app.run_runtime_host_notify_hermes_setup(command),
         "runtime.host-notify.hermes.set" => app.run_runtime_host_notify_hermes_set(command),
         "runtime.host-notify.hermes.set-secret" => {
             app.run_runtime_host_notify_hermes_set_secret(command)
@@ -337,6 +338,9 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         }
         ["runtime", "host-notify", "hermes" | "webhook", "status", ..] => {
             "runtime.host-notify.hermes.status"
+        }
+        ["runtime", "host-notify", "hermes" | "webhook", "setup", ..] => {
+            "runtime.host-notify.hermes.setup"
         }
         ["runtime", "host-notify", "hermes" | "webhook", "set", ..] => {
             "runtime.host-notify.hermes.set"

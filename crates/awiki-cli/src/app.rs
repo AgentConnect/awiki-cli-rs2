@@ -24,6 +24,7 @@ mod mail_handlers;
 mod msg_handlers;
 mod page_handlers;
 mod runtime_handlers;
+mod runtime_hermes_handlers;
 mod site_handlers;
 mod update_handlers;
 pub(super) mod update_preflight;
