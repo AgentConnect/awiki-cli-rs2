@@ -10307,3 +10307,65 @@ claim full hidden `RunService` execution parity.
 
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. The test creates temporary local files only.
+
+## 2026-05-16 Hermes notify adapter script asset slice
+
+Timestamp: 2026-05-16T16:26:10Z / 2026-05-17T00:26:10+0800.
+
+Scope: copy the Go Hermes notify adapter Python runtime asset and its Python
+unit tests into the Rust repository so the translated Go candidate-order
+adapter script lookup can resolve a real `scripts/hermes_notify_adapter.py`
+asset without rewriting adapter behavior in Rust.
+
+Commands run:
+
+```text
+cmp -s ../awiki-cli/scripts/hermes_notify_adapter.py scripts/hermes_notify_adapter.py
+cmp -s ../awiki-cli/scripts/test_hermes_notify_adapter.py scripts/test_hermes_notify_adapter.py
+stat -c '%a %n' scripts/hermes_notify_adapter.py scripts/test_hermes_notify_adapter.py
+wc -l scripts/hermes_notify_adapter.py scripts/test_hermes_notify_adapter.py
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+python3 -m py_compile scripts/hermes_notify_adapter.py
+python3 -m unittest discover -s scripts -p 'test_hermes_notify_adapter.py'
+cd ../awiki-cli && python3 -m py_compile scripts/hermes_notify_adapter.py
+cd ../awiki-cli && python3 -m unittest discover -s scripts -p 'test_hermes_notify_adapter.py'
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Observed results:
+
+- The copied files are byte-identical to the Go repository sources.
+- Permissions were preserved from the Go repository: adapter `775`, test `664`.
+- Python file sizes remain below the requested review-size cap:
+  `hermes_notify_adapter.py` 673 lines and `test_hermes_notify_adapter.py`
+  187 lines.
+- Rust formatting, check, focused Hermes CLI/service contract tests, Python
+  compile/unit tests in both repositories, structure check, whitespace check,
+  and dependency audit passed.
+
+Implemented behavior:
+
+- Adds `scripts/hermes_notify_adapter.py` as the same stdlib-only adapter that
+  Go launches from `serviceProgram.Start`.
+- Adds `scripts/test_hermes_notify_adapter.py` as the same Python unit test
+  surface for adapter validation and host-event conversion helpers.
+- Keeps the existing Rust service-run boundary unchanged: preflight can now
+  resolve the repository-local adapter script asset, but hidden `service-run`
+  still returns the explicit deferred execution boundary instead of launching
+  the adapter process.
+
+Boundary note: this slice copies the runtime asset exactly. It does not
+translate the adapter to Rust, does not launch the adapter, does not implement
+platform service-manager behavior, and does not verify final release archive
+contents. Release archive inclusion for this asset remains a later packaging
+parity check because the current repository surface only exposes the npm
+install/run wrappers and no inspected archive manifest.
+
+Dependency note: no Rust dependency was added. The copied adapter uses only
+Python stdlib modules, matching Go repository behavior, and is outside the Rust
+binary dependency graph.
