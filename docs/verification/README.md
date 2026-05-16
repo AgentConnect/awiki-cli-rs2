@@ -355,6 +355,74 @@ the approved `rusqlite + bundled` SQLite path. It does not add OpenSSL,
 runtimes, YAML crates, platform service libraries, MLS provider crates, ANP SDK
 default/network features, or a new SQLite backend. TLS remains Rustls-first.
 
+## 2026-05-16 Runtime Host-Notify Enable/Disable Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_config_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/config -run 'TestUpdateHostNotifyEnabledWritesBooleanPointer' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions' -count=1
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `runtime_host_notify_enable_disable_contract`: 2 passed.
+- `runtime_contract`: 12 passed.
+- `runtime_openclaw_config_contract`: 5 passed.
+- `runtime_host_notify_sink_contract`: 10 passed.
+- `runtime_openclaw_host_notify_contract`: 11 passed.
+- `runtime_hermes_host_notify_contract`: 8 passed.
+- Go focused config and runtime dry-run selectors passed.
+- `cargo check`, structure check, whitespace check, and dependency audit passed.
+- Changed Rust source/test files remain below the default 1200-line
+  review-size cap: `runtime_handlers.rs` 721 lines, `cli/mod.rs` 451 lines,
+  `cmdmeta/mod.rs` 301 lines, and
+  `runtime_host_notify_enable_disable_contract.rs` 186 lines.
+
+Scope:
+
+- Adds Go catalog/dispatch parity for `runtime host-notify enable` and
+  `runtime host-notify disable`.
+- Preserves Go dry-run contract: summary
+  `Dry run: host notify enablement change planned`, plan action
+  `host_notify_enable_toggle`, `enabled`, and `config_file`.
+- Preserves local config behavior: live toggles only
+  `runtime.host_notify.enabled`, preserves the configured sink, and returns
+  summaries `Host notify enabled` / `Host notify disabled` with `host_notify`
+  plus listener-status context.
+
+Boundary note: the current Rust runtime layer reports local listener status but
+does not implement Go's full service-manager listener restart side effect for
+host-notify changes. That remains part of the broader runtime listener/service
+execution gap. `awiki-system-test` currently has no active selector for
+`runtime host-notify enable` or `runtime host-notify disable`.
+
+Parallelism note: a GPT-5.5 xhigh Native Agent added only the new focused test
+file under a bounded, non-overlapping write scope. The leader implemented
+source wiring, documentation, and final verification.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This command pair uses existing config writer and runtime status
+helpers and does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, async runtimes, YAML crates, platform service
+libraries, ANP SDK network/default features, or a new SQLite backend. TLS
+policy remains Rustls-first.
+
 ## 2026-05-16 Debug DB Handle-History Slice
 
 Status: locally verified.

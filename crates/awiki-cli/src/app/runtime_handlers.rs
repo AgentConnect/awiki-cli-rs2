@@ -211,6 +211,14 @@ impl App {
         self.run_runtime_listener_enable_toggle(false, "awiki-cli runtime listener disable")
     }
 
+    pub fn run_runtime_host_notify_enable(&self) -> Result<(), ExitError> {
+        self.run_runtime_host_notify_enable_toggle(true, "awiki-cli runtime host-notify enable")
+    }
+
+    pub fn run_runtime_host_notify_disable(&self) -> Result<(), ExitError> {
+        self.run_runtime_host_notify_enable_toggle(false, "awiki-cli runtime host-notify disable")
+    }
+
     fn run_runtime_listener_enable_toggle(
         &self,
         enabled: bool,
@@ -239,6 +247,41 @@ impl App {
             command_name,
             &resolved,
             json!({ "listener": listener }),
+            summary,
+            Vec::new(),
+        )
+    }
+
+    fn run_runtime_host_notify_enable_toggle(
+        &self,
+        enabled: bool,
+        command_name: &str,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        if self.globals.dry_run {
+            return self.render_success(
+                command_name,
+                &resolved,
+                json!({ "plan": { "action": "host_notify_enable_toggle", "enabled": enabled, "config_file": resolved.paths.config_file } }),
+                "Dry run: host notify enablement change planned",
+                Vec::new(),
+            );
+        }
+        config::update_host_notify_enabled(&resolved.paths, enabled).map_err(internal_anyhow)?;
+        let resolved = self.resolve_config()?;
+        let host_notify = runtime::host_notify_config_view(&resolved).map_err(internal_anyhow)?;
+        let summary = if enabled {
+            "Host notify enabled"
+        } else {
+            "Host notify disabled"
+        };
+        self.render_success(
+            command_name,
+            &resolved,
+            json!({
+                "host_notify": host_notify,
+                "listener": runtime::current_listener_status(&resolved),
+            }),
             summary,
             Vec::new(),
         )
