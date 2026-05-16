@@ -3,7 +3,7 @@ use crate::cli::ParsedCommand;
 use crate::config::Resolved;
 use crate::message::{
     self, GroupE2eePendingRequest, GroupE2eePublishKeyPackageRequest,
-    GroupE2eeRecoverMemberRequest, GroupE2eeStatusRequest,
+    GroupE2eeRecoverMemberRequest, GroupE2eeStatusRequest, GroupE2eeUpdateKeyRequest,
 };
 use crate::output::ExitError;
 use serde_json::{json, Value};
@@ -350,32 +350,59 @@ impl App {
             "group e2ee update-key",
             "Usage: awiki-cli group e2ee update-key --group <GROUP_DID> --member <MEMBER>",
         )?;
+        let device = string_flag_or(command, "device", DEFAULT_DEVICE);
+        let plan = json!({
+            "action": "group.e2ee.update_key",
+            "identity": self.globals.identity,
+            "runtime_mode": resolved.runtime_mode,
+            "provider": "exec",
+            "mls_data_dir": mls_data_dir(&resolved),
+            "group": group,
+            "member": member,
+            "device": device,
+            "key_package_purpose": "update",
+            "hidden_awiki_extension": true,
+            "p4_membership_mutate": false,
+            "orchestration": [
+                "lease purpose=update KeyPackage",
+                "anp-mls update-member-prepare",
+                "hidden group.e2ee.update",
+                "finalize on accept",
+                "abort on deterministic rejection",
+            ],
+        });
         if !self.globals.dry_run {
-            return Err(not_implemented_side_effect("group e2ee update-key"));
+            let mut result = message::update_group_e2ee_key(
+                &resolved,
+                &self.identity_manager(&resolved),
+                GroupE2eeUpdateKeyRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    member,
+                    device_id: device,
+                },
+            )
+            .map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the target remains active, has published an --update --group KeyPackage, the active identity is the owner, and anp-mls/message-service PR-B3 update APIs are enabled.",
+                )
+            })?;
+            if let Some(data) = result.data.as_object_mut() {
+                data.insert("plan".to_string(), plan);
+            }
+            return self.render_success(
+                "awiki-cli group e2ee update-key",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
         }
         self.render_group_e2ee_plan(
             "awiki-cli group e2ee update-key",
             &resolved,
-            json!({
-                "action": "group.e2ee.update_key",
-                "identity": self.globals.identity,
-                "runtime_mode": resolved.runtime_mode,
-                "provider": "exec",
-                "mls_data_dir": mls_data_dir(&resolved),
-                "group": group,
-                "member": member,
-                "device": string_flag_or(command, "device", DEFAULT_DEVICE),
-                "key_package_purpose": "update",
-                "hidden_awiki_extension": true,
-                "p4_membership_mutate": false,
-                "orchestration": [
-                    "lease purpose=update KeyPackage",
-                    "anp-mls update-member-prepare",
-                    "hidden group.e2ee.update",
-                    "finalize on accept",
-                    "abort on deterministic rejection",
-                ],
-            }),
+            plan,
             "Dry run: group e2ee update-key planned",
         )
     }

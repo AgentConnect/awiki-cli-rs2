@@ -313,7 +313,7 @@ pub(crate) fn abort_prepared_group_e2ee_commit(
     provider.commit_abort(&request, &record.did, device_id)
 }
 
-fn pending_commit_params(
+pub(crate) fn pending_commit_params(
     record: &StoredIdentity,
     group_did: &str,
     prepared: &Map<String, Value>,

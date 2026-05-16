@@ -820,6 +820,45 @@ Do not mix that optimization with the 1:1 translation lane.
   translation slices. Any provider-boundary optimization should be recorded
   later and not mixed into the 1:1 translation lane.
 
+## Group E2EE Update-Key Live Notes
+
+2026-05-16:
+
+- Wired live hidden `group e2ee update-key` without adding a crate, changing
+  Cargo manifests, enabling local ANP SDK MLS features in-process, or changing
+  the approved SQLite/TLS lanes.
+- The MLS update boundary remains external-provider parity:
+  `anp-mls group update-member-prepare --json-in - --data-dir <scoped-dir>`,
+  followed by `anp-mls group update-member-finalize --json-in - --data-dir
+  <scoped-dir>` after hidden service acceptance. Deterministic service
+  rejection uses the update-specific `anp-mls group update-member-abort`
+  command. The shared provider preserves binary resolution order, scoped
+  data-dir layout, executable checks, stdin/stdout JSON contract, and
+  15-second timeout.
+- Hidden RPC delivery reuses the existing authsdk/session and Rustls/std
+  message HTTP client through `message/group_e2ee_transport.rs`; TLS remains
+  Rustls-first. Update-key uses service head preflight, an update KeyPackage
+  lease with `purpose=update`, and hidden `group.e2ee.update` with
+  `group-e2ee` security.
+- Local E2EE summary persistence and optional local welcome processing reuse
+  the existing group SQLite cache, `rusqlite + bundled` lane, and welcome
+  helper from the add/rejoin slice. No pure-Rust SQLite optimization is mixed
+  into this translation slice.
+- Active-member update follows Go's no-P4-membership-mutation model: it does
+  not call public `group.add`, does not call `group.e2ee.recover_member`, does
+  not put P4 `member_did` or `role` fields in the hidden update body, and
+  returns `p4_membership_mutate=false`.
+- No TLS, WebSocket, platform, or ANP SDK dependency decision changed. This
+  slice does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+  `hyper`, WebSocket crates, async runtimes, YAML crates, platform service
+  libraries, MLS provider crates, ANP SDK default/network features, or a new
+  SQLite backend.
+- Repair, commit replay beyond finalize/abort and local welcome processing,
+  group E2EE send/decrypt, WebSocket local bridge group E2EE transport, and
+  full awiki-system-test group-E2EE acceptance remain separate translation
+  slices. Any provider-boundary optimization should be recorded later and not
+  mixed into the 1:1 translation lane.
+
 ## Group E2EE Recover-Member Live Notes
 
 2026-05-16:

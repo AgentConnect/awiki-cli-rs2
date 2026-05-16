@@ -11,6 +11,7 @@ mod group_e2ee_recover;
 mod group_e2ee_remove;
 mod group_e2ee_status;
 mod group_e2ee_transport;
+mod group_e2ee_update;
 mod group_e2ee_wire;
 mod group_service;
 mod group_wire;
@@ -50,6 +51,7 @@ pub use group_e2ee_status::{
     inspect_group_e2ee_status, pull_group_e2ee_notices, GroupE2eePendingRequest,
     GroupE2eeStatusRequest,
 };
+pub use group_e2ee_update::update_group_e2ee_key;
 pub use group_e2ee_wire::{
     build_group_e2ee_add_rpc_params, build_group_e2ee_create_rpc_params,
     build_group_e2ee_get_key_package_rpc_params,

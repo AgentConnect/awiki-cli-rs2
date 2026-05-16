@@ -108,6 +108,54 @@ impl MlsExecProvider {
         result_object(response)
     }
 
+    pub(crate) fn update_member_prepare(
+        &self,
+        request: &Value,
+        agent_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let response = self.call(
+            "group",
+            "update-member-prepare",
+            request,
+            agent_did,
+            device_id,
+        )?;
+        result_object(response)
+    }
+
+    pub(crate) fn update_member_finalize(
+        &self,
+        request: &Value,
+        agent_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let response = self.call(
+            "group",
+            "update-member-finalize",
+            request,
+            agent_did,
+            device_id,
+        )?;
+        result_object(response)
+    }
+
+    pub(crate) fn update_member_abort(
+        &self,
+        request: &Value,
+        agent_did: &str,
+        device_id: &str,
+    ) -> Result<Map<String, Value>, MessageError> {
+        let response = self.call(
+            "group",
+            "update-member-abort",
+            request,
+            agent_did,
+            device_id,
+        )?;
+        result_object(response)
+    }
+
     pub(crate) fn commit_finalize(
         &self,
         request: &Value,
