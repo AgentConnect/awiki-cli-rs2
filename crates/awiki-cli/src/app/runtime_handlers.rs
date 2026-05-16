@@ -1,4 +1,8 @@
-use super::{ensure_sqlite_schema, init_dirs, internal_anyhow, internal_io, App};
+use super::{
+    ensure_sqlite_schema, init_dirs, internal_anyhow, internal_io,
+    runtime_hermes_handlers::host_notify_guidance_warnings_for,
+    runtime_host_notify_refresh::refresh_listener_for_host_notify_change, App,
+};
 use crate::cli::ParsedCommand;
 use crate::config::{self, Resolved};
 use crate::output::ExitError;
@@ -270,6 +274,9 @@ impl App {
         config::update_host_notify_enabled(&resolved.paths, enabled).map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
         let host_notify = runtime::host_notify_config_view(&resolved).map_err(internal_anyhow)?;
+        let (listener, mut warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(internal_anyhow)?;
+        warnings.extend(host_notify_guidance_warnings_for(&resolved, ""));
         let summary = if enabled {
             "Host notify enabled"
         } else {
@@ -280,10 +287,10 @@ impl App {
             &resolved,
             json!({
                 "host_notify": host_notify,
-                "listener": runtime::current_listener_status(&resolved),
+                "listener": listener,
             }),
             summary,
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -415,15 +422,18 @@ impl App {
             .map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
         let host_notify = runtime::host_notify_config_view(&resolved).map_err(internal_anyhow)?;
+        let (listener, mut warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(internal_anyhow)?;
+        warnings.extend(host_notify_guidance_warnings_for(&resolved, ""));
         self.render_success(
             "awiki-cli runtime host-notify config set",
             &resolved,
             json!({
                 "host_notify": host_notify,
-                "listener": runtime::current_listener_status(&resolved),
+                "listener": listener,
             }),
             "Host notify config updated",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -467,12 +477,14 @@ impl App {
             .get("openclaw")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        let (listener, warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime host-notify openclaw set",
             &resolved,
-            json!({ "openclaw": openclaw, "listener": runtime::current_listener_status(&resolved) }),
+            json!({ "openclaw": openclaw, "listener": listener }),
             "OpenClaw host notify config updated",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -501,12 +513,14 @@ impl App {
         }
         config::set_openclaw_token(&resolved.paths, &token).map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
+        let (listener, warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime host-notify openclaw set-token",
             &resolved,
-            json!({ "openclaw": { "token_configured": true }, "listener": runtime::current_listener_status(&resolved) }),
+            json!({ "openclaw": { "token_configured": true }, "listener": listener }),
             "OpenClaw token updated",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -523,12 +537,14 @@ impl App {
         }
         config::clear_openclaw_token(&resolved.paths).map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
+        let (listener, warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime host-notify openclaw clear-token",
             &resolved,
-            json!({ "openclaw": { "token_configured": false }, "listener": runtime::current_listener_status(&resolved) }),
+            json!({ "openclaw": { "token_configured": false }, "listener": listener }),
             "OpenClaw token cleared",
-            Vec::new(),
+            warnings,
         )
     }
 

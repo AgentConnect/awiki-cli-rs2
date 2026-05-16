@@ -1,4 +1,6 @@
-use super::{internal_anyhow, App};
+use super::{
+    internal_anyhow, runtime_host_notify_refresh::refresh_listener_for_host_notify_change, App,
+};
 use crate::cli::ParsedCommand;
 use crate::config::{self, Resolved};
 use crate::output::ExitError;
@@ -303,17 +305,22 @@ impl App {
                 "Check host notify configuration and local OpenClaw route registry state.",
             )
         })?;
-        let listener_status = runtime::current_listener_status(&resolved);
+        let (listener_status, listener_warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(|err| {
+                ExitError::new(
+                    "internal_error",
+                    1,
+                    err.to_string(),
+                    "Hermes host notify setup was written, but the listener could not be restarted to apply it.",
+                )
+            })?;
         let bridge_status = runtime::hermes_bridge::status_for(&resolved);
-        let mut warnings = host_notify_guidance_warnings_for(&resolved, &deliver);
+        let mut warnings = listener_warnings;
+        warnings.extend(host_notify_guidance_warnings_for(&resolved, &deliver));
         warnings.extend(route_state.warnings.clone());
         warnings.extend(bridge_status.warnings.clone());
         warnings.push(
             "Hermes bridge service install/start is deferred in this Rust parity slice; run `awiki-cli runtime host-notify hermes status` after the bridge execution slice lands."
-                .to_string(),
-        );
-        warnings.push(
-            "Listener refresh/restart is deferred in this Rust parity slice; host notify changes will apply the next time the listener starts."
                 .to_string(),
         );
         if deliver != "log" && !route_state.home_channel_configured {
@@ -408,16 +415,18 @@ impl App {
         config::update_hermes_settings(&resolved.paths, notify_url.as_deref(), deliver.as_deref())
             .map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
-        let warnings = host_notify_guidance_warnings_for(
+        let (listener, mut warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(internal_anyhow)?;
+        warnings.extend(host_notify_guidance_warnings_for(
             &resolved,
             &resolve_hermes_deliver_target(&resolved, ""),
-        );
+        ));
         self.render_success(
             "awiki-cli runtime host-notify hermes set",
             &resolved,
             json!({
                 "hermes": runtime::resolve(&resolved).host_notify.hermes.map(|hermes| json!(hermes)).unwrap_or_else(|| json!({})),
-                "listener": runtime::current_listener_status(&resolved),
+                "listener": listener,
             }),
             "Hermes host notify config updated",
             warnings,
@@ -449,16 +458,18 @@ impl App {
         }
         config::set_hermes_secret(&resolved.paths, &value).map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
-        let warnings = host_notify_guidance_warnings_for(
+        let (listener, mut warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(internal_anyhow)?;
+        warnings.extend(host_notify_guidance_warnings_for(
             &resolved,
             &resolve_hermes_deliver_target(&resolved, ""),
-        );
+        ));
         self.render_success(
             "awiki-cli runtime host-notify hermes set-secret",
             &resolved,
             json!({
                 "hermes": { "secret_configured": true },
-                "listener": runtime::current_listener_status(&resolved),
+                "listener": listener,
             }),
             "Hermes secret updated",
             warnings,
@@ -478,15 +489,17 @@ impl App {
         }
         config::clear_hermes_secret(&resolved.paths).map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;
+        let (listener, warnings) =
+            refresh_listener_for_host_notify_change(&resolved).map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli runtime host-notify hermes clear-secret",
             &resolved,
             json!({
                 "hermes": { "secret_configured": false },
-                "listener": runtime::current_listener_status(&resolved),
+                "listener": listener,
             }),
             "Hermes secret cleared",
-            Vec::new(),
+            warnings,
         )
     }
 }
@@ -616,7 +629,10 @@ fn hex_lower(bytes: &[u8]) -> String {
     output
 }
 
-fn host_notify_guidance_warnings_for(resolved: &Resolved, deliver_override: &str) -> Vec<String> {
+pub(super) fn host_notify_guidance_warnings_for(
+    resolved: &Resolved,
+    deliver_override: &str,
+) -> Vec<String> {
     let config = runtime::resolve(resolved).host_notify;
     if config.sink != "hermes" {
         return Vec::new();

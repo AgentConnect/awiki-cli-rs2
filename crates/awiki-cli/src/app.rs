@@ -25,6 +25,7 @@ mod msg_handlers;
 mod page_handlers;
 mod runtime_handlers;
 mod runtime_hermes_handlers;
+mod runtime_host_notify_refresh;
 mod site_handlers;
 mod update_handlers;
 pub(super) mod update_preflight;

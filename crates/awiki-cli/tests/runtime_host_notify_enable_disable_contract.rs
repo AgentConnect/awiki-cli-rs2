@@ -114,6 +114,85 @@ fn host_notify_disable_and_enable_toggle_config_and_preserve_sink() {
     assert_eq!(envelope["data"]["host_notify"]["sink"], "file");
 }
 
+#[test]
+fn host_notify_change_restarts_running_listener_like_go_contract() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let start = awiki_cmd(&["runtime", "listener", "start"], workspace.path());
+    assert_success(&start);
+    let envelope = success_json(&start);
+    assert_eq!(envelope["data"]["listener"]["running"], true);
+
+    let set_sink = awiki_cmd(
+        &["runtime", "host-notify", "config", "set", "--sink", "file"],
+        workspace.path(),
+    );
+    assert_success(&set_sink);
+    let envelope = success_json(&set_sink);
+    assert_eq!(envelope["data"]["host_notify"]["sink"], "file");
+    assert_eq!(envelope["data"]["listener"]["running"], true);
+    assert_warning_contains(
+        &envelope,
+        "Listener restarted to apply host notify configuration.",
+    );
+
+    let status = awiki_cmd(&["runtime", "listener", "status"], workspace.path());
+    assert_success(&status);
+    let envelope = success_json(&status);
+    assert_eq!(envelope["data"]["listener"]["running"], true);
+    assert_eq!(envelope["data"]["listener"]["host_notify"]["sink"], "file");
+}
+
+#[test]
+fn host_notify_change_when_listener_is_stopped_reports_start_warning_like_go_contract() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let set_sink = awiki_cmd(
+        &["runtime", "host-notify", "config", "set", "--sink", "file"],
+        workspace.path(),
+    );
+    assert_success(&set_sink);
+    let envelope = success_json(&set_sink);
+    assert_eq!(envelope["data"]["host_notify"]["sink"], "file");
+    assert_eq!(envelope["data"]["listener"]["running"], false);
+    assert_warning_contains(
+        &envelope,
+        "Host notify changes will apply the next time the listener starts.",
+    );
+    assert_warning_absent(
+        &envelope,
+        "Listener restarted to apply host notify configuration.",
+    );
+}
+
+#[test]
+fn host_notify_change_when_listener_disabled_reports_enablement_warning_like_go_contract() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let disable_listener = awiki_cmd(
+        &["runtime", "listener", "config", "set", "--enabled=false"],
+        workspace.path(),
+    );
+    assert_success(&disable_listener);
+
+    let set_sink = awiki_cmd(
+        &["runtime", "host-notify", "config", "set", "--sink", "file"],
+        workspace.path(),
+    );
+    assert_success(&set_sink);
+    let envelope = success_json(&set_sink);
+    assert_eq!(envelope["data"]["host_notify"]["sink"], "file");
+    assert_eq!(envelope["data"]["listener"]["running"], false);
+    assert_warning_contains(
+        &envelope,
+        "Host notify changes will apply the next time the websocket listener is enabled.",
+    );
+    assert_warning_absent(
+        &envelope,
+        "Listener restarted to apply host notify configuration.",
+    );
+}
+
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
@@ -154,6 +233,29 @@ fn success_json(output: &Output) -> Value {
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true);
     envelope
+}
+
+fn assert_warning_contains(envelope: &Value, expected: &str) {
+    assert!(
+        envelope["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings
+                .iter()
+                .any(|value| value.as_str().unwrap_or_default().contains(expected))),
+        "expected warning containing {expected:?}; envelope: {envelope}"
+    );
+}
+
+fn assert_warning_absent(envelope: &Value, unexpected: &str) {
+    let has_unexpected = envelope["warnings"].as_array().is_some_and(|warnings| {
+        warnings
+            .iter()
+            .any(|value| value.as_str().unwrap_or_default().contains(unexpected))
+    });
+    assert!(
+        !has_unexpected,
+        "unexpected warning containing {unexpected:?}; envelope: {envelope}"
+    );
 }
 
 struct TempDir {

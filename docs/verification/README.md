@@ -2,6 +2,71 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Host Notify Listener Refresh Slice
+
+Timestamp: 2026-05-17T07:45:47+0800.
+
+Scope: translate Go `internal/cli/runtime.go`
+`refreshListenerForHostNotifyChange` on the current Rust local-listener
+boundary and wire it into host-notify config/enable, OpenClaw config/token, and
+Hermes local writes.
+
+What changed:
+
+- Added `app::runtime_host_notify_refresh` with the Go branch order: load
+  listener status, skip restart with the websocket/listener-enabled warning
+  when runtime is not active, skip restart with the listener-start warning when
+  stopped, otherwise stop the listener and apply runtime policy.
+- Prepends the Go restart warning and appends listener warnings after a running
+  listener refresh.
+- Reuses the helper after non-dry-run host-notify config, enable/disable,
+  OpenClaw set/set-token/clear-token, Hermes setup, Hermes set, Hermes
+  set-secret, and Hermes clear-secret writes.
+- Updated parity/dependency/deferred-boundary documentation to keep the real
+  platform service-manager restart, Hermes bridge `Apply`, bridge service
+  install/start, owned health probing, and listener foreground execution
+  separate.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_openclaw --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/cli -run 'TestRefreshListenerForHostNotifyChange|TestRuntimeDryRunPlansCoverStableActions' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/app.rs crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/src/app/runtime_host_notify_refresh.rs crates/awiki-cli/tests/runtime_host_notify_enable_disable_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+```
+
+Observed results:
+
+- Rust format, check, focused host-notify/Hermes/OpenClaw contracts,
+  structure check, and whitespace check passed.
+- Go focused `internal/cli` refresh/dry-run tests passed.
+- Dependency audit added no dependency. Allowed hits remain the existing
+  Rustls/webpki/ring TLS path and the accepted `rusqlite` plus bundled
+  `libsqlite3-sys` SQLite path; no OpenSSL, `native-tls`, WebSocket crate,
+  YAML crate, or platform service-manager crate was added.
+- Changed Rust source/test files remain below the default 1200-line cap:
+  `app.rs` 1026 lines, `runtime_handlers.rs` 737 lines,
+  `runtime_hermes_handlers.rs` 737 lines,
+  `runtime_host_notify_refresh.rs` 40 lines, and
+  `runtime_host_notify_enable_disable_contract.rs` 288 lines.
+
+Boundary note: this slice only applies Go refresh semantics through the current
+local listener state helpers. It does not implement real platform
+service-manager restart/control, real foreground listener service execution,
+Hermes bridge `Apply`, bridge service install/start, owned bridge health
+probing, or full `awiki-system-test` listener/Hermes acceptance.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Listener RunService Outer Plan Slice
 
 Timestamp: 2026-05-17T13:35:00+0800.
