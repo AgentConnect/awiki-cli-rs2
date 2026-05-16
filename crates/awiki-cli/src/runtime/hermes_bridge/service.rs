@@ -36,11 +36,70 @@ pub struct BridgeAdapterCommandPlan {
     pub stderr_inherits_parent: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeServiceStatusSnapshot {
+    pub installed: bool,
+    pub running: bool,
+    pub platform: String,
+    pub service_name: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeApplyDecision {
     EnsureInstalledThenStart,
     Restart,
     Start,
+}
+
+pub fn status_from_parts(
+    service_name: String,
+    config_result: anyhow::Result<BridgeConfig>,
+    service_status_result: anyhow::Result<Option<BridgeServiceStatusSnapshot>>,
+    mut health_available: impl FnMut(&str) -> bool,
+) -> BridgeStatus {
+    let mut status = BridgeStatus {
+        service_name,
+        service_platform: String::new(),
+        installed: false,
+        running: false,
+        bridge_available: false,
+        health_url: String::new(),
+        config: None,
+        warnings: Vec::new(),
+    };
+    let config = match config_result {
+        Ok(config) => config,
+        Err(err) => {
+            status.warnings.push(err.to_string());
+            return status;
+        }
+    };
+    status.health_url = config.health_url.clone();
+    match service_status_result {
+        Ok(Some(service_status)) => {
+            status.installed = service_status.installed;
+            status.running = service_status.running;
+            status.service_platform = service_status.platform;
+            status.service_name = service_status.service_name;
+        }
+        Ok(None) => {
+            status.service_platform = "rust-local".to_string();
+        }
+        Err(err) => status
+            .warnings
+            .push(format!("Hermes bridge service status unavailable: {err}")),
+    }
+    if status.running {
+        status.bridge_available = health_available(&config.health_url);
+        if !status.bridge_available {
+            status
+                .warnings
+                .push("Hermes bridge health endpoint is not responding".to_string());
+        }
+    }
+    status.warnings.extend(config.route_state.warnings.clone());
+    status.config = Some(config);
+    status
 }
 
 pub fn service_name_for(resolved: Option<&Resolved>) -> String {

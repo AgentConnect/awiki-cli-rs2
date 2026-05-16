@@ -15,10 +15,10 @@ pub use route::{ensure_route, EnsureRouteOptions};
 pub use service::{
     adapter_command_plan_for, apply_decision_for, bridge_health_available_with,
     bridge_status_ready, running_in_bridge_service_mode, running_in_bridge_service_mode_with,
-    service_config_plan_for, service_display_name_for, service_name_for,
+    service_config_plan_for, service_display_name_for, service_name_for, status_from_parts,
     wait_for_bridge_status_with, BridgeAdapterCommandPlan, BridgeApplyDecision,
-    BridgeServiceConfigPlan, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX,
-    SERVICE_NAME_PREFIX,
+    BridgeServiceConfigPlan, BridgeServiceStatusSnapshot, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION,
+    SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
 };
 
 pub const DEFAULT_WEBHOOK_PORT: u32 = 8644;
@@ -498,27 +498,12 @@ pub fn inspect_route(home: &str, route_name: &str) -> anyhow::Result<RouteState>
 }
 
 pub fn status_for(resolved: &Resolved) -> BridgeStatus {
-    let mut status = BridgeStatus {
-        service_name: service_name_for(Some(resolved)),
-        service_platform: String::new(),
-        installed: false,
-        running: false,
-        bridge_available: false,
-        health_url: String::new(),
-        config: None,
-        warnings: Vec::new(),
-    };
-    match resolve_bridge_config(resolved) {
-        Ok(config) => {
-            status.health_url = config.health_url.clone();
-            status.config = Some(config);
-            status.service_platform = "rust-local".to_string();
-        }
-        Err(err) => {
-            status.warnings.push(err.to_string());
-        }
-    }
-    status
+    status_from_parts(
+        service_name_for(Some(resolved)),
+        resolve_bridge_config(resolved),
+        Ok(None),
+        |_| false,
+    )
 }
 
 pub fn resolve_bridge_config(resolved: &Resolved) -> anyhow::Result<BridgeConfig> {

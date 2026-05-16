@@ -9766,3 +9766,69 @@ unchanged. This extension reuses existing structs/std types and does not add a
 process-supervision crate, platform service library, HTTP/TLS client,
 OpenSSL/native-tls path, YAML crate, WebSocket crate, ANP SDK network feature,
 or SQLite dependency.
+
+## 2026-05-16 Hermes bridge status aggregation helper extension
+
+Timestamp: 2026-05-16T15:15:34Z / 2026-05-16T23:15:34+0800.
+
+Scope: extend the Hermes bridge service helper slice with injectable
+`StatusFor` aggregation logic from Go `internal/runtime/hermesbridge/service.go`
+without adding platform service-manager or HTTP-client dependencies.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+```
+
+Observed results:
+
+- `cargo fmt --check` passed after formatting.
+- `cargo check -p awiki-cli --locked` passed.
+- `runtime_hermes_bridge_service_contract`: 12 passed.
+- `runtime_hermes_cli_contract`: 5 passed.
+- Go `./internal/runtime/hermesbridge`: passed.
+- Structure check, whitespace check, and dependency audit passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `runtime/hermes_bridge.rs` 865 lines,
+  `runtime/hermes_bridge/route.rs` 686 lines,
+  `runtime/hermes_bridge/service.rs` 248 lines, and
+  `runtime_hermes_bridge_service_contract.rs` 488 lines. No file-size
+  exception is needed.
+
+Implemented behavior:
+
+- Adds `BridgeServiceStatusSnapshot` and
+  `runtime::hermes_bridge::status_from_parts`.
+- Preserves Go `StatusFor` config-error boundary: return a status with the
+  service name and warning instead of failing the caller.
+- Preserves service-status warning text:
+  `Hermes bridge service status unavailable: <err>`.
+- Preserves service-status field merge behavior when injected status is
+  available: installed/running/platform/service-name replace the defaults.
+- Preserves Go running-only health probing and warning behavior:
+  `Hermes bridge health endpoint is not responding`.
+- Preserves route-state warning propagation after service/health warnings.
+- Keeps current Rust production boundary by making `status_for` call
+  `status_from_parts(..., Ok(None), |_| false)`, so public CLI status still
+  reports the existing `rust-local` no-platform-service state until a later
+  service-manager slice supplies real status.
+
+Boundary note: this remains a pure helper. It does not implement
+`kardianos/service` parity, platform service lookup/control, owned HTTP health
+client construction, adapter process lifecycle, non-dry-run Hermes setup,
+or awiki-system-test Hermes setup acceptance.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This extension uses existing structs and injected closures only; it
+does not add platform service libraries, HTTP/TLS clients, OpenSSL/native-tls,
+bundled OpenSSL, YAML crates, WebSocket crates, process supervision crates, ANP
+SDK network features, or SQLite dependencies.

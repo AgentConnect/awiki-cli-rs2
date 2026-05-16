@@ -104,6 +104,123 @@ fn hermes_bridge_adapter_command_plan_matches_go_service_program_start() {
 }
 
 #[test]
+fn hermes_bridge_status_from_parts_matches_go_config_warning_boundary() {
+    let status = hermes_bridge::status_from_parts(
+        "awiki-cli-hermes-bridge".to_string(),
+        Err(anyhow::anyhow!("workspace configuration is required")),
+        Ok(None),
+        |_| unreachable!("health probe should not run when config fails"),
+    );
+
+    assert_eq!(status.service_name, "awiki-cli-hermes-bridge");
+    assert!(!status.installed);
+    assert!(!status.running);
+    assert!(!status.bridge_available);
+    assert!(status.config.is_none());
+    assert_eq!(status.warnings, vec!["workspace configuration is required"]);
+}
+
+#[test]
+fn hermes_bridge_status_from_parts_matches_go_service_status_warning_boundary() {
+    let status = hermes_bridge::status_from_parts(
+        "initial-name".to_string(),
+        Ok(test_bridge_config_with_route_warnings(
+            "/workspace/.hermes",
+            &["route warning"],
+        )),
+        Err(anyhow::anyhow!("status failed")),
+        |_| unreachable!("health probe should not run when service is not running"),
+    );
+
+    assert_eq!(status.service_name, "initial-name");
+    assert_eq!(status.service_platform, "");
+    assert!(!status.installed);
+    assert!(!status.running);
+    assert!(!status.bridge_available);
+    assert_eq!(status.health_url, "http://127.0.0.1:8765/healthz");
+    assert!(status.config.is_some());
+    assert_eq!(
+        status.warnings,
+        vec![
+            "Hermes bridge service status unavailable: status failed",
+            "route warning",
+        ]
+    );
+}
+
+#[test]
+fn hermes_bridge_status_from_parts_probes_health_only_when_running_like_go() {
+    let mut probed = Vec::new();
+    let status = hermes_bridge::status_from_parts(
+        "initial-name".to_string(),
+        Ok(test_bridge_config("/workspace/.hermes")),
+        Ok(Some(hermes_bridge::BridgeServiceStatusSnapshot {
+            installed: true,
+            running: true,
+            platform: "linux-systemd".to_string(),
+            service_name: "platform-name".to_string(),
+        })),
+        |url| {
+            probed.push(url.to_string());
+            false
+        },
+    );
+
+    assert_eq!(status.service_name, "platform-name");
+    assert_eq!(status.service_platform, "linux-systemd");
+    assert!(status.installed);
+    assert!(status.running);
+    assert!(!status.bridge_available);
+    assert_eq!(probed, vec!["http://127.0.0.1:8765/healthz"]);
+    assert_eq!(
+        status.warnings,
+        vec!["Hermes bridge health endpoint is not responding"]
+    );
+
+    let mut stopped_probe_count = 0usize;
+    let stopped = hermes_bridge::status_from_parts(
+        "initial-name".to_string(),
+        Ok(test_bridge_config("/workspace/.hermes")),
+        Ok(Some(hermes_bridge::BridgeServiceStatusSnapshot {
+            installed: true,
+            running: false,
+            platform: "linux-systemd".to_string(),
+            service_name: "platform-name".to_string(),
+        })),
+        |_| {
+            stopped_probe_count += 1;
+            true
+        },
+    );
+    assert!(stopped.installed);
+    assert!(!stopped.running);
+    assert!(!stopped.bridge_available);
+    assert_eq!(stopped_probe_count, 0);
+    assert!(stopped.warnings.is_empty());
+}
+
+#[test]
+fn hermes_bridge_status_from_parts_keeps_current_rust_local_boundary() {
+    let status = hermes_bridge::status_from_parts(
+        "initial-name".to_string(),
+        Ok(test_bridge_config_with_route_warnings(
+            "/workspace/.hermes",
+            &["route warning"],
+        )),
+        Ok(None),
+        |_| unreachable!("health probe should not run without running service"),
+    );
+
+    assert_eq!(status.service_name, "initial-name");
+    assert_eq!(status.service_platform, "rust-local");
+    assert!(!status.installed);
+    assert!(!status.running);
+    assert!(!status.bridge_available);
+    assert_eq!(status.warnings, vec!["route warning"]);
+    assert!(status.config.is_some());
+}
+
+#[test]
 fn hermes_bridge_service_mode_detection_matches_hidden_go_command() {
     let args = vec![
         "awiki-cli".to_string(),
@@ -324,6 +441,10 @@ fn path_string(path: &std::path::Path) -> String {
 }
 
 fn test_bridge_config(hermes_home: &str) -> BridgeConfig {
+    test_bridge_config_with_route_warnings(hermes_home, &[])
+}
+
+fn test_bridge_config_with_route_warnings(hermes_home: &str, warnings: &[&str]) -> BridgeConfig {
     BridgeConfig {
         notify_url: "http://127.0.0.1:8765/notify/host-event".to_string(),
         health_url: "http://127.0.0.1:8765/healthz".to_string(),
@@ -336,13 +457,13 @@ fn test_bridge_config(hermes_home: &str) -> BridgeConfig {
         hermes_webhook_url: "http://127.0.0.1:8644/webhooks/notify".to_string(),
         route_name: "notify".to_string(),
         route_secret: "route-secret".to_string(),
-        route_state: test_route_state(hermes_home),
+        route_state: test_route_state(hermes_home, warnings),
         adapter_script: "/opt/awiki/scripts/hermes_notify_adapter.py".to_string(),
         python_executable: "/usr/bin/python3".to_string(),
     }
 }
 
-fn test_route_state(hermes_home: &str) -> RouteState {
+fn test_route_state(hermes_home: &str, warnings: &[&str]) -> RouteState {
     RouteState {
         hermes_home: hermes_home.to_string(),
         config_file: "/workspace/.hermes/config.yaml".to_string(),
@@ -362,6 +483,6 @@ fn test_route_state(hermes_home: &str) -> RouteState {
         home_channel_supported: true,
         feishu_credentials_configured: true,
         notify_webhook_url: "http://127.0.0.1:8644/webhooks/notify".to_string(),
-        warnings: Vec::new(),
+        warnings: warnings.iter().map(|value| (*value).to_string()).collect(),
     }
 }
