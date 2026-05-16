@@ -210,6 +210,36 @@ fn hermes_status_reports_configured_sink_and_env_secret_when_available() {
     assert_eq!(envelope["data"]["ready"], false);
 }
 
+#[test]
+fn hermes_bridge_service_run_dispatches_to_deferred_bridge_boundary() {
+    let workspace = TempDir::new("bridge-service-run").expect("temp workspace");
+
+    let output = awiki_cmd(
+        &["runtime", "host-notify", "hermes", "bridge", "service-run"],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&output, 1);
+    let envelope = error_json(&output);
+
+    assert_eq!(envelope["error"]["code"], "not_implemented");
+    assert_eq!(
+        envelope["error"]["message"],
+        "runtime host-notify hermes bridge service-run requires Hermes bridge service execution in a later port slice."
+    );
+    assert_eq!(
+        envelope["error"]["hint"],
+        "Translate serviceProgram.Start/Stop and RunService before running this hidden service command."
+    );
+    assert!(
+        !envelope["error"]["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("schema"),
+        "hidden service-run should not fall through to the generic schema stub"
+    );
+}
+
 fn awiki_cmd(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let home = workspace.join("home");
     let hermes_home = workspace.join("hermes-home");

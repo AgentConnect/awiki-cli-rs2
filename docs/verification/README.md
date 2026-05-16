@@ -10103,3 +10103,71 @@ service install/start/restart, or health probing.
 
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. The slice uses only std path and filesystem APIs.
+
+## 2026-05-16 Hermes bridge service-run dispatch boundary
+
+Timestamp: 2026-05-16T16:01:43Z / 2026-05-17T00:01:43+0800.
+
+Scope: route the hidden Hermes bridge `runtime host-notify hermes bridge
+service-run` command to a dedicated deferred bridge-execution boundary, matching
+the Go command dispatch shape without starting the bridge adapter or invoking a
+platform service manager.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+git diff --check
+cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
+```
+
+Observed results:
+
+- `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
+  check-structure`, and `git diff --check` passed.
+- `runtime_hermes_cli_contract`: 6 passed, including the new hidden
+  service-run dispatch test.
+- `update_contract`: 6 passed, preserving the update-preflight exemptions for
+  hidden service commands.
+- `runtime_hermes_bridge_service_contract`: 14 passed.
+- Go focused `internal/cli` Hermes tests passed.
+- Go `internal/runtime/hermesbridge` tests passed.
+- Dependency audit output showed only existing allowed hits: Rustls/ring
+  transport dependencies, `base64`/`sha2`, and the approved
+  `rusqlite`/`libsqlite3-sys` bundled-SQLite toolchain entries
+  (`cc`, `pkg-config`, `vcpkg`). No OpenSSL, `native-tls`, bundled OpenSSL,
+  platform service, YAML, WebSocket, or new HTTP-client dependency was added.
+- Touched source/test files remain below the default 1200-line review-size
+  cap: `runtime_hermes_handlers.rs` 722 lines, `cli/mod.rs` 482 lines, and
+  `runtime_hermes_cli_contract.rs` 366 lines. No file-size exception is needed.
+
+Implemented behavior:
+
+- The CLI dispatcher now maps
+  `runtime.host-notify.hermes.bridge.service-run` to a dedicated app handler
+  instead of falling through to the generic schema stub.
+- The app handler resolves runtime config like Go's
+  `runRuntimeHostNotifyHermesBridgeServiceRun` entry point, then returns an
+  explicit `not_implemented` boundary for the still-deferred
+  `hermesbridge.RunService` / `serviceProgram.Start` / `serviceProgram.Stop`
+  translation.
+- The focused CLI contract asserts the command exits at the dedicated bridge
+  boundary and that the hint no longer references the generic schema stub.
+
+Boundary note: this is intentionally dispatch-only. It does not start or stop
+the Hermes adapter process, does not wait on adapter lifecycle, does not
+install/start/restart/stop platform services, does not run owned bridge health
+probing, and does not claim full Go `RunService` parity.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The slice reuses existing CLI dispatch, config resolution, and error
+envelope code.

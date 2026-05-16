@@ -351,6 +351,23 @@ impl App {
         )
     }
 
+    pub fn run_runtime_host_notify_hermes_bridge_service_run(&self) -> Result<(), ExitError> {
+        let _resolved = self.resolve_config().map_err(|err| {
+            ExitError::new(
+                "internal_error",
+                1,
+                err.detail.message,
+                "Run `awiki-cli doctor` to inspect runtime configuration.",
+            )
+        })?;
+        Err(ExitError::new(
+            "not_implemented",
+            1,
+            "runtime host-notify hermes bridge service-run requires Hermes bridge service execution in a later port slice.",
+            "Translate serviceProgram.Start/Stop and RunService before running this hidden service command.",
+        ))
+    }
+
     pub fn run_runtime_host_notify_hermes_set(
         &self,
         command: &ParsedCommand,
