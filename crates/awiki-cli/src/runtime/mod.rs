@@ -37,6 +37,7 @@ pub mod listener_session_bootstrap;
 pub mod listener_session_lookup;
 pub mod listener_session_loop;
 pub mod listener_session_state;
+pub mod listener_supervisor_shutdown;
 pub mod listener_wsclient;
 pub mod openclaw_host_notify;
 pub mod openclaw_routes;
