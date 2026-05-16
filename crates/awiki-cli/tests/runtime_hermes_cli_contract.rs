@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -243,7 +243,7 @@ fn hermes_bridge_service_run_validates_bridge_config_before_deferred_boundary() 
 
 #[cfg(unix)]
 #[test]
-fn hermes_bridge_service_run_dispatches_to_deferred_boundary_after_preflight() {
+fn hermes_bridge_service_run_starts_adapter_until_signal_like_go_run_service() {
     let workspace = TempDir::new("bridge-service-run-ready").expect("temp workspace");
     let hermes_home = workspace.path().join("hermes-home");
     std::fs::create_dir_all(&hermes_home).expect("Hermes home dir");
@@ -261,42 +261,57 @@ fn hermes_bridge_service_run_dispatches_to_deferred_boundary_after_preflight() {
 "#,
     )
     .expect("write Hermes config");
-    install_adapter_script_candidate();
     let bin = workspace.path().join("bin");
     std::fs::create_dir_all(&bin).expect("bin dir");
-    make_executable(&bin.join("python3")).expect("python3 executable");
+    let marker = workspace.path().join("adapter-started.txt");
+    make_executable_script(
+        &bin.join("python3"),
+        r#"#!/bin/sh
+printf started > "$AWIKI_HERMES_TEST_MARKER"
+exec /bin/sleep 30
+"#,
+    )
+    .expect("python3 executable");
     let path_env = path_string(&bin);
+    let marker_env = path_string(&marker);
 
-    let output = awiki_cmd(
+    let mut command = awiki_command(
         &["runtime", "host-notify", "hermes", "bridge", "service-run"],
         workspace.path(),
         &[
             ("AWIKI_HOST_NOTIFY_HERMES_SECRET", "notify-secret"),
             ("PATH", path_env.as_str()),
+            ("AWIKI_HERMES_TEST_MARKER", marker_env.as_str()),
         ],
     );
-    assert_code(&output, 1);
-    let envelope = error_json(&output);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn service-run");
 
-    assert_eq!(envelope["error"]["code"], "not_implemented");
-    assert_eq!(
-        envelope["error"]["message"],
-        "runtime host-notify hermes bridge service-run requires Hermes bridge service execution in a later port slice."
-    );
-    assert_eq!(
-        envelope["error"]["hint"],
-        "Translate serviceProgram.Start/Stop and RunService before running this hidden service command."
+    wait_for_file(&marker);
+    terminate_process(&mut child);
+    let output = child.wait_with_output().expect("wait service-run");
+
+    assert_code(&output, 0);
+    assert_eq!(std::fs::read_to_string(&marker).expect("marker"), "started");
+    assert!(
+        output.stdout.is_empty(),
+        "service-run should not render a CLI envelope on success; stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
     );
     assert!(
-        !envelope["error"]["hint"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("schema"),
-        "hidden service-run should not fall through to the generic schema stub"
+        output.stderr.is_empty(),
+        "service-run should not render a CLI envelope on success; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
+    awiki_command(args, workspace, envs)
+        .output()
+        .expect("run awiki-cli binary")
+}
+
+fn awiki_command(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Command {
     let home = workspace.join("home");
     let hermes_home = workspace.join("hermes-home");
     std::fs::create_dir_all(&home).expect("home dir");
@@ -323,7 +338,7 @@ fn awiki_cmd(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     for (key, value) in envs {
         command.env(key, value);
     }
-    command.output().expect("run awiki-cli binary")
+    command
 }
 
 fn assert_success(output: &Output) {
@@ -397,22 +412,37 @@ fn path_string(path: &Path) -> String {
 }
 
 #[cfg(unix)]
-fn install_adapter_script_candidate() {
-    let exe = Path::new(env!("CARGO_BIN_EXE_awiki-cli"));
-    let exe_dir = exe.parent().expect("binary parent");
-    let script = exe_dir
-        .join("..")
-        .join("scripts")
-        .join("hermes_notify_adapter.py");
-    std::fs::create_dir_all(script.parent().expect("script parent")).expect("script dir");
-    std::fs::write(&script, "#!/usr/bin/env python3\n").expect("adapter script");
+fn make_executable_script(path: &Path, script: &str) -> std::io::Result<()> {
+    std::fs::write(path, script.as_bytes())?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
 #[cfg(unix)]
-fn make_executable(path: &Path) -> std::io::Result<()> {
-    std::fs::write(path, b"#!/bin/sh\nexit 0\n")?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+fn wait_for_file(path: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if path.is_file() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("timed out waiting for {}", path.display());
+}
+
+#[cfg(unix)]
+fn terminate_process(child: &mut std::process::Child) {
+    unsafe {
+        kill(child.id() as std::os::raw::c_int, SIGTERM);
+    }
+}
+
+#[cfg(unix)]
+const SIGTERM: std::os::raw::c_int = 15;
+
+#[cfg(unix)]
+extern "C" {
+    fn kill(pid: std::os::raw::c_int, sig: std::os::raw::c_int) -> std::os::raw::c_int;
 }
 
 struct TempDir {

@@ -3,6 +3,7 @@ use crate::config::Resolved;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub const SERVICE_NAME_PREFIX: &str = "awiki-cli-hermes-bridge";
@@ -12,6 +13,10 @@ pub const SERVICE_ARGUMENTS: &[&str] =
     &["runtime", "host-notify", "hermes", "bridge", "service-run"];
 pub const BRIDGE_ADAPTER_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const BRIDGE_ADAPTER_STOP_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const BRIDGE_SERVICE_RUN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+#[cfg(unix)]
+static BRIDGE_SERVICE_SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeServiceConfigPlan {
@@ -294,6 +299,27 @@ impl From<std::process::ExitStatus> for BridgeAdapterExit {
     }
 }
 
+pub fn run_bridge_service(plan: &BridgeAdapterCommandPlan) -> anyhow::Result<()> {
+    install_bridge_service_shutdown_handler();
+    run_bridge_service_with_stop(
+        plan,
+        bridge_service_shutdown_requested,
+        BRIDGE_SERVICE_RUN_POLL_INTERVAL,
+    )
+}
+
+pub fn run_bridge_service_with_stop(
+    plan: &BridgeAdapterCommandPlan,
+    mut stop_requested: impl FnMut() -> bool,
+    interval: Duration,
+) -> anyhow::Result<()> {
+    let mut process = BridgeAdapterProcess::start(plan)?;
+    while !stop_requested() {
+        std::thread::sleep(interval);
+    }
+    process.stop()
+}
+
 fn command_for_adapter_plan(plan: &BridgeAdapterCommandPlan) -> Command {
     let mut command = Command::new(&plan.executable);
     command.args(&plan.arguments);
@@ -328,6 +354,46 @@ fn wait_for_adapter_child_exit(
         }
         std::thread::sleep(interval);
     }
+}
+
+#[cfg(unix)]
+fn install_bridge_service_shutdown_handler() {
+    BRIDGE_SERVICE_SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+    unsafe {
+        signal(SIGTERM, bridge_service_signal_handler);
+        signal(SIGINT, bridge_service_signal_handler);
+    }
+}
+
+#[cfg(not(unix))]
+fn install_bridge_service_shutdown_handler() {}
+
+#[cfg(unix)]
+fn bridge_service_shutdown_requested() -> bool {
+    BRIDGE_SERVICE_SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+}
+
+#[cfg(not(unix))]
+fn bridge_service_shutdown_requested() -> bool {
+    false
+}
+
+#[cfg(unix)]
+extern "C" fn bridge_service_signal_handler(_signal: std::os::raw::c_int) {
+    BRIDGE_SERVICE_SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+#[cfg(unix)]
+const SIGINT: std::os::raw::c_int = 2;
+#[cfg(unix)]
+const SIGTERM: std::os::raw::c_int = 15;
+
+#[cfg(unix)]
+extern "C" {
+    fn signal(
+        signum: std::os::raw::c_int,
+        handler: extern "C" fn(std::os::raw::c_int),
+    ) -> extern "C" fn(std::os::raw::c_int);
 }
 
 pub fn running_in_bridge_service_mode() -> bool {

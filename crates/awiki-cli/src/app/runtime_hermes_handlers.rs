@@ -362,13 +362,9 @@ impl App {
         })?;
         let bridge_config = runtime::hermes_bridge::resolve_bridge_config(&resolved)
             .map_err(|err| ExitError::new("internal_error", 1, err.to_string(), String::new()))?;
-        let _adapter_plan = runtime::hermes_bridge::adapter_command_plan_for(&bridge_config);
-        Err(ExitError::new(
-            "not_implemented",
-            1,
-            "runtime host-notify hermes bridge service-run requires Hermes bridge service execution in a later port slice.",
-            "Translate serviceProgram.Start/Stop and RunService before running this hidden service command.",
-        ))
+        let adapter_plan = runtime::hermes_bridge::adapter_command_plan_for(&bridge_config);
+        runtime::hermes_bridge::run_bridge_service(&adapter_plan)
+            .map_err(|err| ExitError::new("internal_error", 1, err.to_string(), String::new()))
     }
 
     pub fn run_runtime_host_notify_hermes_set(

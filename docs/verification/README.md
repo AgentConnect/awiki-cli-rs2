@@ -10369,3 +10369,78 @@ install/run wrappers and no inspected archive manifest.
 Dependency note: no Rust dependency was added. The copied adapter uses only
 Python stdlib modules, matching Go repository behavior, and is outside the Rust
 binary dependency graph.
+
+## 2026-05-16 Hermes bridge service-run adapter execution slice
+
+Timestamp: 2026-05-16T16:44:01Z / 2026-05-17T00:44:01+0800.
+
+Scope: replace the hidden Hermes bridge `service-run` deferred boundary with a
+local `RunService`-shaped adapter process loop. This follows Go
+`RunService -> serviceProgram.Start -> wait -> serviceProgram.Stop` for the
+adapter child process while still excluding platform service-manager
+install/start/status/control.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli runtime::hermes_bridge::tests --lib --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
+```
+
+Observed results:
+
+- `cargo check`, formatting, whitespace, structure check, focused Rust
+  Hermes/update tests, focused Go Hermes tests, and dependency audit passed.
+- `runtime_hermes_bridge_service_contract`: 17 passed, including the new
+  injected stop-condition service-run helper test.
+- `runtime_hermes_cli_contract`: 7 passed, including a subprocess test that
+  starts the hidden CLI service-run path with a fake `python3`, observes the
+  adapter marker file, sends SIGTERM to the CLI, and verifies clean exit with
+  no success/error envelope.
+- Source/test files remain below the default 1200-line cap:
+  `hermes_bridge.rs` 1025 lines, `hermes_bridge/service.rs` 537 lines,
+  `runtime_hermes_handlers.rs` 721 lines,
+  `runtime_hermes_bridge_service_contract.rs` 716 lines, and
+  `runtime_hermes_cli_contract.rs` 475 lines.
+
+Implemented behavior:
+
+- Adds `runtime::hermes_bridge::run_bridge_service` and an injected
+  `run_bridge_service_with_stop` helper that starts `BridgeAdapterProcess`,
+  waits for shutdown, and stops the child with the Go 15-second timeout/error
+  text.
+- Wires hidden `runtime host-notify hermes bridge service-run` through
+  `resolve_bridge_config`, `adapter_command_plan_for`, and the local adapter
+  service loop instead of returning `not_implemented`.
+- Preserves Go preflight ordering: missing awiki Hermes secret, missing route
+  secret, missing Python, and missing adapter script still fail before process
+  start.
+- Adds Unix SIGTERM/SIGINT handling for the hidden service-run command so a
+  local foreground/service-manager run stops the adapter child before exiting.
+
+Boundary note: this still does not adopt `kardianos/service` or a Rust platform
+service-manager crate. It does not implement install/start/stop/restart/
+uninstall through systemd/launchd/Windows SCM, real platform service status
+lookup, lifecycle operation execution, owned HTTP health probing, Windows SCM
+stop-control cleanup, non-dry-run setup bridge `Apply`, or final release archive
+verification for the adapter asset.
+
+Dependency note: no dependency was added. The Unix signal handling uses std FFI
+to `signal(2)`, matching the existing repo preference for direct platform FFI
+in narrow local helpers instead of adding a service/signal crate. The dependency
+audit continues to show only existing allowed hits: Rustls/ring transport
+dependencies, `base64`/`sha2`, and the approved
+`rusqlite`/`libsqlite3-sys` bundled-SQLite toolchain entries
+(`cc`, `pkg-config`, `vcpkg`), plus pre-existing transitive `libc` under ANP
+crypto/random dependencies.

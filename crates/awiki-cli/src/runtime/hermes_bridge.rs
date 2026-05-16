@@ -14,14 +14,14 @@ mod service;
 pub use route::{ensure_route, EnsureRouteOptions};
 pub use service::{
     adapter_command_plan_for, apply_decision_for, apply_service_plan, bridge_health_available_with,
-    bridge_status_ready, ensure_installed_plan, restart_service_plan,
-    running_in_bridge_service_mode, running_in_bridge_service_mode_with, service_config_plan_for,
-    service_display_name_for, service_name_for, start_service_plan, status_from_parts,
-    stop_service_plan, uninstall_service_plan, wait_for_bridge_status_with,
-    BridgeAdapterCommandPlan, BridgeAdapterExit, BridgeAdapterProcess, BridgeApplyDecision,
-    BridgeServiceConfigPlan, BridgeServiceLifecycleOperation, BridgeServiceStatusSnapshot,
-    BRIDGE_ADAPTER_STOP_TIMEOUT, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION,
-    SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
+    bridge_status_ready, ensure_installed_plan, restart_service_plan, run_bridge_service,
+    run_bridge_service_with_stop, running_in_bridge_service_mode,
+    running_in_bridge_service_mode_with, service_config_plan_for, service_display_name_for,
+    service_name_for, start_service_plan, status_from_parts, stop_service_plan,
+    uninstall_service_plan, wait_for_bridge_status_with, BridgeAdapterCommandPlan,
+    BridgeAdapterExit, BridgeAdapterProcess, BridgeApplyDecision, BridgeServiceConfigPlan,
+    BridgeServiceLifecycleOperation, BridgeServiceStatusSnapshot, BRIDGE_ADAPTER_STOP_TIMEOUT,
+    SERVICE_ARGUMENTS, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
 };
 
 pub const DEFAULT_WEBHOOK_PORT: u32 = 8644;

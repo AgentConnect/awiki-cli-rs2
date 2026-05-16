@@ -6,6 +6,10 @@ use awiki_cli::runtime::hermes_bridge::{
 };
 use hermes_bridge::BridgeServiceLifecycleOperation as Op;
 use std::fs;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -166,6 +170,39 @@ fn hermes_bridge_adapter_process_stop_kills_running_child_like_go_stop() {
 
     assert!(!process.is_running().expect("stopped child"));
     assert_eq!(process.wait().expect("wait after stop"), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn hermes_bridge_run_service_starts_adapter_until_stop_requested_like_go_run() {
+    let temp = TempDir::new("run-service-stop").expect("temp dir");
+    let marker = temp.path().join("started.txt");
+    let plan = BridgeAdapterCommandPlan {
+        executable: "/bin/sh".to_string(),
+        arguments: vec![
+            "-c".to_string(),
+            format!("printf started > {}; exec sleep 30", shell_quote(&marker)),
+            "awiki-test-sh".to_string(),
+        ],
+        env_hermes_home: None,
+        stdout_inherits_parent: false,
+        stderr_inherits_parent: false,
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let stop_calls = calls.clone();
+
+    hermes_bridge::run_bridge_service_with_stop(
+        &plan,
+        move || stop_calls.fetch_add(1, Ordering::SeqCst) >= 2,
+        Duration::from_millis(10),
+    )
+    .expect("run bridge service");
+
+    assert_eq!(
+        fs::read_to_string(&marker).expect("adapter marker"),
+        "started"
+    );
+    assert!(calls.load(Ordering::SeqCst) >= 3);
 }
 
 #[test]
@@ -595,6 +632,11 @@ fn test_resolved() -> Resolved {
 
 fn path_string(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(unix)]
+fn shell_quote(path: &std::path::Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
 struct TempDir {
