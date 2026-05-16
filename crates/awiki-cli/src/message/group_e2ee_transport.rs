@@ -1,3 +1,4 @@
+use super::group_service::GroupSendResult;
 use super::service::auth_session;
 use super::{
     build_group_e2ee_add_rpc_params, build_group_e2ee_get_key_package_rpc_params,
@@ -5,7 +6,8 @@ use super::{
     build_group_e2ee_get_update_key_package_rpc_params, build_group_e2ee_head_rpc_params,
     build_group_e2ee_leave_request_rpc_params, build_group_e2ee_notice_rpc_params,
     build_group_e2ee_recover_member_rpc_params, build_group_e2ee_remove_rpc_params,
-    build_group_e2ee_update_member_rpc_params, Client, MessageError, MESSAGE_RPC_ENDPOINT,
+    build_group_e2ee_send_rpc_params, build_group_e2ee_update_member_rpc_params, Client,
+    MessageError, MESSAGE_RPC_ENDPOINT,
 };
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
@@ -150,6 +152,39 @@ impl<'a> GroupE2eeTransport<'a> {
             notice_ids,
         )?;
         self.rpc_call("group.e2ee.notice", params)
+    }
+
+    pub(crate) fn send_group_e2ee(
+        &mut self,
+        group_did: &str,
+        cipher: Map<String, Value>,
+        operation_id: &str,
+        message_id: &str,
+    ) -> Result<GroupSendResult, MessageError> {
+        let params = build_group_e2ee_send_rpc_params(
+            self.record,
+            group_did,
+            cipher,
+            operation_id,
+            message_id,
+        )?;
+        let mut result: GroupSendResult = self.client.authenticated_rpc_call_profile(
+            Profile::RpcDefault,
+            MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.send",
+            params,
+            &mut self.auth,
+        )?;
+        if result.group_did.trim().is_empty() {
+            result.group_did = group_did.to_string();
+        }
+        if result.message_id.trim().is_empty() {
+            result.message_id = message_id.to_string();
+        }
+        if result.operation_id.trim().is_empty() {
+            result.operation_id = operation_id.to_string();
+        }
+        Ok(result)
     }
 
     pub(crate) fn add_group_e2ee(

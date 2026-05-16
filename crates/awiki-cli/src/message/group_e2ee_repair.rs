@@ -518,7 +518,7 @@ fn group_state_ref_from_notice(group_did: &str, notice: &Map<String, Value>) -> 
     group_state_ref
 }
 
-fn notice_objects(value: Option<&Value>) -> Vec<Map<String, Value>> {
+pub(crate) fn notice_objects(value: Option<&Value>) -> Vec<Map<String, Value>> {
     values_from_array(value)
         .into_iter()
         .filter_map(|value| value.as_object().cloned())

@@ -10,6 +10,7 @@ mod group_e2ee_publish;
 mod group_e2ee_recover;
 mod group_e2ee_remove;
 mod group_e2ee_repair;
+mod group_e2ee_send;
 mod group_e2ee_status;
 mod group_e2ee_transport;
 mod group_e2ee_update;

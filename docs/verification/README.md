@@ -2,6 +2,108 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-16 Group E2EE Outbound Send Live Slice
+
+Status: locally verified.
+
+Local Rust and Go reference verification:
+
+```bash
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_send_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_repair_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_update_key_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_recover_member_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_add_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_remove_leave_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_create_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_e2ee_publish_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && rg -n 'TestBuildGroupE2EESend|GroupE2EESend|HTTPTransportGroupMethodsUseExpectedRPCMethods' internal/message internal/cli
+cd ../awiki-cli && go test ./internal/message -run 'TestBuildGroupE2EESendRPCParamsSendsOnlyOpaqueCipherObject|TestHTTPTransportGroupMethodsUseExpectedRPCMethods' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestMsg' -count=1
+wc -l crates/awiki-cli/src/message/group_service.rs crates/awiki-cli/src/message/group_e2ee_send.rs crates/awiki-cli/src/message/group_e2ee_transport.rs crates/awiki-cli/tests/group_e2ee_send_contract.rs
+```
+
+Result: passed for the commands listed above.
+
+Observed results:
+
+- `group_e2ee_send_contract`: 1 passed.
+- `group_live_contract`: 3 passed.
+- `group_contract`: 6 passed.
+- `message_group_e2ee_wire_contract`: 7 passed.
+- `group_e2ee_repair_contract`: 1 passed.
+- `group_e2ee_status_contract`: 2 passed.
+- `group_e2ee_pending_contract`: 2 passed.
+- `group_e2ee_update_key_contract`: 1 passed.
+- `group_e2ee_recover_member_contract`: 1 passed.
+- `group_e2ee_add_contract`: 6 passed.
+- `group_e2ee_remove_leave_contract`: 3 passed.
+- `group_e2ee_create_contract`: 2 passed.
+- `group_e2ee_publish_contract`: 4 passed.
+- `cargo check`, structure check, whitespace check, dependency audit, and Go
+  focused reference tests passed.
+- Changed Rust source/test files remain below the default 1200-line review-size
+  cap: `group_service.rs` 1199 lines, `group_e2ee_send.rs` 345 lines,
+  `group_e2ee_transport.rs` 266 lines, and
+  `group_e2ee_send_contract.rs` 643 lines. No file-size exception is needed.
+
+Scope:
+
+- Wires live outbound group E2EE text send through Go's `sendGroup` routing:
+  explicit `--secure on` requires a cached `group-e2ee` snapshot, while the
+  ordinary group send path auto-upgrades when the cached snapshot uses group
+  E2EE or local MLS state indicates active/pending crypto state.
+- Preserves Go provider boundary for encryption: `anp-mls message encrypt`
+  receives `api_version=anp-mls/v1`, active agent DID, device id, group DID,
+  local `group_state_ref`, sender DID, generated message/operation IDs,
+  `content_type=application/anp-group-cipher+json`,
+  `security_profile=group-e2ee`, `message_type`, and plaintext text.
+- Preserves Go hidden send wire shape: `group.e2ee.send` uses
+  `anp.group.e2ee.v1`, `group-e2ee`, the cipher content type, origin proof
+  auth, and only sanitized opaque cipher fields. Provider-only plaintext/debug
+  fields are not sent.
+- Preserves Go output decoration and local cache behavior: server-omitted
+  `group_did`, `message_id`, and `operation_id` are backfilled, the local
+  group message row is stored as E2EE, `message.secure=true`,
+  `message.security_profile=group-e2ee`, `data.e2ee.encrypted=true`,
+  `data.e2ee.group_state_ref`, `cipher_object_sent=true`, and summary
+  `Sent a group text message with group E2EE`.
+- The Go stale-epoch repair/retry branch is translated through the existing
+  repair helper, including best-effort local pending-commit finalization and a
+  retry after repair, but broader service edge-case/system coverage remains
+  separate.
+
+Boundary note: this slice still excludes group E2EE decrypt/receive/history
+display, WebSocket/local bridge group E2EE transport, and full
+awiki-system-test group-E2EE acceptance.
+
+Parallelism note: no code-writing Native Agent output was used. Earlier
+code-writing Native Agents were stopped because the user constraint requires
+GPT-5.5 xhigh for code-writing agents, and the leader completed this slice
+locally to avoid write-scope or model-setting ambiguity. Future code-writing
+Native Agents remain constrained to GPT-5.5 xhigh with bounded,
+non-overlapping write scopes.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This slice reuses existing `std::process::Command`, `serde_json`,
+existing authsdk/session, existing Rustls/std message HTTP transport, existing
+group E2EE wire builders, the external local ANP Rust SDK `anp-mls` binary, the
+existing repair helper, and the approved `rusqlite + bundled` SQLite path. It
+does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`,
+WebSocket crates, async runtimes, YAML crates, platform service libraries, MLS
+provider crates, ANP SDK default/network features, pure-Rust SQLite
+optimization work, or a new SQLite backend. TLS remains Rustls-first.
+
 ## 2026-05-16 Group E2EE Repair Live Slice
 
 Status: locally verified.

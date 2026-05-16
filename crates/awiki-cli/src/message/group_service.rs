@@ -2,6 +2,7 @@ use super::group_e2ee_add::{
     add_group_member_e2ee, group_member_mutation_uses_e2ee, group_snapshot_uses_e2ee,
 };
 use super::group_e2ee_remove::{leave_group_e2ee, remove_group_member_e2ee_result};
+use super::group_e2ee_send::maybe_send_group_e2ee;
 use super::service::{
     auth_session, bool_value, content_string, default_message_type, int_value, metadata_string,
     normalize_handle_value, require_active_identity, resolve_target, string_value, CommandResult,
@@ -455,10 +456,10 @@ pub fn send_group(
     if request.text.trim().is_empty() {
         return Err(MessageError::TextRequired);
     }
-    if request.secure_mode.trim().eq_ignore_ascii_case("on") {
-        return Err(MessageError::SecureNotSupported);
-    }
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    if let Some(result) = maybe_send_group_e2ee(resolved, manager, &record, &request)? {
+        return Ok(result);
+    }
     let message_type = default_message_type(&request.message_type).to_string();
     let mut auth = auth_session(resolved, manager, &record)?;
     let client = Client::new(resolved)?;
