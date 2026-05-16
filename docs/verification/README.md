@@ -10046,3 +10046,60 @@ platform service execution. Windows currently checks direct candidate plus
 
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. The slice uses only std PATH, filesystem, and Unix permission APIs.
+
+## 2026-05-16 Hermes bridge adapter script lookup slice
+
+Timestamp: 2026-05-16T15:55:03Z / 2026-05-16T23:55:03+0800.
+
+Scope: make the Rust Hermes bridge adapter script resolver follow the Go
+`resolveAdapterScriptPath` candidate order through a testable helper, without
+starting the adapter or introducing service-manager/process dependencies.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 test -p awiki-cli runtime::hermes_bridge::tests --lib --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs
+```
+
+Observed results:
+
+- `cargo fmt`, focused library tests, `cargo check -p awiki-cli`, and `xtask
+  check-structure` passed.
+- Focused library `runtime::hermes_bridge::tests`: 4 passed, including the
+  existing Python lookup tests plus adapter script candidate-order tests.
+- `runtime_hermes_bridge_service_contract`: 14 passed.
+- Go `internal/runtime/hermesbridge` tests passed.
+- Dependency audit output showed only existing allowed hits: Rustls/ring
+  transport dependencies, `base64`/`sha2`, and the approved
+  `rusqlite`/`libsqlite3-sys` bundled-SQLite toolchain entries
+  (`cc`, `pkg-config`, `vcpkg`). No OpenSSL, `native-tls`, bundled OpenSSL,
+  platform service, YAML, WebSocket, or new HTTP-client dependency was added.
+- `runtime/hermes_bridge.rs` is 1024 lines, below the default 1200-line
+  review-size cap. No file-size exception is needed.
+
+Implemented behavior:
+
+- Adapter script lookup now flows through a private helper that preserves the
+  Go candidate order relative to the awiki-cli executable directory:
+  `../scripts/hermes_notify_adapter.py`,
+  `scripts/hermes_notify_adapter.py`, then
+  `../../scripts/hermes_notify_adapter.py`.
+- Existing file paths are canonicalized before being returned, matching Go's
+  `filepath.Clean` intent more closely than returning raw `..`-containing
+  paths.
+- Tests lock both the candidate order and first-existing-file selection without
+  invoking a Python process or the platform service manager.
+
+Boundary note: this remains a local resolver slice. It does not implement
+adapter process start/wait/stop/kill, hidden bridge `service-run`, platform
+service install/start/restart, or health probing.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The slice uses only std path and filesystem APIs.

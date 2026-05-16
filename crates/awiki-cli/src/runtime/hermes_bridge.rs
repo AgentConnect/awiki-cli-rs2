@@ -852,7 +852,27 @@ fn executable_candidate_exists(path: &Path) -> bool {
 fn resolve_adapter_script_path() -> anyhow::Result<String> {
     let exe_path = env::current_exe().context("resolve awiki-cli executable path")?;
     let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new(""));
-    let candidates: [PathBuf; 3] = [
+    if let Some(path) = resolve_adapter_script_path_from_exe_dir(exe_dir) {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    anyhow::bail!(
+        "could not locate scripts/hermes_notify_adapter.py next to the awiki-cli installation"
+    )
+}
+
+fn resolve_adapter_script_path_from_exe_dir(exe_dir: &Path) -> Option<PathBuf> {
+    adapter_script_candidates(exe_dir)
+        .into_iter()
+        .find_map(|candidate| {
+            if !candidate.is_file() {
+                return None;
+            }
+            Some(candidate.canonicalize().unwrap_or(candidate))
+        })
+}
+
+fn adapter_script_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    vec![
         exe_dir
             .join("..")
             .join("scripts")
@@ -863,15 +883,7 @@ fn resolve_adapter_script_path() -> anyhow::Result<String> {
             .join("..")
             .join("scripts")
             .join("hermes_notify_adapter.py"),
-    ];
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Ok(candidate.to_string_lossy().into_owned());
-        }
-    }
-    anyhow::bail!(
-        "could not locate scripts/hermes_notify_adapter.py next to the awiki-cli installation"
-    )
+    ]
 }
 
 fn normalize_adapter_bind_host(host: &str) -> String {
@@ -898,7 +910,10 @@ fn health_url_for(notify_url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_python_executable_from_paths;
+    use super::{
+        adapter_script_candidates, resolve_adapter_script_path_from_exe_dir,
+        resolve_python_executable_from_paths,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -932,6 +947,40 @@ mod tests {
             resolve_python_executable_from_paths(std::slice::from_ref(&bin)).expect("python");
 
         assert_eq!(resolved, bin.join("python"));
+    }
+
+    #[test]
+    fn resolve_adapter_script_path_from_exe_dir_matches_go_candidate_order() {
+        let temp = TempDir::new("adapter-script-order").expect("temp dir");
+        let exe_dir = temp.path().join("bin");
+        let first = temp.path().join("scripts");
+        let second = exe_dir.join("scripts");
+        fs::create_dir_all(&exe_dir).expect("exe dir");
+        fs::create_dir_all(&first).expect("first scripts dir");
+        fs::create_dir_all(&second).expect("second scripts dir");
+        let first_script = first.join("hermes_notify_adapter.py");
+        let second_script = second.join("hermes_notify_adapter.py");
+        fs::write(&first_script, b"first").expect("first script");
+        fs::write(&second_script, b"second").expect("second script");
+
+        let resolved = resolve_adapter_script_path_from_exe_dir(&exe_dir).expect("adapter script");
+
+        assert_eq!(resolved, first_script.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn adapter_script_candidates_match_go_layout_order() {
+        let exe_dir = PathBuf::from("/opt/awiki/bin");
+        let candidates = adapter_script_candidates(&exe_dir);
+
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("/opt/awiki/bin/../scripts/hermes_notify_adapter.py"),
+                PathBuf::from("/opt/awiki/bin/scripts/hermes_notify_adapter.py"),
+                PathBuf::from("/opt/awiki/bin/../../scripts/hermes_notify_adapter.py"),
+            ]
+        );
     }
 
     fn make_executable(path: &Path) -> std::io::Result<()> {
