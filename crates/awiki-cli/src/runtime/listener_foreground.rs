@@ -26,6 +26,23 @@ pub enum ListenerForegroundDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListenerAcceptLoopEvent {
+    Accepted { connection_id: String },
+    AcceptError { error: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListenerAcceptLoopAction {
+    SpawnHandleConn { connection_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListenerAcceptLoopDecision {
+    Continue,
+    Exit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListenerStartSocketPlan {
     pub actions: Vec<ListenerStartSocketAction>,
     pub decision: ListenerForegroundDecision,
@@ -35,6 +52,12 @@ pub struct ListenerStartSocketPlan {
 pub struct ListenerForegroundRunPlan {
     pub actions: Vec<ListenerForegroundRunAction>,
     pub decision: ListenerForegroundDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListenerAcceptLoopStep {
+    pub actions: Vec<ListenerAcceptLoopAction>,
+    pub decision: ListenerAcceptLoopDecision,
 }
 
 pub fn listener_start_socket_plan(
@@ -127,5 +150,18 @@ pub fn listener_foreground_run_plan(
     ListenerForegroundRunPlan {
         actions,
         decision: ListenerForegroundDecision::ReturnOk,
+    }
+}
+
+pub fn listener_accept_loop_step(event: ListenerAcceptLoopEvent) -> ListenerAcceptLoopStep {
+    match event {
+        ListenerAcceptLoopEvent::Accepted { connection_id } => ListenerAcceptLoopStep {
+            actions: vec![ListenerAcceptLoopAction::SpawnHandleConn { connection_id }],
+            decision: ListenerAcceptLoopDecision::Continue,
+        },
+        ListenerAcceptLoopEvent::AcceptError { .. } => ListenerAcceptLoopStep {
+            actions: Vec::new(),
+            decision: ListenerAcceptLoopDecision::Exit,
+        },
     }
 }

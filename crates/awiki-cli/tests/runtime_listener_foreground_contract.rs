@@ -1,6 +1,7 @@
 use awiki_cli::runtime::listener_foreground::{
-    listener_foreground_run_plan, listener_start_socket_plan, ListenerForegroundDecision,
-    ListenerForegroundRunAction, ListenerStartSocketAction,
+    listener_accept_loop_step, listener_foreground_run_plan, listener_start_socket_plan,
+    ListenerAcceptLoopAction, ListenerAcceptLoopDecision, ListenerAcceptLoopEvent,
+    ListenerForegroundDecision, ListenerForegroundRunAction, ListenerStartSocketAction,
 };
 
 #[test]
@@ -207,4 +208,29 @@ fn known_sessions_error_stops_before_identity_watch_like_go() {
         plan.decision,
         ListenerForegroundDecision::ReturnError("list identities failed".to_string())
     );
+}
+
+#[test]
+fn accept_loop_accepted_connection_spawns_handle_conn_and_continues() {
+    let step = listener_accept_loop_step(ListenerAcceptLoopEvent::Accepted {
+        connection_id: "conn-1".to_string(),
+    });
+
+    assert_eq!(
+        step.actions,
+        vec![ListenerAcceptLoopAction::SpawnHandleConn {
+            connection_id: "conn-1".to_string(),
+        }]
+    );
+    assert_eq!(step.decision, ListenerAcceptLoopDecision::Continue);
+}
+
+#[test]
+fn accept_loop_accept_error_returns_without_spawning_handler() {
+    let step = listener_accept_loop_step(ListenerAcceptLoopEvent::AcceptError {
+        error: "listener closed".to_string(),
+    });
+
+    assert!(step.actions.is_empty());
+    assert_eq!(step.decision, ListenerAcceptLoopDecision::Exit);
 }

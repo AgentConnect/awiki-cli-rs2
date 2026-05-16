@@ -2,6 +2,66 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Listener Accept Loop Slice
+
+Timestamp: 2026-05-16T21:01:22Z / 2026-05-17T05:01:22+0800.
+
+Scope: extend `runtime::listener_foreground` with a pure accept-loop step for
+Go `Supervisor.acceptLoop` before real listener socket iteration and connection
+handler goroutine spawning are wired.
+
+What changed:
+
+- Added `ListenerAcceptLoopEvent`, `ListenerAcceptLoopAction`,
+  `ListenerAcceptLoopDecision`, and `listener_accept_loop_step`.
+- Accepted connections plan `SpawnHandleConn` and continue the loop.
+- Accept errors plan no handler spawn and exit the loop, matching Go's silent
+  return on `s.listener.Accept()` error.
+- Reused the existing foreground orchestration module/test to keep this
+  adjacent to `Run` and `startSocket`.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/runtime/listener -run 'TestStartSocketPersistsBridgeAvailability|TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/runtime/listener_foreground.rs crates/awiki-cli/tests/runtime_listener_foreground_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+```
+
+Observed results:
+
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- `runtime_listener_foreground_contract` passed all 10 tests.
+- Adjacent Rust guards passed: `runtime_bridge_contract` all 17 tests and
+  `runtime_listener_supervisor_shutdown_contract` all 5 tests.
+- Adjacent Go listener guard passed:
+  `ok github.com/agentconnect/awiki-cli/internal/runtime/listener 0.072s`.
+- Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
+  Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
+  `rusqlite` plus `libsqlite3-sys` path.
+- Read-only Native Agent parity review found no issues and approved the slice.
+- No Cargo manifests or lockfiles changed.
+- `listener_foreground.rs` is 167 lines and
+  `runtime_listener_foreground_contract.rs` is 236 lines, below the default
+  1200-line cap; project structure check reported no undocumented Rust files
+  over 1200 lines.
+
+Boundary note: this is still a pure planning helper. It does not implement real
+listener `Accept`, socket ownership, goroutine/task spawning, `handleConn`
+execution, connection close semantics, or foreground service runtime.
+
+Dependency note: no Rust dependency was added. This slice uses only local
+action/result types.
+
 ## 2026-05-17 Listener Foreground Startup Slice
 
 Timestamp: 2026-05-16T20:53:20Z / 2026-05-17T04:53:20+0800.
