@@ -551,7 +551,7 @@ impl App {
                 "Choose one profile body source.",
             ));
         }
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_identity_result(
                 "awiki-cli id profile set",

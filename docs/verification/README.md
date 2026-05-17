@@ -14,6 +14,129 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Identity Profile Set Workspace Upgrade Hook
+
+Timestamp: 2026-05-18T02:07:27+0800.
+
+Scope: wire Go `internal/cli/id.go` `identityService()` workspace-upgrade
+behavior into Rust `id profile set`. Go validates conflicting `--markdown` and
+`--markdown-file` before constructing `identityService()`, then constructs the
+service and migrates legacy `config.json` before dry-run planning or
+`Service.SetProfile`.
+
+Rust change:
+
+- `crates/awiki-cli/src/app.rs`: `id profile set` now calls
+  `resolve_config_for_workspace()` after markdown body-source conflict
+  validation and before dry-run planning or live profile update.
+- `crates/awiki-cli/tests/identity_profile_set_upgrade_contract.rs`: added a
+  focused subprocess contract proving both ordering branches: conflict
+  validation leaves legacy config untouched, while a valid profile-set request
+  migrates legacy config before the local active-identity boundary.
+- The new Rust test file is 204 lines, keeping the existing
+  `identity_contract.rs` at 1182 lines and below the 1200-line soft cap.
+
+System-test change:
+
+- Added
+  `tests_v2/id/test_identity_cli.py::test_id_profile_set_rust_migrates_legacy_config_json_before_identity_boundary`.
+- Updated `tests_v2/id/CLAUDE.md` to mention the Rust `id profile set`
+  legacy config workspace-upgrade coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test identity_profile_set_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/cli ./internal/identity ./internal/upgrade -run 'Test.*Profile|Test.*Identity|Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/id/test_identity_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/id/test_identity_cli.py::test_id_profile_set_rust_migrates_legacy_config_json_before_identity_boundary -ra -q
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+wc -l crates/awiki-cli/src/app.rs crates/awiki-cli/tests/identity_contract.rs crates/awiki-cli/tests/identity_profile_set_upgrade_contract.rs docs/parity-matrix.md docs/verification/README.md
+cd /home/ecs-user/awiki-space/awiki-system-test
+wc -l tests_v2/id/test_identity_cli.py tests_v2/id/CLAUDE.md
+```
+
+Observed results:
+
+- Rust formatting passed.
+- Focused Rust profile-set upgrade contract passed: 2 passed, 0 failed.
+- Full Rust `identity_contract` passed: 16 passed, 0 failed.
+- Rust package check passed.
+- `xtask check-structure` passed with no undocumented Rust file over the
+  1200-line soft cap.
+- Go focused reference tests passed:
+  `internal/cli` 11.668s, `internal/identity` 0.423s, and
+  `internal/upgrade` 0.363s.
+- Python syntax check for `tests_v2/id/test_identity_cli.py` passed.
+- Focused `awiki-system-test` selector
+  `test_id_profile_set_rust_migrates_legacy_config_json_before_identity_boundary`
+  passed: 1 passed, 0 failed, 0 skipped in 1.70s.
+- Dependency audit found existing Rustls/webpki/ring, base64/sha2/hmac, and
+  approved `rusqlite`/`libsqlite3-sys` entries; no OpenSSL/native-tls stack or
+  new dependency was added.
+- Line counts after the slice: `app.rs` 1045,
+  `identity_contract.rs` 1182,
+  `identity_profile_set_upgrade_contract.rs` 204,
+  `test_identity_cli.py` 1179, and `tests_v2/id/CLAUDE.md` 13.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The selector writes legacy `config.json`, removes `config.yaml`, then invokes
+  real Rust `id profile set --display-name Legacy Profile` as the first CLI
+  command after the legacy config is present. It does not require user-service,
+  message-service, mail-service, listener, service-manager permissions,
+  registered identities, JWT material, or live OTP state.
+
+Coverage:
+
+- Verifies conflicting `--markdown` and `--markdown-file` validation remains
+  before workspace upgrade and leaves legacy `config.json` untouched.
+- Verifies valid `id profile set` migrates a legacy `config.json`-only
+  workspace before returning the local no-active-identity `not_found` error.
+- Verifies migrated `config.yaml` keeps legacy runtime mode, service base URL,
+  and DID domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, a
+  non-empty upgrade ID, and a backup directory containing `config.json.bak`
+  equal to the seeded legacy config.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies the active-identity boundary does not create SQLite DB state,
+  listener pid files, or runtime socket artifacts.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch in `id profile set`, not live profile
+update HTTP behavior. It does not separately prove `id register`, `id bind`,
+`id replace-did`, legacy SQLite import, imported/current k1 replacement RPCs,
+rollback, cleanup command execution, or mail-service selectors. Mail-related
+system-test cases remain deferred/gated and must not be counted as passed.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged. The existing dependency surface continues to use Rustls for TLS and
+the approved `rusqlite`/`libsqlite3-sys` SQLite path; the audit output contains
+no OpenSSL or native-tls entries.
+
 ## 2026-05-18 Identity Refresh-Token Workspace Upgrade Hook
 
 Timestamp: 2026-05-18T01:49:02+0800.
