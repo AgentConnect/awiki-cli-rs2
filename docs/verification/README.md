@@ -125,6 +125,112 @@ unchanged; the slice reuses existing local upgrade/config/site machinery and
 keeps the Rustls-first / approved `rusqlite + bundled` dependency policy
 unchanged.
 
+## 2026-05-18 Identity Recover Workspace Upgrade Hook
+
+Timestamp: 2026-05-18T01:22:00+0800.
+
+Scope: wire Go `internal/cli/id.go` `identityService()` workspace-upgrade
+behavior into Rust `id recover`, then prove a local legacy `config.json`
+migration through the recovery OTP-send path before any identity or SQLite
+state is written.
+
+Rust change:
+
+- `crates/awiki-cli/src/app/id_recover_handlers.rs`: `id recover` now calls
+  `resolve_config_for_workspace()` where it previously called
+  `resolve_config()`. This matches Go `runIDRecover`, which obtains its
+  service through `identityService()`, and `identityService()` calls
+  `resolveConfigForWorkspace()` before constructing the identity service.
+- `crates/awiki-cli/tests/identity_recover_live_contract.rs`: added
+  `identity_recover_migrates_legacy_config_json_before_send_otp_like_go`.
+  The subprocess helper now sets an isolated `HOME` alongside
+  `AWIKI_CLI_WORKSPACE_HOME_DIR` so host-local legacy OpenClaw identity state
+  cannot leak into the recover contract.
+
+System-test change:
+
+- Added
+  `tests_v2/id/test_identity_cli.py::test_id_recover_rust_migrates_legacy_config_json_before_send_otp`.
+- Updated `tests_v2/id/CLAUDE.md` to mention the Rust `id recover` legacy
+  config workspace-upgrade coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test identity_recover_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/cli ./internal/identity ./internal/upgrade ./internal/store -run 'Test.*Recover|Test.*Identity|Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/id/test_identity_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/id/test_identity_cli.py::test_id_recover_rust_migrates_legacy_config_json_before_send_otp -ra -q
+```
+
+Observed results:
+
+- Rust formatting and package check passed.
+- Rust `identity_recover_live_contract` passed: 3 passed, 0 failed.
+- `xtask check-structure` passed with no undocumented Rust file over the
+  1200-line soft cap.
+- Go focused reference tests passed:
+  `internal/cli` 18.836s, `internal/identity` 0.155s,
+  `internal/upgrade` 0.076s, and `internal/store` 0.158s.
+- Python syntax check for `tests_v2/id/test_identity_cli.py` passed.
+- Focused `awiki-system-test` selector:
+  `test_id_recover_rust_migrates_legacy_config_json_before_send_otp` passed:
+  1 passed, 0 failed, 0 skipped in 0.56s.
+- Dependency audit found existing Rustls/webpki/ring, base64/sha2/hmac, and
+  approved `rusqlite`/`libsqlite3-sys` entries; no OpenSSL/native-tls stack or
+  new dependency was added.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The new selector invokes real Rust `id recover` as the first CLI command
+  after writing legacy `config.json`. It uses the existing backend-unhealthy
+  skip helper, but this run did not skip.
+
+Coverage:
+
+- Verifies `id recover` migrates a legacy `config.json`-only workspace before
+  the non-OTP recover path posts `/user-service/handle/rpc` `send_otp`.
+- Verifies migrated `config.yaml` keeps legacy runtime mode, service base URL,
+  and DID domain, and that the recovered full handle uses the migrated DID
+  domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, a
+  non-empty upgrade ID, and a backup directory containing `config.json.bak`
+  equal to the seeded legacy config.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies the send-OTP branch does not create an identity index, SQLite DB
+  state, listener pid files, or runtime socket artifacts.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch in `id recover` send-OTP. It does not
+separately prove legacy SQLite import through workspace migration, legacy
+identity import, imported/current k1 replacement RPCs, rollback, platform
+cleanup command execution, all identity subcommands through legacy config,
+non-dry-run `id replace-did`, or mail-service selectors. Mail-related
+system-test cases remain deferred/gated and must not be counted as passed.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged; the slice reuses existing local upgrade/config/identity/recover
+machinery and keeps the Rustls-first / approved `rusqlite + bundled`
+dependency policy unchanged.
+
 ## 2026-05-18 Page Workspace Upgrade Hook
 
 Timestamp: 2026-05-18T00:03:21+0800.

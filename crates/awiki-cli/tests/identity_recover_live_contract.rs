@@ -66,6 +66,144 @@ fn identity_recover_phone_without_otp_live_posts_send_otp_and_does_not_create_id
 }
 
 #[test]
+fn identity_recover_migrates_legacy_config_json_before_send_otp_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"sent":true},"id":"req-1"}"#,
+    )]);
+    let legacy_config = workspace.path().join("config.json");
+    let legacy_payload = json!({
+        "schema_version": 1,
+        "services": {
+            "service_base_url": server.base_url(),
+            "did_domain": "legacy-recover.example",
+        },
+        "runtime": {
+            "mode": "http",
+        },
+    });
+    let legacy_text = serde_json::to_string(&legacy_payload).expect("serialize legacy config");
+    std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
+
+    let output = awiki_cmd(
+        &[
+            "id",
+            "recover",
+            "--handle",
+            " Alice ",
+            "--phone",
+            "13800138000",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["summary"],
+        "OTP sent for handle alice.legacy-recover.example recovery"
+    );
+    assert_eq!(envelope["data"]["action"], "send_recover_otp");
+    assert_eq!(
+        envelope["data"]["full_handle"],
+        "alice.legacy-recover.example"
+    );
+    assert_eq!(envelope["data"]["verification_state"], "otp_sent");
+    assert_eq!(envelope["data"]["result"], json!({ "sent": true }));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "send_otp",
+            "params": { "phone": "+8613800138000" },
+        })
+    );
+
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should be removed after workspace upgrade"
+    );
+    let config_yaml = workspace.path().join("config.yaml");
+    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
+    assert!(
+        config_text.contains("schema_version: 1\n"),
+        "migrated config should keep config schema, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  mode: http\n"),
+        "migrated config should keep runtime mode, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains(&format!("  service_base_url: {}\n", server.base_url())),
+        "migrated config should keep service URL, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  did_domain: legacy-recover.example\n"),
+        "migrated config should keep DID domain, got {config_text:?}"
+    );
+
+    let meta_path = workspace.path().join("upgrade").join("meta.json");
+    let meta: Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
+            .expect("upgrade meta JSON");
+    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
+    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
+    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+    assert_eq!(
+        backup_dir.parent(),
+        Some(workspace.path().join("upgrade").join("backups").as_path())
+    );
+    assert_eq!(
+        std::fs::read_to_string(backup_dir.join("config.json.bak"))
+            .expect("read legacy config backup"),
+        legacy_text
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("upgrade")
+            .join("upgrade_journal.json")
+            .exists(),
+        "journal should be cleared after successful upgrade"
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("identities")
+            .join("index.json")
+            .exists(),
+        "send_recover_otp should not create a final recovered identity index"
+    );
+    assert!(
+        !workspace.path().join("data").join("awiki-cli.db").exists(),
+        "send_recover_otp should not create SQLite state"
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "send_recover_otp must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("runtime")
+            .join("listener.pid")
+            .exists(),
+        "send_recover_otp must not create listener pid artifacts"
+    );
+}
+
+#[test]
 fn identity_recover_phone_otp_live_posts_recover_handle_and_finalizes_identity_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
@@ -215,9 +353,12 @@ fn write_service_config(workspace: &Path, base_url: &str) {
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
+    let home = workspace.join("home");
+    std::fs::create_dir_all(&home).expect("create isolated HOME");
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
+        .env("HOME", &home)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
@@ -257,6 +398,13 @@ fn assert_success(output: &Output) {
         "unexpected exit status; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_non_empty_string(value: &Value, field: &str) {
+    assert!(
+        value.as_str().is_some_and(|text| !text.trim().is_empty()),
+        "{field} should be a non-empty string: {value:?}"
     );
 }
 

@@ -10,7 +10,7 @@ const RECOVER_REPAIR_HINT: &str =
 
 impl App {
     pub fn run_id_recover(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let handle = required_string_flag(
             command,
             "handle",
