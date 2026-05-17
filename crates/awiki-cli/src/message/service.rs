@@ -127,17 +127,27 @@ pub fn send(
                 );
             }
             Err(bridge_err) => {
-                match send_direct_http(resolved, manager, &record, &target, &request) {
+                let refreshed;
+                let fallback_record = if is_session_unauthorized(&bridge_err) {
+                    refreshed = refresh_jwt_fallback(resolved, manager, &record).ok();
+                    refreshed.as_ref().unwrap_or(&record)
+                } else {
+                    &record
+                };
+                match send_direct_http(resolved, manager, fallback_record, &target, &request) {
                     Ok(mut result) => {
                         crate::traceutil::mark_fallback(
                             "websocket_to_http",
                             Some(&bridge_err.to_string()),
                         );
                         fill_direct_send_result(&mut result, &Value::Null, &target.did);
-                        let warnings =
-                            vec![super::websocket_http_fallback_warning(Some(&bridge_err))];
                         return persist_send_result(
-                            resolved, &record, &target, &request, &result, warnings,
+                            resolved,
+                            &record,
+                            &target,
+                            &request,
+                            &result,
+                            Vec::new(),
                         );
                     }
                     Err(_) => return Err(bridge_err),
@@ -145,7 +155,8 @@ pub fn send(
             }
         }
     }
-    let result = send_direct_http(resolved, manager, &record, &target, &request)?;
+    let result =
+        send_direct_http_with_fallback_refresh(resolved, manager, &record, &target, &request)?;
     persist_send_result(resolved, &record, &target, &request, &result, Vec::new())
 }
 
@@ -174,6 +185,32 @@ fn send_direct_http(
     )?;
     fill_direct_send_result(&mut result, &meta, &target.did);
     Ok(result)
+}
+
+fn send_direct_http_with_fallback_refresh(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    target: &TargetResolution,
+    request: &SendRequest,
+) -> Result<DirectSendResult, MessageError> {
+    match send_direct_http(resolved, manager, record, target, request) {
+        Ok(result) => Ok(result),
+        Err(err) if is_session_unauthorized(&err) => {
+            let refreshed = refresh_jwt_fallback(resolved, manager, record).ok();
+            match send_direct_http(
+                resolved,
+                manager,
+                refreshed.as_ref().unwrap_or(record),
+                target,
+                request,
+            ) {
+                Ok(result) => Ok(result),
+                Err(_) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 pub fn send_secure_direct_with_sender(
@@ -457,6 +494,62 @@ pub(crate) fn auth_session(
         record.jwt_token.as_str(),
         Some(persist_token),
     );
+    let token = record.jwt_token.trim();
+    remember_message_auth_scopes(resolved, &mut session, token);
+    if token.is_empty() {
+        let client = Client::new(resolved)?;
+        let did_auth_url = join_base_url(&resolved.service_base_url, DID_AUTH_RPC_ENDPOINT);
+        client
+            .ensure_jwt(&mut session, &did_auth_url, "message_bootstrap")
+            .map(|_| ())?;
+    }
+    Ok(session)
+}
+
+pub(crate) fn refresh_jwt_fallback(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+) -> Result<StoredIdentity, MessageError> {
+    if record.identity_name.trim().is_empty() {
+        return Err(MessageError::Internal(
+            "active identity is required".to_string(),
+        ));
+    }
+    let paths = manager.paths_for_identity(&record.identity_name)?;
+    let identity_name = record.identity_name.clone();
+    let persist_manager = manager.clone();
+    let persist_identity_name = identity_name.clone();
+    let persist_token: crate::authsdk::PersistToken = Box::new(move |token| {
+        persist_manager.update_jwt(&persist_identity_name, token)?;
+        Ok(())
+    });
+    let mut session = Session::new(
+        &paths.did_document_path,
+        &paths.key1_private_path,
+        identity_name,
+        record.did.as_str(),
+        record.jwt_token.as_str(),
+        Some(persist_token),
+    );
+    remember_message_auth_scopes(resolved, &mut session, record.jwt_token.trim());
+    let client = Client::new(resolved)?;
+    let did_auth_url = join_base_url(&resolved.service_base_url, DID_AUTH_RPC_ENDPOINT);
+    client.ensure_jwt(&mut session, &did_auth_url, "message_fallback_refresh")?;
+    let mut refreshed = record.clone();
+    refreshed.jwt_token = session.current_jwt().to_string();
+    Ok(refreshed)
+}
+
+pub(crate) fn is_session_unauthorized(err: &MessageError) -> bool {
+    matches!(
+        err,
+        MessageError::Service(service_err)
+            if service_err.status_code == 401 || service_err.rpc_code == 1401
+    )
+}
+
+fn remember_message_auth_scopes(resolved: &Resolved, session: &mut Session, token: &str) {
     let base_url = resolved.service_base_url.trim();
     let did_auth_url = join_base_url(base_url, DID_AUTH_RPC_ENDPOINT);
     let message_rpc_url = join_base_url(base_url, MESSAGE_RPC_ENDPOINT);
@@ -469,7 +562,6 @@ pub(crate) fn auth_session(
     if !anp_service_endpoint.is_empty() {
         session.remember_scope(anp_service_endpoint);
     }
-    let token = record.jwt_token.trim();
     if !token.is_empty() && !base_url.is_empty() {
         session.set_bearer(base_url, token);
         session.set_bearer(&did_auth_url, token);
@@ -478,13 +570,6 @@ pub(crate) fn auth_session(
     if !token.is_empty() && !anp_service_endpoint.is_empty() {
         session.set_bearer(anp_service_endpoint, token);
     }
-    if token.is_empty() {
-        let client = Client::new(resolved)?;
-        client
-            .ensure_jwt(&mut session, &did_auth_url, "message_bootstrap")
-            .map(|_| ())?;
-    }
-    Ok(session)
 }
 
 pub(crate) fn resolve_target(

@@ -134,7 +134,7 @@ fn msg_mark_read_websocket_mode_falls_back_to_http_with_warning_like_go() {
 }
 
 #[test]
-fn msg_mark_read_websocket_mode_double_failure_keeps_original_bridge_error_like_go() {
+fn msg_mark_read_websocket_mode_http_fallback_failure_returns_http_error_like_go() {
     let workspace = TempDir::new("msg-ws-mark-read-double-failure").expect("workspace");
     register_ready_msg_identity(workspace.path(), "bob-ws-double-fail", "bob", "jwt-bob");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
@@ -173,11 +173,10 @@ fn msg_mark_read_websocket_mode_double_failure_keeps_original_bridge_error_like_
     let message = envelope["error"]["message"]
         .as_str()
         .expect("error message");
-    assert_contains_text(message, "message transport is unavailable");
-    assert_contains_text(message, "local websocket bridge request failed");
+    assert_contains_text(message, "http mark-read failed");
     assert!(
-        !message.contains("http mark-read failed"),
-        "double failure should preserve the original bridge error, got: {message}"
+        !message.contains("local websocket bridge request failed"),
+        "HTTP fallback failure should mask the original bridge error after fallback starts, got: {message}"
     );
 
     let requests = server.requests();
@@ -188,6 +187,60 @@ fn msg_mark_read_websocket_mode_double_failure_keeps_original_bridge_error_like_
     let rows = query_rows(
         workspace.path(),
         "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-ws-read-3'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["is_read"], 0);
+}
+
+#[test]
+fn msg_mark_read_websocket_mode_keeps_bridge_error_when_http_prepare_fails_like_go() {
+    let workspace = TempDir::new("msg-ws-mark-read-http-prepare").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-ws-http-prepare", "bob", "jwt-bob");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    seed_direct_message(
+        workspace.path(),
+        bob_did,
+        alice_did,
+        "msg-ws-read-prepare",
+        "still unread after HTTP prepare failure",
+        "2026-05-16T03:14:15Z",
+    );
+    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let missing_ca = workspace.path().join("missing-ca.pem");
+    write_msg_ws_config_with_ca_bundle(
+        workspace.path(),
+        "http://127.0.0.1:9",
+        missing_socket.to_str().expect("socket path"),
+        missing_ca.to_str().expect("ca bundle path"),
+    );
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "bob-ws-http-prepare",
+            "msg",
+            "mark-read",
+            "msg-ws-read-prepare",
+        ],
+        workspace.path(),
+    );
+
+    assert_failure(&output);
+    let envelope = failure_json(&output);
+    let message = envelope["error"]["message"]
+        .as_str()
+        .expect("error message");
+    assert_contains_text(message, "message transport is unavailable");
+    assert_contains_text(message, "local websocket bridge request failed");
+    assert!(
+        !message.contains("read ca bundle"),
+        "HTTP preparation failure should not mask the original bridge error, got: {message}"
+    );
+
+    let rows = query_rows(
+        workspace.path(),
+        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-ws-read-prepare'",
     );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["is_read"], 0);
@@ -387,6 +440,21 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
         workspace.join("config.yaml"),
         format!(
             "runtime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n"
+        ),
+    )
+    .unwrap();
+}
+
+fn write_msg_ws_config_with_ca_bundle(
+    workspace: &Path,
+    base_url: &str,
+    socket_path: &str,
+    ca_bundle: &str,
+) {
+    std::fs::write(
+        workspace.join("config.yaml"),
+        format!(
+            "runtime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n  ca_bundle: {ca_bundle}\n"
         ),
     )
     .unwrap();

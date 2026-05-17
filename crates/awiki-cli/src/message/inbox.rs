@@ -2,8 +2,8 @@ use super::group_service::group_storage_key;
 use super::service::{
     apply_inbox_filters, auth_session, collect_message_ids, mark_messages_read_in_result,
     maybe_publish_secure_prekeys, merge_handle_history_messages, peer_handle_or_did,
-    persist_inbox_messages, require_active_identity, resolve_target, runtime_mode, CommandResult,
-    TargetResolution,
+    persist_inbox_messages, refresh_jwt_fallback, require_active_identity, resolve_target,
+    runtime_mode, CommandResult, TargetResolution,
 };
 use super::{
     build_inbox_rpc_params, websocket_cache_fallback_warning, websocket_http_fallback_warning,
@@ -97,7 +97,7 @@ pub fn inbox(
             InboxTransportOutcome::LocalCache(result) => return Ok(result),
         }
     }
-    let raw = inbox_http(resolved, manager, &record, request.clone())?;
+    let raw = inbox_http_with_fallback_refresh(resolved, manager, &record, request.clone())?;
     Ok(inbox_result_from_remote(
         resolved,
         manager,
@@ -274,7 +274,7 @@ fn inbox_websocket(
                     local_cache_command_result(cached, target, &bridge_err),
                 ));
             }
-            match inbox_http(resolved, manager, record, request.clone()) {
+            match inbox_http_with_fallback_refresh(resolved, manager, record, request.clone()) {
                 Ok(raw) => {
                     crate::traceutil::mark_fallback(
                         "websocket_to_http",
@@ -480,6 +480,24 @@ fn inbox_http(
         params,
         &mut auth,
     )
+}
+
+fn inbox_http_with_fallback_refresh(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    request: InboxRequest,
+) -> Result<Value, MessageError> {
+    match inbox_http(resolved, manager, record, request.clone()) {
+        Ok(raw) => Ok(raw),
+        Err(err) if super::service::is_session_unauthorized(&err) => {
+            match refresh_jwt_fallback(resolved, manager, record) {
+                Ok(refreshed) => inbox_http(resolved, manager, &refreshed, request),
+                Err(_) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn read_inbox_from_cache(

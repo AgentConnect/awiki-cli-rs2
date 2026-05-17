@@ -2,6 +2,88 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Message JWT Fallback-Refresh Trace Slice
+
+Timestamp: 2026-05-17T14:20:00+0800.
+
+Scope: preserve Go `internal/message/service.go` service-level fallback JWT
+refresh trace parity while keeping the existing transport-level message RPC
+`1401` retry label separate.
+
+What changed:
+
+- Added `refresh_jwt_fallback` with Go's `message_fallback_refresh` trace label
+  and reused the existing message auth scope/bearer seeding.
+- Kept `message_service_retry` in the message HTTP transport client for
+  transport-level RPC `1401` retry.
+- Wired service-level fallback refresh wrappers for direct send, inbox, history,
+  and mark-read HTTP paths.
+- Preserved Go's WebSocket fallback asymmetry: direct send and mark-read only
+  pre-refresh when the original bridge/transport error is unauthorized; inbox
+  and history refresh when their HTTP fallback itself returns unauthorized.
+- Split mark-read HTTP fallback preparation from RPC execution so HTTP
+  preparation failures keep the original bridge error, while HTTP RPC fallback
+  failures surface the HTTP error after fallback starts, matching Go control
+  flow.
+- Added focused live contracts for direct-send HTTP `401` fallback refresh and
+  inbox WebSocket missing-bridge -> HTTP `401` -> fallback refresh.
+- Extended mark-read WebSocket tests for HTTP fallback error precedence and the
+  HTTP-preparation failure boundary.
+
+Boundary note:
+
+- This slice is trace/control-flow parity only. It does not change message RPC
+  payloads, persistence shapes, output JSON, warning text, local cache
+  selection, contact sync behavior, or attachment/group/secure E2EE semantics.
+- Full `awiki-system-test` acceptance was not run for this slice.
+- No dependency was added. Cargo manifests and lockfile remain unchanged.
+- Source/test files touched by this slice are below the default 1200-line
+  review-size cap: `service.rs` 1125 lines, `inbox.rs` 820 lines,
+  `history.rs` 349 lines, `mark_read.rs` 221 lines,
+  `traceutil_contract.rs` 329 lines,
+  `msg_jwt_fallback_trace_contract.rs` 546 lines,
+  `msg_ws_mark_read_live_contract.rs` 812 lines, and
+  `msg_ws_proxy_live_contract.rs` 524 lines.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_jwt_fallback_trace_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/message ./internal/traceutil -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+```
+
+Observed results:
+
+- Format check passed.
+- `traceutil_contract`: 9 passed, 0 failed.
+- `msg_jwt_fallback_trace_contract`: 2 passed, 0 failed.
+- `msg_ws_proxy_live_contract`: 2 passed, 0 failed.
+- `msg_ws_inbox_live_contract`: 5 passed, 0 failed.
+- `msg_ws_history_live_contract`: 4 passed, 0 failed.
+- `msg_ws_mark_read_live_contract`: 5 passed, 0 failed.
+- `msg_live_contract`: 7 passed, 0 failed.
+- `cargo check -p awiki-cli --locked` passed.
+- Structure check passed with no undocumented Rust files over the 1200-line
+  default cap.
+- `git diff --check` passed.
+- Go `internal/message` and `internal/traceutil` package tests passed.
+- Dependency audit still shows only existing Rustls/ring/webpki and approved
+  `rusqlite + bundled`/`libsqlite3-sys`; no OpenSSL/native-tls, `reqwest`,
+  `hyper`, WebSocket, YAML, platform-service, or new SQLite dependency was
+  added.
+
 ## 2026-05-17 Attachment Trace-Depth Call-Site Slice
 
 Timestamp: 2026-05-17T11:27:58+0800.
@@ -31,8 +113,9 @@ Boundary note:
 - It reuses existing Go/Rust labels (`persist_direct_send`,
   `persist_group_send`, `touch_group_cache`, and shared
   `handle_lookup:target_resolve`) instead of adding attachment-specific labels.
-- JWT fallback-refresh trace wiring and remaining non-direct-message fallback
-  call sites remain separate parity slices.
+- JWT fallback-refresh trace wiring is now covered by the 2026-05-17 Message
+  JWT Fallback-Refresh Trace Slice above. Remaining non-direct-message fallback
+  call sites stay as separate parity slices.
 - No dependency was added. Cargo manifests and lockfile remain unchanged.
 - `crates/awiki-cli/src/message/attachment_service.rs` is 884 lines and
   `crates/awiki-cli/tests/traceutil_contract.rs` is 289 lines after this slice,

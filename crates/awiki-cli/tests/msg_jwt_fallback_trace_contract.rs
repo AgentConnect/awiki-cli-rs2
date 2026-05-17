@@ -1,223 +1,184 @@
-#![cfg(unix)]
-
-use awiki_cli::runtime::bridge::{self, BridgeRequest};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_send_direct_websocket_mode_uses_local_bridge_like_go() {
-    let workspace = TempDir::new("msg-ws-proxy-direct-send").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "alice-ws", "alice", "jwt-alice");
-    let target_did = "did:wba:awiki.ai:bob:e1_bob";
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
-    let (_bridge, bridge_requests) = spawn_bridge_server(
-        &socket_path,
-        json!({
+fn direct_send_http_401_refreshes_with_fallback_trace_like_go() {
+    let workspace = TempDir::new("msg-jwt-fallback-send").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "alice-msg-fallback", "alice", "jwt-stale");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let server = TestServer::new(vec![
+        TestResponse::status(401, "expired jwt"),
+        TestResponse::status(401, "still expired"),
+        TestResponse::ok(&json_rpc_result(json!({
+            "access_token": "jwt-refreshed"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
             "accepted": true,
-            "message_id": "msg-bridge-direct-1",
-            "operation_id": "op-bridge-direct-1",
-            "target_did": target_did,
-            "accepted_at": "2026-05-16T01:02:03Z",
-            "delivery_state": "accepted",
-            "source": "local_ws_cache"
-        }),
-    );
-    write_msg_ws_config(
-        workspace.path(),
-        "https://placeholder.invalid",
-        socket_path.to_str().expect("socket path"),
-    );
+            "final_acceptance": true,
+            "message_id": "msg-fallback-refresh-1",
+            "operation_id": "op-fallback-refresh-1",
+            "target_did": bob_did,
+            "accepted_at": "2026-05-17T01:02:03Z",
+            "delivery_state": "accepted"
+        }))),
+    ]);
+    write_msg_config(workspace.path(), &server.base_url());
 
-    let output = awiki_cmd(
+    let output = awiki_trace_cmd(
         &[
             "--identity",
-            "alice-ws",
+            "alice-msg-fallback",
             "msg",
             "send",
             "--to",
-            target_did,
+            bob_did,
             "--text",
-            "hello over local bridge",
-            "--type",
-            "text",
+            "hello after fallback refresh",
         ],
         workspace.path(),
     );
 
     assert_success(&output);
-    let envelope = success_json(&output);
+    let envelope = success_json_with_stderr(&output);
     assert_eq!(envelope["summary"], "Sent a direct text message");
-    assert_eq!(envelope["data"]["action"], "send_message");
-    assert_eq!(envelope["data"]["target"]["did"], target_did);
-    assert_eq!(envelope["data"]["message"]["id"], "msg-bridge-direct-1");
-    assert_eq!(envelope["data"]["message"]["type"], "text");
-    assert_eq!(envelope["data"]["message"]["secure"], false);
-    assert_eq!(
-        envelope["data"]["delivery"]["message_id"],
-        "msg-bridge-direct-1"
-    );
-    assert_eq!(
-        envelope["data"]["delivery"]["operation_id"],
-        "op-bridge-direct-1"
-    );
-    assert!(envelope["data"].get("source").is_none());
-    assert_no_websocket_http_fallback_warning(&envelope);
+    assert_eq!(envelope["data"]["message"]["id"], "msg-fallback-refresh-1");
 
-    let request = bridge_requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("bridge direct.send request");
-    assert_eq!(request.method, "direct.send");
-    assert_eq!(request.identity_name, "alice-ws");
-    assert_eq!(request.params["target"], target_did);
-    assert_eq!(request.params["text"], "hello over local bridge");
-    assert_eq!(request.params["type"], "text");
+    let trace = stderr_text(&output);
+    assert_text_contains(&trace, "JWT 续期 / 消息回退时刷新 JWT");
+    assert_text_contains(&trace, "远端 RPC / direct send");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert_contains_text(&requests[0], "Authorization: Bearer jwt-stale\r\n");
+    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert_eq!(json_body(&requests[2])["method"], "get_me");
+    assert!(requests[3].starts_with("POST /im/rpc HTTP/1.1"));
+    assert_contains_text(&requests[3], "Authorization: Bearer jwt-refreshed\r\n");
+    assert_eq!(json_body(&requests[3])["method"], "direct.send");
+
+    let auth_path = identity_auth_path(workspace.path(), "alice-msg-fallback");
+    let auth: Value =
+        serde_json::from_slice(&std::fs::read(auth_path).expect("read auth")).expect("auth json");
+    assert_eq!(auth["jwt_token"], "jwt-refreshed");
 }
 
 #[test]
-fn msg_send_direct_websocket_mode_falls_back_to_http_without_warning_like_go() {
-    let workspace = TempDir::new("msg-ws-proxy-direct-send-fallback").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "alice-ws-fallback", "alice", "jwt-alice");
-    let target_did = "did:wba:awiki.ai:bob:e1_bob";
+fn inbox_websocket_http_fallback_401_refreshes_with_fallback_trace_like_go() {
+    let workspace = TempDir::new("msg-jwt-fallback-inbox-ws").expect("workspace");
+    register_ready_msg_identity(
+        workspace.path(),
+        "bob-msg-fallback-ws",
+        "bob",
+        "jwt-bob-stale",
+    );
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "accepted": true,
-        "final_acceptance": true,
-        "message_id": "msg-http-direct-1",
-        "operation_id": "op-http-direct-1",
-        "target_did": target_did,
-        "accepted_at": "2026-05-16T02:03:04Z",
-        "delivery_state": "accepted",
-        "source": "remote_http"
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::status(401, "expired inbox jwt"),
+        TestResponse::status(401, "still expired inbox jwt"),
+        TestResponse::ok(&json_rpc_result(json!({
+            "access_token": "jwt-bob-fresh"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "messages": [{
+                "id": "msg-fallback-inbox-1",
+                "type": "text",
+                "sender_did": alice_did,
+                "receiver_did": bob_did,
+                "content_type": "text/plain",
+                "content": "hello through refreshed inbox fallback",
+                "sent_at": "2026-05-17T02:03:04Z",
+                "is_read": false
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "did": alice_did,
+            "handle": "alice.awiki.ai",
+            "full_handle": "alice.awiki.ai"
+        }))),
+    ]);
     write_msg_ws_config(
         workspace.path(),
         &server.base_url(),
         missing_socket.to_str().expect("socket path"),
     );
 
-    let output = awiki_cmd(
+    let output = awiki_trace_cmd(
         &[
             "--identity",
-            "alice-ws-fallback",
+            "bob-msg-fallback-ws",
             "msg",
-            "send",
-            "--to",
-            target_did,
-            "--text",
-            "hello over HTTP fallback",
-            "--type",
-            "text",
+            "inbox",
+            "--scope",
+            "direct",
+            "--with",
+            alice_did,
+            "--limit",
+            "3",
         ],
         workspace.path(),
     );
 
     assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Sent a direct text message");
-    assert_eq!(envelope["data"]["action"], "send_message");
-    assert_eq!(envelope["data"]["target"]["did"], target_did);
-    assert_eq!(envelope["data"]["message"]["id"], "msg-http-direct-1");
-    assert_eq!(envelope["data"]["message"]["type"], "text");
-    assert_eq!(envelope["data"]["message"]["secure"], false);
+    let envelope = success_json_with_stderr(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 direct inbox messages");
+    assert_eq!(envelope["data"]["source"], "remote_http");
     assert_eq!(
-        envelope["data"]["delivery"]["message_id"],
-        "msg-http-direct-1"
+        envelope["data"]["messages"][0]["id"],
+        "msg-fallback-inbox-1"
     );
-    assert_eq!(
-        envelope["data"]["delivery"]["operation_id"],
-        "op-http-direct-1"
+
+    let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.as_str().unwrap_or_default().contains(
+                "WebSocket listener was unavailable for this identity; used HTTP fallback"
+            )),
+        "expected websocket HTTP fallback warning, got: {warnings:?}"
     );
-    assert!(envelope["data"].get("source").is_none());
-    assert_no_websocket_http_fallback_warning(&envelope);
+
+    let trace = stderr_text(&output);
+    assert_text_contains(&trace, "JWT 续期 / 消息回退时刷新 JWT");
+    assert_text_contains(&trace, "回退:");
+    assert_text_contains(&trace, "WebSocket 降级到 HTTP");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_text(&requests[0], "Authorization: Bearer jwt-alice\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
-    assert_eq!(body["method"], "direct.send");
-    assert_eq!(body["params"]["meta"]["profile"], "anp.direct.base.v1");
+    assert_eq!(requests.len(), 7);
     assert_eq!(
-        body["params"]["meta"]["target"],
-        json!({"kind": "agent", "did": target_did})
+        json_body(&requests[0])["method"],
+        "direct.e2ee.publish_prekey_bundle"
     );
     assert_eq!(
-        body["params"]["body"],
-        json!({"text": "hello over HTTP fallback"})
+        json_body(&requests[1])["method"],
+        "direct.e2ee.publish_prekey_bundle"
     );
-    assert_eq!(
-        body["params"]["auth"]["scheme"],
-        "anp-rfc9421-origin-proof-v1"
-    );
-}
+    assert_eq!(json_body(&requests[2])["method"], "inbox.get");
+    assert_contains_text(&requests[2], "Authorization: Bearer jwt-bob-stale\r\n");
+    assert_eq!(json_body(&requests[3])["method"], "inbox.get");
+    assert!(requests[4].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert_eq!(json_body(&requests[4])["method"], "get_me");
+    assert_eq!(json_body(&requests[5])["method"], "inbox.get");
+    assert_contains_text(&requests[5], "Authorization: Bearer jwt-bob-fresh\r\n");
+    assert!(requests[6].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
 
-fn spawn_bridge_server(
-    socket_path: &Path,
-    result: Value,
-) -> (thread::JoinHandle<()>, mpsc::Receiver<BridgeRequest>) {
-    let listener =
-        bridge::listen_bridge(socket_path.to_str().expect("socket path")).expect("listen bridge");
-    listener
-        .set_nonblocking(true)
-        .expect("set bridge listener nonblocking");
-    let (requests_tx, requests_rx) = mpsc::channel();
-    let response_line = json!({ "ok": true, "result": result }).to_string() + "\n";
-
-    let handle = thread::spawn(move || loop {
-        let Ok((mut conn, _)) = accept_unix_connection(&listener) else {
-            return;
-        };
-        conn.set_read_timeout(Some(Duration::from_secs(2)))
-            .expect("set bridge read timeout");
-        let mut request_line = String::new();
-        let Ok(read) = BufReader::new(conn.try_clone().expect("clone bridge client"))
-            .read_line(&mut request_line)
-        else {
-            return;
-        };
-        if read == 0 || request_line.trim().is_empty() {
-            continue;
-        }
-
-        let request: BridgeRequest =
-            serde_json::from_str(request_line.trim_end()).expect("decode bridge request");
-        requests_tx.send(request).expect("send bridge request");
-        conn.write_all(response_line.as_bytes())
-            .expect("write bridge response");
-        break;
-    });
-
-    (handle, requests_rx)
-}
-
-fn accept_unix_connection(
-    listener: &std::os::unix::net::UnixListener,
-) -> std::io::Result<(
-    std::os::unix::net::UnixStream,
-    std::os::unix::net::SocketAddr,
-)> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match listener.accept() {
-            Ok(accepted) => return Ok(accepted),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "timed out accepting bridge test connection",
-                    ));
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Err(err),
-        }
-    }
+    let auth_path = identity_auth_path(workspace.path(), "bob-msg-fallback-ws");
+    let auth: Value =
+        serde_json::from_slice(&std::fs::read(auth_path).expect("read auth")).expect("auth json");
+    assert_eq!(auth["jwt_token"], "jwt-bob-fresh");
 }
 
 fn register_ready_msg_identity(
@@ -283,6 +244,26 @@ fn register_ready_msg_identity(
     .unwrap();
 }
 
+fn identity_auth_path(workspace: &Path, identity_name: &str) -> PathBuf {
+    let index_path = workspace.join("identities").join("index.json");
+    let index: Value = serde_json::from_slice(&std::fs::read(index_path).unwrap()).unwrap();
+    let dir_name = index["credentials"][identity_name]["dir_name"]
+        .as_str()
+        .unwrap();
+    workspace
+        .join("identities")
+        .join(dir_name)
+        .join("auth.json")
+}
+
+fn write_msg_config(workspace: &Path, base_url: &str) {
+    std::fs::write(
+        workspace.join("config.yaml"),
+        format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
+    )
+    .unwrap();
+}
+
 fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
@@ -294,11 +275,45 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
+    awiki_cmd_owned(
+        &args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>(),
+        workspace,
+    )
+}
+
+fn awiki_trace_cmd(args: &[&str], workspace: &Path) -> Output {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    awiki_trace_cmd_owned(&args, workspace)
+}
+
+fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT");
+    command.output().expect("run awiki-cli binary")
+}
+
+fn awiki_trace_cmd_owned(args: &[String], workspace: &Path) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env("AWIKI_CLI_TRACE_TIMING", "1")
         .env_remove("AWIKI_WORKSPACE")
         .env_remove("AWIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_HOME")
@@ -318,32 +333,32 @@ fn assert_success(output: &Output) {
     );
 }
 
-fn success_json(output: &Output) -> Value {
-    assert!(
-        output.stderr.is_empty(),
-        "stderr should be empty: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+fn success_json_with_stderr(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true);
     envelope
 }
 
-fn assert_no_websocket_http_fallback_warning(envelope: &Value) {
-    let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
-    assert!(
-        warnings.is_empty()
-            || warnings.iter().all(|warning| !warning
-                .as_str()
-                .unwrap_or_default()
-                .contains("used HTTP fallback")),
-        "direct send should not include websocket HTTP fallback warning: {warnings:?}"
-    );
+fn stderr_text(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!stderr.is_empty(), "stderr should contain trace output");
+    stderr
 }
 
 fn request_body(raw: &str) -> &str {
     raw.split("\r\n\r\n").nth(1).unwrap_or_default()
+}
+
+fn json_body(raw: &str) -> Value {
+    serde_json::from_str(request_body(raw)).expect("request body json")
+}
+
+fn assert_text_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected text to contain {needle:?}, got:\n{haystack}"
+    );
 }
 
 fn assert_contains_text(haystack: &str, needle: &str) {
@@ -372,6 +387,13 @@ impl TestResponse {
     fn ok(body: &str) -> Self {
         Self {
             status: 200,
+            body: body.to_string(),
+        }
+    }
+
+    fn status(status: u16, body: &str) -> Self {
+        Self {
+            status,
             body: body.to_string(),
         }
     }

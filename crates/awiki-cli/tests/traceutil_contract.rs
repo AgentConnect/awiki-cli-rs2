@@ -284,6 +284,46 @@ fn attachment_trace_call_sites_match_go_trace_depth_contract() {
     }
 }
 
+#[test]
+fn message_jwt_refresh_call_sites_match_go_trace_depth_contract() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let client = source(crate_root, "src/message/client.rs");
+    let service = source(crate_root, "src/message/service.rs");
+    let inbox = source(crate_root, "src/message/inbox.rs");
+    let history = source(crate_root, "src/message/history.rs");
+    let mark_read = source(crate_root, "src/message/mark_read.rs");
+
+    assert!(
+        client.contains("\"message_service_retry\""),
+        "message transport-level 1401 retry should keep the Go message_service_retry label"
+    );
+    assert!(
+        service.contains("\"message_fallback_refresh\""),
+        "message service fallback refresh should use the Go message_fallback_refresh label"
+    );
+
+    for (label, source) in [
+        ("send_direct_http_with_fallback_refresh", &service),
+        ("inbox_http_with_fallback_refresh", &inbox),
+        ("history_http_with_fallback_refresh", &history),
+        ("mark_read_http_with_fallback_refresh", &mark_read),
+    ] {
+        assert!(
+            source.contains(label),
+            "message fallback refresh wrapper is not wired: {label}"
+        );
+    }
+
+    assert_eq!(
+        traceutil::humanize_text("message_fallback_refresh"),
+        "消息回退时刷新 JWT"
+    );
+    assert_eq!(
+        traceutil::humanize_text("message_service_retry"),
+        "消息服务重试前刷新 JWT"
+    );
+}
+
 fn source(crate_root: &Path, relative: &str) -> String {
     std::fs::read_to_string(crate_root.join(relative)).expect("read Rust source")
 }

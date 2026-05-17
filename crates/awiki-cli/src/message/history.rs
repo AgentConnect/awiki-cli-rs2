@@ -1,7 +1,7 @@
 use super::service::{
     auth_session, maybe_publish_secure_prekeys, merge_handle_history_messages, peer_handle_or_did,
-    persist_history_messages, require_active_identity, resolve_target, resolved_dids_value,
-    runtime_mode, CommandResult, TargetResolution,
+    persist_history_messages, refresh_jwt_fallback, require_active_identity, resolve_target,
+    resolved_dids_value, runtime_mode, CommandResult, TargetResolution,
 };
 use super::{
     build_history_rpc_params, websocket_cache_fallback_warning, websocket_http_fallback_warning,
@@ -62,7 +62,7 @@ pub fn history(
         }
     } else {
         (
-            history_http(resolved, manager, &record, request.clone())?,
+            history_http_with_fallback_refresh(resolved, manager, &record, request.clone())?,
             Vec::new(),
         )
     };
@@ -136,7 +136,7 @@ fn history_websocket(
                     local_cache_command_result(cached, target, &bridge_err),
                 ));
             }
-            match history_http(resolved, manager, record, request.clone()) {
+            match history_http_with_fallback_refresh(resolved, manager, record, request.clone()) {
                 Ok(raw) => {
                     crate::traceutil::mark_fallback(
                         "websocket_to_http",
@@ -259,6 +259,24 @@ fn history_http(
         params,
         &mut auth,
     )
+}
+
+fn history_http_with_fallback_refresh(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    request: HistoryRequest,
+) -> Result<Value, MessageError> {
+    match history_http(resolved, manager, record, request.clone()) {
+        Ok(raw) => Ok(raw),
+        Err(err) if super::service::is_session_unauthorized(&err) => {
+            match refresh_jwt_fallback(resolved, manager, record) {
+                Ok(refreshed) => history_http(resolved, manager, &refreshed, request),
+                Err(_) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn read_history_from_cache(

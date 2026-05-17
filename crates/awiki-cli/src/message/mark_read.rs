@@ -1,8 +1,10 @@
 use super::service::{
-    auth_session, int_value, require_active_identity, runtime_mode, string_value,
+    auth_session, int_value, refresh_jwt_fallback, require_active_identity, runtime_mode,
+    string_value,
 };
 use super::{build_mark_read_rpc_params, websocket_http_fallback_warning, Client, CommandResult};
 use super::{MarkReadRequest, MessageError, WSProxyTransport, MESSAGE_RPC_ENDPOINT};
+use crate::authsdk::Session;
 use crate::config::Resolved;
 use crate::identity::types::StoredIdentity;
 use crate::identity::Manager;
@@ -100,22 +102,59 @@ fn mark_direct_ids(
     request: MarkReadRequest,
 ) -> Result<(Value, Vec<String>), MessageError> {
     if runtime_mode(resolved) != runtime::bridge::MODE_WEBSOCKET {
-        return mark_read_http(resolved, manager, record, request).map(|raw| (raw, Vec::new()));
+        return mark_read_http_with_fallback_refresh(resolved, manager, record, request)
+            .map(|raw| (raw, Vec::new()));
     }
     let bridge = WSProxyTransport::new(resolved, &record.identity_name);
     match bridge.mark_read(request.clone()) {
         Ok(result) => Ok((Value::Object(result), Vec::new())),
-        Err(bridge_err) => match mark_read_http(resolved, manager, record, request) {
-            Ok(raw) => {
-                crate::traceutil::mark_fallback("websocket_to_http", Some(&bridge_err.to_string()));
-                Ok((
-                    raw,
-                    vec![websocket_http_fallback_warning(Some(&bridge_err))],
-                ))
+        Err(bridge_err) => {
+            let refreshed;
+            let fallback_record = if super::service::is_session_unauthorized(&bridge_err) {
+                refreshed = match refresh_jwt_fallback(resolved, manager, record) {
+                    Ok(refreshed) => refreshed,
+                    Err(_) => return Err(bridge_err),
+                };
+                &refreshed
+            } else {
+                record
+            };
+            let mut http = match prepare_mark_read_http_context(resolved, manager, fallback_record)
+            {
+                Ok(http) => http,
+                Err(_) => return Err(bridge_err),
+            };
+            match mark_read_http_with_context(&mut http, fallback_record, request) {
+                Ok(raw) => {
+                    crate::traceutil::mark_fallback(
+                        "websocket_to_http",
+                        Some(&bridge_err.to_string()),
+                    );
+                    Ok((
+                        raw,
+                        vec![websocket_http_fallback_warning(Some(&bridge_err))],
+                    ))
+                }
+                Err(err) => Err(err),
             }
-            Err(_) => Err(bridge_err),
-        },
+        }
     }
+}
+
+struct MarkReadHttpContext {
+    auth: Session,
+    client: Client,
+}
+
+fn prepare_mark_read_http_context(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+) -> Result<MarkReadHttpContext, MessageError> {
+    Ok(MarkReadHttpContext {
+        auth: auth_session(resolved, manager, record)?,
+        client: Client::new(resolved)?,
+    })
 }
 
 fn mark_read_http(
@@ -124,16 +163,41 @@ fn mark_read_http(
     record: &StoredIdentity,
     request: MarkReadRequest,
 ) -> Result<Value, MessageError> {
-    let mut auth = auth_session(resolved, manager, record)?;
-    let client = Client::new(resolved)?;
+    let mut http = prepare_mark_read_http_context(resolved, manager, record)?;
+    mark_read_http_with_context(&mut http, record, request)
+}
+
+fn mark_read_http_with_context(
+    http: &mut MarkReadHttpContext,
+    record: &StoredIdentity,
+    request: MarkReadRequest,
+) -> Result<Value, MessageError> {
     let params = build_mark_read_rpc_params(record, request)?;
-    client.authenticated_rpc_call_profile(
+    http.client.authenticated_rpc_call_profile(
         Profile::RpcDefault,
         MESSAGE_RPC_ENDPOINT,
         "inbox.mark_read",
         params,
-        &mut auth,
+        &mut http.auth,
     )
+}
+
+fn mark_read_http_with_fallback_refresh(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+    request: MarkReadRequest,
+) -> Result<Value, MessageError> {
+    match mark_read_http(resolved, manager, record, request.clone()) {
+        Ok(raw) => Ok(raw),
+        Err(err) if super::service::is_session_unauthorized(&err) => {
+            match refresh_jwt_fallback(resolved, manager, record) {
+                Ok(refreshed) => mark_read_http(resolved, manager, &refreshed, request),
+                Err(_) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn is_local_mail_notification_message(message: &Value) -> bool {
