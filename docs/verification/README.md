@@ -8241,6 +8241,59 @@ slice reuses the existing Rustls-first authsdk transport and does not add
 `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, bundled OpenSSL,
 YAML crates, platform service libraries, or ANP SDK network/default features.
 
+## 2026-05-17 Tenant Site Scoped System Evidence
+
+Timestamp: 2026-05-17T18:33:29+0800.
+
+Scope: add direct `awiki-system-test` coverage for the currently available
+tenant-site backend boundary. The configured test domain does not expose a
+tenant site admin for the freshly registered handle identity, so this slice
+proves authenticated `/site/rpc` reachability plus Go-shaped non-admin
+forbidden mapping, not positive tenant-admin CRUD.
+
+Command run:
+
+```bash
+cd /home/ecs-user/awiki-space/awiki-system-test
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli \
+AWIKI_CLI_UPDATE_CACHE_ONLY=1 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run pytest tests_v2/site/test_site_cli.py -ra -q
+```
+
+Observed result:
+
+- System-test site CLI selector: 1 passed, 0 failed, 0 skipped in 1.35s.
+- Failed tests: 0.
+- Skipped tests: 0.
+
+Configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- Resolved tests_v2 mode: `local`.
+- Resolved user-service URL: `https://anpclaw.com`.
+- Resolved message-service URL: `https://anpclaw.com`.
+- Resolved DID/domain under test: `anpclaw.com`.
+
+Coverage boundary:
+
+- The selector registers a real handle identity, then runs Rust subprocess
+  `site root get --domain anpclaw.com` and
+  `site page list --domain anpclaw.com`.
+- Both commands authenticate, reach live `/site/rpc`, and return structured
+  non-admin envelopes with exit code 4, `error.code=forbidden`,
+  `service rpc error -32001` or the tenant-site-admin message, `ok=false`, and
+  `meta.dry_run=false`.
+- This evidence does not promote `site root set`, `site page create/get/update/
+  rename/delete`, tenant-admin successful CRUD, full site lifecycle acceptance,
+  mail selectors, or full repository-wide acceptance.
+
+No Rust dependency was added. Cargo manifests and lockfile remain unchanged.
+
 ## 2026-05-15 Identity Phone Register And Page System Slice
 
 Local Rust and Go reference verification:
