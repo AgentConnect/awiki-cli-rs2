@@ -8350,6 +8350,71 @@ Coverage boundary:
 
 No Rust dependency was added. Cargo manifests and lockfile remain unchanged.
 
+## 2026-05-17 Secure Retry System Evidence
+
+Timestamp: 2026-05-17T19:09:06+0800.
+
+Scope: add direct `awiki-system-test` subprocess coverage for explicit
+`msg secure retry <outbox_id>` production execution. This slice proves the
+manual retry command path itself; it does not promote WebSocket/local bridge
+secure execution, runtime listener live `ProcessIncoming`, secure attachments,
+mail, or full repository-wide system acceptance.
+
+Command run:
+
+```bash
+cd /home/ecs-user/awiki-space/awiki-system-test
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli \
+AWIKI_CLI_UPDATE_CACHE_ONLY=1 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run pytest tests_v2/cli/test_awiki_cli_secure_retry_local.py::test_awiki_cli_msg_secure_retry_flushes_failed_outbox_as_direct_cipher -ra -q
+```
+
+Observed result:
+
+- System-test secure retry selector: 1 passed, 0 failed, 0 skipped in 3.29s.
+- Failed tests: 0.
+- Skipped tests: 0.
+
+Configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- Resolved tests_v2 mode: `local`.
+- Resolved user-service URL: `https://awiki.info`.
+- Resolved message-service URL: `https://awiki.info`.
+- Resolved DID/domain under test: `awiki.info`.
+
+Coverage boundary:
+
+- The selector creates fresh e1-capable Alice/Bob test identities, seeds an
+  isolated Rust CLI workspace, warms Bob's secure prekey/read path, sends an
+  initial secure direct message, waits for Bob to decrypt it, sends Bob's
+  secure reply, waits for Alice to decrypt it, then seeds one failed Alice
+  `e2ee_outbox` row for Bob and runs
+  `msg secure retry <outbox_id>` through the real Rust subprocess.
+- It verifies the public envelope: command name `awiki-cli msg secure retry`,
+  `meta.dry_run=false`, summary `Retried secure outbox record <outbox_id>`,
+  matching `data.outbox_id`, `data.record.local_status=sent`, populated
+  `sent_msg_id`, and no private session/ratchet material in the output.
+- It intentionally accepts the Go-shaped unredacted retry outbox record,
+  including `plaintext`, because `msg secure failed/retry` expose local outbox
+  rows while session state remains redacted.
+- It verifies local side effects: the failed outbox row becomes `sent`, the
+  returned `sent_msg_id` matches SQLite, and a local outbound message row is
+  persisted with `is_e2ee=1`.
+- It fetches raw service-side direct history and verifies the retried message
+  is `application/anp-direct-cipher+json` ciphertext, not plaintext or private
+  session material.
+- This evidence complements explicit `msg secure init` and `msg secure repair`
+  selectors; it does not cover runtime listener E2EE processing, WebSocket
+  local bridge retry execution, or full secure-direct acceptance.
+
+No Rust dependency was added. Cargo manifests and lockfile remain unchanged.
+
 ## 2026-05-17 Secure Repair System Evidence
 
 Timestamp: 2026-05-17T19:02:51+0800.
