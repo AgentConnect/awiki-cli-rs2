@@ -134,13 +134,10 @@ pub fn send(
                             Some(&bridge_err.to_string()),
                         );
                         fill_direct_send_result(&mut result, &Value::Null, &target.did);
+                        let warnings =
+                            vec![super::websocket_http_fallback_warning(Some(&bridge_err))];
                         return persist_send_result(
-                            resolved,
-                            &record,
-                            &target,
-                            &request,
-                            &result,
-                            Vec::new(),
+                            resolved, &record, &target, &request, &result, warnings,
                         );
                     }
                     Err(_) => return Err(bridge_err),

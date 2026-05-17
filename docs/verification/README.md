@@ -2,6 +2,55 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Direct WebSocket Send Fallback Warning Slice
+
+Timestamp: 2026-05-17T09:55:00+0800.
+
+Scope: correct ordinary direct `msg send` WebSocket-to-HTTP fallback warning
+parity with Go `internal/message/service.go`.
+
+What changed:
+
+- `message::send` now passes Go's visible
+  `websocketHTTPFallbackWarning` into `persist_send_result` when
+  `runtime.mode=websocket`, local bridge `direct.send` fails, and signed HTTP
+  fallback succeeds.
+- The focused `msg_ws_proxy_live_contract` fallback case now asserts the
+  user-visible HTTP fallback warning while keeping successful local-bridge sends
+  warning-free.
+- The parity matrix direct-send WebSocket row was corrected to record the
+  visible warning behavior.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract --locked
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/message -run 'TestWebSocketFallbackWarnings|TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures' -count=1
+wc -l crates/awiki-cli/src/message/service.rs crates/awiki-cli/tests/msg_ws_proxy_live_contract.rs docs/parity-matrix.md docs/verification/README.md
+```
+
+Observed results:
+
+- Focused `msg_ws_proxy_live_contract` passed with the direct-send HTTP
+  fallback case asserting the Go visible fallback warning.
+- Adjacent `msg_live_contract`, `message_ws_proxy_contract`, and
+  `msg_ws_mark_read_live_contract` suites passed.
+- Go focused warning/proxy reference tests passed.
+- Format check, package check, structure check, and whitespace check passed.
+- `service.rs` is 976 lines and `msg_ws_proxy_live_contract.rs` is 539 lines,
+  both below the default 1200-line cap.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged.
+
 ## 2026-05-17 Message Secure Status/Failed CLI Boundary Slice
 
 Timestamp: 2026-05-17T09:25:00+0800.
@@ -2546,7 +2595,8 @@ Scope:
 - Preserves Go HTTP fallback behavior for this direct-send branch: if bridge
   send fails, the service attempts the existing signed HTTP `/im/rpc`
   `direct.send`; successful fallback records trace fallback `websocket_to_http`
-  but does not add `websocketHTTPFallbackWarning` to the user-visible result.
+  and now appends Go's visible `websocketHTTPFallbackWarning` to the
+  user-visible result.
 - Preserves Go double-failure behavior: if bridge send fails and HTTP fallback
   also fails, the original bridge/transport error is returned.
 - Keeps direct send output shape compatible with Go by not adding a `data.source`

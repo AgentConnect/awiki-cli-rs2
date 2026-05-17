@@ -80,7 +80,7 @@ fn msg_send_direct_websocket_mode_uses_local_bridge_like_go() {
 }
 
 #[test]
-fn msg_send_direct_websocket_mode_falls_back_to_http_without_warning_like_go() {
+fn msg_send_direct_websocket_mode_falls_back_to_http_with_warning_like_go() {
     let workspace = TempDir::new("msg-ws-proxy-direct-send-fallback").expect("workspace");
     register_ready_msg_identity(workspace.path(), "alice-ws-fallback", "alice", "jwt-alice");
     let target_did = "did:wba:awiki.ai:bob:e1_bob";
@@ -134,7 +134,10 @@ fn msg_send_direct_websocket_mode_falls_back_to_http_without_warning_like_go() {
         "op-http-direct-1"
     );
     assert!(envelope["data"].get("source").is_none());
-    assert_no_websocket_http_fallback_warning(&envelope);
+    assert_websocket_http_fallback_warning_contains(
+        &envelope,
+        "local websocket bridge unavailable",
+    );
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -339,6 +342,18 @@ fn assert_no_websocket_http_fallback_warning(envelope: &Value) {
                 .unwrap_or_default()
                 .contains("used HTTP fallback")),
         "direct send should not include websocket HTTP fallback warning: {warnings:?}"
+    );
+}
+
+fn assert_websocket_http_fallback_warning_contains(envelope: &Value, detail: &str) {
+    let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
+    assert!(
+        warnings.iter().any(|warning| {
+            let warning = warning.as_str().unwrap_or_default();
+            warning.contains("WebSocket listener was unavailable for this identity; used HTTP fallback. Details:")
+                && warning.contains(detail)
+        }),
+        "direct send should include websocket HTTP fallback warning with {detail:?}: {warnings:?}"
     );
 }
 
