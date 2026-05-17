@@ -2,6 +2,66 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Page CLI System Evidence
+
+Timestamp: 2026-05-17T18:18:00+0800.
+
+Scope: promote `awiki-cli/internal/cli/page.go` to scoped
+`system_verified` using focused Rust subprocess `awiki-system-test` coverage
+against the configured `awiki.info` content service, plus focused Rust/Go
+contract checks for the CLI and content RPC boundaries.
+
+System-test coverage used:
+
+- `tests_v2/page/test_page_cli.py::test_page_full_lifecycle_works_via_cli`
+  registers an isolated handle identity, then verifies `page create`, `page
+  list`, `page get`, `page update`, `page rename`, and `page delete` through the
+  real Rust subprocess.
+- `tests_v2/page/test_page_cli.py::test_page_validation_errors_are_structured`
+  verifies local validation errors for conflicting body sources, empty update,
+  missing slug, missing title, and unsupported visibility.
+- `tests_v2/page/test_page_cli.py::test_page_supports_unlisted_visibility_dry_run_and_conflict_paths`
+  verifies `page create --dry-run`, `unlisted` visibility, markdown-file update,
+  duplicate-page conflict mapping, and missing-page not-found mapping.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest tests_v2/page/test_page_cli.py -ra -q
+cd . && cargo +1.79.0 test -p awiki-cli --test page_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test page_live_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test content_wire_contract --locked
+cd ../awiki-cli && go test ./internal/content ./internal/cli -run 'Test.*Page|Test.*Content|TestService' -count=1
+```
+
+Observed results:
+
+- System-test page CLI file: 3 passed, 0 failed, 0 skipped in 4.63s.
+- Rust `page_contract`: 5 passed, 0 failed.
+- Rust `page_live_contract`: 4 passed, 0 failed.
+- Rust `content_wire_contract`: 3 passed, 0 failed.
+- Go focused `internal/content` and `internal/cli` page/content tests: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- The system-test helper uses the configured remote mode services, including
+  the `awiki.info` user/message/content endpoints. The selector self-skips if
+  live handle registration reports the known backend registration-health
+  failure; this run reported 0 skipped.
+
+Coverage boundary:
+
+- Promoted handle-level `page` CLI behavior: dry-run `page.create` planning,
+  local validation, body-source conflict handling, non-dry-run
+  create/list/get/update/rename/delete wiring through content RPC, service error
+  mapping for conflict/not-found paths, and Go-shaped result envelopes.
+- This does not promote tenant `site page` commands, site root behavior, mail
+  selectors, trace phase assertions, or full repository-wide system acceptance.
+
 ## 2026-05-17 Runtime CLI System Evidence
 
 Timestamp: 2026-05-17T17:29:25+0800.
