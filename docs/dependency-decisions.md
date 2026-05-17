@@ -520,6 +520,11 @@ Earlier 2026-05-15 wire-only slice:
 - `runtime status/apply/setup/mode get/set`, listener config/lifecycle, and
   host-notify/OpenClaw config commands use the existing Rust standard library,
   `serde_json`, and existing store/config modules.
+- Foreground listener DID-to-handle enrichment reuses the already selected
+  Rustls-first `identity::Client` and `identity::wire` JSON-RPC builders. It
+  adds no new HTTP/TLS/WebSocket crate and does not introduce OpenSSL,
+  `native-tls`, bundled OpenSSL, platform service libraries, or a new SQLite
+  backend.
 - Ordinary listener lifecycle commands persist a workspace-local
   `listener.local-state.json` under the runtime state directory unless the
   dedicated Linux systemd execution gate is enabled. This preserves the

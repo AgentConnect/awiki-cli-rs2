@@ -153,6 +153,22 @@ Hermes service, Hermes bridge/process lifecycle, noop/log foreground sink
 delivery, Windows named-pipe listener I/O, Windows/macOS service-manager
 execution, or full repository-wide system acceptance.
 
+Current runtime listener handle-enrichment evidence: on 2026-05-18, Rust
+foreground notification paths were wired to the Go-equivalent remote
+`LookupHandleByDID` boundary. The new `runtime::listener_handle_lookup` helper
+posts JSON-RPC `lookup` to `/user-service/handle/rpc`, treats HTTP 404 and RPC
+`-32002` as no handle, ignores empty handle/DID lookup results, and returns the
+raw handle for the existing listener contact-sync normalizer. The real live
+foreground WebSocket loop, secure backlog replay, and local secure-ack delivery
+paths now pass this lookup callback into `handle_listener_notification` instead
+of `None`, so direct and group incoming host-notify `sender_handle` enrichment
+can match Go when user-service has a handle binding for the sender DID. Focused
+Rust tests cover the helper request and not-found semantics; existing injected
+listener notification tests cover contact-cache upsert and host event handle
+application. The current file-sink system probe creates registered DIDs without
+handle records, so it remains a listener/host-notify regression selector rather
+than a stable sender-handle assertion. Mail selectors remain deferred/gated.
+
 Current runtime CLI system evidence: on 2026-05-17, the Rust binary passed the
 full `tests_v2/runtime/test_runtime_cli.py` file with
 `AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1`: 14 passed, 0 failed, and 0 skipped.

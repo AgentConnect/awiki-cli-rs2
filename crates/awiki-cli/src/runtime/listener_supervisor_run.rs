@@ -4,6 +4,7 @@ use super::listener::{self, SessionStatus, Status};
 use super::listener_bridge_connection::{
     execute_listener_bridge_request, ListenerBridgeRuntime, ListenerBridgeSession,
 };
+use super::listener_handle_lookup::lookup_listener_handle_by_did;
 use super::listener_notification_handler::handle_listener_notification;
 use super::listener_notification_plan::{
     NotificationSessionContext, SecureNotificationNormalization,
@@ -732,6 +733,7 @@ fn handle_replayed_secure_notification(
         did: record.did.clone(),
         handle: record.handle.clone(),
     };
+    let mut lookup = |did: &str| lookup_listener_handle_by_did(resolved, did);
     let _ = handle_listener_notification(
         &mut connection,
         Some(host_notify.as_ref()),
@@ -740,7 +742,7 @@ fn handle_replayed_secure_notification(
         &session,
         secure_normalization,
         None,
-        None,
+        Some(&mut lookup),
     );
     let _ = listener::write_status(&guard.status_file, &guard);
 }
@@ -825,6 +827,7 @@ fn consume_notifications(
             did: record.did.clone(),
             handle: record.handle.clone(),
         };
+        let mut lookup = |did: &str| lookup_listener_handle_by_did(resolved, did);
         let _ = handle_listener_notification(
             &mut connection,
             Some(host_notify.as_ref()),
@@ -833,7 +836,7 @@ fn consume_notifications(
             &session,
             secure_normalization,
             None,
-            None,
+            Some(&mut lookup),
         );
         let _ = listener::write_status(&guard.status_file, &guard);
     }
@@ -1303,6 +1306,7 @@ fn deliver_local_secure_ack(
         did: recipient_record.did.clone(),
         handle: recipient_record.handle.clone(),
     };
+    let mut lookup = |did: &str| lookup_listener_handle_by_did(resolved, did);
     let _ = handle_listener_notification(
         &mut connection,
         None,
@@ -1311,7 +1315,7 @@ fn deliver_local_secure_ack(
         &session,
         secure_normalization,
         None,
-        None,
+        Some(&mut lookup),
     );
 }
 

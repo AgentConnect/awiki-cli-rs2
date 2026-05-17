@@ -125,6 +125,124 @@ Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged. The slice keeps SQLite on the approved `rusqlite + bundled`
 path and keeps TLS policy Rustls-first with no OpenSSL/native-tls introduction.
 
+## 2026-05-18 Foreground Listener Remote Handle Lookup
+
+Scope: match Go foreground listener incoming-contact sync for direct and group
+host notifications. Go checks the local contact cache first and, when no handle
+is cached, calls user-service `LookupHandleByDID` before applying
+`sender_handle` to direct/group host-notify events.
+
+Go source reference:
+
+- `awiki-cli/internal/runtime/listener/server.go`: `handleNotification` calls
+  `syncIncomingContact` for `direct.incoming` and `group.incoming`, ignores the
+  returned error, applies host-notification handles, stores the message, and
+  dispatches the host notification.
+- `awiki-cli/internal/runtime/listener/contact_sync.go`: local contact cache
+  lookup precedes remote `LookupHandleByDID`; remote lookup/upsert failures
+  return an empty sender handle to the caller because the caller ignores the
+  error.
+- `awiki-cli/internal/identity/client.go`: `LookupHandleByDID` posts JSON-RPC
+  `lookup` to `/user-service/handle/rpc`, treats HTTP 404 and RPC `-32002` as
+  not found, and returns nil for blank handle or blank DID results.
+- `awiki-cli/internal/runtime/listener/host_notify_test.go`:
+  `TestHandleNotificationDispatchesHostNotificationToSink` proves a direct
+  incoming foreground notification is enriched with `sender_handle` when the
+  test user-service handle RPC resolves the sender DID.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_handle_lookup.rs`: added a small
+  helper around the existing `identity::client::Client` and
+  `identity::wire::build_handle_lookup_by_did_rpc_call`. It preserves the Go
+  not-found/empty-result boundary and returns the raw remote handle so
+  `listener_contact_sync` remains responsible for Go-style handle
+  normalization and contact upsert.
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: real foreground
+  WebSocket consumption, secure backlog replay, and local secure-ack delivery
+  now pass `Some(&mut lookup)` into `handle_listener_notification` instead of
+  `None`.
+- `crates/awiki-cli/tests/runtime_listener_foreground_contract.rs`: added
+  focused local HTTP-server tests for the request path/body, raw handle return,
+  HTTP 404 and RPC `-32002` not-found handling, blank handle/DID results, and
+  blank DID validation before HTTP.
+- `docs/parity-matrix.md`, `docs/known-go-issues.md`,
+  `docs/dependency-decisions.md`, and `docs/file-size-exceptions.md`: record
+  the new foreground handle-lookup wiring, dependency reuse, and updated
+  documented line count for the existing supervisor file-size exception.
+
+System-test note:
+
+- The best non-mail selector remains
+  `tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds`.
+  That probe starts a real foreground listener and validates direct,
+  group-state, and group host-notify file-sink events.
+- It is not extended in this slice because its fixture uses
+  `create_node_identity(..., name="hostfile-*")`, which registers DIDs and
+  display names but does not create user-service handle records. Go's
+  `LookupHandleByDID` looks up handle bindings, so asserting
+  `sender_handle` there would be unstable without changing fixture setup to
+  register handles.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract listener_handle_lookup --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract direct_notification_stores_syncs_enriches_and_dispatches_after_storage --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract handler_applies_host_notify_status_outcomes_like_go_supervisor --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener ./internal/identity ./internal/store -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestLookupHandleByDID|Test.*Contact' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+```
+
+Observed results:
+
+- Rust formatting check: passed.
+- Focused Rust listener handle lookup contract: 3 passed, 0 failed, 0 ignored,
+  10 filtered out in 0.04s.
+- Existing Rust execute-level enrichment regression
+  `direct_notification_stores_syncs_enriches_and_dispatches_after_storage`: 1
+  passed, 0 failed, 0 ignored, 5 filtered out in 0.00s.
+- Existing Rust handler/status regression
+  `handler_applies_host_notify_status_outcomes_like_go_supervisor`: 1 passed,
+  0 failed, 0 ignored, 2 filtered out in 0.00s.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed with
+  `structure ok: no undocumented Rust files over 1200 lines`. The existing
+  documented exception `listener_supervisor_run.rs` is now 1536 lines against
+  Go `internal/runtime/listener/server.go` at 1802 lines; the new
+  `listener_handle_lookup.rs` helper is 27 lines and the updated foreground
+  contract test is 496 lines.
+- Go focused reference tests passed:
+  `internal/runtime/listener` 0.133s, `internal/identity` 0.006s, and
+  `internal/store` 0.131s.
+- Focused non-mail file-sink system selector: 1 passed, 0 failed, 0 skipped in
+  5.97s.
+- `git diff --check` passed in both `awiki-cli-rs2` and `awiki-system-test`.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+- No `AWIKI_CLI_BINARY` override was used.
+- The selector used the configured v2 user-service/message-service environment,
+  started a real foreground listener, and exercised direct and group
+  host-notify file-sink events. It did not run mail selectors and does not
+  count deferred mail tests as passed.
+
+Dependency note: no Rust dependency was added. The helper reuses the existing
+Rustls-first synchronous HTTP client through `identity::Client`; Cargo manifests
+and lockfile remain unchanged. SQLite remains on the approved
+`rusqlite + bundled` path, and no OpenSSL, `native-tls`, bundled OpenSSL, new
+WebSocket crate, platform service library, or new SQLite backend was added.
+
 ## 2026-05-18 CLI Unknown Local Flag Boundary
 
 Scope: match Go/Cobra's command-local unknown long-flag error boundary for
