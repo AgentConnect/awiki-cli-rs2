@@ -2,6 +2,89 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Command Schema Metadata Parity Slice
+
+Timestamp: 2026-05-17T09:45:11+0800.
+
+Scope: align Rust static command schema metadata with selected Go
+`internal/cmdmeta/catalog.go` fields. This is a schema metadata parity slice
+only; command runtime behavior and business implementation are unchanged.
+
+What changed:
+
+- Added `choices` support to the Rust `flag!` metadata helper.
+- Matched Go `upgrade` command short text and `side_effect=false` metadata.
+- Matched Go identity command text and flag usage metadata for
+  `id.register`, `id.bind`, `id.profile`, and `id.profile.set`.
+- Added Go flag choices metadata for `msg.send --secure`,
+  `msg.inbox --scope`, `group.create --message-security-profile`,
+  `group.e2ee.publish-key-package --purpose`, `runtime.setup --mode`,
+  `runtime.host-notify.config.set --sink`, and
+  `page.create/page.update --visibility`.
+- Matched Go runtime/listener/host-notify grouping metadata where grouping
+  nodes use `implemented=false`, while executable children keep handlers.
+- Matched Go OpenClaw token metadata by making
+  `runtime.host-notify.openclaw.set-token --value` required.
+- Matched Go debug metadata for `debug`, `debug.db`, `debug.db.query`, and
+  `debug.db.import-v1`, including `phase4`, `query <SQL>`, and path usage.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 test -p awiki-cli --test core_contract schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test update_contract upgrade_schema_exposes_go_contract --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract msg_schema_exposes_go_command_surface --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/cmdmeta ./internal/cli -run 'TestCatalog|TestCommandFromSpec|TestBuildRoot' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/core_contract.rs crates/awiki-cli/tests/update_contract.rs
+```
+
+Observed results:
+
+- Focused schema metadata parity test passed, including choices and
+  grouping-node assertions.
+- Focused `upgrade` schema contract passed with Go-compatible
+  `side_effect=false`.
+- Full `core_contract` and `update_contract` suites passed during the slice.
+- Focused message, group, runtime, identity, and Hermes contract suites passed
+  during the slice.
+- `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
+  check-structure`, `git diff --check`, and focused Go
+  `internal/cmdmeta`/`internal/cli` reference tests passed during the slice.
+- Dependency audit showed only existing allowed hits: Rustls/ring/webpki,
+  transitive `libc`, and the approved `rusqlite`/`libsqlite3-sys` bundled
+  SQLite toolchain entries (`cc`, `pkg-config`, `vcpkg`). No OpenSSL,
+  `native-tls`, bundled OpenSSL, platform service, WebSocket, YAML, or new HTTP
+  dependency was added.
+- Touched Rust source/test files remain below the default 1200-line cap:
+  `cmdmeta/mod.rs` 354 lines, `core_contract.rs` 1050 lines, and
+  `update_contract.rs` 290 lines. No file-size exception is needed.
+
+Boundary note: this slice intentionally changes static schema metadata only.
+It does not implement or alter runtime listener, host notification, identity,
+message, group, page, or debug business behavior. Full `awiki-system-test`
+acceptance remains pending for the overall port.
+
+Parallelism note: one read-only Native Agent compared Go and Rust command
+catalog metadata, reported the remaining drift set, and was closed after its
+findings were integrated. No code-writing Native Agent changed files in this
+slice.
+
+Dependency note: no dependency was added. The slice keeps TLS on the existing
+Rustls-first path and preserves the already approved `rusqlite + bundled`
+SQLite lane.
+
 ## 2026-05-17 Go Stub Command Catalog Slice
 
 Timestamp: 2026-05-17T09:29:13+0800.

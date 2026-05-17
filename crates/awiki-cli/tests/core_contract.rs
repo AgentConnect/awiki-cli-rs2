@@ -441,6 +441,147 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
 }
 
 #[test]
+fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
+    let upgrade = schema_for(&["upgrade"]);
+    assert_eq!(
+        schema_command(&upgrade)["short"],
+        "Check for newer awiki-cli versions and show upgrade hints"
+    );
+    assert_eq!(schema_command(&upgrade)["side_effect"], false);
+
+    let register = schema_for(&["id", "register"]);
+    assert_eq!(
+        schema_command(&register)["short"],
+        "Register a handle-backed user identity"
+    );
+    assert_eq!(
+        schema_flag(schema_command(&register), "handle")["usage"],
+        "Handle local part"
+    );
+    assert_eq!(
+        schema_flag(schema_command(&register), "wait")["usage"],
+        "Wait for email verification before completing registration"
+    );
+
+    let profile = schema_for(&["id", "profile"]);
+    assert_eq!(
+        schema_command(&profile)["short"],
+        "Read or update DID profile data"
+    );
+    let profile_set = schema_for(&["id", "profile", "set"]);
+    assert_eq!(
+        schema_command(&profile_set)["short"],
+        "Update DID profile data"
+    );
+    assert_eq!(
+        schema_flag(schema_command(&profile_set), "display-name")["usage"],
+        "Profile display name"
+    );
+
+    let msg_send = schema_for(&["msg", "send"]);
+    assert_eq!(
+        schema_flag(schema_command(&msg_send), "secure")["choices"],
+        serde_json::json!(["off", "on"])
+    );
+    let msg_inbox = schema_for(&["msg", "inbox"]);
+    assert_eq!(
+        schema_flag(schema_command(&msg_inbox), "scope")["choices"],
+        serde_json::json!(["all", "direct", "group"])
+    );
+
+    let group_create = schema_for(&["group", "create"]);
+    assert_eq!(
+        schema_flag(schema_command(&group_create), "message-security-profile")["choices"],
+        serde_json::json!(["transport-protected", "group-e2ee"])
+    );
+    let publish = schema_for(&["group", "e2ee", "publish-key-package"]);
+    assert_eq!(
+        schema_flag(schema_command(&publish), "purpose")["choices"],
+        serde_json::json!(["normal", "recovery", "update"])
+    );
+    let page_create = schema_for(&["page", "create"]);
+    assert_eq!(
+        schema_flag(schema_command(&page_create), "visibility")["choices"],
+        serde_json::json!(["public", "draft", "unlisted"])
+    );
+    let page_update = schema_for(&["page", "update"]);
+    assert_eq!(
+        schema_flag(schema_command(&page_update), "visibility")["choices"],
+        serde_json::json!(["public", "draft", "unlisted"])
+    );
+
+    let runtime_mode = schema_for(&["runtime", "mode"]);
+    assert_eq!(schema_command(&runtime_mode)["implemented"], false);
+    assert_eq!(
+        schema_command(&runtime_mode)["short"],
+        "Inspect or update runtime mode"
+    );
+    let runtime_setup = schema_for(&["runtime", "setup"]);
+    assert_eq!(
+        schema_flag(schema_command(&runtime_setup), "mode")["choices"],
+        serde_json::json!(["http", "websocket"])
+    );
+
+    let listener = schema_for(&["runtime", "listener"]);
+    assert_eq!(schema_command(&listener)["implemented"], false);
+    let listener_install = schema_for(&["runtime", "listener", "install"]);
+    assert_eq!(
+        schema_command(&listener_install)["short"],
+        "Install the listener service"
+    );
+    let listener_config = schema_for(&["runtime", "listener", "config"]);
+    assert_eq!(schema_command(&listener_config)["implemented"], false);
+
+    let host_notify = schema_for(&["runtime", "host-notify"]);
+    assert_eq!(schema_command(&host_notify)["implemented"], false);
+    assert_eq!(
+        schema_command(&host_notify)["short"],
+        "Inspect or update host notification settings"
+    );
+    let host_notify_set = schema_for(&["runtime", "host-notify", "config", "set"]);
+    assert_eq!(
+        schema_command(&host_notify_set)["short"],
+        "Update host notification configuration"
+    );
+    assert_eq!(
+        schema_flag(schema_command(&host_notify_set), "sink")["choices"],
+        serde_json::json!(["noop", "log", "file", "openclaw", "hermes"])
+    );
+    let openclaw = schema_for(&["runtime", "host-notify", "openclaw"]);
+    assert_eq!(schema_command(&openclaw)["implemented"], false);
+    let openclaw_token = schema_for(&["runtime", "host-notify", "openclaw", "set-token"]);
+    assert_eq!(
+        schema_command(&openclaw_token)["short"],
+        "Store the OpenClaw hook token in config"
+    );
+    assert_eq!(
+        schema_flag(schema_command(&openclaw_token), "value")["required"],
+        true
+    );
+
+    let debug = schema_for(&["debug"]);
+    assert_eq!(
+        schema_command(&debug)["short"],
+        "Debugging and raw inspection commands"
+    );
+    let debug_db = schema_for(&["debug", "db"]);
+    assert_eq!(schema_command(&debug_db)["phase"], "phase4");
+    assert_eq!(
+        schema_command(&debug_db)["short"],
+        "Database inspection helpers"
+    );
+    let debug_query = schema_for(&["debug", "db", "query"]);
+    assert_eq!(schema_command(&debug_query)["phase"], "phase4");
+    assert_eq!(schema_command(&debug_query)["use"], "query <SQL>");
+    let debug_import = schema_for(&["debug", "db", "import-v1"]);
+    assert_eq!(schema_command(&debug_import)["phase"], "phase4");
+    assert_eq!(
+        schema_flag(schema_command(&debug_import), "path")["usage"],
+        "Explicit legacy database path override"
+    );
+}
+
+#[test]
 fn schema_exposes_hidden_hermes_bridge_service_run_like_go_catalog() {
     let bridge_output = awiki_cmd(&["schema", "runtime", "host-notify", "hermes", "bridge"]);
     assert_success(&bridge_output);

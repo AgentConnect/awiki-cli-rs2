@@ -13,7 +13,7 @@ fn upgrade_schema_exposes_go_contract() {
     assert_eq!(envelope["data"]["command"]["name"], "upgrade");
     assert_eq!(envelope["data"]["command"]["handler"], "upgrade");
     assert_eq!(envelope["data"]["command"]["phase"], "phase2");
-    assert_eq!(envelope["data"]["command"]["side_effect"], true);
+    assert_eq!(envelope["data"]["command"]["side_effect"], false);
     assert_eq!(
         envelope["data"]["command"]["outputs"],
         json!(["json", "pretty", "table"])
