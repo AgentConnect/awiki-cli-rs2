@@ -1,4 +1,5 @@
 use awiki_cli::traceutil::{self, Run};
+use std::path::Path;
 use std::sync::Mutex;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -120,4 +121,78 @@ fn trace_disabled_emits_nothing_and_records_no_phases() {
     assert_eq!(run.phases(), Vec::new());
     assert_eq!(run.fallbacks(), Vec::new());
     assert_eq!(run.emit_to_string().expect("emit disabled"), "");
+}
+
+#[test]
+fn direct_message_trace_call_sites_match_go_trace_depth_contract() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let service = source(crate_root, "src/message/service.rs");
+    let inbox = source(crate_root, "src/message/inbox.rs");
+    let history = source(crate_root, "src/message/history.rs");
+    let contact_sync = source(crate_root, "src/message/contact_sync.rs");
+
+    for (label, source) in [
+        (
+            "traceutil::handle_lookup_phase(\"target_resolve\")",
+            &service,
+        ),
+        (
+            "traceutil::handle_lookup_phase(\"contact_sync_by_did\")",
+            &contact_sync,
+        ),
+        (
+            "traceutil::local_db_phase(\"persist_direct_send\")",
+            &service,
+        ),
+        (
+            "traceutil::local_db_phase(\"persist_inbox_messages\")",
+            &service,
+        ),
+        (
+            "traceutil::local_db_phase(\"persist_history_messages\")",
+            &service,
+        ),
+        ("traceutil::local_db_phase(\"read_inbox_cache\")", &inbox),
+        (
+            "traceutil::local_db_phase(\"read_unified_direct_inbox_cache\")",
+            &inbox,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_mail_notification_cache\")",
+            &inbox,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_history_cache\")",
+            &history,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_inbox_cache_by_peer_dids\")",
+            &inbox,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_history_cache_by_peer_dids\")",
+            &history,
+        ),
+    ] {
+        assert!(
+            source.contains(label),
+            "direct-message Go trace label is not wired: {label}"
+        );
+    }
+
+    assert_eq!(
+        service
+            .matches("traceutil::start_phase(\"contact_sync\")")
+            .count(),
+        2,
+        "inbox and history persistence should each wrap only contact sync"
+    );
+    assert_eq!(
+        traceutil::humanize_text("read_unified_direct_inbox_cache"),
+        "读取统一直聊收件箱缓存"
+    );
+}
+
+fn source(crate_root: &Path, relative: &str) -> String {
+    std::fs::read_to_string(crate_root.join(relative)).expect("read Rust source")
 }

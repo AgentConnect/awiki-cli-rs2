@@ -267,12 +267,17 @@ fn read_history_from_cache(
     peer_did: &str,
     limit: i64,
 ) -> Result<Vec<Value>, MessageError> {
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    let thread_id = store::make_thread_id(&record.did, peer_did, "");
-    store::list_thread_messages(&connection, &record.did, &thread_id, limit)
-        .map_err(|err| MessageError::Internal(err.to_string()))
+    let mut phase = crate::traceutil::local_db_phase("read_history_cache");
+    let result = (|| {
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        let thread_id = store::make_thread_id(&record.did, peer_did, "");
+        store::list_thread_messages(&connection, &record.did, &thread_id, limit)
+            .map_err(|err| MessageError::Internal(err.to_string()))
+    })();
+    phase.finish();
+    result
 }
 
 fn read_history_from_cache_by_peer_dids(
@@ -281,21 +286,26 @@ fn read_history_from_cache_by_peer_dids(
     peer_dids: &[String],
     limit: i64,
 ) -> Result<Vec<Value>, MessageError> {
-    if peer_dids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::list_direct_messages_by_peer_dids(
-        &connection,
-        &record.did,
-        peer_dids,
-        limit,
-        false,
-        false,
-    )
-    .map_err(|err| MessageError::Internal(err.to_string()))
+    let mut phase = crate::traceutil::local_db_phase("read_history_cache_by_peer_dids");
+    let result = (|| {
+        if peer_dids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::list_direct_messages_by_peer_dids(
+            &connection,
+            &record.did,
+            peer_dids,
+            limit,
+            false,
+            false,
+        )
+        .map_err(|err| MessageError::Internal(err.to_string()))
+    })();
+    phase.finish();
+    result
 }
 
 fn contains_direct_e2ee_wire_messages(messages: &[Value]) -> bool {

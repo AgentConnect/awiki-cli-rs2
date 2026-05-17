@@ -503,12 +503,15 @@ pub(crate) fn resolve_target(
     }
     let normalized = crate::identity::normalize_handle_input(target, &resolved.did_domain)?;
     let call = build_handle_lookup_by_handle_rpc_call(&normalized.full_handle)?;
-    let lookup: Value = crate::identity::client::Client::new(resolved)?.rpc_call_profile(
-        call.profile,
-        call.endpoint,
-        call.method,
-        call.params,
-    )?;
+    let mut phase = crate::traceutil::handle_lookup_phase("target_resolve");
+    let lookup = match crate::identity::client::Client::new(resolved) {
+        Ok(client) => {
+            client.rpc_call_profile(call.profile, call.endpoint, call.method, call.params)
+        }
+        Err(err) => Err(err),
+    };
+    phase.finish();
+    let lookup: Value = lookup?;
     let did = lookup
         .get("did")
         .and_then(Value::as_str)
@@ -536,6 +539,7 @@ fn persist_send_result(
     result: &DirectSendResult,
     initial_warnings: Vec<String>,
 ) -> Result<CommandResult, MessageError> {
+    let mut phase = crate::traceutil::local_db_phase("persist_direct_send");
     let message_type = default_message_type(&request.message_type).to_string();
     let secure = request.secure_mode.trim() == "on";
     let mut warnings = initial_warnings;
@@ -569,7 +573,7 @@ fn persist_send_result(
             }
         }
     }
-    Ok(CommandResult {
+    let result = Ok(CommandResult {
         data: json!({
             "action": "send_message",
             "target": {
@@ -587,7 +591,9 @@ fn persist_send_result(
         }),
         summary: format!("Sent a direct {message_type} message"),
         warnings: super::compact_warnings(warnings),
-    })
+    });
+    phase.finish();
+    result
 }
 
 fn secure_rpc(client: Client, mut auth: Session) -> Box<super::SecureE2EERpc> {
@@ -612,14 +618,18 @@ pub(crate) fn persist_inbox_messages(
     known_handle: &str,
     warnings: &mut Vec<String>,
 ) -> Vec<Value> {
+    let mut phase = crate::traceutil::local_db_phase("persist_inbox_messages");
     let mut messages = messages_from_result(raw.get("messages"));
     if messages.is_empty() {
+        phase.finish();
         return messages;
     }
     let Ok(mut connection) = store::open(&resolved.paths) else {
+        phase.finish();
         return messages;
     };
     if store::ensure_schema(&connection).is_err() {
+        phase.finish();
         return messages;
     }
     warnings.extend(super::secure_incoming::maybe_decrypt_direct_e2ee_messages(
@@ -635,15 +645,20 @@ pub(crate) fn persist_inbox_messages(
     if let Err(err) = store::store_messages_batch(&mut connection, &records) {
         warnings.push(format!("Failed to persist inbox messages: {err}"));
     }
-    warnings.extend(super::contact_sync::sync_direct_peer_handles(
+    let mut contact_phase = crate::traceutil::start_phase("contact_sync");
+    let contact_warnings = super::contact_sync::sync_direct_peer_handles(
         resolved,
         &mut connection,
         &record.did,
         &messages,
         known_handle,
         "msg.inbox",
-    ));
-    super::secure_incoming::filter_displayable_direct_e2ee_messages(messages)
+    );
+    contact_phase.finish();
+    warnings.extend(contact_warnings);
+    let result = super::secure_incoming::filter_displayable_direct_e2ee_messages(messages);
+    phase.finish();
+    result
 }
 
 pub(crate) fn persist_history_messages(
@@ -655,14 +670,18 @@ pub(crate) fn persist_history_messages(
     raw: &Value,
     warnings: &mut Vec<String>,
 ) -> Vec<Value> {
+    let mut phase = crate::traceutil::local_db_phase("persist_history_messages");
     let mut messages = messages_from_result(raw.get("messages"));
     if messages.is_empty() {
+        phase.finish();
         return messages;
     }
     let Ok(mut connection) = store::open(&resolved.paths) else {
+        phase.finish();
         return messages;
     };
     if store::ensure_schema(&connection).is_err() {
+        phase.finish();
         return messages;
     }
     warnings.extend(super::secure_incoming::maybe_decrypt_direct_e2ee_messages(
@@ -678,15 +697,20 @@ pub(crate) fn persist_history_messages(
     if let Err(err) = store::store_messages_batch(&mut connection, &records) {
         warnings.push(format!("Failed to persist history messages: {err}"));
     }
-    warnings.extend(super::contact_sync::sync_direct_peer_handles(
+    let mut contact_phase = crate::traceutil::start_phase("contact_sync");
+    let contact_warnings = super::contact_sync::sync_direct_peer_handles(
         resolved,
         &mut connection,
         &record.did,
         &messages,
         known_handle,
         "msg.history",
-    ));
-    super::secure_incoming::filter_displayable_direct_e2ee_messages(messages)
+    );
+    contact_phase.finish();
+    warnings.extend(contact_warnings);
+    let result = super::secure_incoming::filter_displayable_direct_e2ee_messages(messages);
+    phase.finish();
+    result
 }
 
 fn inbound_record(record: &StoredIdentity, message: &Value) -> Option<MessageRecord> {

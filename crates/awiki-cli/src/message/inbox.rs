@@ -489,18 +489,23 @@ fn read_inbox_from_cache(
     limit: i64,
     unread_only: bool,
 ) -> Result<Vec<Value>, MessageError> {
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::list_inbox_messages(
-        &connection,
-        &record.did,
-        limit,
-        peer_did,
-        unread_only,
-        false,
-    )
-    .map_err(|err| MessageError::Internal(err.to_string()))
+    let mut phase = crate::traceutil::local_db_phase("read_inbox_cache");
+    let result = (|| {
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::list_inbox_messages(
+            &connection,
+            &record.did,
+            limit,
+            peer_did,
+            unread_only,
+            false,
+        )
+        .map_err(|err| MessageError::Internal(err.to_string()))
+    })();
+    phase.finish();
+    result
 }
 
 fn read_inbox_from_cache_by_peer_dids(
@@ -510,21 +515,26 @@ fn read_inbox_from_cache_by_peer_dids(
     limit: i64,
     unread_only: bool,
 ) -> Result<Vec<Value>, MessageError> {
-    if peer_dids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::list_direct_messages_by_peer_dids(
-        &connection,
-        &record.did,
-        peer_dids,
-        limit,
-        unread_only,
-        true,
-    )
-    .map_err(|err| MessageError::Internal(err.to_string()))
+    let mut phase = crate::traceutil::local_db_phase("read_inbox_cache_by_peer_dids");
+    let result = (|| {
+        if peer_dids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::list_direct_messages_by_peer_dids(
+            &connection,
+            &record.did,
+            peer_dids,
+            limit,
+            unread_only,
+            true,
+        )
+        .map_err(|err| MessageError::Internal(err.to_string()))
+    })();
+    phase.finish();
+    result
 }
 
 fn read_unified_direct_inbox_from_cache(
@@ -533,11 +543,16 @@ fn read_unified_direct_inbox_from_cache(
     limit: i64,
     unread_only: bool,
 ) -> Result<Vec<Value>, MessageError> {
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::list_inbox_messages(&connection, &record.did, limit, "", unread_only, true)
-        .map_err(|err| MessageError::Internal(err.to_string()))
+    let mut phase = crate::traceutil::local_db_phase("read_unified_direct_inbox_cache");
+    let result = (|| {
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::list_inbox_messages(&connection, &record.did, limit, "", unread_only, true)
+            .map_err(|err| MessageError::Internal(err.to_string()))
+    })();
+    phase.finish();
+    result
 }
 
 fn read_all_group_inbox_from_cache(
@@ -579,11 +594,16 @@ fn read_all_mail_notifications_from_cache(
     limit: i64,
     unread_only: bool,
 ) -> Result<Vec<Value>, MessageError> {
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::list_notification_inbox_messages(&connection, &record.did, limit, unread_only)
-        .map_err(|err| MessageError::Internal(err.to_string()))
+    let mut phase = crate::traceutil::local_db_phase("read_mail_notification_cache");
+    let result = (|| {
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::list_notification_inbox_messages(&connection, &record.did, limit, unread_only)
+            .map_err(|err| MessageError::Internal(err.to_string()))
+    })();
+    phase.finish();
+    result
 }
 
 fn contains_direct_e2ee_wire_messages(messages: &[Value]) -> bool {

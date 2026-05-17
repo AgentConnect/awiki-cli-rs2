@@ -25,7 +25,10 @@ pub(crate) fn sync_peer_handle(
         handle = resolved_handle.clone();
     }
     if handle.is_empty() {
-        if let Some(lookup) = lookup_handle_by_did(resolved, peer_did)? {
+        let mut phase = crate::traceutil::handle_lookup_phase("contact_sync_by_did");
+        let lookup = lookup_handle_by_did(resolved, peer_did);
+        phase.finish();
+        if let Some(lookup) = lookup? {
             handle = normalize_handle_value(
                 lookup
                     .get("handle")

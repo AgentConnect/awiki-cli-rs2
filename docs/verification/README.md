@@ -2,6 +2,84 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Direct-Message Trace-Depth Call-Site Slice
+
+Timestamp: 2026-05-17T11:43:00+0800.
+
+Scope: wire the already-translated Rust trace primitives into the Go
+`internal/message/service.go` and `contact_sync.go` direct-message trace-depth
+call sites without changing message behavior.
+
+What changed:
+
+- Added `handle_lookup:target_resolve` around direct handle target lookup,
+  after DID-target early return.
+- Added `handle_lookup:contact_sync_by_did` around the remote DID-to-handle
+  contact-sync lookup only after local contact handle resolution fails.
+- Added direct-message local DB phases for `persist_direct_send`,
+  `persist_inbox_messages`, `persist_history_messages`,
+  `read_inbox_cache`, `read_unified_direct_inbox_cache`,
+  `read_mail_notification_cache`, `read_history_cache`,
+  `read_inbox_cache_by_peer_dids`, and `read_history_cache_by_peer_dids`.
+- Added nested `contact_sync` phases around inbox/history
+  `sync_direct_peer_handles` calls after message batch persistence.
+- Added the missing humanized label for
+  `read_unified_direct_inbox_cache`.
+- Added a focused static trace contract so the direct-message Go trace labels
+  cannot silently disappear from production Rust message sources.
+
+Boundary note:
+
+- This slice is instrumentation parity only. It does not change RPC payloads,
+  persistence shape, message warnings, fallback selection, or output JSON.
+- Group trace-depth labels, JWT fallback-refresh trace wiring, attachment-local
+  trace-depth wiring, and non-direct-message local DB/handle/fallback call
+  sites remain separate parity slices.
+- No dependency was added. Cargo manifests and lockfile remain unchanged.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_contact_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/message ./internal/traceutil -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+```
+
+Observed results:
+
+- Format check passed.
+- `traceutil_contract`: 6 passed, 0 failed.
+- `msg_contract`: 6 passed, 0 failed.
+- `msg_ws_inbox_live_contract`: 5 passed, 0 failed.
+- `msg_ws_history_live_contract`: 4 passed, 0 failed.
+- `msg_live_contract`: 7 passed, 0 failed.
+- `store_contact_contract`: 3 passed, 0 failed.
+- `authsdk_contract`: 15 passed, 0 failed.
+- `cargo check -p awiki-cli --locked` passed.
+- Structure check passed with no undocumented Rust files over the 1200-line
+  default cap.
+- `git diff --check` reported no whitespace errors.
+- Go `internal/message` and `internal/traceutil` passed.
+- Dependency audit showed only existing Rustls/ring/webpki and approved
+  `rusqlite + bundled` / `libsqlite3-sys` paths; no OpenSSL, `native-tls`,
+  WebSocket, YAML, platform-service, or new SQLite dependency was added.
+- Static source check shows production message call sites for all requested
+  direct-message trace labels.
+- Source/test files remain below the default 1200-line review-size cap:
+  `service.rs` 1040 lines, `inbox.rs` 792 lines, `history.rs` 331 lines,
+  `contact_sync.rs` 196 lines, and `traceutil_contract.rs` 198 lines.
+
 ## 2026-05-17 ANP Registry PascalCase Facade Slice
 
 Timestamp: 2026-05-17T10:29:46+0800.

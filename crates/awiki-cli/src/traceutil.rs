@@ -353,6 +353,7 @@ fn known_humanized_text(value: &str) -> Option<&'static str> {
         "persist_inbox_messages" => Some("写入收件箱消息"),
         "persist_history_messages" => Some("写入历史消息"),
         "read_inbox_cache" => Some("读取收件箱缓存"),
+        "read_unified_direct_inbox_cache" => Some("读取统一直聊收件箱缓存"),
         "read_mail_notification_cache" => Some("读取邮件通知缓存"),
         "read_history_cache" => Some("读取历史缓存"),
         "read_inbox_cache_by_peer_dids" => Some("按对端 DID 读取收件箱缓存"),
