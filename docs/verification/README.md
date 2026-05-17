@@ -14,6 +14,70 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 SQLite Open/Schema Public Debug Query Selector
+
+Scope: add scoped `system_verified` parity evidence for the public local SQLite
+open/create plus minimal schema path used by `debug db query`. The broader
+`internal/store/open.go` and `internal/store/schema.go` helper rows remain
+`unit_verified` for helper branches and full schema coverage not exercised
+through this selector.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract init_creates_real_sqlite_schema --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test debug_contract debug_db_query_migrates_legacy_config_json_before_opening_store_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/store -run 'TestEnsureSchemaCreatesVersionAndTables' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/debug/test_debug_cli.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/debug/test_debug_cli.py::test_debug_db_query_migrates_legacy_config_json_before_opening_store -ra -q
+```
+
+Observed results:
+
+- Rust `core_contract` focused `init_creates_real_sqlite_schema`: 1 passed,
+  0 failed.
+- Rust `debug_contract` focused
+  `debug_db_query_migrates_legacy_config_json_before_opening_store_like_go`:
+  1 passed, 0 failed.
+- Go focused store reference test: passed for `internal/store` in 0.065s.
+- Python compile check for `tests_v2/debug/test_debug_cli.py`: passed.
+- Focused system selector: 1 passed, 0 failed, 0 skipped in 0.26s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The selector uses an isolated local workspace. It does not require
+  user-service, message-service, mail-service, listener, service-manager
+  permissions, OpenClaw, Hermes, or registered remote identities.
+
+Coverage:
+
+- `debug db query` proves the public local store path opens or creates
+  `data/awiki-cli.db` through the real Rust subprocess.
+- The command runs the translated schema initializer before query execution and
+  returns the expected `database_file` path.
+- The selector queries `sqlite_master` and proves the `messages` table is
+  available through the real CLI path after legacy `config.json` migration.
+- The companion Rust `init` contract verifies `init` creates a real SQLite
+  database that the public `debug db query` command can query for the
+  `messages` table.
+
+Boundary note: this selector does not prove every `store/open.go` or
+`schema.go` helper branch. PRAGMA effects, read-only open behavior, directory
+mode details, all tables/indexes/views, schema version transitions, v11
+contact-handle backfill, too-old/newer schema rejection, DAO behavior, legacy
+SQLite import, cross-version SQLite compatibility, mail selectors, and full
+repository-wide acceptance remain covered by focused Rust/Go tests, adjacent
+rows, or deferred work. Mail system-test selectors remain deferred and are not
+counted as passed here.
+
+Dependency note: no Rust dependency was added. This selector uses the existing
+approved `rusqlite + bundled` SQLite lane and keeps TLS policy unchanged.
+
 ## 2026-05-18 Config Writer Public CLI Paths Selector
 
 Scope: add scoped `system_verified` parity evidence for public CLI paths that
