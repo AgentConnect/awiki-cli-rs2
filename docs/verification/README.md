@@ -14,6 +14,107 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Workspace Backup Public SQLite Selector
+
+Timestamp: 2026-05-18T03:10:23+0800.
+
+Scope: add public subprocess evidence that Go `internal/upgrade/backup.go`
+backup assembly is exercised through Rust `UpgradeIfNeeded`, including SQLite
+`VACUUM INTO` backup creation. The selector uses `config set --did-domain`
+against an isolated schema-version-1 workspace and does not require mail,
+remote services, local listener setup, or platform service-manager access.
+
+System-test change:
+
+- Added
+  `tests_v2/core/test_basic_commands.py::test_config_set_workspace_upgrade_backup_includes_sqlite_and_go_named_files`.
+- Updated `tests_v2/core/CLAUDE.md` to include workspace backup
+  assembly/SQLite backup coverage through `config set`.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 test -p awiki-cli backup --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml'
+git diff --check -- docs/parity-matrix.md docs/verification/README.md
+
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/upgrade -run 'TestUpgradeIfNeededCleansLegacySkillArtifactsForExistingWorkspace|TestUpgradeIfNeededImportsLegacyWorkspace' -count=1
+
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_set_workspace_upgrade_backup_includes_sqlite_and_go_named_files -ra -q
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_set_workspace_upgrade_backup_includes_sqlite_and_go_named_files tests_v2/core/test_basic_commands.py::test_config_set_runs_v1_to_v2_cleanup_for_legacy_openclaw_artifacts -ra -q
+git diff --check -- tests_v2/core/test_basic_commands.py tests_v2/core/CLAUDE.md
+
+cd /home/ecs-user/awiki-space
+wc -l awiki-system-test/tests_v2/core/test_basic_commands.py awiki-system-test/tests_v2/core/CLAUDE.md awiki-cli-rs2/crates/awiki-cli/src/upgrade/backup.rs awiki-cli-rs2/crates/awiki-cli/tests/workspace_upgrade_contract.rs awiki-cli-rs2/docs/parity-matrix.md awiki-cli-rs2/docs/verification/README.md
+du -sh awiki-cli-rs2/target/debug/incremental awiki-system-test/.pytest_cache awiki-system-test/tests_v2/core/__pycache__ 2>/dev/null || true
+rm -rf awiki-cli-rs2/target/debug/incremental awiki-system-test/tests_v2/core/__pycache__ awiki-system-test/.pytest_cache
+```
+
+Observed results:
+
+- `cargo test -p awiki-cli backup --locked` passed the focused backup-matching
+  tests, including `workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup`,
+  `workspace_upgrade_backup_sqlite_replaces_existing_destination_and_escapes_path`,
+  and `workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go`.
+- `workspace_upgrade_contract`: 20 passed, 0 failed.
+- `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed.
+- `cargo check -p awiki-cli --locked` passed.
+- `xtask check-structure` passed: no undocumented Rust files over 1200 lines.
+- Go focused `internal/upgrade` tests passed.
+- Python syntax check passed.
+- Focused `awiki-system-test` selector passed: 1 passed, 0 failed, 0 skipped in
+  0.22s.
+- Combined backup plus v1->v2 cleanup selector batch passed: 2 passed,
+  0 failed, 0 skipped in 0.27s.
+- Rust and system-test whitespace checks passed.
+- File-size check: touched system-test files stay below the default 1200-line
+  cap (`test_basic_commands.py` 522 lines, `tests_v2/core/CLAUDE.md` 14
+  lines). Referenced Rust files remain below the cap (`backup.rs` 192 lines,
+  `workspace_upgrade_contract.rs` 913 lines). The accumulated verification log
+  is a known evidence-history document.
+- Dependency audit output stayed on existing `rustls`/`webpki`/`ring` and the
+  approved `rusqlite + bundled` `libsqlite3-sys` path. No OpenSSL,
+  `native-tls`, reqwest, hyper, platform service-manager crate, WebSocket
+  crate, YAML crate, or alternate SQLite path was introduced.
+- Disk cleanup removed regenerated `awiki-cli-rs2/target/debug/incremental`
+  and Python cache directories after verification.
+
+Behavior proven:
+
+- Seeds `upgrade/meta.json` with `workspace_schema_version: 1` and a running
+  `upgrade/upgrade_journal.json` with empty `backup_dir`.
+- Seeds normal `config.yaml`, an identity file under `identities/alice`, and a
+  small SQLite `data/awiki-cli.db` containing a `backup_probe` row and
+  `PRAGMA user_version = 12`.
+- Runs the real Rust CLI subprocess through `config set --did-domain`, which
+  triggers `resolve_config_for_workspace()` and `UpgradeIfNeeded`.
+- Verifies the backup directory is under `upgrade/backups` and contains
+  Go-named backup files: `config.yaml.bak`, `identities/alice/identity.json`,
+  `awiki-cli.db.bak`, `meta.json.bak`, and `upgrade_journal.json.bak`.
+- Verifies `config.yaml.bak` predates the live DID-domain write, backup meta
+  and journal JSON match their seeded values, `awiki-cli.db.bak` is queryable
+  with the seeded row and `user_version`, final meta reaches schema version 3,
+  the journal is cleared, no listener pid/service-pid or message-daemon socket
+  is created, and the source SQLite DB still contains the row.
+
+Boundary note: this selector proves public backup assembly and SQLite backup
+creation for an already-present local SQLite file. It does not claim rollback,
+legacy SQLite import, platform listener cleanup, k1 replacement RPC behavior,
+or mail selectors.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This
+selector uses Python's standard `sqlite3` in the system test fixture and the
+existing Rust `rusqlite + bundled` SQLite path in the CLI. TLS policy remains
+Rustls-first and mail selectors remain deferred.
+
 ## 2026-05-18 Workspace v1->v2 Cleanup Public Selector
 
 Timestamp: 2026-05-18T02:56:26+0800.
