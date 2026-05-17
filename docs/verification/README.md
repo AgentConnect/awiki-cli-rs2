@@ -14,6 +14,101 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Workspace v1->v2 Cleanup Public Selector
+
+Timestamp: 2026-05-18T02:56:26+0800.
+
+Scope: add public subprocess evidence that the Rust `UpgradeIfNeeded` phase
+loop executes the Go v1->v2 cleanup migration for safe filesystem artifacts.
+The selector uses `config set --did-domain` because it reaches
+`resolve_config_for_workspace()` and does not require mail, remote services, a
+local listener, or identity state.
+
+System-test change:
+
+- Added
+  `tests_v2/core/test_basic_commands.py::test_config_set_runs_v1_to_v2_cleanup_for_legacy_openclaw_artifacts`.
+- Updated `tests_v2/core/CLAUDE.md` to include `config set`-triggered
+  v1->v2 legacy OpenClaw skill/heartbeat cleanup.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli migration_v1_to_v2 --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml'
+git diff --check -- docs/parity-matrix.md docs/verification/README.md
+
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/upgrade -run 'TestUpgradeIfNeededCleansLegacySkillArtifactsForExistingWorkspace|TestUpgradeIfNeededImportsLegacyWorkspace' -count=1
+
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_set_runs_v1_to_v2_cleanup_for_legacy_openclaw_artifacts -ra -q
+git diff --check -- tests_v2/core/test_basic_commands.py tests_v2/core/CLAUDE.md
+
+cd /home/ecs-user/awiki-space
+wc -l awiki-system-test/tests_v2/core/test_basic_commands.py awiki-system-test/tests_v2/core/CLAUDE.md awiki-cli-rs2/crates/awiki-cli/src/upgrade/migration_v1_to_v2.rs awiki-cli-rs2/crates/awiki-cli/src/upgrade/upgrader.rs awiki-cli-rs2/crates/awiki-cli/tests/workspace_upgrade_if_needed_contract.rs awiki-cli-rs2/docs/parity-matrix.md awiki-cli-rs2/docs/verification/README.md
+du -sh awiki-cli-rs2/target/debug/incremental awiki-system-test/.pytest_cache awiki-system-test/tests_v2/core/__pycache__ 2>/dev/null || true
+rm -rf awiki-cli-rs2/target/debug/incremental awiki-system-test/tests_v2/core/__pycache__ awiki-system-test/.pytest_cache
+```
+
+Observed results:
+
+- Rust formatting passed.
+- `migration_v1_to_v2`: 7 passed, 0 failed.
+- `workspace_upgrade_contract`: 20 passed, 0 failed.
+- `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed.
+- `cargo check -p awiki-cli --locked` passed.
+- `xtask check-structure` passed: no undocumented Rust files over 1200 lines.
+- Go focused `internal/upgrade` tests passed.
+- Python syntax check passed.
+- Focused `awiki-system-test` selector passed: 1 passed, 0 failed, 0 skipped in
+  0.56s on the first run and 1 passed, 0 failed, 0 skipped in 0.45s on the
+  final rerun.
+- Rust and system-test whitespace checks passed.
+- File-size check: touched system-test files stay below the default 1200-line
+  cap (`test_basic_commands.py` 439 lines, `tests_v2/core/CLAUDE.md` 14
+  lines). Referenced Rust upgrade files remain below the cap
+  (`migration_v1_to_v2.rs` 917 lines, `upgrader.rs` 586 lines,
+  `workspace_upgrade_if_needed_contract.rs` 1089 lines). The accumulated
+  verification log is a known evidence-history document.
+- Dependency audit output stayed on existing `rustls`/`webpki`/`ring` and the
+  approved `rusqlite + bundled` `libsqlite3-sys` path. No OpenSSL,
+  `native-tls`, reqwest, hyper, platform service-manager crate, WebSocket
+  crate, YAML crate, or alternate SQLite path was introduced.
+- Disk cleanup removed regenerated `awiki-cli-rs2/target/debug/incremental`
+  and Python cache directories after verification.
+
+Behavior proven:
+
+- Seeds isolated `upgrade/meta.json` with `workspace_schema_version: 1`.
+- Runs the real Rust CLI subprocess through `config set --did-domain`.
+- Verifies both Go legacy skill directories are removed:
+  `$HOME/.openclaw/skills/awiki-agent-id-message` and
+  `$HOME/.openclaw/workspace/skills/awiki-agent-id-message`.
+- Verifies the `OPENCLAW_WORKSPACE/HEARTBEAT.md` marker section containing
+  `awiki-agent-id-message` is removed while unrelated text remains.
+- Verifies `upgrade/meta.json` reaches workspace schema version 3, the journal
+  is cleared, and no SQLite DB, listener pid, or message-daemon socket is
+  created.
+
+Boundary note: this system selector deliberately does not create
+`$HOME/.config/systemd/user/awiki-ws-listener.service`, macOS LaunchAgent
+plists, or Windows scheduled-task artifacts. Those fixtures would intentionally
+call the real host service manager. Platform listener cleanup command shapes
+remain covered by Rust unit tests with an injected command runner.
+
+No dependency was added. Cargo manifests and lockfile were unchanged. This
+slice only adds system-test/docs evidence for existing std-only filesystem and
+process cleanup code. TLS policy remains Rustls-first, SQLite remains on the
+already approved `rusqlite + bundled` path, and mail selectors remain deferred.
+
 ## 2026-05-18 Identity Replace-DID Workspace Upgrade Hook
 
 Timestamp: 2026-05-18T02:44:01+0800.
