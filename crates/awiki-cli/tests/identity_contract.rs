@@ -333,21 +333,7 @@ fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
     );
 
     assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
-    assert!(
-        !workspace_home.join("data").join("awiki-cli.db").exists(),
-        "id status should not create SQLite state"
-    );
-    assert!(
-        !workspace_home
-            .join("runtime")
-            .join("message-daemon.sock")
-            .exists(),
-        "id status must not create runtime socket artifacts"
-    );
-    assert!(
-        !workspace_home.join("runtime").join("listener.pid").exists(),
-        "id status must not create listener pid artifacts"
-    );
+    assert_no_runtime_state(&workspace_home, "id status");
 }
 
 #[test]
@@ -441,21 +427,7 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
     );
 
     assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
-    assert!(
-        !workspace_home.join("data").join("awiki-cli.db").exists(),
-        "id create should not create SQLite state"
-    );
-    assert!(
-        !workspace_home
-            .join("runtime")
-            .join("message-daemon.sock")
-            .exists(),
-        "id create must not create runtime socket artifacts"
-    );
-    assert!(
-        !workspace_home.join("runtime").join("listener.pid").exists(),
-        "id create must not create listener pid artifacts"
-    );
+    assert_no_runtime_state(&workspace_home, "id create");
 }
 
 #[test]
@@ -561,21 +533,7 @@ fn identity_use_migrates_legacy_config_json_before_switch_like_go() {
     );
 
     assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
-    assert!(
-        !workspace_home.join("data").join("awiki-cli.db").exists(),
-        "id use should not create SQLite state"
-    );
-    assert!(
-        !workspace_home
-            .join("runtime")
-            .join("message-daemon.sock")
-            .exists(),
-        "id use must not create runtime socket artifacts"
-    );
-    assert!(
-        !workspace_home.join("runtime").join("listener.pid").exists(),
-        "id use must not create listener pid artifacts"
-    );
+    assert_no_runtime_state(&workspace_home, "id use");
 }
 
 #[test]
@@ -614,21 +572,45 @@ fn identity_resolve_migrates_legacy_config_json_before_target_validation_like_go
         "legacy-id-resolve.example",
     );
     assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
-    assert!(
-        !workspace_home.join("data").join("awiki-cli.db").exists(),
-        "id resolve validation should not create SQLite state"
+    assert_no_runtime_state(&workspace_home, "id resolve validation");
+}
+
+#[test]
+fn identity_profile_get_migrates_legacy_config_json_before_self_identity_boundary_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let (legacy_config, legacy_text) = write_legacy_config_json(
+        &workspace_home,
+        json!({
+            "schema_version": 1,
+            "services": {
+                "service_base_url": "https://legacy-id-profile.example",
+                "did_domain": "legacy-id-profile.example",
+            },
+            "runtime": {
+                "mode": "http",
+            },
+        }),
     );
-    assert!(
-        !workspace_home
-            .join("runtime")
-            .join("message-daemon.sock")
-            .exists(),
-        "id resolve validation must not create runtime socket artifacts"
+
+    let profile = awiki_cmd(&["id", "profile", "get"], workspace.path());
+    assert_code(&profile, 5);
+    let profile = error_json(&profile);
+    assert_eq!(profile["error"]["code"], "not_found");
+    assert!(profile["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("identity not found: no active identity is configured"));
+
+    assert!(!legacy_config.exists());
+    assert_migrated_config(
+        &workspace_home,
+        "https://legacy-id-profile.example",
+        "legacy-id-profile.example",
     );
-    assert!(
-        !workspace_home.join("runtime").join("listener.pid").exists(),
-        "id resolve validation must not create listener pid artifacts"
-    );
+    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert_no_runtime_state(&workspace_home, "id profile get self boundary");
 }
 
 #[test]
@@ -987,41 +969,8 @@ fn identity_import_v1_migrates_legacy_config_json_before_import_like_go() {
         "legacy-id-import.example",
     );
 
-    let meta_path = workspace_home.join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
-    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
-    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
-    assert_eq!(
-        backup_dir.parent(),
-        Some(workspace_home.join("upgrade").join("backups").as_path())
-    );
-    assert_eq!(
-        std::fs::read_to_string(backup_dir.join("config.json.bak"))
-            .expect("read legacy config backup"),
-        legacy_text
-    );
-    assert!(
-        !workspace_home
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
-    );
-    assert!(
-        !workspace_home
-            .join("runtime")
-            .join("message-daemon.sock")
-            .exists(),
-        "id import-v1 must not create runtime socket artifacts"
-    );
-    assert!(
-        !workspace_home.join("runtime").join("listener.pid").exists(),
-        "id import-v1 must not create listener pid artifacts"
-    );
+    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert_no_runtime_state(&workspace_home, "id import-v1");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -1100,6 +1049,24 @@ fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
             .join("upgrade_journal.json")
             .exists(),
         "journal should be cleared after successful upgrade"
+    );
+}
+
+fn assert_no_runtime_state(workspace_home: &Path, label: &str) {
+    assert!(
+        !workspace_home.join("data").join("awiki-cli.db").exists(),
+        "{label} should not create SQLite state"
+    );
+    assert!(
+        !workspace_home
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "{label} must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace_home.join("runtime").join("listener.pid").exists(),
+        "{label} must not create listener pid artifacts"
     );
 }
 

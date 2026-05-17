@@ -590,7 +590,7 @@ impl App {
     }
 
     pub fn run_id_profile_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let result = identity::get_profile(
             &resolved,
             &self.identity_manager(&resolved),
