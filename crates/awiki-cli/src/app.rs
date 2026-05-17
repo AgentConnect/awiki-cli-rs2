@@ -435,14 +435,14 @@ impl App {
     }
 
     pub fn run_id_list(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let result =
             identity::list_identities(&self.identity_manager(&resolved)).map_err(identity_exit)?;
         self.render_identity_result("awiki-cli id list", &resolved, result)
     }
 
     pub fn run_id_current(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let result =
             identity::current_identity(&self.identity_manager(&resolved)).map_err(identity_exit)?;
         self.render_identity_result("awiki-cli id current", &resolved, result)
@@ -468,7 +468,7 @@ impl App {
     }
 
     pub fn run_id_status(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let result =
             identity::identity_status(&self.identity_manager(&resolved)).map_err(identity_exit)?;
         self.render_identity_result("awiki-cli id status", &resolved, result)

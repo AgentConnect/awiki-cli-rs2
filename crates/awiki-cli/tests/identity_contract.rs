@@ -301,6 +301,94 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
 }
 
 #[test]
+fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let legacy_config = workspace_home.join("config.json");
+    let legacy_payload = json!({
+        "schema_version": 1,
+        "services": {
+            "service_base_url": "https://legacy-id-status.example",
+            "did_domain": "legacy-id-status.example",
+        },
+        "runtime": {
+            "mode": "http",
+        },
+    });
+    let legacy_text = serde_json::to_string(&legacy_payload).expect("serialize legacy config");
+    std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
+
+    let status = success_json(&awiki_cmd(&["id", "status"], workspace.path()));
+    assert_eq!(status["summary"], "No default identity is configured yet");
+    assert_eq!(status["data"]["active_identity"], Value::Null);
+    assert_eq!(status["data"]["identity_count"], 0);
+
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should be removed after workspace upgrade"
+    );
+    let config_yaml = workspace_home.join("config.yaml");
+    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
+    assert!(
+        config_text.contains("schema_version: 1\n"),
+        "migrated config should keep config schema, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  mode: http\n"),
+        "migrated config should keep runtime mode, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  service_base_url: https://legacy-id-status.example\n"),
+        "migrated config should keep service URL, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  did_domain: legacy-id-status.example\n"),
+        "migrated config should keep DID domain, got {config_text:?}"
+    );
+
+    let meta_path = workspace_home.join("upgrade").join("meta.json");
+    let meta: Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
+            .expect("upgrade meta JSON");
+    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
+    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
+    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+    assert_eq!(
+        backup_dir.parent(),
+        Some(workspace_home.join("upgrade").join("backups").as_path())
+    );
+    assert_eq!(
+        std::fs::read_to_string(backup_dir.join("config.json.bak"))
+            .expect("read legacy config backup"),
+        legacy_text
+    );
+    assert!(
+        !workspace_home
+            .join("upgrade")
+            .join("upgrade_journal.json")
+            .exists(),
+        "journal should be cleared after successful upgrade"
+    );
+    assert!(
+        !workspace_home.join("data").join("awiki-cli.db").exists(),
+        "id status should not create SQLite state"
+    );
+    assert!(
+        !workspace_home
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "id status must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace_home.join("runtime").join("listener.pid").exists(),
+        "id status must not create listener pid artifacts"
+    );
+}
+
+#[test]
 fn identity_dry_run_and_validation_contracts_match_go() {
     let workspace = TempDir::new().expect("workspace");
     let create = success_json(&awiki_cmd(
@@ -665,6 +753,13 @@ fn assert_error_contains(error: awiki_cli::identity::IdentityError, needle: &str
     assert!(
         message.contains(needle),
         "error {message:?} should contain {needle:?}"
+    );
+}
+
+fn assert_non_empty_string(value: &Value, field: &str) {
+    assert!(
+        value.as_str().is_some_and(|text| !text.trim().is_empty()),
+        "{field} should be a non-empty string: {value:?}"
     );
 }
 
