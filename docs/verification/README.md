@@ -14,6 +14,79 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Same-Path Docs/Skills Asset Inventory Slice
+
+Scope: close the remaining same-path Go `docs/` and `skills/` asset inventory
+gap in the Rust repository without changing public CLI behavior.
+
+Rust repository change:
+
+- Added the missing Go same-path documentation assets under `docs/` and
+  `skills/`, including ANP service discovery, direct/group E2EE operations,
+  Go CLI + Rust MLS notes, Hermes/OpenClaw/WebSocket host-notify docs and
+  contracts, local-state upgrade docs, PR notes, and the remaining skill
+  reference markdown files.
+- Kept the existing Rust compatibility copy
+  `docs/architecture/output-format.md` because Go `internal/docs/topics.go`
+  exposes that canonical output-topic reference even though the Go source file
+  for the content lives under `docs/architecture/参考文档/output-format.md`.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli && comm -23 <(find docs skills -maxdepth 4 -type f | sort) <(cd ../awiki-cli-rs2 && find docs skills -maxdepth 4 -type f | sort)
+cd /home/ecs-user/awiki-space/awiki-cli && comm -12 <(find docs skills -maxdepth 4 -type f | sort) <(cd ../awiki-cli-rs2 && find docs skills -maxdepth 4 -type f | sort) | while read -r p; do if ! cmp -s "$p" "../awiki-cli-rs2/$p"; then printf 'DIFF %s\n' "$p"; fi; done
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && jq empty docs/architecture/contracts/notification-surface-v1.schema.json
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && python3 - <<'PY'
+import yaml
+from pathlib import Path
+for path in [Path('docs/architecture/contracts/notify-hermes-v1.openapi.yaml')]:
+    with path.open(encoding='utf-8') as f:
+        yaml.safe_load(f)
+print('yaml ok')
+PY
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_docs_and_schema_support_listing_lookup_jq_and_table tests_v2/core/test_basic_commands.py::test_docs_unknown_topic_returns_not_found tests_v2/core/test_basic_commands.py::test_docs_rejects_extra_arguments -ra -q
+```
+
+Observed results:
+
+- Go-to-Rust same-path asset inventory: 47 Go files under `docs`/`skills`, 47
+  matching Rust files, 0 missing, and 0 byte-different files.
+- `notification-surface-v1.schema.json` parsed with `jq`.
+- `notify-hermes-v1.openapi.yaml` parsed with `python3` + PyYAML.
+- Rust focused docs contract: passed.
+- `xtask check-structure`: passed; Rust source-file structure constraints were
+  unchanged by this docs-only slice.
+- Focused system docs selectors: 3 passed, 0 failed, 0 skipped in 0.98s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+
+Coverage:
+
+- The Rust repository now carries all same-path Go `docs/` and `skills/`
+  assets from the bounded inventory, byte-for-byte.
+- Public `docs` list/topic lookup behavior remained unchanged and continues to
+  pass the existing Rust and system selectors.
+- Oversized copied documentation is accepted only because the Go source asset
+  is already oversized; the user's 1200-line rule remains focused on Rust
+  source files unless a translated Go source file is itself oversized.
+
+Boundary note: this slice intentionally does not rewrite Go-specific
+documentation for Rust, does not copy legacy external
+`../awiki-agent-id-message/...` references exposed by the `storage` and
+`runtime` topics, does not implement any behavior described by the copied docs,
+and does not run or count mail system-test selectors.
+
+Dependency note: no dependency was added.
+
 ## 2026-05-18 Deprecated Service URL Config Policy Slice
 
 Scope: match Go's `config.Resolve` hard policy rejection for deprecated

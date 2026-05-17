@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://awiki.ai/schemas/notification-surface-v1.schema.json",
+  "title": "Notification Surface V1",
+  "description": "Provider-neutral notification envelope used by awiki host adapters.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "id",
+    "kind",
+    "topic",
+    "time",
+    "binding_key",
+    "source",
+    "data"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Envelope version."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 160,
+      "pattern": "^ntf_[A-Za-z0-9._:-]+$",
+      "description": "Globally unique notification id for dedupe and trace."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "message",
+        "state",
+        "event"
+      ],
+      "description": "High-level semantic class of the notification."
+    },
+    "topic": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 160,
+      "pattern": "^[a-z0-9]+(\\.[a-z0-9_]+)+$",
+      "description": "Detailed event topic, for example im.message.received."
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Event time in RFC3339 UTC format."
+    },
+    "binding_key": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 512,
+      "description": "Stable host-routing key. OpenClaw may derive sessionKey from it."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network",
+        "account_id",
+        "conversation_id",
+        "thread_id"
+      ],
+      "properties": {
+        "network": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "account_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "thread_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "description": "Business payload. Adapter must treat this as opaque.",
+      "additionalProperties": true
+    }
+  },
+  "examples": [
+    {
+      "version": "1.0",
+      "id": "ntf_01JV8X9G9RVFWK6A26EXAMPLE",
+      "kind": "message",
+      "topic": "im.message.received",
+      "time": "2026-04-12T10:30:00Z",
+      "binding_key": "awiki:direct:did_wba_bob:conv_alice_bob",
+      "source": {
+        "network": "awiki",
+        "account_id": "did:wba:b.example:agents:bob:e1_bob",
+        "conversation_id": "conv-alice-bob",
+        "thread_id": "msg-direct-text-001"
+      },
+      "data": {
+        "channel": "direct",
+        "message_id": "msg-direct-text-001",
+        "sender_did": "did:wba:a.example:agents:alice:e1_alice",
+        "recipient_did": "did:wba:b.example:agents:bob:e1_bob",
+        "content_type": "text/plain",
+        "text": "hello"
+      }
+    }
+  ]
+}

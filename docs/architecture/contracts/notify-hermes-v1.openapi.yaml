@@ -1,0 +1,241 @@
+openapi: 3.1.0
+info:
+  title: awiki Notification Webhook API
+  version: 1.0.0
+  description: |
+    Unified ingress contract for host notification adapters.
+    The request body uses Notification Surface V1.
+servers:
+  - url: http://127.0.0.1:8765
+    description: Local adapter ingress
+paths:
+  /notify:
+    post:
+      operationId: postNotify
+      summary: Accept a normalized notification event
+      description: >
+        Accept one Notification Surface V1 event, verify signature and replay
+        window, dedupe by id, then forward to a host adapter implementation.
+      parameters:
+        - name: X-Notify-Timestamp
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9]{10}$"
+          description: Unix epoch seconds in UTC.
+        - name: X-Notify-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^(sha256=)?[A-Fa-f0-9]{64}$"
+          description: HMAC-SHA256 signature in hex.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationSurfaceV1"
+      responses:
+        "202":
+          description: Accepted and forwarded (or accepted duplicate)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotifyAcceptedResponse"
+        "400":
+          description: Invalid request or schema validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Signature verification failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Upstream host webhook failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /notify/host-event:
+    post:
+      operationId: postHostEventNotify
+      summary: Accept one awiki HostNotificationEvent compatibility payload
+      description: >
+        Accept one awiki-cli HostNotificationEvent, verify the same notify
+        signature headers, convert it into Notification Surface V1, validate the
+        converted surface payload, then forward it to the Hermes webhook route.
+      parameters:
+        - name: X-Notify-Timestamp
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9]{10}$"
+          description: Unix epoch seconds in UTC.
+        - name: X-Notify-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+            pattern: "^(sha256=)?[A-Fa-f0-9]{64}$"
+          description: HMAC-SHA256 signature in hex.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HostNotificationEvent"
+      responses:
+        "202":
+          description: Accepted and forwarded (or accepted duplicate)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotifyAcceptedResponse"
+        "400":
+          description: Invalid request or compatibility payload validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Signature verification failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Upstream host webhook failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    HostNotificationEvent:
+      type: object
+      additionalProperties: true
+      required: [version, id, topic, received_at, data]
+      properties:
+        version:
+          type: string
+          const: "1.0"
+        id:
+          type: string
+          minLength: 1
+          maxLength: 512
+        topic:
+          type: string
+          minLength: 3
+          maxLength: 160
+          pattern: "^[a-z0-9]+(\\.[a-z0-9_]+)+$"
+        received_at:
+          type: string
+          format: date-time
+        data:
+          type: object
+          additionalProperties: true
+    NotificationSurfaceV1:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - id
+        - kind
+        - topic
+        - time
+        - binding_key
+        - source
+        - data
+      properties:
+        version:
+          type: string
+          const: "1.0"
+        id:
+          type: string
+          minLength: 8
+          maxLength: 160
+          pattern: "^ntf_[A-Za-z0-9._:-]+$"
+        kind:
+          type: string
+          enum: [message, state, event]
+        topic:
+          type: string
+          minLength: 3
+          maxLength: 160
+          pattern: "^[a-z0-9]+(\\.[a-z0-9_]+)+$"
+        time:
+          type: string
+          format: date-time
+        binding_key:
+          type: string
+          minLength: 3
+          maxLength: 512
+        source:
+          type: object
+          additionalProperties: false
+          required: [network, account_id, conversation_id, thread_id]
+          properties:
+            network:
+              type: string
+              minLength: 2
+              maxLength: 64
+              pattern: "^[a-z0-9][a-z0-9._-]*$"
+            account_id:
+              type: string
+              minLength: 1
+              maxLength: 256
+            conversation_id:
+              type: string
+              minLength: 1
+              maxLength: 512
+            thread_id:
+              type: string
+              minLength: 1
+              maxLength: 512
+        data:
+          type: object
+          additionalProperties: true
+    NotifyAcceptedResponse:
+      type: object
+      additionalProperties: false
+      required: [accepted, id, host, ref]
+      properties:
+        accepted:
+          type: boolean
+        id:
+          type: string
+        host:
+          type: string
+          enum: [openclaw, hermes]
+        ref:
+          type: string
+        duplicate:
+          type: boolean
+          default: false
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [accepted, error]
+      properties:
+        accepted:
+          type: boolean
+          const: false
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
