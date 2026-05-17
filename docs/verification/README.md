@@ -8350,6 +8350,69 @@ Coverage boundary:
 
 No Rust dependency was added. Cargo manifests and lockfile remain unchanged.
 
+## 2026-05-17 Secure Repair System Evidence
+
+Timestamp: 2026-05-17T19:02:51+0800.
+
+Scope: add direct `awiki-system-test` subprocess coverage for explicit
+`msg secure repair --with <peer>` production execution. This slice proves the
+manual repair command path itself; it does not promote `msg secure retry`,
+WebSocket/local bridge secure execution, runtime listener live
+`ProcessIncoming`, secure attachments, mail, or full repository-wide system
+acceptance.
+
+Command run:
+
+```bash
+cd /home/ecs-user/awiki-space/awiki-system-test
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli \
+AWIKI_CLI_UPDATE_CACHE_ONLY=1 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run pytest tests_v2/cli/test_awiki_cli_secure_repair_local.py::test_awiki_cli_msg_secure_repair_resets_state_and_sends_manual_direct_init -ra -q
+```
+
+Observed result:
+
+- System-test secure repair selector: 1 passed, 0 failed, 0 skipped in 2.78s.
+- Failed tests: 0.
+- Skipped tests: 0.
+
+Configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- Resolved tests_v2 mode: `local`.
+- Resolved user-service URL: `https://anpclaw.com`.
+- Resolved message-service URL: `https://anpclaw.com`.
+- Resolved DID/domain under test: `anpclaw.com`.
+
+Coverage boundary:
+
+- The selector creates fresh e1-capable Alice/Bob test identities, seeds an
+  isolated Rust CLI workspace, writes one old Alice->Bob
+  `p5-e2ee-sessions/old-session.json`, seeds two failed outbox rows, warms
+  Bob's secure prekey/read path, then runs
+  `msg secure repair --with <bob_did>` through the real Rust subprocess.
+- It verifies the public envelope: command name `awiki-cli msg secure repair`,
+  `meta.dry_run=false`, summary `Repaired secure session with <bob_did>`,
+  `data.initialized=true`, `repair.reset_records=2`, generated
+  `secure-init-...` message/operation IDs, target DID fallback, and redacted
+  pending initiator session metadata.
+- It verifies local side effects: the old session file is deleted, a new
+  pending Bob session exists, the same-peer failed outbox row is requeued, and
+  a different peer's failed row stays failed.
+- It fetches raw service-side direct history and verifies the replacement
+  secure-init message is `application/anp-direct-init+json` ciphertext, not
+  plaintext or private session material.
+- This evidence complements the explicit `msg secure init` selector; it does
+  not cover `msg secure retry`, runtime listener E2EE processing, or full
+  secure-direct acceptance.
+
+No Rust dependency was added. Cargo manifests and lockfile remain unchanged.
+
 ## 2026-05-17 Secure Init System Evidence
 
 Timestamp: 2026-05-17T18:45:06+0800.
