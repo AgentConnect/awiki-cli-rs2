@@ -675,6 +675,125 @@ fn identity_import_v1_flat_legacy_contract() {
     assert_eq!(current["data"]["identity"]["identity_name"], "legacy-flat");
 }
 
+#[test]
+fn identity_import_v1_migrates_legacy_config_json_before_import_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let legacy_config = workspace_home.join("config.json");
+    let legacy_payload = json!({
+        "schema_version": 1,
+        "services": {
+            "service_base_url": "https://legacy-id-import.example",
+            "did_domain": "legacy-id-import.example",
+        },
+        "runtime": {
+            "mode": "http",
+        },
+    });
+    let legacy_text = serde_json::to_string(&legacy_payload).expect("serialize legacy config");
+    std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
+
+    let home = workspace.path().join("home");
+    let generated = awiki_cli::identity::generate_identity("legacy-id-import.example", "", "")
+        .expect("legacy fixture identity");
+    let legacy = home
+        .join(".openclaw")
+        .join("credentials")
+        .join("awiki-agent-id-message");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(
+        legacy.join("legacy-flat.json"),
+        serde_json::to_vec_pretty(&json!({
+            "did": generated.did,
+            "unique_id": generated.unique_id,
+            "name": "Legacy Flat",
+            "handle": "legacy-flat",
+            "jwt_token": "token",
+            "private_key_pem": generated.key1_private_pem,
+            "public_key_pem": generated.key1_public_pem,
+            "did_document": generated.did_document
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let imported = success_json(&awiki_cmd_with_home(
+        &["id", "import-v1", "--name", "legacy-flat"],
+        workspace.path(),
+        &home,
+    ));
+    assert_eq!(
+        imported["data"]["result"]["imported"][0]["identity_name"],
+        "legacy-flat"
+    );
+    let current = success_json(&awiki_cmd_with_home(
+        &["id", "current"],
+        workspace.path(),
+        &home,
+    ));
+    assert_eq!(current["data"]["identity"]["identity_name"], "legacy-flat");
+
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should be removed before import"
+    );
+    let config_yaml = workspace_home.join("config.yaml");
+    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
+    assert!(
+        config_text.contains("schema_version: 1\n"),
+        "migrated config should keep config schema, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  mode: http\n"),
+        "migrated config should keep runtime mode, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  service_base_url: https://legacy-id-import.example\n"),
+        "migrated config should keep service URL, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  did_domain: legacy-id-import.example\n"),
+        "migrated config should keep DID domain, got {config_text:?}"
+    );
+
+    let meta_path = workspace_home.join("upgrade").join("meta.json");
+    let meta: Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
+            .expect("upgrade meta JSON");
+    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
+    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
+    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+    assert_eq!(
+        backup_dir.parent(),
+        Some(workspace_home.join("upgrade").join("backups").as_path())
+    );
+    assert_eq!(
+        std::fs::read_to_string(backup_dir.join("config.json.bak"))
+            .expect("read legacy config backup"),
+        legacy_text
+    );
+    assert!(
+        !workspace_home
+            .join("upgrade")
+            .join("upgrade_journal.json")
+            .exists(),
+        "journal should be cleared after successful upgrade"
+    );
+    assert!(
+        !workspace_home
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "id import-v1 must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace_home.join("runtime").join("listener.pid").exists(),
+        "id import-v1 must not create listener pid artifacts"
+    );
+}
+
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     awiki_cmd_with_home(args, workspace, workspace)
 }

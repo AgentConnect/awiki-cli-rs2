@@ -475,7 +475,7 @@ impl App {
     }
 
     pub fn run_id_import_v1(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let name = command.flags.get("name").cloned().unwrap_or_default();
         let import_all = command
             .flags
