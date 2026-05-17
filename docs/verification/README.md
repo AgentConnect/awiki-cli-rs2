@@ -2,6 +2,91 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Foreground Listener WebSocket/Secure Evidence Refresh
+
+Timestamp: 2026-05-17T20:55:00+0800.
+
+Scope: add scoped system evidence rows for the foreground listener/local bridge
+happy path and the secure-direct foreground listener happy path. This refresh
+does not promote the wider helper rows wholesale; fallback/error branches and
+non-direct notification families remain contract-only or separately tracked.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+cd ../awiki-system-test && PYTHONPATH=/home/ecs-user/awiki-space/awiki-system-test:/home/ecs-user/awiki-space/awiki-system-test/src PYTHONDONTWRITEBYTECODE=1 AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run python tests_v2/cli/probes/run_awiki_cli_runtime_listener_local_probe.py /home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli
+cd . && cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_notifications_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_normalize_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_in_process_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_delivery_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_outbox_flush_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_inbox_poll_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_sync_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_replay_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_sessions_contract --locked
+cd ../awiki-cli && go test ./internal/message -run 'TestWebSocketFallbackWarnings|TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestAllInboxMergesLocalMailNotifications|TestReadInboxFromCacheExcludesMailNotificationsForDirectInbox|TestReadUnifiedDirectInboxFromCacheIncludesNewStyleMailMetadataRows' -count=1
+cd ../awiki-cli && go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation' -count=1
+```
+
+Observed results:
+
+- Focused runtime listener pytest selector: 1 passed, 0 failed, 0 skipped in
+  5.48s.
+- Direct probe script exited 0 and printed `LISTENER_WS_LOCAL_VERIFY_OK`.
+- Direct probe script stdout did not contain `LISTENER_SECURE_PATH_SKIPPED`, so
+  the secure-direct path ran with e1-capable identities.
+- Rust `msg_ws_proxy_live_contract`: 2 passed.
+- Rust `msg_ws_inbox_live_contract`: 5 passed.
+- Rust `message_ws_proxy_contract`: 3 passed.
+- Rust secure listener contracts: notifications 6 passed, normalize 10 passed,
+  ack-in-process 13 passed, ack-delivery 6 passed, outbox-flush 4 passed,
+  inbox-poll 4 passed, sync 7 passed, replay 5 passed, sessions 4 passed.
+- Go focused WebSocket/message tests passed.
+- Go focused secure message/listener tests passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- Resolved tests_v2 mode remains `local` with `awiki.info` user-service,
+  message-service HTTP, WebSocket, and DID domain, as recorded in the adjacent
+  ordinary direct evidence refresh.
+
+Coverage boundary:
+
+- The foreground listener/local bridge evidence starts `runtime listener run`,
+  waits for Alice/Bob/Carol WebSocket sessions, sends a real ordinary direct
+  message through a Rust subprocess in `runtime.mode=websocket`, waits for the
+  foreground listener to persist it into isolated SQLite, and verifies `msg
+  inbox` sees the cached message.
+- The secure-direct evidence sends Alice->Bob secure init/follow-up messages,
+  verifies Bob receives decrypted E2EE SQLite rows, verifies queued follow-up
+  outbox rows become `sent`, stops the listener, queues an Alice->Carol
+  pending-confirmation follow-up while the listener is down, restarts the
+  listener, and verifies backlog polling/replay stores Carol's decrypted rows
+  and marks Alice's queued outbox row `sent`.
+- This promotes only scoped system rows for these happy paths. It does not
+  prove direct history WebSocket, mark-read WebSocket, group send/messages
+  WebSocket, group or mail inbox merge rows, direct/group attachment WebSocket,
+  ACK failure/warning edges, malformed secure-control payloads, nil/missing
+  session ladders, mail/group/group-state listener delivery, host-notify
+  delivery, Windows named-pipe I/O, platform service-manager execution, or full
+  repository-wide system acceptance.
+- Mail-related system-test selectors remain deferred and must not be reported
+  as passed from this listener probe.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. This evidence reuses the existing std/Rustls foreground
+WebSocket transport, local ANP Rust SDK direct-E2EE helpers, and approved
+`rusqlite + bundled` store path.
+
 ## 2026-05-17 Ordinary Direct Message System Evidence Refresh
 
 Timestamp: 2026-05-17T20:35:00+0800.
