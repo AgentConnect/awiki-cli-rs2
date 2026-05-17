@@ -237,6 +237,82 @@ fn msg_secure_failed_live_routes_cli_and_filters_active_identity_like_go() {
     }
 }
 
+#[test]
+fn msg_secure_drop_live_routes_cli_and_marks_active_identity_outbox_like_go() {
+    let workspace = TempDir::new("msg-secure-drop-live").expect("workspace");
+    let manager = Manager::new(test_paths(workspace.path()));
+    let alice = save_ready_identity(&manager, "alice-drop", "alice");
+    let bob = save_ready_identity(&manager, "bob-drop", "bob");
+    let peer_did = "did:wba:awiki.ai:user:peer:e1_peer";
+
+    seed_secure_outbox(
+        workspace.path(),
+        E2EEOutboxRecord {
+            outbox_id: "drop-live".to_string(),
+            owner_did: alice.did.clone(),
+            peer_did: peer_did.to_string(),
+            session_id: "session-drop-live".to_string(),
+            original_type: "text".to_string(),
+            plaintext: "drop this queued secure text".to_string(),
+            local_status: "failed".to_string(),
+            last_error_code: "send_failed".to_string(),
+            retry_hint: "drop".to_string(),
+            created_at: "2026-05-17T02:00:00Z".to_string(),
+            updated_at: "2026-05-17T02:00:00Z".to_string(),
+            credential_name: "alice-drop".to_string(),
+            ..E2EEOutboxRecord::default()
+        },
+    );
+    seed_secure_outbox(
+        workspace.path(),
+        E2EEOutboxRecord {
+            outbox_id: "drop-other-owner".to_string(),
+            owner_did: bob.did.clone(),
+            peer_did: peer_did.to_string(),
+            session_id: "session-drop-other".to_string(),
+            original_type: "text".to_string(),
+            plaintext: "other owner plaintext".to_string(),
+            local_status: "failed".to_string(),
+            created_at: "2026-05-17T02:01:00Z".to_string(),
+            updated_at: "2026-05-17T02:01:00Z".to_string(),
+            credential_name: "bob-drop".to_string(),
+            ..E2EEOutboxRecord::default()
+        },
+    );
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-drop",
+            "msg",
+            "secure",
+            "drop",
+            "drop-live",
+        ],
+        workspace.path(),
+    );
+
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["summary"],
+        "Dropped secure outbox record drop-live"
+    );
+    assert_eq!(envelope["data"]["outbox_id"], "drop-live");
+    assert_eq!(envelope["data"]["status"], "dropped");
+
+    let rows = query_rows(
+        workspace.path(),
+        "SELECT outbox_id, local_status, credential_name FROM e2ee_outbox ORDER BY outbox_id",
+    );
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["outbox_id"], "drop-live");
+    assert_eq!(rows[0]["local_status"], "dropped");
+    assert_eq!(rows[0]["credential_name"], "alice-drop");
+    assert_eq!(rows[1]["outbox_id"], "drop-other-owner");
+    assert_eq!(rows[1]["local_status"], "failed");
+    assert_eq!(rows[1]["credential_name"], "bob-drop");
+}
+
 fn save_ready_identity(
     manager: &Manager,
     identity_name: &str,
@@ -294,6 +370,14 @@ fn seed_secure_outbox(workspace: &Path, record: E2EEOutboxRecord) {
     let connection = store::open(&paths).expect("open store");
     store::ensure_schema(&connection).expect("ensure store schema");
     store::queue_e2ee_outbox(&connection, record).expect("seed secure outbox");
+}
+
+fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
+    let output = awiki_cmd(&["debug", "db", "query", sql], workspace);
+    success_json(&output)["data"]["rows"]
+        .as_array()
+        .cloned()
+        .expect("query rows")
 }
 
 fn test_paths(workspace: &Path) -> Paths {

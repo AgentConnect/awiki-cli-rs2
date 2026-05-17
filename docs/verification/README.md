@@ -117,12 +117,12 @@ Observed results:
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged.
 
-## 2026-05-17 Message Secure Status/Failed CLI Boundary Slice
+## 2026-05-17 Message Secure Status/Failed/Drop CLI Boundary Slice
 
 Timestamp: 2026-05-17T09:25:00+0800.
 
 Scope: strengthen CLI non-dry-run coverage for already translated Go
-`internal/cli/msg.go` secure status/failed handlers.
+`internal/cli/msg.go` secure status/failed/drop handlers.
 
 What changed:
 
@@ -132,6 +132,9 @@ What changed:
 - Added a focused integration test for live `awiki-cli msg secure failed`
   filtering failed outbox rows to the active identity while excluding queued and
   other-identity rows.
+- Added a focused integration test for live `awiki-cli msg secure drop
+  <OUTBOX_ID>` command routing, Go summary/data shape, active identity row
+  mutation to `local_status=dropped`, and unrelated owner row preservation.
 - Locked Go-shaped redaction at the command boundary: status records do not
   expose owner DID, credential name, plaintext, metadata, or private session key
   fields.
@@ -154,11 +157,11 @@ wc -l crates/awiki-cli/tests/msg_secure_status_failed_live_contract.rs docs/veri
 
 Observed results:
 
-- New live CLI status/failed contract tests passed.
+- New live CLI status/failed/drop contract tests passed.
 - Existing `msg_contract` and `message_secure_commands_contract` suites passed.
 - Format check, package check, structure check, whitespace check, and Go focused
   secure CLI/message tests passed.
-- `msg_secure_status_failed_live_contract.rs` is 398 lines, below the default
+- `msg_secure_status_failed_live_contract.rs` is 482 lines, below the default
   1200-line cap.
 
 Dependency note: no Rust dependency was added.
