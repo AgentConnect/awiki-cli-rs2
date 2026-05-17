@@ -6076,6 +6076,68 @@ group+direct+mail merge ordering, mail notification rows, group E2EE inbox
 behavior, WebSocket group inbox transport, group attachment inbox behavior, or
 full repository-wide system acceptance.
 
+## 2026-05-17 Message All-Inbox Local Cache System Evidence
+
+Timestamp: 2026-05-17T14:45:00Z / 2026-05-17T22:45:00+0800.
+
+Scope: promote the default / explicit `msg inbox --scope all` websocket-mode
+local-cache success path with a real Rust subprocess selector. This proves
+`Service.allInbox` merge behavior across direct, group, and mail-like local
+SQLite rows without starting or accepting a real mail-service flow.
+
+What changed in `awiki-system-test`:
+
+- Added `tests_v2/cli/test_awiki_cli_msg_inbox_local_cache.py` as a focused
+  local-cache selector, keeping the already large direct-message system test
+  file from growing further.
+- The test creates one isolated local identity, writes websocket-mode config,
+  runs `awiki-cli init` through the real Rust subprocess to create the current
+  SQLite schema, and seeds the public `messages` table with parameterized
+  direct, group, second-group, and mail-like notification rows.
+- Default `msg inbox --limit 10` is asserted to return all four rows in Go
+  merge order: mail-like row, newer group row, direct row, older group row.
+- The selector checks `source=local_direct_cache+local_group_cache`,
+  `total=4`, no `group` field on the default all route, mail normalization
+  (`source_kind=mail`, `[邮件]` title/content, sender/preview/attachment
+  notice), direct sender/receiver preservation, and group row preservation.
+- Explicit `msg inbox --scope all --limit 2` verifies merge-before-limit
+  truncation.
+- `msg inbox --group <group_a> --limit 10` without `--scope group` verifies
+  the Go route boundary: it remains default all-inbox and still includes both
+  group rows rather than implicitly switching to explicit group inbox.
+- `tests_v2/cli/CLAUDE.md` records the new focused selector and the fact that
+  it is not mail-service acceptance.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_msg_inbox_local_cache.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_msg_inbox_local_cache.py -ra -q
+cd . && cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract --locked
+cd . && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd ../awiki-cli && go test ./internal/message -run 'TestAllInboxMergesLocalMailNotifications|TestReadInboxFromCacheExcludesMailNotificationsForDirectInbox|TestReadUnifiedDirectInboxFromCacheIncludesNewStyleMailMetadataRows|TestNormalizeMailNotificationMessageRecognizesMetadataSourceKind|TestMergeInboxMessagesSortsAndLimits' -count=1
+cd ../awiki-cli && go test ./internal/store -run 'TestListGroupInboxMessages|TestListNotificationInboxMessages|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates|TestMessageQueryHelpersLookupAndMarkReadRespectOwner' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestMsgDryRunPlansRenderStableContracts' -count=1
+git diff --check
+```
+
+Observed result:
+
+- Python compile passed.
+- Focused Rust subprocess selector passed: `1 passed in 1.20s`.
+- Rust `msg_all_inbox_live_contract` passed: 9 tests.
+- Focused Go message, store, and CLI reference selectors passed.
+- Structure check passed: no undocumented Rust files over 1200 lines.
+- Whitespace checks passed in the touched Rust and system-test repositories.
+- No mail selector was run or counted as passed. The seeded mail-like row is
+  evidence for local cache merge and normalization only.
+
+Boundary note: this selector does not test real mail-service delivery,
+`tests_v2/mail`, mail notification listener delivery, all-inbox mark-read with
+remote direct IDs, direct HTTP fallback, group WebSocket transport, group E2EE,
+or full repository-wide system acceptance. Mail-related system selectors remain
+explicitly deferred to a later mail-focused pass.
+
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 
 Status: unit verified.
