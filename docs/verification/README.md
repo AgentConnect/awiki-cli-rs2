@@ -2,6 +2,65 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Update Policy System Evidence
+
+Timestamp: 2026-05-17T18:25:00+0800.
+
+Scope: promote `awiki-cli/internal/update/update.go` to scoped
+`system_verified` using the existing deterministic Rust subprocess
+`awiki-system-test` update-policy file, plus focused Rust/Go tests for lower
+level registry/cache behavior that system tests intentionally avoid.
+
+System-test coverage used:
+
+- `tests_v2/update/test_update_policy.py::test_dev_build_uses_metadata_but_does_not_block`
+  proves real Rust `upgrade --format json` consumes seeded
+  `<workspace>/cache/update/metadata.json` and reports latest/minimum/dev-build
+  decision fields without hard-blocking a dev build.
+- `tests_v2/update/test_update_policy.py::test_disable_strict_version_in_config_allows_commands`
+  proves `update.disable_strict_version: true` in isolated `config.yaml`
+  flips `strict_disabled=true` in real subprocess output.
+- `tests_v2/update/test_update_policy.py::test_disable_strict_version_env_override_takes_precedence`
+  proves `AWIKI_CLI_DISABLE_STRICT_VERSION=1` wins over default strict
+  behavior in real subprocess output.
+- `tests_v2/update/test_update_policy.py::test_root_preflight_soft_fails_non_exempt_update_checks_and_exempts_local_commands`
+  proves cache-only root preflight soft-fail behavior for non-exempt `status`,
+  verbose stderr logging, quiet non-verbose behavior, and local/recovery
+  exemptions for `version`, `upgrade`, `init --dry-run`, `docs`, `schema`,
+  `config show`, `doctor`, and `completion bash`.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/update/test_update_policy.py -ra -q
+cd ../awiki-cli && go test ./internal/update -count=1
+cd . && cargo +1.79.0 test -p awiki-cli --lib 'update::' --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test update_contract upgrade_cache_only_uses_seeded_metadata_for_dev_builds --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test update_contract upgrade_strict_disable_follows_config_and_env_override --locked
+```
+
+Observed results:
+
+- System-test update policy file: 4 passed, 0 failed, 0 skipped in 0.18s.
+- Go `internal/update`: passed.
+- Rust update library tests: 12 passed, 0 failed.
+- Rust `update_contract` cache-only seeded metadata selector: 1 passed, 0 failed.
+- Rust `update_contract` strict-disable selector: 1 passed, 0 failed.
+
+Boundary note: the system-test update file is intentionally offline and
+deterministic. It seeds metadata and does not contact the real npm registry.
+Registry order, npmjs-to-npmmirror fallback, combined all-registry error text,
+network cache writeback, Unix cache directory/file permissions, stale-cache
+fallback after network failure, proxy env behavior, and non-dev hard-block
+behavior remain covered by focused Rust/Go tests plus the previously recorded
+live dry-run smoke, not by deterministic `awiki-system-test`.
+
+Verification caveat: an overly broad exploratory command
+`cargo +1.79.0 test -p awiki-cli update --locked` was interrupted after it
+matched unrelated cross-module tests and reached the deferred service-run
+boundary. It is not used as acceptance evidence for this row; the scoped
+commands above are the evidence for this promotion.
+
 ## 2026-05-17 Identity Key Compatibility System Selector
 
 Timestamp: 2026-05-17T17:45:00+0800.
