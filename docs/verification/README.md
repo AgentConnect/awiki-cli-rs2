@@ -2,6 +2,72 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Message Secure Prekey Read-Path Slice
+
+Timestamp: 2026-05-17T11:20:00+0800.
+
+Scope: match Go `maybePublishSecurePrekeys` side effects before direct
+`msg inbox` and `msg history` remote reads.
+
+What changed:
+
+- Added shared `message::service::maybe_publish_secure_prekeys`, reusing the
+  existing Rustls/std authenticated message client and local ANP Rust E2EE
+  adapter.
+- `message::inbox` now publishes secure prekeys after active identity loading
+  and before direct/all remote read handling; `scope=group` remains Go-like and
+  returns before this step.
+- `message::history` now publishes secure prekeys after active identity loading
+  and before target resolution / remote transport handling.
+- `msg secure init/repair` preparation now reuses the same helper instead of
+  keeping a duplicate private prekey publisher.
+- Added `msg_secure_prekey_read_live_contract` to prove CLI RPC order:
+  two `direct.e2ee.publish_prekey_bundle` calls before `inbox.get` and before
+  `direct.get_history`, and warning-only behavior when explicit publish fails.
+- Updated existing live fake-server fixtures for the new Go-compatible
+  pre-read publish sequence in HTTP and websocket fallback read tests.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_secure_prekey_read_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract --locked
+```
+
+Observed results:
+
+- New focused live prekey-read contract passed: 2 tests.
+- Existing direct HTTP live contract passed: 7 tests.
+- WebSocket direct inbox live contract passed: 5 tests.
+- WebSocket history live contract passed: 4 tests.
+- All/group inbox live contract passed: 9 tests.
+- Package check passed.
+- Source/test line counts remain within the standing cap for changed files:
+  `service.rs` 1016 lines, `inbox.rs` 772 lines, `history.rs` 321 lines,
+  `secure_commands.rs` 648 lines, new focused test 509 lines. Existing
+  `msg_live_contract.rs` is exactly 1200 lines after only necessary fixture
+  updates.
+
+Boundary note: this slice does not claim full secure-direct system acceptance,
+real WebSocket secure transport, foreground listener secure processing, or full
+`awiki-system-test` acceptance. It only wires the Go best-effort prekey publish
+side effect into already translated read paths.
+
+Parallelism note: two read-only Native Agents mapped Go/Rust behavior and test
+fixtures. No code-writing Native Agent changed files.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. The slice reuses the existing Rustls/std HTTP transport, local ANP
+Rust SDK E2EE adapter, and approved `rusqlite + bundled` SQLite path. It does
+not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
+crates, async runtimes, YAML crates, platform service libraries, or a new
+SQLite backend.
+
 ## 2026-05-17 Direct WebSocket Send Fallback Warning Slice
 
 Timestamp: 2026-05-17T09:55:00+0800.

@@ -1,7 +1,7 @@
 use super::types::{MessageError, SendRequest, MESSAGE_RPC_ENDPOINT};
 use super::{
     build_direct_send_rpc_params, content_type_for_message_type, new_secure_e2ee_client_for_record,
-    Client, MessageServiceE2EEClient,
+    Client, MessageServiceE2EEClient, SecureE2EERpc,
 };
 use crate::authsdk::Session;
 use crate::config::{join_base_url, Resolved};
@@ -364,6 +364,46 @@ pub(crate) fn publish_secure_prekeys_with_client(
             super::compact_warnings(vec![format!("Failed to publish secure prekeys: {err}")])
         }
     }
+}
+
+pub(crate) fn maybe_publish_secure_prekeys(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &StoredIdentity,
+) -> Vec<String> {
+    if record.e2ee_agreement_private_pem.is_empty() || record.key1_private_pem.is_empty() {
+        return Vec::new();
+    }
+    let auth = match auth_session(resolved, manager, record) {
+        Ok(auth) => auth,
+        Err(err) => {
+            return super::compact_warnings(vec![format!(
+                "Failed to initialize secure prekey auth: {err}"
+            )])
+        }
+    };
+    let rpc: Box<SecureE2EERpc> = if resolved.service_base_url.trim().is_empty() {
+        Box::new(|_, _| Err("message service url is required".to_string()))
+    } else {
+        let rpc_client = match Client::new(resolved) {
+            Ok(client) => client,
+            Err(err) => {
+                return super::compact_warnings(vec![format!(
+                    "Failed to initialize secure prekey publisher: {err}"
+                )])
+            }
+        };
+        secure_rpc(rpc_client, auth)
+    };
+    let mut client = match new_secure_e2ee_client_for_record(Some(manager), Some(record), rpc) {
+        Ok(client) => client,
+        Err(err) => {
+            return super::compact_warnings(vec![format!(
+                "Failed to initialize secure prekey publisher: {err}"
+            )])
+        }
+    };
+    publish_secure_prekeys_with_client(&mut client)
 }
 
 pub(crate) fn require_active_identity(

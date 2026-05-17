@@ -377,6 +377,8 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         "is_read": false,
     });
     let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [message.clone()],
             "total": 1,
@@ -387,6 +389,8 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
             "handle": "alice.awiki.ai",
             "full_handle": "alice.awiki.ai"
         }))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [message.clone()],
             "total": 1,
@@ -444,13 +448,14 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(mark_json["data"]["message_ids"], json!(["msg-direct-1"]));
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 8);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[1].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
     assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[3].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    assert!(requests[6].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[7].starts_with("POST /im/rpc HTTP/1.1"));
 
-    let inbox_body: Value = serde_json::from_str(request_body(&requests[0])).expect("inbox body");
+    let inbox_body: Value = serde_json::from_str(request_body(&requests[2])).expect("inbox body");
     assert_eq!(inbox_body["method"], "inbox.get");
     assert_eq!(
         inbox_body["params"]["meta"]["profile"],
@@ -460,12 +465,12 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(inbox_body["params"]["body"].get("peer_did"), None);
 
     let history_body: Value =
-        serde_json::from_str(request_body(&requests[2])).expect("history body");
+        serde_json::from_str(request_body(&requests[6])).expect("history body");
     assert_eq!(history_body["method"], "direct.get_history");
     assert_eq!(history_body["params"]["body"]["peer_did"], alice_did);
     assert_eq!(history_body["params"]["body"]["limit"], 5);
 
-    let mark_body: Value = serde_json::from_str(request_body(&requests[3])).expect("mark body");
+    let mark_body: Value = serde_json::from_str(request_body(&requests[7])).expect("mark body");
     assert_eq!(mark_body["method"], "inbox.mark_read");
     assert_eq!(
         mark_body["params"]["body"]["message_ids"],
@@ -533,6 +538,8 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
         "is_read": false,
     });
     let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
         TestResponse::ok(&json_rpc_result(json!({
             "did": alice_new,
             "handle": "alice.awiki.ai",
@@ -623,6 +630,8 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
         "is_read": false,
     });
     let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
         TestResponse::ok(&json_rpc_result(json!({
             "did": alice_new,
             "handle": "alice.awiki.ai",

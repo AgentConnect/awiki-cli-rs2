@@ -1,7 +1,7 @@
 use super::service::{
-    auth_session, merge_handle_history_messages, peer_handle_or_did, persist_history_messages,
-    require_active_identity, resolve_target, resolved_dids_value, runtime_mode, CommandResult,
-    TargetResolution,
+    auth_session, maybe_publish_secure_prekeys, merge_handle_history_messages, peer_handle_or_did,
+    persist_history_messages, require_active_identity, resolve_target, resolved_dids_value,
+    runtime_mode, CommandResult, TargetResolution,
 };
 use super::{
     build_history_rpc_params, websocket_cache_fallback_warning, websocket_http_fallback_warning,
@@ -27,6 +27,7 @@ pub fn history(
         request.limit = 50;
     }
     let record = require_active_identity(resolved, manager, &request.identity_name)?;
+    let publish_warnings = maybe_publish_secure_prekeys(resolved, manager, &record);
     let original_with = request.with.trim().to_string();
     let target_is_handle = !original_with.is_empty() && !original_with.starts_with("did:");
     let target = match resolve_target(resolved, &original_with) {
@@ -47,7 +48,7 @@ pub fn history(
     };
     request.with = target.did.clone();
     let source_mode = runtime_mode(resolved);
-    let (raw, mut warnings) = if source_mode == runtime::bridge::MODE_WEBSOCKET {
+    let (raw, transport_warnings) = if source_mode == runtime::bridge::MODE_WEBSOCKET {
         match history_websocket(
             resolved,
             manager,
@@ -65,6 +66,8 @@ pub fn history(
             Vec::new(),
         )
     };
+    let mut warnings = publish_warnings;
+    warnings.extend(transport_warnings);
     let mut messages = persist_history_messages(
         resolved,
         manager,

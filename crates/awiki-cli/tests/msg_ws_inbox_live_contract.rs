@@ -83,20 +83,29 @@ fn msg_inbox_websocket_mode_falls_back_to_http_with_warning_like_go() {
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "messages": [{
-            "id": "msg-ws-inbox-http-1",
-            "type": "text",
-            "sender_did": alice_did,
-            "receiver_did": bob_did,
-            "content_type": "text/plain",
-            "content": "hello from HTTP inbox fallback",
-            "sent_at": "2026-05-16T02:03:04Z",
-            "is_read": false
-        }],
-        "total": 1,
-        "source": "remote_http"
-    })))]);
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "messages": [{
+                "id": "msg-ws-inbox-http-1",
+                "type": "text",
+                "sender_did": alice_did,
+                "receiver_did": bob_did,
+                "content_type": "text/plain",
+                "content": "hello from HTTP inbox fallback",
+                "sent_at": "2026-05-16T02:03:04Z",
+                "is_read": false
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "did": alice_did,
+            "handle": "alice.awiki.ai",
+            "full_handle": "alice.awiki.ai"
+        }))),
+    ]);
     write_msg_ws_config(
         workspace.path(),
         &server.base_url(),
@@ -128,10 +137,13 @@ fn msg_inbox_websocket_mode_falls_back_to_http_with_warning_like_go() {
     assert_has_http_fallback_warning(&envelope);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 4);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_text(&requests[0], "Authorization: Bearer jwt-bob\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[3].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    assert_contains_text(&requests[2], "Authorization: Bearer jwt-bob\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(body["method"], "inbox.get");
     assert_eq!(body["params"]["body"]["user_did"], bob_did);
     assert_eq!(body["params"]["body"]["limit"], 7);
@@ -202,9 +214,13 @@ fn msg_inbox_websocket_mode_double_failure_returns_http_error_like_go() {
     register_ready_msg_identity(workspace.path(), "bob-ws-inbox-fail", "bob", "jwt-bob");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(vec![TestResponse::internal_error(
-        r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"http inbox failed"},"id":"req-1"}"#,
-    )]);
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::internal_error(
+            r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"http inbox failed"},"id":"req-1"}"#,
+        ),
+    ]);
     write_msg_ws_config(
         workspace.path(),
         &server.base_url(),
@@ -237,8 +253,8 @@ fn msg_inbox_websocket_mode_double_failure_returns_http_error_like_go() {
     );
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(requests.len(), 3);
+    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
     assert_eq!(body["method"], "inbox.get");
 }
 

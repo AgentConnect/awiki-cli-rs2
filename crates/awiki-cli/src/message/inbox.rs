@@ -1,8 +1,9 @@
 use super::group_service::group_storage_key;
 use super::service::{
     apply_inbox_filters, auth_session, collect_message_ids, mark_messages_read_in_result,
-    merge_handle_history_messages, peer_handle_or_did, persist_inbox_messages,
-    require_active_identity, resolve_target, runtime_mode, CommandResult, TargetResolution,
+    maybe_publish_secure_prekeys, merge_handle_history_messages, peer_handle_or_did,
+    persist_inbox_messages, require_active_identity, resolve_target, runtime_mode, CommandResult,
+    TargetResolution,
 };
 use super::{
     build_inbox_rpc_params, websocket_cache_fallback_warning, websocket_http_fallback_warning,
@@ -33,8 +34,13 @@ pub fn inbox(
         return group_inbox(resolved, manager, &record, request);
     }
 
+    let publish_warnings = maybe_publish_secure_prekeys(resolved, manager, &record);
+
     if request.scope.trim() == "all" {
-        return all_inbox(resolved, manager, &record, request);
+        let mut result = all_inbox(resolved, manager, &record, request)?;
+        result.warnings.extend(publish_warnings);
+        result.warnings = super::compact_warnings(result.warnings);
+        return Ok(result);
     }
 
     let original_with = request.with.trim().to_string();
@@ -71,7 +77,12 @@ pub fn inbox(
             &request,
             target_is_handle,
         )? {
-            InboxTransportOutcome::Remote { raw, warnings } => {
+            InboxTransportOutcome::Remote {
+                raw,
+                warnings: transport_warnings,
+            } => {
+                let mut warnings = publish_warnings;
+                warnings.extend(transport_warnings);
                 return Ok(inbox_result_from_remote(
                     resolved,
                     manager,
@@ -95,7 +106,7 @@ pub fn inbox(
         &target,
         target_is_handle,
         raw,
-        Vec::new(),
+        publish_warnings,
     ))
 }
 

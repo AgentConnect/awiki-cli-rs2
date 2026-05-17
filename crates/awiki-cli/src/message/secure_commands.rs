@@ -1,5 +1,5 @@
 use super::service::{
-    auth_session, publish_secure_prekeys_with_client, require_active_identity, resolve_target,
+    auth_session, maybe_publish_secure_prekeys, require_active_identity, resolve_target,
     CommandResult, TargetResolution,
 };
 use super::types::{
@@ -8,8 +8,8 @@ use super::types::{
 };
 use super::{
     build_secure_init_payload, current_secure_session_id, flush_queued_secure_outbox_with_sender,
-    new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient, SecureE2EERpc,
-    SecureOutboxSendOutcome, SecureOutboxSendRequest,
+    new_secure_e2ee_client_for_record, Client, MessageServiceE2EEClient, SecureOutboxSendOutcome,
+    SecureOutboxSendRequest,
 };
 use crate::anpsdk::FileSessionStore;
 use crate::config::Resolved;
@@ -221,7 +221,7 @@ fn prepare_secure_peer_action(
         return Err(MessageError::TargetRequired);
     }
     let target = resolve_target(resolved, &request.with)?;
-    let warnings = publish_secure_prekeys(resolved, manager, &record);
+    let warnings = maybe_publish_secure_prekeys(resolved, manager, &record);
     Ok((record, target, warnings))
 }
 
@@ -401,46 +401,6 @@ pub fn secure_retry(
         summary: format!("Retried secure outbox record {}", request.outbox_id),
         warnings,
     })
-}
-
-fn publish_secure_prekeys(
-    resolved: &Resolved,
-    manager: &Manager,
-    record: &StoredIdentity,
-) -> Vec<String> {
-    if record.e2ee_agreement_private_pem.is_empty() || record.key1_private_pem.is_empty() {
-        return Vec::new();
-    }
-    let auth = match auth_session(resolved, manager, record) {
-        Ok(auth) => auth,
-        Err(err) => {
-            return super::compact_warnings(vec![format!(
-                "Failed to initialize secure prekey auth: {err}"
-            )])
-        }
-    };
-    let rpc: Box<SecureE2EERpc> = if resolved.service_base_url.trim().is_empty() {
-        Box::new(|_, _| Err("message service url is required".to_string()))
-    } else {
-        let rpc_client = match Client::new(resolved) {
-            Ok(client) => client,
-            Err(err) => {
-                return super::compact_warnings(vec![format!(
-                    "Failed to initialize secure prekey publisher: {err}"
-                )])
-            }
-        };
-        secure_retry_rpc(rpc_client, auth)
-    };
-    let mut client = match new_secure_e2ee_client_for_record(Some(manager), Some(record), rpc) {
-        Ok(client) => client,
-        Err(err) => {
-            return super::compact_warnings(vec![format!(
-                "Failed to initialize secure prekey publisher: {err}"
-            )])
-        }
-    };
-    publish_secure_prekeys_with_client(&mut client)
 }
 
 fn secure_retry_client(
