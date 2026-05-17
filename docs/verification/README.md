@@ -2,6 +2,72 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 OpenClaw Config Probe System Selector
+
+Timestamp: 2026-05-17T16:06:00+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for the
+OpenClaw host-notify config probe path without starting OpenClaw, listener, or
+external services.
+
+System-test change:
+
+- Added
+  `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_openclaw_config_probe_uses_local_openclaw_json`.
+- Updated `tests_v2/runtime/CLAUDE.md` to document the local
+  `openclaw.json` probe boundary.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_openclaw_config_probe_uses_local_openclaw_json -q
+cd ../awiki-system-test && git diff --check -- tests_v2/runtime/test_runtime_cli.py tests_v2/runtime/CLAUDE.md
+```
+
+Observed results:
+
+- Python compile check: passed.
+- Focused selector: 1 passed, 0 failed, 0 skipped in 0.97s.
+- Diff whitespace check for changed runtime files: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace.
+- The selector rewrote the isolated runtime config with
+  `host_notify.sink=openclaw` and no explicit OpenClaw hook URL so the CLI must
+  use the auto-detected OpenClaw settings path.
+- The selector wrote a temporary `openclaw.json` under the test runtime root and
+  exposed it only through `OPENCLAW_CONFIG_PATH` for the subprocess.
+- It did not require OpenClaw, mail-service, message-service local topology,
+  tenant env gates, registered identities, user-service, listener foreground
+  execution, or real user service-manager permissions.
+
+Coverage:
+
+- Verifies `runtime host-notify config show` builds
+  `http://127.0.0.1:<port>/<hooks-path>/agent` from the temporary OpenClaw JSON
+  when the AWiki config has no explicit hook URL.
+- Verifies `hook_url_source=auto_detected`,
+  `detected_webhook_source=openclaw_config`,
+  `detected_webhook_path_source=openclaw_config`, and
+  `token_source=openclaw_config`.
+- Verifies the OpenClaw JSON token is represented only as
+  `token_configured=true` and is absent from structured output, stdout, and
+  stderr.
+- Verifies `OPENCLAW_GATEWAY_PORT` overrides the OpenClaw JSON port while the
+  JSON hook path and token source remain in effect.
+
+Boundary note: this selector covers OpenClaw config probing and redaction only.
+It does not execute OpenClaw route add/remove/list, confirmation webhook POST,
+host-notify delivery, foreground listener dispatch, or local bridge I/O.
+
+Dependency note: no Rust dependency was added. The exercised path uses existing
+JSON parsing, env/path handling, and host-notify config code only.
+
 ## 2026-05-17 Deterministic Debug Import System Selector
 
 Timestamp: 2026-05-17T15:19:19+0800.
