@@ -14,6 +14,72 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Direct Send WebSocket Public Foreground Selector
+
+Scope: split a narrow `system_verified` parity row for ordinary direct
+`msg send --to --text` in `runtime.mode=websocket` through the real foreground
+listener/local bridge path. The broader direct-send WebSocket transport row
+remains `unit_verified` for fallback/asymmetry details.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message -run 'TestWebSocketFallbackWarnings|TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/probes/run_awiki_cli_runtime_listener_local_probe.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- `msg_ws_proxy_live_contract`: 2 passed, 0 failed.
+- `message_ws_proxy_contract`: 3 passed, 0 failed.
+- Go focused message reference tests: passed.
+- Python compile check for the listener wrapper and probe: passed.
+- Focused runtime listener system selector: 1 passed, 0 failed, 0 skipped in
+  6.99s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The test used `.env` configured `awiki.info` endpoints:
+  `E2E_USER_SERVICE_URL=https://awiki.info`,
+  `E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
+  `E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`, and
+  `E2E_DID_DOMAIN=awiki.info`.
+- Generated `tests_v2` `__pycache__` directories were removed after the pytest
+  run as disposable intermediates.
+
+Coverage:
+
+- Starts `runtime listener run` in an isolated subprocess environment.
+- Waits for Alice/Bob/Carol foreground WebSocket sessions to become ready.
+- Runs a real Rust subprocess ordinary direct send from Bob in websocket mode:
+  `msg send --to <alice did> --text <message>`.
+- Waits for Alice's foreground listener to persist the direct message into
+  isolated local SQLite.
+- The probe emits `LISTENER_WS_LOCAL_VERIFY_OK`, proving the successful
+  foreground listener/local bridge direct-send happy path.
+
+Boundary note: this selector proves only the successful ordinary direct send
+foreground listener/local bridge path. Rust contracts still carry exact
+`direct.send` bridge params, output shape without a Go-absent `data.source`
+field, successful HTTP fallback shape, and the Go asymmetry that direct-send
+fallback does not emit a visible WebSocket HTTP fallback warning. This selector
+does not prove direct inbox/history/mark-read, secure direct, attachments, group
+WebSocket paths, local cache fallback, bridge+HTTP double-failure edges beyond
+contracts, Windows named-pipe I/O, platform service-manager lifecycle, mail
+selectors, or full repository-wide acceptance. Mail system-test selectors remain
+deferred and are not counted as passed here.
+
+Dependency note: no Rust dependency was added. The foreground WebSocket path
+continues to use the existing std/Rustls transport and approved
+`rusqlite + bundled` SQLite lane.
+
 ## 2026-05-18 Direct Inbox WebSocket Public Foreground Selector
 
 Scope: split a narrow `system_verified` parity row for ordinary direct
