@@ -466,14 +466,6 @@ impl App {
             ));
         }
         let hook_url = hook_url.unwrap_or_default();
-        runtime::validate_openclaw_hook_url(hook_url).map_err(|err| {
-            ExitError::new(
-                "invalid_argument",
-                2,
-                err.to_string(),
-                "Use a loopback OpenClaw hook URL such as http://127.0.0.1:18789/hooks/agent.",
-            )
-        })?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli runtime host-notify openclaw set",
@@ -483,6 +475,14 @@ impl App {
                 Vec::new(),
             );
         }
+        runtime::validate_openclaw_hook_url(hook_url).map_err(|err| {
+            ExitError::new(
+                "invalid_argument",
+                2,
+                err.to_string(),
+                "Use a loopback OpenClaw hook URL such as http://127.0.0.1:18789/hooks/agent.",
+            )
+        })?;
         config::update_openclaw_settings(&resolved.paths, Some(hook_url))
             .map_err(internal_anyhow)?;
         let resolved = self.resolve_config()?;

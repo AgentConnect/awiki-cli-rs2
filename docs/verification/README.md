@@ -14,6 +14,117 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 OpenClaw Dry-Run Hook URL Validation Order
+
+Scope: match Go's `runtime host-notify openclaw set --dry-run` validation
+ordering for hook URLs. Go renders the dry-run plan before checking whether the
+hook URL uses a loopback host, while non-dry-run writes still reject
+non-loopback hook URLs before persisting config.
+
+Go source reference:
+
+- `awiki-cli/internal/cli/runtime.go`: `runRuntimeHostNotifyOpenClawSet`
+  returns the dry-run plan before calling OpenClaw settings validation.
+- `awiki-cli/internal/runtime/openclawnotify/config.go`: live settings
+  validation rejects non-loopback hook URL hosts.
+- Direct Go probe:
+  `AWIKI_CLI_UPDATE_CACHE_ONLY=1 go run ./cmd/awiki-cli --dry-run runtime host-notify openclaw set --hook-url http://10.0.0.1:18789/hooks/agent`
+  returned exit 0 with
+  `summary="Dry run: OpenClaw host notify config change planned"`,
+  `data.plan.action="host_notify_openclaw_set"`, and
+  `data.plan.hook_url="http://10.0.0.1:18789/hooks/agent"`.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/app/runtime_handlers.rs`:
+  `run_runtime_host_notify_openclaw_set` now returns the dry-run plan before
+  calling `runtime::validate_openclaw_hook_url`.
+- `crates/awiki-cli/tests/runtime_openclaw_cli_contract.rs`: added
+  `openclaw_set_dry_run_echoes_remote_hook_url_before_live_validation_like_go`
+  to prove the non-loopback hook URL succeeds in dry-run, echoes the raw
+  `hook_url`, writes no `config.yaml`, and still fails with `invalid_argument`
+  in live mode before persistence.
+- `crates/awiki-cli/tests/runtime_contract.rs`: kept the broader runtime
+  validation contract under the 1200-line source-file cap by moving this
+  focused OpenClaw CLI ordering assertion into its own small test file.
+- `docs/parity-matrix.md`, `docs/known-go-issues.md`, and
+  `docs/dependency-decisions.md`: record the validation-order boundary and the
+  no-new-dependency decision.
+
+System-test change:
+
+- `tests_v2/runtime/test_runtime_cli.py`: extended
+  `test_runtime_host_notify_validates_inputs_and_supports_dry_run` with the
+  non-loopback `--dry-run --hook-url http://10.0.0.1:18789/hooks/agent`
+  success case and the matching non-dry-run `invalid_argument` failure case.
+- `tests_v2/runtime/CLAUDE.md`: records that runtime coverage includes the
+  OpenClaw dry-run hook-url ordering boundary.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_cli_contract openclaw_set_dry_run_echoes_remote_hook_url_before_live_validation_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_validation_and_dry_run_plans_match_go_contracts --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && AWIKI_CLI_UPDATE_CACHE_ONLY=1 go run ./cmd/awiki-cli --dry-run runtime host-notify openclaw set --hook-url http://10.0.0.1:18789/hooks/agent
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli ./internal/runtime/openclawnotify ./internal/config -run 'Test.*HostNotify|Test.*OpenClaw|Test.*Runtime' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_validates_inputs_and_supports_dry_run -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+```
+
+Observed results:
+
+- Rust formatting check: passed.
+- Rust focused OpenClaw CLI contract
+  `openclaw_set_dry_run_echoes_remote_hook_url_before_live_validation_like_go`:
+  1 passed, 0 failed, 0 ignored, 0 filtered out in 0.01s.
+- Rust focused runtime contract
+  `host_notify_validation_and_dry_run_plans_match_go_contracts`: 1 passed,
+  0 failed, 0 ignored, 11 filtered out in 0.01s.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed; no undocumented Rust source file over 1200
+  lines. Relevant line counts after the split:
+  `runtime_handlers.rs` 762 lines, `runtime_contract.rs` 1173 lines, and
+  `runtime_openclaw_cli_contract.rs` 158 lines.
+- Go direct dry-run probe: exit 0, summary
+  `Dry run: OpenClaw host notify config change planned`, action
+  `host_notify_openclaw_set`, and raw hook URL
+  `http://10.0.0.1:18789/hooks/agent`.
+- Go focused reference tests: `internal/cli` passed in 19.499s,
+  `internal/runtime/openclawnotify` passed in 0.011s, and `internal/config`
+  passed in 0.030s.
+- Python compile check for `tests_v2/runtime/test_runtime_cli.py`: passed.
+- Focused runtime system selector: 1 passed, 0 failed, 0 skipped in 1.00s.
+- `git diff --check` passed in both `awiki-cli-rs2` and `awiki-system-test`.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+- No `AWIKI_CLI_BINARY` override was used.
+- The selector uses isolated local workspaces and does not require
+  user-service, message-service, mail-service, real OpenClaw, Hermes,
+  foreground listener execution, live route confirmation, or service-manager
+  permissions.
+
+Boundary note: this is CLI validation-order parity only. It does not change
+OpenClaw route confirmation, OpenClaw sink construction, foreground listener
+delivery, real OpenClaw execution, mail notification acceptance, or full
+repository-wide system acceptance. Mail-related system-test cases remain
+deferred/gated by the operational constraint above and are not counted as
+passed.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. The slice keeps SQLite on the approved `rusqlite + bundled`
+path and keeps TLS policy Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 CLI Unknown Local Flag Boundary
 
 Scope: match Go/Cobra's command-local unknown long-flag error boundary for
