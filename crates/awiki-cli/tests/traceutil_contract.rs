@@ -257,6 +257,33 @@ fn group_trace_call_sites_match_go_trace_depth_contract() {
     );
 }
 
+#[test]
+fn attachment_trace_call_sites_match_go_trace_depth_contract() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let attachment_service = source(crate_root, "src/message/attachment_service.rs");
+
+    for label in [
+        "traceutil::local_db_phase(\"persist_direct_send\")",
+        "traceutil::local_db_phase(\"persist_group_send\")",
+        "traceutil::local_db_phase(\"touch_group_cache\")",
+    ] {
+        assert!(
+            attachment_service.contains(label),
+            "attachment Go trace label is not wired: {label}"
+        );
+    }
+
+    for call_site in [
+        "let target = resolve_target(resolved, &request.target)?;",
+        "let peer = resolve_target(resolved, &request.with)?;",
+    ] {
+        assert!(
+            attachment_service.contains(call_site),
+            "attachment direct path should keep shared target_resolve lookup: {call_site}"
+        );
+    }
+}
+
 fn source(crate_root: &Path, relative: &str) -> String {
     std::fs::read_to_string(crate_root.join(relative)).expect("read Rust source")
 }

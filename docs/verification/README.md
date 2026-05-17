@@ -2,6 +2,71 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Attachment Trace-Depth Call-Site Slice
+
+Timestamp: 2026-05-17T11:27:58+0800.
+
+Scope: wire existing Rust trace primitives into the direct/group attachment
+local persistence paths and preserve the shared direct attachment handle lookup
+trace path without changing attachment behavior.
+
+What changed:
+
+- Added `local_db:persist_direct_send` around direct attachment local message
+  persistence.
+- Added `local_db:persist_group_send` around group attachment local message
+  persistence.
+- Added nested `local_db:touch_group_cache` around the group attachment cache
+  touch that mirrors ordinary group send.
+- Extended the focused static trace contract so attachment local DB labels and
+  shared direct attachment `resolve_target` call sites cannot silently disappear
+  from production Rust attachment sources.
+
+Boundary note:
+
+- This slice is instrumentation parity only. It does not change RPC payloads,
+  attachment manifest shapes, upload/download behavior, persistence record
+  fields, message warnings, fallback selection, local cache semantics, or output
+  JSON.
+- It reuses existing Go/Rust labels (`persist_direct_send`,
+  `persist_group_send`, `touch_group_cache`, and shared
+  `handle_lookup:target_resolve`) instead of adding attachment-specific labels.
+- JWT fallback-refresh trace wiring and remaining non-direct-message fallback
+  call sites remain separate parity slices.
+- No dependency was added. Cargo manifests and lockfile remain unchanged.
+- `crates/awiki-cli/src/message/attachment_service.rs` is 884 lines and
+  `crates/awiki-cli/tests/traceutil_contract.rs` is 289 lines after this slice,
+  both below the default 1200-line review-size cap, so no file-size exception is
+  needed.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test attachment_live_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/message ./internal/traceutil -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+```
+
+Observed results:
+
+- Format check passed.
+- `traceutil_contract`: 8 passed, 0 failed.
+- `attachment_live_contract`: 4 passed, 0 failed.
+- `cargo check -p awiki-cli --locked` passed.
+- Structure check passed with no undocumented Rust files over the 1200-line
+  default cap.
+- `git diff --check` passed.
+- Go `internal/message` and `internal/traceutil` package tests passed.
+- Dependency audit still shows only existing Rustls/ring/webpki and approved
+  `rusqlite + bundled`/`libsqlite3-sys`; no OpenSSL/native-tls, `reqwest`,
+  `hyper`, WebSocket, YAML, or new SQLite dependency was added.
+
 ## 2026-05-17 Group Trace-Depth Call-Site Slice
 
 Timestamp: 2026-05-17T12:35:00+0800.
@@ -27,9 +92,11 @@ Boundary note:
 - This slice is instrumentation parity only. It does not change RPC payloads,
   persistence shape, message warnings, fallback selection, local cache
   semantics, or output JSON.
-- JWT fallback-refresh trace wiring, attachment-local trace-depth wiring, and
-  remaining non-direct-message handle/fallback call sites remain separate parity
-  slices.
+- At this slice boundary, JWT fallback-refresh trace wiring,
+  attachment-local trace-depth wiring, and remaining non-direct-message
+  handle/fallback call sites remained separate parity slices. Attachment local
+  DB/handle trace-depth is now covered by the 2026-05-17 attachment trace-depth
+  call-site slice above.
 - No dependency was added. Cargo manifests and lockfile remain unchanged.
 - `crates/awiki-cli/src/message/group_service.rs` is 1152 lines after this
   slice, below the default 1200-line review-size cap, so no file-size exception
@@ -103,7 +170,8 @@ Boundary note:
   wiring, attachment-local trace-depth wiring, and non-direct-message local
   DB/handle/fallback call sites remained separate parity slices. Group local DB
   trace-depth is now covered by the 2026-05-17 group trace-depth call-site
-  slice above.
+  slice above, and attachment local DB/handle trace-depth is now covered by the
+  2026-05-17 attachment trace-depth call-site slice above.
 - No dependency was added. Cargo manifests and lockfile remain unchanged.
 
 Commands run:

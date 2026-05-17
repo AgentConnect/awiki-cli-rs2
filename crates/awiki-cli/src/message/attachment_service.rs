@@ -568,36 +568,42 @@ fn persist_direct_attachment_send_result(
     result: &DirectAttachmentSendResult,
     warnings: &mut Vec<String>,
 ) -> Result<CommandResult, MessageError> {
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    if let Err(err) = store::store_message(
-        &connection,
-        MessageRecord {
-            msg_id: result.message_id.clone(),
-            owner_did: record.did.clone(),
-            thread_id: store::make_thread_id(&record.did, target_did, ""),
-            direction: 1,
-            sender_did: record.did.clone(),
-            receiver_did: target_did.to_string(),
-            content_type: super::attachment_manifest_content_type().to_string(),
-            content: manifest_content_string(manifest),
-            sent_at: result.accepted_at.clone(),
-            is_read: true,
-            metadata: metadata_string(json!({
-                "delivery_state": result.delivery_state,
-                "operation_id": result.operation_id,
-                "target_handle": target_handle,
-                "attachment_id": slot.attachment_id,
-                "object_uri": slot.object_uri,
-                "caption": caption,
-            })),
-            credential_name: record.identity_name.clone(),
-            ..MessageRecord::default()
-        },
-    ) {
-        warnings.push(format!("Failed to persist local message: {err}"));
-    }
+    let mut phase = crate::traceutil::local_db_phase("persist_direct_send");
+    let persist_result: Result<(), MessageError> = (|| {
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        if let Err(err) = store::store_message(
+            &connection,
+            MessageRecord {
+                msg_id: result.message_id.clone(),
+                owner_did: record.did.clone(),
+                thread_id: store::make_thread_id(&record.did, target_did, ""),
+                direction: 1,
+                sender_did: record.did.clone(),
+                receiver_did: target_did.to_string(),
+                content_type: super::attachment_manifest_content_type().to_string(),
+                content: manifest_content_string(manifest),
+                sent_at: result.accepted_at.clone(),
+                is_read: true,
+                metadata: metadata_string(json!({
+                    "delivery_state": result.delivery_state,
+                    "operation_id": result.operation_id,
+                    "target_handle": target_handle,
+                    "attachment_id": slot.attachment_id,
+                    "object_uri": slot.object_uri,
+                    "caption": caption,
+                })),
+                credential_name: record.identity_name.clone(),
+                ..MessageRecord::default()
+            },
+        ) {
+            warnings.push(format!("Failed to persist local message: {err}"));
+        }
+        Ok(())
+    })();
+    phase.finish();
+    persist_result?;
     Ok(CommandResult {
         data: json!({
             "action": "send_attachment",
@@ -627,49 +633,58 @@ fn persist_group_attachment_send_result(
     warnings: &mut Vec<String>,
 ) -> Result<CommandResult, MessageError> {
     let message_id = group_send_message_id(group_did, result);
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    if let Err(err) = store::store_message(
-        &connection,
-        MessageRecord {
-            msg_id: message_id.clone(),
-            owner_did: record.did.clone(),
-            thread_id: store::make_thread_id(&record.did, "", &group_storage_key(group_did)),
-            direction: 1,
-            sender_did: record.did.clone(),
-            group_id: group_storage_key(group_did),
-            group_did: group_did.to_string(),
-            content_type: super::attachment_manifest_content_type().to_string(),
-            content: manifest_content_string(manifest),
-            sent_at: result.accepted_at.clone(),
-            is_read: true,
-            metadata: metadata_string(json!({
-                "group_event_seq": result.group_event_seq,
-                "group_state_version": result.group_state_version,
-                "operation_id": result.operation_id,
-                "attachment_id": slot.attachment_id,
-                "object_uri": slot.object_uri,
-                "caption": caption,
-            })),
-            credential_name: record.identity_name.clone(),
-            ..MessageRecord::default()
-        },
-    ) {
-        warnings.push(format!("Failed to persist local group message: {err}"));
-    }
-    if let Err(err) = store::touch_group_after_message(
-        &connection,
-        &record.did,
-        &group_storage_key(group_did),
-        group_did,
-        &result.accepted_at,
-        i64_option(Some(&Value::String(result.group_event_seq.clone()))),
-        &record.identity_name,
-        &metadata_string(json!({ "group_state_version": result.group_state_version })),
-    ) {
-        warnings.push(format!("Failed to update group cache: {err}"));
-    }
+    let mut phase = crate::traceutil::local_db_phase("persist_group_send");
+    let persist_result: Result<(), MessageError> = (|| {
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        if let Err(err) = store::store_message(
+            &connection,
+            MessageRecord {
+                msg_id: message_id.clone(),
+                owner_did: record.did.clone(),
+                thread_id: store::make_thread_id(&record.did, "", &group_storage_key(group_did)),
+                direction: 1,
+                sender_did: record.did.clone(),
+                group_id: group_storage_key(group_did),
+                group_did: group_did.to_string(),
+                content_type: super::attachment_manifest_content_type().to_string(),
+                content: manifest_content_string(manifest),
+                sent_at: result.accepted_at.clone(),
+                is_read: true,
+                metadata: metadata_string(json!({
+                    "group_event_seq": result.group_event_seq,
+                    "group_state_version": result.group_state_version,
+                    "operation_id": result.operation_id,
+                    "attachment_id": slot.attachment_id,
+                    "object_uri": slot.object_uri,
+                    "caption": caption,
+                })),
+                credential_name: record.identity_name.clone(),
+                ..MessageRecord::default()
+            },
+        ) {
+            warnings.push(format!("Failed to persist local group message: {err}"));
+        }
+        let mut touch_phase = crate::traceutil::local_db_phase("touch_group_cache");
+        let touch_result = store::touch_group_after_message(
+            &connection,
+            &record.did,
+            &group_storage_key(group_did),
+            group_did,
+            &result.accepted_at,
+            i64_option(Some(&Value::String(result.group_event_seq.clone()))),
+            &record.identity_name,
+            &metadata_string(json!({ "group_state_version": result.group_state_version })),
+        );
+        touch_phase.finish();
+        if let Err(err) = touch_result {
+            warnings.push(format!("Failed to update group cache: {err}"));
+        }
+        Ok(())
+    })();
+    phase.finish();
+    persist_result?;
     Ok(CommandResult {
         data: json!({
             "action": "send_attachment",
