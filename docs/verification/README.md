@@ -14,6 +14,73 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Hermes EnsureRoute Public Setup Selector
+
+Scope: split a narrow `system_verified` parity row for the public
+`runtime host-notify hermes setup` path that creates a missing local Hermes
+notify route through the translated `EnsureRoute` helper. The broader
+`hermes_config.go` helper/YAML preservation row remains `unit_verified`.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_setup_writes_local_files -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/hermesbridge -count=1
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check -- docs/parity-matrix.md docs/verification/README.md
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check -- tests_v2/runtime/test_runtime_cli.py
+```
+
+Observed results:
+
+- Python compile check: passed.
+- Focused Hermes setup selector: 1 passed, 0 failed, 0 skipped in 1.95s.
+- `runtime_hermes_ensure_route_contract`: 8 passed, 0 failed.
+- `runtime_hermes_setup_dry_run_contract`: 12 passed, 0 failed.
+- `cargo check`, structure check, Go Hermes bridge reference tests, and
+  whitespace checks passed.
+- Generated `tests_v2/runtime/__pycache__` was removed after the pytest run as a
+  disposable intermediate.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector uses an isolated awiki workspace and isolated `HERMES_HOME`.
+- It does not require mail-service, message-service local topology, real Hermes,
+  registered identities, tenant env gates, or user service-manager permissions.
+
+Coverage:
+
+- Verifies dry-run setup reports `host_notify_hermes_setup` plan fields and does
+  not create `HERMES_HOME/config.yaml`.
+- Verifies non-dry-run setup writes isolated awiki config and isolated
+  `HERMES_HOME/config.yaml`.
+- Verifies output reports `local_hermes.route_configured=true`,
+  `local_hermes.deliver=telegram`, and
+  `local_hermes.route_secret_configured=true`.
+- Verifies the local Hermes route file contains `platforms:`, `webhook:`,
+  `notify:`, route `secret:`, and `deliver: telegram`.
+- Verifies the plaintext awiki host-notify secret passed through `--secret` is
+  redacted from command output and is not written into the Hermes route file.
+
+Boundary note: this public selector proves only the missing-route creation path
+for local Hermes setup. It does not prove route migration/preservation edge
+cases beyond the Rust/Go contract tests, real Hermes delivery, bridge `Apply`,
+platform service install/start/restart, owned health probing, full Go `yaml.v3`
+round-trip parity for comments/anchors/complex scalars/arbitrary formatting, or
+mail notification acceptance.
+
+Dependency note: no Rust dependency was added. The slice reuses the existing
+local config writer, local Hermes route writer, std filesystem handling, and
+Rustls-first project dependency policy. Mail system-test selectors remain
+deferred.
+
 ## 2026-05-18 Workspace Legacy Settings Public Selector
 
 Timestamp: 2026-05-18T06:35:00+0800.
