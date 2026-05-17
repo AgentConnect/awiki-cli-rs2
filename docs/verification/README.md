@@ -2,6 +2,76 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Group E2EE Send/Decrypt System Evidence
+
+Timestamp: 2026-05-17T18:40:00+0800.
+
+Scope: promote the scoped live group E2EE outbound send row and HTTP
+`group messages` decrypt/display row to `system_verified` using the focused
+Alice/Bob real-MLS `awiki-system-test` loop, plus fresh Rust/Go contract checks.
+This does not promote every group E2EE lifecycle, recovery, update, WebSocket,
+or foreground-listener path.
+
+System-test coverage used:
+
+- `tests_v2/cli/test_awiki_cli_group_e2ee_local.py::test_awiki_cli_group_e2ee_alice_bob_real_mls_loop`
+  builds or uses the sibling local `anp-mls` Rust binary, seeds Alice and Bob
+  identities, publishes Bob's KeyPackage, creates an E2EE group, adds Bob,
+  verifies Bob sees welcome notices, repairs Bob's local MLS state, sends an
+  encrypted group text message from Alice, verifies Bob can read the decrypted
+  plaintext through `group messages`, verifies no resident `anp-mls` process is
+  left behind, and checks local/business SQLite storage boundaries.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_local.py -ra -q
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_send_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_decrypt_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cd ../awiki-cli && go test ./internal/message -run 'TestBuildGroupE2EESendRPCParamsSendsOnlyOpaqueCipherObject|TestMLSExecProviderCommands|TestHTTPTransportGroupMethodsUseExpectedRPCMethods' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+```
+
+Observed results:
+
+- System-test group E2EE local file: 1 passed, 0 failed, 0 skipped in 4.04s.
+- Rust `group_e2ee_send_contract`: 1 passed, 0 failed.
+- Rust `group_e2ee_decrypt_contract`: 3 passed, 0 failed.
+- Rust `group_live_contract`: 4 passed, 0 failed.
+- Rust `message_group_e2ee_wire_contract`: 7 passed, 0 failed.
+- Go focused `internal/message` group E2EE send/provider/transport tests:
+  passed.
+- Go focused `internal/cli` group dry-run plans: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- The selector requires hidden P6/group-E2EE APIs to be explicitly enabled and
+  uses the local sibling ANP Rust SDK `anp-mls` binary path or builds it from
+  `/home/ecs-user/awiki-space/anp/rust`.
+
+Coverage boundary:
+
+- Promoted outbound group E2EE text send: `msg send --group` auto-upgrade or
+  secure mode routing, `anp-mls message encrypt`, hidden `group.e2ee.send`,
+  local E2EE message persistence, output decoration, one-shot provider process
+  behavior, and no business-DB private MLS state for the happy-path Alice/Bob
+  loop.
+- Promoted HTTP `group messages` decrypt/display: after welcome repair and
+  encrypted send, Bob's `group messages` call returns the decrypted plaintext
+  from the real MLS loop.
+- The system evidence is intentionally scoped. It does not claim all lifecycle
+  PR-A/PR-B1 edges, recovery, update-key, rejoin, stale-epoch repair/retry edge
+  cases, broader decrypt warning cases, WebSocket/local bridge group E2EE
+  transport, foreground listener group E2EE handling, mail selectors, or full
+  repository-wide system acceptance.
+
 ## 2026-05-17 Page CLI System Evidence
 
 Timestamp: 2026-05-17T18:18:00+0800.
