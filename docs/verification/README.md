@@ -14,6 +14,81 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Workspace Legacy Settings Public Selector
+
+Timestamp: 2026-05-18T06:35:00+0800.
+
+Scope: promote Go `internal/upgrade/migration_v0_to_v1.go` legacy
+`settings.json` handling from pure parser/unit evidence to focused public
+subprocess evidence. The selector exercises the no-current-workspace branch
+through `runtime mode get`, which runs `UpgradeIfNeeded` and writes canonical
+`config.yaml` from isolated legacy OpenClaw settings.
+
+System-test change:
+
+- Added
+  `tests_v2/runtime/test_runtime_cli.py::test_runtime_mode_get_migrates_legacy_settings_without_service_manager`.
+- Updated `tests_v2/runtime/CLAUDE.md` to include legacy `settings.json`
+  workspace-upgrade coverage through `runtime mode get`.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract workspace_upgrade_legacy_settings_parser_matches_go_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract workspace_v0_to_v1_config_apply_imports_legacy_settings_when_no_workspace --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check -- docs/parity-matrix.md docs/verification/README.md
+
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/upgrade -run 'TestLoadLegacySettingsRejectsSplitServiceURLs|TestUpgradeIfNeededImportsLegacyWorkspace' -count=1
+
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_mode_get_migrates_legacy_settings_without_service_manager -ra -q
+git diff --check -- tests_v2/runtime/test_runtime_cli.py tests_v2/runtime/CLAUDE.md
+```
+
+Observed results:
+
+- Legacy settings parser contract passed: 1 passed, 0 failed.
+- Legacy settings v0->v1 apply contract passed: 1 passed, 0 failed.
+- `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed.
+- `cargo check -p awiki-cli --locked` passed.
+- `xtask check-structure` passed: no undocumented Rust files over 1200 lines.
+- Go focused `internal/upgrade` tests passed for split settings rejection and
+  legacy workspace import.
+- Python syntax check for `tests_v2/runtime/test_runtime_cli.py` passed.
+- Focused `awiki-system-test` selector passed: 1 passed, 0 failed, 0 skipped
+  in 0.47s.
+
+Behavior proven by the selector:
+
+- Removes the helper-created `config.yaml`, asserts no legacy `config.json`,
+  and seeds only
+  `.openclaw/workspace/data/awiki-agent-id-message/config/settings.json`.
+- Runs real Rust `awiki-cli runtime mode get` with cache-only update checks.
+- Verifies the migrated runtime mode is `websocket`, canonical `config.yaml`
+  contains schema version `1`, normalized service base URL, DID domain, and
+  runtime mode from the legacy settings.
+- Verifies `upgrade/meta.json` reaches workspace schema version `3`, warnings
+  are empty, `last_upgrade_id` is non-empty, a backup directory is created, and
+  the journal is cleared.
+- Verifies the legacy settings file is preserved, and no SQLite DB, identity
+  index, listener pid, or message-daemon socket is created.
+- Verifies a second `runtime mode get` succeeds after migration.
+
+Boundary note: this selector proves the local legacy-settings-to-config branch
+through public CLI execution. It does not claim legacy identity import, legacy
+SQLite import, imported/current k1 replacement RPCs, rollback, platform cleanup,
+or mail selectors.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged. TLS
+policy remains Rustls-first; SQLite remains on the approved `rusqlite +
+bundled` path; mail system-test selectors remain deferred.
+
 ## 2026-05-18 Workspace v0->v1 Legacy Config Public Row Split
 
 Timestamp: 2026-05-18T06:05:00+0800.
