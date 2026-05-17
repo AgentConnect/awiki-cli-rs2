@@ -23,6 +23,13 @@ module/file slices when that improves throughput. Any code-writing Native Agent
 must use GPT-5.5 with xhigh reasoning and a bounded, non-overlapping write
 scope; read-only Native Agents may use lighter settings.
 
+Current operational constraints: mail-related system-test selectors are deferred
+for now and must be reported as deferred/gated, not passed, until a later
+mail-focused verification pass. Disk space on the development host is limited;
+clearly disposable build/test intermediates may be removed when needed while
+preserving source, configuration, committed evidence, unrelated dirty work, and
+useful build outputs unless disk pressure requires a broader cleanup.
+
 Current command catalog metadata slice: Rust static schema metadata now matches
 the selected Go catalog fields for `upgrade` text/`side_effect`, identity
 short/flag usage text, command flag `choices` for `msg`, `group`, `runtime`,

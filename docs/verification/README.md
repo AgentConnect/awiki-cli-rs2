@@ -2,6 +2,18 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## Operational Constraints
+
+- Mail-related system-test cases are deferred for now. Mail behavior remains in
+  scope for Go-to-Rust parity, but `tests_v2/mail` selectors may be skipped and
+  must be reported as deferred/gated rather than passed until a later
+  mail-focused verification pass is run.
+- Disk space on the development host is constrained. Clearly disposable
+  build/test intermediates may be removed when needed, including incremental
+  Rust build cache and pytest cache, while preserving source files,
+  configuration, committed evidence, unrelated dirty work, and useful build
+  outputs unless disk pressure requires a broader cleanup.
+
 ## 2026-05-17 Broad Non-Mail System Regression Refresh
 
 Timestamp: 2026-05-17T21:15:00+0800.
