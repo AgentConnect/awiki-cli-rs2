@@ -6605,6 +6605,94 @@ OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
 Tokio, YAML crates, platform service libraries, ANP SDK wiring, E2EE provider
 dependencies, file-store dependencies, or new SQLite dependencies.
 
+## 2026-05-17 Store E2EE Outbox Public CLI Consumer Evidence
+
+Status: scoped system verified for the `msg secure status` / `failed` / `drop`
+consumer path over local `e2ee_outbox` rows.
+
+Timestamp: 2026-05-17T23:16:18+0800.
+
+Scope: add narrowly scoped system evidence to the store E2EE outbox DAO work
+without overclaiming the full DAO API. The existing system selector seeds local
+`e2ee_outbox` rows directly through SQLite, then exercises the real Rust
+subprocess commands that consume the DAO read/update path.
+
+Local Rust verification:
+
+```bash
+cargo +1.79.0 test -p awiki-cli --test store_e2ee_outbox_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_commands_contract --locked
+```
+
+Observed results:
+
+- `store_e2ee_outbox_contract`: 6 passed, 0 failed.
+- `message_secure_commands_contract`: 11 passed, 0 failed.
+
+Go reference verification:
+
+```bash
+go test ./internal/store ./internal/message -run 'Test.*E2EEOutbox|TestServiceSecureStatusReturnsSessionAndOutboxSummary|TestServiceSecureFailedAndDropOperateOnOutbox' -count=1
+```
+
+Observed results:
+
+- `internal/store`: passed, no matching tests to run.
+- `internal/message`: passed in 0.131s.
+
+System-test verification:
+
+```bash
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_direct_local.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_failed_and_drop_use_local_outbox_without_services -ra -q
+```
+
+Observed results:
+
+- Python syntax check passed.
+- Focused selector passed: 1 passed, 0 failed, 0 skipped in 6.45s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The selector uses isolated local identities and local SQLite state. It does
+  not require message-service, user-service, mail-service, listener,
+  service-manager permissions, or registered remote identities.
+
+Coverage:
+
+- Proves the real Rust subprocess can create/open the local SQLite schema and
+  see the `e2ee_outbox` table through `debug db query`.
+- Proves active-identity owner scoping for the public local outbox commands.
+- Proves `msg secure status` reads active-owner rows, orders them by
+  `updated_at DESC`, counts by local status, and redacts `owner_did`,
+  `credential_name`, `plaintext`, and `metadata`.
+- Proves `msg secure failed` lists only active-owner failed rows and preserves
+  the Go-shaped unredacted failed-row output.
+- Proves `msg secure drop` performs a get-before-mutate check for the selected
+  active-owner row and updates its `local_status` to `dropped`.
+- Proves another identity's failed row remains untouched.
+
+Boundary note: this is not full system evidence for every function in
+`store::e2ee_outbox`. The selector seeds rows with direct SQL, so it does not
+system-prove `queue_e2ee_outbox`, generated `local-<nanos>` IDs, insertion
+defaults, optional/null coercions, metadata blank-to-null behavior,
+`mark_e2ee_outbox_sent`, `mark_e2ee_outbox_failed`,
+`set_e2ee_outbox_failure_by_id`, credential-fallback branches, sent attempt
+increment, failure-field clearing, or all-column JSON mapping. Those remain
+covered by the focused Rust DAO contract. This evidence also does not claim
+`SecureRetry`, `SecureInit`, `SecureRepair`, HTTP sender execution,
+WebSocket/local bridge execution, runtime listener E2EE processing, ANP SDK file
+session stores, full secure-direct acceptance, or mail selectors.
+
+Dependency note: no Rust dependency was added. The evidence reuses the existing
+approved `rusqlite + bundled` store lane and local secure command code.
+
 ## 2026-05-16 Message Secure Control Helper and Queued Outbox Row Planning Slice
 
 Status: unit verified.
