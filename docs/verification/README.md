@@ -2,6 +2,87 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Group E2EE Broader Scoped System Evidence
+
+Timestamp: 2026-05-17T20:10:00+0800.
+
+Scope: promote the remaining directly covered group E2EE live rows to scoped
+`system_verified`: `group create --e2ee`, `group add --e2ee`/rejoin-through
+owner re-add behavior, `group e2ee recover-member`, `group e2ee update-key`,
+`group e2ee repair`, and live `status`/`pending`/`publish-key-package` support.
+Already-promoted remove/leave/send/decrypt rows stay unchanged. This is focused
+group E2EE evidence, not full repository-wide acceptance.
+
+System-test coverage used:
+
+- `test_awiki_cli_group_e2ee_local.py::test_awiki_cli_group_e2ee_alice_bob_real_mls_loop`
+  proves live normal KeyPackage publish, group create bootstrap, group add,
+  pending welcome notices, repair, status, encrypted send, decrypted read, and
+  storage/process boundaries.
+- `test_awiki_cli_group_e2ee_recovery_local.py` proves missed-add repair replay,
+  active-member same-device recover-member without P4 `group.add`, removed-member
+  recovery rejection, recovery KeyPackage publish, and post-recovery decryptability.
+- `test_awiki_cli_group_e2ee_update_rejoin_local.py` proves owner update-key with
+  purpose=`update` KeyPackage, post-update repair/decryptability, removed-member
+  denial before re-add, and fresh owner re-add/rejoin-through-readd decryptability.
+- `test_awiki_cli_group_e2ee_lifecycle_local.py` continues to prove remove/leave
+  and process-leave-request behavior used by the broader flows.
+- `test_awiki_cli_group_e2ee_negative_local.py` proves unsupported transition
+  candidate command boundaries and owner-role error envelope behavior while the
+  focused contract flag is enabled.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_local.py tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py tests_v2/cli/test_awiki_cli_group_e2ee_recovery_local.py tests_v2/cli/test_awiki_cli_group_e2ee_update_rejoin_local.py tests_v2/cli/test_awiki_cli_group_e2ee_negative_local.py -ra -q
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_create_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_add_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_status_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_pending_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_publish_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_recover_member_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_update_key_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_repair_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cd ../awiki-cli && go test ./internal/message -run 'TestBuildGroupE2EECreateRPCParams|TestBuildGroupE2EEPublishKeyPackageRPCParamsStripsProviderOnlyFields|TestAddGroupMemberE2EEUsesOnlyServiceLeasedKeyPackageForMLS|TestLocalIdentityByDIDFindsStoredMemberForWelcomeProcessing|TestGroupE2EEWelcomeDeviceIDUsesPublicKeyPackageDevice|TestRecoverGroupE2EEMemberUsesRecoverMemberWithoutGroupAdd|TestUpdateGroupE2EEKeyUsesUpdateMethodWithoutGroupAdd|TestInspectGroupE2EEStatusComparesLocalEpochToServiceHead|TestGroupE2EEStatusForRecoveryScansNonDefaultDevice|TestMLSExecProviderCommands|TestHTTPTransportGroupMethods' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestGroupDryRunPlansRenderStableContracts' -count=1
+```
+
+Observed results:
+
+- Combined focused group E2EE selector run: 12 passed, 0 failed, 0 skipped in
+  34.63s.
+- Rust contracts: create 2 passed, add 6 passed, status 2 passed, pending
+  2 passed, publish 4 passed, recover-member 1 passed, update-key 1 passed,
+  repair 1 passed, group live 4 passed, group E2EE wire 7 passed.
+- Go focused `internal/message` group E2EE/provider/transport tests passed.
+- Go focused `internal/cli` group dry-run plans passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- The selectors use the local `awiki-system-test` services and sibling ANP Rust
+  SDK `anp-mls` binary path. A skipped/gated run must not be counted as passed.
+
+Coverage boundary:
+
+- Promoted only the success paths and explicit negative boundaries exercised by
+  the focused selectors. Warning downgrade branches, dry-run/schema details,
+  service-head ranking/tie-breaks, provider request shapes, and failed
+  finalize/abort edges remain covered by Rust/Go contract tests unless a row
+  explicitly says otherwise.
+- WebSocket/local bridge group E2EE transport, foreground listener group E2EE
+  handling, mail selectors, service-manager behavior, and full repository-wide
+  `tests_v2` acceptance remain separate work.
+- No dependency was added. The evidence stays on the existing Rustls/std
+  transport, local `anp-mls` executable, and approved `rusqlite + bundled`
+  SQLite path.
+
 ## 2026-05-17 Group E2EE Remove/Leave System Evidence
 
 Timestamp: 2026-05-17T19:05:00+0800.
