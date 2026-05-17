@@ -2,6 +2,98 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Runtime CLI System Evidence
+
+Timestamp: 2026-05-17T17:29:25+0800.
+
+Scope: split and promote scoped runtime CLI parity evidence for the local
+`internal/cli/runtime.go` subprocess behavior and the OpenClaw route CLI
+boundary. The previous matrix row mixed verified local CLI behavior with
+residual real platform service-manager and real listener-restart work; those
+residuals remain explicitly deferred.
+
+System-test coverage used:
+
+- `tests_v2/runtime/test_runtime_cli.py::test_runtime_mode_set_rejects_unknown_modes`
+  verifies unsupported runtime modes fail with the Go-shaped CLI error.
+- `tests_v2/runtime/test_runtime_cli.py::test_runtime_setup_and_apply_support_dry_run_and_validation`
+  verifies runtime setup/apply dry-run plans and setup mode validation.
+- `tests_v2/runtime/test_runtime_cli.py::test_runtime_listener_config_set_requires_flags_and_supports_dry_run`
+  verifies listener config mutation validation and dry-run plan output.
+- `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_config_commands_work`
+  verifies host-notify sink/OpenClaw hook/token local config writes and token
+  redaction.
+- `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_openclaw_config_probe_uses_local_openclaw_json`
+  verifies isolated OpenClaw JSON probing and env-port precedence.
+- `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_openclaw_route_add_list_remove_uses_local_webhook`
+  verifies route add/list/remove, session-key parsing, duplicate suppression,
+  bearer-token forwarding, and the route-add confirmation payload through a
+  loopback webhook capture.
+- `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_enable_disable_round_trip`
+  verifies host-notify enable/disable persistence, sink preservation, dry-run
+  plan shape, and listener context.
+- `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_validates_inputs_and_supports_dry_run`
+  verifies host-notify validation and dry-run behavior.
+- The full file also ran the gated listener subprocess selectors with
+  `AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1`, including mode/setup/status,
+  listener lifecycle, and apply/listener-config behavior.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest tests_v2/runtime/test_runtime_cli.py -ra -q
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli openclaw_routes --locked
+cd . && cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
+cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestRuntimeValidationErrorsUseStableCodes|TestHostNotifyConfigViewRedactsOpenClawTokenValue|TestRefreshListenerForHostNotifyChange' -count=1
+cd ../awiki-cli && go test ./internal/runtime/openclawnotify -count=1
+```
+
+Observed results:
+
+- System-test runtime CLI file: 14 passed, 0 failed, 0 skipped in 14.09s.
+- Rust `runtime_contract`: 12 passed, 0 failed.
+- Rust `runtime_host_notify_enable_disable_contract`: 5 passed, 0 failed.
+- Rust `openclaw_routes` filter: 4 passed, 0 failed.
+- Rust `openclaw_webhook` filter: 1 passed, 0 failed.
+- Go focused `internal/cli` runtime tests: passed.
+- Go `internal/runtime/openclawnotify`: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- The service-management-gated selectors require both the env gate and a
+  working `systemctl --user` environment through
+  `listener_service_management_skip_reason`; this run reported 0 skipped.
+
+Coverage boundary:
+
+- Promoted local `internal/cli/runtime.go` subprocess behavior: runtime
+  validation, dry-run setup/apply plans, listener config validation/dry-run,
+  host-notify config/token/enablement persistence, redaction, local listener
+  state output, and local refresh warnings.
+- Promoted `internal/cli/runtime_host_notify_routes.go` plus the OpenClaw route
+  CLI boundary: route add/list/remove, `--session-key` parsing, duplicate
+  suppression, dry-run plans, and one loopback route-add confirmation webhook.
+- The service-management-gated selectors prove the Rust subprocess interface in
+  the current host environment, but the current Rust implementation still uses
+  local listener-state files for lifecycle commands. This is not evidence for
+  real platform service-manager install/start/stop/restart/uninstall execution.
+- Real foreground listener restart caused by host-notify config changes remains
+  deferred. The local refresh helper warnings are translated and tested, but no
+  system selector proves a live foreground listener is restarted by a config
+  write.
+- Hermes CLI read/write/setup remains documented in its split rows. Mail
+  selectors, real mail notification delivery, real Hermes POST delivery, real
+  OpenClaw process integration, Windows service-manager parity, macOS launchd
+  parity, and full cross-platform service-manager parity remain out of scope for
+  this promotion.
+
 ## 2026-05-17 Runtime Listener Host-Notify System Evidence
 
 Timestamp: 2026-05-17T19:15:00+0800.
