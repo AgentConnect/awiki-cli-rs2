@@ -305,7 +305,6 @@ fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
-    let legacy_config = workspace_home.join("config.json");
     let legacy_payload = json!({
         "schema_version": 1,
         "services": {
@@ -316,8 +315,7 @@ fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
             "mode": "http",
         },
     });
-    let legacy_text = serde_json::to_string(&legacy_payload).expect("serialize legacy config");
-    std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
+    let (legacy_config, legacy_text) = write_legacy_config_json(&workspace_home, legacy_payload);
 
     let status = success_json(&awiki_cmd(&["id", "status"], workspace.path()));
     assert_eq!(status["summary"], "No default identity is configured yet");
@@ -347,30 +345,7 @@ fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
         "migrated config should keep DID domain, got {config_text:?}"
     );
 
-    let meta_path = workspace_home.join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
-    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
-    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
-    assert_eq!(
-        backup_dir.parent(),
-        Some(workspace_home.join("upgrade").join("backups").as_path())
-    );
-    assert_eq!(
-        std::fs::read_to_string(backup_dir.join("config.json.bak"))
-            .expect("read legacy config backup"),
-        legacy_text
-    );
-    assert!(
-        !workspace_home
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
-    );
+    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
     assert!(
         !workspace_home.join("data").join("awiki-cli.db").exists(),
         "id status should not create SQLite state"
@@ -393,10 +368,9 @@ fn identity_create_validates_name_before_workspace_upgrade_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
-    let legacy_config = workspace_home.join("config.json");
-    std::fs::write(
-        &legacy_config,
-        serde_json::to_string(&json!({
+    let (legacy_config, _) = write_legacy_config_json(
+        &workspace_home,
+        json!({
             "schema_version": 1,
             "services": {
                 "service_base_url": "https://legacy-id-create-invalid.example",
@@ -405,10 +379,8 @@ fn identity_create_validates_name_before_workspace_upgrade_like_go() {
             "runtime": {
                 "mode": "http",
             },
-        }))
-        .unwrap(),
-    )
-    .expect("write legacy config");
+        }),
+    );
 
     let create = awiki_cmd(&["id", "create"], workspace.path());
     assert_code(&create, 2);
@@ -437,7 +409,6 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
-    let legacy_config = workspace_home.join("config.json");
     let legacy_payload = json!({
         "schema_version": 1,
         "services": {
@@ -448,8 +419,7 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
             "mode": "http",
         },
     });
-    let legacy_text = serde_json::to_string(&legacy_payload).expect("serialize legacy config");
-    std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
+    let (legacy_config, legacy_text) = write_legacy_config_json(&workspace_home, legacy_payload);
 
     let create = success_json(&awiki_cmd(
         &[
@@ -496,30 +466,7 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
         "migrated config should keep DID domain, got {config_text:?}"
     );
 
-    let meta_path = workspace_home.join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
-    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
-    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
-    assert_eq!(
-        backup_dir.parent(),
-        Some(workspace_home.join("upgrade").join("backups").as_path())
-    );
-    assert_eq!(
-        std::fs::read_to_string(backup_dir.join("config.json.bak"))
-            .expect("read legacy config backup"),
-        legacy_text
-    );
-    assert!(
-        !workspace_home
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
-    );
+    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
     assert!(
         !workspace_home.join("data").join("awiki-cli.db").exists(),
         "id create should not create SQLite state"
@@ -534,6 +481,139 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
     assert!(
         !workspace_home.join("runtime").join("listener.pid").exists(),
         "id create must not create listener pid artifacts"
+    );
+}
+
+#[test]
+fn identity_use_validates_argument_before_workspace_upgrade_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let (legacy_config, _) = write_legacy_config_json(
+        &workspace_home,
+        json!({
+            "schema_version": 1,
+            "services": {
+                "service_base_url": "https://legacy-id-use-invalid.example",
+                "did_domain": "legacy-id-use-invalid.example",
+            },
+            "runtime": {
+                "mode": "http",
+            },
+        }),
+    );
+
+    let use_result = awiki_cmd(&["id", "use"], workspace.path());
+    assert_code(&use_result, 2);
+    let use_result = error_json(&use_result);
+    assert_eq!(use_result["error"]["code"], "invalid_argument");
+    assert!(use_result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("id use requires exactly one identity name"));
+    assert!(
+        legacy_config.exists(),
+        "missing identity arg must not trigger workspace upgrade before validation"
+    );
+    assert!(
+        !workspace_home.join("config.yaml").exists(),
+        "missing identity arg must not write migrated config"
+    );
+    assert!(
+        !workspace_home.join("upgrade").join("meta.json").exists(),
+        "missing identity arg must not write upgrade metadata"
+    );
+}
+
+#[test]
+fn identity_use_migrates_legacy_config_json_before_switch_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let manager = identity_manager(&workspace_home);
+    let alice = manager
+        .save(awiki_cli::identity::types::SaveInput {
+            identity_name: "alice".to_string(),
+            did: "did:wba:legacy-id-use.example:user:e1_alice".to_string(),
+            unique_id: "e1_alice".to_string(),
+            display_name: "Alice".to_string(),
+            ..Default::default()
+        })
+        .expect("save alice");
+    let bob = manager
+        .save(awiki_cli::identity::types::SaveInput {
+            identity_name: "bob".to_string(),
+            did: "did:wba:legacy-id-use.example:user:e1_bob".to_string(),
+            unique_id: "e1_bob".to_string(),
+            display_name: "Bob".to_string(),
+            ..Default::default()
+        })
+        .expect("save bob");
+    assert_eq!(alice.identity_name, "alice");
+    assert_eq!(bob.identity_name, "bob");
+    let legacy_payload = json!({
+        "schema_version": 1,
+        "identity": {
+            "active": "alice",
+        },
+        "services": {
+            "service_base_url": "https://legacy-id-use.example",
+            "did_domain": "legacy-id-use.example",
+        },
+        "runtime": {
+            "mode": "http",
+        },
+    });
+    let (legacy_config, legacy_text) = write_legacy_config_json(&workspace_home, legacy_payload);
+
+    let use_result = success_json(&awiki_cmd(&["id", "use", "bob"], workspace.path()));
+    assert_eq!(use_result["data"]["action"], "set_default_identity");
+    assert_eq!(use_result["data"]["identity"]["identity_name"], "bob");
+    let current = success_json(&awiki_cmd(&["id", "current"], workspace.path()));
+    assert_eq!(current["data"]["identity"]["identity_name"], "bob");
+
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should be removed before identity switch"
+    );
+    let config_yaml = workspace_home.join("config.yaml");
+    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
+    assert!(
+        config_text.contains("schema_version: 1\n"),
+        "migrated config should keep config schema, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  active: alice\n"),
+        "id use should leave migrated config active identity unchanged like Go, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  mode: http\n"),
+        "migrated config should keep runtime mode, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  service_base_url: https://legacy-id-use.example\n"),
+        "migrated config should keep service URL, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  did_domain: legacy-id-use.example\n"),
+        "migrated config should keep DID domain, got {config_text:?}"
+    );
+
+    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert!(
+        !workspace_home.join("data").join("awiki-cli.db").exists(),
+        "id use should not create SQLite state"
+    );
+    assert!(
+        !workspace_home
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "id use must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace_home.join("runtime").join("listener.pid").exists(),
+        "id use must not create listener pid artifacts"
     );
 }
 
@@ -962,6 +1042,40 @@ fn identity_manager(workspace: &Path) -> awiki_cli::identity::Manager {
         legacy_credentials_dir: path_string(&workspace.join("legacy")),
         legacy_data_dir: path_string(&workspace.join("legacy-data")),
     })
+}
+
+fn write_legacy_config_json(workspace_home: &Path, payload: Value) -> (PathBuf, String) {
+    let legacy_config = workspace_home.join("config.json");
+    let legacy_text = serde_json::to_string(&payload).expect("serialize legacy config");
+    std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
+    (legacy_config, legacy_text)
+}
+
+fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
+    let meta_path = workspace_home.join("upgrade").join("meta.json");
+    let meta: Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
+            .expect("upgrade meta JSON");
+    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
+    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
+    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+    assert_eq!(
+        backup_dir.parent(),
+        Some(workspace_home.join("upgrade").join("backups").as_path())
+    );
+    assert_eq!(
+        std::fs::read_to_string(backup_dir.join("config.json.bak"))
+            .expect("read legacy config backup"),
+        legacy_text
+    );
+    assert!(
+        !workspace_home
+            .join("upgrade")
+            .join("upgrade_journal.json")
+            .exists(),
+        "journal should be cleared after successful upgrade"
+    );
 }
 
 fn read_json(path: &str) -> Value {

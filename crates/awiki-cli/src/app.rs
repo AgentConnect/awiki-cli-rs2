@@ -449,7 +449,6 @@ impl App {
     }
 
     pub fn run_id_use(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
         if command.args.len() != 1 {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -458,6 +457,7 @@ impl App {
                 "Usage: awiki-cli id use <identity>",
             ));
         }
+        let resolved = self.resolve_config_for_workspace()?;
         let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             identity::use_plan(&command.args[0])
