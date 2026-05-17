@@ -479,51 +479,56 @@ fn persist_group_snapshot(
     let Some(snapshot) = normalize_group_snapshot(raw) else {
         return Vec::new();
     };
-    let group_did = string_value(snapshot.get("group_did"));
-    if group_did.trim().is_empty() {
-        return Vec::new();
-    }
-    let Ok(connection) = store::open(&resolved.paths) else {
-        return vec!["Failed to open local store for group snapshot".to_string()];
-    };
-    if let Err(err) = store::ensure_schema(&connection) {
-        return vec![format!(
-            "Failed to ensure local schema for group snapshot: {err}"
-        )];
-    }
-    let record_to_store = store::GroupRecord {
-        owner_did: record.did.clone(),
-        group_id: group_storage_key(&group_did),
-        group_did: group_did.clone(),
-        name: string_value(snapshot.get("name")),
-        slug: string_value(snapshot.get("slug")),
-        description: string_value(snapshot.get("description")),
-        goal: string_value(snapshot.get("goal")),
-        rules: string_value(snapshot.get("rules")),
-        message_prompt: string_value(snapshot.get("message_prompt")),
-        doc_url: string_value(snapshot.get("doc_url")),
-        group_owner_did: string_value(snapshot.get("owner_did")),
-        my_role: default_string(
-            &string_value(snapshot.get("member_role")),
-            &string_value(snapshot.get("my_role")),
-        ),
-        membership_status: default_string(
-            &string_value(snapshot.get("member_status")),
-            &string_value(snapshot.get("membership_status")),
-        ),
-        join_enabled: bool_option(snapshot.get("join_enabled")),
-        member_count: i64_option(snapshot.get("member_count")),
-        last_synced_seq: i64_option(snapshot.get("group_event_seq")),
-        remote_created_at: string_value(snapshot.get("created_at")),
-        remote_updated_at: string_value(snapshot.get("updated_at")),
-        metadata: metadata_string(snapshot),
-        credential_name: record.identity_name.clone(),
-        ..store::GroupRecord::default()
-    };
-    if let Err(err) = store::upsert_group(&connection, record_to_store) {
-        return vec![format!("Failed to persist group snapshot: {err}")];
-    }
-    Vec::new()
+    let mut phase = crate::traceutil::local_db_phase("persist_group_snapshot");
+    let result = (|| {
+        let group_did = string_value(snapshot.get("group_did"));
+        if group_did.trim().is_empty() {
+            return Vec::new();
+        }
+        let Ok(connection) = store::open(&resolved.paths) else {
+            return vec!["Failed to open local store for group snapshot".to_string()];
+        };
+        if let Err(err) = store::ensure_schema(&connection) {
+            return vec![format!(
+                "Failed to ensure local schema for group snapshot: {err}"
+            )];
+        }
+        let record_to_store = store::GroupRecord {
+            owner_did: record.did.clone(),
+            group_id: group_storage_key(&group_did),
+            group_did: group_did.clone(),
+            name: string_value(snapshot.get("name")),
+            slug: string_value(snapshot.get("slug")),
+            description: string_value(snapshot.get("description")),
+            goal: string_value(snapshot.get("goal")),
+            rules: string_value(snapshot.get("rules")),
+            message_prompt: string_value(snapshot.get("message_prompt")),
+            doc_url: string_value(snapshot.get("doc_url")),
+            group_owner_did: string_value(snapshot.get("owner_did")),
+            my_role: default_string(
+                &string_value(snapshot.get("member_role")),
+                &string_value(snapshot.get("my_role")),
+            ),
+            membership_status: default_string(
+                &string_value(snapshot.get("member_status")),
+                &string_value(snapshot.get("membership_status")),
+            ),
+            join_enabled: bool_option(snapshot.get("join_enabled")),
+            member_count: i64_option(snapshot.get("member_count")),
+            last_synced_seq: i64_option(snapshot.get("group_event_seq")),
+            remote_created_at: string_value(snapshot.get("created_at")),
+            remote_updated_at: string_value(snapshot.get("updated_at")),
+            metadata: metadata_string(snapshot),
+            credential_name: record.identity_name.clone(),
+            ..store::GroupRecord::default()
+        };
+        if let Err(err) = store::upsert_group(&connection, record_to_store) {
+            return vec![format!("Failed to persist group snapshot: {err}")];
+        }
+        Vec::new()
+    })();
+    phase.finish();
+    result
 }
 
 fn persist_group_members(
@@ -536,28 +541,33 @@ fn persist_group_members(
     if members.is_empty() {
         return Vec::new();
     }
-    let Ok(mut connection) = store::open(&resolved.paths) else {
-        return vec!["Failed to open local store for group members".to_string()];
-    };
-    if let Err(err) = store::ensure_schema(&connection) {
-        return vec![format!(
-            "Failed to ensure local schema for group members: {err}"
-        )];
-    }
-    let records = members
-        .iter()
-        .filter_map(|member| group_member_record(record, group_did, member))
-        .collect::<Vec<_>>();
-    if let Err(err) = store::replace_group_members(
-        &mut connection,
-        &record.did,
-        &group_storage_key(group_did),
-        &records,
-        &record.identity_name,
-    ) {
-        return vec![format!("Failed to persist group members: {err}")];
-    }
-    Vec::new()
+    let mut phase = crate::traceutil::local_db_phase("persist_group_members");
+    let result = (|| {
+        let Ok(mut connection) = store::open(&resolved.paths) else {
+            return vec!["Failed to open local store for group members".to_string()];
+        };
+        if let Err(err) = store::ensure_schema(&connection) {
+            return vec![format!(
+                "Failed to ensure local schema for group members: {err}"
+            )];
+        }
+        let records = members
+            .iter()
+            .filter_map(|member| group_member_record(record, group_did, member))
+            .collect::<Vec<_>>();
+        if let Err(err) = store::replace_group_members(
+            &mut connection,
+            &record.did,
+            &group_storage_key(group_did),
+            &records,
+            &record.identity_name,
+        ) {
+            return vec![format!("Failed to persist group members: {err}")];
+        }
+        Vec::new()
+    })();
+    phase.finish();
+    result
 }
 
 pub(crate) fn persist_group_messages(
@@ -570,37 +580,42 @@ pub(crate) fn persist_group_messages(
     if messages.is_empty() {
         return Vec::new();
     }
-    let Ok(mut connection) = store::open(&resolved.paths) else {
-        return vec!["Failed to open local store for group messages".to_string()];
-    };
-    if let Err(err) = store::ensure_schema(&connection) {
-        return vec![format!(
-            "Failed to ensure local schema for group messages: {err}"
-        )];
-    }
-    let records = messages
-        .iter()
-        .filter_map(|message| group_message_record(record, group_did, message))
-        .collect::<Vec<_>>();
-    if let Err(err) = store::store_messages_batch(&mut connection, &records) {
-        return vec![format!("Failed to persist group messages: {err}")];
-    }
-    if let Some(latest) = messages.first() {
-        let _ = store::touch_group_after_message(
-            &connection,
-            &record.did,
-            &group_storage_key(group_did),
-            group_did,
-            &default_string(
-                &string_value(latest.get("sent_at")),
-                &string_value(latest.get("created_at")),
-            ),
-            i64_option(raw.get("next_since_seq")),
-            &record.identity_name,
-            &metadata_string(json!({ "source": "group.list_messages" })),
-        );
-    }
-    Vec::new()
+    let mut phase = crate::traceutil::local_db_phase("persist_group_messages");
+    let result = (|| {
+        let Ok(mut connection) = store::open(&resolved.paths) else {
+            return vec!["Failed to open local store for group messages".to_string()];
+        };
+        if let Err(err) = store::ensure_schema(&connection) {
+            return vec![format!(
+                "Failed to ensure local schema for group messages: {err}"
+            )];
+        }
+        let records = messages
+            .iter()
+            .filter_map(|message| group_message_record(record, group_did, message))
+            .collect::<Vec<_>>();
+        if let Err(err) = store::store_messages_batch(&mut connection, &records) {
+            return vec![format!("Failed to persist group messages: {err}")];
+        }
+        if let Some(latest) = messages.first() {
+            let _ = store::touch_group_after_message(
+                &connection,
+                &record.did,
+                &group_storage_key(group_did),
+                group_did,
+                &default_string(
+                    &string_value(latest.get("sent_at")),
+                    &string_value(latest.get("created_at")),
+                ),
+                i64_option(raw.get("next_since_seq")),
+                &record.identity_name,
+                &metadata_string(json!({ "source": "group.list_messages" })),
+            );
+        }
+        Vec::new()
+    })();
+    phase.finish();
+    result
 }
 
 pub(crate) fn persist_group_send_result(
@@ -610,54 +625,66 @@ pub(crate) fn persist_group_send_result(
     message_type: &str,
     result: &GroupSendResult,
 ) -> Vec<String> {
-    let mut warnings = Vec::new();
-    let Ok(connection) = store::open(&resolved.paths) else {
-        return vec!["Failed to open local store for group send".to_string()];
-    };
-    if let Err(err) = store::ensure_schema(&connection) {
-        return vec![format!(
-            "Failed to ensure local schema for group send: {err}"
-        )];
-    }
-    let message_id = group_send_message_id(&request.group, result);
-    if let Err(err) = store::store_message(
-        &connection,
-        MessageRecord {
-            msg_id: message_id,
-            owner_did: record.did.clone(),
-            thread_id: store::make_thread_id(&record.did, "", &group_storage_key(&request.group)),
-            direction: 1,
-            sender_did: record.did.clone(),
-            group_id: group_storage_key(&request.group),
-            group_did: request.group.clone(),
-            content_type: content_type_for_message_type(message_type).to_string(),
-            content: request.text.clone(),
-            sent_at: result.accepted_at.clone(),
-            is_read: true,
-            metadata: metadata_string(json!({
-                "group_event_seq": result.group_event_seq,
-                "group_state_version": result.group_state_version,
-                "operation_id": result.operation_id,
-            })),
-            credential_name: record.identity_name.clone(),
-            ..MessageRecord::default()
-        },
-    ) {
-        warnings.push(format!("Failed to persist local group message: {err}"));
-    }
-    if let Err(err) = store::touch_group_after_message(
-        &connection,
-        &record.did,
-        &group_storage_key(&request.group),
-        &request.group,
-        &result.accepted_at,
-        i64_option(Some(&Value::String(result.group_event_seq.clone()))),
-        &record.identity_name,
-        &metadata_string(json!({ "group_state_version": result.group_state_version })),
-    ) {
-        warnings.push(format!("Failed to update group cache: {err}"));
-    }
-    warnings
+    let mut phase = crate::traceutil::local_db_phase("persist_group_send");
+    let result = (|| {
+        let mut warnings = Vec::new();
+        let Ok(connection) = store::open(&resolved.paths) else {
+            return vec!["Failed to open local store for group send".to_string()];
+        };
+        if let Err(err) = store::ensure_schema(&connection) {
+            return vec![format!(
+                "Failed to ensure local schema for group send: {err}"
+            )];
+        }
+        let message_id = group_send_message_id(&request.group, result);
+        if let Err(err) = store::store_message(
+            &connection,
+            MessageRecord {
+                msg_id: message_id,
+                owner_did: record.did.clone(),
+                thread_id: store::make_thread_id(
+                    &record.did,
+                    "",
+                    &group_storage_key(&request.group),
+                ),
+                direction: 1,
+                sender_did: record.did.clone(),
+                group_id: group_storage_key(&request.group),
+                group_did: request.group.clone(),
+                content_type: content_type_for_message_type(message_type).to_string(),
+                content: request.text.clone(),
+                sent_at: result.accepted_at.clone(),
+                is_read: true,
+                metadata: metadata_string(json!({
+                    "group_event_seq": result.group_event_seq,
+                    "group_state_version": result.group_state_version,
+                    "operation_id": result.operation_id,
+                })),
+                credential_name: record.identity_name.clone(),
+                ..MessageRecord::default()
+            },
+        ) {
+            warnings.push(format!("Failed to persist local group message: {err}"));
+        }
+        let mut touch_phase = crate::traceutil::local_db_phase("touch_group_cache");
+        let touch_result = store::touch_group_after_message(
+            &connection,
+            &record.did,
+            &group_storage_key(&request.group),
+            &request.group,
+            &result.accepted_at,
+            i64_option(Some(&Value::String(result.group_event_seq.clone()))),
+            &record.identity_name,
+            &metadata_string(json!({ "group_state_version": result.group_state_version })),
+        );
+        touch_phase.finish();
+        if let Err(err) = touch_result {
+            warnings.push(format!("Failed to update group cache: {err}"));
+        }
+        warnings
+    })();
+    phase.finish();
+    result
 }
 
 fn mark_cached_group_left(
@@ -665,26 +692,31 @@ fn mark_cached_group_left(
     record: &StoredIdentity,
     group_did: &str,
 ) -> Vec<String> {
-    let Ok(mut connection) = store::open(&resolved.paths) else {
-        return vec!["Failed to open local store for leave projection".to_string()];
-    };
-    if let Err(err) = store::ensure_schema(&connection) {
-        return vec![format!(
-            "Failed to ensure local schema for leave projection: {err}"
-        )];
-    }
-    let group_key = group_storage_key(group_did);
-    let mut warnings = Vec::new();
-    if let Err(err) = store::mark_group_left(
-        &mut connection,
-        &record.did,
-        &group_key,
-        group_did,
-        &record.identity_name,
-    ) {
-        warnings.push(format!("Failed to update local group leave status: {err}"));
-    }
-    warnings
+    let mut phase = crate::traceutil::local_db_phase("mark_group_left");
+    let result = (|| {
+        let Ok(mut connection) = store::open(&resolved.paths) else {
+            return vec!["Failed to open local store for leave projection".to_string()];
+        };
+        if let Err(err) = store::ensure_schema(&connection) {
+            return vec![format!(
+                "Failed to ensure local schema for leave projection: {err}"
+            )];
+        }
+        let group_key = group_storage_key(group_did);
+        let mut warnings = Vec::new();
+        if let Err(err) = store::mark_group_left(
+            &mut connection,
+            &record.did,
+            &group_key,
+            group_did,
+            &record.identity_name,
+        ) {
+            warnings.push(format!("Failed to update local group leave status: {err}"));
+        }
+        warnings
+    })();
+    phase.finish();
+    result
 }
 
 pub(crate) fn cached_group_snapshot(
@@ -692,11 +724,16 @@ pub(crate) fn cached_group_snapshot(
     record: &StoredIdentity,
     group_did: &str,
 ) -> Option<Value> {
-    let connection = store::open(&resolved.paths).ok()?;
-    store::ensure_schema(&connection).ok()?;
-    store::get_group_snapshot(&connection, &record.did, &group_storage_key(group_did))
-        .ok()
-        .map(enrich_cached_group_snapshot)
+    let mut phase = crate::traceutil::local_db_phase("read_group_snapshot_cache");
+    let result = (|| {
+        let connection = store::open(&resolved.paths).ok()?;
+        store::ensure_schema(&connection).ok()?;
+        store::get_group_snapshot(&connection, &record.did, &group_storage_key(group_did))
+            .ok()
+            .map(enrich_cached_group_snapshot)
+    })();
+    phase.finish();
+    result
 }
 
 pub(crate) fn cached_group_members(
@@ -705,15 +742,20 @@ pub(crate) fn cached_group_members(
     group_did: &str,
     limit: i64,
 ) -> Option<Vec<Value>> {
-    let connection = store::open(&resolved.paths).ok()?;
-    store::ensure_schema(&connection).ok()?;
-    store::list_cached_group_members(
-        &connection,
-        &record.did,
-        &group_storage_key(group_did),
-        limit,
-    )
-    .ok()
+    let mut phase = crate::traceutil::local_db_phase("read_group_members_cache");
+    let result = (|| {
+        let connection = store::open(&resolved.paths).ok()?;
+        store::ensure_schema(&connection).ok()?;
+        store::list_cached_group_members(
+            &connection,
+            &record.did,
+            &group_storage_key(group_did),
+            limit,
+        )
+        .ok()
+    })();
+    phase.finish();
+    result
 }
 
 pub(crate) fn cached_group_messages(
@@ -723,16 +765,21 @@ pub(crate) fn cached_group_messages(
     limit: i64,
     cursor: &str,
 ) -> Option<Vec<Value>> {
-    let connection = store::open(&resolved.paths).ok()?;
-    store::ensure_schema(&connection).ok()?;
-    store::list_group_messages(
-        &connection,
-        &record.did,
-        &group_storage_key(group_did),
-        limit,
-        i64_option(Some(&Value::String(cursor.to_string()))),
-    )
-    .ok()
+    let mut phase = crate::traceutil::local_db_phase("read_group_messages_cache");
+    let result = (|| {
+        let connection = store::open(&resolved.paths).ok()?;
+        store::ensure_schema(&connection).ok()?;
+        store::list_group_messages(
+            &connection,
+            &record.did,
+            &group_storage_key(group_did),
+            limit,
+            i64_option(Some(&Value::String(cursor.to_string()))),
+        )
+        .ok()
+    })();
+    phase.finish();
+    result
 }
 
 fn group_member_record(

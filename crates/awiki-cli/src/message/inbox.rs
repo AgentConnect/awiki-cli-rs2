@@ -561,11 +561,16 @@ fn read_all_group_inbox_from_cache(
     limit: i64,
     unread_only: bool,
 ) -> Result<Vec<Value>, MessageError> {
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::list_group_inbox_messages(&connection, &record.did, limit, "", unread_only)
-        .map_err(|err| MessageError::Internal(err.to_string()))
+    let mut phase = crate::traceutil::local_db_phase("read_all_group_inbox_cache");
+    let result = (|| {
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::list_group_inbox_messages(&connection, &record.did, limit, "", unread_only)
+            .map_err(|err| MessageError::Internal(err.to_string()))
+    })();
+    phase.finish();
+    result
 }
 
 fn read_group_inbox_from_cache(
@@ -575,17 +580,22 @@ fn read_group_inbox_from_cache(
     limit: i64,
     unread_only: bool,
 ) -> Result<Vec<Value>, MessageError> {
-    let connection =
-        store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
-    store::list_group_inbox_messages(
-        &connection,
-        &record.did,
-        limit,
-        &group_storage_key(group_did),
-        unread_only,
-    )
-    .map_err(|err| MessageError::Internal(err.to_string()))
+    let mut phase = crate::traceutil::local_db_phase("read_group_inbox_cache");
+    let result = (|| {
+        let connection =
+            store::open(&resolved.paths).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::ensure_schema(&connection).map_err(|err| MessageError::Internal(err.to_string()))?;
+        store::list_group_inbox_messages(
+            &connection,
+            &record.did,
+            limit,
+            &group_storage_key(group_did),
+            unread_only,
+        )
+        .map_err(|err| MessageError::Internal(err.to_string()))
+    })();
+    phase.finish();
+    result
 }
 
 fn read_all_mail_notifications_from_cache(

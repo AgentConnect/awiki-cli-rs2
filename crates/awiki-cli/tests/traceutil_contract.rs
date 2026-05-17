@@ -193,6 +193,70 @@ fn direct_message_trace_call_sites_match_go_trace_depth_contract() {
     );
 }
 
+#[test]
+fn group_trace_call_sites_match_go_trace_depth_contract() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let group_service = source(crate_root, "src/message/group_service.rs");
+    let inbox = source(crate_root, "src/message/inbox.rs");
+
+    for (label, source) in [
+        (
+            "traceutil::local_db_phase(\"persist_group_send\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"persist_group_snapshot\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"persist_group_members\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"persist_group_messages\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"touch_group_cache\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"mark_group_left\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_group_snapshot_cache\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_group_members_cache\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_group_messages_cache\")",
+            &group_service,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_group_inbox_cache\")",
+            &inbox,
+        ),
+        (
+            "traceutil::local_db_phase(\"read_all_group_inbox_cache\")",
+            &inbox,
+        ),
+    ] {
+        assert!(
+            source.contains(label),
+            "group Go trace label is not wired: {label}"
+        );
+    }
+
+    assert_eq!(
+        traceutil::humanize_text("read_all_group_inbox_cache"),
+        "读取全部群组收件箱缓存"
+    );
+}
+
 fn source(crate_root: &Path, relative: &str) -> String {
     std::fs::read_to_string(crate_root.join(relative)).expect("read Rust source")
 }

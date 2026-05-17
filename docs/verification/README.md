@@ -2,6 +2,73 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Group Trace-Depth Call-Site Slice
+
+Timestamp: 2026-05-17T12:35:00+0800.
+
+Scope: wire the already-translated Rust trace primitives into the Go
+`internal/message/group_service.go` local group trace-depth call sites without
+changing group/message behavior.
+
+What changed:
+
+- Added group local DB phases for `persist_group_send`,
+  `persist_group_snapshot`, `persist_group_members`, `persist_group_messages`,
+  `touch_group_cache`, `mark_group_left`, `read_group_snapshot_cache`,
+  `read_group_members_cache`, `read_group_messages_cache`,
+  `read_group_inbox_cache`, and `read_all_group_inbox_cache`.
+- Added Chinese humanized labels for the group trace details so pretty timing
+  output remains Go-shaped and readable.
+- Extended the focused static trace contract so the group Go trace labels cannot
+  silently disappear from production Rust group/message sources.
+
+Boundary note:
+
+- This slice is instrumentation parity only. It does not change RPC payloads,
+  persistence shape, message warnings, fallback selection, local cache
+  semantics, or output JSON.
+- JWT fallback-refresh trace wiring, attachment-local trace-depth wiring, and
+  remaining non-direct-message handle/fallback call sites remain separate parity
+  slices.
+- No dependency was added. Cargo manifests and lockfile remain unchanged.
+- `crates/awiki-cli/src/message/group_service.rs` is 1152 lines after this
+  slice, below the default 1200-line review-size cap, so no file-size exception
+  is needed.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test store_groups_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_group_live_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/message ./internal/traceutil -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+```
+
+Observed results:
+
+- Format check passed.
+- `traceutil_contract`: 7 passed, 0 failed.
+- `group_live_contract`: 3 passed, 0 failed.
+- `store_groups_contract`: 2 passed, 0 failed.
+- `msg_all_inbox_live_contract`: 9 passed, 0 failed.
+- `msg_ws_group_live_contract`: 7 passed, 0 failed.
+- `cargo check -p awiki-cli --locked` passed.
+- Structure check passed with no undocumented Rust files over the 1200-line
+  default cap.
+- `git diff --check` passed.
+- Go `internal/message` and `internal/traceutil` package tests passed.
+- Dependency audit still shows only existing Rustls/ring/webpki and approved
+  `rusqlite + bundled`/`libsqlite3-sys`; no OpenSSL/native-tls, `reqwest`,
+  `hyper`, WebSocket, YAML, or new SQLite dependency was added.
+
 ## 2026-05-17 Direct-Message Trace-Depth Call-Site Slice
 
 Timestamp: 2026-05-17T11:43:00+0800.
@@ -32,9 +99,11 @@ Boundary note:
 
 - This slice is instrumentation parity only. It does not change RPC payloads,
   persistence shape, message warnings, fallback selection, or output JSON.
-- Group trace-depth labels, JWT fallback-refresh trace wiring, attachment-local
-  trace-depth wiring, and non-direct-message local DB/handle/fallback call
-  sites remain separate parity slices.
+- At this slice boundary, group trace-depth labels, JWT fallback-refresh trace
+  wiring, attachment-local trace-depth wiring, and non-direct-message local
+  DB/handle/fallback call sites remained separate parity slices. Group local DB
+  trace-depth is now covered by the 2026-05-17 group trace-depth call-site
+  slice above.
 - No dependency was added. Cargo manifests and lockfile remain unchanged.
 
 Commands run:
