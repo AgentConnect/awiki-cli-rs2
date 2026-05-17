@@ -15,7 +15,7 @@ impl App {
                 "Usage: awiki-cli debug db query \"SELECT * FROM messages LIMIT 5\"",
             ));
         }
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let db = self.open_store(
             &resolved,
             "Run `awiki-cli doctor` to inspect the database path and configuration.",
@@ -38,7 +38,7 @@ impl App {
     }
 
     pub fn run_debug_db_import_v1(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let mut db = self.open_store(
             &resolved,
             "Run `awiki-cli doctor` to inspect the database path and configuration.",
@@ -100,7 +100,7 @@ impl App {
                 "Usage: awiki-cli debug db handle-history <handle>",
             ));
         }
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let db = self.open_store(
             &resolved,
             "Run `awiki-cli doctor` to inspect the database path and configuration.",

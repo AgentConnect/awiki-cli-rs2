@@ -14,6 +14,137 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-17 Debug DB Workspace Upgrade Hook
+
+Timestamp: 2026-05-17T23:27:26+0800.
+
+Scope: wire the Go `debug.go` `openStore` workspace-upgrade boundary into the
+Rust debug DB handlers before local SQLite store open, then prove the legacy
+`config.json` migration branch through `debug db query` in a real Rust
+subprocess.
+
+Rust change:
+
+- `crates/awiki-cli/src/app/debug_handlers.rs`: `run_debug_db_query`,
+  `run_debug_db_import_v1`, and `run_debug_db_handle_history` now call
+  `resolve_config_for_workspace()` before `open_store`, matching Go
+  `internal/cli/debug.go` where all three commands call `openStore()`.
+- `crates/awiki-cli/tests/debug_contract.rs`: added
+  `debug_db_query_migrates_legacy_config_json_before_opening_store_like_go`.
+
+System-test change:
+
+- Added
+  `tests_v2/debug/test_debug_cli.py::test_debug_db_query_migrates_legacy_config_json_before_opening_store`.
+- Updated `tests_v2/debug/CLAUDE.md` to include the legacy-config workspace
+  upgrade coverage in the debug directory description.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test debug_contract debug_db_query_migrates_legacy_config_json_before_opening_store_like_go --locked
+cargo +1.79.0 test -p awiki-cli --test debug_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/app/debug_handlers.rs crates/awiki-cli/tests/debug_contract.rs docs/parity-matrix.md docs/verification/README.md
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/cli ./internal/upgrade ./internal/store -run 'Test.*Debug|Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/debug/test_debug_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/debug/test_debug_cli.py::test_debug_db_query_migrates_legacy_config_json_before_opening_store -ra -q
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/debug/test_debug_cli.py -ra -q
+git diff --check -- tests_v2/debug/test_debug_cli.py tests_v2/debug/CLAUDE.md
+wc -l tests_v2/debug/test_debug_cli.py tests_v2/debug/CLAUDE.md
+```
+
+Observed results:
+
+- Rust formatting and package check passed.
+- Focused Rust selector:
+  `debug_db_query_migrates_legacy_config_json_before_opening_store_like_go`
+  passed: 1 passed, 0 failed.
+- Full Rust `debug_contract` passed: 5 passed, 0 failed.
+- `xtask check-structure` passed with no undocumented Rust file over the
+  1200-line soft cap.
+- Rust `git diff --check` passed.
+- Go focused reference tests passed:
+  `internal/cli` 30.526s, `internal/upgrade` 0.053s, and
+  `internal/store` 0.003s with no store tests selected.
+- Python syntax check for `tests_v2/debug/test_debug_cli.py` passed.
+- Focused system-test whitespace check passed for
+  `tests_v2/debug/test_debug_cli.py` and `tests_v2/debug/CLAUDE.md`.
+- Focused `awiki-system-test` selector:
+  `test_debug_db_query_migrates_legacy_config_json_before_opening_store`
+  passed: 1 passed, 0 failed, 0 skipped in 0.24s.
+- Full debug system-test file passed:
+  `tests_v2/debug/test_debug_cli.py`: 7 passed, 0 failed, 0 skipped in
+  9.47s.
+- Dependency audit stayed on existing `rustls`/`webpki`/`ring`,
+  `base64`/`sha2`/`hmac`, and approved `rusqlite + bundled`
+  `libsqlite3-sys` paths. No OpenSSL, `native-tls`, reqwest, hyper, platform
+  service-manager crate, WebSocket crate, YAML crate, or alternate SQLite path
+  was introduced.
+- File-size check: `debug_handlers.rs` 253 lines, `debug_contract.rs` 426
+  lines, `tests_v2/debug/test_debug_cli.py` 515 lines, and
+  `tests_v2/debug/CLAUDE.md` 13 lines. All touched Rust/Python source and test
+  files stay under the default 1200-line cap. `docs/verification/README.md`
+  remains an existing accumulated evidence-log exception.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The selector used an isolated temporary workspace under the system-test
+  helper's `HOME` and `AWIKI_CLI_WORKSPACE_HOME_DIR`.
+- The test explicitly removed the helper-created `config.yaml`, seeded only
+  `config.json`, and did not use real user-service, message-service,
+  mail-service, listener, or service-manager dependencies.
+
+Coverage:
+
+- Rust debug DB handlers now follow the Go store-open boundary for this module:
+  raw config resolve, `workspace_upgrade` trace phase, `upgrade_if_needed`, raw
+  resolve refresh, then local SQLite store open.
+- Verifies `debug db query` migrates a legacy `config.json`-only workspace
+  before opening the local SQLite store.
+- Verifies legacy `config.json` is removed and `config.yaml` is written with
+  semantic fields for schema version, runtime mode, service base URL, and DID
+  domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, no
+  warnings, a non-empty upgrade ID, and a backup directory containing
+  `config.json.bak` equal to the seeded legacy config.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies the normal local SQLite store is created at `data/awiki-cli.db` and
+  exposes the `messages` schema table through the real `debug db query`
+  subprocess path.
+- Verifies the migration did not leave listener pid/socket artifacts.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch in `debug db query`, plus direct Rust code
+coverage that `debug db import-v1` and `debug db handle-history` use the same
+workspace resolver before store open. It does not prove legacy SQLite import
+through workspace migration, legacy identity import, imported/current k1
+replacement RPCs, rollback, platform cleanup command execution, all-command
+upgrade-hook coverage, or mail-service selectors.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged; the slice reuses existing local upgrade/config/store machinery and
+the already-approved `rusqlite + bundled` SQLite lane.
+
 ## 2026-05-17 Config Set Workspace Upgrade Hook
 
 Timestamp: 2026-05-17T23:09:18+0800.
