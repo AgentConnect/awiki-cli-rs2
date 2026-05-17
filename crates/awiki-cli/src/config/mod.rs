@@ -242,6 +242,7 @@ pub fn resolve(overrides: Overrides) -> anyhow::Result<Resolved> {
     let home = home_dir()?;
     let (workspace_home_dir, workspace_source) = resolve_workspace_home(&home);
     let paths = build_paths(&home, &workspace_home_dir);
+    validate_deprecated_config_fields(&paths.config_file)?;
     let (file_config, config_exists, config_error) = read_file_config(&paths.config_file);
     let mut sources = BTreeMap::new();
     sources.insert("workspace_home_dir".to_string(), workspace_source.clone());
@@ -469,6 +470,84 @@ fn parse_file_config(raw: &str) -> Result<FileConfig, String> {
         set_config_value(&mut config, &path, &value);
     }
     Ok(config)
+}
+
+fn validate_deprecated_config_fields(path: &str) -> anyhow::Result<()> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => anyhow::bail!("read config yaml for policy validation: {err}"),
+    };
+    let deprecated_fields = collect_deprecated_config_fields(&raw);
+    if deprecated_fields.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "deprecated config.yaml fields are no longer supported: {}",
+        deprecated_fields.join(", ")
+    )
+}
+
+fn collect_deprecated_config_fields(raw: &str) -> Vec<String> {
+    let trimmed = raw.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return collect_deprecated_config_fields_json(raw);
+    }
+    collect_deprecated_config_fields_yaml(raw)
+}
+
+fn collect_deprecated_config_fields_json(raw: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    let Some(services) = value.get("services").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    deprecated_service_keys()
+        .iter()
+        .filter(|key| services.contains_key(**key))
+        .map(|key| format!("services.{key}"))
+        .collect()
+}
+
+fn collect_deprecated_config_fields_yaml(raw: &str) -> Vec<String> {
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut deprecated = Vec::new();
+    for line in raw.lines() {
+        let without_comment = line.split('#').next().unwrap_or("").trim_end();
+        if without_comment.trim().is_empty() {
+            continue;
+        }
+        let indent = without_comment.chars().take_while(|ch| *ch == ' ').count();
+        while stack.last().is_some_and(|(level, _)| *level >= indent) {
+            stack.pop();
+        }
+        let trimmed = without_comment.trim_start();
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        if stack.len() == 1 && stack[0].1 == "services" && deprecated_service_keys().contains(&key)
+        {
+            deprecated.push(format!("services.{key}"));
+        }
+        if value.trim().is_empty() {
+            stack.push((indent, key.to_string()));
+            continue;
+        }
+    }
+    deprecated
+}
+
+fn deprecated_service_keys() -> [&'static str; 3] {
+    [
+        "user_service_url",
+        "message_service_url",
+        "message_service_ws_url",
+    ]
 }
 
 fn strip_yaml_scalar(value: &str) -> String {

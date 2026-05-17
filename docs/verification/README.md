@@ -14,6 +14,88 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Deprecated Service URL Config Policy Slice
+
+Scope: match Go's `config.Resolve` hard policy rejection for deprecated
+split-service URL fields in current `config.yaml`.
+
+Rust change:
+
+- `crates/awiki-cli/src/config/mod.rs`: `resolve` now validates raw
+  `config.yaml` for `services.user_service_url`,
+  `services.message_service_url`, and `services.message_service_ws_url` before
+  normal config parsing. The check is limited to these deprecated fields and
+  keeps the existing tolerant behavior for other unknown fields.
+- `crates/awiki-cli/tests/config_policy_contract.rs`: added focused subprocess
+  contracts proving all three deprecated fields fail and supported
+  `services.service_base_url` still resolves normally.
+
+System-test change:
+
+- `tests_v2/core/test_basic_commands.py`: added
+  `test_config_show_rejects_deprecated_service_url_fields`.
+- `tests_v2/core/CLAUDE.md`: recorded the new core config-policy coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test config_policy_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/config -run 'TestResolveRejectsDeprecatedServiceURLFieldsInConfigYAML|TestResolveLoadsFileConfigAndOverrides|TestResolveAllowsLegacyConfigJSONForUpgrade' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_show_rejects_deprecated_service_url_fields -ra -q
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_show_rejects_deprecated_service_url_fields tests_v2/core/test_basic_commands.py::test_config_template_matches_go_asset_and_resolves_through_config_show tests_v2/core/test_basic_commands.py::test_config_set_did_domain_persists_normalized_domain_and_rejects_invalid_inputs -ra -q
+```
+
+Observed results:
+
+- Rust focused `config_policy_contract`: 3 passed, 0 failed.
+- Rust `core_contract`: 20 passed, 0 failed.
+- Rust package check: passed.
+- `xtask check-structure`: passed; no undocumented Rust file over the
+  1200-line soft cap.
+- Go focused config reference tests: passed for `internal/config` in 0.007s.
+- Python compile check for `tests_v2/core/test_basic_commands.py`: passed.
+- Focused system selector:
+  `test_config_show_rejects_deprecated_service_url_fields`: 1 passed,
+  0 failed, 0 skipped in 0.90s.
+- Core config system selector set: 3 passed, 0 failed, 0 skipped in 7.03s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The selector uses isolated local workspaces and does not require user-service,
+  message-service, mail-service, listener, service-manager permissions,
+  OpenClaw, Hermes, or registered remote identities.
+
+Coverage:
+
+- Rust now rejects current `config.yaml` containing deprecated
+  `services.user_service_url`, `services.message_service_url`, or
+  `services.message_service_ws_url` with the Go message prefix
+  `deprecated config.yaml fields are no longer supported`.
+- The policy check treats a deprecated key with an empty YAML value as present,
+  matching Go's field-existence check after `yaml.Unmarshal`.
+- The Rust contract proves supported `services.service_base_url` is still
+  accepted and normalized, preventing a broad strict-parser behavior change.
+- The system selector proves the public `config show` subprocess path rejects
+  `services.user_service_url` before creating SQLite/runtime artifacts.
+
+Boundary note: this slice does not claim full Go `yaml.v3` parser parity,
+strict schema validation, every config-policy branch, combined config.yaml plus
+legacy config.json conflict handling, deprecated environment-variable policy,
+or mail selectors. Unknown non-deprecated fields remain tolerated as before.
+
+Dependency note: no Rust dependency was added. The scan uses existing
+std/serde_json code and keeps TLS/SQLite dependency policy unchanged.
+
 ## 2026-05-18 SQLite Open/Schema Public Debug Query Selector
 
 Scope: add scoped `system_verified` parity evidence for the public local SQLite
