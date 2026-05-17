@@ -608,7 +608,7 @@ impl App {
     }
 
     pub fn run_id_resolve(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let result = identity::resolve_identity(
             &resolved,
             identity::ResolveParams {

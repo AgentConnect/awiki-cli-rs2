@@ -326,23 +326,10 @@ fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
         !legacy_config.exists(),
         "legacy config.json should be removed after workspace upgrade"
     );
-    let config_yaml = workspace_home.join("config.yaml");
-    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
-    assert!(
-        config_text.contains("schema_version: 1\n"),
-        "migrated config should keep config schema, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  mode: http\n"),
-        "migrated config should keep runtime mode, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  service_base_url: https://legacy-id-status.example\n"),
-        "migrated config should keep service URL, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  did_domain: legacy-id-status.example\n"),
-        "migrated config should keep DID domain, got {config_text:?}"
+    assert_migrated_config(
+        &workspace_home,
+        "https://legacy-id-status.example",
+        "legacy-id-status.example",
     );
 
     assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
@@ -447,23 +434,10 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
         !legacy_config.exists(),
         "legacy config.json should be removed before identity creation"
     );
-    let config_yaml = workspace_home.join("config.yaml");
-    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
-    assert!(
-        config_text.contains("schema_version: 1\n"),
-        "migrated config should keep config schema, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  mode: http\n"),
-        "migrated config should keep runtime mode, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  service_base_url: https://legacy-id-create.example\n"),
-        "migrated config should keep service URL, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  did_domain: legacy-id-create.example\n"),
-        "migrated config should keep DID domain, got {config_text:?}"
+    assert_migrated_config(
+        &workspace_home,
+        "https://legacy-id-create.example",
+        "legacy-id-create.example",
     );
 
     assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
@@ -576,27 +550,14 @@ fn identity_use_migrates_legacy_config_json_before_switch_like_go() {
         !legacy_config.exists(),
         "legacy config.json should be removed before identity switch"
     );
-    let config_yaml = workspace_home.join("config.yaml");
-    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
-    assert!(
-        config_text.contains("schema_version: 1\n"),
-        "migrated config should keep config schema, got {config_text:?}"
+    let config_text = assert_migrated_config(
+        &workspace_home,
+        "https://legacy-id-use.example",
+        "legacy-id-use.example",
     );
     assert!(
         config_text.contains("  active: alice\n"),
         "id use should leave migrated config active identity unchanged like Go, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  mode: http\n"),
-        "migrated config should keep runtime mode, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  service_base_url: https://legacy-id-use.example\n"),
-        "migrated config should keep service URL, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  did_domain: legacy-id-use.example\n"),
-        "migrated config should keep DID domain, got {config_text:?}"
     );
 
     assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
@@ -614,6 +575,59 @@ fn identity_use_migrates_legacy_config_json_before_switch_like_go() {
     assert!(
         !workspace_home.join("runtime").join("listener.pid").exists(),
         "id use must not create listener pid artifacts"
+    );
+}
+
+#[test]
+fn identity_resolve_migrates_legacy_config_json_before_target_validation_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let legacy_payload = json!({
+        "schema_version": 1,
+        "services": {
+            "service_base_url": "https://legacy-id-resolve.example",
+            "did_domain": "legacy-id-resolve.example",
+        },
+        "runtime": {
+            "mode": "http",
+        },
+    });
+    let (legacy_config, legacy_text) = write_legacy_config_json(&workspace_home, legacy_payload);
+
+    let resolve = awiki_cmd(&["id", "resolve"], workspace.path());
+    assert_code(&resolve, 2);
+    let resolve = error_json(&resolve);
+    assert_eq!(resolve["error"]["code"], "invalid_argument");
+    assert!(resolve["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("exactly one of handle or did is required"));
+
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should be removed before resolve target validation"
+    );
+    assert_migrated_config(
+        &workspace_home,
+        "https://legacy-id-resolve.example",
+        "legacy-id-resolve.example",
+    );
+    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert!(
+        !workspace_home.join("data").join("awiki-cli.db").exists(),
+        "id resolve validation should not create SQLite state"
+    );
+    assert!(
+        !workspace_home
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "id resolve validation must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace_home.join("runtime").join("listener.pid").exists(),
+        "id resolve validation must not create listener pid artifacts"
     );
 }
 
@@ -967,23 +981,10 @@ fn identity_import_v1_migrates_legacy_config_json_before_import_like_go() {
         !legacy_config.exists(),
         "legacy config.json should be removed before import"
     );
-    let config_yaml = workspace_home.join("config.yaml");
-    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
-    assert!(
-        config_text.contains("schema_version: 1\n"),
-        "migrated config should keep config schema, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  mode: http\n"),
-        "migrated config should keep runtime mode, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  service_base_url: https://legacy-id-import.example\n"),
-        "migrated config should keep service URL, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  did_domain: legacy-id-import.example\n"),
-        "migrated config should keep DID domain, got {config_text:?}"
+    assert_migrated_config(
+        &workspace_home,
+        "https://legacy-id-import.example",
+        "legacy-id-import.example",
     );
 
     let meta_path = workspace_home.join("upgrade").join("meta.json");
@@ -1049,6 +1050,30 @@ fn write_legacy_config_json(workspace_home: &Path, payload: Value) -> (PathBuf, 
     let legacy_text = serde_json::to_string(&payload).expect("serialize legacy config");
     std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
     (legacy_config, legacy_text)
+}
+
+fn assert_migrated_config(
+    workspace_home: &Path,
+    service_base_url: &str,
+    did_domain: &str,
+) -> String {
+    let config_text =
+        std::fs::read_to_string(workspace_home.join("config.yaml")).expect("read migrated config");
+    for (needle, label) in [
+        ("schema_version: 1\n".to_string(), "config schema"),
+        ("  mode: http\n".to_string(), "runtime mode"),
+        (
+            format!("  service_base_url: {service_base_url}\n"),
+            "service URL",
+        ),
+        (format!("  did_domain: {did_domain}\n"), "DID domain"),
+    ] {
+        assert!(
+            config_text.contains(&needle),
+            "migrated config should keep {label}, got {config_text:?}"
+        );
+    }
+    config_text
 }
 
 fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
