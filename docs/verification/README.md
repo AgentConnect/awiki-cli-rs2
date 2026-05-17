@@ -6019,6 +6019,63 @@ add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket
 crates, async runtimes, YAML crates, platform service libraries, ANP SDK
 network/default features, or a new SQLite backend.
 
+## 2026-05-17 Message Explicit Group Inbox System Evidence
+
+Timestamp: 2026-05-17T14:20:30Z / 2026-05-17T22:20:30+0800.
+
+Scope: promote the explicit `msg inbox --scope group` local-cache path with a
+real Rust subprocess system selector. This is scoped evidence for Go
+`Service.groupInbox`, `readGroupInboxFromCache`, and `ListGroupInboxMessages`;
+it does not promote the broader default/all inbox merge row because that row
+also includes direct and mail notification merge behavior.
+
+What changed in `awiki-system-test`:
+
+- `tests_v2/cli/test_awiki_cli_group_local.py` now extends the existing group
+  happy path after Alice creates a group, adds Bob, and sends a non-E2EE group
+  text.
+- Bob runs `group messages --group <group_did>` first so the real Rust CLI
+  persists the group message into the isolated local SQLite cache.
+- Bob then runs
+  `msg inbox --scope group --group <group_did> --unread --limit 20` and the
+  test asserts `source=local_group_cache`, `group=<group_did>`, and the
+  returned local-cache row matches the sent group message ID/content.
+- Bob then runs the same group inbox command with `--mark-read`, asserts the
+  returned row is marked read, and verifies a later unread group inbox no
+  longer returns that message ID.
+- `tests_v2/cli/CLAUDE.md` was updated to record the new group inbox local
+  cache/mark-read coverage.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_group_local.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_can_create_group_add_member_send_and_list_messages -ra -q
+cd . && cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract --locked
+cd . && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd ../awiki-cli && go test ./internal/message -run 'Test.*Inbox|TestMergeInboxMessagesSortsAndLimits' -count=1
+cd ../awiki-cli && go test ./internal/store -run 'TestListGroupInboxMessages|TestMessageQueryHelpersLookupAndMarkReadRespectOwner' -count=1
+cd ../awiki-cli && go test ./internal/cli -run 'TestMsgDryRunPlansRenderStableContracts' -count=1
+git diff --check
+```
+
+Observed result:
+
+- Python compile passed.
+- Focused Rust subprocess selector passed: `1 passed in 2.93s`.
+- Rust `msg_all_inbox_live_contract` passed: 9 tests.
+- Focused Go message, store, and CLI reference selectors passed.
+- Structure check passed: no undocumented Rust files over 1200 lines.
+- Whitespace checks passed in the touched Rust and system-test repositories.
+- No mail selector was run or counted as passed.
+
+Boundary note: this system evidence covers explicit `scope=group` local-cache
+read, group filter, unread filter, and mark-read mutation after a live group
+message is cached through the real CLI. It does not cover default `scope=all`
+group+direct+mail merge ordering, mail notification rows, group E2EE inbox
+behavior, WebSocket group inbox transport, group attachment inbox behavior, or
+full repository-wide system acceptance.
+
 ## 2026-05-16 Message Secure Retry Injected Store Execution Slice
 
 Status: unit verified.
