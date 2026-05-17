@@ -2,6 +2,97 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 OpenClaw Route Webhook System Selector
+
+Timestamp: 2026-05-17T16:45:00+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for
+OpenClaw host-notify route add/list/remove and route-add confirmation webhook
+behavior without starting OpenClaw, listener, or external services.
+
+System-test change:
+
+- Added
+  `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_openclaw_route_add_list_remove_uses_local_webhook`.
+- Reused the existing loopback webhook capture helper through a narrow local
+  subclass that returns OpenClaw's accepted response shape.
+- Updated `tests_v2/runtime/test_runtime_cli.py` header and
+  `tests_v2/runtime/CLAUDE.md` to document route confirmation webhook coverage.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_openclaw_route_add_list_remove_uses_local_webhook -q
+cd ../awiki-system-test && git diff --check -- tests_v2/runtime/test_runtime_cli.py tests_v2/runtime/CLAUDE.md
+cd . && cargo +1.79.0 fmt --check
+cd . && cargo +1.79.0 test -p awiki-cli openclaw_routes --locked
+cd . && cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_openclaw --locked
+cd . && cargo +1.79.0 check -p awiki-cli --locked
+cd . && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd . && cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd . && git diff --check -- docs/parity-matrix.md docs/verification/README.md
+```
+
+Observed results:
+
+- Python compile check: passed.
+- Focused selector: 1 passed, 0 failed, 0 skipped in 1.68s.
+- System-test diff whitespace check: passed.
+- Rust format check: passed.
+- Rust OpenClaw route helper tests: 4 passed, 0 failed.
+- Rust OpenClaw webhook helper tests: 1 passed, 0 failed.
+- Rust `runtime_contract host_notify_openclaw`: 8 passed, 0 failed,
+  4 filtered out.
+- Rust package check: passed.
+- Structure check: `structure ok: no undocumented Rust files over 1200 lines`.
+- Dependency scan: only existing `rustls`/`webpki`/`ring`,
+  `rusqlite`/`libsqlite3-sys`, and crypto/base64 matches were present; no
+  OpenSSL, native-tls, YAML, service-manager, or new platform service dependency
+  matched.
+- Rust docs diff whitespace check: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace.
+- The selector configured `host_notify.sink=openclaw`, explicit loopback
+  OpenClaw hook URL, and a config-file OpenClaw token.
+- The selector started only an in-process loopback webhook capture server and
+  stopped it in a `finally` block.
+- It did not require OpenClaw, mail-service, message-service local topology,
+  tenant env gates, registered identities, user-service, listener foreground
+  execution, or real user service-manager permissions.
+
+Coverage:
+
+- Verifies dry-run route add normalizes channel/target input and reports the
+  `host_notify_openclaw_route_add` plan with the local route registry path.
+- Verifies live route add parses `agent:main:telegram:direct:123456`, persists
+  `{"channel":"telegram","to":"123456"}`, and returns
+  `confirmation.accepted=true` plus the OpenClaw `runId`.
+- Verifies the confirmation POST uses `/hooks/agent`, sends
+  `Authorization: Bearer <token>`, does not leak the token to stdout/stderr,
+  and emits the Go-compatible JSON payload: fixed `name=AWiki`,
+  `wakeMode=now`, `deliver=true`, route channel/to, and the configured
+  confirmation message.
+- Verifies duplicate route add reports `OpenClaw route already exists`, keeps
+  exactly one route, and does not send a second confirmation POST.
+- Verifies route list, `runtime host-notify config show` route exposure,
+  dry-run remove, live remove, and final empty route list.
+
+Boundary note: this selector covers OpenClaw route registry commands and the
+route-add confirmation webhook only. It does not execute foreground listener
+host-notify delivery, OpenClaw delivery sink fan-out from real notifications,
+local bridge I/O, or message/mail service flows.
+
+Dependency note: no Rust dependency was added. The exercised path uses the
+existing Rustls/std HTTP client, JSON handling, config writer/parser, and local
+route registry code.
+
 ## 2026-05-17 OpenClaw Config Probe System Selector
 
 Timestamp: 2026-05-17T16:06:00+0800.
