@@ -14,6 +14,107 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Page Required Flag CLI Boundary
+
+Scope: match Go/Cobra required flag behavior for handle-level page commands
+whose Go command metadata marks flags as required.
+
+Go source reference:
+
+- `awiki-cli/internal/cmdmeta/catalog.go` marks `page.get --slug`,
+  `page.update --slug`, `page.rename --slug/--to`, and `page.delete --slug`
+  as required.
+- `awiki-cli/internal/cli/root.go` calls `MarkFlagRequired` for required
+  flags, so missing flags fail before the page handler reaches
+  `contentService()`.
+- Direct Go CLI probes showed missing required flags render exit 1,
+  `error.code=internal_error`, and messages like
+  `required flag(s) "slug" not set`; explicitly provided empty values such as
+  `--slug ""` still count as present and can dry-run successfully.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/app/page_handlers.rs`: added local required-flag
+  enforcement for `page get`, `page update`, `page rename`, and `page delete`.
+  The check uses `changed_flags` rather than trimmed values to preserve the Go
+  `--slug ""` boundary.
+- `crates/awiki-cli/tests/page_contract.rs`: added
+  `page_required_flag_errors_match_go_cobra_boundary` to verify exit 1,
+  `internal_error`, single and multiple missing flag message ordering, and the
+  explicit empty-string dry-run behavior.
+- `docs/parity-matrix.md` and `docs/known-go-issues.md`: recorded the
+  required-flag boundary and the deliberate decision not to optimize the
+  dry-run validation semantics.
+
+System-test change:
+
+- `tests_v2/page/test_page_cli.py`: added
+  `test_page_required_flags_are_enforced_like_go_cobra`, an offline real
+  subprocess selector for the same missing flag envelopes and empty-string
+  boundary.
+- `tests_v2/page/CLAUDE.md`: records the expanded page coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli ./internal/cmdmeta ./internal/content -run 'Test.*Page|Test.*Content|TestService|TestBuildRoot|TestCommandFromSpec|TestCatalog' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/page/test_page_cli.py
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test page_contract page_required_flag_errors_match_go_cobra_boundary --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/page/test_page_cli.py::test_page_required_flags_are_enforced_like_go_cobra -ra -q
+```
+
+Observed results:
+
+- Rust formatting check: passed.
+- Go focused reference tests: `internal/cli` passed in 0.010s,
+  `internal/cmdmeta` passed in 0.003s, and `internal/content` passed in
+  0.012s.
+- Python compile check for `tests_v2/page/test_page_cli.py`: passed.
+- Rust focused page contract:
+  `page_required_flag_errors_match_go_cobra_boundary`: 1 passed, 0 failed,
+  0 ignored, 6 filtered out in 0.01s.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed; no undocumented Rust source file over 1200
+  lines.
+- Focused page required-flag system selector: 1 passed, 0 failed, 0 skipped in
+  0.17s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+- No `AWIKI_CLI_BINARY` override was used.
+- The selector uses isolated local workspaces and does not require
+  user-service, message-service, content RPC health, mail-service, OpenClaw,
+  Hermes, foreground listener execution, or service-manager permissions.
+
+Coverage:
+
+- `page get --dry-run` missing `--slug`.
+- `page update --dry-run --title ...` missing `--slug`.
+- `page rename --dry-run --slug old` missing `--to`.
+- `page rename --dry-run` missing both `--slug` and `--to` in Go/Cobra order.
+- `page delete --dry-run` missing `--slug`.
+- `page get --dry-run --slug ""` remains a successful dry-run with an empty
+  request slug, matching Cobra's required-flag presence semantics.
+
+Boundary note: this is CLI required-flag envelope parity only. It does not
+change `page create` slug/title handler validation, service-side page slug
+validation, visibility validation, content RPC success/failure behavior,
+tenant site page commands, mail selectors, or full repository-wide acceptance.
+Mail-related system-test cases remain deferred/gated by the operational
+constraint above and are not counted as passed.
+
+Dependency note: no Rust dependency was added. SQLite remains on the approved
+`rusqlite + bundled` path, and TLS policy remains Rustls-first with no
+OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Go Planned Stub Command Family Selector
 
 Scope: add real subprocess system-test evidence for Go planned stub command

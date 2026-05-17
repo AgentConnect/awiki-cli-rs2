@@ -87,6 +87,7 @@ impl App {
     }
 
     pub fn run_page_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        require_flags(command, &["slug"])?;
         let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
@@ -119,6 +120,7 @@ impl App {
     }
 
     pub fn run_page_update(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        require_flags(command, &["slug"])?;
         let body = resolve_markdown_body(command)?;
         let resolved = self.resolve_config_for_workspace()?;
         let title = string_flag(command, "title");
@@ -177,6 +179,7 @@ impl App {
     }
 
     pub fn run_page_rename(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        require_flags(command, &["slug", "to"])?;
         let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
@@ -216,6 +219,7 @@ impl App {
     }
 
     pub fn run_page_delete(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        require_flags(command, &["slug"])?;
         let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
@@ -287,6 +291,28 @@ fn resolve_markdown_body(command: &ParsedCommand) -> Result<Option<String>, Exit
         return Ok(Some(string_flag(command, "markdown")));
     }
     Ok(None)
+}
+
+fn require_flags(command: &ParsedCommand, names: &[&str]) -> Result<(), ExitError> {
+    let missing: Vec<_> = names
+        .iter()
+        .copied()
+        .filter(|name| !changed_flag(command, name))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let quoted = missing
+        .iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(ExitError::new(
+        "internal_error",
+        1,
+        format!("required flag(s) {quoted} not set"),
+        "",
+    ))
 }
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {

@@ -285,6 +285,69 @@ fn page_validation_errors_match_go_cli_boundary() {
 }
 
 #[test]
+fn page_required_flag_errors_match_go_cobra_boundary() {
+    let workspace = TempDir::new().expect("workspace");
+
+    let get = awiki_cmd(&["--dry-run", "page", "get"], workspace.path());
+    assert_code(&get, 1);
+    let envelope = error_json(&get);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_contains(
+        &envelope["error"]["message"],
+        "required flag(s) \"slug\" not set",
+    );
+
+    let update = awiki_cmd(
+        &["--dry-run", "page", "update", "--title", "New Title"],
+        workspace.path(),
+    );
+    assert_code(&update, 1);
+    let envelope = error_json(&update);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_contains(
+        &envelope["error"]["message"],
+        "required flag(s) \"slug\" not set",
+    );
+
+    let rename_missing_to = awiki_cmd(
+        &["--dry-run", "page", "rename", "--slug", "old"],
+        workspace.path(),
+    );
+    assert_code(&rename_missing_to, 1);
+    let envelope = error_json(&rename_missing_to);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_contains(
+        &envelope["error"]["message"],
+        "required flag(s) \"to\" not set",
+    );
+
+    let rename_missing_both = awiki_cmd(&["--dry-run", "page", "rename"], workspace.path());
+    assert_code(&rename_missing_both, 1);
+    let envelope = error_json(&rename_missing_both);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_contains(
+        &envelope["error"]["message"],
+        "required flag(s) \"slug\", \"to\" not set",
+    );
+
+    let delete = awiki_cmd(&["--dry-run", "page", "delete"], workspace.path());
+    assert_code(&delete, 1);
+    let envelope = error_json(&delete);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_contains(
+        &envelope["error"]["message"],
+        "required flag(s) \"slug\" not set",
+    );
+
+    let blank_slug = success_json(&awiki_cmd(
+        &["--dry-run", "page", "get", "--slug", ""],
+        workspace.path(),
+    ));
+    assert_eq!(blank_slug["summary"], "Dry run: page get planned");
+    assert_eq!(blank_slug["data"]["plan"]["request"]["slug"], "");
+}
+
+#[test]
 fn page_non_dry_run_requires_active_identity_for_content_rpc_slice() {
     let workspace = TempDir::new().expect("workspace");
 
