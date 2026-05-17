@@ -14,6 +14,99 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 CLI Unknown Local Flag Boundary
+
+Scope: match Go/Cobra's command-local unknown long-flag error boundary for
+known commands without changing global flag parsing or handler validation.
+
+Go source reference:
+
+- `awiki-cli/internal/cli/root.go` builds the command tree with Cobra and adds
+  local flags from `cmdmeta.CommandSpec`.
+- Direct Go probes for `status --bogus`, `version --bogus=value`, and
+  `config set --did-domain awiki.info --bogus value` return exit 1 with
+  `error.code=internal_error` and `message="unknown flag: --bogus"` before
+  command handlers run.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/cli/mod.rs`: local-tail parsing now validates
+  command-local long flags against the known command's `cmdmeta` flag list
+  before consuming values. Unknown local flags return the Go/Cobra-shaped
+  `internal_error` exit 1 envelope. Unknown command names still fall through to
+  the existing command error path, and global flags continue to be handled by
+  the existing global parsing pass.
+- `crates/awiki-cli/tests/cli_parser_contract.rs`: added
+  `unknown_local_flags_fail_like_go_cobra_before_handler_execution` for
+  no-value, inline-value, and post-known-flag unknown local flags, plus a
+  regression that `status --format json` still succeeds.
+- `docs/parity-matrix.md`, `docs/known-go-issues.md`, and
+  `docs/dependency-decisions.md`: record the bounded Cobra parser parity and
+  keep broader parser parity deferred.
+
+System-test change:
+
+- `tests_v2/core/test_basic_commands.py`: added
+  `test_unknown_local_flags_fail_like_go_cobra`, an offline real subprocess
+  selector for the same unknown-local-flag boundary.
+- `tests_v2/core/CLAUDE.md`: records the expanded core parser coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test cli_parser_contract unknown_local_flags_fail_like_go_cobra_before_handler_execution --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && AWIKI_CLI_UPDATE_CACHE_ONLY=1 go run ./cmd/awiki-cli status --bogus
+cd /home/ecs-user/awiki-space/awiki-cli && AWIKI_CLI_UPDATE_CACHE_ONLY=1 go run ./cmd/awiki-cli version --bogus=value
+cd /home/ecs-user/awiki-space/awiki-cli && AWIKI_CLI_UPDATE_CACHE_ONLY=1 go run ./cmd/awiki-cli config set --did-domain awiki.info --bogus value
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli ./internal/cmdmeta -run 'TestBuildRoot|TestCommandFromSpec|TestCatalog|Test.*Config' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_unknown_local_flags_fail_like_go_cobra -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+```
+
+Observed results:
+
+- Rust formatting check: passed.
+- Rust focused CLI parser contract
+  `unknown_local_flags_fail_like_go_cobra_before_handler_execution`: 1 passed,
+  0 failed, 0 ignored, 0 filtered out in 0.01s.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed; no undocumented Rust source file over 1200
+  lines.
+- Go probes returned exit 1 and `unknown flag: --bogus` for all three
+  representative commands.
+- Go focused reference tests: `internal/cli` passed in 11.066s and
+  `internal/cmdmeta` passed in 0.008s.
+- Python compile check for `tests_v2/core/test_basic_commands.py`: passed.
+- Focused unknown-local-flag system selector: 1 passed, 0 failed, 0 skipped in
+  0.19s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+- No `AWIKI_CLI_BINARY` override is used.
+- The selector uses isolated local workspaces and does not require
+  user-service, message-service, mail-service, OpenClaw, Hermes, foreground
+  listener execution, service-manager permissions, or live network RPC.
+
+Boundary note: this is parser-envelope parity only. It does not implement full
+Cobra help rendering, short flag support, every argument/flag ordering nuance,
+or any business handler behavior. Mail-related system-test cases remain
+deferred/gated by the operational constraint above and are not counted as
+passed.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path,
+and TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Config Quoted Hash Scalar Parsing
 
 Scope: match Go `yaml.v3` behavior for translated config fields whose quoted

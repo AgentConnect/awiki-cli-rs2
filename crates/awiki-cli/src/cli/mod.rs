@@ -70,7 +70,7 @@ where
     let name = command_name(&remaining)?;
     let path_len = name.split('.').filter(|part| !part.is_empty()).count();
     let tail = drop_command_words(&remaining, path_len);
-    let (flags, changed_flags, args) = parse_local_tail(&tail)?;
+    let (flags, changed_flags, args) = parse_local_tail(&name, &tail)?;
     Ok(ParsedCommand {
         globals,
         name,
@@ -419,6 +419,7 @@ fn drop_command_words(tokens: &[String], path_len: usize) -> Vec<String> {
 }
 
 fn parse_local_tail(
+    command_name: &str,
     tokens: &[String],
 ) -> Result<(BTreeMap<String, String>, Vec<String>, Vec<String>), ExitError> {
     let mut flags = BTreeMap::new();
@@ -427,6 +428,7 @@ fn parse_local_tail(
     let mut iter = tokens.iter().peekable();
     while let Some(token) = iter.next() {
         if let Some((name, value)) = split_long_flag(token) {
+            validate_local_flag(command_name, name)?;
             let value = match value {
                 Some(value) => value.to_string(),
                 None if is_bool_local_flag(name) => "true".to_string(),
@@ -446,6 +448,25 @@ fn parse_local_tail(
         }
     }
     Ok((flags, changed_flags, args))
+}
+
+fn validate_local_flag(command_name: &str, flag_name: &str) -> Result<(), ExitError> {
+    let Some(spec) = cmdmeta::lookup(command_name) else {
+        return Ok(());
+    };
+    let known = spec
+        .flags
+        .iter()
+        .any(|flag| flag.name.eq_ignore_ascii_case(flag_name));
+    if known {
+        return Ok(());
+    }
+    Err(ExitError::new(
+        "internal_error",
+        1,
+        format!("unknown flag: --{flag_name}"),
+        "",
+    ))
 }
 
 fn split_long_flag(arg: &str) -> Option<(&str, Option<&str>)> {
