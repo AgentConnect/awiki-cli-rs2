@@ -2,6 +2,52 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Message Secure Status/Failed CLI Boundary Slice
+
+Timestamp: 2026-05-17T09:25:00+0800.
+
+Scope: strengthen CLI non-dry-run coverage for already translated Go
+`internal/cli/msg.go` secure status/failed handlers.
+
+What changed:
+
+- Added a focused integration test file for live `awiki-cli msg secure status
+  --with <did>` command routing through the app handler and message service into
+  local secure session JSON plus SQLite `e2ee_outbox`.
+- Added a focused integration test for live `awiki-cli msg secure failed`
+  filtering failed outbox rows to the active identity while excluding queued and
+  other-identity rows.
+- Locked Go-shaped redaction at the command boundary: status records do not
+  expose owner DID, credential name, plaintext, metadata, or private session key
+  fields.
+- No production code changed.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 test -p awiki-cli --test msg_secure_status_failed_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_commands_contract --locked
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/cli ./internal/message -run 'TestRunMsgSecure|TestServiceSecureStatusReturnsSessionAndOutboxSummary|TestServiceSecureFailedAndDropOperateOnOutbox' -count=1
+wc -l crates/awiki-cli/tests/msg_secure_status_failed_live_contract.rs docs/verification/README.md
+```
+
+Observed results:
+
+- New live CLI status/failed contract tests passed.
+- Existing `msg_contract` and `message_secure_commands_contract` suites passed.
+- Format check, package check, structure check, whitespace check, and Go focused
+  secure CLI/message tests passed.
+- `msg_secure_status_failed_live_contract.rs` is 398 lines, below the default
+  1200-line cap.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Mail Attachment Regression Coverage Slice
 
 Timestamp: 2026-05-17T08:47:00+0800.
