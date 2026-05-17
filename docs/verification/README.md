@@ -787,15 +787,16 @@ Coverage boundary:
 
 ## 2026-05-17 Runtime Listener Host-Notify System Evidence
 
-Timestamp: 2026-05-17T19:15:00+0800.
+Timestamp: 2026-05-17T21:10:00+0800.
 
-Scope: promote the foreground listener notification execute/handler rows and
-the OpenClaw host-notify delivery-sink row to scoped `system_verified` using
-real Rust subprocess `awiki-system-test` probes. The probes start
-`runtime listener run`, connect to the configured message-service v2 WebSocket
-stack, receive an incoming direct notification, persist it to the isolated
-SQLite cache, and deliver the resulting host notification through a loopback
-OpenClaw webhook route.
+Scope: promote the foreground listener notification execute/handler rows, the
+OpenClaw host-notify delivery-sink row, and the file host-notify sink foreground
+delivery path to scoped `system_verified` using real Rust subprocess
+`awiki-system-test` probes. The probes start `runtime listener run`, connect to
+the configured message-service v2 WebSocket stack, receive an incoming direct
+notification, persist it to the isolated SQLite cache, and deliver the
+resulting host notification through a loopback OpenClaw webhook route or an
+isolated JSONL file sink.
 
 System-test coverage used:
 
@@ -815,11 +816,20 @@ System-test coverage used:
   POST reaches `/hooks/agent` with bearer token, `deliver=true`, channel
   `telegram`, target `123456`, and the expected AWiki prompt; and verifies the
   fake legacy OpenClaw binary was not used.
+- `tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds`
+  configures `host_notify.enabled=true`, `sink=file`, and an isolated
+  host-notify output path; starts `runtime listener run`; sends a direct
+  message; verifies the listener stores the message; and verifies the file sink
+  receives one newline-delimited host notification JSON event for the direct
+  incoming notification.
 
 Commands run:
 
 ```text
-cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py -ra -q
+cd ../awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/probes/run_awiki_cli_host_notify_file_sink_local_probe.py tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds -ra -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py -ra -q
 cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
 cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
 cd . && cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_host_notify_contract --locked
@@ -830,8 +840,11 @@ cd ../awiki-cli && go test ./internal/runtime/listener -run 'Test(BuildOpenClawH
 
 Observed results:
 
-- System-test listener/OpenClaw selectors: 3 passed, 0 failed, 0 skipped in
-  12.62s.
+- Python compile check for the new file-sink probe and wrapper: passed.
+- Rust `runtime_host_notify_sink_contract`: 10 passed, 0 failed.
+- Focused file-sink system selector: 1 passed, 0 failed, 0 skipped in 3.38s.
+- System-test listener/OpenClaw/file-sink selectors: 4 passed, 0 failed,
+  0 skipped in 14.76s.
 - Rust `runtime_listener_notification_execute_contract`: 6 passed, 0 failed.
 - Rust `runtime_listener_notification_handler_contract`: 3 passed, 0 failed.
 - Rust `runtime_openclaw_host_notify_contract`: 11 passed, 0 failed.
@@ -846,14 +859,15 @@ System-test configuration context:
 - `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
 - The probes use the configured message-service v2 endpoints from
   `awiki-system-test` helper configuration, isolated temporary awiki workspaces,
-  and loopback webhook capture for OpenClaw delivery. They do not require a real
+  loopback webhook capture for OpenClaw delivery, and an isolated temporary
+  host-notify file path for the file-sink probe. They do not require a real
   OpenClaw process, mail-service selectors, Hermes, or platform service-manager
   permissions.
 
 Boundary note: this is system-test evidence for direct incoming foreground
-listener persistence plus OpenClaw host-notify delivery. It does not prove
-mail-system acceptance, group/group-state live notification delivery,
-Hermes host-notify POST delivery, noop/log/file sink delivery in a foreground
+listener persistence plus OpenClaw and file-sink host-notify delivery. It does
+not prove mail-system acceptance, group/group-state live notification delivery,
+Hermes host-notify POST delivery, noop/log sink delivery in a foreground
 listener, Windows named-pipe listener I/O, or platform service-manager
 execution. Mail-related system-test selectors remain explicitly deferred by the
 current port plan.
