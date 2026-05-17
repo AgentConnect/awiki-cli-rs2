@@ -315,10 +315,94 @@ fn page_non_dry_run_requires_active_identity_for_content_rpc_slice() {
     assert_eq!(envelope["error"]["code"], "not_found");
 }
 
+#[test]
+fn page_list_migrates_legacy_config_json_before_identity_boundary_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let legacy_config = workspace.path().join("config.json");
+    std::fs::write(
+        &legacy_config,
+        r#"{"schema_version":1,"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
+    )
+    .expect("write legacy config");
+
+    let list = awiki_cmd(&["page", "list"], workspace.path());
+    assert_code(&list, 5);
+    let envelope = error_json(&list);
+    assert_eq!(envelope["error"]["code"], "not_found");
+    assert_contains(
+        &envelope["error"]["message"],
+        "identity not found: no active identity is configured",
+    );
+
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should be removed after workspace upgrade"
+    );
+    let config_yaml = workspace.path().join("config.yaml");
+    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
+    assert!(
+        config_text.contains("  mode: http\n"),
+        "migrated config should keep runtime mode, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  service_base_url: https://legacy.example\n"),
+        "migrated config should keep service URL, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  did_domain: legacy.example\n"),
+        "migrated config should keep DID domain, got {config_text:?}"
+    );
+
+    let meta_path = workspace.path().join("upgrade").join("meta.json");
+    let meta: Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
+            .expect("upgrade meta JSON");
+    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
+    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
+    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+    assert_eq!(
+        backup_dir.parent(),
+        Some(workspace.path().join("upgrade").join("backups").as_path())
+    );
+    assert!(backup_dir.join("config.json.bak").is_file());
+    assert!(
+        !workspace
+            .path()
+            .join("upgrade")
+            .join("upgrade_journal.json")
+            .exists(),
+        "journal should be cleared after successful upgrade"
+    );
+    assert!(
+        !workspace.path().join("data").join("awiki-cli.db").exists(),
+        "page list should fail at identity boundary before creating SQLite state"
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "page list must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace
+            .path()
+            .join("runtime")
+            .join("listener.pid")
+            .exists(),
+        "page list must not create listener pid artifacts"
+    );
+}
+
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
+    let home = workspace.join("home");
+    std::fs::create_dir_all(&home).expect("create isolated HOME");
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
+        .env("HOME", &home)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
@@ -375,6 +459,13 @@ fn assert_contains(value: &Value, needle: &str) {
     assert!(
         haystack.contains(needle),
         "{haystack:?} should contain {needle:?}"
+    );
+}
+
+fn assert_non_empty_string(value: &Value, field: &str) {
+    assert!(
+        value.as_str().is_some_and(|text| !text.trim().is_empty()),
+        "{field} should be a non-empty string: {value:?}"
     );
 }
 

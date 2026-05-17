@@ -16,7 +16,7 @@ impl App {
             return Err(invalid_page_arg("title is required", "title is required"));
         }
         let body = resolve_markdown_body(command)?.unwrap_or_default();
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli page create",
@@ -59,7 +59,7 @@ impl App {
     }
 
     pub fn run_page_list(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli page list",
@@ -87,7 +87,7 @@ impl App {
     }
 
     pub fn run_page_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli page get",
@@ -120,7 +120,7 @@ impl App {
 
     pub fn run_page_update(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let body = resolve_markdown_body(command)?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let title = string_flag(command, "title");
         if !self.globals.dry_run {
             let result = content::update_page(
@@ -177,7 +177,7 @@ impl App {
     }
 
     pub fn run_page_rename(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli page rename",
@@ -216,7 +216,7 @@ impl App {
     }
 
     pub fn run_page_delete(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli page delete",
