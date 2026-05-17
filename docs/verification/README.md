@@ -14,6 +14,97 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Config Quoted Hash Scalar Parsing
+
+Scope: match Go `yaml.v3` behavior for translated config fields whose quoted
+scalar values contain `#`, while preserving ordinary inline-comment stripping
+for unquoted/comment text.
+
+Go source reference:
+
+- `awiki-cli/internal/config/config.go` reads `config.yaml` with
+  `gopkg.in/yaml.v3`.
+- `awiki-cli/internal/config/write.go` keeps the broader Go YAML
+  parser/serializer boundary out of this narrow read-path fix.
+- A direct Go `config show` probe with
+  `services.ca_bundle: "/tmp/ca#bundle.pem"` returned
+  `data.ca_bundle=/tmp/ca#bundle.pem`, proving that the quoted `#` is data.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/config/mod.rs`: replaced unconditional `#` splitting
+  in the hand-written config reader and deprecated-field scanner with
+  quote-aware inline-comment stripping. `#` inside simple single-quoted and
+  double-quoted scalar values is preserved; `#` outside quotes still starts an
+  inline comment.
+- `crates/awiki-cli/tests/config_policy_contract.rs`: added
+  `config_show_preserves_hash_inside_quoted_yaml_scalars_like_go` to verify
+  `config show` preserves quoted `#` for `service_base_url`, `did_domain`, and
+  `ca_bundle`, and still drops the real inline comment after `ca_bundle`.
+- `docs/parity-matrix.md`, `docs/known-go-issues.md`, and
+  `docs/dependency-decisions.md`: record the bounded parser parity and keep
+  full YAML parser/serializer parity deferred.
+
+System-test change:
+
+- `tests_v2/core/test_basic_commands.py`: added
+  `test_config_show_preserves_hash_inside_quoted_yaml_scalars`, an offline
+  real subprocess selector for the same quoted-scalar boundary.
+- `tests_v2/core/CLAUDE.md`: records the expanded core config coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test config_policy_contract config_show_preserves_hash_inside_quoted_yaml_scalars_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/config ./internal/cli -run 'Test.*Config|TestRunConfig' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_show_preserves_hash_inside_quoted_yaml_scalars -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+```
+
+Observed results:
+
+- Rust formatting check: passed.
+- Rust focused config policy contract
+  `config_show_preserves_hash_inside_quoted_yaml_scalars_like_go`: 1 passed, 0
+  failed, 0 ignored, 3 filtered out in 0.01s.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed; no undocumented Rust source file over 1200
+  lines.
+- Go focused config reference tests: `internal/config` passed in 0.023s and
+  `internal/cli` passed in 11.265s.
+- Python compile check for `tests_v2/core/test_basic_commands.py`: passed.
+- Focused config quoted-hash system selector: 1 passed, 0 failed, 0 skipped in
+  0.25s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+- No `AWIKI_CLI_BINARY` override is used.
+- The selector uses isolated local workspaces and does not require
+  user-service, message-service, mail-service, OpenClaw, Hermes, foreground
+  listener execution, service-manager permissions, or live network RPC.
+
+Boundary note: this is a bounded config read-path parser parity slice. It does
+not introduce a full YAML parser, change the durable writer renderer, preserve
+comments, support anchors, prove complex scalar parity, alter environment
+override precedence, change SQLite/TLS decisions, or count mail selectors as
+passed. Mail-related system-test cases remain deferred/gated by the operational
+constraint above.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. This slice explicitly avoids adding a YAML crate; SQLite
+remains on the approved `rusqlite + bundled` path, and TLS policy remains
+Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Page Required Flag CLI Boundary
 
 Scope: match Go/Cobra required flag behavior for handle-level page commands

@@ -447,7 +447,7 @@ fn parse_file_config(raw: &str) -> Result<FileConfig, String> {
     let mut config = FileConfig::default();
     let mut stack: Vec<(usize, String)> = Vec::new();
     for line in raw.lines() {
-        let without_comment = line.split('#').next().unwrap_or("").trim_end();
+        let without_comment = strip_yaml_inline_comment(line).trim_end();
         if without_comment.trim().is_empty() {
             continue;
         }
@@ -514,7 +514,7 @@ fn collect_deprecated_config_fields_yaml(raw: &str) -> Vec<String> {
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut deprecated = Vec::new();
     for line in raw.lines() {
-        let without_comment = line.split('#').next().unwrap_or("").trim_end();
+        let without_comment = strip_yaml_inline_comment(line).trim_end();
         if without_comment.trim().is_empty() {
             continue;
         }
@@ -540,6 +540,29 @@ fn collect_deprecated_config_fields_yaml(raw: &str) -> Vec<String> {
         }
     }
     deprecated
+}
+
+fn strip_yaml_inline_comment(line: &str) -> &str {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for (idx, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if in_double && ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '#' if !in_single && !in_double => return &line[..idx],
+            _ => {}
+        }
+    }
+    line
 }
 
 fn deprecated_service_keys() -> [&'static str; 3] {

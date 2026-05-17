@@ -68,6 +68,32 @@ fn config_show_still_accepts_service_base_url_after_deprecated_field_guard() {
     );
 }
 
+#[test]
+fn config_show_preserves_hash_inside_quoted_yaml_scalars_like_go() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let config_path = workspace.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "services:\n  service_base_url: \"https://awiki.info/api#v1\"\n  did_domain: 'awiki.info#tenant'\n  ca_bundle: \"/tmp/ca#bundle.pem\" # inline comment\n",
+    )
+    .expect("write config");
+
+    let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    assert_eq!(
+        envelope["data"]["service_base_url"],
+        "https://awiki.info/api#v1"
+    );
+    assert_eq!(envelope["data"]["did_domain"], "awiki.info#tenant");
+    assert_eq!(envelope["data"]["ca_bundle"], "/tmp/ca#bundle.pem");
+    assert_eq!(
+        envelope["data"]["sources"]["service_base_url"]["value"],
+        "https://awiki.info/api#v1"
+    );
+}
+
 fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
