@@ -14,6 +14,78 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Bridge Unix Public Foreground Selector
+
+Scope: split a narrow `system_verified` parity row for the successful Unix
+foreground listener/local bridge I/O path. The broader bridge helper row remains
+`unit_verified` for endpoint normalization, helper edge cases, and Windows
+named-pipe validation.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime -run 'TestResolveShortensLongSocketPath|TestResolveKeepsShortSocketPath|TestResolveDefaultsToWebSocketMode' -count=1
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message -run 'TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/probes/run_awiki_cli_runtime_listener_local_probe.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check -- docs/parity-matrix.md docs/verification/README.md
+```
+
+Observed results:
+
+- `runtime_bridge_contract`: 17 passed, 0 failed.
+- `runtime_contract`: 12 passed, 0 failed.
+- `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed.
+- Go focused runtime bridge reference tests: passed.
+- Go focused message WebSocket proxy reference tests: passed.
+- Python compile check for the listener wrapper and probe: passed.
+- Focused runtime listener system selector: 1 passed, 0 failed, 0 skipped in
+  7.00s.
+- `git diff --check`: passed for the edited documentation files.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The test used `.env` configured `awiki.info` endpoints:
+  `E2E_USER_SERVICE_URL=https://awiki.info`,
+  `E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
+  `E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`, and
+  `E2E_DID_DOMAIN=awiki.info`.
+- Generated `tests_v2` `__pycache__` directories were removed after the pytest
+  run as disposable intermediates.
+
+Coverage:
+
+- Starts `runtime listener run` in an isolated subprocess environment on the
+  current Unix host.
+- Waits for Alice/Bob/Carol foreground WebSocket sessions to become ready.
+- Exercises public Rust subprocess commands in `runtime.mode=websocket` that
+  reach the local bridge endpoint: `msg send --to --text`, default/scoped direct
+  `msg inbox`, `msg history --with <did>`, and `msg mark-read`.
+- The probe emits `LISTENER_WS_LOCAL_VERIFY_OK`,
+  `LISTENER_WS_DIRECT_SCOPE_INBOX_OK`, and
+  `LISTENER_WS_HISTORY_MARK_READ_OK`, proving the successful public foreground
+  Unix bridge path for ordinary direct send/inbox/history/mark-read.
+
+Boundary note: this selector proves only the successful Unix foreground local
+bridge I/O path on the current host. It does not prove Windows named-pipe I/O,
+socket path shortening under real system path pressure, helper error branches,
+unsupported bridge methods, disconnected-session failures, group bridge calls,
+secure-direct details, attachments, mail, host-notify, platform service-manager
+behavior, or full repository-wide acceptance. Mail system-test selectors remain
+deferred and are not counted as passed here.
+
+Dependency note: no Rust dependency was added. The bridge path continues to use
+the existing std/Rustls transport and approved `rusqlite + bundled` SQLite lane.
+
 ## 2026-05-18 Runtime Listener Bridge Dispatch Public Foreground Selector
 
 Scope: split a narrow `system_verified` parity row for public foreground
