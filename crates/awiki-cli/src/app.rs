@@ -366,8 +366,13 @@ impl App {
     }
 
     pub fn run_id_create(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
         let name = command.flags.get("name").cloned().unwrap_or_default();
+        let identity_name = command
+            .flags
+            .get("identity")
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_default();
         if name.trim().is_empty() {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -376,12 +381,7 @@ impl App {
                 "Usage: awiki-cli id create --name \"Alice\" [--identity alice]",
             ));
         }
-        let identity_name = command
-            .flags
-            .get("identity")
-            .filter(|value| !value.trim().is_empty())
-            .cloned()
-            .unwrap_or_default();
+        let resolved = self.resolve_config_for_workspace()?;
         let manager = self.identity_manager(&resolved);
         if self.globals.dry_run {
             let existing = manager.list().unwrap_or_default();

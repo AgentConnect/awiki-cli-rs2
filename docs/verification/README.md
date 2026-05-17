@@ -14,6 +14,122 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Identity Create Workspace Upgrade Hook
+
+Timestamp: 2026-05-18T01:02:50+0800.
+
+Scope: wire Go `internal/cli/id.go` `identityService()` workspace-upgrade
+behavior into Rust `id create` while preserving Go's validation-before-service
+ordering for a missing `--name`.
+
+Rust change:
+
+- `crates/awiki-cli/src/app.rs`: `id create` now reads `--name` and
+  `--identity`, rejects missing `--name`, and only then calls
+  `resolve_config_for_workspace()`. This matches Go `runIDCreate`, which reads
+  flags, validates `--name`, and then constructs the service through
+  `identityService()`.
+- `crates/awiki-cli/tests/identity_contract.rs`: added
+  `identity_create_validates_name_before_workspace_upgrade_like_go` and
+  `identity_create_migrates_legacy_config_json_before_create_like_go`.
+
+System-test change:
+
+- Added
+  `tests_v2/id/test_identity_cli.py::test_id_create_rust_migrates_legacy_config_json_before_create`.
+- Updated `tests_v2/id/CLAUDE.md` to mention the Rust `id create` legacy config
+  workspace-upgrade coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract identity_create_validates_name_before_workspace_upgrade_like_go --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract identity_create_migrates_legacy_config_json_before_create_like_go --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/app.rs crates/awiki-cli/tests/identity_contract.rs docs/parity-matrix.md docs/verification/README.md
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/cli ./internal/identity ./internal/upgrade -run 'Test.*Create|Test.*Identity|Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/id/test_identity_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/id/test_identity_cli.py::test_id_create_rust_migrates_legacy_config_json_before_create -ra -q
+wc -l tests_v2/id/test_identity_cli.py tests_v2/id/CLAUDE.md
+```
+
+Observed results:
+
+- Rust formatting and package check passed.
+- Focused Rust validation selector passed: 1 passed, 0 failed.
+- Focused Rust valid-create migration selector passed: 1 passed, 0 failed.
+- Full Rust `identity_contract` passed: 11 passed, 0 failed.
+- `xtask check-structure` passed with no undocumented Rust file over the
+  1200-line soft cap. Line counts after the slice: `app.rs` 1045 lines and
+  `identity_contract.rs` 1061 lines.
+- Go focused reference tests passed:
+  `internal/cli` 15.395s, `internal/identity` 0.152s, and
+  `internal/upgrade` 0.104s.
+- Python syntax check for `tests_v2/id/test_identity_cli.py` passed.
+- Focused `awiki-system-test` selector:
+  `test_id_create_rust_migrates_legacy_config_json_before_create` passed:
+  1 passed, 0 failed, 0 skipped in 7.40s.
+- Dependency audit found existing Rustls/webpki/ring, base64/sha2/hmac, and
+  approved `rusqlite`/`libsqlite3-sys` entries; no OpenSSL/native-tls stack or
+  new dependency was added.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The new selector invokes real Rust `id create --name Legacy Create
+  --identity legacy-create` as the first CLI command after writing legacy
+  `config.json`. It does not require user-service, message-service,
+  mail-service, listener, service-manager permissions, or live OTP state.
+
+Coverage:
+
+- Verifies missing `id create --name` validation happens before workspace
+  upgrade by leaving legacy `config.json` untouched and avoiding `config.yaml`
+  and `upgrade/meta.json`.
+- Verifies valid `id create` migrates a legacy `config.json`-only workspace
+  before local identity creation.
+- Verifies the generated DID uses the migrated DID domain and the created
+  identity becomes the current identity.
+- Verifies migrated `config.yaml` keeps legacy runtime mode, service base URL,
+  and DID domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, a
+  non-empty upgrade ID, and a backup directory containing `config.json.bak`
+  equal to the seeded legacy config.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies the local create branch does not create SQLite DB state, listener pid
+  files, or runtime socket artifacts.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch in `id create`, plus Rust subprocess
+evidence for Go validation ordering. It does not separately prove legacy config
+migration for `id use`, `id register`, `id bind`, `id refresh-token`,
+`id profile`, `id resolve`, `id replace-did`, legacy SQLite import,
+imported/current k1 replacement RPCs, rollback, cleanup command execution, or
+mail-service selectors. Mail-related system-test cases remain deferred/gated
+and must not be counted as passed.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged. The existing dependency surface continues to use Rustls for TLS and
+the approved `rusqlite`/`libsqlite3-sys` SQLite path; the audit output contains
+no OpenSSL or native-tls entries.
+
 ## 2026-05-18 Identity Import-v1 Workspace Upgrade Hook
 
 Timestamp: 2026-05-18T00:53:28+0800.

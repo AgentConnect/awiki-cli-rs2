@@ -389,6 +389,155 @@ fn identity_status_migrates_legacy_config_json_before_store_read_like_go() {
 }
 
 #[test]
+fn identity_create_validates_name_before_workspace_upgrade_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let legacy_config = workspace_home.join("config.json");
+    std::fs::write(
+        &legacy_config,
+        serde_json::to_string(&json!({
+            "schema_version": 1,
+            "services": {
+                "service_base_url": "https://legacy-id-create-invalid.example",
+                "did_domain": "legacy-id-create-invalid.example",
+            },
+            "runtime": {
+                "mode": "http",
+            },
+        }))
+        .unwrap(),
+    )
+    .expect("write legacy config");
+
+    let create = awiki_cmd(&["id", "create"], workspace.path());
+    assert_code(&create, 2);
+    let create = error_json(&create);
+    assert_eq!(create["error"]["code"], "invalid_argument");
+    assert!(create["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("id create requires --name"));
+    assert!(
+        legacy_config.exists(),
+        "missing --name must not trigger workspace upgrade before validation"
+    );
+    assert!(
+        !workspace_home.join("config.yaml").exists(),
+        "missing --name must not write migrated config"
+    );
+    assert!(
+        !workspace_home.join("upgrade").join("meta.json").exists(),
+        "missing --name must not write upgrade metadata"
+    );
+}
+
+#[test]
+fn identity_create_migrates_legacy_config_json_before_create_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let legacy_config = workspace_home.join("config.json");
+    let legacy_payload = json!({
+        "schema_version": 1,
+        "services": {
+            "service_base_url": "https://legacy-id-create.example",
+            "did_domain": "legacy-id-create.example",
+        },
+        "runtime": {
+            "mode": "http",
+        },
+    });
+    let legacy_text = serde_json::to_string(&legacy_payload).expect("serialize legacy config");
+    std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
+
+    let create = success_json(&awiki_cmd(
+        &[
+            "id",
+            "create",
+            "--name",
+            "Legacy Create",
+            "--identity",
+            "legacy-create",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(create["data"]["identity"]["identity_name"], "legacy-create");
+    assert!(create["data"]["identity"]["did"]
+        .as_str()
+        .unwrap()
+        .starts_with("did:wba:legacy-id-create.example:user:"));
+    let current = success_json(&awiki_cmd(&["id", "current"], workspace.path()));
+    assert_eq!(
+        current["data"]["identity"]["identity_name"],
+        "legacy-create"
+    );
+
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should be removed before identity creation"
+    );
+    let config_yaml = workspace_home.join("config.yaml");
+    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
+    assert!(
+        config_text.contains("schema_version: 1\n"),
+        "migrated config should keep config schema, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  mode: http\n"),
+        "migrated config should keep runtime mode, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  service_base_url: https://legacy-id-create.example\n"),
+        "migrated config should keep service URL, got {config_text:?}"
+    );
+    assert!(
+        config_text.contains("  did_domain: legacy-id-create.example\n"),
+        "migrated config should keep DID domain, got {config_text:?}"
+    );
+
+    let meta_path = workspace_home.join("upgrade").join("meta.json");
+    let meta: Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
+            .expect("upgrade meta JSON");
+    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
+    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
+    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+    assert_eq!(
+        backup_dir.parent(),
+        Some(workspace_home.join("upgrade").join("backups").as_path())
+    );
+    assert_eq!(
+        std::fs::read_to_string(backup_dir.join("config.json.bak"))
+            .expect("read legacy config backup"),
+        legacy_text
+    );
+    assert!(
+        !workspace_home
+            .join("upgrade")
+            .join("upgrade_journal.json")
+            .exists(),
+        "journal should be cleared after successful upgrade"
+    );
+    assert!(
+        !workspace_home.join("data").join("awiki-cli.db").exists(),
+        "id create should not create SQLite state"
+    );
+    assert!(
+        !workspace_home
+            .join("runtime")
+            .join("message-daemon.sock")
+            .exists(),
+        "id create must not create runtime socket artifacts"
+    );
+    assert!(
+        !workspace_home.join("runtime").join("listener.pid").exists(),
+        "id create must not create listener pid artifacts"
+    );
+}
+
+#[test]
 fn identity_dry_run_and_validation_contracts_match_go() {
     let workspace = TempDir::new().expect("workspace");
     let create = success_json(&awiki_cmd(
