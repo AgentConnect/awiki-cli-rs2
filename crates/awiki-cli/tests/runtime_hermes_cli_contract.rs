@@ -214,31 +214,32 @@ fn hermes_status_reports_configured_sink_and_env_secret_when_available() {
 fn hermes_bridge_service_run_validates_bridge_config_before_deferred_boundary() {
     let workspace = TempDir::new("bridge-service-run").expect("temp workspace");
 
-    let output = awiki_cmd(
-        &["runtime", "host-notify", "hermes", "bridge", "service-run"],
-        workspace.path(),
-        &[],
-    );
-    assert_code(&output, 1);
-    let envelope = error_json(&output);
+    for command in [
+        &["runtime", "host-notify", "hermes", "bridge", "service-run"][..],
+        &["runtime", "host-notify", "webhook", "bridge", "service-run"],
+    ] {
+        let output = awiki_cmd(command, workspace.path(), &[]);
+        assert_code(&output, 1);
+        let envelope = error_json(&output);
 
-    assert_eq!(
-        envelope["error"]["code"],
-        "internal_error",
-        "hidden service-run should run Go-equivalent bridge config preflight before the deferred boundary"
-    );
-    assert_eq!(
-        envelope["error"]["message"],
-        "Hermes host notify secret is not configured in awiki-cli"
-    );
-    assert!(envelope["error"].get("hint").is_none());
-    assert!(
-        !envelope["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("schema"),
-        "hidden service-run should not fall through to the generic schema stub"
-    );
+        assert_eq!(
+            envelope["error"]["code"],
+            "internal_error",
+            "hidden service-run should run Go-equivalent bridge config preflight before the deferred boundary for {command:?}"
+        );
+        assert_eq!(
+            envelope["error"]["message"],
+            "Hermes host notify secret is not configured in awiki-cli"
+        );
+        assert!(envelope["error"].get("hint").is_none());
+        assert!(
+            !envelope["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("schema"),
+            "hidden service-run should not fall through to the generic schema stub for {command:?}"
+        );
+    }
 }
 
 #[cfg(unix)]

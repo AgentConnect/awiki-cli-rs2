@@ -366,7 +366,7 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["runtime", "host-notify", "hermes" | "webhook", "clear-secret", ..] => {
             "runtime.host-notify.hermes.clear-secret"
         }
-        ["runtime", "host-notify", "hermes", "bridge", "service-run", ..] => {
+        ["runtime", "host-notify", "hermes" | "webhook", "bridge", "service-run", ..] => {
             "runtime.host-notify.hermes.bridge.service-run"
         }
         ["people", "search", ..] => "people.search",

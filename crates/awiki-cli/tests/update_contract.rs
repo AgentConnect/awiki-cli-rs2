@@ -161,12 +161,12 @@ fn root_preflight_exempts_local_recovery_commands_from_update_check() {
         );
     }
 
-    let deferred_exempt_commands: &[&[&str]] = &[
-        &["runtime", "listener", "service-run"],
+    let hermes_bridge_exempt_commands: &[&[&str]] = &[
         &["runtime", "host-notify", "hermes", "bridge", "service-run"],
+        &["runtime", "host-notify", "webhook", "bridge", "service-run"],
     ];
 
-    for args in deferred_exempt_commands {
+    for args in hermes_bridge_exempt_commands {
         let mut verbose_args = vec!["--verbose"];
         verbose_args.extend_from_slice(args);
         let output = awiki_cmd_with_workspace(
@@ -177,14 +177,20 @@ fn root_preflight_exempts_local_recovery_commands_from_update_check() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !stderr.contains("[awiki-cli] update check failed:"),
-            "deferred exempt command {args:?} should not log update check failure, stderr = {stderr}"
+            "Hermes bridge exempt command {args:?} should not log update check failure, stderr = {stderr}"
         );
         assert_eq!(
             output.status.code(),
             Some(1),
-            "deferred command should still stop at current handler boundary; stdout:\n{}\nstderr:\n{}",
+            "Hermes bridge command should still stop at current preflight boundary; stdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             stderr
+        );
+        let envelope = error_json(&output);
+        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_eq!(
+            envelope["error"]["message"],
+            "Hermes host notify secret is not configured in awiki-cli"
         );
     }
 }
@@ -257,6 +263,13 @@ fn success_json(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true, "success envelope should set ok=true");
+    envelope
+}
+
+fn error_json(output: &Output) -> Value {
+    let envelope: Value =
+        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
+    assert_eq!(envelope["ok"], false, "error envelope should set ok=false");
     envelope
 }
 

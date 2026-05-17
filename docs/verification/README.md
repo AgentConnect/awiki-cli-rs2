@@ -14,6 +14,105 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Hermes Webhook Bridge Service-Run Alias Slice
+
+Scope: match Go/Cobra alias inheritance for the hidden Hermes bridge
+`service-run` command. In Go, `webhook` is an alias on the parent
+`runtime.host-notify.hermes` command, so `runtime host-notify webhook bridge
+service-run` reaches the same hidden bridge handler as
+`runtime host-notify hermes bridge service-run`.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/cli/mod.rs`: maps
+  `runtime host-notify webhook bridge service-run` to canonical
+  `runtime.host-notify.hermes.bridge.service-run`.
+- `crates/awiki-cli/tests/runtime_hermes_cli_contract.rs`: verifies both
+  canonical `hermes bridge service-run` and alias `webhook bridge service-run`
+  reach the missing-secret preflight boundary.
+- `crates/awiki-cli/tests/update_contract.rs`: verifies both Hermes bridge
+  service-run command forms stay update-preflight exempt without verbose
+  update-check noise. The long-running `runtime listener service-run`
+  subprocess case remains covered by the pure `app::update_preflight` unit
+  test rather than by spawning the foreground service command.
+- `docs/parity-matrix.md`: records the focused `system_verified` alias slice.
+
+System-test change:
+
+- `tests_v2/runtime/test_runtime_cli.py`: added
+  `test_runtime_host_notify_webhook_bridge_service_run_reaches_hermes_preflight`.
+  The selector runs the real Rust subprocess against an isolated workspace and
+  asserts exit 1, `internal_error`, and the Go missing-secret message.
+- `tests_v2/runtime/CLAUDE.md`: records the new runtime selector coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract hermes_bridge_service_run_validates_bridge_config_before_deferred_boundary --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test update_contract root_preflight_exempts_local_recovery_commands_from_update_check --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli app::update_preflight --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli ./internal/runtime/hermesbridge -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue|TestResolveBridgeConfigRequiresNotifySecret|TestRunService' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_webhook_bridge_service_run_reaches_hermes_preflight -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+```
+
+Observed results:
+
+- Rust formatting: passed.
+- Rust Hermes CLI focused contract: 1 passed, 0 failed, 0 ignored, 6 filtered
+  out in 0.07s.
+- Rust update focused contract: 1 passed, 0 failed, 0 ignored, 5 filtered out
+  in 0.09s.
+- Rust `app::update_preflight` unit filter: 3 passed, 0 failed, 0 ignored.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed; no undocumented Rust source file over 1200
+  lines.
+- Go focused reference tests: `internal/cli` passed in 5.572s; the
+  `internal/runtime/hermesbridge` package had no matching tests to run and
+  passed in 0.003s.
+- Python compile check for `tests_v2/runtime/test_runtime_cli.py`: passed.
+- Focused runtime system selector: 1 passed, 0 failed, 0 skipped in 0.78s.
+- `git diff --check` passed in both `awiki-cli-rs2` and `awiki-system-test`.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+- The selector uses an isolated local workspace. It does not set
+  `AWIKI_CLI_BINARY`, does not require user-service, message-service,
+  mail-service, real Hermes, OpenClaw, foreground listener execution, or
+  service-manager permissions.
+
+Coverage:
+
+- `runtime host-notify webhook bridge service-run` now follows Go/Cobra parent
+  alias behavior and resolves to canonical
+  `runtime.host-notify.hermes.bridge.service-run`.
+- The command reaches the Go-equivalent bridge config preflight and returns the
+  missing-secret `internal_error` boundary instead of falling through to generic
+  `not implemented` or schema-stub behavior.
+- The update-preflight exemption remains covered without spawning long-running
+  listener service-run as a subprocess.
+
+Boundary note: this slice does not claim real Hermes bridge process execution,
+platform service-manager install/start/stop/status behavior, owned HTTP health
+probing, foreground listener execution, mail selectors, or full repository-wide
+acceptance. Mail-related system-test cases remain deferred/gated by the
+operational constraint above.
+
+Dependency note: no Rust dependency was added. SQLite remains on the approved
+`rusqlite + bundled` path, and TLS policy remains Rustls-first with no
+OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Runtime Listener Saved-Status Public Selector
 
 Scope: add scoped `system_verified` parity evidence for public
