@@ -158,7 +158,12 @@ pub fn read_expected_boot_id(path: &str) -> anyhow::Result<String> {
     Ok(raw.trim().to_string())
 }
 
-pub fn status_for(resolved: &Resolved, installed: bool, running: bool) -> anyhow::Result<Status> {
+pub fn status_for(
+    resolved: &Resolved,
+    installed: bool,
+    running: bool,
+    service_platform: &str,
+) -> anyhow::Result<Status> {
     let runtime_paths = paths(resolved)?;
     let runtime = super::resolve(resolved);
     let mut status = Status {
@@ -170,7 +175,7 @@ pub fn status_for(resolved: &Resolved, installed: bool, running: bool) -> anyhow
         log_file: runtime_paths.log_file,
         status_file: runtime_paths.status_file,
         service_name: super::listener_service::service_name_for(resolved),
-        service_platform: "rust-local".to_string(),
+        service_platform: service_platform.to_string(),
         host_notify: listener_host_notify_status(resolved),
         ..Status::default()
     };

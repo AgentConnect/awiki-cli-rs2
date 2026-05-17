@@ -7,6 +7,7 @@ use awiki_cli::runtime::listener_service::{
     ListenerServiceProgramDecision, ListenerServiceProgramRunAction, ListenerServiceProgramState,
     ListenerServiceStatusForAction, ListenerServiceStatusForPlan, ListenerServiceStatusSnapshot,
 };
+use awiki_cli::runtime::listener_systemd;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -130,6 +131,71 @@ fn listener_service_config_plan_matches_go_new_service_config_shape() {
             .get("AWIKI_CLI_WORKSPACE_HOME_DIR")
             .expect("workspace env"),
         &spaced.paths.workspace_home_dir
+    );
+}
+
+#[test]
+fn listener_systemd_unit_matches_go_service_intent_on_linux() {
+    let resolved = test_resolved();
+    let unit = listener_systemd::unit_for(&resolved).expect("systemd unit");
+
+    assert_eq!(
+        unit.name,
+        format!("{}.service", listener_service::service_name_for(&resolved))
+    );
+    assert!(unit.path.ends_with(format!(
+        "{}.service",
+        listener_service::service_name_for(&resolved)
+    )));
+    assert!(unit.content.contains("[Unit]\n"));
+    assert!(unit
+        .content
+        .contains("Description=awiki-cli realtime websocket listener"));
+    assert!(unit.content.contains("[Service]\n"));
+    assert!(unit.content.contains("Type=simple"));
+    assert!(unit.content.contains("runtime listener service-run"));
+    assert!(unit
+        .content
+        .contains("Environment=AWIKI_LISTENER_SERVICE_MODE=1"));
+    assert!(unit.content.contains(&format!(
+        "Environment=AWIKI_CLI_WORKSPACE_HOME_DIR={}",
+        resolved.paths.workspace_home_dir
+    )));
+    assert!(unit.content.contains("Restart=on-failure"));
+    assert!(unit.content.contains("RestartSec=1s"));
+    assert!(unit.content.contains("[Install]\nWantedBy=default.target"));
+    assert!(unit.content.contains("listener.service.pid"));
+    assert!(unit.content.contains("listener.service.log"));
+}
+
+#[test]
+fn listener_systemd_status_parser_matches_systemctl_show_values() {
+    assert_eq!(
+        listener_systemd::parse_systemd_status("loaded\nactive\n"),
+        listener_systemd::SystemdStatus {
+            installed: true,
+            running: true,
+            load_state: "loaded".to_string(),
+            active_state: "active".to_string(),
+        }
+    );
+    assert_eq!(
+        listener_systemd::parse_systemd_status("loaded\ninactive\n"),
+        listener_systemd::SystemdStatus {
+            installed: true,
+            running: false,
+            load_state: "loaded".to_string(),
+            active_state: "inactive".to_string(),
+        }
+    );
+    assert_eq!(
+        listener_systemd::parse_systemd_status("not-found\ninactive\n"),
+        listener_systemd::SystemdStatus {
+            installed: false,
+            running: false,
+            load_state: "not-found".to_string(),
+            active_state: "inactive".to_string(),
+        }
     );
 }
 

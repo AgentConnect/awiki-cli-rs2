@@ -84,7 +84,11 @@ impl ListenerSupervisor {
             status_file: runtime_paths.status_file,
             socket_path: runtime_paths.socket_path,
             service_name: super::listener_service::service_name_for(&resolved),
-            service_platform: "rust-local".to_string(),
+            service_platform: if running_in_listener_service_mode() && cfg!(target_os = "linux") {
+                "linux-systemd".to_string()
+            } else {
+                "rust-local".to_string()
+            },
             host_notify: host_notify_status,
             ..Status::default()
         };

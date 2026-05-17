@@ -45,6 +45,7 @@ pub mod listener_session_state;
 pub mod listener_supervisor_init;
 pub mod listener_supervisor_run;
 pub mod listener_supervisor_shutdown;
+pub mod listener_systemd;
 pub mod listener_ws_transport;
 pub mod listener_wsclient;
 pub mod openclaw_host_notify;
@@ -144,13 +145,22 @@ pub fn runtime_value(resolved: &Resolved) -> Value {
 }
 
 pub fn listener_status(resolved: &Resolved, installed: bool, running: bool) -> Value {
-    match listener::status_for(resolved, installed, running) {
+    listener_status_with_platform(resolved, installed, running, "rust-local")
+}
+
+pub fn listener_status_with_platform(
+    resolved: &Resolved,
+    installed: bool,
+    running: bool,
+    service_platform: &str,
+) -> Value {
+    match listener::status_for(resolved, installed, running, service_platform) {
         Ok(status) => listener::to_value(status),
         Err(err) => json!({
             "mode": resolve(resolved).mode,
             "installed": installed,
             "running": running,
-            "service_platform": "rust-local",
+            "service_platform": service_platform,
             "bridge_available": false,
             "host_notify": {},
             "warnings": [format!("listener status unavailable: {err}")],
@@ -159,6 +169,11 @@ pub fn listener_status(resolved: &Resolved, installed: bool, running: bool) -> V
 }
 
 pub fn current_listener_status(resolved: &Resolved) -> Value {
+    if listener_systemd::is_supported() {
+        if let Ok(status) = listener_systemd::status_value(resolved) {
+            return status;
+        }
+    }
     listener_status(
         resolved,
         listener_installed(resolved),
@@ -168,6 +183,27 @@ pub fn current_listener_status(resolved: &Resolved) -> Value {
 
 pub fn apply_runtime_policy(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
+    if listener_systemd::is_supported() {
+        if resolve(resolved).mode != "websocket" || !resolved.runtime_listener_enabled {
+            return Ok(listener::to_value(listener_systemd::stop(resolved)?));
+        }
+        let mut status = if resolved.runtime_listener_auto_install {
+            listener_systemd::install(resolved)?
+        } else {
+            listener_systemd::status(resolved).and_then(|status| {
+                listener::status_for(
+                    resolved,
+                    status.installed,
+                    status.running,
+                    listener_systemd::service_platform(),
+                )
+            })?
+        };
+        if resolved.runtime_listener_auto_start {
+            status = listener_systemd::start(resolved)?;
+        }
+        return Ok(listener::to_value(status));
+    }
     if resolve(resolved).mode == "websocket" && resolved.runtime_listener_enabled {
         let installed = resolved.runtime_listener_auto_install || listener_installed(resolved);
         let running = installed && resolved.runtime_listener_auto_start;
@@ -185,12 +221,18 @@ pub fn apply_runtime_policy(resolved: &Resolved) -> anyhow::Result<Value> {
 
 pub fn install_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
+    if listener_systemd::is_supported() {
+        return Ok(listener::to_value(listener_systemd::install(resolved)?));
+    }
     write_listener_state(resolved, true, false)?;
     Ok(listener_status(resolved, true, false))
 }
 
 pub fn start_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
+    if listener_systemd::is_supported() {
+        return Ok(listener::to_value(listener_systemd::start(resolved)?));
+    }
     if resolve(resolved).mode != "websocket" {
         anyhow::bail!("runtime mode must be websocket before starting the listener");
     }
@@ -198,8 +240,19 @@ pub fn start_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     Ok(listener_status(resolved, true, true))
 }
 
+pub fn restart_listener(resolved: &Resolved) -> anyhow::Result<Value> {
+    ensure_runtime_dirs(resolved)?;
+    if listener_systemd::is_supported() {
+        return Ok(listener::to_value(listener_systemd::restart(resolved)?));
+    }
+    start_listener(resolved)
+}
+
 pub fn stop_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
+    if listener_systemd::is_supported() {
+        return Ok(listener::to_value(listener_systemd::stop(resolved)?));
+    }
     write_listener_state(resolved, listener_installed(resolved), false)?;
     Ok(listener_status(
         resolved,
@@ -210,6 +263,9 @@ pub fn stop_listener(resolved: &Resolved) -> anyhow::Result<Value> {
 
 pub fn uninstall_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     ensure_runtime_dirs(resolved)?;
+    if listener_systemd::is_supported() {
+        return Ok(listener::to_value(listener_systemd::uninstall(resolved)?));
+    }
     write_listener_state(resolved, false, false)?;
     Ok(listener_status(resolved, false, false))
 }

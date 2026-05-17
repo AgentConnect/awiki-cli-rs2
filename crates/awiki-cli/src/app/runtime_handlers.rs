@@ -330,7 +330,7 @@ impl App {
             "listener_restart",
             "Dry run: listener restart planned",
             "Listener restarted",
-            runtime::start_listener,
+            runtime::restart_listener,
         )
     }
 

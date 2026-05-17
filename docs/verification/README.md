@@ -14,6 +14,100 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-17 Linux User-Systemd Listener Service Evidence
+
+Timestamp: 2026-05-17T22:20:00+0800.
+
+Scope: implement and verify the Linux user-systemd execution path for Go
+`internal/runtime/listener/service.go` listener lifecycle commands. This
+covers real `systemctl --user` install/start/restart/stop/uninstall execution
+only when the Rust-specific execution gate is enabled.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --test runtime_contract --test runtime_host_notify_enable_disable_contract --test runtime_listener_foreground_contract --locked
+git diff --check
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/runtime/listener ./internal/cli -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing|TestRefreshListenerForHostNotifyChangeRestartsRunningListener|TestRefreshListenerForHostNotifyChangeWarnsWhenListenerIsStopped|TestRuntimeDryRunPlans' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py -ra -q
+uv run python -m py_compile tests_v2/helpers/awiki_cli_runtime.py
+```
+
+Observed results:
+
+- Rust formatting, package check, binary build, and whitespace checks passed.
+- Rust test counts:
+  - `runtime_contract`: 12 passed.
+  - `runtime_listener_service_contract`: 18 passed.
+  - `runtime_host_notify_enable_disable_contract`: 5 passed.
+  - `runtime_listener_foreground_contract`: 10 passed.
+  - combined focused command passed.
+- Go focused runtime listener/CLI tests passed for both packages:
+  `internal/runtime/listener` and `internal/cli`.
+- `awiki-system-test` runtime file:
+  `tests_v2/runtime/test_runtime_cli.py` finished with 14 passed, 0 failed,
+  0 skipped in 32.53s.
+- System-test helper syntax check passed.
+
+Configuration context:
+
+- `AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1` enabled service-manager selectors in
+  `awiki-system-test`.
+- `tests_v2/helpers/awiki_cli_runtime.py` sets
+  `AWIKI_CLI_ENABLE_SYSTEMD_LISTENER_SERVICE=1` for service-manager subprocess
+  runs so the Rust binary may touch real user-systemd state only in those
+  selectors.
+- User systemd bus was available on the validation host:
+  `XDG_RUNTIME_DIR=/run/user/1000`,
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`, and
+  `systemctl --user status --no-pager` exited 0.
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+
+Coverage boundary:
+
+- Proves Linux user-systemd lifecycle parity for exercised `runtime listener`
+  service commands: install, start, restart, stop, uninstall, status/readiness,
+  auto-install, bridge availability wait, and expected boot ID wait.
+- The Rust implementation writes a workspace-hashed
+  `awiki-cli-listener-<sha256 12 hex>.service` unit, executes
+  `systemctl --user daemon-reload/enable/start/restart/stop/disable`, runs the
+  current binary with `runtime listener service-run`, sets
+  `AWIKI_CLI_WORKSPACE_HOME_DIR` plus `AWIKI_LISTENER_SERVICE_MODE=1`, and
+  reports `service_platform=linux-systemd`.
+- Does not prove macOS launchd, Windows Service Manager, or
+  host-notify-triggered live restart of an already service-managed foreground
+  listener.
+- Does not count mail-related selectors as passed; mail system tests remain
+  deferred to a later mail-focused validation pass.
+
+Dependency note:
+
+- No Cargo dependency was added. The slice uses std filesystem/env/process APIs
+  plus `systemctl --user`.
+- No OpenSSL, `native-tls`, bundled OpenSSL, platform service crate, dbus crate,
+  WebSocket crate, YAML crate, ANP network feature, or new SQLite backend was
+  added.
+
 ## 2026-05-17 Broad Non-Mail System Regression Refresh
 
 Timestamp: 2026-05-17T21:15:00+0800.
