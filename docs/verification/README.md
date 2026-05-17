@@ -2,6 +2,101 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Full tests_v2 Rust Run Mail-Service Environment Blocker
+
+Timestamp: 2026-05-17T19:45:00+0800.
+
+Scope: attempt the full `tests_v2` Rust subprocess suite after the broad CLI
+baseline and focused group E2EE acceptance run, including mail selectors and
+environment-gated protocol selectors.
+
+Command run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 uv run pytest tests_v2 -ra -q
+```
+
+Observed results:
+
+- Overall: 97 passed, 1 failed, 9 skipped in 127.85s.
+- Failed:
+  - `tests_v2/mail/test_awiki_cli_mail_notification_local.py::test_awiki_cli_mail_notification_flow_local`.
+  - Domain: mail notification integration.
+  - Count: 1 failed.
+  - Reason: `awiki-mail-service` was not reachable at
+    `http://127.0.0.1:9899`; `/mail/health` failed with
+    `ConnectError('All connection attempts failed')`.
+- Skipped:
+  - `tests_v2/mail/test_awiki_cli_mail_local.py`: 4 skipped because
+    `awiki-mail-service` was not reachable at `http://127.0.0.1:9899`.
+  - `tests_v2/message_service/test_direct_local.py:324`: 1 skipped because
+    the case requires the local `tests_v2` message-service topology.
+  - `tests_v2/message_service/test_group_e2ee_flag_off.py:37`: 1 skipped
+    because the flag-off guard requires `AWIKI_GROUP_E2EE_CONTRACT_TEST` to be
+    unset, while this run intentionally set it for group E2EE contract coverage.
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:92`: 1 skipped;
+    set `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` to run DID-only tenant admission
+    coverage.
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:132`: 1 skipped;
+    set `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` to run DID-only message-service denial
+    coverage.
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:191`: 1 skipped;
+    set `E2E_MESSAGE_V2_MESSAGE_ONLY_DID` to run message-only admission
+    coverage.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`.
+- Mail service URL resolved to `http://127.0.0.1:9899`.
+
+Classification: this is not a Rust CLI parity failure conclusion. The only
+observed failure is an environment blocker for the mail-service dependency, and
+mail is currently allowed to remain translated but untested. Full `tests_v2`
+acceptance remains blocked until a reachable `awiki-mail-service` is available
+and the mail selectors run successfully.
+
+## 2026-05-17 Broad Rust CLI System-Test Baseline
+
+Timestamp: 2026-05-17T19:10:00+0800.
+
+Scope: run a broad Rust subprocess baseline after the focused group E2EE system
+acceptance edges, excluding mail and message-service-only protocol suites so
+the result stays tied to the Rust `awiki-cli` binary surface.
+
+Command run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/core tests_v2/debug tests_v2/update tests_v2/runtime tests_v2/id tests_v2/page tests_v2/multi_tenant tests_v2/cli/test_awiki_cli_direct_local.py tests_v2/cli/test_awiki_cli_group_local.py tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/test_awiki_cli_service_run_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_main_only_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_webhook_only_local.py -ra -q
+```
+
+Observed results:
+
+- Overall: 70 passed, 0 failed, 3 skipped in 92.01s.
+- Skipped:
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:92`: set
+    `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` to run DID-only tenant admission coverage.
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:132`: set
+    `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` to run DID-only message-service denial
+    coverage.
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:191`: set
+    `E2E_MESSAGE_V2_MESSAGE_ONLY_DID` to run message-only admission coverage.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The run used the local `awiki-system-test` service configuration from the
+  repository environment; no mail selectors or message-service-only protocol
+  selectors were included.
+
+Boundary note: this is not full `tests_v2` acceptance. Mail selectors,
+message-service-only protocol tests, and the environment-gated multi-tenant
+admission cases remain outside this baseline.
+
 ## 2026-05-17 Group E2EE Focused System Acceptance Edges
 
 Timestamp: 2026-05-17T18:20:00+0800.

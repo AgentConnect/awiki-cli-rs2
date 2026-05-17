@@ -53,6 +53,26 @@ through to `group e2ee pending`, plus the non-owner `group add` error envelope
 that must preserve Go's owner-role hint. Full `awiki-system-test` acceptance
 remains pending for the overall port.
 
+Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
+broad non-mail, non-message-service `awiki-system-test` subprocess batch under
+`AWIKI_CLI_UNDER_TEST=rust`, covering `tests_v2/core`, `debug`, `update`,
+`runtime`, `id`, `page`, `multi_tenant`, direct/group CLI, runtime listener,
+service-run, and OpenClaw host-notify selectors: 70 passed, 3 skipped, 0
+failed. The three skips were message-service tenant-admission environment gates
+requiring `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` or
+`E2E_MESSAGE_V2_MESSAGE_ONLY_DID`. Mail, message-service-only protocol tests,
+and full repository-wide `tests_v2` acceptance remain pending.
+
+Current full-suite attempt evidence: on 2026-05-17, `AWIKI_CLI_UNDER_TEST=rust`
+with `AWIKI_GROUP_E2EE_CONTRACT_TEST=1` ran `uv run pytest tests_v2 -ra -q`.
+The result was 97 passed, 1 failed, and 9 skipped in 127.85s. The only failure
+was `tests_v2/mail/test_awiki_cli_mail_notification_local.py::test_awiki_cli_mail_notification_flow_local`
+because `awiki-mail-service` was not reachable at `http://127.0.0.1:9899`;
+four additional mail cases skipped for the same unavailable service. This is
+tracked as an environment blocker rather than Rust CLI acceptance. Full
+`tests_v2` acceptance remains pending until mail-service-backed selectors are
+run against a reachable mail service.
+
 | Go path | Go symbol / feature | Rust path | Status | Tests | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `awiki-cli/cmd/awiki-cli/main.go` | process entrypoint | `crates/awiki-cli/src/main.rs`, `crates/awiki-cli/src/lib.rs` | `system_verified` | `cargo build -p awiki-cli --bin awiki-cli --offline`; `tests_v2/core/test_basic_commands.py` | Initial Rust entrypoint delegates to library execute and is exercised as a subprocess by core system tests. |
