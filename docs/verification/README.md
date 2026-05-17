@@ -14,6 +14,117 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Site Workspace Upgrade Hook
+
+Timestamp: 2026-05-18T00:09:43+0800.
+
+Scope: wire Go `internal/cli/site.go` `siteService()` workspace-upgrade
+behavior into Rust site handlers, then prove a local legacy `config.json`
+migration through `site page list` before the command reaches the
+no-active-identity site boundary.
+
+Rust change:
+
+- `crates/awiki-cli/src/app/site_handlers.rs`: `site root get`,
+  `site root set`, `site page list`, `site page get`, `site page create`,
+  `site page update`, `site page rename`, and `site page delete` now call
+  `resolve_config_for_workspace()` where they previously called
+  `resolve_config()`. This matches Go `siteService()`, which calls
+  `resolveConfigForWorkspace()` before constructing the site service.
+- `crates/awiki-cli/tests/site_contract.rs`: added
+  `site_page_list_migrates_legacy_config_json_before_identity_boundary_like_go`.
+  The subprocess helper now sets an isolated `HOME` alongside
+  `AWIKI_CLI_WORKSPACE_HOME_DIR` so host-local legacy OpenClaw identity state
+  cannot leak into the site no-active-identity contract.
+
+System-test change:
+
+- Added
+  `tests_v2/site/test_site_cli.py::test_site_page_list_rust_migrates_legacy_config_json_before_identity_boundary`.
+- Updated `tests_v2/site/CLAUDE.md` to mention the Rust `site page list`
+  legacy config workspace-upgrade coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test site_contract site_page_list_migrates_legacy_config_json_before_identity_boundary_like_go --locked
+cargo +1.79.0 test -p awiki-cli --test site_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/cli ./internal/site ./internal/upgrade -run 'Test.*Site|Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/site/test_site_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/site/test_site_cli.py::test_site_page_list_rust_migrates_legacy_config_json_before_identity_boundary -ra -q
+```
+
+Observed results:
+
+- Rust formatting passed.
+- Focused Rust `site_contract` selector passed: 1 passed, 0 failed.
+- Full Rust `site_contract` passed: 6 passed, 0 failed.
+- Rust package check passed.
+- `xtask check-structure` passed with no undocumented Rust file over the
+  1200-line soft cap.
+- Go focused reference tests passed:
+  `internal/cli` 16.452s, `internal/site` 0.012s, and
+  `internal/upgrade` 0.060s.
+- Python syntax check for `tests_v2/site/test_site_cli.py` passed.
+- Focused `awiki-system-test` selector:
+  `test_site_page_list_rust_migrates_legacy_config_json_before_identity_boundary`
+  passed: 1 passed, 0 failed, 0 skipped in 0.20s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The new selector uses an isolated local workspace and invokes real Rust
+  `site page list` as the first CLI command after writing legacy `config.json`.
+  It does not require user-service, message-service, site-service, mail-service,
+  listener, service-manager permissions, or registered identities.
+
+Coverage:
+
+- Rust site handlers now follow Go `siteService()` config boundary: raw config
+  resolve, `workspace_upgrade` trace phase, `upgrade_if_needed`, raw resolve
+  refresh, then dry-run render or site service execution.
+- Verifies `site page list` migrates a legacy `config.json`-only workspace
+  before failing at the no-active-identity boundary.
+- Verifies migrated `config.yaml` keeps legacy runtime mode, service base URL,
+  and DID domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, a
+  non-empty upgrade ID, and a backup directory containing `config.json.bak`
+  equal to the seeded legacy config.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies the migration does not create SQLite DB state, listener pid files,
+  or runtime socket artifacts.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch in `site page list`, plus direct Rust code
+coverage that all currently translated site handlers use the same workspace
+resolver boundary. It does not separately subprocess-test legacy config
+migration for every site subcommand, run live tenant-admin site CRUD in this
+local selector, prove legacy SQLite import through workspace migration, legacy
+identity import, imported/current k1 replacement RPCs, rollback, platform
+cleanup command execution, all-command upgrade-hook coverage, or mail-service
+selectors.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged; the slice reuses existing local upgrade/config/site machinery and
+keeps the Rustls-first / approved `rusqlite + bundled` dependency policy
+unchanged.
+
 ## 2026-05-18 Page Workspace Upgrade Hook
 
 Timestamp: 2026-05-18T00:03:21+0800.

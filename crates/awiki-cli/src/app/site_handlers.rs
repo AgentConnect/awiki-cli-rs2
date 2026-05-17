@@ -8,7 +8,7 @@ use std::fs;
 impl App {
     pub fn run_site_root_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain"])?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli site root get",
@@ -45,7 +45,7 @@ impl App {
     pub fn run_site_root_set(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain"])?;
         let body = required_markdown_body(command)?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli site root set",
@@ -85,7 +85,7 @@ impl App {
 
     pub fn run_site_page_list(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain"])?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli site page list",
@@ -121,7 +121,7 @@ impl App {
 
     pub fn run_site_page_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain", "slug"])?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli site page get",
@@ -160,7 +160,7 @@ impl App {
     pub fn run_site_page_create(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain", "slug"])?;
         let body = required_markdown_body(command)?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli site page create",
@@ -203,7 +203,7 @@ impl App {
     pub fn run_site_page_update(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain", "slug"])?;
         let body = required_markdown_body(command)?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli site page update",
@@ -245,7 +245,7 @@ impl App {
 
     pub fn run_site_page_rename(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain", "slug", "to"])?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli site page rename",
@@ -287,7 +287,7 @@ impl App {
 
     pub fn run_site_page_delete(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["domain", "slug"])?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if self.globals.dry_run {
             return self.render_success(
                 "awiki-cli site page delete",
