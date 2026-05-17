@@ -14,6 +14,76 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Config Template Public Config-Show Selector
+
+Timestamp: 2026-05-18T05:40:00+0800.
+
+Scope: promote the Go `config.template.yaml` asset slice from repository
+byte-copy evidence to public Rust subprocess evidence. The selector compares the
+selected Rust repository template against the Go template, copies the Go bytes
+into an isolated workspace as `config.yaml`, and runs `config show` through the
+real Rust CLI.
+
+System-test change:
+
+- Added
+  `tests_v2/core/test_basic_commands.py::test_config_template_matches_go_asset_and_resolves_through_config_show`.
+- Updated `tests_v2/core/CLAUDE.md` to list config-template parsing coverage in
+  the core command selector boundary.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cmp -s ../awiki-cli/config.template.yaml config.template.yaml
+git diff --check -- docs/parity-matrix.md docs/verification/README.md
+
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/config ./internal/cli -run 'TestConfig|TestRunConfig' -count=1
+
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_template_matches_go_asset_and_resolves_through_config_show -ra -q
+git diff --check -- tests_v2/core/test_basic_commands.py tests_v2/core/CLAUDE.md
+```
+
+Observed results:
+
+- `cargo fmt --check` passed.
+- `cargo check -p awiki-cli --locked` passed.
+- `xtask check-structure` passed: no undocumented Rust files over 1200 lines.
+- `cmp -s ../awiki-cli/config.template.yaml config.template.yaml` passed.
+- Go focused config/CLI tests passed: `internal/config` and `internal/cli`.
+- Python syntax check passed.
+- Focused `awiki-system-test` selector passed: 1 passed, 0 failed, 0 skipped
+  in 0.17s.
+- Rust and system-test whitespace checks passed.
+
+Behavior proven by the selector:
+
+- Reads `../awiki-cli/config.template.yaml` and the selected Rust repository
+  `config.template.yaml`, asserting byte equality through the system-test
+  process.
+- Replaces the isolated runtime's `config.yaml` with the Go template bytes and
+  runs `awiki-cli config show` as a subprocess.
+- Verifies public resolved config fields: schema version `1`, runtime
+  `websocket`, listener defaults enabled/auto-install/auto-start, host-notify
+  enabled with `log` sink, JSON output, `https://awiki.ai` service base URL,
+  `awiki.ai` DID domain, default ANP service endpoint/DID, and
+  `https://mail.awiki.ai` mail-service URL from the config file.
+
+Boundary note: this proves the copied public template is byte-identical to Go
+and accepted by the current Rust `config show` path. It does not claim full
+Go `yaml.v3` parser/serializer parity, config writer behavior, `init` template
+generation, mail-service acceptance, or any remote service integration.
+
+No dependency was added. Cargo manifests and lockfile remain unchanged. TLS
+policy remains Rustls-first; SQLite remains on the approved `rusqlite +
+bundled` path; mail system-test selectors remain deferred.
+
 ## 2026-05-18 Workspace Backup Public SQLite Selector
 
 Timestamp: 2026-05-18T03:10:23+0800.
