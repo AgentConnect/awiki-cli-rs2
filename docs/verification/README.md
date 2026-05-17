@@ -108,6 +108,92 @@ Dependency note:
   WebSocket crate, YAML crate, ANP network feature, or new SQLite backend was
   added.
 
+## 2026-05-17 Foreground Listener Direct History/Mark-Read Evidence
+
+Timestamp: 2026-05-17T20:25:24+0800.
+
+Scope: extend the existing foreground listener/local bridge system probe so the
+same real listener run covers ordinary direct `msg history --with` and
+`msg mark-read` in `runtime.mode=websocket`, in addition to the existing
+direct send/inbox evidence. This is a scoped happy-path system evidence
+refresh; fallback/error branches remain covered by Rust and Go contracts.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/probes/run_awiki_cli_runtime_listener_local_probe.py tests_v2/cli/test_awiki_cli_runtime_listener_local.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+git diff --check
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+git diff --check
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/message ./internal/store -run 'TestBuildMarkReadRPCParamsValidatesMessageIDs|TestBuildMarkReadRPCParamsRequiresMessageIDs|TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestReadHistoryFromCacheByPeerDIDs|Test.*History|TestMessageQueryHelpersLookupAndMarkReadRespectOwner|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates' -count=1
+```
+
+Observed results:
+
+- Python probe/wrapper syntax check passed.
+- Rust formatting, package check, binary build, and whitespace checks passed.
+- Rust focused test counts: `msg_ws_history_live_contract` 4 passed,
+  `msg_ws_mark_read_live_contract` 5 passed,
+  `msg_ws_proxy_live_contract` 2 passed,
+  `msg_ws_inbox_live_contract` 5 passed, and
+  `message_ws_proxy_contract` 3 passed.
+- Go focused reference tests passed for `internal/message` and
+  `internal/store`.
+- `awiki-system-test` focused selector
+  `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds`
+  finished with 1 passed, 0 failed, and 0 skipped in 6.77s.
+- The pytest wrapper now asserts both `LISTENER_WS_LOCAL_VERIFY_OK` and
+  `LISTENER_WS_HISTORY_MARK_READ_OK` in the probe stdout.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- Pytest cache provider was disabled with `-p no:cacheprovider` to avoid
+  unnecessary intermediate cache output.
+
+Coverage boundary:
+
+- The probe starts `runtime listener run`, waits for Alice/Bob/Carol WebSocket
+  sessions, sends a real Bob->Alice direct message through a Rust subprocess in
+  websocket mode, waits for Alice's foreground listener to persist it into
+  isolated SQLite, verifies `msg inbox` sees it, verifies
+  `msg history --with <bob did>` sees it, marks the message read, then verifies
+  a scoped unread direct inbox no longer returns that message.
+- This promotes only the foreground listener/local bridge happy-path evidence
+  for ordinary direct history and mark-read. It does not prove HTTP fallback
+  warnings, bridge+HTTP double-failure behavior, group WebSocket paths,
+  attachment WebSocket paths, secure direct WebSocket execution, mail
+  notification rows, group inbox rows, Windows named-pipe I/O, macOS/Windows
+  service-manager behavior, or full repository-wide `awiki-system-test`
+  acceptance.
+- Mail-related system-test selectors remain deferred and must not be reported
+  as passed from this listener probe.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path, and
+TLS/transport behavior continues to use the existing std/Rustls implementation.
+
 ## 2026-05-17 Broad Non-Mail System Regression Refresh
 
 Timestamp: 2026-05-17T21:15:00+0800.
