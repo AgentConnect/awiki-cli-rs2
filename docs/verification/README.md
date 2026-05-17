@@ -2,6 +2,79 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Runtime Listener Host-Notify System Evidence
+
+Timestamp: 2026-05-17T19:15:00+0800.
+
+Scope: promote the foreground listener notification execute/handler rows and
+the OpenClaw host-notify delivery-sink row to scoped `system_verified` using
+real Rust subprocess `awiki-system-test` probes. The probes start
+`runtime listener run`, connect to the configured message-service v2 WebSocket
+stack, receive an incoming direct notification, persist it to the isolated
+SQLite cache, and deliver the resulting host notification through a loopback
+OpenClaw webhook route.
+
+System-test coverage used:
+
+- `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds`
+  starts the Rust foreground listener for seeded identities, sends a direct
+  message through the real Rust CLI, waits for the listener to persist the
+  received content into `awiki-cli.db`, verifies `msg inbox` observes that
+  cached message, and exercises the secure-direct listener replay path when the
+  configured identities support it.
+- `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_identity_reports_registration_error`
+  verifies the foreground listener reports the expected registration-readiness
+  error for a local-only identity.
+- `tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py::test_awiki_cli_host_notify_openclaw_local_probe_succeeds`
+  configures `host_notify.enabled=true`, `sink=openclaw`, a loopback webhook
+  URL, and a persisted OpenClaw route; starts `runtime listener run`; sends a
+  direct message; verifies the listener stores the message; verifies a webhook
+  POST reaches `/hooks/agent` with bearer token, `deliver=true`, channel
+  `telegram`, target `123456`, and the expected AWiki prompt; and verifies the
+  fake legacy OpenClaw binary was not used.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py -ra -q
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_host_notify_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
+cd ../awiki-cli && go test ./internal/runtime/listener ./internal/store -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestHandleNotificationDispatchesMailNotificationToSink|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage|TestStoreMessageAndThreadView|Test.*Contact' -count=1
+cd ../awiki-cli && go test ./internal/runtime/listener -run 'Test(BuildOpenClawHookRequestIncludesChannelDelivery|BuildOpenClawEventTextUsesMainAgentSessionFormat|BuildOpenClawEventTextUsesMailFormat|BuildOpenClawHookRequestIncludesMailPrompt|NewOpenClawHostNotifySinkRejectsNonLoopbackHookURL|NewOpenClawHostNotifySinkAllowsEmptyToken|OpenClawHostNotifySinkNotifyUsesRouteRegistry)' -count=1
+```
+
+Observed results:
+
+- System-test listener/OpenClaw selectors: 3 passed, 0 failed, 0 skipped in
+  12.62s.
+- Rust `runtime_listener_notification_execute_contract`: 6 passed, 0 failed.
+- Rust `runtime_listener_notification_handler_contract`: 3 passed, 0 failed.
+- Rust `runtime_openclaw_host_notify_contract`: 11 passed, 0 failed.
+- Rust `openclaw_webhook` filter: 1 passed, 0 failed.
+- Go focused listener/store tests: passed.
+- Go focused OpenClaw host-notify tests: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The probes use the configured message-service v2 endpoints from
+  `awiki-system-test` helper configuration, isolated temporary awiki workspaces,
+  and loopback webhook capture for OpenClaw delivery. They do not require a real
+  OpenClaw process, mail-service selectors, Hermes, or platform service-manager
+  permissions.
+
+Boundary note: this is system-test evidence for direct incoming foreground
+listener persistence plus OpenClaw host-notify delivery. It does not prove
+mail-system acceptance, group/group-state live notification delivery,
+Hermes host-notify POST delivery, noop/log/file sink delivery in a foreground
+listener, Windows named-pipe listener I/O, or platform service-manager
+execution. Mail-related system-test selectors remain explicitly deferred by the
+current port plan.
+
 ## 2026-05-17 Update Policy System Evidence
 
 Timestamp: 2026-05-17T18:25:00+0800.
