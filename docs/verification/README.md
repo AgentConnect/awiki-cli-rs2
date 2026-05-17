@@ -2,6 +2,59 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Runtime Host-Notify Enable/Disable System Selector
+
+Timestamp: 2026-05-17T14:27:45+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for
+`runtime host-notify enable` and `runtime host-notify disable`, closing the
+previous system-test coverage gap for this already translated command pair.
+
+System-test change:
+
+- Added
+  `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_enable_disable_round_trip`.
+- Updated `tests_v2/runtime/CLAUDE.md` to include host-notify enable/disable
+  persistence coverage in the runtime test directory description.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_enable_disable_round_trip -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/runtime/test_runtime_cli.py -ra -q
+```
+
+Observed results:
+
+- Focused selector: 1 passed, 0 failed, 0 skipped in 1.21s.
+- Runtime CLI file: 10 passed, 0 failed, 0 skipped in 10.38s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace and did not require
+  mail-service, message-service local topology, tenant env gates, Hermes, or
+  real user service-manager permissions.
+
+Coverage:
+
+- Verifies `runtime host-notify config set --sink file` persists the sink.
+- Verifies `runtime host-notify disable` writes
+  `host_notify.enabled=false`, preserves `sink=file`, returns listener
+  host-notify context, and emits a host-notify change warning.
+- Verifies `runtime host-notify enable` writes `host_notify.enabled=true`,
+  preserves `sink=file`, returns listener host-notify context, and emits a
+  host-notify change warning.
+- Verifies `runtime host-notify config show` observes the final persisted
+  enabled/sink state.
+
+Boundary note: this is system-test evidence for the host-notify enable/disable
+CLI surface only. The broader runtime listener platform service-manager
+execution boundary remains tracked separately and must not be inferred from
+this selector.
+
 ## 2026-05-17 Full tests_v2 Rust Run Mail-Service Environment Blocker
 
 Timestamp: 2026-05-17T19:45:00+0800.
