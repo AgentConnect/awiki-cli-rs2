@@ -10,7 +10,7 @@ const REPLACE_DID_HINT: &str =
 
 impl App {
     pub fn run_id_replace_did(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let is_public = optional_bool_flag(command, "is-public")?;
         let is_agent = optional_bool_flag(command, "is-agent")?;
         let role = changed_string_flag(command, "role");

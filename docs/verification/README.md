@@ -14,6 +14,124 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Identity Replace-DID Workspace Upgrade Hook
+
+Timestamp: 2026-05-18T02:44:01+0800.
+
+Scope: wire Go `internal/cli/id.go` `identityService()` workspace-upgrade
+behavior into Rust `id replace-did`. Go parses the local replace-DID flags,
+constructs `identityService()`, and only then enters dry-run planning or
+`Service.ReplaceDID`. `identityService()` calls `resolveConfigForWorkspace()`,
+so non-dry-run Rust `id replace-did` must migrate legacy `config.json` before
+the first selected/active identity lookup boundary.
+
+Rust change:
+
+- `crates/awiki-cli/src/app/id_replace_did_handlers.rs`: `id replace-did` now
+  calls `resolve_config_for_workspace()` before dry-run planning or live
+  replace-DID execution. The shared resolver still skips migration for global
+  `--dry-run`, matching Go.
+- `crates/awiki-cli/tests/identity_replace_did_upgrade_contract.rs`: added
+  `replace_did_migrates_legacy_config_json_before_active_identity_boundary_like_go`.
+  The test is a separate 153-line file so existing large identity tests do not
+  grow past the default 1200-line review-size cap.
+
+System-test change:
+
+- Added
+  `tests_v2/id/test_identity_cli.py::test_id_replace_did_rust_migrates_legacy_config_json_before_identity_boundary`.
+- Updated `tests_v2/id/CLAUDE.md` to mention the Rust `id replace-did` legacy
+  config workspace-upgrade coverage before active identity lookup.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt
+cargo +1.79.0 test -p awiki-cli --test identity_replace_did_upgrade_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cargo +1.79.0 test -p awiki-cli --test identity_replace_did_live_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/cli ./internal/identity ./internal/upgrade -run 'Test.*ReplaceDID|Test.*Identity|Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/id/test_identity_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/id/test_identity_cli.py::test_id_replace_did_rust_migrates_legacy_config_json_before_identity_boundary -ra -q
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+wc -l crates/awiki-cli/src/app/id_replace_did_handlers.rs crates/awiki-cli/tests/identity_contract.rs crates/awiki-cli/tests/identity_replace_did_live_contract.rs crates/awiki-cli/tests/identity_replace_did_upgrade_contract.rs docs/parity-matrix.md docs/verification/README.md
+cd /home/ecs-user/awiki-space/awiki-system-test
+wc -l tests_v2/id/test_identity_cli.py tests_v2/id/CLAUDE.md
+```
+
+Observed results:
+
+- Rust formatting passed.
+- Focused Rust replace-DID migration selector passed: 1 passed, 0 failed.
+- Full Rust `identity_contract` passed: 17 passed, 0 failed.
+- Rust live replace-DID contract passed: 4 passed, 0 failed.
+- Rust package check passed.
+- `xtask check-structure` passed with no undocumented Rust file over the
+  1200-line soft cap.
+- Go focused reference tests passed:
+  `internal/cli` 11.421s, `internal/identity` 0.133s, and
+  `internal/upgrade` 0.068s.
+- Python syntax check for `tests_v2/id/test_identity_cli.py` passed.
+- Focused `awiki-system-test` selector
+  `test_id_replace_did_rust_migrates_legacy_config_json_before_identity_boundary`
+  passed: 1 passed, 0 failed, 0 skipped in 4.37s.
+- System-test configuration context: `AWIKI_CLI_UNDER_TEST=rust`,
+  `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`,
+  `AWIKI_CLI_UPDATE_CACHE_ONLY=1`, `PYTHONDONTWRITEBYTECODE=1`, and
+  `pytest -p no:cacheprovider`.
+- Dependency audit found existing Rustls/webpki/ring, base64/sha2/hmac, and
+  approved `rusqlite`/`libsqlite3-sys` entries; no OpenSSL/native-tls stack or
+  new dependency was added.
+- Line counts after the slice: `id_replace_did_handlers.rs` 95,
+  `identity_contract.rs` 1191,
+  `identity_replace_did_live_contract.rs` 744,
+  `identity_replace_did_upgrade_contract.rs` 153,
+  `test_identity_cli.py` 1165, and `tests_v2/id/CLAUDE.md` 13.
+
+Coverage:
+
+- Verifies non-dry-run `id replace-did` migrates a legacy `config.json`-only
+  workspace before returning the local `not_found` active-identity boundary:
+  `identity not found: no active identity is configured`.
+- Verifies migrated `config.yaml` keeps legacy runtime mode, service base URL,
+  and DID domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, a
+  non-empty upgrade ID, and a backup directory containing `config.json.bak`
+  equal to the seeded legacy config.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies the active-identity boundary does not create SQLite DB state,
+  listener pid files, or runtime socket artifacts.
+- Re-runs adjacent live replace-DID Rust coverage so the resolver change does
+  not regress authenticated replacement, no-JWT bootstrap, optional field
+  mapping, backup-before-remote ordering, or local SQLite rebind behavior.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch in `id replace-did`, not live replace-DID
+HTTP behavior through a legacy-config workspace. It does not separately prove
+workspace migration k1 replacement RPCs, rollback, cleanup command execution,
+or mail-service selectors. Mail-related system-test cases remain deferred/gated
+and must not be counted as passed.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged. The existing dependency surface continues to use Rustls for TLS and
+the approved `rusqlite`/`libsqlite3-sys` SQLite path; the audit output contains
+no OpenSSL or native-tls entries.
+
 ## 2026-05-18 Identity Register Workspace Upgrade Hook
 
 Timestamp: 2026-05-18T02:27:56+0800.
