@@ -310,27 +310,44 @@ OpenSSL/native-tls introduction.
 ## 2026-05-18 Runtime Listener Saved-Status Public Selector
 
 Scope: add scoped `system_verified` parity evidence for public
-`runtime listener status` stopped/offline saved-status merge behavior, without
-requiring platform service-manager permissions or mail services.
+`runtime listener status` stopped/offline saved-status merge behavior and the
+adjacent `runtime status` aggregate warning envelope, without requiring
+platform service-manager permissions or mail services.
+
+2026-05-18 update: the same selector now also proves Go's top-level warning
+promotion for both `runtime listener status` and `runtime status`. Go passes
+`status.Warnings` to `renderSuccess` for both commands; Rust now extracts the
+computed `data.listener.warnings` list and passes it to the top-level success
+envelope for both public handlers.
 
 System-test change:
 
 - `tests_v2/runtime/test_runtime_cli.py`: added
   `test_runtime_listener_status_merges_saved_sessions_and_host_notify_without_service_manager`.
-  The selector seeds `listener.status.json` in an isolated workspace, runs the
-  real Rust subprocess `runtime listener status`, and verifies saved
+  The selector seeds `listener.status.json` in an isolated workspace, runs real
+  Rust subprocesses for `runtime listener status` and `runtime status`, and
+  verifies saved
   `pid`/`boot_id`/`started_at`/`sessions` plus `host_notify.last_error` are
   visible in the public envelope.
 - The selector also verifies stopped listener semantics: configured
   host-notify `enabled`/`sink`/default file path/OpenClaw hook remain in effect
   while the saved running-only `sink`/`file_path`/`hook_url` values do not
   override them.
+- The selector now verifies both public commands include the listener service,
+  listener socket, and disconnected-session warnings in the top-level envelope
+  like Go.
 - `tests_v2/runtime/CLAUDE.md`: recorded the new offline listener saved-status
   merge coverage.
 
-Rust documentation change:
+Rust repository change:
 
-- `docs/parity-matrix.md`: added a scoped `system_verified` row for public
+- `crates/awiki-cli/src/app/runtime_handlers.rs`: `run_runtime_status` and
+  `run_runtime_listener_status` now render the already-computed listener status
+  once and promote its `warnings` array into the top-level success envelope.
+- `crates/awiki-cli/tests/runtime_contract.rs`: the saved-status contract now
+  asserts top-level warning propagation for both `runtime listener status` and
+  `runtime status`.
+- `docs/parity-matrix.md`: added/updated a scoped `system_verified` row for public
   stopped/offline `runtime listener status` saved-status merge evidence, while
   keeping the broader listener status/files helper row at `unit_verified` for
   PID mismatch, running-only host-notify override, file helper permissions, and
@@ -339,11 +356,13 @@ Rust documentation change:
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestSessionWarnings|TestHasDisconnectedSessions|TestMergeSavedRuntimeStatus' -count=1
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener ./internal/cli -run 'TestSessionWarnings|TestHasDisconnectedSessions|TestMergeSavedRuntimeStatus|TestRuntimeDryRunPlans' -count=1
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli listener --locked
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_listener_status_merges_saved_sessions_and_host_notify_without_service_manager -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
 cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
@@ -351,16 +370,18 @@ cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
 
 Observed results:
 
-- Go focused listener reference tests: passed for
-  `internal/runtime/listener` in 0.004s.
+- Go focused listener/runtime reference tests: `internal/runtime/listener`
+  passed in 0.009s and `internal/cli` passed in 5.348s.
 - Rust focused runtime contract:
   `listener_status_merges_saved_sessions_and_host_notify_state`: 1 passed,
-  0 failed, 0 ignored, 11 filtered out in 0.12s.
+  0 failed, 0 ignored, 11 filtered out in 0.07s.
 - Rust filtered `listener` test run: 27 passed, 0 failed, 0 ignored, with the
   remaining tests filtered; this included the saved-status/session-warning
   unit guards plus adjacent listener helper guards.
 - Python compile check for `tests_v2/runtime/test_runtime_cli.py`: passed.
-- Focused runtime system selector: 1 passed, 0 failed, 0 skipped in 186.84s.
+- Focused runtime system selector: 1 passed, 0 failed, 0 skipped in 0.24s.
+- Rust formatting check: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
 - `xtask check-structure`: passed; no undocumented Rust file over 1200 lines.
 - `git diff --check` passed in both `awiki-cli-rs2` and `awiki-system-test`.
 
@@ -383,6 +404,9 @@ Coverage:
   saved-status merge behavior: saved PID, boot ID, start timestamp, sessions,
   disconnected-session warnings, and `host_notify.last_error` are surfaced
   through the real CLI JSON envelope.
+- Public `runtime listener status` and `runtime status` now promote the same
+  listener warnings to top-level `warnings`, matching Go's `status.Warnings`
+  envelope behavior.
 - The system selector proves Go's stopped-listener host-notify boundary:
   saved `host_notify.sink`, `file_path`, and `hook_url` do not override
   configured status unless current listener status is running.

@@ -13,15 +13,17 @@ use std::fs;
 impl App {
     pub fn run_runtime_status(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        let listener = runtime::current_listener_status(&resolved);
+        let warnings = listener_warnings(&listener);
         self.render_success(
             "awiki-cli runtime status",
             &resolved,
             json!({
                 "runtime": runtime::runtime_value(&resolved),
-                "listener": runtime::current_listener_status(&resolved),
+                "listener": listener,
             }),
             "Runtime status loaded",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -145,12 +147,14 @@ impl App {
 
     pub fn run_runtime_listener_status(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
+        let listener = runtime::current_listener_status(&resolved);
+        let warnings = listener_warnings(&listener);
         self.render_success(
             "awiki-cli runtime listener status",
             &resolved,
-            json!({ "listener": runtime::current_listener_status(&resolved) }),
+            json!({ "listener": listener }),
             "Listener status loaded",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -677,6 +681,17 @@ fn listener_config_snapshot(resolved: &Resolved) -> Value {
         "auto_install": resolved.runtime_listener_auto_install,
         "auto_start": resolved.runtime_listener_auto_start,
     })
+}
+
+fn listener_warnings(listener: &Value) -> Vec<String> {
+    listener
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
 }
 
 fn validate_runtime_mode_for_setup(mode: &str) -> Result<(), ExitError> {

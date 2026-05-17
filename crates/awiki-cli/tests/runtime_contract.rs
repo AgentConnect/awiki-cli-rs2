@@ -136,6 +136,20 @@ fn listener_status_merges_saved_sessions_and_host_notify_state() {
         .any(|warning| warning.as_str().unwrap_or_default().contains(
             "websocket session for identity bob is disconnected: refresh websocket session JWT: unauthorized"
         )));
+    assert_top_level_warning_contains(
+        &envelope,
+        "websocket session for identity bob is disconnected: refresh websocket session JWT: unauthorized",
+    );
+
+    let status = awiki_cmd_with_workspace(&["runtime", "status"], workspace.path());
+    assert_success(&status);
+    let envelope = success_json(&status);
+    assert_eq!(envelope["summary"], "Runtime status loaded");
+    assert_eq!(envelope["data"]["listener"]["pid"], 42);
+    assert_top_level_warning_contains(
+        &envelope,
+        "websocket session for identity bob is disconnected: refresh websocket session JWT: unauthorized",
+    );
 }
 
 #[test]
@@ -1145,5 +1159,15 @@ fn assert_warnings_absent_or_empty(envelope: &Value) {
     assert!(
         warnings.as_array().is_some_and(Vec::is_empty),
         "warnings should be absent or empty: {envelope}"
+    );
+}
+
+fn assert_top_level_warning_contains(envelope: &Value, needle: &str) {
+    let warnings = envelope["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.as_str().unwrap_or_default().contains(needle)),
+        "warnings should contain {needle:?}; got {warnings:?}"
     );
 }
