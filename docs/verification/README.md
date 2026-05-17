@@ -2,6 +2,76 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Group E2EE Remove/Leave System Evidence
+
+Timestamp: 2026-05-17T19:05:00+0800.
+
+Scope: promote the scoped live group E2EE remove/leave/process-leave-request
+row to `system_verified` using the focused lifecycle `awiki-system-test`
+selector, plus fresh Rust/Go contract checks. This does not promote
+recover-member, update-key, rejoin, WebSocket/local bridge, or foreground
+listener group E2EE paths.
+
+System-test coverage used:
+
+- `tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py::test_awiki_cli_group_e2ee_remove_revokes_member_and_keeps_plaintext_private_state_out`
+  verifies owner `group remove --e2ee` revokes Bob before post-remove plaintext
+  is released, Bob cannot read/send after removal, remaining-member repair is
+  opaque, and tested storage boundaries avoid application plaintext and private
+  MLS state.
+- `tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py::test_awiki_cli_group_e2ee_same_epoch_self_leave_is_unsupported_until_safe_flow_exists`
+  verifies same-epoch local-terminal self-leave fails closed and does not mark
+  Bob locally inactive before the owner remove path revokes him.
+- `tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py::test_awiki_cli_group_e2ee_leave_request_owner_process_revokes_member_and_repairs_remaining`
+  verifies PR-B1 `group leave --e2ee` creates a leave request and authorized
+  owner `group e2ee process-leave-request` advances the epoch, revokes Bob, and
+  repairs remaining members.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py -ra -q
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_remove_leave_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_add_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test group_e2ee_repair_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test message_group_e2ee_wire_contract --locked
+cd ../awiki-cli && go test ./internal/message -run 'TestLeaveGroupRejectsActiveOwnerFromCachedSnapshot|TestLeaveGroupE2EECreatesLeaveRequestWithoutLocalMLSLeave|TestUnsupportedGroupE2EESelfLeaveReasonDetectsNonAdvancingEpoch|TestGroupMemberMutationUsesPreMutationE2EESnapshot|TestShouldAbortGroupE2EEPendingCommitOnlyForDeterministicServiceRejection|TestPendingCommitTerminalParamsDoNotReusePrepareOperationID|TestBuildGroupE2EERemoveRPCParams|TestHTTPTransportGroupMethods|TestMLSExecProviderCommands' -count=1
+```
+
+Observed results:
+
+- System-test group E2EE lifecycle file: 3 passed, 0 failed, 0 skipped in
+  11.97s.
+- Rust `group_e2ee_remove_leave_contract`: 3 passed, 0 failed.
+- Rust `group_e2ee_add_contract`: 6 passed, 0 failed.
+- Rust `group_e2ee_repair_contract`: 1 passed, 0 failed.
+- Rust `message_group_e2ee_wire_contract`: 7 passed, 0 failed.
+- Go focused `internal/message` remove/leave/provider/transport tests: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- The selector requires hidden P6/group-E2EE APIs to be explicitly enabled and
+  uses the local sibling ANP Rust SDK `anp-mls` binary path or builds it from
+  `/home/ecs-user/awiki-space/anp/rust`.
+
+Coverage boundary:
+
+- Promoted the success/safety lifecycle boundary for owner remove, unsupported
+  self-leave fail-closed behavior, leave-request creation, owner processing of
+  leave requests, remaining-member repair, removed-member read/send denial, and
+  storage no-leak assertions in the focused system selector.
+- Failed submit/abort side-channel enrichment remains contract-only and is
+  still recorded as a future Rust API-shape decision because the current Rust
+  `Result` shape cannot return Go-style data on those failed paths.
+- Recover-member, update-key, rejoin, WebSocket/local bridge group E2EE
+  transport, foreground listener group E2EE handling, mail selectors, and full
+  repository-wide system acceptance remain separate rows.
+
 ## 2026-05-17 Group E2EE Send/Decrypt System Evidence
 
 Timestamp: 2026-05-17T18:40:00+0800.
