@@ -331,6 +331,65 @@ fn schema_lists_contracts_and_supports_space_joined_targets() {
 }
 
 #[test]
+fn schema_exposes_hidden_hermes_bridge_service_run_like_go_catalog() {
+    let bridge_output = awiki_cmd(&["schema", "runtime", "host-notify", "hermes", "bridge"]);
+    assert_success(&bridge_output);
+    let bridge = success_json(&bridge_output);
+
+    assert_eq!(
+        bridge["summary"],
+        "Static contract for runtime.host-notify.hermes.bridge"
+    );
+    assert_eq!(
+        bridge["data"]["command"]["name"],
+        "runtime.host-notify.hermes.bridge"
+    );
+    assert_eq!(bridge["data"]["command"]["use"], "bridge");
+    assert_eq!(bridge["data"]["command"]["hidden"], true);
+    assert_eq!(bridge["data"]["command"]["implemented"], false);
+    let children = bridge["data"]["children"]
+        .as_array()
+        .expect("bridge children should be an array");
+    assert!(
+        children.iter().any(|command| {
+            command["name"] == "runtime.host-notify.hermes.bridge.service-run"
+                && command["hidden"] == true
+                && command["implemented"] == true
+                && command["handler"] == "runtime.host-notify.hermes.bridge.service-run"
+        }),
+        "schema bridge children should expose hidden service-run: {children:?}"
+    );
+
+    let service_output = awiki_cmd(&[
+        "schema",
+        "runtime",
+        "host-notify",
+        "hermes",
+        "bridge",
+        "service-run",
+    ]);
+    assert_success(&service_output);
+    let service = success_json(&service_output);
+
+    assert_eq!(
+        service["summary"],
+        "Static contract for runtime.host-notify.hermes.bridge.service-run"
+    );
+    assert_eq!(
+        service["data"]["command"]["name"],
+        "runtime.host-notify.hermes.bridge.service-run"
+    );
+    assert_eq!(service["data"]["command"]["use"], "service-run");
+    assert_eq!(service["data"]["command"]["hidden"], true);
+    assert_eq!(service["data"]["command"]["implemented"], true);
+    assert_eq!(
+        service["data"]["command"]["handler"],
+        "runtime.host-notify.hermes.bridge.service-run"
+    );
+    assert!(service["data"]["children"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn validation_errors_use_json_error_envelopes_on_stderr() {
     let output = awiki_cmd(&["docs", "overview", "extra"]);
     assert_code(&output, 2);

@@ -2,6 +2,75 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Hermes Bridge Command Schema Metadata Slice
+
+Timestamp: 2026-05-17T09:11:45+08:00.
+
+Scope: align Rust static command schema metadata with Go
+`internal/cmdmeta/catalog.go` for the already-dispatchable hidden Hermes bridge
+service command.
+
+What changed:
+
+- Added the hidden `runtime.host-notify.hermes.bridge` grouping command to
+  `crates/awiki-cli/src/cmdmeta/mod.rs`, preserving Go's
+  `implemented=false` grouping-node metadata.
+- Added the hidden implemented
+  `runtime.host-notify.hermes.bridge.service-run` command spec with handler
+  `runtime.host-notify.hermes.bridge.service-run`, matching the parser and app
+  handler already present in Rust.
+- Added a focused `core_contract` test that queries both
+  `schema runtime host-notify hermes bridge` and
+  `schema runtime host-notify hermes bridge service-run`.
+- Kept visible grouping-node metadata unchanged: Go also keeps
+  `runtime.host-notify.hermes` and
+  `runtime.host-notify.openclaw.route` as `implemented=false` grouping nodes
+  while their executable children are implemented.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 test -p awiki-cli --test core_contract schema_exposes_hidden_hermes_bridge_service_run_like_go_catalog --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+cd ../awiki-cli && go test ./internal/cmdmeta ./internal/cli -run 'TestCatalog|TestCommandFromSpec|TestBuildRoot|TestIsUpdateExemptCommandAllowsListenerServiceRun' -count=1
+wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/core_contract.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
+```
+
+Observed results:
+
+- Focused hidden Hermes bridge schema test passed.
+- Full `core_contract`: 16 passed.
+- `runtime_hermes_cli_contract`: 7 passed, preserving the hidden
+  `service-run` executable behavior.
+- Go focused `internal/cmdmeta` and `internal/cli` tests passed.
+- `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
+  check-structure`, and `git diff --check` passed.
+- Dependency audit showed only existing allowed hits: Rustls/ring/webpki,
+  transitive `libc`, and the approved `rusqlite`/`libsqlite3-sys` bundled
+  SQLite toolchain entries (`cc`, `pkg-config`, `vcpkg`). No OpenSSL,
+  `native-tls`, bundled OpenSSL, platform service, WebSocket, YAML, or new HTTP
+  dependency was added.
+- Touched Rust source/test files remain below the default 1200-line cap:
+  `cmdmeta/mod.rs` 310 lines, `core_contract.rs` 752 lines, and
+  `runtime_hermes_cli_contract.rs` 475 lines. No file-size exception is
+  needed.
+
+Boundary note: this is schema/catalog metadata only. It does not implement
+Hermes platform service-manager install/start/stop/restart, real service
+status lookup, bridge health probing, non-dry-run setup `Apply`, release asset
+packaging, or full `awiki-system-test` Hermes acceptance.
+
+Dependency note: no dependency was added. The slice keeps TLS on the existing
+Rustls-first path and preserves the already approved `rusqlite + bundled`
+SQLite lane.
+
 ## 2026-05-17 Message Secure Prekey Read-Path Slice
 
 Timestamp: 2026-05-17T11:20:00+0800.
