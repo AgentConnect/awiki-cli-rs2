@@ -409,7 +409,7 @@ impl App {
     }
 
     pub fn run_id_register(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let params = identity::RegisterParams {
             identity_name: self.globals.identity.clone(),
             handle: string_flag(command, "handle"),
