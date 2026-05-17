@@ -2,6 +2,51 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Mail Attachment Regression Coverage Slice
+
+Timestamp: 2026-05-17T08:47:00+0800.
+
+Scope: strengthen regression coverage for the already translated Go
+`internal/cli/mail.go` `runMailAttachmentDownload` local post-RPC behavior.
+
+What changed:
+
+- Added coverage that an existing output file is overwritten and truncated
+  without changing its existing Unix permissions, matching Go `os.WriteFile`.
+- Added coverage that empty `content_base64` fails before writing the output
+  file with the Go `internal_error` message and hint.
+- Added coverage that invalid base64 fails before writing the output file with
+  the Go `attachment base64 decode failed:` message prefix and hint.
+- No production code changed.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract mail_attachment_live_overwrites_existing_output_like_go --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract mail_attachment_live_rejects_empty_content_like_go --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract mail_attachment_live_rejects_invalid_base64_like_go --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_wire_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+go test ./internal/cli ./internal/mail -run 'TestMail|TestServiceAttachmentValidatesIndex|TestNewClientRequiresMailServiceURL' -count=1
+wc -l crates/awiki-cli/tests/mail_live_contract.rs docs/verification/README.md docs/parity-matrix.md
+```
+
+Observed results:
+
+- Focused new mail attachment regression tests passed.
+- Full `mail_live_contract`, `mail_contract`, and `mail_wire_contract` passed.
+- Go focused CLI/mail guard passed.
+- Format check, package check, structure check, and whitespace check passed.
+- `mail_live_contract.rs` is 675 lines, below the default 1200-line cap.
+
+Dependency note: no Rust dependency was added.
+
 ## 2026-05-17 Docs Topic Referenced Assets Slice
 
 Timestamp: 2026-05-17T08:30:00+0800.

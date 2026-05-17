@@ -224,6 +224,110 @@ fn mail_attachment_live_decodes_base64_and_writes_output_like_go() {
     }
 }
 
+#[test]
+fn mail_attachment_live_overwrites_existing_output_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"filename":"report.txt","content_type":"text/plain","content_base64":"bmV3Cg==","size":4},"id":"req-1"}"#,
+    )]);
+    write_mail_config(workspace.path(), &server.base_url());
+    let output_path = workspace.path().join("existing.txt");
+    std::fs::write(&output_path, "old content that must be truncated").expect("seed output");
+    #[cfg(unix)]
+    std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(0o644))
+        .expect("seed mode");
+
+    let output = awiki_cmd_owned(
+        &mail_attachment_download_args(&output_path),
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["data"]["path"],
+        output_path.to_string_lossy().to_string()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&output_path).expect("attachment output"),
+        "new\n"
+    );
+    #[cfg(unix)]
+    {
+        let file_mode = std::fs::metadata(&output_path)
+            .expect("attachment metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            file_mode, 0o644,
+            "Go os.WriteFile truncates existing files without chmodding them"
+        );
+    }
+}
+
+#[test]
+fn mail_attachment_live_rejects_empty_content_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"filename":"empty.txt","content_base64":"","size":0},"id":"req-1"}"#,
+    )]);
+    write_mail_config(workspace.path(), &server.base_url());
+    let output_path = workspace.path().join("empty.txt");
+
+    let output = awiki_cmd_owned(
+        &mail_attachment_download_args(&output_path),
+        workspace.path(),
+    );
+
+    assert_code(&output, 1);
+    assert!(
+        !output_path.exists(),
+        "empty content should fail before writing output"
+    );
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_eq!(envelope["error"]["message"], "attachment content is empty");
+    assert_contains(
+        &envelope["error"]["hint"],
+        "Try fetching the attachment again or verify the mail service response.",
+    );
+}
+
+#[test]
+fn mail_attachment_live_rejects_invalid_base64_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"filename":"bad.txt","content_base64":"not-base64!","size":11},"id":"req-1"}"#,
+    )]);
+    write_mail_config(workspace.path(), &server.base_url());
+    let output_path = workspace.path().join("bad.txt");
+
+    let output = awiki_cmd_owned(
+        &mail_attachment_download_args(&output_path),
+        workspace.path(),
+    );
+
+    assert_code(&output, 1);
+    assert!(
+        !output_path.exists(),
+        "invalid base64 should fail before writing output"
+    );
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_contains(
+        &envelope["error"]["message"],
+        "attachment base64 decode failed:",
+    );
+    assert_contains(
+        &envelope["error"]["hint"],
+        "Ensure the mail service response is valid.",
+    );
+}
+
 fn register_ready_mail_identity(
     workspace: &Path,
     identity_name: &str,
@@ -297,6 +401,22 @@ fn awiki_trace_cmd(args: &[&str], workspace: &Path) -> Output {
         .map(|arg| (*arg).to_string())
         .collect::<Vec<_>>();
     awiki_trace_cmd_owned(&args, workspace)
+}
+
+fn mail_attachment_download_args(output_path: &Path) -> Vec<String> {
+    vec![
+        "--identity".to_string(),
+        "alice-mail".to_string(),
+        "mail".to_string(),
+        "attachment".to_string(),
+        "download".to_string(),
+        "--message-id".to_string(),
+        "msg-1".to_string(),
+        "--attachment-index".to_string(),
+        "0".to_string(),
+        "--output".to_string(),
+        output_path.to_string_lossy().into_owned(),
+    ]
 }
 
 fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
