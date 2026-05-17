@@ -2,6 +2,79 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Runtime Hermes Host-Notify System Selectors
+
+Timestamp: 2026-05-17T14:52:23+0800.
+
+Scope: add and run Rust subprocess `awiki-system-test` selectors for local
+Hermes host-notify CLI surfaces that were already translated and covered by
+Rust contract tests: `guide`, `status`, `set`, `set-secret`, `clear-secret`,
+and the local-file half of `setup`.
+
+System-test change:
+
+- Added
+  `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_guide_status_and_config_commands_work`.
+- Added
+  `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_setup_writes_local_files`.
+- Updated `tests_v2/runtime/CLAUDE.md` to include Hermes local coverage in the
+  runtime test directory description.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_guide_status_and_config_commands_work tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_setup_writes_local_files -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/runtime/test_runtime_cli.py -ra -q
+```
+
+Observed results:
+
+- Focused Hermes selectors: 2 passed, 0 failed, 0 skipped in 2.30s.
+- Runtime CLI file: 12 passed, 0 failed, 0 skipped in 11.82s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- Each selector used an isolated `awiki-cli` workspace.
+- The Hermes selectors set `HERMES_HOME` to an isolated runtime directory so
+  setup writes local test files only.
+- They did not require mail-service, message-service local topology, tenant env
+  gates, real Hermes, registered identities, or real user service-manager
+  permissions.
+
+Coverage:
+
+- Verifies `runtime host-notify hermes guide` returns Go-shaped command,
+  summary, current awiki config, recommended verify commands, and warning
+  text for a non-Hermes sink.
+- Verifies invalid `--deliver` values return `invalid_argument`.
+- Verifies `runtime host-notify hermes status` returns readiness booleans,
+  `ready=false`, and local route state before and after Hermes config changes.
+- Verifies `runtime host-notify config set --sink hermes` plus
+  `runtime host-notify hermes set` expose the configured Hermes runtime view.
+- Verifies `set-secret`, `config show`, and `clear-secret` redact the plaintext
+  secret while preserving `secret_configured` and `secret_source`.
+- Verifies `runtime host-notify hermes setup --dry-run` reports the managed
+  local plan and writes no local Hermes config.
+- Verifies non-dry-run `setup` writes isolated awiki config and
+  `HERMES_HOME/config.yaml`, reports host-notify/local-Hermes/passive-bridge
+  data, includes status next-step guidance, and keeps the bridge-service
+  deferred warning.
+
+Boundary note: these selectors cover local Hermes CLI read/write/setup file
+behavior only. They do not prove real Hermes delivery, real bridge health
+probing, platform service install/start/restart, owned service-manager status,
+or mail notification acceptance.
+
+Dependency note: no Rust dependency was added. The exercised paths reuse the
+existing local config writer, local Hermes route writer, passive listener
+status helpers, and Rustls-first project dependency policy. They do not add
+OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates,
+async runtimes, YAML crates, platform service libraries, ANP SDK network/default
+features, or a new SQLite backend.
+
 ## 2026-05-17 Debug DB Handle-History System Selector
 
 Timestamp: 2026-05-17T15:04:20+0800.
