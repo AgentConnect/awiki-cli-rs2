@@ -4653,20 +4653,38 @@ does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`,
 WebSocket crates, Tokio, YAML crates, platform service libraries, new E2EE
 provider dependencies, or a new SQLite backend.
 
-## 2026-05-16 Message Secure Status/Failed/Drop Command Slice
+## 2026-05-17 Message Secure Status/Failed/Drop System Selector
 
-Status: unit verified.
+Status: system verified for the local `msg secure status` / `failed` / `drop`
+subprocess subset.
 
 Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 test -p awiki-cli --test message_secure_commands_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_secure_status_failed_live_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
-git diff --check
+git diff --check -- docs/parity-matrix.md docs/verification/README.md
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 ```
+
+System-test verification:
+
+```bash
+cd /home/ecs-user/awiki-space/awiki-system-test
+uv run python -m py_compile tests_v2/cli/test_awiki_cli_direct_local.py
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+AWIKI_CLI_UPDATE_CACHE_ONLY=1 \
+uv run pytest tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_failed_and_drop_use_local_outbox_without_services -q
+```
+
+System-test result:
+
+- Focused selector: `1 passed in 1.32s`.
+- Python compile check passed.
 
 Go reference verification:
 
@@ -4702,19 +4720,28 @@ Scope:
   to the active owner/credential before mutation, set `local_status` to
   `dropped`, return `{ "outbox_id": id, "status": "dropped" }`, and summarize
   with `Dropped secure outbox record <id>`.
+- Adds an awiki-system-test subprocess selector that initializes only the local
+  SQLite schema through `debug db query`, seeds ready local DID identities plus
+  `e2ee_outbox` rows, and verifies `msg secure status`, `msg secure failed`,
+  and `msg secure drop` without message-service, user-service, mail-service,
+  registered identity, listener, or service-manager dependencies.
+- The selector proves status rows are ordered by `updated_at DESC`, count only
+  the active identity's rows, and redact `owner_did`, `credential_name`,
+  `plaintext`, and `metadata`; failed rows remain unredacted but filtered to the
+  active identity; drop mutates only the selected active-identity row while a
+  second identity's failed row remains untouched.
 - Preserves missing-row parity with Go's `sql.ErrNoRows` path by surfacing the
   store `query returned no rows` error through the generic internal-error lane
   rather than mapping it to `message not found`.
 - Keeps files under the default review-size cap: `secure_commands.rs` and the
   focused test file remain below 1200 lines.
-- A code-writing Native Agent contributed the focused test expansion under the
-  required GPT-5.5 xhigh configuration and a single-file write scope.
 
-Boundary note: this slice does not implement `SecureRetry` queued flush
-execution, `SecureInit`, `SecureRepair`, `queueSecureOutboxRecord`,
-`currentSecureSessionID`, ANP SDK E2EE clients, session-store mutation,
-WebSocket RPC, prekey publishing, or `awiki-system-test` secure-direct
-acceptance.
+Boundary note: this system selector covers only local status/failed/drop. It
+does not cover `SecureRetry` queued flush execution, `SecureInit`,
+`SecureRepair`, HTTP sender execution, WebSocket/local bridge execution,
+runtime listener E2EE processing, full secure-direct acceptance,
+`queueSecureOutboxRecord`, `currentSecureSessionID`, ANP SDK E2EE clients,
+session-store mutation, or prekey publishing.
 
 Dependency note: no dependency was added. The slice reuses existing identity,
 message, store, `serde_json`, filesystem, and approved `rusqlite + bundled`
