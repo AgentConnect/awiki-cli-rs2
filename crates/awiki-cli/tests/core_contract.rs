@@ -82,10 +82,22 @@ fn version_reports_current_build_info() {
     assert_eq!(envelope["command"], "awiki-cli version");
     assert_eq!(envelope["summary"], "Build information");
     assert_has_keys(&envelope["data"], &build_info_keys());
-    assert_eq!(envelope["data"]["version"], "dev");
-    assert_eq!(envelope["data"]["commit"], "unknown");
-    assert_eq!(envelope["data"]["build_date"], "unknown");
-    assert_eq!(envelope["data"]["cgo_enabled"], "unknown");
+    assert_eq!(
+        envelope["data"]["version"],
+        option_env!("AWIKI_CLI_VERSION").unwrap_or("dev")
+    );
+    assert_eq!(
+        envelope["data"]["commit"],
+        option_env!("AWIKI_CLI_COMMIT").unwrap_or("unknown")
+    );
+    assert_eq!(
+        envelope["data"]["build_date"],
+        option_env!("AWIKI_CLI_BUILD_DATE").unwrap_or("unknown")
+    );
+    assert_eq!(
+        envelope["data"]["cgo_enabled"],
+        option_env!("AWIKI_CLI_CGO_ENABLED").unwrap_or("unknown")
+    );
     assert_eq!(envelope["data"]["compiler"], "rustc");
     assert_non_empty_string(&envelope["data"]["go_version"], "go_version");
     assert_non_empty_string(&envelope["data"]["goos"], "goos");

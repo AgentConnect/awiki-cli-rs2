@@ -118,16 +118,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_defaults_match_go_buildinfo_contract() {
+    fn current_metadata_matches_compile_time_env_or_go_defaults() {
         let info = BuildInfo::current();
-        assert_eq!(info.version, "dev");
-        assert_eq!(info.commit, "unknown");
-        assert_eq!(info.build_date, "unknown");
-        assert_eq!(info.cgo_enabled, "unknown");
+        assert_eq!(
+            info.version,
+            option_env!("AWIKI_CLI_VERSION").unwrap_or("dev")
+        );
+        assert_eq!(
+            info.commit,
+            option_env!("AWIKI_CLI_COMMIT").unwrap_or("unknown")
+        );
+        assert_eq!(
+            info.build_date,
+            option_env!("AWIKI_CLI_BUILD_DATE").unwrap_or("unknown")
+        );
+        assert_eq!(
+            info.cgo_enabled,
+            option_env!("AWIKI_CLI_CGO_ENABLED").unwrap_or("unknown")
+        );
         assert_eq!(info.compiler, "rustc");
         assert!(!info.go_version.is_empty());
         assert!(!info.goos.is_empty());
         assert!(!info.goarch.is_empty());
+    }
+
+    #[test]
+    fn default_metadata_values_match_go_buildinfo_contract() {
+        let runtime = RuntimeInfo {
+            go_version: "rust-test".to_string(),
+            goos: "linux".to_string(),
+            goarch: "amd64".to_string(),
+            compiler: "rustc".to_string(),
+        };
+        let info = BuildInfo::from_metadata("dev", "unknown", "unknown", "unknown", runtime);
+
+        assert_eq!(info.version, "dev");
+        assert_eq!(info.commit, "unknown");
+        assert_eq!(info.build_date, "unknown");
+        assert_eq!(info.cgo_enabled, "unknown");
     }
 
     #[test]

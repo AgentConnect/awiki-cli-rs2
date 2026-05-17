@@ -2,6 +2,67 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Buildinfo Metadata Injection Slice
+
+Timestamp: 2026-05-17T10:12:43+0800.
+
+Scope: verify Go `internal/buildinfo/buildinfo.go` parity for ordinary build
+defaults and release-style metadata injection. Go uses linker variable
+injection for `Version`, `Commit`, `BuildDate`, and `CGOEnabled`; Rust now
+records the same boundary as compile-time `AWIKI_CLI_VERSION`,
+`AWIKI_CLI_COMMIT`, `AWIKI_CLI_BUILD_DATE`, and `AWIKI_CLI_CGO_ENABLED`.
+
+What changed:
+
+- `buildinfo` unit tests now accept either explicitly injected compile-time
+  metadata or Go's default `dev` / `unknown` values for `BuildInfo::current`.
+- A separate unit test locks the Go default metadata snapshot without depending
+  on the process build environment.
+- `core_contract` version assertions now compare public CLI output with the
+  compile-time metadata embedded in the test binary, preserving both ordinary
+  and injected build contracts.
+- No `build.rs`, dependency, or git/Cargo auto-probing behavior was added.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli buildinfo --locked
+AWIKI_CLI_VERSION=9.9.9 AWIKI_CLI_COMMIT=abc AWIKI_CLI_BUILD_DATE=2026-05-17T00:00:00Z AWIKI_CLI_CGO_ENABLED=0 cargo +1.79.0 test -p awiki-cli buildinfo --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract version_reports_current_build_info --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test core_contract status_reports_phase_version_paths_state_and_config --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test doctor_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/buildinfo
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+```
+
+Observed results:
+
+- Format check passed.
+- Ordinary buildinfo tests passed with Go default metadata.
+- The injected run rebuilt `awiki-cli` and verified `BuildInfo::current`
+  captured the explicit `AWIKI_CLI_*` metadata while preserving Rust
+  runtime/compiler fields.
+- Focused `version`, `status`, and `doctor` contract tests passed.
+- Structure check passed with no undocumented Rust files over the 1200-line
+  default cap.
+- `git diff --check` reported no whitespace errors.
+- Go `internal/buildinfo` tests passed.
+- Dependency audit showed only existing Rustls/ring/webpki and approved
+  `rusqlite + bundled` / `libsqlite3-sys` paths; no OpenSSL or `native-tls`
+  dependency was added.
+- An earlier injected run failed only because the old default-only assertion
+  expected `version=dev`; that failure was the evidence that compile-time
+  injection already works and the test needed to model the Go linker-variable
+  override path.
+
+Boundary note: release packaging scripts and npm/GitHub release automation are
+still separate translation lanes. This slice only records the Rust compile-time
+metadata boundary that those scripts can use.
+
 ## 2026-05-17 Rust System-Test Selector Core Smoke
 
 Timestamp: 2026-05-17T10:00:01+0800.
