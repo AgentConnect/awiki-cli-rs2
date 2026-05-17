@@ -822,9 +822,14 @@ System-test coverage used:
 - `tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds`
   configures `host_notify.enabled=true`, `sink=file`, and an isolated
   host-notify output path; starts `runtime listener run`; sends a direct
-  message; verifies the listener stores the message; and verifies the file sink
+  message; verifies the listener stores the message; verifies the file sink
   receives one newline-delimited host notification JSON event for the direct
-  incoming notification.
+  incoming notification; then creates a group, adds Bob, verifies the resulting
+  non-mail `im.group.state.changed` file-sink event for `member-activated`, sends
+  a group message from Bob, verifies Alice's SQLite group cache row, and verifies
+  the non-mail `im.group.message.received` file-sink event with Go-shaped
+  `data.message_id`, group DID, sender/recipient DIDs, text/plain content, and
+  string group event sequence.
 - `tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py::test_awiki_cli_host_notify_hermes_local_probe_succeeds`
   configures `host_notify.enabled=true`, `sink=hermes`, a loopback notify URL,
   and a test secret; starts `runtime listener run`; sends a direct message;
@@ -866,6 +871,8 @@ Observed results:
 - Python compile check for the new file-sink probe and wrapper: passed.
 - Rust `runtime_host_notify_sink_contract`: 10 passed, 0 failed.
 - Focused file-sink system selector: 1 passed, 0 failed, 0 skipped in 3.38s.
+- Focused file-sink refresh after adding group/group-state assertions: 1 passed,
+  0 failed, 0 skipped in 4.25s.
 - Python compile check for the new Hermes probe and wrapper: passed.
 - Focused Hermes host-notify system selector: 1 passed, 0 failed, 0 skipped in
   3.38s.
@@ -903,15 +910,16 @@ System-test configuration context:
 
 Boundary note: this is system-test evidence for direct incoming foreground
 listener persistence plus OpenClaw, file-sink, and Hermes-sink host-notify
-delivery. The Hermes evidence proves only direct-message HTTP POST delivery to a
-loopback capture server with HMAC validation and, separately, one direct-message
-HTTP 503 failure path that preserves the message while exposing
-`host_notify.last_error`. It does not prove mail-system acceptance,
-group/group-state live notification delivery, real Hermes service/bridge/process
-integration, noop/log sink delivery in a foreground listener, Windows
-named-pipe listener I/O, Windows/macOS service-manager execution, or full
-repository-wide `awiki-system-test` acceptance. Mail-related system-test
-selectors remain explicitly deferred by the current port plan.
+delivery. The file-sink evidence now includes direct incoming, `group.add`
+group-state, and group incoming message delivery. The Hermes evidence proves only
+direct-message HTTP POST delivery to a loopback capture server with HMAC
+validation and, separately, one direct-message HTTP 503 failure path that
+preserves the message while exposing `host_notify.last_error`. It does not prove
+mail-system acceptance, OpenClaw/Hermes group or group-state delivery, real
+Hermes service/bridge/process integration, noop/log sink delivery in a foreground
+listener, Windows named-pipe listener I/O, Windows/macOS service-manager
+execution, or full repository-wide `awiki-system-test` acceptance. Mail-related
+system-test selectors remain explicitly deferred by the current port plan.
 
 ## 2026-05-17 Update Policy System Evidence
 
