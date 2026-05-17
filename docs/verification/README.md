@@ -264,6 +264,78 @@ Dependency note: no Rust dependency was added and no Rust production file was
 changed. This refresh uses the existing std/Rustls foreground WebSocket
 transport and approved `rusqlite + bundled` local store path.
 
+## 2026-05-17 Foreground Group WebSocket Bridge Evidence
+
+Timestamp: 2026-05-17T22:08:36+0800.
+
+Scope: extend the existing foreground listener/file-sink system probe so the
+same real listener run asserts ordinary non-E2EE group `msg send --group` and
+`group messages` use the local WebSocket bridge happy path in
+`runtime.mode=websocket`. This is scoped to successful group send/list-message
+bridge execution and does not broaden fallback, E2EE, attachment, or mail
+claims.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/probes/run_awiki_cli_host_notify_file_sink_local_probe.py tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds -ra -q
+git diff --check
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 test -p awiki-cli --test msg_ws_group_live_contract --locked
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/message -run 'TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestHTTPTransportGroupMethodsUseExpectedRPCMethods|TestBuildGroupMessagesRPCParams|TestTransportSource|TestSourceWithDefault|TestWebSocketFallbackWarnings' -count=1
+```
+
+Observed results:
+
+- Python probe/wrapper syntax check passed.
+- Focused `awiki-system-test` selector
+  `tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds`
+  finished with 1 passed, 0 failed, and 0 skipped in 4.28s.
+- The pytest wrapper now asserts `HOST_NOTIFY_FILE_GROUP_WS_LOCAL_BRIDGE_OK`.
+- Rust `msg_ws_group_live_contract`: 7 passed.
+- Go focused group WebSocket/reference tests passed.
+- System-test whitespace check passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- Pytest cache provider was disabled with `-p no:cacheprovider`.
+
+Coverage boundary:
+
+- The file-sink probe starts `runtime listener run`, creates a non-E2EE group,
+  adds Bob, waits for listener readiness, sends Bob's `msg send --group` through
+  the real Rust subprocess, asserts the send output uses
+  `data.source=local_ws_cache`, waits for Alice's listener to persist the group
+  message, then asserts Alice's `group messages --group` output also uses
+  `data.source=local_ws_cache` and contains the same message.
+- The same run continues to prove direct incoming, group-state add, and group
+  incoming host-notify JSONL delivery for the file sink.
+- This is successful foreground listener/local bridge evidence for ordinary
+  non-E2EE group send and message listing only. It does not prove group
+  WebSocket fallback/error branches, group E2EE WebSocket transport, attachment
+  WebSocket transport, mail acceptance, OpenClaw/Hermes group delivery, or full
+  repository-wide `awiki-system-test` acceptance.
+- Mail-related system-test selectors remain deferred and must not be reported
+  as passed from this probe.
+
+Dependency note: no Rust dependency was added and no Rust production file was
+changed. The evidence reuses the existing std/Rustls foreground listener
+transport and approved `rusqlite + bundled` local store path.
+
 ## 2026-05-17 Broad Non-Mail System Regression Refresh
 
 Timestamp: 2026-05-17T21:15:00+0800.
