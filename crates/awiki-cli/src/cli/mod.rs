@@ -210,6 +210,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "debug.db.query" => app.run_debug_db_query(command),
         "debug.db.import-v1" => app.run_debug_db_import_v1(command),
         "debug.db.handle-history" => app.run_debug_db_handle_history(command),
+        other if is_go_stub_command(other) => Err(go_stub_error(other)),
         other => Err(stub_error(other)),
     }
 }
@@ -285,6 +286,9 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["group", "e2ee", "rejoin", ..] => "group.e2ee.rejoin",
         ["group", "e2ee", "recover-member", ..] => "group.e2ee.recover-member",
         ["group", "e2ee", "process-leave-request", ..] => "group.e2ee.process-leave-request",
+        ["group", "code", "get", ..] => "group.code.get",
+        ["group", "code", "refresh", ..] => "group.code.refresh",
+        ["group", "code", "enable", ..] => "group.code.enable",
         ["page", "create", ..] => "page.create",
         ["page", "list", ..] => "page.list",
         ["page", "get", ..] => "page.get",
@@ -304,6 +308,9 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["runtime", "setup", ..] => "runtime.setup",
         ["runtime", "mode", "get", ..] => "runtime.mode.get",
         ["runtime", "mode", "set", ..] => "runtime.mode.set",
+        ["runtime", "heartbeat", "status", ..] => "runtime.heartbeat.status",
+        ["runtime", "heartbeat", "install", ..] => "runtime.heartbeat.install",
+        ["runtime", "heartbeat", "run-once", ..] => "runtime.heartbeat.run-once",
         ["runtime", "listener", "status", ..] => "runtime.listener.status",
         ["runtime", "listener", "install", ..] => "runtime.listener.install",
         ["runtime", "listener", "start", ..] => "runtime.listener.start",
@@ -357,9 +364,20 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["runtime", "host-notify", "hermes", "bridge", "service-run", ..] => {
             "runtime.host-notify.hermes.bridge.service-run"
         }
+        ["people", "search", ..] => "people.search",
+        ["people", "follow", ..] => "people.follow",
+        ["people", "unfollow", ..] => "people.unfollow",
+        ["people", "status", ..] => "people.status",
+        ["people", "followers", ..] => "people.followers",
+        ["people", "following", ..] => "people.following",
+        ["people", "contacts", "list", ..] => "people.contacts.list",
+        ["people", "contacts", "save", ..] => "people.contacts.save",
         ["debug", "db", "query", ..] => "debug.db.query",
         ["debug", "db", "import-v1", ..] => "debug.db.import-v1",
         ["debug", "db", "handle-history", ..] => "debug.db.handle-history",
+        ["debug", "raw", "rpc", ..] => "debug.raw.rpc",
+        ["debug", "schema-cache", ..] => "debug.schema-cache",
+        ["debug", "logs", ..] => "debug.logs",
         [head, ..] => head,
     };
     if name.is_empty() {
@@ -466,6 +484,25 @@ fn is_bool_local_flag(name: &str) -> bool {
             | "recovery"
             | "contract-test"
             | "attachments-allowed"
+            | "follow"
+    )
+}
+
+fn is_go_stub_command(command: &str) -> bool {
+    cmdmeta::lookup(command).is_some_and(|spec| spec.handler == "stub")
+}
+
+fn go_stub_error(command: &str) -> ExitError {
+    let spec = cmdmeta::lookup(command).expect("known Go stub command");
+    let command_path = format!("awiki-cli {}", command.replace('.', " "));
+    ExitError::new(
+        "internal_error",
+        1,
+        format!("{command_path} is not implemented yet."),
+        format!(
+            "{command_path} is planned for {}. Use `awiki-cli schema {command}` to inspect the frozen contract.",
+            spec.phase.to_ascii_uppercase()
+        ),
     )
 }
 

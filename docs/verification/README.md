@@ -2,6 +2,77 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Go Stub Command Catalog Slice
+
+Timestamp: 2026-05-17T09:29:13+0800.
+
+Scope: align Rust static schema, parser routing, and planned-command stub
+errors with Go `internal/cmdmeta/catalog.go` plus Go `internal/cli/root.go`
+`runStub` behavior for catalog commands that Go exposes but intentionally
+marks as `Implemented: false` with `Handler: "stub"`.
+
+What changed:
+
+- Added Go planned stub command families to Rust command metadata where they
+  were absent: `group.code`, `runtime.heartbeat`, `people`,
+  `people.contacts`, `debug.raw`, `debug.schema-cache`, and `debug.logs`.
+- Added parser mappings for the executable stub leaves so commands such as
+  `group code get`, `runtime heartbeat status`, `people contacts save`,
+  `debug raw rpc`, and `debug logs --follow` resolve to their exact canonical
+  dot names instead of the top-level fallback.
+- Added a Go-style stub error path for catalog specs whose handler is `stub`:
+  exit code `1`, error code `internal_error`, message
+  `awiki-cli <path> is not implemented yet.`, and hint
+  `awiki-cli <path> is planned for PHASE. Use \`awiki-cli schema <name>\` to
+  inspect the frozen contract.`
+- Added focused `core_contract` coverage for schema metadata and representative
+  executable stub leaves across `group.code`, `runtime.heartbeat`, `people`,
+  `people.contacts`, `debug.raw`, and `debug.logs`.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 test -p awiki-cli --test core_contract schema_exposes_go_stub_command_families_and_stub_errors --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/cmdmeta ./internal/cli -run 'TestCatalog|TestCommandFromSpec|TestBuildRoot' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/tests/core_contract.rs
+```
+
+Observed results:
+
+- Focused Go stub command schema/error contract passed.
+- Full `core_contract`: 17 passed.
+- Go focused `internal/cmdmeta` and `internal/cli` tests passed.
+- `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
+  check-structure`, and `git diff --check` passed.
+- Dependency audit showed only existing allowed hits: Rustls/ring/webpki,
+  transitive `libc`, and the approved `rusqlite`/`libsqlite3-sys` bundled
+  SQLite toolchain entries (`cc`, `pkg-config`, `vcpkg`). No OpenSSL,
+  `native-tls`, bundled OpenSSL, platform service, WebSocket, YAML, or new HTTP
+  dependency was added.
+- Touched Rust source/test files remain below the default 1200-line cap:
+  `cmdmeta/mod.rs` 332 lines, `cli/mod.rs` 519 lines, and
+  `core_contract.rs` 909 lines. No file-size exception is needed.
+
+Boundary note: this slice intentionally does not implement group join-code,
+heartbeat, people/contact, raw RPC, schema-cache, or log-follow business
+behavior. Go itself exposes these leaves as planned stubs, so this slice only
+copies that frozen boundary.
+
+Parallelism note: two read-only Native Agents checked remaining command
+catalog/parser parity and broader next-slice candidates. No code-writing Native
+Agent changed files in this slice.
+
+Dependency note: no dependency was added. The slice keeps TLS on the existing
+Rustls-first path and preserves the already approved `rusqlite + bundled`
+SQLite lane.
+
 ## 2026-05-17 Hermes Bridge Command Schema Metadata Slice
 
 Timestamp: 2026-05-17T09:11:45+08:00.

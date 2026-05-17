@@ -331,6 +331,116 @@ fn schema_lists_contracts_and_supports_space_joined_targets() {
 }
 
 #[test]
+fn schema_exposes_go_stub_command_families_and_stub_errors() {
+    let group_code = schema_for(&["group", "code"]);
+    assert_eq!(schema_command(&group_code)["name"], "group.code");
+    assert_eq!(schema_command(&group_code)["implemented"], false);
+    let group_get = schema_child(&group_code, "group.code.get");
+    assert_go_stub_schema(group_get, "group.code.get", "phase5");
+    assert_output_contains(group_get, "table");
+    assert_eq!(schema_flag(group_get, "group")["required"], true);
+
+    let heartbeat = schema_for(&["runtime", "heartbeat"]);
+    assert_eq!(schema_command(&heartbeat)["name"], "runtime.heartbeat");
+    assert_eq!(schema_command(&heartbeat)["implemented"], false);
+    let heartbeat_install = schema_child(&heartbeat, "runtime.heartbeat.install");
+    assert_go_stub_schema(heartbeat_install, "runtime.heartbeat.install", "phase7");
+    assert_eq!(schema_flag(heartbeat_install, "every")["default"], "15m");
+
+    let people = schema_for(&["people"]);
+    assert_eq!(schema_command(&people)["name"], "people");
+    assert_eq!(schema_command(&people)["implemented"], true);
+    assert_go_stub_schema(
+        schema_child(&people, "people.search"),
+        "people.search",
+        "phase8",
+    );
+
+    let contacts = schema_for(&["people", "contacts"]);
+    assert_eq!(schema_command(&contacts)["implemented"], false);
+    let contacts_save = schema_child(&contacts, "people.contacts.save");
+    assert_go_stub_schema(contacts_save, "people.contacts.save", "phase8");
+    assert_eq!(schema_flag(contacts_save, "did")["required"], true);
+
+    let raw = schema_for(&["debug", "raw"]);
+    assert_eq!(schema_command(&raw)["implemented"], false);
+    assert_go_stub_schema(
+        schema_child(&raw, "debug.raw.rpc"),
+        "debug.raw.rpc",
+        "phase7",
+    );
+
+    let logs = schema_for(&["debug", "logs"]);
+    let logs_command = schema_command(&logs);
+    assert_go_stub_schema(logs_command, "debug.logs", "phase7");
+    assert_output_contains(logs_command, "ndjson");
+    assert_eq!(schema_flag(logs_command, "follow")["type"], "bool");
+
+    for (args, name, phase, command_path) in [
+        (
+            &["group", "code", "get", "--group", "did:group"][..],
+            "group.code.get",
+            "PHASE5",
+            "awiki-cli group code get",
+        ),
+        (
+            &["runtime", "heartbeat", "status"][..],
+            "runtime.heartbeat.status",
+            "PHASE7",
+            "awiki-cli runtime heartbeat status",
+        ),
+        (
+            &["people", "search", "alice"][..],
+            "people.search",
+            "PHASE8",
+            "awiki-cli people search",
+        ),
+        (
+            &[
+                "people",
+                "contacts",
+                "save",
+                "--did",
+                "did:example:alice",
+                "--handle",
+                "alice",
+            ][..],
+            "people.contacts.save",
+            "PHASE8",
+            "awiki-cli people contacts save",
+        ),
+        (
+            &["debug", "raw", "rpc"][..],
+            "debug.raw.rpc",
+            "PHASE7",
+            "awiki-cli debug raw rpc",
+        ),
+        (
+            &["debug", "logs", "--follow"][..],
+            "debug.logs",
+            "PHASE7",
+            "awiki-cli debug logs",
+        ),
+    ] {
+        let output = awiki_cmd(args);
+        assert_code(&output, 1);
+        assert_stdout_empty(&output);
+        let envelope = error_json(&output);
+
+        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_contains(
+            &envelope["error"]["message"],
+            &format!("{command_path} is not implemented yet."),
+        );
+        assert_contains(&envelope["error"]["hint"], &format!("planned for {phase}"));
+        assert_contains(
+            &envelope["error"]["hint"],
+            &format!("awiki-cli schema {name}"),
+        );
+    }
+}
+
+#[test]
 fn schema_exposes_hidden_hermes_bridge_service_run_like_go_catalog() {
     let bridge_output = awiki_cmd(&["schema", "runtime", "host-notify", "hermes", "bridge"]);
     assert_success(&bridge_output);
@@ -669,6 +779,53 @@ fn assert_non_empty_array(value: &Value, label: &str) {
     assert!(
         value.as_array().is_some_and(|value| !value.is_empty()),
         "{label} should be a non-empty array, got {value:?}"
+    );
+}
+
+fn schema_for(path: &[&str]) -> Value {
+    let mut args = vec!["schema"];
+    args.extend_from_slice(path);
+    let output = awiki_cmd(&args);
+    assert_success(&output);
+    success_json(&output)
+}
+
+fn schema_command(schema: &Value) -> &Value {
+    &schema["data"]["command"]
+}
+
+fn schema_child<'a>(schema: &'a Value, name: &str) -> &'a Value {
+    schema["data"]["children"]
+        .as_array()
+        .unwrap_or_else(|| panic!("schema children should be an array: {schema:?}"))
+        .iter()
+        .find(|command| command["name"] == name)
+        .unwrap_or_else(|| panic!("missing schema child {name:?}: {schema:?}"))
+}
+
+fn schema_flag<'a>(command: &'a Value, name: &str) -> &'a Value {
+    command["flags"]
+        .as_array()
+        .unwrap_or_else(|| panic!("schema flags should be an array: {command:?}"))
+        .iter()
+        .find(|flag| flag["name"] == name)
+        .unwrap_or_else(|| panic!("missing flag {name:?}: {command:?}"))
+}
+
+fn assert_go_stub_schema(command: &Value, name: &str, phase: &str) {
+    assert_eq!(command["name"], name);
+    assert_eq!(command["phase"], phase);
+    assert_eq!(command["implemented"], false);
+    assert_eq!(command["handler"], "stub");
+}
+
+fn assert_output_contains(command: &Value, output: &str) {
+    let outputs = command["outputs"]
+        .as_array()
+        .unwrap_or_else(|| panic!("schema outputs should be an array: {command:?}"));
+    assert!(
+        outputs.iter().any(|value| value == output),
+        "expected outputs {outputs:?} to contain {output:?}"
     );
 }
 
