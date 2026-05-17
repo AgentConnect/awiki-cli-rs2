@@ -526,7 +526,7 @@ impl App {
     }
 
     pub fn run_id_refresh_token(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             identity::refresh_token_plan(&manager, &self.globals.identity)

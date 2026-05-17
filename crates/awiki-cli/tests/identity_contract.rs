@@ -577,16 +577,35 @@ fn identity_resolve_migrates_legacy_config_json_before_target_validation_like_go
 
 #[test]
 fn identity_profile_get_migrates_legacy_config_json_before_self_identity_boundary_like_go() {
+    assert_identity_boundary_after_legacy_config_upgrade(
+        &["id", "profile", "get"],
+        "profile",
+        "id profile get self boundary",
+    );
+}
+
+#[test]
+fn identity_refresh_token_migrates_legacy_config_json_before_active_identity_boundary_like_go() {
+    assert_identity_boundary_after_legacy_config_upgrade(
+        &["id", "refresh-token"],
+        "refresh",
+        "id refresh-token identity boundary",
+    );
+}
+
+fn assert_identity_boundary_after_legacy_config_upgrade(args: &[&str], label: &str, state: &str) {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
+    let service_base_url = format!("https://legacy-id-{label}.example");
+    let did_domain = format!("legacy-id-{label}.example");
     let (legacy_config, legacy_text) = write_legacy_config_json(
         &workspace_home,
         json!({
             "schema_version": 1,
             "services": {
-                "service_base_url": "https://legacy-id-profile.example",
-                "did_domain": "legacy-id-profile.example",
+                "service_base_url": service_base_url,
+                "did_domain": did_domain,
             },
             "runtime": {
                 "mode": "http",
@@ -594,23 +613,19 @@ fn identity_profile_get_migrates_legacy_config_json_before_self_identity_boundar
         }),
     );
 
-    let profile = awiki_cmd(&["id", "profile", "get"], workspace.path());
-    assert_code(&profile, 5);
-    let profile = error_json(&profile);
-    assert_eq!(profile["error"]["code"], "not_found");
-    assert!(profile["error"]["message"]
+    let result = awiki_cmd(args, workspace.path());
+    assert_code(&result, 5);
+    let result = error_json(&result);
+    assert_eq!(result["error"]["code"], "not_found");
+    assert!(result["error"]["message"]
         .as_str()
         .unwrap()
         .contains("identity not found: no active identity is configured"));
 
     assert!(!legacy_config.exists());
-    assert_migrated_config(
-        &workspace_home,
-        "https://legacy-id-profile.example",
-        "legacy-id-profile.example",
-    );
+    assert_migrated_config(&workspace_home, &service_base_url, &did_domain);
     assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
-    assert_no_runtime_state(&workspace_home, "id profile get self boundary");
+    assert_no_runtime_state(&workspace_home, state);
 }
 
 #[test]
