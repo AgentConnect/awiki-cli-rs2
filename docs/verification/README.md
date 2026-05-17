@@ -2,6 +2,70 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Debug DB Handle-History System Selector
+
+Timestamp: 2026-05-17T15:04:20+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for
+`debug db handle-history`, closing the previous system-test coverage gap for
+this already translated local SQLite debug command.
+
+System-test change:
+
+- Added
+  `tests_v2/debug/test_debug_cli.py::test_debug_db_handle_history_reads_contact_bindings`.
+- Updated `tests_v2/debug/CLAUDE.md` to include handle-history coverage in the
+  debug test directory description.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/debug/test_debug_cli.py::test_debug_db_handle_history_reads_contact_bindings -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/debug/test_debug_cli.py -ra -q
+```
+
+Observed results:
+
+- Focused selector: 1 passed, 0 failed, 0 skipped in 1.19s.
+- Debug CLI file: 5 passed, 0 failed, 0 skipped in 8.88s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace, initialized the local
+  SQLite schema through `awiki-cli init`, and seeded `contact_handle_bindings`
+  rows directly in that isolated database.
+- It did not require mail-service, message-service local topology, Hermes,
+  tenant env gates, registered identities, or real user service-manager
+  permissions.
+
+Coverage:
+
+- Verifies `debug db handle-history "  wba://ALICE.awiki.ai  "` normalizes to
+  handle `alice`.
+- Verifies the success envelope command and summary match the Go-shaped Rust
+  implementation.
+- Verifies `database_file` points at the isolated subprocess workspace DB.
+- Verifies row ordering/currentness for `did:owner-a` current/old bindings and
+  the second owner binding while ignoring an unrelated `bob` row.
+- Verifies owner aggregation emits the current DID, historical count, and
+  historical DIDs for each owner.
+- Verifies missing normalized handles return exit code 5 with
+  `error.code=not_found`, `sql: no rows in result set`, and the Go-shaped hint.
+
+Boundary note: this is a system selector addition for an already translated
+command. It does not change Rust implementation code, SQLite schema, dependency
+choices, message-service behavior, mail selectors, or the broader full-suite
+acceptance status.
+
+Dependency note: no Rust dependency was added. The exercised command uses the
+existing approved `rusqlite + bundled` SQLite lane and does not add OpenSSL,
+`native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
+runtimes, YAML crates, platform service libraries, ANP SDK network/default
+features, or a new SQLite backend. TLS policy remains Rustls-first.
+
 ## 2026-05-17 Runtime Host-Notify Enable/Disable System Selector
 
 Timestamp: 2026-05-17T14:27:45+0800.
@@ -3445,9 +3509,10 @@ Scope:
   main `app.rs` file remains below the 1200-line default while preserving the
   existing `debug db query` and `debug db import-v1` behavior.
 
-Boundary note: `awiki-system-test` currently has no active
-`debug db handle-history` selector under `tests_v2/debug`; this slice is
-covered by Rust CLI integration tests plus the focused Go unit reference tests.
+Boundary note: a follow-up system selector was added on 2026-05-17 as
+`tests_v2/debug/test_debug_cli.py::test_debug_db_handle_history_reads_contact_bindings`;
+this original slice remains the Rust implementation and unit/reference-test
+record.
 
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
 unchanged. The command uses the existing approved `rusqlite + bundled` SQLite
