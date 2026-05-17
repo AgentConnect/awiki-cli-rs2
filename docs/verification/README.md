@@ -14,6 +14,126 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-17 Config Set Workspace Upgrade Hook
+
+Timestamp: 2026-05-17T23:09:18+0800.
+
+Scope: wire the Go `resolveConfigForWorkspace` upgrade hook into the Rust
+`config set --did-domain` public command path before and after the persistent
+write, then prove the legacy `config.json` migration branch through a real Rust
+subprocess.
+
+Rust change:
+
+- `crates/awiki-cli/src/app.rs`: `run_config_set` now calls
+  `resolve_config_for_workspace()` before validation/dry-run planning and again
+  after `config::update_did_domain`, matching Go `internal/cli/config.go`.
+- `crates/awiki-cli/tests/core_contract.rs`: added
+  `config_set_migrates_legacy_config_json_before_writing_like_go`.
+
+System-test change:
+
+- Added
+  `tests_v2/core/test_basic_commands.py::test_config_set_migrates_legacy_config_json_before_persisting_did_domain`.
+- Updated `tests_v2/core/CLAUDE.md` to include this legacy-config workspace
+  upgrade coverage in the core command directory description.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract config_set --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test config_writer_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli ./internal/upgrade -run 'Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_set_migrates_legacy_config_json_before_persisting_did_domain -ra -q
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py -ra -q
+```
+
+Observed results:
+
+- Rust formatting and package check passed.
+- Focused `core_contract config_set`: 3 passed, 0 failed.
+- Full `core_contract`: 20 passed, 0 failed.
+- `config_writer_contract`: 7 passed, 0 failed.
+- `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed.
+- `traceutil_contract`: 9 passed, 0 failed.
+- `xtask check-structure` passed with no undocumented Rust file over the
+  1200-line soft cap.
+- Rust `git diff --check` passed.
+- Focused system-test whitespace check passed for `tests_v2/core/test_basic_commands.py`
+  and `tests_v2/core/CLAUDE.md`.
+- Go focused reference tests passed:
+  `internal/cli` 23.830s and `internal/upgrade` 0.061s.
+- Python syntax check for `tests_v2/core/test_basic_commands.py` passed.
+- Focused `awiki-system-test` selector:
+  `test_config_set_migrates_legacy_config_json_before_persisting_did_domain`
+  passed: 1 passed, 0 failed, 0 skipped in 1.14s.
+- Full core basic command system-test file:
+  `tests_v2/core/test_basic_commands.py` passed: 13 passed, 0 failed, 0 skipped
+  in 4.58s.
+- Dependency audit stayed on existing `rustls`/`webpki`/`ring`,
+  `base64`/`sha2`/`hmac`, and approved `rusqlite + bundled`
+  `libsqlite3-sys` paths. No OpenSSL, `native-tls`, reqwest, hyper, platform
+  service-manager crate, WebSocket crate, YAML crate, or alternate SQLite path
+  was introduced.
+- File-size check: `app.rs` 1045 lines, `core_contract.rs` 1183 lines,
+  `tests_v2/core/test_basic_commands.py` 352 lines, and
+  `tests_v2/core/CLAUDE.md` 14 lines. All touched Rust/Python source and test
+  files stay under the default 1200-line cap. `docs/verification/README.md`
+  remains an existing accumulated evidence-log exception.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The selector used an isolated temporary workspace under the system-test
+  helper's `HOME` and `AWIKI_CLI_WORKSPACE_HOME_DIR`.
+- The test explicitly removed the helper-created `config.yaml`, seeded only
+  `config.json`, and did not use real user service-manager permissions.
+
+Coverage:
+
+- Rust now follows the Go `config set` command boundary for this path: raw
+  config resolve, dry-run migration skip, `workspace_upgrade` phase,
+  `upgrade_if_needed`, raw resolve refresh, persistent write, then another
+  workspace resolver pass before rendering.
+- The subprocess selector verifies `config set --did-domain` migrates a legacy
+  `config.json`-only workspace before persisting the new normalized DID domain.
+- Verifies legacy `config.json` is removed and `config.yaml` is written with
+  semantic fields for schema version, runtime mode, service base URL, and the
+  updated DID domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, no
+  warnings, a non-empty upgrade ID, and a backup directory containing
+  `config.json.bak`.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies the migration did not create `data/awiki-cli.db` and did not leave
+  listener pid/socket artifacts.
+- Verifies `config show` reads back the updated DID domain and migrated runtime
+  mode through the real Rust subprocess.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch in `config set`. It does not prove legacy
+SQLite import, legacy identity import, imported/current k1 replacement RPCs,
+rollback, platform cleanup command execution, all-command upgrade-hook
+coverage, or mail-service selectors.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged; the slice reuses existing local upgrade/config writer machinery.
+
 ## 2026-05-17 Workspace Upgrade Public Runtime Mode Hook
 
 Timestamp: 2026-05-17T22:45:55+0800.

@@ -234,6 +234,72 @@ fn config_set_did_domain_matches_go_contract() {
 }
 
 #[test]
+fn config_set_migrates_legacy_config_json_before_writing_like_go() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let config_json = workspace.path().join("config.json");
+    std::fs::write(
+        &config_json,
+        r#"{"schema_version":1,"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
+    )
+    .expect("write legacy config");
+
+    let update = awiki_cmd_with_workspace(
+        &["config", "set", "--did-domain", " Tenant.Example. "],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_success(&update);
+    let envelope = success_json(&update);
+    assert_eq!(envelope["command"], "awiki-cli config set");
+    assert_eq!(envelope["summary"], "DID domain updated");
+    assert_eq!(envelope["data"]["did_domain"], "tenant.example");
+    assert_eq!(
+        envelope["data"]["config_file"],
+        workspace
+            .path()
+            .join("config.yaml")
+            .to_string_lossy()
+            .as_ref()
+    );
+
+    assert!(
+        !config_json.exists(),
+        "legacy config.json should be removed after workspace upgrade"
+    );
+    let config_yaml = workspace.path().join("config.yaml");
+    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
+    assert_text_contains(&config_text, "schema_version: 1\n");
+    assert_text_contains(&config_text, "  mode: http\n");
+    assert_text_contains(&config_text, "  service_base_url: https://legacy.example\n");
+    assert_text_contains(&config_text, "  did_domain: tenant.example\n");
+
+    let meta_path = workspace.path().join("upgrade").join("meta.json");
+    let meta: Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
+            .expect("upgrade meta JSON");
+    assert_eq!(meta["workspace_schema_version"], 3);
+    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
+    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
+    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+    assert_eq!(
+        backup_dir.parent(),
+        Some(workspace.path().join("upgrade").join("backups").as_path())
+    );
+    assert!(backup_dir.join("config.json.bak").is_file());
+    assert!(
+        !workspace
+            .path()
+            .join("upgrade")
+            .join("upgrade_journal.json")
+            .exists(),
+        "journal should be cleared after successful upgrade"
+    );
+    assert!(
+        !workspace.path().join("data").join("awiki-cli.db").exists(),
+        "config-only migration should not create SQLite state"
+    );
+}
+
+#[test]
 fn config_set_validates_did_domain_like_go() {
     let workspace = TempDir::new().expect("temp workspace");
 

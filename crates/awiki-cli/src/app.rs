@@ -174,7 +174,7 @@ impl App {
     }
 
     pub fn run_config_set(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let Some(raw_did_domain) = command.flags.get("did-domain") else {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -207,7 +207,7 @@ impl App {
             );
         }
         config::update_did_domain(&resolved.paths, &did_domain).map_err(internal_anyhow)?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         self.render_success(
             "awiki-cli config set",
             &resolved,
