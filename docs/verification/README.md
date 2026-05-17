@@ -12709,6 +12709,87 @@ crates, platform service libraries, new E2EE provider dependencies, or a new
 SQLite backend. TLS remains Rustls-first for later runtime/WebSocket transport
 work.
 
+## 2026-05-17 Direct Secure E2EE System Evidence Slice
+
+Status: scoped system verified.
+
+System, local Rust, and Go reference verification:
+
+```bash
+cd /home/ecs-user/awiki-space/awiki-system-test
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+AWIKI_CLI_UPDATE_CACHE_ONLY=1 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run pytest \
+  tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_can_send_secure_direct_messages_with_manual_reply_confirmation \
+  tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_secure_direct_handle_queries_hide_raw_wire_cache_and_mark_read \
+  -ra -q
+
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 test -p awiki-cli --test message_secure_send_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_incoming_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --locked
+cargo +1.79.0 test -p awiki-cli --test message_secure_outbox_flush_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/message -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestPollingInboxDecryptsDirectInitAndSendsSecureAck|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation' -count=1
+```
+
+Result: passed.
+
+Observed results:
+
+- `awiki-system-test` focused direct secure selectors: 2 passed, 0 failed,
+  0 skipped in 7.47s.
+- `message_secure_send_contract`: 4 passed.
+- `message_secure_incoming_contract`: 12 passed.
+- `message_secure_client_contract`: 14 passed.
+- `message_secure_outbox_flush_contract`: 23 passed.
+- `msg_live_contract`: 7 passed.
+- Go `./internal/message` focused reference tests passed.
+
+Scope:
+
+- Promotes the production direct secure send path to scoped system evidence:
+  real Rust subprocess `msg send --secure on` sends secure init, reply, and
+  follow-up messages through message-service v2 against `awiki.info`.
+- Confirms raw service history stays encrypted with
+  `application/anp-direct-init+json` for the first message and
+  `application/anp-direct-cipher+json` for reply/follow-up messages, while CLI
+  send results and read results expose only the Go-shaped secure message
+  result with `secure=true`.
+- Promotes the direct secure inbox/history display slice to scoped system
+  evidence: recipient `msg inbox` decrypts the secure init into plaintext,
+  sender/recipient `msg history` decrypt secure cipher rows into plaintext, and
+  handle-based inbox/history queries hide stale raw secure wire cache rows.
+- Confirms handle-based `msg inbox --mark-read` marks the returned decrypted
+  secure row read and removes it from the follow-up unread query.
+- Leaves the polling ACK/flush warning/failure edges as contract evidence: the
+  system selectors exercise the successful init/reply/follow-up path, but do
+  not explicitly force ACK send failure, outbox flush warning, or malformed
+  secure-control branches.
+
+Boundary note: this is not full secure-direct acceptance. It does not claim
+explicit `msg secure retry`, `msg secure init`, or `msg secure repair`
+subcommands; WebSocket/local bridge secure execution; runtime listener live
+`ProcessIncoming`; secure direct attachments; mail-related selectors; or a full
+`tests_v2` run. Selectors can skip when test identities are not e1-capable; this
+evidence used a run with 0 skipped tests.
+
+Parallelism note: a read-only Native Agent mapped the next parity candidates
+and recommended promoting only the direct secure send and inbox/history scoped
+rows from this evidence. No code-writing Native Agent changed files.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile remain
+unchanged. This evidence reuses the existing Rustls/std authsdk/message client,
+local ANP Rust E2EE adapter, secure outbox/store helpers, and the approved
+`rusqlite + bundled` SQLite path. It does not add OpenSSL, `native-tls`,
+bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async runtimes, YAML
+crates, platform service libraries, new E2EE provider dependencies, or a new
+SQLite backend. TLS remains Rustls-first.
+
 ## 2026-05-16 Group E2EE Status/Pending Live Slice
 
 Status: locally verified.
