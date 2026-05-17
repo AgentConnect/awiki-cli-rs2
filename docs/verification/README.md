@@ -2,6 +2,58 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Trace Timing Output-Channel System Selector
+
+Timestamp: 2026-05-17T14:55:30+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for the
+`AWIKI_CLI_TRACE_TIMING` output-channel contract on local core commands.
+
+System-test change:
+
+- Added
+  `tests_v2/core/test_output_contracts_cli.py::test_trace_timing_preserves_cli_output_channels`.
+- Updated `tests_v2/core/CLAUDE.md` to include trace timing output-channel
+  coverage in the core output contract directory description.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/core/test_output_contracts_cli.py::test_trace_timing_preserves_cli_output_channels -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/core/test_output_contracts_cli.py -ra -q
+```
+
+Observed results:
+
+- Focused selector: 1 passed, 0 failed, 0 skipped in 1.14s.
+- Core output contract file: 3 passed, 0 failed, 0 skipped in 3.06s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace and ran local core
+  commands only.
+- It did not require mail-service, message-service local topology, tenant env
+  gates, registered identities, or real user service-manager permissions.
+
+Coverage:
+
+- Verifies `AWIKI_CLI_TRACE_TIMING=1 awiki-cli status` keeps the JSON success
+  envelope on stdout.
+- Verifies the timing trace is written to stderr and includes
+  `[awiki-cli 耗时追踪]`, `命令: awiki-cli status`, `阶段:`, and `解析配置`.
+- Verifies `AWIKI_CLI_TRACE_TIMING=1 awiki-cli completion bash` preserves raw
+  shell completion stdout and emits no trace stderr.
+
+Boundary note: this selector covers the core output-channel behavior only. It
+does not exercise service RPC trace labels, JWT fallback labels, mail trace
+phases, direct-message trace-depth call sites, or full-suite acceptance.
+
+Dependency note: no Rust dependency was added. The exercised path is local
+trace/output behavior only.
+
 ## 2026-05-17 Runtime Hermes Host-Notify System Selectors
 
 Timestamp: 2026-05-17T14:52:23+0800.
