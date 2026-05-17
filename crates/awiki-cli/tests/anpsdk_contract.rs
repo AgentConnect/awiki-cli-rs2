@@ -12,14 +12,26 @@ fn anpsdk_facade_exposes_go_registry_authentication_symbols() {
     );
     assert_eq!(anpsdk::MODULE_VERSION, "v0.8.7");
     assert_eq!(
+        anpsdk::ModulePath,
+        "github.com/agent-network-protocol/anp/golang"
+    );
+    assert_eq!(anpsdk::ModuleVersion, "v0.8.7");
+    assert_eq!(
         anpsdk::AUTH_MODE_HTTP_SIGNATURES,
         anpsdk::AuthMode::HttpSignatures
     );
     assert_eq!(anpsdk::AUTH_MODE_AUTO, anpsdk::AuthMode::Auto);
     assert_eq!(anpsdk::DID_PROFILE_E1, anpsdk::DidProfile::E1);
     assert_eq!(anpsdk::DID_PROFILE_K1, anpsdk::DidProfile::K1);
+    assert_eq!(
+        anpsdk::AuthModeHTTPSignatures,
+        anpsdk::AuthMode::HttpSignatures
+    );
+    assert_eq!(anpsdk::AuthModeAuto, anpsdk::AuthMode::Auto);
+    assert_eq!(anpsdk::DidProfileE1, anpsdk::DidProfile::E1);
+    assert_eq!(anpsdk::DidProfileK1, anpsdk::DidProfile::K1);
 
-    let service = anpsdk::build_anp_message_service(
+    let service = anpsdk::BuildANPMessageService(
         "did:wba:example.com:user:alice:e1_alice",
         "https://example.com/anp-im/rpc",
         anpsdk::AnpMessageServiceOptions::default()
@@ -29,9 +41,8 @@ fn anpsdk_facade_exposes_go_registry_authentication_symbols() {
     assert_eq!(service["type"], "ANPMessageService");
     assert_eq!(service["serviceEndpoint"], "https://example.com/anp-im/rpc");
 
-    let bundle =
-        anpsdk::create_did_wba_document("example.com", anpsdk::DidDocumentOptions::default())
-            .expect("create DID document through facade");
+    let bundle = anpsdk::CreateDidWBADocument("example.com", anpsdk::DidDocumentOptions::default())
+        .expect("create DID document through facade");
     assert!(bundle.did().unwrap_or_default().starts_with("did:wba:"));
     let private_key = anpsdk::PrivateKeyMaterial::from_pem(
         bundle.private_key_pem("key-1").expect("key-1 private key"),
@@ -39,8 +50,34 @@ fn anpsdk_facade_exposes_go_registry_authentication_symbols() {
     .expect("private key through facade");
     let public_key = private_key.public_key();
     assert_eq!(public_key.to_string(), "ed25519");
-    let _verifier = anpsdk::DidWbaVerifier::new(anpsdk::DidWbaVerifierConfig::default());
-    let _auth = anpsdk::DIDWbaAuthHeader::new("", "", anpsdk::AUTH_MODE_HTTP_SIGNATURES);
+    let auth_header =
+        anpsdk::GenerateAuthHeader(&bundle.did_document, "example.com", &private_key, "1.1")
+            .expect("generate DID-WBA auth header through Go facade");
+    assert!(auth_header.starts_with("DIDWba "));
+
+    let http_signature_headers = anpsdk::GenerateHTTPSignatureHeaders(
+        &bundle.did_document,
+        "https://example.com/anp-im/rpc",
+        "POST",
+        &private_key,
+        None,
+        Some(br#"{"jsonrpc":"2.0"}"#),
+        anpsdk::HttpSignatureOptions {
+            keyid: None,
+            covered_components: None,
+            created: Some(1_712_000_000),
+            expires: Some(1_712_000_300),
+            nonce: Some("nonce-1".to_string()),
+        },
+    )
+    .expect("generate HTTP signature headers through Go facade");
+    assert!(http_signature_headers.contains_key("Signature"));
+    assert!(http_signature_headers.contains_key("Signature-Input"));
+
+    let _resolve_fn = anpsdk::ResolveDidDocument;
+    let _resolve_with_options_fn = anpsdk::ResolveDidDocumentWithOptions;
+    let _verifier = anpsdk::NewDidWbaVerifier(anpsdk::DidWbaVerifierConfig::default());
+    let _auth = anpsdk::NewDIDWbaAuthHeader("", "", anpsdk::AuthModeHTTPSignatures);
 }
 
 #[test]
@@ -103,12 +140,12 @@ fn anpsdk_facade_runtime_pem_parsers_reject_legacy_anp_labels() {
 
 #[test]
 fn anpsdk_facade_exposes_go_registry_proof_symbols() {
-    let digest = anpsdk::build_im_content_digest(br#"{"hello":"world"}"#);
+    let digest = anpsdk::BuildIMContentDigest(br#"{"hello":"world"}"#);
     assert!(digest.starts_with("sha-256=:"));
 
-    let signature_input = anpsdk::build_im_signature_input(
+    let signature_input = anpsdk::BuildIMSignatureInput(
         "did:wba:example.com:user:alice:e1_alice#key-1",
-        anpsdk::ImProofGenerationOptions {
+        anpsdk::IMGenerationOptions {
             label: "sig1".to_string(),
             components: vec![
                 "@method".to_string(),
@@ -121,7 +158,8 @@ fn anpsdk_facade_exposes_go_registry_proof_symbols() {
         },
     )
     .expect("build signature input");
-    let parsed = anpsdk::parse_im_signature_input(&signature_input).expect("parse input");
+    let parsed: anpsdk::ParsedIMSignatureInput =
+        anpsdk::ParseIMSignatureInput(&signature_input).expect("parse input");
     assert_eq!(parsed.label, "sig1");
     assert_eq!(
         parsed.keyid,
@@ -129,15 +167,20 @@ fn anpsdk_facade_exposes_go_registry_proof_symbols() {
     );
 
     assert_eq!(
-        anpsdk::build_logical_target_uri(
-            anpsdk::TARGET_KIND_AGENT,
+        anpsdk::EncodeIMSignature(b"hello", "sig1"),
+        "sig1=:aGVsbG8=:"
+    );
+
+    assert_eq!(
+        anpsdk::BuildLogicalTargetURI(
+            anpsdk::TargetKindAgent,
             "did:wba:example.com:user:bob:e1_bob",
         )
         .expect("target uri"),
         "anp://agent/did%3Awba%3Aexample.com%3Auser%3Abob%3Ae1_bob"
     );
 
-    let signed = anpsdk::build_signed_request_object(
+    let signed: anpsdk::SignedRequestObject = anpsdk::BuildSignedRequestObject(
         "message.send",
         &json!({
             "target": {
@@ -148,10 +191,10 @@ fn anpsdk_facade_exposes_go_registry_proof_symbols() {
         &json!({"content": "hello"}),
     )
     .expect("signed request object");
-    let canonical = anpsdk::canonicalize_signed_request_object(&signed).expect("canonical request");
+    let canonical = anpsdk::CanonicalizeSignedRequestObject(&signed).expect("canonical request");
     assert!(!canonical.is_empty());
 
-    let base = anpsdk::build_rfc9421_origin_signature_base(
+    let base = anpsdk::BuildRFC9421OriginSignatureBase(
         "message.send",
         "anp://agent/did%3Awba%3Aexample.com%3Auser%3Abob%3Ae1_bob",
         &digest,
@@ -160,9 +203,81 @@ fn anpsdk_facade_exposes_go_registry_proof_symbols() {
     .expect("signature base");
     assert!(!base.is_empty());
 
+    let bundle = anpsdk::CreateDidWBADocument("example.com", anpsdk::DidDocumentOptions::default())
+        .expect("create proof DID document");
+    let private_key = bundle.load_private_key("key-1").expect("load proof key");
+    let keyid = format!("{}#key-1", bundle.did().expect("bundle DID"));
+
+    let im_proof: anpsdk::IMProof = anpsdk::GenerateIMProof(
+        &canonical,
+        &base,
+        &private_key,
+        &keyid,
+        anpsdk::IMGenerationOptions {
+            label: "sig1".to_string(),
+            components: vec![
+                "@method".to_string(),
+                "@target-uri".to_string(),
+                "content-digest".to_string(),
+            ],
+            created: Some(1_712_000_000),
+            expires: Some(1_712_000_300),
+            nonce: Some("nonce-1".to_string()),
+        },
+    )
+    .expect("generate IM proof through Go facade");
+    anpsdk::VerifyIMProofWithDocument(
+        &im_proof,
+        &canonical,
+        &base,
+        &bundle.did_document,
+        bundle.did(),
+    )
+    .expect("verify IM proof through Go facade");
+
+    let origin_proof: anpsdk::RFC9421OriginProof = anpsdk::GenerateRFC9421OriginProof(
+        "message.send",
+        &json!({
+            "target": {
+                "kind": "agent",
+                "did": "did:wba:example.com:user:bob:e1_bob"
+            }
+        }),
+        &json!({"content": "hello"}),
+        &private_key,
+        &keyid,
+        anpsdk::RFC9421OriginProofGenerationOptions {
+            created: Some(1_712_000_000),
+            expires: Some(1_712_000_300),
+            nonce: Some("nonce-1".to_string()),
+            label: Some("sig1".to_string()),
+        },
+    )
+    .expect("generate RFC9421 origin proof through Go facade");
+    anpsdk::VerifyRFC9421OriginProof(
+        &origin_proof,
+        "message.send",
+        &json!({
+            "target": {
+                "kind": "agent",
+                "did": "did:wba:example.com:user:bob:e1_bob"
+            }
+        }),
+        &json!({"content": "hello"}),
+        anpsdk::RFC9421OriginProofVerificationOptions {
+            did_document: Some(bundle.did_document.clone()),
+            verification_method: None,
+            expected_signer_did: bundle.did().map(str::to_string),
+        },
+    )
+    .expect("verify RFC9421 origin proof through Go facade");
+
     assert_eq!(anpsdk::TARGET_KIND_AGENT, anpsdk::TargetKind::Agent);
     assert_eq!(anpsdk::TARGET_KIND_GROUP, anpsdk::TargetKind::Group);
     assert_eq!(anpsdk::TARGET_KIND_SERVICE, anpsdk::TargetKind::Service);
+    assert_eq!(anpsdk::TargetKindAgent, anpsdk::TargetKind::Agent);
+    assert_eq!(anpsdk::TargetKindGroup, anpsdk::TargetKind::Group);
+    assert_eq!(anpsdk::TargetKindService, anpsdk::TargetKind::Service);
 }
 
 #[test]
@@ -215,7 +330,7 @@ fn file_signed_prekey_store_creates_root_and_round_trips_go_files() {
     let root = workspace.path().join("signed-prekeys");
     assert!(!root.exists());
 
-    let mut store = anpsdk::FileSignedPrekeyStore::new(&root).expect("create signed prekey store");
+    let mut store = anpsdk::NewFileSignedPrekeyStore(&root).expect("create signed prekey store");
     assert!(root.is_dir());
 
     let private_key = generated_x25519_private_key();
@@ -298,8 +413,7 @@ fn file_one_time_prekey_store_creates_root_lists_sorted_and_round_trips_go_files
     let root = workspace.path().join("one-time-prekeys");
     assert!(!root.exists());
 
-    let mut store =
-        anpsdk::FileOneTimePrekeyStore::new(&root).expect("create one-time prekey store");
+    let mut store = anpsdk::NewFileOneTimePrekeyStore(&root).expect("create one-time prekey store");
     assert!(root.is_dir());
 
     let private_key_a = generated_x25519_private_key();
@@ -377,7 +491,7 @@ fn file_pending_outbound_store_round_trips_json_and_delete_missing_succeeds() {
     assert!(!root.exists());
 
     let mut store =
-        anpsdk::FilePendingOutboundStore::new(&root).expect("create pending outbound store");
+        anpsdk::NewFilePendingOutboundStore(&root).expect("create pending outbound store");
     assert!(root.is_dir());
 
     let pending = pending_outbound("op-pending-1");
@@ -427,7 +541,7 @@ fn file_session_store_creates_root_and_round_trips_pretty_json_without_trailing_
     let root = workspace.path().join("sessions").join("direct");
     assert!(!root.exists());
 
-    let mut store = anpsdk::FileSessionStore::new(&root).expect("create session store");
+    let mut store = anpsdk::NewFileSessionStore(&root).expect("create session store");
     assert!(root.is_dir());
 
     let session = direct_session("session-1", "did:wba:example.com:user:bob:e1_bob");

@@ -1,12 +1,21 @@
 pub const MODULE_PATH: &str = "github.com/agent-network-protocol/anp/golang";
 pub const MODULE_VERSION: &str = "v0.8.7";
+#[allow(non_upper_case_globals)]
+pub const ModulePath: &str = MODULE_PATH;
+#[allow(non_upper_case_globals)]
+pub const ModuleVersion: &str = MODULE_VERSION;
 
 pub use anp::authentication::{
-    build_anp_message_service, create_did_wba_document, generate_auth_header,
-    generate_http_signature_headers, resolve_did_document, resolve_did_document_sync,
-    resolve_did_document_with_options, validate_did_document_binding, AnpMessageServiceOptions,
-    AuthMode, AuthenticationError, DIDWbaAuthHeader, DidDocumentBundle, DidDocumentOptions,
-    DidProfile, DidResolutionOptions, DidWbaVerifier, DidWbaVerifierConfig, HttpSignatureOptions,
+    build_anp_message_service, build_anp_message_service as BuildANPMessageService,
+    create_did_wba_document, create_did_wba_document as CreateDidWBADocument, generate_auth_header,
+    generate_auth_header as GenerateAuthHeader, generate_http_signature_headers,
+    generate_http_signature_headers as GenerateHTTPSignatureHeaders, resolve_did_document,
+    resolve_did_document as ResolveDidDocument, resolve_did_document_sync,
+    resolve_did_document_with_options,
+    resolve_did_document_with_options as ResolveDidDocumentWithOptions,
+    validate_did_document_binding, AnpMessageServiceOptions, AuthMode, AuthenticationError,
+    DIDWbaAuthHeader, DidDocumentBundle, DidDocumentOptions, DidProfile, DidResolutionOptions,
+    DidWbaVerifier, DidWbaVerifierConfig, HttpSignatureOptions,
 };
 pub use anp::direct_e2ee::{
     build_prekey_bundle, direct_cipher_send_request, direct_init_send_request,
@@ -18,14 +27,31 @@ pub use anp::direct_e2ee::{
     SessionStore, SignedPrekey, SignedPrekeyStore,
 };
 pub use anp::proof::{
-    build_im_content_digest, build_im_signature_input, build_logical_target_uri,
-    build_rfc9421_origin_signature_base, build_signed_request_object,
-    canonicalize_signed_request_object, encode_im_signature, generate_did_wba_binding,
-    generate_group_receipt_proof, generate_im_proof, generate_rfc9421_origin_proof,
-    parse_im_signature_input, verify_did_wba_binding, verify_group_receipt_proof,
-    verify_im_proof_with_document, verify_rfc9421_origin_proof, DidWbaBindingVerificationOptions,
-    ImProof, ImProofGenerationOptions, ParsedImSignatureInput, Rfc9421OriginProof,
-    Rfc9421OriginProofGenerationOptions, Rfc9421OriginProofVerificationOptions,
+    build_im_content_digest, build_im_content_digest as BuildIMContentDigest,
+    build_im_signature_input, build_im_signature_input as BuildIMSignatureInput,
+    build_logical_target_uri, build_logical_target_uri as BuildLogicalTargetURI,
+    build_rfc9421_origin_signature_base,
+    build_rfc9421_origin_signature_base as BuildRFC9421OriginSignatureBase,
+    build_signed_request_object, build_signed_request_object as BuildSignedRequestObject,
+    canonicalize_signed_request_object,
+    canonicalize_signed_request_object as CanonicalizeSignedRequestObject, encode_im_signature,
+    encode_im_signature as EncodeIMSignature, generate_did_wba_binding,
+    generate_did_wba_binding as GenerateDidWbaBinding, generate_group_receipt_proof,
+    generate_group_receipt_proof as GenerateGroupReceiptProof, generate_im_proof,
+    generate_im_proof as GenerateIMProof, generate_rfc9421_origin_proof,
+    generate_rfc9421_origin_proof as GenerateRFC9421OriginProof, parse_im_signature_input,
+    parse_im_signature_input as ParseIMSignatureInput, verify_did_wba_binding,
+    verify_did_wba_binding as VerifyDidWbaBinding, verify_group_receipt_proof,
+    verify_group_receipt_proof as VerifyGroupReceiptProof, verify_im_proof_with_document,
+    verify_im_proof_with_document as VerifyIMProofWithDocument, verify_rfc9421_origin_proof,
+    verify_rfc9421_origin_proof as VerifyRFC9421OriginProof, DidWbaBindingVerificationOptions,
+    ImProof, ImProof as IMProof, ImProofGenerationOptions,
+    ImProofGenerationOptions as IMGenerationOptions, ParsedImSignatureInput,
+    ParsedImSignatureInput as ParsedIMSignatureInput, Rfc9421OriginProof,
+    Rfc9421OriginProof as RFC9421OriginProof, Rfc9421OriginProofGenerationOptions,
+    Rfc9421OriginProofGenerationOptions as RFC9421OriginProofGenerationOptions,
+    Rfc9421OriginProofVerificationOptions,
+    Rfc9421OriginProofVerificationOptions as RFC9421OriginProofVerificationOptions,
     SignedRequestObject, TargetKind,
 };
 pub use anp::{PrivateKeyMaterial, PublicKeyMaterial};
@@ -42,6 +68,21 @@ pub const DID_PROFILE_K1: DidProfile = DidProfile::K1;
 pub const TARGET_KIND_AGENT: TargetKind = TargetKind::Agent;
 pub const TARGET_KIND_GROUP: TargetKind = TargetKind::Group;
 pub const TARGET_KIND_SERVICE: TargetKind = TargetKind::Service;
+
+#[allow(non_upper_case_globals)]
+pub const DidProfileE1: DidProfile = DID_PROFILE_E1;
+#[allow(non_upper_case_globals)]
+pub const DidProfileK1: DidProfile = DID_PROFILE_K1;
+#[allow(non_upper_case_globals)]
+pub const AuthModeHTTPSignatures: AuthMode = AUTH_MODE_HTTP_SIGNATURES;
+#[allow(non_upper_case_globals)]
+pub const AuthModeAuto: AuthMode = AUTH_MODE_AUTO;
+#[allow(non_upper_case_globals)]
+pub const TargetKindAgent: TargetKind = TARGET_KIND_AGENT;
+#[allow(non_upper_case_globals)]
+pub const TargetKindGroup: TargetKind = TARGET_KIND_GROUP;
+#[allow(non_upper_case_globals)]
+pub const TargetKindService: TargetKind = TARGET_KIND_SERVICE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyType {
@@ -146,6 +187,20 @@ pub fn PublicKeyFromPEM(input: impl AsRef<str>) -> Result<PublicKeyMaterial, Str
     public_key_from_pem(input)
 }
 
+#[allow(non_snake_case)]
+pub fn NewDIDWbaAuthHeader(
+    did_document_path: impl AsRef<Path>,
+    private_key_path: impl AsRef<Path>,
+    auth_mode: AuthMode,
+) -> DIDWbaAuthHeader {
+    DIDWbaAuthHeader::new(did_document_path, private_key_path, auth_mode)
+}
+
+#[allow(non_snake_case)]
+pub fn NewDidWbaVerifier(config: DidWbaVerifierConfig) -> DidWbaVerifier {
+    DidWbaVerifier::new(config)
+}
+
 #[derive(Debug, Clone)]
 pub struct FileSessionStore {
     root: PathBuf,
@@ -216,6 +271,11 @@ impl SessionStore for FileSessionStore {
     fn delete_session(&mut self, session_id: &str) -> Result<(), DirectE2eeError> {
         Self::delete_session(self, session_id)
     }
+}
+
+#[allow(non_snake_case)]
+pub fn NewFileSessionStore(root: impl AsRef<Path>) -> Result<FileSessionStore, DirectE2eeError> {
+    FileSessionStore::new(root)
 }
 
 #[derive(Debug, Clone)]
@@ -300,6 +360,13 @@ impl SignedPrekeyStore for FileSignedPrekeyStore {
     }
 }
 
+#[allow(non_snake_case)]
+pub fn NewFileSignedPrekeyStore(
+    root: impl AsRef<Path>,
+) -> Result<FileSignedPrekeyStore, DirectE2eeError> {
+    FileSignedPrekeyStore::new(root)
+}
+
 #[derive(Debug, Clone)]
 pub struct FileOneTimePrekeyStore {
     root: PathBuf,
@@ -365,6 +432,13 @@ impl FileOneTimePrekeyStore {
     }
 }
 
+#[allow(non_snake_case)]
+pub fn NewFileOneTimePrekeyStore(
+    root: impl AsRef<Path>,
+) -> Result<FileOneTimePrekeyStore, DirectE2eeError> {
+    FileOneTimePrekeyStore::new(root)
+}
+
 #[derive(Debug, Clone)]
 pub struct FilePendingOutboundStore {
     root: PathBuf,
@@ -419,6 +493,13 @@ impl PendingOutboundStore for FilePendingOutboundStore {
     fn delete_pending(&mut self, operation_id: &str) -> Result<(), DirectE2eeError> {
         Self::delete_pending(self, operation_id)
     }
+}
+
+#[allow(non_snake_case)]
+pub fn NewFilePendingOutboundStore(
+    root: impl AsRef<Path>,
+) -> Result<FilePendingOutboundStore, DirectE2eeError> {
+    FilePendingOutboundStore::new(root)
 }
 
 fn session_json_paths(root: &Path) -> Result<Vec<PathBuf>, DirectE2eeError> {

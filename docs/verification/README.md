@@ -2,6 +2,77 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 ANP Registry PascalCase Facade Slice
+
+Timestamp: 2026-05-17T10:29:46+0800.
+
+Scope: continue Go `internal/anpsdk/registry.go` parity by exposing the
+transport-free PascalCase registry facade names over the local `../anp/rust`
+SDK and the existing CLI-side direct-E2EE file stores.
+
+What changed:
+
+- Added Go-shaped constants for module metadata, DID profiles, auth modes, and
+  target kinds: `ModulePath`, `ModuleVersion`, `DidProfileE1`,
+  `DidProfileK1`, `AuthModeHTTPSignatures`, `AuthModeAuto`,
+  `TargetKindAgent`, `TargetKindGroup`, and `TargetKindService`.
+- Added PascalCase `pub use` aliases for authentication and proof helpers:
+  ANP message-service building, DID document creation/resolution,
+  DID-WBA auth/header signing, HTTP signatures, IM proof helpers, RFC9421
+  origin proof helpers, group receipt proof helpers, and DID-WBA binding
+  helpers.
+- Added Go-shaped type aliases for `IMProof`, `IMGenerationOptions`,
+  `ParsedIMSignatureInput`, `RFC9421OriginProof`,
+  `RFC9421OriginProofGenerationOptions`, and
+  `RFC9421OriginProofVerificationOptions`.
+- Added thin constructor wrappers for `NewDIDWbaAuthHeader`,
+  `NewDidWbaVerifier`, `NewFileSessionStore`,
+  `NewFileSignedPrekeyStore`, `NewFileOneTimePrekeyStore`, and
+  `NewFilePendingOutboundStore`.
+- Extended `anpsdk_contract` so tests use PascalCase facade names directly for
+  auth headers, HTTP signatures, proof generation/verification, target-kind
+  constants, and file-store construction.
+
+Boundary note:
+
+- `MessageServiceE2EEClient` and `NewMessageServiceDirectE2eeClient` remain in
+  the message secure-client row. Re-exporting them from `anpsdk` would cross
+  from a mechanical SDK facade into CLI message/auth/store wiring and risks an
+  `anpsdk -> message -> anpsdk` dependency cycle.
+- DID resolver aliases are compile-referenced but not network-executed because
+  the local ANP SDK is still used with `default-features = false`.
+- No dependency or local ANP SDK feature was added.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test anpsdk_contract --locked
+cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd ../awiki-cli && go test ./internal/anpsdk -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
+```
+
+Observed results:
+
+- Format check passed.
+- `anpsdk_contract`: 16 passed, 0 failed.
+- `authsdk_contract`: 15 passed, 0 failed.
+- `cargo check -p awiki-cli --locked` passed.
+- Structure check passed with no undocumented Rust files over the 1200-line
+  default cap.
+- `git diff --check` reported no whitespace errors.
+- Go `internal/anpsdk` compiled with no test files.
+- Dependency audit showed only existing Rustls/ring/webpki and approved
+  `rusqlite + bundled` / `libsqlite3-sys` paths; no OpenSSL, `native-tls`,
+  WebSocket, YAML, or new SQLite dependency was added.
+- The focused test now proves Go-shaped PascalCase spellings directly instead
+  of only proving the underlying snake-case Rust functions.
+
 ## 2026-05-17 Buildinfo Metadata Injection Slice
 
 Timestamp: 2026-05-17T10:12:43+0800.
