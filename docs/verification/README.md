@@ -787,7 +787,7 @@ Coverage boundary:
 
 ## 2026-05-17 Runtime Listener Host-Notify System Evidence
 
-Timestamp: 2026-05-17T21:10:00+0800.
+Timestamp: 2026-05-17T21:25:30+0800.
 
 Scope: promote the foreground listener notification execute/handler rows, the
 OpenClaw host-notify delivery-sink row, the file host-notify sink foreground
@@ -797,7 +797,9 @@ The probes start `runtime listener run`, connect to the configured
 message-service v2 WebSocket stack, receive an incoming direct notification,
 persist it to the isolated SQLite cache, and deliver the resulting host
 notification through a loopback OpenClaw webhook route, an isolated JSONL file
-sink, or a loopback Hermes capture server that validates the request HMAC.
+sink, a loopback Hermes capture server that validates the request HMAC, or a
+loopback Hermes endpoint that returns HTTP 503 to prove status error
+persistence.
 
 System-test coverage used:
 
@@ -829,6 +831,13 @@ System-test coverage used:
   verifies the listener stores the message; verifies one HTTP POST reaches the
   loopback capture server with the expected direct-message host notification
   JSON; and verifies the Hermes HMAC signature over the raw request body.
+- `tests_v2/cli/test_awiki_cli_host_notify_failure_local.py::test_awiki_cli_host_notify_failure_local_probe_succeeds`
+  configures `host_notify.enabled=true`, `sink=hermes`, a loopback notify URL,
+  and a test secret; starts `runtime listener run`; sends a direct message to a
+  loopback endpoint that returns `503` with body `no route`; verifies the
+  listener still stores the message; and polls `runtime listener status` until
+  `data.listener.host_notify.last_error` contains
+  `hermes host notify failed status=503: no route`.
 
 Commands run:
 
@@ -838,7 +847,10 @@ cd . && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds -ra -q
 cd ../awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/probes/run_awiki_cli_host_notify_hermes_local_probe.py tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py::test_awiki_cli_host_notify_hermes_local_probe_succeeds -ra -q
+cd ../awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/probes/run_awiki_cli_host_notify_failure_local_probe.py tests_v2/cli/test_awiki_cli_host_notify_failure_local.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_failure_local.py::test_awiki_cli_host_notify_failure_local_probe_succeeds -ra -q
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py -ra -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py tests_v2/cli/test_awiki_cli_host_notify_failure_local.py -ra -q
 cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
 cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
 cd . && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
@@ -857,8 +869,14 @@ Observed results:
 - Python compile check for the new Hermes probe and wrapper: passed.
 - Focused Hermes host-notify system selector: 1 passed, 0 failed, 0 skipped in
   3.38s.
-- System-test listener/OpenClaw/file-sink/Hermes selectors: 5 passed, 0 failed,
-  0 skipped in 18.07s.
+- Python compile check for the new Hermes failure-status probe and wrapper:
+  passed.
+- Focused Hermes failure-status system selector: 1 passed, 0 failed, 0 skipped
+  in 3.53s.
+- System-test listener/OpenClaw/file-sink/Hermes success selectors: 5 passed,
+  0 failed, 0 skipped in 18.07s.
+- System-test listener/OpenClaw/file-sink/Hermes success plus Hermes
+  failure-status selectors: 6 passed, 0 failed, 0 skipped in 28.91s.
 - Rust `runtime_listener_notification_execute_contract`: 6 passed, 0 failed.
 - Rust `runtime_listener_notification_handler_contract`: 3 passed, 0 failed.
 - Rust `runtime_hermes_host_notify_contract`: 8 passed, 0 failed.
@@ -877,19 +895,23 @@ System-test configuration context:
   `awiki-system-test` helper configuration, isolated temporary awiki workspaces,
   loopback webhook capture for OpenClaw delivery, an isolated temporary
   host-notify file path for the file-sink probe, and a loopback HTTP capture
-  server plus test secret for Hermes HMAC validation. They do not require a
-  real OpenClaw process, real Hermes service, Hermes bridge/process lifecycle,
+  server plus test secret for Hermes HMAC validation. The failure-status probe
+  uses a loopback HTTP endpoint returning `503 no route` plus the same
+  foreground listener and isolated SQLite cache. They do not require a real
+  OpenClaw process, real Hermes service, Hermes bridge/process lifecycle,
   mail-service selectors, or platform service-manager permissions.
 
 Boundary note: this is system-test evidence for direct incoming foreground
 listener persistence plus OpenClaw, file-sink, and Hermes-sink host-notify
 delivery. The Hermes evidence proves only direct-message HTTP POST delivery to a
-loopback capture server with HMAC validation. It does not prove mail-system
-acceptance, group/group-state live notification delivery, real Hermes
-service/bridge/process integration, noop/log sink delivery in a foreground
-listener, Windows named-pipe listener I/O, Windows/macOS service-manager
-execution, or full repository-wide `awiki-system-test` acceptance. Mail-related
-system-test selectors remain explicitly deferred by the current port plan.
+loopback capture server with HMAC validation and, separately, one direct-message
+HTTP 503 failure path that preserves the message while exposing
+`host_notify.last_error`. It does not prove mail-system acceptance,
+group/group-state live notification delivery, real Hermes service/bridge/process
+integration, noop/log sink delivery in a foreground listener, Windows
+named-pipe listener I/O, Windows/macOS service-manager execution, or full
+repository-wide `awiki-system-test` acceptance. Mail-related system-test
+selectors remain explicitly deferred by the current port plan.
 
 ## 2026-05-17 Update Policy System Evidence
 
