@@ -2,6 +2,89 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Identity ANP Service System Selector
+
+Timestamp: 2026-05-17T17:05:00+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for local
+`id create` DID-document `ANPMessageService` generation without calling
+user-service, message-service, mail-service, listener, or external services.
+
+System-test change:
+
+- Added
+  `tests_v2/id/test_identity_cli.py::test_id_create_generates_default_anp_message_service`.
+- Updated `tests_v2/id/test_identity_cli.py` header and
+  `tests_v2/id/CLAUDE.md` to document local DID-document `ANPMessageService`
+  coverage.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && uv run python -m py_compile tests_v2/id/test_identity_cli.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/id/test_identity_cli.py::test_id_create_generates_default_anp_message_service -q
+cd ../awiki-system-test && git diff --check -- tests_v2/id/test_identity_cli.py tests_v2/id/CLAUDE.md
+cd . && cargo +1.79.0 fmt --check
+cd . && cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
+cd . && cargo +1.79.0 check -p awiki-cli --locked
+cd . && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd . && cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd . && git diff --check -- docs/parity-matrix.md docs/verification/README.md
+```
+
+Observed results:
+
+- Python compile check: passed.
+- Initial selector attempt failed because the test expected literal `#message`
+  in persisted DID document output.
+- Inspection of the generated isolated `did_document.json` showed the local ANP
+  SDK expands the helper's relative service id into
+  `<identity-did>#message` in the final DID document.
+- Focused selector after aligning to persisted DID document shape: 1 passed,
+  0 failed, 0 skipped in 1.03s.
+- System-test diff whitespace check: passed.
+- Rust format check: passed.
+- Rust `identity_contract`: 7 passed, 0 failed.
+- Rust package check: passed.
+- Structure check: `structure ok: no undocumented Rust files over 1200 lines`.
+- Dependency scan: only existing `rustls`/`webpki`/`ring`,
+  `rusqlite`/`libsqlite3-sys`, and crypto/base64 matches were present; no
+  OpenSSL, native-tls, YAML, service-manager, or new platform service dependency
+  matched.
+- Rust docs diff whitespace check: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace with
+  `did_domain=tenant.example`.
+- The selector ran only `id create`, then read the generated
+  `identities/<dir>/did_document.json` from the isolated workspace.
+
+Coverage:
+
+- Verifies the created local identity DID starts with
+  `did:wba:tenant.example:user:`.
+- Verifies the persisted DID document id equals the CLI summary DID.
+- Verifies the generated service entry id is `<identity-did>#message`, matching
+  the local ANP SDK's final DID-document expansion of the helper-level
+  `#message` service id.
+- Verifies the service entry has type `ANPMessageService`,
+  `serviceEndpoint=https://tenant.example/anp-im/rpc`,
+  `serviceDid=did:wba:tenant.example`, profiles
+  `anp.core.binding.v1`, `anp.direct.base.v1`, `anp.attachment.v1`, and
+  `securityProfiles=["transport-protected"]`.
+
+Boundary note: this selector covers local DID generation and persisted DID
+document service shape only. It does not execute live registration, JWT refresh,
+profile calls, message-service discovery, PEM compatibility conversion, or new
+ANP SDK feature work.
+
+Dependency note: no Rust dependency was added. The exercised path uses the
+existing local `../anp/rust` SDK facade and identity store code.
+
 ## 2026-05-17 OpenClaw Route Webhook System Selector
 
 Timestamp: 2026-05-17T16:45:00+0800.
