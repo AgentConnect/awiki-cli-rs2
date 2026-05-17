@@ -76,12 +76,13 @@ update-key, rejoin, WebSocket/local bridge transport, foreground listener group
 E2EE handling, mail, or full repository-wide system acceptance.
 
 Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
-broad non-mail, non-message-service `awiki-system-test` subprocess batch under
-`AWIKI_CLI_UNDER_TEST=rust`, covering `tests_v2/core`, `debug`, `update`,
-`runtime`, `id`, `page`, `multi_tenant`, direct/group CLI, runtime listener,
-service-run, and OpenClaw host-notify selectors: 70 passed, 3 skipped, 0
-failed. The three skips were message-service tenant-admission environment gates
-requiring `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` or
+broad non-mail `awiki-system-test` subprocess batch under
+`AWIKI_CLI_UNDER_TEST=rust` and `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`, covering
+`tests_v2/core`, `debug`, `update`, `runtime`, `id`, `page`, `site`,
+`multi_tenant`, direct/group CLI, group E2EE, runtime listener, service-run,
+secure init/repair/retry, and OpenClaw host-notify selectors: 101 passed, 3
+skipped, 0 failed. The three skips were message-service tenant-admission
+environment gates requiring `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` or
 `E2E_MESSAGE_V2_MESSAGE_ONLY_DID`. Mail, message-service-only protocol tests,
 and full repository-wide `tests_v2` acceptance remain pending.
 

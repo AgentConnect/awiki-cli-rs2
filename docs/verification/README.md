@@ -2,6 +2,64 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Broad Non-Mail System Regression Refresh
+
+Timestamp: 2026-05-17T21:15:00+0800.
+
+Scope: broad Rust subprocess regression over the enabled non-mail
+`awiki-system-test` selectors. This is a regression signal for the already
+ported surfaces; it is not full repository-wide acceptance because mail
+selectors, message-service-only protocol suites, and tenant-admission gated
+cases remain outside this run.
+
+Command run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core tests_v2/debug tests_v2/update tests_v2/runtime tests_v2/id tests_v2/page tests_v2/site tests_v2/multi_tenant tests_v2/cli/test_awiki_cli_direct_local.py tests_v2/cli/test_awiki_cli_group_local.py tests_v2/cli/test_awiki_cli_group_e2ee_local.py tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py tests_v2/cli/test_awiki_cli_group_e2ee_recovery_local.py tests_v2/cli/test_awiki_cli_group_e2ee_update_rejoin_local.py tests_v2/cli/test_awiki_cli_group_e2ee_negative_local.py tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/test_awiki_cli_service_run_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_main_only_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_webhook_only_local.py tests_v2/cli/test_awiki_cli_secure_init_local.py tests_v2/cli/test_awiki_cli_secure_repair_local.py tests_v2/cli/test_awiki_cli_secure_retry_local.py -ra -q
+```
+
+Observed result:
+
+- Overall: 101 passed, 0 failed, 3 skipped in 145.33s.
+- Failed tests: 0.
+- Skipped tests:
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:92`:
+    `Set E2E_MESSAGE_V2_DID_ONLY_DOMAIN to run DID-only tenant admission coverage.`
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:132`:
+    `Set E2E_MESSAGE_V2_DID_ONLY_DOMAIN to run DID-only message-service denial coverage.`
+  - `tests_v2/multi_tenant/test_message_tenant_admission.py:191`:
+    `Set E2E_MESSAGE_V2_MESSAGE_ONLY_DID to run message-only admission coverage.`
+
+Configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- Resolved tests_v2 mode: `local`.
+- Resolved user-service URL: `https://awiki.info`.
+- Resolved message-service URL: `https://awiki.info`.
+- Resolved message-service WebSocket URL: `wss://awiki.info/im/ws`.
+- Resolved DID/domain under test: `awiki.info`.
+- `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` was unset.
+- `E2E_MESSAGE_V2_MESSAGE_ONLY_DID` was unset.
+
+Coverage boundary:
+
+- Covered enabled non-mail Rust subprocess selectors for core output,
+  debug/update/runtime/id/page/site/multi-tenant surfaces, direct/group CLI,
+  group E2EE, foreground listener/service-run, OpenClaw host-notify variants,
+  and explicit secure init/repair/retry selectors.
+- Did not run `tests_v2/mail` by design; mail-related system tests remain
+  deferred to a later mail-focused pass and must not be counted as passed.
+- Did not run message-service-only protocol suites as Rust CLI acceptance
+  evidence.
+- Did not satisfy the three skipped tenant-admission cases because the required
+  `E2E_MESSAGE_V2_DID_ONLY_DOMAIN` and `E2E_MESSAGE_V2_MESSAGE_ONLY_DID` gates
+  were unset.
+
 ## 2026-05-17 Foreground Listener WebSocket/Secure Evidence Refresh
 
 Timestamp: 2026-05-17T20:55:00+0800.
