@@ -2,6 +2,61 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Config Set DID Domain System Selector
+
+Timestamp: 2026-05-17T14:59:25+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for
+`config set --did-domain`, closing the system-test coverage gap for this
+already translated local config writer command.
+
+System-test change:
+
+- Added
+  `tests_v2/core/test_basic_commands.py::test_config_set_did_domain_persists_normalized_domain_and_rejects_invalid_inputs`.
+- Updated `tests_v2/core/CLAUDE.md` to include local config write coverage in
+  the core command directory description.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/core/test_basic_commands.py::test_config_set_did_domain_persists_normalized_domain_and_rejects_invalid_inputs -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/core/test_basic_commands.py -ra -q
+```
+
+Observed results:
+
+- Focused selector: 1 passed, 0 failed, 0 skipped in 1.24s.
+- Core basic command file: 11 passed, 0 failed, 0 skipped in 3.83s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace and local config file.
+- It did not require mail-service, message-service local topology, tenant env
+  gates, registered identities, or real user service-manager permissions.
+
+Coverage:
+
+- Verifies `--dry-run config set --did-domain Tenant.Example.` returns
+  `config_set_did_domain` and normalized `tenant.example`.
+- Verifies dry-run leaves the existing isolated `config.yaml` unchanged.
+- Verifies live `config set --did-domain " Tenant.Example. "` persists
+  normalized `services.did_domain`.
+- Verifies `config show` reads back the new normalized `did_domain`.
+- Verifies the command does not create runtime socket or listener pid artifacts.
+- Verifies missing `--did-domain`, URL-like input, and path-like input all
+  return `invalid_argument` with Go-shaped messages/hints.
+
+Boundary note: this selector covers the narrow local config writer command
+only. It does not claim full Go `yaml.v3` parser/serializer parity for all YAML
+features, comments, anchors, or formatting preservation.
+
+Dependency note: no Rust dependency was added. The exercised path uses the
+existing std-only config writer.
+
 ## 2026-05-17 Trace Timing Output-Channel System Selector
 
 Timestamp: 2026-05-17T14:55:30+0800.
