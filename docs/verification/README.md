@@ -2,6 +2,72 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Update Root-Preflight System Selector
+
+Timestamp: 2026-05-17T15:11:18+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for the root
+update-preflight soft-fail path and local/recovery command exemptions.
+
+System-test change:
+
+- Added
+  `tests_v2/update/test_update_policy.py::test_root_preflight_soft_fails_non_exempt_update_checks_and_exempts_local_commands`.
+- Added `tests_v2/update/CLAUDE.md` to document the update-policy subprocess
+  test boundary.
+- Updated `tests_v2/CLAUDE.md` to list the update test directory.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && uv run python -m py_compile tests_v2/update/test_update_policy.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/update/test_update_policy.py::test_root_preflight_soft_fails_non_exempt_update_checks_and_exempts_local_commands -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/update/test_update_policy.py -ra -q
+cd ../awiki-system-test && git diff --check -- tests_v2/update/test_update_policy.py tests_v2/update/CLAUDE.md tests_v2/CLAUDE.md
+```
+
+Observed results:
+
+- Python compile check: passed.
+- Focused selector: 1 passed, 0 failed, 0 skipped in 0.40s.
+- Update policy file: 4 passed, 0 failed, 0 skipped in 0.16s.
+- Diff whitespace check for changed system-test files: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace and intentionally did
+  not seed update metadata so the update check takes the deterministic
+  cache-only unavailable path.
+- It did not require npm registry access, mail-service, message-service local
+  topology, tenant env gates, registered identities, or real user
+  service-manager permissions.
+
+Coverage:
+
+- Verifies non-exempt `status --format json` succeeds when update checking
+  fails in cache-only mode.
+- Verifies quiet non-verbose `status` does not write
+  `[awiki-cli] update check failed:` to stderr.
+- Verifies `--verbose status` logs `[awiki-cli] update check failed:` and the
+  `cache-only mode` cause to stderr while preserving a successful JSON
+  envelope on stdout.
+- Verifies local/recovery commands do not log update-check failures under
+  `--verbose`: `version`, `upgrade`, `init --dry-run`, `docs`, `schema`,
+  `config show`, `doctor`, and `completion bash`.
+
+Boundary note: this selector covers dev-build cache-only soft-fail and
+exemption behavior. It does not prove the non-dev `version_unsupported`
+hard-block path because the system-test Rust binary is built as `version=dev`;
+that hard-block remains covered by Rust/Go unit-level tests unless a future
+system-test lane builds a non-dev binary variant.
+
+Dependency note: no Rust dependency was added. The exercised path uses the
+existing Rustls/std update client boundary only far enough to return the
+cache-only unavailable result; no network request is attempted.
+
 ## 2026-05-17 Workspace Upgrade Read-Only System Selector
 
 Timestamp: 2026-05-17T15:03:36+0800.
