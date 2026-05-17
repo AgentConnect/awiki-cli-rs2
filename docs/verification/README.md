@@ -14,6 +14,143 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-17 Message Workspace Upgrade Hook
+
+Timestamp: 2026-05-17T23:45:04+0800.
+
+Scope: wire the Go `messageService()` workspace-upgrade boundary into Rust
+message command handlers, then prove the local legacy `config.json` migration
+branch through `msg secure status` before reading local `e2ee_outbox` rows.
+
+Rust change:
+
+- `crates/awiki-cli/src/app/msg_handlers.rs`: `msg send`,
+  `msg attachment download`, `msg inbox`, `msg history`, `msg mark-read`,
+  `msg secure status`, `msg secure init`, `msg secure repair`,
+  `msg secure failed`, `msg secure retry`, and `msg secure drop` now use
+  `resolve_config_for_workspace()` where they previously called
+  `resolve_config()`. This matches Go `internal/cli/msg.go`, where public
+  message handlers call `messageService()` and that helper calls
+  `resolveConfigForWorkspace()`.
+- `crates/awiki-cli/tests/msg_secure_status_failed_live_contract.rs`: added
+  `msg_secure_status_migrates_legacy_config_json_before_local_outbox_read_like_go`.
+
+System-test change:
+
+- Added
+  `tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_migrates_legacy_config_json_before_local_outbox_read`.
+- Added a local `_ensure_e2ee_outbox_schema` helper so this selector can seed
+  SQLite directly without invoking `debug db query` and accidentally triggering
+  the workspace upgrade before the `msg` command under test.
+- Updated `tests_v2/cli/CLAUDE.md` to mention `msg secure status` legacy
+  config workspace-upgrade coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test msg_secure_status_failed_live_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+wc -l crates/awiki-cli/src/app/msg_handlers.rs crates/awiki-cli/tests/msg_secure_status_failed_live_contract.rs docs/parity-matrix.md docs/verification/README.md
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/cli ./internal/message ./internal/upgrade ./internal/store -run 'Test.*Msg|Test.*Message|Test.*Secure|Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|Test.*E2EEOutbox' -count=1
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_direct_local.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_migrates_legacy_config_json_before_local_outbox_read -ra -q
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_failed_and_drop_use_local_outbox_without_services tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_migrates_legacy_config_json_before_local_outbox_read -ra -q
+git diff --check -- tests_v2/cli/test_awiki_cli_direct_local.py tests_v2/cli/CLAUDE.md
+wc -l tests_v2/cli/test_awiki_cli_direct_local.py tests_v2/cli/CLAUDE.md
+```
+
+Observed results:
+
+- Rust formatting and package check passed.
+- Rust `msg_contract` passed: 6 passed, 0 failed.
+- Rust `msg_secure_status_failed_live_contract` passed: 4 passed, 0 failed.
+- `xtask check-structure` passed with no undocumented Rust file over the
+  1200-line soft cap.
+- Rust `git diff --check` passed.
+- Go focused reference tests passed:
+  `internal/cli` 23.840s, `internal/message` 0.387s,
+  `internal/upgrade` 0.099s, and `internal/store` 0.242s.
+- Python syntax check for `tests_v2/cli/test_awiki_cli_direct_local.py` passed.
+- Focused system-test whitespace check passed for
+  `tests_v2/cli/test_awiki_cli_direct_local.py` and `tests_v2/cli/CLAUDE.md`.
+- Focused `awiki-system-test` selector:
+  `test_awiki_cli_msg_secure_status_migrates_legacy_config_json_before_local_outbox_read`
+  passed: 1 passed, 0 failed, 0 skipped in 1.27s.
+- Two-selector local outbox system-test check passed: 2 passed, 0 failed,
+  0 skipped in 2.77s.
+- Dependency audit stayed on existing `rustls`/`webpki`/`ring`,
+  `base64`/`sha2`/`hmac`, and approved `rusqlite + bundled`
+  `libsqlite3-sys` paths. No OpenSSL, `native-tls`, reqwest, hyper, platform
+  service-manager crate, WebSocket crate, YAML crate, or alternate SQLite path
+  was introduced.
+- File-size check: `msg_handlers.rs` 853 lines and
+  `msg_secure_status_failed_live_contract.rs` 572 lines. Both touched Rust
+  source/test files stay under the default 1200-line cap. The system-test file
+  `tests_v2/cli/test_awiki_cli_direct_local.py` is an existing large system
+  test file at 1313 lines after adding one focused selector; the Rust source
+  cap does not apply to it, and this slice did not create a multi-thousand-line
+  Rust module.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid new
+  Python cache artifacts.
+- The new selector uses an isolated local workspace, local seeded identity, and
+  local SQLite `e2ee_outbox` row. It does not require message-service,
+  user-service, mail-service, listener, service-manager permissions, or
+  registered remote identities.
+- The selector writes `config.json` only after removing the helper-created
+  `config.yaml`, then invokes real Rust `msg secure status` as the first CLI
+  command after seeding local SQLite. This prevents a debug/setup command from
+  triggering the workspace upgrade before the message command under test.
+
+Coverage:
+
+- Rust message handlers now follow the Go `messageService()` config boundary:
+  raw config resolve, `workspace_upgrade` trace phase, `upgrade_if_needed`, raw
+  resolve refresh, then message service/local outbox execution.
+- Verifies `msg secure status` migrates a legacy `config.json`-only workspace
+  before local secure outbox reads.
+- Verifies the migrated `config.yaml` keeps the legacy active identity,
+  runtime mode, service base URL, and DID domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, a
+  non-empty upgrade ID, warnings as a list, and a backup directory containing
+  `config.json.bak` equal to the seeded legacy config.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies local `msg secure status` still reads the seeded active-identity
+  outbox row and emits the Go-shaped redacted status output.
+- Verifies the migration did not leave listener pid/socket artifacts.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch in `msg secure status`, plus direct Rust
+code coverage that all currently translated message handlers use the same
+workspace resolver boundary. It does not separately subprocess-test legacy
+config migration for every message subcommand, and it does not prove legacy
+SQLite import through workspace migration, legacy identity import,
+imported/current k1 replacement RPCs, rollback, platform cleanup command
+execution, all-command upgrade-hook coverage, or mail-service selectors.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged; the slice reuses existing local upgrade/config/message/store
+machinery and the already-approved `rusqlite + bundled` SQLite lane.
+
 ## 2026-05-17 Debug DB Workspace Upgrade Hook
 
 Timestamp: 2026-05-17T23:27:26+0800.

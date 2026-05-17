@@ -57,7 +57,7 @@ impl App {
             ));
         }
 
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::send(
                 &resolved,
@@ -163,7 +163,7 @@ impl App {
                 "Choose direct attachment download with --with or group attachment download with --group.",
             ));
         }
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::download_attachment(
                 &resolved,
@@ -224,7 +224,7 @@ impl App {
     }
 
     pub fn run_msg_inbox(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::inbox(
                 &resolved,
@@ -284,7 +284,7 @@ impl App {
 
     pub fn run_msg_history(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["with"])?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::history(
                 &resolved,
@@ -344,7 +344,7 @@ impl App {
                 "Usage: awiki-cli msg mark-read <MESSAGE_ID...>",
             ));
         }
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::mark_read(
                 &resolved,
@@ -380,7 +380,7 @@ impl App {
 
     pub fn run_msg_secure_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let with = string_flag(command, "with");
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::secure_status(
                 &resolved,
@@ -416,7 +416,7 @@ impl App {
     pub fn run_msg_secure_init(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let with = string_flag(command, "with");
         require_flags(command, &["with"])?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::secure_init(
                 &resolved,
@@ -452,7 +452,7 @@ impl App {
     pub fn run_msg_secure_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let with = string_flag(command, "with");
         require_flags(command, &["with"])?;
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::secure_repair(
                 &resolved,
@@ -486,7 +486,7 @@ impl App {
     }
 
     pub fn run_msg_secure_failed(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::secure_failed(
                 &resolved,
@@ -557,7 +557,7 @@ impl App {
                 usage,
             ));
         }
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             if action == "msg.secure.drop" {
                 let result = message::secure_drop(

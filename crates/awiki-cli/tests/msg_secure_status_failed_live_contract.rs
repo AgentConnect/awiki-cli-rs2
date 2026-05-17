@@ -134,6 +134,69 @@ fn msg_secure_status_live_routes_cli_and_redacts_local_state_like_go() {
 }
 
 #[test]
+fn msg_secure_status_migrates_legacy_config_json_before_local_outbox_read_like_go() {
+    let workspace = TempDir::new("msg-secure-status-legacy-config").expect("workspace");
+    let legacy_config = workspace.path().join("config.json");
+    std::fs::write(
+        &legacy_config,
+        r#"{"schema_version":1,"identity":{"active":"alice-status"},"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
+    )
+    .expect("write legacy config");
+    let manager = Manager::new(test_paths(workspace.path()));
+    let alice = save_ready_identity(&manager, "alice-status", "alice");
+    let peer_did = "did:wba:legacy.example:user:bob:e1_bob";
+    seed_secure_outbox(
+        workspace.path(),
+        E2EEOutboxRecord {
+            outbox_id: "status-legacy-config".to_string(),
+            owner_did: alice.did.clone(),
+            peer_did: peer_did.to_string(),
+            session_id: "session-legacy-config".to_string(),
+            original_type: "text".to_string(),
+            plaintext: "legacy config plaintext".to_string(),
+            local_status: "failed".to_string(),
+            created_at: "2026-05-17T02:00:00Z".to_string(),
+            updated_at: "2026-05-17T02:00:00Z".to_string(),
+            credential_name: "alice-status".to_string(),
+            ..E2EEOutboxRecord::default()
+        },
+    );
+
+    let output = awiki_cmd(&["msg", "secure", "status"], workspace.path());
+    let envelope = success_json(&output);
+
+    assert_eq!(envelope["command"], "awiki-cli msg secure status");
+    assert_eq!(
+        envelope["summary"],
+        "Loaded 0 secure session(s) and 1 secure outbox record(s)"
+    );
+    assert_eq!(envelope["data"]["outbox"]["total"], 1);
+    assert_eq!(
+        envelope["data"]["outbox"]["records"][0]["outbox_id"],
+        "status-legacy-config"
+    );
+    assert!(
+        !legacy_config.exists(),
+        "legacy config.json should be removed after workspace upgrade"
+    );
+    let migrated = std::fs::read_to_string(workspace.path().join("config.yaml"))
+        .expect("read migrated config");
+    assert!(
+        migrated.contains("  active: alice-status\n"),
+        "migrated config should keep active identity, got {migrated:?}"
+    );
+    assert!(
+        migrated.contains("  service_base_url: https://legacy.example\n"),
+        "migrated config should keep service URL, got {migrated:?}"
+    );
+    assert!(
+        migrated.contains("  did_domain: legacy.example\n"),
+        "migrated config should keep DID domain, got {migrated:?}"
+    );
+    assert_workspace_upgrade_meta(workspace.path(), "config.json.bak");
+}
+
+#[test]
 fn msg_secure_failed_live_routes_cli_and_filters_active_identity_like_go() {
     let workspace = TempDir::new("msg-secure-failed-live").expect("workspace");
     let manager = Manager::new(test_paths(workspace.path()));
@@ -449,6 +512,33 @@ fn assert_absent(value: &Value, field: &str) {
     assert!(
         value.get(field).is_none(),
         "{field} should be absent from {value:?}"
+    );
+}
+
+fn assert_workspace_upgrade_meta(workspace: &Path, backup_file: &str) {
+    let meta_path = workspace.join("upgrade").join("meta.json");
+    let meta: Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
+            .expect("upgrade meta JSON");
+    assert_eq!(meta["workspace_schema_version"], 3);
+    assert!(
+        meta["last_upgrade_id"]
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty()),
+        "last_upgrade_id should be non-empty: {meta:?}"
+    );
+    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap_or_default());
+    assert_eq!(
+        backup_dir.parent(),
+        Some(workspace.join("upgrade").join("backups").as_path())
+    );
+    assert!(backup_dir.join(backup_file).is_file());
+    assert!(
+        !workspace
+            .join("upgrade")
+            .join("upgrade_journal.json")
+            .exists(),
+        "journal should be cleared after successful upgrade"
     );
 }
 
