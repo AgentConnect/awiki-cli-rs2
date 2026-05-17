@@ -194,6 +194,76 @@ Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged. SQLite remains on the approved `rusqlite + bundled` path, and
 TLS/transport behavior continues to use the existing std/Rustls implementation.
 
+## 2026-05-17 Foreground Listener Scoped Direct Inbox Refresh
+
+Timestamp: 2026-05-17T22:03:24+0800.
+
+Scope: tighten the existing foreground listener/local bridge direct-message
+system probe by asserting the positive scoped direct inbox path before
+mark-read. This is an additive evidence refresh only; it does not change Rust
+production behavior or broaden fallback/group/mail claims.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/probes/run_awiki_cli_runtime_listener_local_probe.py tests_v2/cli/test_awiki_cli_runtime_listener_local.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+git diff --check
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/message ./internal/store -run 'TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestReadInboxFromCacheExcludesMailNotificationsForDirectInbox|TestReadUnifiedDirectInboxFromCacheIncludesNewStyleMailMetadataRows|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates|TestMessageQueryHelpersLookupAndMarkReadRespectOwner' -count=1
+```
+
+Observed results:
+
+- Python probe/wrapper syntax check passed.
+- Focused `awiki-system-test` selector
+  `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds`
+  finished with 1 passed, 0 failed, and 0 skipped in 6.76s.
+- The pytest wrapper now asserts `LISTENER_WS_DIRECT_SCOPE_INBOX_OK` in
+  addition to `LISTENER_WS_LOCAL_VERIFY_OK` and
+  `LISTENER_WS_HISTORY_MARK_READ_OK`.
+- Rust `msg_ws_inbox_live_contract`: 5 passed.
+- Go focused direct-inbox/store reference tests passed.
+- Rust docs whitespace check passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- Pytest cache provider was disabled with `-p no:cacheprovider`.
+
+Coverage boundary:
+
+- The same real listener run now proves that after Bob sends Alice a direct
+  message in websocket mode and Alice's foreground listener persists it to
+  SQLite, both default `msg inbox` and
+  `msg inbox --scope direct --with <bob did> --unread` can observe the unread
+  direct message before `msg mark-read` mutates local read state.
+- This remains scoped to the foreground listener/local bridge happy path for
+  ordinary direct messages. It does not prove HTTP fallback warnings,
+  bridge+HTTP double-failure behavior, group WebSocket paths, attachment
+  WebSocket paths, mail notification rows, group inbox rows, Windows named-pipe
+  I/O, macOS/Windows service-manager behavior, or full repository-wide
+  `awiki-system-test` acceptance.
+- Mail-related system-test selectors remain deferred and must not be reported
+  as passed from this listener probe.
+
+Dependency note: no Rust dependency was added and no Rust production file was
+changed. This refresh uses the existing std/Rustls foreground WebSocket
+transport and approved `rusqlite + bundled` local store path.
+
 ## 2026-05-17 Broad Non-Mail System Regression Refresh
 
 Timestamp: 2026-05-17T21:15:00+0800.
