@@ -2,6 +2,56 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Output Docs Topic Asset Slice
+
+Timestamp: 2026-05-17T09:54:08+0800.
+
+Scope: close the remaining same-repository asset gap for the Go
+`internal/docs/topics.go` `output` topic. Go's topic table points at
+`docs/architecture/output-format.md`, while the Go repository stores the source
+asset under `docs/architecture/参考文档/output-format.md`; the Rust repository
+now carries that asset at the canonical topic path without changing the topic
+metadata.
+
+What changed:
+
+- Copied `../awiki-cli/docs/architecture/参考文档/output-format.md` to
+  `docs/architecture/output-format.md` byte-for-byte.
+- Extended the focused docs topic contract so `awiki-cli docs output` preserves
+  Go's canonical `docs/architecture/output-format.md` reference and verifies
+  same-repository docs references exist.
+- Updated the parity matrix to remove the previous output-topic path
+  reconciliation note and record the copied asset.
+
+Commands run:
+
+```text
+cmp -s ../awiki-cli/docs/architecture/参考文档/output-format.md docs/architecture/output-format.md
+cargo +1.79.0 fmt
+cargo +1.79.0 test -p awiki-cli --test core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+stat -c '%a %n' docs/architecture/output-format.md
+wc -l docs/architecture/output-format.md crates/awiki-cli/tests/core_contract.rs docs/parity-matrix.md docs/verification/README.md
+```
+
+Observed results:
+
+- The copied output-format asset compares byte-identical with the Go source
+  document and has mode `664`.
+- Focused docs topic contract passed.
+- Full `core_contract`, format check, structure check, and whitespace check
+  passed during the slice.
+- `docs/architecture/output-format.md` is 407 lines and
+  `core_contract.rs` is 1081 lines, both below the default 1200-line cap.
+- No Rust dependency was added.
+
+Boundary note: this is source documentation asset parity only. The copied
+document keeps Go/source wording and is not rewritten for Rust implementation
+details in this translation slice.
+
 ## 2026-05-17 Command Schema Metadata Parity Slice
 
 Timestamp: 2026-05-17T09:45:11+0800.

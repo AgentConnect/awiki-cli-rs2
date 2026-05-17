@@ -296,6 +296,18 @@ fn docs_list_and_topic_lookup_preserve_go_topic_contracts() {
         &topic["data"]["topic"]["references"],
         "data.topic.references",
     );
+
+    let output_topic = success_json(&awiki_cmd(&["docs", "output"]));
+    let references = output_topic["data"]["topic"]["references"]
+        .as_array()
+        .expect("output topic references should be an array");
+    assert!(
+        references
+            .iter()
+            .any(|reference| reference == "docs/architecture/output-format.md"),
+        "output topic should preserve Go's canonical output-format reference: {references:?}"
+    );
+    assert_docs_references_exist(references);
 }
 
 #[test]
@@ -1007,6 +1019,25 @@ fn assert_text_contains(haystack: &str, needle: &str) {
         haystack.contains(needle),
         "expected {haystack:?} to contain {needle:?}"
     );
+}
+
+fn assert_docs_references_exist(references: &[Value]) {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate should live under workspace root");
+    for reference in references {
+        let reference = reference
+            .as_str()
+            .unwrap_or_else(|| panic!("docs reference should be a string: {reference:?}"));
+        if reference.starts_with("../") {
+            continue;
+        }
+        assert!(
+            repo_root.join(reference).is_file(),
+            "docs reference {reference:?} should exist under {repo_root:?}"
+        );
+    }
 }
 
 fn build_info_keys() -> [&'static str; 8] {
