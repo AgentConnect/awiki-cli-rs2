@@ -170,6 +170,8 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "runtime.listener.stop" => app.run_runtime_listener_stop(),
         "runtime.listener.restart" => app.run_runtime_listener_restart(),
         "runtime.listener.uninstall" => app.run_runtime_listener_uninstall(),
+        "runtime.listener.run" => app.run_runtime_listener_run(),
+        "runtime.listener.service-run" => app.run_runtime_listener_service_run(),
         "runtime.listener.config.show" => app.run_runtime_listener_config_show(),
         "runtime.listener.config.set" => app.run_runtime_listener_config_set(command),
         "runtime.listener.enable" => app.run_runtime_listener_enable(),

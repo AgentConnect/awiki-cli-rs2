@@ -4,4 +4,4 @@ Rust source files should stay at or below 1200 non-generated lines. Exceptions r
 
 | Rust path | Rust lines | Go path | Go lines | Reason |
 | --- | ---: | --- | ---: | --- |
-
+| `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | 1528 | `awiki-cli/internal/runtime/listener/server.go` | 1802 | Foreground listener execution currently mirrors the oversized Go supervisor file for traceable 1:1 translation of run/service-run startup, bridge ownership, WebSocket session loops, secure notification normalization, local secure ACK recovery, queued secure outbox flushing, and secure backlog replay. This is an intentional translation-time exception; splitting this runtime owner into smaller Rust files is a later optimization/refactor task, not mixed into the parity slice. |

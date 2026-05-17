@@ -2,6 +2,88 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Runtime Listener Foreground/WebSocket Execution Slice
+
+Timestamp: 2026-05-17T16:35:00+0800.
+
+Scope: wire executable Go `runtime listener run` and hidden
+`runtime listener service-run` foreground behavior through the Rust app dispatch
+layer, local bridge, blocking Rustls WebSocket transport, notification handler,
+and secure-direct listener helpers.
+
+What changed:
+
+- Added Rust foreground listener entrypoints for `runtime.listener.run` and
+  `runtime.listener.service-run`.
+- Exposed `runtime::bridge` listener/stream helpers so the foreground owner uses
+  the existing platform bridge abstraction instead of importing Unix socket
+  types directly.
+- Added a foreground runtime owner that writes PID/status/boot artifacts, starts
+  the Unix local bridge, accepts bridge requests, starts per-identity WebSocket
+  session loops, reconnects sessions, handles notification reads, and cleans up
+  runtime artifacts on normal return.
+- Added a dependency-free blocking WebSocket transport using std sockets plus
+  existing Rustls/webpki roots/base64/rand dependencies; no `tungstenite`,
+  async runtime, `reqwest`, `hyper`, OpenSSL, or `native-tls` dependency was
+  added.
+- Wired direct local bridge requests through one-shot WebSocket RPC calls and
+  reused the existing bridge framing/dispatch and mark-read side-effect helpers.
+- Wired direct/mail/group/group-state notification persistence through the
+  existing listener notification handler.
+- Wired secure direct notification execution through the existing secure
+  normalization, local ACK, queued outbox flush, unread secure inbox sync, and
+  pending-confirmation history replay helpers.
+- Documented `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` as a
+  translation-time file-size exception: 1529 lines against Go
+  `internal/runtime/listener/server.go` at 1802 lines.
+
+Boundary note:
+
+- This verifies the runtime listener foreground/WebSocket slice only. It does
+  not claim full `awiki-cli` port acceptance.
+- Full explicit OS signal cleanup remains a later parity item. Current
+  foreground/system-test behavior relies on process termination for external
+  SIGTERM paths.
+- Bridge RPC currently opens a one-shot WebSocket connection per request instead
+  of reusing Go's persistent session client; this passed current local listener
+  system tests and is recorded as follow-up parity/optimization work.
+- Full `awiki-system-test` was not run for the whole repository.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_normalize_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_sync_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+git diff --check
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/cli/test_awiki_cli_runtime_listener_local.py -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/cli/test_awiki_cli_service_run_local.py -q
+```
+
+Observed results:
+
+- Format check passed.
+- `cargo check -p awiki-cli --locked` passed.
+- Structure check passed after the documented file-size exception:
+  `structure ok: no undocumented Rust files over 1200 lines`.
+- `runtime_listener_secure_normalize_contract`: 10 passed.
+- `runtime_listener_notification_handler_contract`: 3 passed.
+- `runtime_listener_secure_sync_contract`: 7 passed.
+- `runtime_listener_service_contract`: 16 passed.
+- `runtime_bridge_contract`: 17 passed.
+- `runtime_listener_bridge_connection_contract`: 10 passed.
+- `runtime_listener_foreground_contract`: 10 passed.
+- `git diff --check` passed.
+- `awiki-system-test` runtime listener local selector: 2 passed.
+- `awiki-system-test` service-run local selector: 1 passed.
+
 ## 2026-05-17 Message JWT Fallback-Refresh Trace Slice
 
 Timestamp: 2026-05-17T14:20:00+0800.

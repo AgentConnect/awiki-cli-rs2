@@ -344,6 +344,16 @@ impl App {
         )
     }
 
+    pub fn run_runtime_listener_run(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        runtime::listener_supervisor_run::run_foreground(resolved).map_err(internal_anyhow)
+    }
+
+    pub fn run_runtime_listener_service_run(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        runtime::listener_supervisor_run::run_service(resolved).map_err(internal_anyhow)
+    }
+
     fn run_runtime_listener_lifecycle(
         &self,
         command_name: &str,

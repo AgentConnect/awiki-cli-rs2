@@ -16,6 +16,37 @@ pub type BridgeListener = std::os::unix::net::UnixListener;
 #[derive(Debug)]
 pub struct BridgeListener;
 
+#[cfg(unix)]
+pub type BridgeStream = std::os::unix::net::UnixStream;
+
+#[cfg(not(unix))]
+#[derive(Debug)]
+pub struct BridgeStream;
+
+#[cfg(not(unix))]
+impl io::Read for BridgeStream {
+    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "windows local websocket bridge I/O is not implemented in Rust port",
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+impl io::Write for BridgeStream {
+    fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "windows local websocket bridge I/O is not implemented in Rust port",
+        ))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 pub const MODE_HTTP: &str = "http";
 pub const MODE_WEBSOCKET: &str = "websocket";
 pub const MAX_UNIX_SOCKET_PATH_BYTES: usize = 100;
@@ -270,6 +301,45 @@ pub fn listen_bridge(path: &str) -> anyhow::Result<BridgeListener> {
 #[cfg(not(unix))]
 pub fn listen_bridge(_path: &str) -> anyhow::Result<BridgeListener> {
     anyhow::bail!("windows local websocket bridge I/O is not implemented in Rust port")
+}
+
+#[cfg(unix)]
+pub fn set_bridge_listener_nonblocking(
+    listener: &BridgeListener,
+    nonblocking: bool,
+) -> io::Result<()> {
+    listener.set_nonblocking(nonblocking)
+}
+
+#[cfg(not(unix))]
+pub fn set_bridge_listener_nonblocking(
+    _listener: &BridgeListener,
+    _nonblocking: bool,
+) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn clone_bridge_listener(listener: &BridgeListener) -> io::Result<BridgeListener> {
+    listener.try_clone()
+}
+
+#[cfg(not(unix))]
+pub fn clone_bridge_listener(_listener: &BridgeListener) -> io::Result<BridgeListener> {
+    Ok(BridgeListener)
+}
+
+#[cfg(unix)]
+pub fn accept_bridge(listener: &BridgeListener) -> io::Result<BridgeStream> {
+    listener.accept().map(|(stream, _)| stream)
+}
+
+#[cfg(not(unix))]
+pub fn accept_bridge(_listener: &BridgeListener) -> io::Result<BridgeStream> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "windows local websocket bridge I/O is not implemented in Rust port",
+    ))
 }
 
 pub fn handle_bridge_connection_once<RW, F>(stream: RW, dispatch: F) -> io::Result<()>
