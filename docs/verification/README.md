@@ -2,6 +2,81 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Ordinary Direct Message System Evidence Refresh
+
+Timestamp: 2026-05-17T20:35:00+0800.
+
+Scope: refresh and promote the ordinary direct-message live HTTP row to scoped
+`system_verified`. This covers the real Rust subprocess path for direct
+`msg send`, `msg inbox --scope direct`, `msg history --with`, `msg mark-read`,
+and a direct-only `msg inbox --scope all --mark-read` flow. It does not promote
+mail notification system tests, group local-cache merge behavior, WebSocket/local
+bridge transport, secure direct E2EE, OpenClaw/Hermes host notification, runtime
+listener incoming processing, or full repository-wide system acceptance.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_can_send_direct_messages_and_mark_them_read tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_inbox_scope_all_limit_and_mark_read_work -ra -q
+cd . && cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test store_contact_contract --locked
+cd ../awiki-cli && go test ./internal/store ./internal/message ./internal/traceutil -run 'TestUpsertContactRebindsCurrentHandleAndPreservesHistory|TestListDIDsByHandleFallsBackToContactsWithoutHistoryBindings|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates|TestSyncPeerHandle|TestReadHistoryFromCacheByPeerDIDsAggregatesHistoricalBindings|TestTraceRunRecordsPhasesAndFallbacks' -count=1
+cd ../awiki-system-test && uv run python - <<'PY'
+from tests_v2.helpers.config import load_message_service_v2_config, resolve_tests_v2_mode
+cfg = load_message_service_v2_config()
+print("mode", resolve_tests_v2_mode())
+print("user_service_url", cfg.user_service_url)
+print("message_service_url", cfg.node_a.public_base_url)
+print("message_service_ws_url", cfg.node_a.ws_url)
+print("did_domain", cfg.node_a.domain)
+PY
+```
+
+Observed results:
+
+- Focused `awiki-system-test` direct-message selectors: 2 passed, 0 failed,
+  0 skipped in 5.38s.
+- Rust binary build passed.
+- Rust `msg_live_contract`: 7 passed.
+- Rust `store_contact_contract`: 3 passed.
+- Go focused `internal/store`, `internal/message`, and `internal/traceutil`
+  selectors passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- Resolved tests_v2 mode: `local`.
+- Resolved user-service URL: `https://awiki.info`.
+- Resolved message-service URL: `https://awiki.info`.
+- Resolved message-service WebSocket URL: `wss://awiki.info/im/ws`.
+- Resolved DID/domain under test: `awiki.info`.
+
+Coverage boundary:
+
+- The first selector sends a direct message from Alice to Bob through the real
+  Rust CLI subprocess, waits for Bob's direct unread inbox to contain it, checks
+  Alice's direct history, marks the message read, and verifies it leaves Bob's
+  direct unread inbox.
+- The second selector sends two ordinary direct messages and exercises
+  `msg inbox --scope all --unread --limit 1 --mark-read` for the direct-message
+  subset of the unified inbox path. It does not prove group inbox merge rows or
+  mail notification rows, so the broader `scope=all` parity row remains
+  partially system-evidenced but not promoted solely from this run.
+- Mail-related system-test selectors remain explicitly deferred to a later
+  mail-focused pass; skipped/deferred mail tests must not be reported as passed.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. The slice reuses the existing Rustls/std HTTP client,
+authsdk session, local ANP proof helpers, and approved `rusqlite + bundled`
+SQLite path. It does not add OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`,
+`hyper`, WebSocket crates, YAML crates, platform service-manager libraries, or
+new SQLite dependencies.
+
 ## 2026-05-17 Group E2EE Broader Scoped System Evidence
 
 Timestamp: 2026-05-17T20:10:00+0800.
