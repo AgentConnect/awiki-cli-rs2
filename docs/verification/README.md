@@ -14,6 +14,76 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Workspace v0->v1 Legacy Config Public Row Split
+
+Timestamp: 2026-05-18T06:05:00+0800.
+
+Scope: split the already verified legacy `config.json` public apply branch out
+of the broader v0->v1 migration row as its own scoped `system_verified` parity
+matrix row. This records that `runtime mode get` exercises `UpgradeIfNeeded`
+for the deterministic local legacy-config branch without claiming legacy
+settings, identity import, SQLite import, k1 replacement RPCs, rollback, lock,
+platform cleanup, or mail behavior.
+
+Documentation change:
+
+- Added a dedicated `system_verified` row for
+  `awiki-cli/internal/upgrade/migration_v0_to_v1.go` legacy `config.json`
+  public apply branch in `docs/parity-matrix.md`.
+- Kept the broad v0->v1 helper/apply/import/validation row at `unit_verified`
+  because that wider row still includes legacy settings, identity import,
+  legacy SQLite import, imported k1 replacement handoff, validation, and
+  deferred rollback boundaries.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check -- docs/parity-matrix.md docs/verification/README.md
+
+cd /home/ecs-user/awiki-space/awiki-cli
+go test ./internal/upgrade -run 'TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestLoadLegacySettingsRejectsSplitServiceURLs' -count=1
+
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_mode_get_migrates_legacy_config_json_without_service_manager -ra -q
+```
+
+Observed results:
+
+- `workspace_migration_v0_to_v1_contract`: 25 passed, 0 failed.
+- `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed, including
+  `workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop`.
+- `cargo check -p awiki-cli --locked` passed.
+- `xtask check-structure` passed: no undocumented Rust files over 1200 lines.
+- Go focused `internal/upgrade` tests passed for legacy config migration,
+  metadata stamping, and split legacy-settings rejection.
+- Python syntax check for `tests_v2/runtime/test_runtime_cli.py` passed.
+- Focused `awiki-system-test` selector passed: 1 passed, 0 failed, 0 skipped
+  in 0.64s.
+
+Behavior covered by the existing selector:
+
+- Removes the helper-created `config.yaml`, seeds only `config.json`, and runs
+  real Rust `awiki-cli runtime mode get`.
+- Verifies `runtime mode get` returns the legacy `websocket` runtime mode after
+  migration.
+- Verifies `config.json` is removed, canonical `config.yaml` is written, and
+  schema/runtime/service-base/DID-domain fields match the seeded legacy JSON.
+- Verifies upgrade metadata reaches workspace schema version `3`, records a
+  non-empty upgrade ID, stores `config.json.bak` under `upgrade/backups`, and
+  clears the journal.
+- Verifies no SQLite DB, listener pid, or message-daemon socket is created, and
+  a second `runtime mode get` succeeds after migration.
+
+Boundary note: this is a documentation/evidence-row split backed by the focused
+public subprocess selector. It does not add new implementation, does not mark
+the broad v0->v1 row complete, and does not claim mail selectors.
+
 ## 2026-05-18 Config Template Public Config-Show Selector
 
 Timestamp: 2026-05-18T05:40:00+0800.
