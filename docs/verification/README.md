@@ -8294,6 +8294,62 @@ Coverage boundary:
 
 No Rust dependency was added. Cargo manifests and lockfile remain unchanged.
 
+## 2026-05-17 Group E2EE Dry-Run Schema System Evidence
+
+Timestamp: 2026-05-17T18:39:54+0800.
+
+Scope: add direct `awiki-system-test` subprocess coverage for the static
+`group e2ee` dry-run and schema command surface. This slice does not exercise
+live P6 APIs, the `anp-mls` binary, MLS state mutation, message-service
+delivery, WebSocket/local bridge transport, foreground listener behavior, mail,
+or tenant site administration.
+
+Command run:
+
+```bash
+cd /home/ecs-user/awiki-space/awiki-system-test
+AWIKI_CLI_UNDER_TEST=rust \
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 \
+AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli \
+AWIKI_CLI_UPDATE_CACHE_ONLY=1 \
+PYTHONDONTWRITEBYTECODE=1 \
+uv run pytest tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_group_e2ee_dry_run_and_schema_commands_are_stable -ra -q
+```
+
+Observed result:
+
+- System-test group E2EE dry-run/schema selector: 1 passed, 0 failed,
+  0 skipped in 1.04s.
+- Failed tests: 0.
+- Skipped tests: 0.
+
+Configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- Resolved tests_v2 mode: `local`.
+- Resolved user-service URL: `https://anpclaw.com`.
+- Resolved message-service URL: `https://anpclaw.com`.
+- Resolved DID/domain under test: `anpclaw.com`.
+
+Coverage boundary:
+
+- The selector runs real Rust subprocess dry-run commands for
+  `group e2ee status`, `publish-key-package`, `pending`, `repair`,
+  `process-leave-request`, `recover-member`, hidden `update-key`, and hidden
+  `rejoin`.
+- It verifies stable plan actions, provider metadata, group/member inputs,
+  hidden orchestration text, `p4_membership_mutate` boundaries, rejoin canonical
+  command guidance, hidden command metadata, and publish purpose choices through
+  `schema group e2ee` and `schema group e2ee publish-key-package`.
+- This evidence is intentionally dry-run/schema scoped. Live KeyPackage publish,
+  pending notice pull, repair, recovery, update-key, rejoin-through-readd,
+  encrypted send/decrypt, and lifecycle flows remain covered by their separate
+  focused live group E2EE rows.
+
+No Rust dependency was added. Cargo manifests and lockfile remain unchanged.
+
 ## 2026-05-15 Identity Phone Register And Page System Slice
 
 Local Rust and Go reference verification:
