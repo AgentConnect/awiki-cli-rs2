@@ -2,6 +2,64 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Workspace Upgrade Read-Only System Selector
+
+Timestamp: 2026-05-17T15:03:36+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for the
+read-only workspace-upgrade inspection surfaces exposed through `doctor` and
+`config show`.
+
+System-test change:
+
+- Added
+  `tests_v2/core/test_basic_commands.py::test_doctor_and_config_show_report_workspace_upgrade_meta_and_journal`.
+- Updated `tests_v2/core/CLAUDE.md` to include workspace-upgrade read-only
+  report coverage in the core command directory description.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/core/test_basic_commands.py::test_doctor_and_config_show_report_workspace_upgrade_meta_and_journal -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/core/test_basic_commands.py -ra -q
+```
+
+Observed results:
+
+- Focused selector: 1 passed, 0 failed, 0 skipped in 0.15s.
+- Core basic command file: 12 passed, 0 failed, 0 skipped in 3.96s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace and manually seeded
+  `upgrade/meta.json` plus `upgrade/upgrade_journal.json`.
+- It did not run real migration execution and did not require mail-service,
+  message-service local topology, tenant env gates, registered identities, or
+  real user service-manager permissions.
+
+Coverage:
+
+- Verifies `doctor` reports `workspace_upgrade` as `warn` with
+  `Workspace upgrade completed with migration warnings` when meta warnings are
+  present.
+- Verifies `doctor` reports `workspace_upgrade` as `warn` with
+  `Workspace upgrade journal indicates an interrupted upgrade` when a running
+  journal exists.
+- Verifies doctor details include meta warning fields, journal `upgrade_id` and
+  `phase`, and detection `current_version_source=meta`.
+- Verifies `config show` embeds workspace-upgrade `paths`, `meta`, `journal`,
+  and `detection` fields, and does not expose a stub `actions` field.
+
+Boundary note: this selector covers the read-only inspection/reporting surface
+only. It does not execute `UpgradeIfNeeded`, file locking, backup creation,
+legacy DB import, identity replacement RPCs, rollback, or cleanup migrations.
+
+Dependency note: no Rust dependency was added. The exercised path is local JSON
+metadata/journal inspection only.
+
 ## 2026-05-17 Config Set DID Domain System Selector
 
 Timestamp: 2026-05-17T14:59:25+0800.
