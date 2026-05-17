@@ -14,6 +14,71 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Bridge Dispatch Public Foreground Selector
+
+Scope: split a narrow `system_verified` parity row for public foreground
+listener/local bridge dispatch of ordinary direct bridge methods. The broader
+pure `handleBridgeRequest` dispatch helper row remains `unit_verified` for
+unsupported methods, coercion, error, group, and injected edge cases.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/probes/run_awiki_cli_runtime_listener_local_probe.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- `runtime_listener_bridge_dispatch_contract`: 10 passed, 0 failed.
+- `runtime_listener_bridge_connection_contract`: 10 passed, 0 failed.
+- Go focused runtime listener bridge reference test: passed.
+- Python compile check for the listener wrapper and probe: passed.
+- Focused runtime listener system selector: 1 passed, 0 failed, 0 skipped in
+  7.59s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The test used `.env` configured `awiki.info` endpoints:
+  `E2E_USER_SERVICE_URL=https://awiki.info`,
+  `E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
+  `E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`, and
+  `E2E_DID_DOMAIN=awiki.info`.
+- Generated `tests_v2` `__pycache__` directories were removed after the pytest
+  run as disposable intermediates.
+
+Coverage:
+
+- Starts `runtime listener run` in an isolated subprocess environment.
+- Waits for Alice/Bob/Carol foreground WebSocket sessions to become ready.
+- Exercises real local bridge calls through public Rust subprocess commands:
+  `msg send --to --text`, default/scoped direct `msg inbox`,
+  `msg history --with <did>`, and `msg mark-read`.
+- The probe emits `LISTENER_WS_LOCAL_VERIFY_OK`,
+  `LISTENER_WS_DIRECT_SCOPE_INBOX_OK`, and
+  `LISTENER_WS_HISTORY_MARK_READ_OK`, proving the successful public foreground
+  dispatch path for `direct.send`, `inbox.get`, `direct.get_history`, and
+  `inbox.mark_read`.
+
+Boundary note: this selector proves only successful public foreground bridge
+dispatch for ordinary direct methods. It does not prove unsupported methods,
+weak JSON coercions, group bridge dispatch, service-DID fetch, disconnected
+session errors, build/send errors, best-effort local mark-read failure edges,
+Windows named-pipe I/O, secure direct, attachments, mail, host-notify, platform
+service-manager behavior, or full repository-wide acceptance. Mail system-test
+selectors remain deferred and are not counted as passed here.
+
+Dependency note: no Rust dependency was added. The foreground bridge path
+continues to use the existing std/Rustls transport and approved
+`rusqlite + bundled` SQLite lane.
+
 ## 2026-05-18 Direct Send WebSocket Public Foreground Selector
 
 Scope: split a narrow `system_verified` parity row for ordinary direct
