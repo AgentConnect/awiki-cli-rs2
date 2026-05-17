@@ -100,13 +100,18 @@ impl App {
 
     pub(super) fn resolve_config_raw(&self) -> anyhow::Result<Resolved> {
         let mut phase = traceutil::start_phase("resolve_config");
+        let result = self.resolve_config_untraced();
+        phase.finish();
+        result
+    }
+
+    fn resolve_config_untraced(&self) -> anyhow::Result<Resolved> {
         let result = config::resolve(Overrides {
             identity: self.globals.identity.clone(),
             identity_changed: self.globals.identity_changed,
             format: self.globals.format.clone(),
             format_changed: self.globals.format_changed,
         });
-        phase.finish();
         result
     }
 
@@ -617,6 +622,20 @@ impl App {
 
     fn resolve_config(&self) -> Result<Resolved, ExitError> {
         self.resolve_config_raw().map_err(internal_anyhow)
+    }
+
+    fn resolve_config_for_workspace(&self) -> Result<Resolved, ExitError> {
+        let resolved = self.resolve_config_raw().map_err(internal_anyhow)?;
+        if self.globals.dry_run {
+            return Ok(resolved);
+        }
+
+        let mut phase = traceutil::start_phase("workspace_upgrade");
+        let result = upgrade::upgrade_if_needed(&resolved, crate::buildinfo::VERSION);
+        phase.finish();
+        result.map_err(|err| internal_anyhow(anyhow::Error::new(err)))?;
+
+        self.resolve_config_untraced().map_err(internal_anyhow)
     }
 
     fn open_store(

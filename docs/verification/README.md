@@ -14,6 +14,109 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-17 Workspace Upgrade Public Runtime Mode Hook
+
+Timestamp: 2026-05-17T22:45:55+0800.
+
+Scope: wire the Go `resolveConfigForWorkspace` upgrade hook into the Rust
+`runtime mode get` public command path, then prove the legacy `config.json`
+migration branch through a real Rust subprocess.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test core_contract trace_timing --locked
+cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata|TestUpgradeIfNeededCleansLegacySkillArtifactsForExistingWorkspace' -count=1
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+wc -l crates/awiki-cli/src/app.rs crates/awiki-cli/src/app/runtime_handlers.rs docs/parity-matrix.md docs/verification/README.md
+```
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test
+PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_mode_get_migrates_legacy_config_json_without_service_manager -ra -q
+git diff --check -- tests_v2/runtime/test_runtime_cli.py tests_v2/runtime/CLAUDE.md
+wc -l tests_v2/runtime/test_runtime_cli.py tests_v2/runtime/CLAUDE.md
+```
+
+Observed results:
+
+- Rust formatting and package check passed.
+- `traceutil_contract`: 9 passed, 0 failed.
+- `core_contract trace_timing`: 3 passed, 0 failed.
+- `runtime_contract`: 12 passed, 0 failed.
+- `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed, including the
+  focused legacy `config.json` migration contract.
+- `workspace_migration_v0_to_v1_contract`: 25 passed, 0 failed.
+- `workspace_upgrade_contract`: 20 passed, 0 failed.
+- Go focused `internal/upgrade` tests passed for legacy `config.json`
+  migration, current metadata stamping, and legacy skill cleanup.
+- Python syntax check for `tests_v2/runtime/test_runtime_cli.py` passed.
+- Focused `awiki-system-test` selector:
+  `test_runtime_mode_get_migrates_legacy_config_json_without_service_manager`
+  passed: 1 passed, 0 failed, 0 skipped in 0.60s.
+- `xtask check-structure`, Rust whitespace check, and focused system-test
+  whitespace check passed.
+- File-size check: `app.rs` 1040 lines, `runtime_handlers.rs` 747 lines,
+  `tests_v2/runtime/test_runtime_cli.py` 924 lines; all touched source/test
+  files stay under the default 1200-line cap. `docs/verification/README.md`
+  is an existing accumulated evidence log and remains the documented exception
+  category for verification history.
+- Dependency audit output stayed on existing `rustls`/`webpki`/`ring`,
+  `base64`/`sha2`/`hmac`, and approved `rusqlite + bundled`
+  `libsqlite3-sys` paths. No OpenSSL, `native-tls`, reqwest, hyper, platform
+  service-manager crate, WebSocket crate, YAML crate, or alternate SQLite path
+  was introduced.
+
+Configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated temporary workspace under the system-test
+  helper's `HOME` and `AWIKI_CLI_WORKSPACE_HOME_DIR`.
+- The test explicitly removed the helper-created `config.yaml`, seeded only
+  `config.json`, and did not use real user service-manager permissions.
+
+Coverage:
+
+- Rust now follows the Go command boundary for this path: raw config resolve,
+  dry-run migration skip, `workspace_upgrade` trace phase, `upgrade_if_needed`,
+  then raw resolve again before rendering `runtime mode get`.
+- The subprocess selector verifies `runtime mode get` returns the migrated
+  `websocket` runtime mode from legacy `config.json`.
+- Verifies legacy `config.json` is removed and `config.yaml` is written with
+  semantic fields for schema version, runtime mode, service base URL, and DID
+  domain.
+- Verifies `upgrade/meta.json` records workspace schema version `3`, no
+  warnings, a non-empty upgrade ID, and a backup directory containing
+  `config.json.bak`.
+- Verifies `upgrade/upgrade_journal.json` is cleared after success.
+- Verifies the migration did not create `data/awiki-cli.db` and did not leave
+  listener pid/socket artifacts.
+- Verifies a second `runtime mode get` succeeds, proving the completed
+  migration does not leave a stale journal/lock blocker for this command.
+
+Boundary note: this is public CLI evidence for the local legacy
+`config.json`-only migration branch. It does not prove legacy SQLite import,
+legacy identity import, imported/current k1 replacement RPCs, rollback,
+platform cleanup command execution, or mail-service selectors.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged; the slice reuses the existing local upgrade machinery, Rustls-first
+client decisions for later identity paths, and the approved `rusqlite +
+bundled` SQLite path without creating a database in this system selector.
+
 ## 2026-05-17 Linux User-Systemd Listener Service Evidence
 
 Timestamp: 2026-05-17T22:20:00+0800.

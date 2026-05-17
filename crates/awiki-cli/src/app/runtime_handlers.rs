@@ -98,7 +98,7 @@ impl App {
     }
 
     pub fn run_runtime_mode_get(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         self.render_success(
             "awiki-cli runtime mode get",
             &resolved,
