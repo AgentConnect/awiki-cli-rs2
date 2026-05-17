@@ -31,6 +31,15 @@ grouping-node `implemented=false` metadata, OpenClaw token required metadata,
 and debug DB phase/text/use/path usage. This is schema metadata parity only;
 runtime behavior and business implementation remain separate rows/slices.
 
+Current system-test selector evidence: `awiki-system-test` can build the Rust
+binary from this sibling repository with `AWIKI_CLI_UNDER_TEST=rust` and
+`AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`. On
+2026-05-17, the Rust binary passed `tests_v2/core/test_basic_commands.py`,
+`tests_v2/core/test_output_contracts_cli.py`, `tests_v2/debug/test_debug_cli.py`,
+and `tests_v2/update/test_update_policy.py` with no failures or skips under
+cache-only update checks. Full `awiki-system-test` acceptance remains pending
+for the overall port.
+
 | Go path | Go symbol / feature | Rust path | Status | Tests | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `awiki-cli/cmd/awiki-cli/main.go` | process entrypoint | `crates/awiki-cli/src/main.rs`, `crates/awiki-cli/src/lib.rs` | `system_verified` | `cargo build -p awiki-cli --bin awiki-cli --offline`; `tests_v2/core/test_basic_commands.py` | Initial Rust entrypoint delegates to library execute and is exercised as a subprocess by core system tests. |

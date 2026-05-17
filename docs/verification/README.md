@@ -2,6 +2,42 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Rust System-Test Selector Core Smoke
+
+Timestamp: 2026-05-17T10:00:01+0800.
+
+Scope: verify the `awiki-system-test` binary selector can exercise the current
+`awiki-cli-rs2` Rust binary for local/cache-friendly core, output, debug, and
+update policy system-test subsets. This is verification evidence only; no
+implementation behavior changed in this slice.
+
+Commands run from `/home/ecs-user/awiki-space/awiki-system-test`:
+
+```text
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_RUST_CARGO_OFFLINE=1 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run --no-sync awiki-system-test tests_v2/core/test_basic_commands.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_RUST_CARGO_OFFLINE=1 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run --no-sync awiki-system-test tests_v2/core/test_output_contracts_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_RUST_CARGO_OFFLINE=1 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run --no-sync awiki-system-test tests_v2/debug/test_debug_cli.py
+AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_RUST_CARGO_OFFLINE=1 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run --no-sync awiki-system-test tests_v2/update/test_update_policy.py
+```
+
+Observed results:
+
+- `tests_v2/core/test_basic_commands.py`: 10 passed, 0 failed, 0 skipped,
+  3.12s.
+- `tests_v2/core/test_output_contracts_cli.py`: 2 passed, 0 failed,
+  0 skipped, 1.81s.
+- `tests_v2/debug/test_debug_cli.py`: 4 passed, 0 failed, 0 skipped, 8.81s.
+- `tests_v2/update/test_update_policy.py`: 3 passed, 0 failed, 0 skipped,
+  0.41s.
+- Configuration context: Rust CLI selected via `AWIKI_CLI_UNDER_TEST=rust`;
+  Rust repo forced to `/home/ecs-user/awiki-space/awiki-cli-rs2`; Cargo build
+  kept offline with `AWIKI_CLI_RUST_CARGO_OFFLINE=1`; update tests and
+  preflight checks were cache-only via `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+
+Boundary note: this does not claim full `awiki-system-test` acceptance. Remote
+identity/page/message/group/runtime/mail/listener selectors and full
+environment-dependent runs remain separate acceptance gates.
+
 ## 2026-05-17 Output Docs Topic Asset Slice
 
 Timestamp: 2026-05-17T09:54:08+0800.
