@@ -2,6 +2,74 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Deterministic Debug Import System Selector
+
+Timestamp: 2026-05-17T15:19:19+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for
+`debug db import-v1` using a seeded local legacy SQLite fixture instead of a
+message-service-created source database.
+
+System-test change:
+
+- Added
+  `tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_imports_seeded_legacy_sqlite_without_message_service`.
+- Updated `tests_v2/debug/CLAUDE.md` to document the deterministic local
+  import fixture boundary.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && uv run python -m py_compile tests_v2/debug/test_debug_cli.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/debug/test_debug_cli.py::test_debug_db_import_v1_imports_seeded_legacy_sqlite_without_message_service -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/debug/test_debug_cli.py -ra -q
+cd ../awiki-system-test && git diff --check -- tests_v2/debug/test_debug_cli.py tests_v2/debug/CLAUDE.md
+```
+
+Observed results:
+
+- Python compile check: passed.
+- Focused selector: 1 passed, 0 failed, 0 skipped in 1.24s.
+- Debug CLI file: 6 passed, 0 failed, 0 skipped in 8.74s.
+- Diff whitespace check for changed debug files: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace.
+- The selector generated a local `did:wba:awiki.info` identity and wrote it as
+  a flat v1 legacy identity fixture before running `id import-v1 --name legacy`.
+- The selector created a local v6 legacy SQLite database at
+  `seeded-legacy-data/database/awiki.db` with `messages`, `contacts`, and empty
+  `e2ee_outbox` tables.
+- It did not require npm registry access, mail-service, message-service local
+  topology, tenant env gates, registered identities, user-service, or real user
+  service-manager permissions.
+
+Coverage:
+
+- Verifies `id import-v1 --name legacy` imports the local flat legacy identity
+  used for owner inference.
+- Verifies `debug db import-v1 --path <legacy-root>` reports
+  `source_schema_version=6`, the expected source path, one imported message,
+  one imported contact, zero imported E2EE outbox rows, and missing-table skips
+  for groups, group members, relationship events, and E2EE sessions.
+- Verifies the imported message through `debug db query`: inferred `owner_did`,
+  generated direct `thread_id`, default `content_type=text`, content, and
+  `credential_name`.
+- Verifies the imported contact handle-binding side effect through
+  `debug db handle-history`.
+
+Boundary note: this selector covers the deterministic local legacy SQLite
+import path and complements the existing message-flow copied-DB system test.
+It does not execute workspace `UpgradeIfNeeded`, legacy config migration,
+remote k1 identity replacement, rollback, or message-service-created data.
+
+Dependency note: no Rust dependency was added. The exercised path reuses the
+approved `rusqlite + bundled` SQLite lane and local filesystem fixtures only.
+
 ## 2026-05-17 Update Root-Preflight System Selector
 
 Timestamp: 2026-05-17T15:11:18+0800.
