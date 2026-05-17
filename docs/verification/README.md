@@ -14,6 +14,70 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Config Writer Public CLI Paths Selector
+
+Scope: add scoped `system_verified` parity evidence for public CLI paths that
+consume Go `internal/config/write.go` helper behavior. The broader config writer
+helper row remains `unit_verified` for helper branches and durable-write edge
+cases not exercised through these selectors.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test config_writer_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/config ./internal/cli -run 'Test.*Config|TestHostNotify|TestConfigureHermesHostNotify|TestUpdateHostNotify|TestRuntimeHostNotify|TestRefreshListenerForHostNotifyChange' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py tests_v2/runtime/test_runtime_cli.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_set_did_domain_persists_normalized_domain_and_rejects_invalid_inputs tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_enable_disable_round_trip tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_validates_inputs_and_supports_dry_run tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_setup_writes_local_files -ra -q
+```
+
+Observed results:
+
+- `config_writer_contract`: 7 passed, 0 failed.
+- `runtime_host_notify_enable_disable_contract`: 5 passed, 0 failed.
+- Go focused config/CLI reference tests: passed for `internal/config` and
+  `internal/cli`.
+- Python compile check for the core and runtime system-test files: passed.
+- Focused system selectors: 4 passed, 0 failed, 0 skipped in 4.22s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- These selectors use isolated local workspaces and do not require user-service,
+  message-service, mail-service, listener, OpenClaw, or a running Hermes
+  process.
+
+Coverage:
+
+- `config set --did-domain` proves dry-run no-write behavior, normalized live
+  DID-domain persistence, `config.yaml` text update, `config show` readback,
+  and invalid local input errors.
+- Runtime host-notify config selectors prove public sink persistence for
+  `noop`, `log`, and `file`, command validation plus dry-run guards, and
+  host-notify enable/disable boolean persistence while preserving the configured
+  sink.
+- Hermes setup proves the public one-shot writer path for awiki `config.yaml`:
+  `runtime.host_notify.enabled=true`, `sink=hermes`, Hermes `notify_url`,
+  `deliver`, and secret persistence with no plaintext secret in stdout/stderr.
+  It also writes isolated `HERMES_HOME/config.yaml`, but that route-writer
+  behavior is tracked in the Hermes rows rather than promoted here.
+
+Boundary note: this selector does not prove every config writer helper branch.
+Active identity writes, runtime listener config writes, OpenClaw token
+set/clear, Hermes set/set-secret/clear-secret, temp-file failure cleanup,
+file-permission and directory-sync edge cases beyond contracts, Windows
+directory-sync behavior, full Go `yaml.v3` parser/serializer round-trip, real
+Hermes delivery/bridge/service-manager behavior, mail selectors, and full
+repository-wide acceptance remain covered by focused contracts, adjacent rows,
+or deferred work. The dry-run OpenClaw assertion proves validation and no-write
+planning only; it is not counted as OpenClaw writer parity here. Mail
+system-test selectors remain deferred and are not counted as passed here.
+
+Dependency note: no Rust dependency was added. The selector uses the existing
+std-only config writer and local filesystem behavior.
+
 ## 2026-05-18 Runtime Bridge Unix Public Foreground Selector
 
 Scope: split a narrow `system_verified` parity row for the successful Unix
