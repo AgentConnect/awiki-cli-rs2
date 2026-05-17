@@ -40,6 +40,19 @@ and `tests_v2/update/test_update_policy.py` with no failures or skips under
 cache-only update checks. Full `awiki-system-test` acceptance remains pending
 for the overall port.
 
+Current group E2EE selector evidence: on 2026-05-17, the Rust binary passed the
+focused local group E2EE selectors in `awiki-system-test` with
+`AWIKI_GROUP_E2EE_CONTRACT_TEST=1`: `test_awiki_cli_group_e2ee_local.py`,
+`test_awiki_cli_group_e2ee_lifecycle_local.py`,
+`test_awiki_cli_group_e2ee_recovery_local.py`,
+`test_awiki_cli_group_e2ee_update_rejoin_local.py`, and
+`test_awiki_cli_group_e2ee_negative_local.py`. This evidence covers the
+transition-candidate CLI boundary where unsupported `group e2ee leave-requests`
+and `group e2ee leave-request list` must fail like Go/Cobra so callers can fall
+through to `group e2ee pending`, plus the non-owner `group add` error envelope
+that must preserve Go's owner-role hint. Full `awiki-system-test` acceptance
+remains pending for the overall port.
+
 | Go path | Go symbol / feature | Rust path | Status | Tests | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `awiki-cli/cmd/awiki-cli/main.go` | process entrypoint | `crates/awiki-cli/src/main.rs`, `crates/awiki-cli/src/lib.rs` | `system_verified` | `cargo build -p awiki-cli --bin awiki-cli --offline`; `tests_v2/core/test_basic_commands.py` | Initial Rust entrypoint delegates to library execute and is exercised as a subprocess by core system tests. |

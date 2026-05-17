@@ -133,6 +133,55 @@ fn group_members_live_posts_group_list_members_and_maps_members_like_go() {
 }
 
 #[test]
+fn group_add_live_error_preserves_go_owner_hint() {
+    let workspace = TempDir::new("group-live-add-owner-hint").expect("workspace");
+    register_ready_group_identity(workspace.path(), "bob-group", "bob", "jwt-bob");
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
+    let member_did = "did:wba:awiki.ai:alice:e1_alice";
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_error(
+        2403,
+        "actor cannot add members",
+    ))]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "bob-group",
+            "group",
+            "add",
+            "--group",
+            group_did,
+            "--member",
+            member_did,
+            "--role",
+            "member",
+        ],
+        workspace.path(),
+    );
+
+    assert_code(&output, 1);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_contains_text(
+        envelope["error"]["message"].as_str().unwrap_or_default(),
+        "actor cannot add members",
+    );
+    assert_contains_text(
+        envelope["error"]["hint"].as_str().unwrap_or_default(),
+        "owner role required for membership changes",
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(body["method"], "group.add");
+    assert_eq!(body["params"]["body"]["member_did"], member_did);
+    assert_eq!(body["params"]["body"]["role"], "member");
+}
+
+#[test]
 fn msg_send_group_live_posts_group_send_and_maps_message_id_suffix_like_go() {
     let workspace = TempDir::new("group-live-send").expect("workspace");
     register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
@@ -328,6 +377,28 @@ fn success_json(output: &Output) -> Value {
     envelope
 }
 
+fn error_json(output: &Output) -> Value {
+    assert!(
+        output.stdout.is_empty(),
+        "stdout should be empty: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let envelope: Value =
+        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
+    assert_eq!(envelope["ok"], false);
+    envelope
+}
+
+fn assert_code(output: &Output, expected: i32) {
+    assert_eq!(
+        output.status.code(),
+        Some(expected),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn request_body(raw: &str) -> &str {
     raw.split("\r\n\r\n").nth(1).unwrap_or_default()
 }
@@ -343,6 +414,18 @@ fn json_rpc_result(result: Value) -> String {
     json!({
         "jsonrpc": "2.0",
         "result": result,
+        "id": "req-1",
+    })
+    .to_string()
+}
+
+fn json_rpc_error(code: i64, message: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "error": {
+            "code": code,
+            "message": message,
+        },
         "id": "req-1",
     })
     .to_string()

@@ -2,6 +2,80 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Group E2EE Focused System Acceptance Edges
+
+Timestamp: 2026-05-17T18:20:00+0800.
+
+Scope: close the focused `awiki-system-test` group E2EE local acceptance gaps
+found after the main lifecycle/recovery/update-rejoin selectors passed.
+
+What changed:
+
+- Matched Go/Cobra's `group e2ee` unsupported-child boundary for transition
+  candidates such as `leave-requests` and `leave-request list`. Rust now emits
+  an `internal_error` unknown-command envelope for those children instead of
+  falling back to a parent-level `not_implemented` error, allowing the system
+  test fallback probe to continue to the supported `group e2ee pending` path.
+- Preserved Go's group membership mutation error hint for live `group add` and
+  `group remove`: RPC/service errors now include the owner-role guidance from
+  Go `runGroupMemberMutation`.
+- Added focused Rust regressions for both edges:
+  `group_e2ee_unknown_subcommands_match_go_cobra_boundary` and
+  `group_add_live_error_preserves_go_owner_hint`.
+
+Commands run:
+
+```text
+cargo +1.79.0 fmt --check
+cargo +1.79.0 test -p awiki-cli --test core_contract group_e2ee_unknown_subcommands_match_go_cobra_boundary --locked
+cargo +1.79.0 test -p awiki-cli --test group_contract --locked
+cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_negative_local.py -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_local.py -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_recovery_local.py tests_v2/cli/test_awiki_cli_group_e2ee_update_rejoin_local.py -q
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_local.py tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py tests_v2/cli/test_awiki_cli_group_e2ee_recovery_local.py tests_v2/cli/test_awiki_cli_group_e2ee_update_rejoin_local.py tests_v2/cli/test_awiki_cli_group_e2ee_negative_local.py -q
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
+```
+
+Observed results:
+
+- `core_contract` focused unknown-subcommand regression: 1 passed, 0 failed.
+- `group_contract`: 6 passed, 0 failed.
+- `group_live_contract`: 4 passed, 0 failed.
+- `test_awiki_cli_group_e2ee_negative_local.py`: 3 passed, 0 failed, 0 skipped.
+- `test_awiki_cli_group_e2ee_local.py`: 1 passed, 0 failed, 0 skipped.
+- `test_awiki_cli_group_e2ee_lifecycle_local.py`: 3 passed, 0 failed, 0 skipped.
+- `test_awiki_cli_group_e2ee_recovery_local.py` plus
+  `test_awiki_cli_group_e2ee_update_rejoin_local.py`: 5 passed, 0 failed,
+  0 skipped.
+- Combined focused group E2EE selector run: 12 passed, 0 failed, 0 skipped in
+  35.30s.
+- `cargo check`, structure check, whitespace check, and dependency audit
+  passed. The dependency audit output stayed on existing Rustls/ring/webpki,
+  base64/sha2/hmac, and approved `rusqlite + bundled`/`libsqlite3-sys` paths;
+  no OpenSSL, `native-tls`, `reqwest`, `hyper`, WebSocket crate, YAML crate,
+  platform service-manager dependency, or alternate SQLite backend was added.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`.
+- The selectors use the local `awiki-system-test` node/message-service
+  fixtures and generated same-domain Alice/Bob DID identities; no external
+  production service was targeted.
+
+Boundary note: this is focused group E2EE acceptance evidence, not full
+repository-wide `awiki-system-test` acceptance. The change adds no dependency
+and does not alter TLS, SQLite, MLS provider, ANP SDK, or transport choices.
+All touched Rust source/test files remain below the default 1200-line cap, so
+no file-size exception is needed.
+
 ## 2026-05-17 Runtime Listener Foreground/WebSocket Execution Slice
 
 Timestamp: 2026-05-17T16:35:00+0800.

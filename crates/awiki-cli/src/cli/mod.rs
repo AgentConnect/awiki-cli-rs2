@@ -288,6 +288,9 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ["group", "e2ee", "rejoin", ..] => "group.e2ee.rejoin",
         ["group", "e2ee", "recover-member", ..] => "group.e2ee.recover-member",
         ["group", "e2ee", "process-leave-request", ..] => "group.e2ee.process-leave-request",
+        ["group", "e2ee", unknown, ..] => {
+            return Err(unknown_subcommand("group e2ee", unknown));
+        }
         ["group", "code", "get", ..] => "group.code.get",
         ["group", "code", "refresh", ..] => "group.code.refresh",
         ["group", "code", "enable", ..] => "group.code.enable",
@@ -391,6 +394,15 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         ));
     }
     Ok(name.to_string())
+}
+
+fn unknown_subcommand(parent: &str, subcommand: &str) -> ExitError {
+    ExitError::new(
+        "internal_error",
+        1,
+        format!("unknown command {subcommand:?} for \"awiki-cli {parent}\""),
+        format!("Use `awiki-cli {parent} --help` to inspect supported subcommands."),
+    )
 }
 
 fn drop_command_words(tokens: &[String], path_len: usize) -> Vec<String> {

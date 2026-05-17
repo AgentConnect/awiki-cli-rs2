@@ -205,7 +205,7 @@ impl App {
             } else {
                 message::remove_group_member(&resolved, &self.identity_manager(&resolved), request)
             }
-            .map_err(group_exit)?;
+            .map_err(group_membership_exit)?;
             result.summary = if public_action == "add" {
                 "Added member to group".to_string()
             } else {
@@ -499,6 +499,13 @@ fn group_exit(err: message::MessageError) -> ExitError {
     message_exit(
         err,
         "Ensure the active identity is ready and the message service is reachable.",
+    )
+}
+
+fn group_membership_exit(err: message::MessageError) -> ExitError {
+    message_exit(
+        err,
+        "Make sure the group and member exist and the active identity has the owner role required for membership changes.",
     )
 }
 

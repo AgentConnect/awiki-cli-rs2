@@ -465,6 +465,30 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
 }
 
 #[test]
+fn group_e2ee_unknown_subcommands_match_go_cobra_boundary() {
+    for args in [
+        &["group", "e2ee", "leave-requests", "--group", "did:group"][..],
+        &[
+            "group",
+            "e2ee",
+            "leave-request",
+            "list",
+            "--group",
+            "did:group",
+        ][..],
+    ] {
+        let output = awiki_cmd(args);
+        assert_code(&output, 1);
+        assert_stdout_empty(&output);
+        let envelope = error_json(&output);
+
+        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_contains(&envelope["error"]["message"], "unknown command");
+        assert_contains(&envelope["error"]["hint"], "awiki-cli group e2ee --help");
+    }
+}
+
+#[test]
 fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
     let upgrade = schema_for(&["upgrade"]);
     assert_eq!(
