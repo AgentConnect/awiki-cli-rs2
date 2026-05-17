@@ -14,6 +14,74 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Direct Inbox WebSocket Public Foreground Selector
+
+Scope: split a narrow `system_verified` parity row for ordinary direct
+`msg inbox --scope direct --with <did> --unread` in `runtime.mode=websocket`
+through the real foreground listener/local bridge path. The broader direct
+inbox transport/cache row remains `unit_verified` for fallback/error branches.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message -run 'TestWebSocketFallbackWarnings|TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWSProxyTransportWrapsBridgeFailures|TestAllInboxMergesLocalMailNotifications|TestReadInboxFromCacheExcludesMailNotificationsForDirectInbox|TestReadUnifiedDirectInboxFromCacheIncludesNewStyleMailMetadataRows' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/probes/run_awiki_cli_runtime_listener_local_probe.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- `msg_ws_inbox_live_contract`: 5 passed, 0 failed.
+- `message_ws_proxy_contract`: 3 passed, 0 failed.
+- Rust binary build: passed.
+- Go focused message reference tests: passed.
+- Python compile check for the listener wrapper and probe: passed.
+- Focused runtime listener system selector: 1 passed, 0 failed, 0 skipped in
+  7.67s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The test used `.env` configured `awiki.info` endpoints:
+  `E2E_USER_SERVICE_URL=https://awiki.info`,
+  `E2E_MESSAGE_SERVICE_URL=https://awiki.info`,
+  `E2E_MESSAGE_SERVICE_WS_URL=wss://awiki.info/im/ws`, and
+  `E2E_DID_DOMAIN=awiki.info`.
+- Generated `tests_v2` `__pycache__` directories were removed after the pytest
+  run as disposable intermediates.
+
+Coverage:
+
+- Starts `runtime listener run` in an isolated subprocess environment.
+- Sends a real Bob-to-Alice ordinary direct text message through Rust subprocess
+  CLI execution against the configured `awiki.info` v2 stack.
+- Waits for Alice's foreground listener to persist the direct message into
+  isolated local SQLite.
+- Verifies default `msg inbox` can observe the cached direct message.
+- Verifies `msg inbox --scope direct --with <bob did> --unread --limit 20`
+  observes the same unread direct message and the probe emits
+  `LISTENER_WS_DIRECT_SCOPE_INBOX_OK`.
+
+Boundary note: this is public system evidence for the successful foreground
+listener/local bridge direct inbox path only. Rust contracts still carry bridge
+parameter mapping, local cache-before-HTTP, HTTP fallback warning, mark-read
+returned-row mutation, and HTTP-side double-failure coverage. This selector does
+not prove `scope=all`, `scope=group`, mail notification inbox rows, secure direct
+WebSocket execution, attachments, group WebSocket paths, Windows named-pipe I/O,
+platform service-manager lifecycle, fallback/error branches in system tests, or
+full repository-wide acceptance. Mail system-test selectors remain deferred and
+are not counted as passed here.
+
+Dependency note: no Rust dependency was added. The foreground WebSocket path
+continues to use the existing std/Rustls transport and approved
+`rusqlite + bundled` SQLite lane.
+
 ## 2026-05-18 Runtime Hermes EnsureRoute Public Setup Selector
 
 Scope: split a narrow `system_verified` parity row for the public
