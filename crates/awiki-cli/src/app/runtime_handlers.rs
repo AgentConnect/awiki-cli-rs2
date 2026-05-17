@@ -390,7 +390,7 @@ impl App {
             &resolved,
             json!({ "host_notify": host_notify }),
             "Host notify config loaded",
-            Vec::new(),
+            host_notify_guidance_warnings_for(&resolved, ""),
         )
     }
 

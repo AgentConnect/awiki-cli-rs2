@@ -114,6 +114,100 @@ within the approved cleanup boundary:
 `awiki-system-test/.pytest_cache`. Source files, configuration, committed
 evidence, useful build outputs, and unrelated dirty helper work were preserved.
 
+## 2026-05-18 Hermes Config-Show Guidance Warnings
+
+Scope: match Go's top-level warning behavior for
+`runtime host-notify config show` when the effective host-notify sink is
+Hermes. Go routes this public read command through `hostNotifyGuidanceWarnings`
+so the same three Hermes guidance warnings appear outside the `data` payload.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/app/runtime_handlers.rs`: `run_runtime_host_notify_config_show`
+  now passes `host_notify_guidance_warnings_for(&resolved, "")` into the
+  success envelope instead of an empty warnings list.
+- `crates/awiki-cli/tests/runtime_hermes_cli_contract.rs`: added
+  `host_notify_config_show_includes_go_hermes_guidance_warnings`, which seeds
+  `sink: hermes` and `deliver: telegram`, runs `runtime host-notify config
+  show`, and asserts the three Go warning texts. The same test rewrites the
+  sink to `log` and verifies non-Hermes sinks do not receive Hermes guidance
+  warnings.
+- `docs/parity-matrix.md`: records this as part of the Hermes read-view row
+  rather than treating it as new Hermes business behavior.
+
+System-test change:
+
+- `tests_v2/runtime/test_runtime_cli.py`: extended
+  `test_runtime_host_notify_hermes_guide_status_and_config_commands_work` to
+  assert that the real Rust subprocess `runtime host-notify config show`
+  returns the Hermes forwarding warning, Telegram home-channel warning, and
+  `hermes setup` bridge-management warning.
+- `tests_v2/runtime/CLAUDE.md`: records the new runtime selector coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract host_notify_config_show_includes_go_hermes_guidance_warnings --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli -run 'TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue|TestRuntimeDryRunPlansCoverStableActions' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_guide_status_and_config_commands_work -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+```
+
+Observed results:
+
+- Rust formatting check: passed.
+- Rust focused Hermes CLI contract:
+  `host_notify_config_show_includes_go_hermes_guidance_warnings`: 1 passed, 0
+  failed, 0 ignored, 7 filtered out in 0.01s.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed; no undocumented Rust source file over 1200
+  lines.
+- Go focused reference tests: `internal/cli` passed in 5.457s.
+- Python compile check for `tests_v2/runtime/test_runtime_cli.py`: passed.
+- Focused runtime Hermes system selector: 1 passed, 0 failed, 0 skipped in
+  1.32s.
+- `git diff --check` passed in both `awiki-cli-rs2` and `awiki-system-test`.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+- No `AWIKI_CLI_BINARY` override was used.
+- The selector uses an isolated awiki-cli workspace and isolated `HERMES_HOME`.
+  It does not require user-service, message-service, mail-service, real Hermes,
+  OpenClaw, foreground listener execution, or service-manager permissions.
+
+Coverage:
+
+- Public `runtime host-notify config show` now matches Go for configured
+  Hermes sink warnings:
+  `Hermes sink only forwards notifications to the Hermes adapter...`,
+  `For Telegram delivery, prefer setting TELEGRAM_HOME_CHANNEL...`, and the
+  `runtime host-notify hermes setup` bridge-management guidance.
+- Non-Hermes `log` sink remains free of Hermes guidance warnings in the focused
+  Rust contract.
+- The existing system selector still verifies Hermes secret redaction:
+  `secret_configured` and `secret_source` are present, while plaintext secret
+  fields and stdout/stderr leaks are absent.
+
+Boundary note: this is warning propagation and envelope parity only. It does
+not prove real Hermes service delivery, platform service-manager lifecycle,
+owned bridge health probing, foreground listener execution, mail selectors, or
+full repository-wide acceptance. Mail-related system-test cases remain
+deferred/gated and are not counted as passed.
+
+Dependency note: no Rust dependency was added. The slice reuses the existing
+Hermes warning helper, keeps SQLite on the approved `rusqlite + bundled` path,
+and keeps TLS policy Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Hermes Webhook Bridge Service-Run Alias Slice
 
 Scope: match Go/Cobra alias inheritance for the hidden Hermes bridge

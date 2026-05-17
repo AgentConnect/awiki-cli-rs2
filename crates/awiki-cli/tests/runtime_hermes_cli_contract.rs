@@ -211,6 +211,72 @@ fn hermes_status_reports_configured_sink_and_env_secret_when_available() {
 }
 
 #[test]
+fn host_notify_config_show_includes_go_hermes_guidance_warnings() {
+    let workspace = TempDir::new("config-show-guidance").expect("temp workspace");
+    let config_path = workspace.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "runtime:\n  host_notify:\n    enabled: true\n    sink: hermes\n    hermes:\n      notify_url: http://127.0.0.1:8765/notify/host-event\n      deliver: telegram\n",
+    )
+    .expect("write config");
+
+    let output = awiki_cmd(
+        &["runtime", "host-notify", "config", "show"],
+        workspace.path(),
+        &[],
+    );
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    assert_eq!(
+        envelope["command"],
+        "awiki-cli runtime host-notify config show"
+    );
+    assert_eq!(envelope["summary"], "Host notify config loaded");
+    assert_eq!(envelope["data"]["host_notify"]["sink"], "hermes");
+    assert_eq!(
+        envelope["data"]["host_notify"]["hermes"]["deliver"],
+        "telegram"
+    );
+    assert_warning_contains(
+        &envelope,
+        "Hermes sink only forwards notifications to the Hermes adapter. Final delivery targets are configured in Hermes, not in awiki-cli.",
+    );
+    assert_warning_contains(
+        &envelope,
+        "For Telegram delivery, prefer setting TELEGRAM_HOME_CHANNEL (or using /sethome in Hermes) instead of hard-coding deliver_extra.chat_id in Hermes routes.",
+    );
+    assert_warning_contains(
+        &envelope,
+        "`awiki-cli runtime host-notify hermes setup` now also updates the local Hermes notify route and starts the local bridge automatically.",
+    );
+
+    std::fs::write(
+        &config_path,
+        "runtime:\n  host_notify:\n    enabled: true\n    sink: log\n",
+    )
+    .expect("write log config");
+
+    let output = awiki_cmd(
+        &["runtime", "host-notify", "config", "show"],
+        workspace.path(),
+        &[],
+    );
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    assert_eq!(envelope["data"]["host_notify"]["sink"], "log");
+    assert!(
+        envelope
+            .get("warnings")
+            .and_then(Value::as_array)
+            .map_or(true, Vec::is_empty),
+        "non-Hermes sinks should not receive Hermes guidance warnings: {:?}",
+        envelope["warnings"]
+    );
+}
+
+#[test]
 fn hermes_bridge_service_run_validates_bridge_config_before_deferred_boundary() {
     let workspace = TempDir::new("bridge-service-run").expect("temp workspace");
 
