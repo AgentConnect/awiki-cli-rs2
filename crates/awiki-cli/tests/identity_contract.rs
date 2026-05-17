@@ -585,6 +585,15 @@ fn identity_profile_get_migrates_legacy_config_json_before_self_identity_boundar
 }
 
 #[test]
+fn identity_bind_migrates_legacy_config_json_before_active_identity_boundary_like_go() {
+    assert_identity_boundary_after_legacy_config_upgrade(
+        &["id", "bind", "--phone", "13800138000"],
+        "bind",
+        "id bind identity boundary",
+    );
+}
+
+#[test]
 fn identity_refresh_token_migrates_legacy_config_json_before_active_identity_boundary_like_go() {
     assert_identity_boundary_after_legacy_config_upgrade(
         &["id", "refresh-token"],

@@ -504,7 +504,7 @@ impl App {
     }
 
     pub fn run_id_bind(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
+        let resolved = self.resolve_config_for_workspace()?;
         let params = identity::BindParams {
             phone: string_flag(command, "phone"),
             email: string_flag(command, "email"),
