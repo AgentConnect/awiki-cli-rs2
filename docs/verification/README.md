@@ -2,6 +2,85 @@
 
 Store command transcripts and summary reports for parity, structure, Rust unit tests, ANP SDK tests, and `awiki-system-test` runs here.
 
+## 2026-05-17 Identity Key Compatibility System Selector
+
+Timestamp: 2026-05-17T17:45:00+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector for
+load-time migration of legacy ANP private-key PEM labels to standard PKCS#8
+`PRIVATE KEY` PEM without calling user-service, message-service, mail-service,
+listener, or service-manager.
+
+System-test change:
+
+- Added
+  `tests_v2/id/test_identity_cli.py::test_id_current_migrates_legacy_anp_private_key_pems`.
+- Updated `tests_v2/id/test_identity_cli.py` header and
+  `tests_v2/id/CLAUDE.md` to document legacy ANP private-key PEM compatibility
+  migration coverage.
+
+Commands run:
+
+```text
+cd ../awiki-system-test && uv run python -m py_compile tests_v2/id/test_identity_cli.py
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/id/test_identity_cli.py::test_id_current_migrates_legacy_anp_private_key_pems -q
+cd ../awiki-system-test && git diff --check -- tests_v2/id/test_identity_cli.py tests_v2/id/CLAUDE.md
+cd ../awiki-cli && go test ./internal/identity -run 'TestManagerLoadMigratesLegacyANPPrivateKeysToPKCS8|TestReplaceDIDConvertsLegacyANPK1KeyWhenJWTMissing' -count=1
+cd . && cargo +1.79.0 test -p awiki-cli --test identity_key_compat_contract --locked
+cd . && cargo +1.79.0 fmt --check
+cd . && cargo +1.79.0 check -p awiki-cli --locked
+cd . && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd . && cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+cd . && git diff --check -- docs/parity-matrix.md docs/verification/README.md
+```
+
+Observed results:
+
+- Python compile check: passed.
+- Focused selector: 1 passed, 0 failed, 0 skipped in 2.67s.
+- System-test diff whitespace check: passed.
+- Go focused identity compatibility tests: passed.
+- Rust `identity_key_compat_contract`: 3 passed, 0 failed.
+- Rust format check: passed.
+- Rust package check: passed.
+- Structure check: `structure ok: no undocumented Rust files over 1200 lines`.
+- Dependency scan: only existing `rustls`/`webpki`/`ring`,
+  `rusqlite`/`libsqlite3-sys`, and crypto/base64 matches were present; no
+  OpenSSL, native-tls, YAML, service-manager, or new platform service dependency
+  matched.
+- Rust docs diff whitespace check: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- The selector used an isolated `awiki-cli` workspace and marked its workspace
+  schema metadata current to isolate identity load-time key compatibility from
+  workspace upgrade behavior.
+
+Coverage:
+
+- Seeds a local identity through the shared system-test helper, then rewrites
+  `key-1-private.pem`, `e2ee-signing-private.pem`, and
+  `e2ee-agreement-private.pem` to legacy ANP PEM labels:
+  `ANP ED25519 PRIVATE KEY`, `ANP SECP256R1 PRIVATE KEY`, and
+  `ANP X25519 PRIVATE KEY`.
+- Runs real Rust `awiki-cli id current`, which loads the current identity
+  through `Manager::load`.
+- Verifies the current identity summary remains the seeded identity and still
+  reports the three private key files as present.
+- Verifies all three private key files are rewritten on disk to standard
+  `-----BEGIN PRIVATE KEY-----` PEM and no longer contain `BEGIN ANP`.
+
+Boundary note: this selector covers local load-time PEM compatibility only. It
+does not execute live registration, `replace-did`, k1-to-e1 replacement, remote
+user-service calls, message-service calls, mail behavior, listener behavior, or
+service-manager behavior.
+
+Dependency note: no Rust dependency was added. The exercised path uses the
+existing local `../anp/rust` key compatibility API and identity store code.
+
 ## 2026-05-17 Identity ANP Service System Selector
 
 Timestamp: 2026-05-17T17:05:00+0800.
