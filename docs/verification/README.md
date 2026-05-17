@@ -14,6 +14,106 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Go Planned Stub Command Family Selector
+
+Scope: add real subprocess system-test evidence for Go planned stub command
+families that are intentionally present in the command catalog but implemented
+by Go `runStub` rather than live business handlers.
+
+Go source reference:
+
+- `awiki-cli/internal/cmdmeta/catalog.go` marks the selected command families
+  with `Handler: "stub"` and phase metadata.
+- `awiki-cli/internal/cli/root.go` `runStub` returns exit 1,
+  `error.code=internal_error`, message
+  `awiki-cli <command> is not implemented yet.`, and a hint containing
+  `awiki-cli <command> is planned for PHASE<N>. Use awiki-cli schema <name>`.
+
+Rust repository evidence:
+
+- `crates/awiki-cli/src/cmdmeta/mod.rs` exposes the matching static metadata.
+- `crates/awiki-cli/src/cli/mod.rs` resolves the planned stub command paths.
+- `crates/awiki-cli/tests/core_contract.rs` already verifies schema exposure
+  and Go-shaped stub envelopes for representative commands.
+- `docs/parity-matrix.md` now links this row to the system selector below.
+
+System-test change:
+
+- `tests_v2/core/test_basic_commands.py`: added
+  `test_go_planned_stub_commands_return_frozen_contract_hints`.
+  The selector runs real Rust subprocesses for representative planned stub
+  commands and verifies the exact Go command path, `PHASE` hint, and
+  `awiki-cli schema <name>` pointer.
+- `tests_v2/core/CLAUDE.md`: records the new core selector coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_go_planned_stub_commands_return_frozen_contract_hints -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract schema_exposes_go_stub_command_families_and_stub_errors --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli ./internal/cmdmeta -run 'Test.*Stub|TestCatalog|TestBuildRoot|TestCommandFromSpec' -count=1
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+```
+
+Observed results:
+
+- Python compile check for `tests_v2/core/test_basic_commands.py`: passed.
+- Focused core system selector: 1 passed, 0 failed, 0 skipped in 0.18s.
+- Rust formatting check: passed.
+- Rust focused `core_contract`
+  `schema_exposes_go_stub_command_families_and_stub_errors`: 1 passed, 0
+  failed, 0 ignored, 19 filtered out in 0.04s.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- `xtask check-structure`: passed; no undocumented Rust source file over 1200
+  lines.
+- Go focused reference tests: `internal/cli` passed in 0.004s and
+  `internal/cmdmeta` passed in 0.004s.
+- `git diff --check` passed in both `awiki-cli-rs2` and `awiki-system-test`.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider` avoid Python
+  cache artifacts.
+- No `AWIKI_CLI_BINARY` override was used.
+- The selector uses isolated local workspaces and does not require
+  user-service, message-service, mail-service, OpenClaw, Hermes, foreground
+  listener execution, or service-manager permissions.
+
+Coverage:
+
+- `group code get --group did:group` reaches `group.code.get` with `PHASE5`.
+- `runtime heartbeat status` reaches `runtime.heartbeat.status` with `PHASE7`.
+- `people search alice` reaches `people.search` with `PHASE8`.
+- `people contacts save --did did:example:alice --handle alice` reaches
+  `people.contacts.save` with `PHASE8`.
+- `debug raw rpc` reaches `debug.raw.rpc` with `PHASE7`.
+- `debug logs --follow` reaches `debug.logs` with `PHASE7`.
+
+Boundary note: this is schema/parser/stub-boundary parity only. It does not
+claim actual group join-code, heartbeat, people/contact, raw RPC,
+schema-cache, or log-follow business behavior. Mail-related system-test cases
+remain deferred/gated by the operational constraint above and are not counted
+as passed.
+
+Dependency note: no Rust dependency was added. SQLite remains on the approved
+`rusqlite + bundled` path, and TLS policy remains Rustls-first with no
+OpenSSL/native-tls introduction.
+
+Disk note: after validation, regenerated cache-only intermediates were removed
+within the approved cleanup boundary:
+`awiki-cli-rs2/target/debug/incremental`,
+`awiki-system-test/tests_v2/core/__pycache__`, and
+`awiki-system-test/.pytest_cache`. Source files, configuration, committed
+evidence, useful build outputs, and unrelated dirty helper work were preserved.
+
 ## 2026-05-18 Hermes Webhook Bridge Service-Run Alias Slice
 
 Scope: match Go/Cobra alias inheritance for the hidden Hermes bridge
