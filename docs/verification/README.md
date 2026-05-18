@@ -14,6 +14,87 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Shared Bridge RPC
+
+Timestamp: 2026-05-18T05:52:00Z / 2026-05-18T13:52:00+0800.
+
+Scope: complete the primary Batch 1 bridge-connection semantics gap by routing
+foreground local bridge RPC calls through the active long-lived session
+WebSocket, matching Go `handleBridgeRequest` use of `session.currentClient()`.
+Mail selectors remain deferred.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: added a
+  Supervisor-owned per-identity `SessionRpcRegistry`.
+- Connected session loops now register a `SessionRpcSender` after websocket
+  connection success and remove it on disconnect.
+- `BridgeRuntime::send_rpc` and `BridgeRuntime::fetch_message_service_did`
+  now use `SessionSharedRpc` instead of creating a fresh `OneShotSessionRpc`.
+- `consume_notifications` remains the single websocket reader. It drains bridge
+  RPC requests from a channel, sends JSON-RPC request frames on the long-lived
+  session transport, routes response frames through `ListenerWsPendingDispatch`,
+  keeps notification handling and the 60-second ping cadence in the same loop,
+  and fails pending bridge RPC callers when the websocket reader exits.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --test runtime_listener_bridge_runtime_contract --test runtime_listener_wsclient_contract --test runtime_listener_notification_consume_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --test runtime_listener_session_loop_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages|TestHandleNotificationDispatchesHostNotificationToSink|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts -ra -q
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- Rust bridge/wsclient/notification focused contracts: 53 passed, 0 failed.
+- Rust foreground/session-loop focused contracts: 23 passed, 0 failed.
+- Rust formatting check: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines. `listener_supervisor_run.rs` remains the documented oversized
+  translation-time exception at 2011 lines; this is above Go `server.go`'s 1802
+  lines but within the user-approved rare special-file allowance and below
+  5000 lines.
+- `git diff --check`: passed.
+- Go focused listener guards, including the bridge request history/group skip
+  guard: passed.
+- New `awiki-system-test` Batch 1 non-mail contract selector: 1 passed,
+  0 failed, 0 skipped.
+- Live foreground listener local probe: 1 passed, 0 failed, 0 skipped. This
+  exercises the Rust foreground listener, Unix local bridge, direct inbox,
+  scoped unread inbox, direct history, and mark-read after bridge RPC reuse.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- The live listener local probe used the configured awiki.info user/message
+  service context inherited by `awiki-system-test`; the contract selector did
+  not require live service URLs.
+- No mail selector was run or counted. Mail remains deferred/gated.
+
+Boundary note: this slice completes bridge RPC reuse for the successful
+foreground Unix bridge path and `group.create` service-DID lookup path. It does
+not yet fold every helper-only one-shot RPC caller into the connected session
+owner, does not add explicit `ReaderError` status storage beyond failing pending
+bridge RPCs on read exit, and does not add a separately cancelable 15-second
+ping context beyond the current transport write timeout. It also does not cover
+Windows named-pipe I/O, macOS/Windows service-manager execution, mail-system
+acceptance, or full repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Runtime Listener Notification Ping Loop
 
 Timestamp: 2026-05-18T05:10:00Z / 2026-05-18T13:10:00+0800.

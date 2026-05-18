@@ -48,7 +48,9 @@ use crate::runtime;
 use crate::store;
 use rand::RngCore;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::fs;
+use std::sync::mpsc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -85,6 +87,7 @@ struct ListenerSupervisor {
     listener: Option<bridge::BridgeListener>,
     host_notify: Arc<HostNotifySinkImpl>,
     local_notifications: Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: Arc<Mutex<SessionRpcRegistry>>,
 }
 
 impl ListenerSupervisor {
@@ -122,6 +125,7 @@ impl ListenerSupervisor {
             listener: None,
             host_notify: Arc::new(host_notify),
             local_notifications: Arc::new(Mutex::new(LocalNotificationQueue::default())),
+            session_rpcs: Arc::new(Mutex::new(SessionRpcRegistry::default())),
         })
     }
 
@@ -158,6 +162,7 @@ impl ListenerSupervisor {
         let manager = self.manager.clone();
         let host_notify = self.host_notify.clone();
         let local_notifications = self.local_notifications.clone();
+        let session_rpcs = self.session_rpcs.clone();
         let shutdown = self.shutdown.clone();
         let listener_for_loop = listener;
         thread::spawn(move || {
@@ -170,6 +175,7 @@ impl ListenerSupervisor {
                             status: status.clone(),
                             host_notify: host_notify.clone(),
                             local_notifications: local_notifications.clone(),
+                            session_rpcs: session_rpcs.clone(),
                             shutdown: shutdown.clone(),
                         };
                         thread::spawn(move || handle_bridge_stream(stream, runtime));
@@ -200,6 +206,7 @@ impl ListenerSupervisor {
         let shutdown = self.shutdown.clone();
         let host_notify = self.host_notify.clone();
         let local_notifications = self.local_notifications.clone();
+        let session_rpcs = self.session_rpcs.clone();
         thread::spawn(move || {
             while !shutdown.load(Ordering::SeqCst) {
                 if let Ok(identities) = manager.list() {
@@ -220,6 +227,7 @@ impl ListenerSupervisor {
                                 status.clone(),
                                 host_notify.clone(),
                                 local_notifications.clone(),
+                                session_rpcs.clone(),
                                 shutdown.clone(),
                                 summary.identity_name,
                                 summary.did,
@@ -248,6 +256,7 @@ impl ListenerSupervisor {
             self.status.clone(),
             self.host_notify.clone(),
             self.local_notifications.clone(),
+            self.session_rpcs.clone(),
             self.shutdown.clone(),
             identity_name.to_string(),
             did.to_string(),
@@ -284,6 +293,7 @@ struct BridgeRuntime {
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
     local_notifications: Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: Arc<Mutex<SessionRpcRegistry>>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -314,6 +324,7 @@ impl ListenerBridgeRuntime for BridgeRuntime {
                 self.status.clone(),
                 host_notify_for_bridge_created_session(&self.host_notify),
                 local_notifications_for_bridge_created_session(&self.local_notifications),
+                self.session_rpcs.clone(),
                 self.shutdown.clone(),
                 identity_name.clone(),
                 did,
@@ -340,7 +351,7 @@ impl ListenerBridgeRuntime for BridgeRuntime {
         &mut self,
         session: &ListenerBridgeSession,
     ) -> anyhow::Result<String> {
-        let mut rpc = OneShotSessionRpc::connect(&self.resolved, &self.manager, session)?;
+        let mut rpc = SessionSharedRpc::new(&self.session_rpcs, &session.identity_name)?;
         fetch_message_service_did(
             &ListenerServiceDidSession {
                 identity_name: session.identity_name.clone(),
@@ -356,11 +367,11 @@ impl ListenerBridgeRuntime for BridgeRuntime {
         method: &str,
         params: Value,
     ) -> anyhow::Result<Map<String, Value>> {
-        let mut rpc = OneShotSessionRpc::connect(&self.resolved, &self.manager, session)?;
         let params = match params {
             Value::Object(map) => map,
             _ => Map::new(),
         };
+        let mut rpc = SessionSharedRpc::new(&self.session_rpcs, &session.identity_name)?;
         rpc.send_rpc(method, params)
     }
 
@@ -377,6 +388,79 @@ impl ListenerBridgeRuntime for BridgeRuntime {
 
 impl Drop for BridgeRuntime {
     fn drop(&mut self) {}
+}
+
+#[derive(Clone)]
+struct SessionRpcSender {
+    tx: mpsc::Sender<SessionRpcRequest>,
+}
+
+#[derive(Default)]
+struct SessionRpcRegistry {
+    senders: BTreeMap<String, SessionRpcSender>,
+}
+
+impl SessionRpcRegistry {
+    fn set(&mut self, identity_name: &str, sender: SessionRpcSender) {
+        self.senders.insert(identity_name.to_string(), sender);
+    }
+
+    fn remove(&mut self, identity_name: &str) {
+        self.senders.remove(identity_name);
+    }
+
+    fn get(&self, identity_name: &str) -> Option<SessionRpcSender> {
+        self.senders.get(identity_name).cloned()
+    }
+}
+
+struct SessionRpcRequest {
+    method: String,
+    params: Map<String, Value>,
+    response_tx: mpsc::Sender<anyhow::Result<Map<String, Value>>>,
+}
+
+struct SessionSharedRpc {
+    sender: SessionRpcSender,
+}
+
+impl SessionSharedRpc {
+    fn new(registry: &Arc<Mutex<SessionRpcRegistry>>, identity_name: &str) -> anyhow::Result<Self> {
+        let sender = registry
+            .lock()
+            .map(|registry| registry.get(identity_name))
+            .unwrap_or(None)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{}",
+                    super::listener_service_did::disconnected_websocket_session_error(
+                        identity_name
+                    )
+                )
+            })?;
+        Ok(Self { sender })
+    }
+}
+
+impl ListenerServiceDidRpc for SessionSharedRpc {
+    fn send_rpc(
+        &mut self,
+        method: &str,
+        params: Map<String, Value>,
+    ) -> anyhow::Result<Map<String, Value>> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.sender
+            .tx
+            .send(SessionRpcRequest {
+                method: method.to_string(),
+                params,
+                response_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?;
+        response_rx
+            .recv()
+            .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?
+    }
 }
 
 struct OneShotSessionRpc {
@@ -486,6 +570,7 @@ fn spawn_session_loop(
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
     local_notifications: Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: Arc<Mutex<SessionRpcRegistry>>,
     shutdown: Arc<AtomicBool>,
     identity_name: String,
     _did: String,
@@ -510,6 +595,12 @@ fn spawn_session_loop(
         while !shutdown.load(Ordering::SeqCst) {
             match connect_session(&resolved, &manager, &identity_name) {
                 Ok((record, mut transport)) => {
+                    let (rpc_tx, rpc_rx) = mpsc::channel();
+                    set_session_rpc_sender(
+                        &session_rpcs,
+                        &identity_name,
+                        SessionRpcSender { tx: rpc_tx },
+                    );
                     mark_session_connected(&status, &identity_name, &record.did);
                     if let Some(signal) = initial_signal.take() {
                         signal.signal_success();
@@ -540,10 +631,12 @@ fn spawn_session_loop(
                         &local_notifications,
                         &record,
                         &mut transport,
+                        &rpc_rx,
                         &shutdown,
                     )
                     .err()
                     .map(|err| err.to_string());
+                    remove_session_rpc_sender(&session_rpcs, &identity_name);
                     let _ = transport.close();
                     if shutdown.load(Ordering::SeqCst) {
                         break;
@@ -961,6 +1054,91 @@ fn one_shot_rpc_for_record(
     )
 }
 
+fn set_session_rpc_sender(
+    registry: &Arc<Mutex<SessionRpcRegistry>>,
+    identity_name: &str,
+    sender: SessionRpcSender,
+) {
+    if let Ok(mut registry) = registry.lock() {
+        registry.set(identity_name, sender);
+    }
+}
+
+fn remove_session_rpc_sender(registry: &Arc<Mutex<SessionRpcRegistry>>, identity_name: &str) {
+    if let Ok(mut registry) = registry.lock() {
+        registry.remove(identity_name);
+    }
+}
+
+fn drain_session_rpc_requests(
+    transport: &mut WsTransport,
+    rpc_rx: &mpsc::Receiver<SessionRpcRequest>,
+    next_id: &mut i64,
+    dispatch: &mut super::listener_wsclient::ListenerWsPendingDispatch,
+    pending_rpc_responses: &mut BTreeMap<String, mpsc::Sender<anyhow::Result<Map<String, Value>>>>,
+) -> anyhow::Result<()> {
+    loop {
+        match rpc_rx.try_recv() {
+            Ok(request) => {
+                let request_id = super::listener_wsclient::next_ws_rpc_request_id(next_id);
+                dispatch.register_pending(request_id.clone());
+                pending_rpc_responses.insert(request_id.clone(), request.response_tx);
+                let payload = super::listener_wsclient::build_ws_rpc_request(
+                    &request_id,
+                    &request.method,
+                    Some(request.params),
+                );
+                if let Err(err) = transport.send_json(&payload) {
+                    let _ = dispatch.remove_pending(&request_id);
+                    if let Some(response_tx) = pending_rpc_responses.remove(&request_id) {
+                        let _ = response_tx.send(Err(err));
+                    }
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => return Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+        }
+    }
+}
+
+fn route_session_rpc_response(
+    message: Map<String, Value>,
+    dispatch: &mut super::listener_wsclient::ListenerWsPendingDispatch,
+    pending_rpc_responses: &mut BTreeMap<String, mpsc::Sender<anyhow::Result<Map<String, Value>>>>,
+) {
+    let outcome = dispatch.route_incoming_message(message);
+    let super::listener_wsclient::ListenerWsDispatchOutcome::RoutedResponse { request_id } =
+        outcome
+    else {
+        return;
+    };
+    let Some(response) = dispatch.take_pending_response(&request_id) else {
+        return;
+    };
+    let _ = dispatch.remove_pending(&request_id);
+    if let Some(response_tx) = pending_rpc_responses.remove(&request_id) {
+        let _ = response_tx.send(super::listener_wsclient::decode_ws_rpc_result(&response));
+    }
+}
+
+fn fail_session_rpc_pending(
+    error: &str,
+    dispatch: &mut super::listener_wsclient::ListenerWsPendingDispatch,
+    pending_rpc_responses: &mut BTreeMap<String, mpsc::Sender<anyhow::Result<Map<String, Value>>>>,
+) {
+    for request_id in dispatch.fail_pending_requests(error) {
+        let response = dispatch
+            .take_pending_response(&request_id)
+            .unwrap_or_else(|| {
+                super::listener_wsclient::pending_failure_response(&request_id, error)
+            });
+        let _ = dispatch.remove_pending(&request_id);
+        if let Some(response_tx) = pending_rpc_responses.remove(&request_id) {
+            let _ = response_tx.send(super::listener_wsclient::decode_ws_rpc_result(&response));
+        }
+    }
+}
+
 fn consume_notifications(
     resolved: &Resolved,
     manager: &Manager,
@@ -969,22 +1147,40 @@ fn consume_notifications(
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     record: &StoredIdentity,
     transport: &mut WsTransport,
+    rpc_rx: &mpsc::Receiver<SessionRpcRequest>,
     shutdown: &Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let mut next_ping = Instant::now() + SESSION_PING_INTERVAL;
+    let mut next_id = 0_i64;
+    let mut dispatch = super::listener_wsclient::ListenerWsPendingDispatch::default();
+    let mut pending_rpc_responses =
+        BTreeMap::<String, mpsc::Sender<anyhow::Result<Map<String, Value>>>>::new();
     while !shutdown.load(Ordering::SeqCst) {
+        drain_session_rpc_requests(
+            transport,
+            rpc_rx,
+            &mut next_id,
+            &mut dispatch,
+            &mut pending_rpc_responses,
+        )?;
         if Instant::now() >= next_ping {
             transport
                 .ping()
                 .map_err(|err| anyhow::anyhow!("websocket ping failed: {err}"))?;
             next_ping = Instant::now() + SESSION_PING_INTERVAL;
         }
-        let Some(notification) =
-            transport.read_json_message_timeout(SESSION_NOTIFICATION_READ_POLL)?
-        else {
-            continue;
+        let notification = match transport.read_json_message_timeout(SESSION_NOTIFICATION_READ_POLL)
+        {
+            Ok(Some(notification)) => notification,
+            Ok(None) => continue,
+            Err(err) => {
+                let error = err.to_string();
+                fail_session_rpc_pending(&error, &mut dispatch, &mut pending_rpc_responses);
+                return Err(err);
+            }
         };
         if notification.get("id").is_some() {
+            route_session_rpc_response(notification, &mut dispatch, &mut pending_rpc_responses);
             continue;
         }
         let notification = Value::Object(notification);
@@ -1018,6 +1214,11 @@ fn consume_notifications(
         );
         let _ = listener::write_status(&guard.status_file, &guard);
     }
+    fail_session_rpc_pending(
+        "websocket notification loop closed",
+        &mut dispatch,
+        &mut pending_rpc_responses,
+    );
     Ok(())
 }
 
