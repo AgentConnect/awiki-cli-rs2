@@ -896,6 +896,26 @@ covered by the attachment Rust selector and the direct/group attachment live
 HTTP slice, so it should not be reselected as a production-code batch unless a
 new Go behavior delta is found. Mail selectors remain deferred.
 
+Current group E2EE stale-doc reconciliation evidence: on 2026-05-19, an
+accelerated group E2EE module-batch pre-scan used parallel read-only Native
+Agents to map Go group E2EE source behavior, the current split Rust
+implementation/tests, and non-mail system-test selector coverage. No
+production Rust gap was found. The actionable issue was stale
+`docs/known-go-issues.md` text that still described group E2EE execution as
+local-plan-only or request-builder-only, so that status was corrected to
+reflect the current hidden P6 HTTP/MLS implementation and focused selector
+evidence. The combined Rust-only selector wrapper passed
+`test_awiki_cli_group_e2ee_stale_retry_and_negative_rust_contracts`,
+`test_awiki_cli_group_e2ee_status_pending_publish_rust_contracts`, and
+`test_awiki_cli_group_e2ee_create_add_repair_decrypt_rust_contracts` with 3
+passed, 0 failed, and 0 skipped in 182.01s under
+`AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`, and
+`AWIKI_CLI_UPDATE_CACHE_ONLY=1`. This reconciliation does not claim a new live
+real-service acceptance run; foreground listener group E2EE, future
+WebSocket/local-bridge hidden E2EE behavior, full repository acceptance, and
+mail selectors remain separate.
+
 Current attachment Rust selector evidence: on 2026-05-18, an accelerated
 `message` attachment batch used read-only Native Agents to map Go
 `attachment_service.go`, `attachment.go`, `attachment_wire.go`, CLI warning

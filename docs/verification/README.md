@@ -24,6 +24,26 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   traceable 1:1 translation would otherwise become less reviewable. Files above
   3000 lines are rare special exceptions only and require a documented reason.
 
+## 2026-05-19 Group E2EE Stale Docs Reconciliation
+
+Detailed report:
+`2026-05-19-group-e2ee-stale-docs-reconciliation.md`.
+
+Summary: the accelerated group E2EE reconciliation batch used parallel
+read-only Native Agents to map Go group E2EE source behavior, the current split
+Rust implementation/tests, and non-mail system-test selector coverage. No
+production Rust gap was found. `docs/known-go-issues.md` was corrected so the
+group E2EE rows no longer describe the Rust port as local-plan-only or
+request-builder-only:
+hidden P6 HTTP/MLS execution, local `anp-mls` provider use, KeyPackage publish,
+create/add/send/decrypt, remove/leave/process-leave, recover-member,
+update-key, status/pending/repair, and hidden wire sanitization are already
+translated and selector-evidenced. The combined Rust-only selector wrapper
+passed 3 tests, 0 failed, and 0 skipped in 182.01s. This is docs-only
+reconciliation, not a new live real-service acceptance claim; foreground
+listener group E2EE, future WebSocket/local-bridge hidden E2EE behavior, full
+repository acceptance, and mail selectors remain separate.
+
 ## 2026-05-19 Runtime Listener Secure Outbox Local Queue Selector Batch
 
 Detailed report:
