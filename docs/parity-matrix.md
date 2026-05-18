@@ -42,6 +42,38 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current store selector batch evidence: on 2026-05-19, the batch followed the
+accelerated module-batch pipeline. Three read-only Native Agents mapped Go
+`internal/store` behavior, current Rust store implementation/test coverage, and
+non-mail system-test selector gaps in parallel. The leader added focused
+message-store contract coverage while a bounded GPT-5.5 xhigh Native Agent
+updated only the system-test selector wrapper and nearest CLI docs entry. The
+batch closed the selector visibility gap for all non-mail store Cargo targets
+and added direct evidence for message/thread view, secure raw/decrypted upsert,
+owner-scoped lookup/mark-read, and local notification predicate behavior.
+Existing dirty helper files in `awiki-system-test` were not touched or staged.
+Mail selectors remain deferred.
+
+Store gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/store/dao.go`, `dao_test.go` | store messages, update thread view, replace raw secure wire with decrypted content, preserve decrypted content when raw wire arrives later, preserve read/E2EE flags and latest server sequence | `crates/awiki-cli/src/store/messages.rs` | implemented; direct store contract coverage added | `store_messages_contract` passed 3 tests | `tests_v2/cli/test_awiki_cli_store_rust_contracts.py::test_awiki_cli_store_rust_contracts` passed | low |
+| `internal/store/query.go`, `query_test.go` | owner-scoped message lookup, mark-read row count, thread lookup blank validation, local inbox direct/group/mail-like filters, notification inbox predicates, and notification ordering | `crates/awiki-cli/src/store/messages.rs`, `src/store/query.rs` | implemented; direct store contract coverage added | `store_messages_contract` passed 3 tests | same focused selector | low; mail service acceptance remains deferred |
+| `internal/store/dao.go`, `query.go` | contacts, E2EE outbox, group cache, helper, legacy import, identity rebind, and recovered-handle merge behavior | `crates/awiki-cli/src/store/*` | implemented and focused-contract tested | `store_contact_contract`, `store_e2ee_outbox_contract`, `store_groups_contract`, `store_helpers_contract`, `store_import_contract`, `store_rebind_contract`, `store_recover_merge_contract` passed 27 tests | same focused selector | low |
+
+Verification evidence: Rust direct store contract targets passed 30 tests; the
+focused Go `internal/store` guard passed; wrapper syntax and whitespace checks
+passed; and the new focused non-mail `awiki-system-test` selector passed with
+1 passed, 0 failed, and 0 skipped in 1.23s. Rust fmt/check/structure gates
+passed. The new `store_messages_contract.rs` is 385 lines; `src/store/import.rs`
+is 1117 lines and `store_recover_merge_contract.rs` is 1009 lines, both still
+under the default review target. `xtask check-structure` reported no
+undocumented Rust files over 1200 lines. No production Rust code, manifests,
+ANP SDK code, or dependencies changed in this batch. SQLite remains on the
+approved `rusqlite + bundled` path; no OpenSSL, `native-tls`, bundled OpenSSL,
+platform service, or SQLite backend change was introduced.
+
 Current workspace/config/update selector batch evidence: on 2026-05-18, the
 batch followed the accelerated module-batch pipeline. Three read-only Native
 Agents mapped Go config/update/upgrade behavior, current Rust

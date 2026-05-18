@@ -20,6 +20,21 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-19 Store Rust Selector Batch
+
+Detailed report:
+`2026-05-19-store-rust-selector.md`.
+
+Summary: the accelerated `store/*` batch used parallel Native Agents to map Go
+store behavior, current Rust store coverage, and system-test selector gaps
+before editing. It added a focused `store_messages_contract` target for
+message/thread view, secure raw/decrypted upsert, owner-scoped lookup/mark-read,
+and local notification filter predicates, then exposed all eight non-mail store
+Cargo targets through a Rust-only `awiki-system-test` selector. Rust direct
+validation passed 30 store tests; the focused Go `internal/store` guard passed;
+the new non-mail system selector passed with 1 test, 0 failed, and 0 skipped;
+structure and whitespace checks passed; and mail selectors remained deferred.
+
 ## 2026-05-18 CLI Parser Shorthand Flag Batch
 
 Detailed report:
