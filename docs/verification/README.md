@@ -44,6 +44,28 @@ reconciliation, not a new live real-service acceptance claim; foreground
 listener group E2EE, future WebSocket/local-bridge hidden E2EE behavior, full
 repository acceptance, and mail selectors remain separate.
 
+## 2026-05-19 Config YAML Scalar/Writer Batch
+
+Detailed report:
+`2026-05-19-config-yaml-scalar-writer.md`.
+
+Summary: the accelerated config YAML/parser/writer batch used three parallel
+read-only Native Agents to map Go `internal/config` behavior, current Rust
+coverage, and non-mail system-test selectors. The Rust hand-written config
+parser now decodes common quoted YAML scalars, common double-quoted escapes,
+single-quoted scalar quoting, and null-like values, and preserves Go's public
+malformed-YAML behavior by reporting the parse issue in `config_error` while
+returning default resolved config output. The config writer now quotes and
+escapes scalar values that would otherwise break round-trip parsing, such as
+inline-comment markers and embedded quotes. No dependency was added: deprecated
+or unsafe-libyaml-backed YAML crates were rejected, `serde-saphyr` could not be
+fetched reliably through the configured mirror during this batch, and full
+Go `yaml.v3` parity remains a separate dependency decision. Rust focused
+config tests passed 14 tests; `cargo fmt --check`, `cargo check`, structure,
+whitespace, and dependency audits passed; the focused non-mail
+`awiki-system-test` selector batch passed 3 tests in 10.06s. Mail selectors
+remain deferred.
+
 ## 2026-05-19 Runtime Listener Secure Outbox Local Queue Selector Batch
 
 Detailed report:

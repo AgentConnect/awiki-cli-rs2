@@ -459,14 +459,18 @@ fn parse_file_config(raw: &str) -> Result<FileConfig, String> {
         let Some((key, value)) = trimmed.split_once(':') else {
             continue;
         };
-        let key = key.trim().to_string();
-        let value = strip_yaml_scalar(value.trim());
-        if value.is_empty() {
-            stack.push((indent, key));
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("yaml: missing mapping key in line {line:?}"));
+        }
+        let raw_value = value.trim();
+        if raw_value.is_empty() {
+            stack.push((indent, key.to_string()));
             continue;
         }
+        let value = strip_yaml_scalar(raw_value)?;
         let mut path: Vec<String> = stack.iter().map(|(_, key)| key.clone()).collect();
-        path.push(key);
+        path.push(key.to_string());
         set_config_value(&mut config, &path, &value);
     }
     Ok(config)
@@ -573,12 +577,62 @@ fn deprecated_service_keys() -> [&'static str; 3] {
     ]
 }
 
-fn strip_yaml_scalar(value: &str) -> String {
-    value
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .to_string()
+fn strip_yaml_scalar(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value == "~" || value.eq_ignore_ascii_case("null") {
+        return Ok(String::new());
+    }
+    if let Some(inner) = value.strip_prefix('"') {
+        let Some(inner) = inner.strip_suffix('"') else {
+            return Err(
+                "yaml: found unexpected end of stream while scanning a quoted scalar".into(),
+            );
+        };
+        return decode_yaml_double_quoted(inner);
+    }
+    if let Some(inner) = value.strip_prefix('\'') {
+        let Some(inner) = inner.strip_suffix('\'') else {
+            return Err(
+                "yaml: found unexpected end of stream while scanning a quoted scalar".into(),
+            );
+        };
+        return Ok(inner.replace("''", "'"));
+    }
+    Ok(value.to_string())
+}
+
+fn decode_yaml_double_quoted(value: &str) -> Result<String, String> {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            output.push(ch);
+            continue;
+        }
+        let Some(escaped) = chars.next() else {
+            return Err("yaml: found unknown escape character".into());
+        };
+        match escaped {
+            '0' => output.push('\0'),
+            'a' => output.push('\u{0007}'),
+            'b' => output.push('\u{0008}'),
+            't' | '\t' => output.push('\t'),
+            'n' => output.push('\n'),
+            'v' => output.push('\u{000b}'),
+            'f' => output.push('\u{000c}'),
+            'r' => output.push('\r'),
+            'e' => output.push('\u{001b}'),
+            '"' => output.push('"'),
+            '/' => output.push('/'),
+            '\\' => output.push('\\'),
+            'N' => output.push('\u{0085}'),
+            '_' => output.push('\u{00a0}'),
+            'L' => output.push('\u{2028}'),
+            'P' => output.push('\u{2029}'),
+            _ => return Err(format!("yaml: found unknown escape character {escaped:?}")),
+        }
+    }
+    Ok(output)
 }
 
 fn set_config_value(config: &mut FileConfig, path: &[String], value: &str) {

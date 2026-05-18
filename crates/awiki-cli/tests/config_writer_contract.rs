@@ -200,6 +200,35 @@ fn config_writer_configure_hermes_one_shot_matches_go_contract() {
     assert_contains(&text, "      secret: secret-setup\n");
 }
 
+#[test]
+fn config_writer_quotes_scalars_that_would_break_yaml_round_trip() {
+    let temp = TempDir::new("config-writer-yaml-quotes").expect("temp dir");
+    let paths = test_paths(temp.path());
+
+    config::update_active_identity(&paths, " alice # one ").expect("active identity");
+    config::update_openclaw_settings(&paths, Some("http://127.0.0.1:18789/hooks/agent#local"))
+        .expect("openclaw hook");
+    config::set_openclaw_token(&paths, "token # local").expect("set token");
+    config::set_hermes_secret(&paths, "secret \"quoted\"").expect("set hermes secret");
+
+    let text = read_config(&paths);
+    assert_contains(&text, "  active: \"alice # one\"\n");
+    assert_contains(
+        &text,
+        "      hook_url: \"http://127.0.0.1:18789/hooks/agent#local\"\n",
+    );
+    assert_contains(&text, "      token: \"token # local\"\n");
+    assert_contains(&text, "      secret: \"secret \\\"quoted\\\"\"\n");
+
+    let output = awiki_cmd_with_workspace(&["config", "show"], temp.path().to_str().unwrap());
+    assert!(
+        output.status.success(),
+        "config show should parse quoted writer output; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn test_paths(root: &Path) -> Paths {
     let data_dir = root.join("data");
     let state_dir = root.join("runtime");
@@ -232,6 +261,19 @@ fn assert_contains(haystack: &str, needle: &str) {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME");
+    command.output().expect("run awiki-cli binary")
 }
 
 struct TempDir {

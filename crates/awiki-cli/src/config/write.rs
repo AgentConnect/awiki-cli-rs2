@@ -402,9 +402,9 @@ fn render_file_config(config: &FileConfig) -> String {
             "  metadata_cache_ttl_seconds: {}\n"
         ),
         CONFIG_SCHEMA_VERSION,
-        config.identity.active,
-        config.runtime.mode,
-        config.runtime.socket_path,
+        yaml_scalar(&config.identity.active),
+        yaml_scalar(&config.runtime.mode),
+        yaml_scalar(&config.runtime.socket_path),
         config
             .runtime
             .listener
@@ -425,26 +425,64 @@ fn render_file_config(config: &FileConfig) -> String {
             .host_notify
             .enabled
             .unwrap_or(DEFAULT_HOST_NOTIFY_ENABLED),
-        config.runtime.host_notify.sink,
-        config.runtime.host_notify.file_path,
-        config.runtime.host_notify.openclaw.hook_url,
-        config.runtime.host_notify.openclaw.agent_id,
-        config.runtime.host_notify.openclaw.hook_name,
-        config.runtime.host_notify.openclaw.token,
-        config.runtime.host_notify.hermes.notify_url,
-        config.runtime.host_notify.hermes.deliver,
-        config.runtime.host_notify.hermes.secret,
-        config.runtime.host_notify.webhook.notify_url,
-        config.runtime.host_notify.webhook.secret,
-        config.output.format,
+        yaml_scalar(&config.runtime.host_notify.sink),
+        yaml_scalar(&config.runtime.host_notify.file_path),
+        yaml_scalar(&config.runtime.host_notify.openclaw.hook_url),
+        yaml_scalar(&config.runtime.host_notify.openclaw.agent_id),
+        yaml_scalar(&config.runtime.host_notify.openclaw.hook_name),
+        yaml_scalar(&config.runtime.host_notify.openclaw.token),
+        yaml_scalar(&config.runtime.host_notify.hermes.notify_url),
+        yaml_scalar(&config.runtime.host_notify.hermes.deliver),
+        yaml_scalar(&config.runtime.host_notify.hermes.secret),
+        yaml_scalar(&config.runtime.host_notify.webhook.notify_url),
+        yaml_scalar(&config.runtime.host_notify.webhook.secret),
+        yaml_scalar(&config.output.format),
         config.output.no_color.unwrap_or(false),
-        config.services.service_base_url,
-        config.services.did_domain,
-        config.services.anp_service_endpoint,
-        config.services.anp_service_did,
-        config.services.ca_bundle,
-        config.services.mail_service_url,
+        yaml_scalar(&config.services.service_base_url),
+        yaml_scalar(&config.services.did_domain),
+        yaml_scalar(&config.services.anp_service_endpoint),
+        yaml_scalar(&config.services.anp_service_did),
+        yaml_scalar(&config.services.ca_bundle),
+        yaml_scalar(&config.services.mail_service_url),
         config.update.disable_strict_version,
         config.update.metadata_cache_ttl_seconds,
     )
+}
+
+fn yaml_scalar(value: &str) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    if !needs_yaml_quotes(value) {
+        return value.to_string();
+    }
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\0' => escaped.push_str("\\0"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn needs_yaml_quotes(value: &str) -> bool {
+    if value != value.trim() {
+        return true;
+    }
+    let lower = value.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "null" | "~" | "true" | "false" | "yes" | "no" | "on" | "off"
+    ) {
+        return true;
+    }
+    value.contains(['#', '"', '\'', '\\', '\n', '\r', '\t'])
 }

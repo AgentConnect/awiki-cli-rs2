@@ -94,6 +94,55 @@ fn config_show_preserves_hash_inside_quoted_yaml_scalars_like_go() {
     );
 }
 
+#[test]
+fn config_show_decodes_common_quoted_yaml_scalars_like_go() {
+    let workspace = TempDir::new().expect("temp workspace");
+    std::fs::write(
+        workspace.path().join("config.yaml"),
+        concat!(
+            "services:\n",
+            "  service_base_url: \"https://platform.example/api\\nnext\"\n",
+            "  did_domain: 'Tenant.Example'\n",
+            "runtime:\n",
+            "  host_notify:\n",
+            "    sink: null\n",
+            "output:\n",
+            "  format: \"false\"\n",
+        ),
+    )
+    .expect("write config");
+
+    let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["data"]["service_base_url"],
+        "https://platform.example/api\nnext"
+    );
+    assert_eq!(envelope["data"]["did_domain"], "Tenant.Example");
+    assert_eq!(envelope["data"]["host_notify_sink"], "log");
+    assert_eq!(envelope["data"]["output_format"], "false");
+}
+
+#[test]
+fn config_show_reports_malformed_yaml_in_config_error_like_go() {
+    let workspace = TempDir::new().expect("temp workspace");
+    std::fs::write(
+        workspace.path().join("config.yaml"),
+        "services:\n  service_base_url: \"https://platform.example\n",
+    )
+    .expect("write config");
+
+    let output = awiki_cmd_with_workspace(&["config", "show"], workspace.path().to_str().unwrap());
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["config_exists"], true);
+    assert_contains(&envelope["data"]["config_error"], "yaml:");
+    assert_eq!(envelope["data"]["service_base_url"], "https://awiki.ai");
+    assert!(!workspace.path().join("data").exists());
+    assert!(!workspace.path().join("runtime").exists());
+}
+
 fn awiki_cmd_with_workspace(args: &[&str], workspace: &str) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
