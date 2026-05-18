@@ -428,6 +428,44 @@ fn ws_rpc_request_shape_matches_go_send_rpc_envelope() {
 }
 
 #[test]
+fn ws_rpc_request_id_generation_matches_go_send_rpc_sequence() {
+    let mut next_id = 0;
+
+    assert_eq!(
+        listener_wsclient::next_ws_rpc_request_id(&mut next_id),
+        "req-1"
+    );
+    assert_eq!(next_id, 1);
+    assert_eq!(
+        listener_wsclient::next_ws_rpc_request_id(&mut next_id),
+        "req-2"
+    );
+    assert_eq!(next_id, 2);
+}
+
+#[test]
+fn pending_dispatch_prepares_request_after_registering_pending_slot() {
+    let mut dispatch = listener_wsclient::ListenerWsPendingDispatch::default();
+    let mut next_id = 0;
+
+    let request = dispatch.prepare_ws_rpc_request(
+        &mut next_id,
+        "direct.send",
+        Some(map([("body", json!({ "text": "hello" }))])),
+    );
+
+    assert_eq!(request["id"], "req-1");
+    assert_eq!(request["method"], "direct.send");
+    assert_eq!(request["params"]["body"]["text"], "hello");
+    assert!(
+        dispatch.has_pending("req-1"),
+        "SendRPC registers pending before the websocket write"
+    );
+    assert_eq!(dispatch.pending_len(), 1);
+    assert!(dispatch.take_pending_response("req-1").is_none());
+}
+
+#[test]
 fn ws_rpc_result_decode_matches_go_send_rpc_response_boundary() {
     let result = listener_wsclient::decode_ws_rpc_result(&map([(
         "result",
@@ -484,6 +522,110 @@ fn pending_failure_and_incoming_classification_match_go_read_loop_helpers() {
         listener_wsclient::classify_incoming_message(&map([("method", json!("direct.incoming"))])),
         listener_wsclient::IncomingWsMessage::Notification
     );
+}
+
+#[test]
+fn pending_dispatch_routes_known_normalized_ids_and_drops_unknown_responses() {
+    let mut dispatch = listener_wsclient::ListenerWsPendingDispatch::default();
+    assert!(dispatch.register_pending("req-7"));
+    assert!(dispatch.register_pending("8"));
+
+    assert_eq!(
+        dispatch.route_incoming_message(map([
+            ("id", json!("req-7")),
+            ("result", json!({ "accepted": true })),
+        ])),
+        listener_wsclient::ListenerWsDispatchOutcome::RoutedResponse {
+            request_id: "req-7".to_string()
+        }
+    );
+    assert_eq!(
+        dispatch.route_incoming_message(map([
+            ("id", json!(7.6)),
+            ("result", json!({ "coerced": true })),
+        ])),
+        listener_wsclient::ListenerWsDispatchOutcome::RoutedResponse {
+            request_id: "8".to_string()
+        }
+    );
+    assert_eq!(
+        dispatch.route_incoming_message(map([
+            ("id", json!("missing")),
+            ("method", json!("must.not.be.notification")),
+        ])),
+        listener_wsclient::ListenerWsDispatchOutcome::DroppedResponse {
+            request_id: "missing".to_string()
+        }
+    );
+
+    let response = dispatch
+        .take_pending_response("req-7")
+        .expect("routed response");
+    assert_eq!(response["result"]["accepted"], true);
+    let response = dispatch.take_pending_response("8").expect("coerced id");
+    assert_eq!(response["result"]["coerced"], true);
+    assert!(dispatch.take_pending_response("missing").is_none());
+    assert_eq!(
+        dispatch.notification_len(),
+        0,
+        "unknown responses are dropped instead of reclassified as notifications"
+    );
+}
+
+#[test]
+fn pending_dispatch_fail_all_synthesizes_responses_without_removing_pending_entries() {
+    let mut dispatch = listener_wsclient::ListenerWsPendingDispatch::default();
+    dispatch.register_pending("req-1");
+    dispatch.register_pending("req-2");
+
+    let failed = dispatch.fail_pending_requests("websocket read failed");
+
+    assert_eq!(failed, vec!["req-1".to_string(), "req-2".to_string()]);
+    assert_eq!(dispatch.pending_len(), 2);
+    assert!(dispatch.has_pending("req-1"));
+    assert!(dispatch.has_pending("req-2"));
+
+    let req_1_failure = dispatch
+        .take_pending_response("req-1")
+        .expect("req-1 failure response");
+    assert_eq!(
+        req_1_failure,
+        listener_wsclient::pending_failure_response("req-1", "websocket read failed")
+    );
+    let req_2_failure = dispatch
+        .take_pending_response("req-2")
+        .expect("req-2 failure response");
+    assert_eq!(
+        req_2_failure,
+        listener_wsclient::pending_failure_response("req-2", "websocket read failed")
+    );
+
+    let removed = dispatch
+        .remove_pending("req-1")
+        .expect("SendRPC cleanup removes its own pending entry");
+    assert!(removed.is_empty());
+    assert_eq!(dispatch.pending_len(), 1);
+    assert!(!dispatch.has_pending("req-1"));
+    assert!(dispatch.has_pending("req-2"));
+}
+
+#[test]
+fn pending_dispatch_queues_notifications_with_go_drop_on_full_semantics() {
+    let mut dispatch = listener_wsclient::ListenerWsPendingDispatch::with_notification_capacity(1);
+
+    assert_eq!(
+        dispatch.route_incoming_message(map([("method", json!("direct.incoming"))])),
+        listener_wsclient::ListenerWsDispatchOutcome::QueuedNotification
+    );
+    assert_eq!(
+        dispatch.route_incoming_message(map([("method", json!("group.incoming"))])),
+        listener_wsclient::ListenerWsDispatchOutcome::DroppedNotification
+    );
+
+    assert_eq!(dispatch.notification_len(), 1);
+    let queued = dispatch.pop_notification().expect("queued notification");
+    assert_eq!(queued["method"], "direct.incoming");
+    assert!(dispatch.pop_notification().is_none());
 }
 
 #[test]

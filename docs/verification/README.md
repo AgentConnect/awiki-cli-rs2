@@ -14,6 +14,92 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener WebSocket Pending Dispatch
+
+Timestamp: 2026-05-18T04:28:00Z / 2026-05-18T12:28:00+0800.
+
+Scope: advance the runtime/listener connection-semantics batch by translating
+the pending response/notification split from Go
+`internal/runtime/listener/wsclient.go` into Rust helpers and the currently
+active one-shot RPC path. This is a batch slice, not the full shared long-lived
+`WSClient` runtime owner.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_wsclient.rs`: added
+  `ListenerWsPendingDispatch`, `ListenerWsDispatchOutcome`,
+  `LISTENER_WS_NOTIFICATION_QUEUE_CAPACITY`, and
+  `next_ws_rpc_request_id`.
+- The helper preserves Go `WSClient` read-loop semantics: `req-N` ID
+  generation, pending registration before request write, response routing by
+  Go-normalized `id`, unknown response ID drops, notifications only for
+  messages without `id`, bounded notification buffering with drop-on-full
+  behavior, and reader-error synthetic pending responses using
+  `pending_failure_response`.
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: current
+  `OneShotSessionRpc::send_rpc` now uses the pending dispatcher for response
+  classification and read-failure handling instead of hand-rolled response
+  skipping.
+- `crates/awiki-cli/tests/runtime_listener_wsclient_contract.rs`: added focused
+  contracts for `req-N` sequencing, register-before-write request preparation,
+  known/unknown response routing, fail-all synthetic responses, and bounded
+  notification queue behavior.
+- `awiki-system-test/tests_v2/cli/test_awiki_cli_runtime_listener_local.py`:
+  added a non-mail Batch 1 selector wrapper that executes focused Rust
+  listener contracts through the selected Rust repository. It does not claim
+  live bridge websocket reuse.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --test runtime_listener_bridge_connection_contract --test runtime_listener_bridge_runtime_contract --locked
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --test runtime_listener_bridge_connection_contract --test runtime_listener_bridge_runtime_contract --test runtime_listener_session_loop_contract --test runtime_listener_notification_consume_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleNotificationDispatchesHostNotificationToSink|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+```
+
+Observed results:
+
+- Initial Rust wsclient/bridge focused contracts: 46 passed, 0 failed.
+- New `awiki-system-test` Batch 1 non-mail selector: 1 passed, 0 failed,
+  0 skipped.
+- Batch Rust listener focused contracts: 63 passed, 0 failed.
+- Go focused listener guards: passed.
+- Rust formatting check: passed after applying `cargo +1.79.0 fmt`.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines. `listener_supervisor_run.rs` remains the documented oversized
+  translation-time exception at 1797 lines; `listener_wsclient.rs` is 542 lines
+  and the focused wsclient test file is 917 lines.
+- `git diff --check`: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- `AWIKI_SYSTEM_TEST_MODE`, `E2E_USER_SERVICE_URL`,
+  `E2E_MESSAGE_SERVICE_URL`, `E2E_MESSAGE_SERVICE_WS_URL`, and
+  `E2E_DID_DOMAIN` were not needed by this selector because it runs local Rust
+  contracts through pytest rather than contacting live services.
+- No mail selector was run or counted. Mail remains deferred/gated.
+
+Boundary note: this slice does not yet implement Go's full shared long-lived
+`WSClient` runtime owner, bridge RPC transport reuse through the current
+session client, or the real notification consume loop's 60-second ping ticker
+with a 15-second ping timeout. It also does not cover Windows named-pipe I/O,
+macOS/Windows service-manager execution, mail-system acceptance, or full
+repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Runtime Listener Foreground Signal Shutdown
 
 Timestamp: 2026-05-18T01:57:52Z / 2026-05-18T09:57:52+0800.

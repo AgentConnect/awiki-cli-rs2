@@ -309,6 +309,30 @@ not add a dependency; real child-process `setsid` spawn integration,
 notification ping timeout parity, bridge RPC transport reuse, Windows named-pipe
 I/O, and mail selectors remain separate work.
 
+Current runtime listener WebSocket pending-dispatch evidence: on 2026-05-18,
+Rust `listener_wsclient` gained a focused pending dispatcher matching the Go
+`WSClient.readLoop` helper semantics: `req-N` request ID generation, pending
+registration before write, response routing by Go-normalized `id`, unknown
+response ID drops instead of notification reclassification, bounded notification
+queueing with drop-on-full behavior, and reader-error synthetic pending failure
+responses using the existing Go-shaped `{"error":{"message":...},"id":...}`
+envelope. The current `OneShotSessionRpc::send_rpc` path now uses this
+dispatcher instead of hand-rolled response skipping, so existing bridge/service
+DID one-shot calls observe the same response classification and read-failure
+decode boundary while the larger shared long-lived `WSClient` owner is still
+being translated. Focused Rust listener tests passed with 63 passed, 0 failed,
+and 0 skipped across wsclient, bridge connection/runtime, notification consume,
+and session-loop suites; Go listener guards passed; `cargo fmt --check`,
+`cargo check`, `xtask check-structure`, and `git diff --check` passed; and a
+new non-mail `awiki-system-test` selector
+`tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts`
+passed with 1 passed, 0 failed, and 0 skipped under
+`AWIKI_CLI_UNDER_TEST=rust`. This is Batch 1 connection-semantics progress, but
+it does not yet implement Go's shared long-lived session `WSClient` with one
+reader loop, bridge RPC transport reuse through `session.currentClient()`, or
+the real 60-second ping ticker with 15-second ping timeout. Mail selectors
+remain deferred/gated, and no dependency was added.
+
 Current debug handle-history selector evidence: on 2026-05-17, a new Rust
 subprocess selector
 `tests_v2/debug/test_debug_cli.py::test_debug_db_handle_history_reads_contact_bindings`

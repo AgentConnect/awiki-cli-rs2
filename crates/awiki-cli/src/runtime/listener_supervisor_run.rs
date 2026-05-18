@@ -420,19 +420,43 @@ impl OneShotSessionRpc {
         method: &str,
         params: Map<String, Value>,
     ) -> anyhow::Result<Map<String, Value>> {
-        self.next_id += 1;
-        let request_id = format!("req-{}", self.next_id);
+        let mut dispatch = super::listener_wsclient::ListenerWsPendingDispatch::default();
+        let request_id = super::listener_wsclient::next_ws_rpc_request_id(&mut self.next_id);
+        dispatch.register_pending(request_id.clone());
         let request =
             super::listener_wsclient::build_ws_rpc_request(&request_id, method, Some(params));
         self.transport.send_json(&request)?;
         loop {
-            let message = self.transport.read_json_message()?;
-            if super::listener_wsclient::classify_incoming_message(&message)
-                == (super::listener_wsclient::IncomingWsMessage::Response {
-                    request_id: request_id.clone(),
-                })
-            {
-                return super::listener_wsclient::decode_ws_rpc_result(&message);
+            let message = match self.transport.read_json_message() {
+                Ok(message) => message,
+                Err(err) => {
+                    let error = err.to_string();
+                    dispatch.fail_pending_requests(&error);
+                    let response =
+                        dispatch
+                            .take_pending_response(&request_id)
+                            .unwrap_or_else(|| {
+                                super::listener_wsclient::pending_failure_response(
+                                    &request_id,
+                                    &error,
+                                )
+                            });
+                    let _ = dispatch.remove_pending(&request_id);
+                    return super::listener_wsclient::decode_ws_rpc_result(&response);
+                }
+            };
+            match dispatch.route_incoming_message(message) {
+                super::listener_wsclient::ListenerWsDispatchOutcome::RoutedResponse {
+                    request_id: routed_id,
+                } if routed_id == request_id => {
+                    let response =
+                        dispatch.take_pending_response(&request_id).ok_or_else(|| {
+                            anyhow::anyhow!("websocket response missing pending entry")
+                        })?;
+                    let _ = dispatch.remove_pending(&request_id);
+                    return super::listener_wsclient::decode_ws_rpc_result(&response);
+                }
+                _ => {}
             }
         }
     }
