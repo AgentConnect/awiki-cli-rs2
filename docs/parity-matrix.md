@@ -42,6 +42,35 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current identity module-batch evidence: on 2026-05-18, the batch followed the
+accelerated pipeline. Read-only Native Agents mapped Go identity legacy
+behavior, existing Rust implementation/test coverage, and `awiki-system-test`
+identity selectors in parallel. A GPT-5.5 xhigh Native Agent with the bounded
+write scope `crates/awiki-cli/tests/identity_legacy_import_contract.rs` added
+only focused legacy-import edge contracts; the leader reviewed, ran Go/Rust
+focused tests, ran focused non-mail system selectors, and batched docs updates.
+No production Rust code, manifests, system-test helpers, or dependencies were
+changed. The batch gap table was:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `awiki-cli/internal/identity/legacy.go`, `legacy_test.go` | `ScanLegacy` detects indexed layout, flat credential payloads, invalid JSON files, non-credential JSON files, and orphan `e2ee_*.json` artifacts | `crates/awiki-cli/src/identity/legacy.rs`, `crates/awiki-cli/tests/identity_legacy_import_contract.rs` | implemented; focused edge coverage added | `identity_legacy_import_contract::scan_legacy_detects_indexed_flat_invalid_and_orphan_artifacts_like_go` | `tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities` covers the public flat+indexed path | low after this batch; scan artifact reporting is local API behavior rather than a distinct public CLI selector |
+| `awiki-cli/internal/identity/legacy.go`, `legacy_test.go` | `ImportLegacy("")` rejects ambiguous multiple flat credentials with `ErrInvalidInput` and the Go message | `crates/awiki-cli/src/identity/legacy.rs`, `crates/awiki-cli/tests/identity_legacy_import_contract.rs` | implemented; focused edge coverage added | `identity_legacy_import_contract::import_legacy_requires_name_when_multiple_flat_credentials_exist_like_go` | public import selectors cover named/`--all`/missing layout paths; ambiguous multi-flat remains local contract coverage | low; CLI JSON-envelope duplication intentionally omitted because the Go behavior under test is the manager boundary |
+| `awiki-cli/internal/identity/legacy.go`, `legacy_test.go` | `ImportAllLegacy` imports indexed entries before flat credentials, preserves the indexed default as current, and copies flat legacy E2EE state | `crates/awiki-cli/src/identity/legacy.rs`, `crates/awiki-cli/tests/identity_legacy_import_contract.rs` | implemented; focused edge coverage added | `identity_legacy_import_contract::import_all_legacy_imports_indexed_default_and_copies_flat_e2ee_state_like_go` | `tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities` passed against the real Rust CLI | low; filesystem E2EE-state copy is proven locally and public import shape is system-verified |
+| `awiki-cli/internal/identity/legacy.go`, `legacy_test.go` | `ImportAllLegacy` skips conflicting flat credentials and imports non-conflicting credentials | `crates/awiki-cli/src/identity/legacy.rs`, `crates/awiki-cli/tests/identity_legacy_import_contract.rs` | implemented; focused edge coverage added | `identity_legacy_import_contract::import_all_legacy_skips_conflicting_flat_credentials_like_go` | no separate public selector for conflict skip; existing import selectors cover success and missing-layout CLI envelopes | low; conflict skip is deterministic manager behavior and now has direct Rust parity coverage |
+| `awiki-cli/internal/identity/service.go`, `client.go`, `awiki-cli/internal/cli/id.go` | live profile, resolve, and bind execution over shared auth/session identity service paths | `crates/awiki-cli/src/identity/{service,client,wire}.rs`, `crates/awiki-cli/tests/{identity_live_contract,identity_wire_contract}.rs` | already `system_verified`; stale known-issues deferred wording corrected | existing identity live/wire contracts and focused `tests_v2/id` selectors | focused `tests_v2/id` profile/resolve/bind selectors remain the public evidence | documentation risk only; no code gap found |
+
+Verification evidence: `cargo +1.79.0 test -p awiki-cli --test
+identity_legacy_import_contract --locked` passed 4 focused tests. Go focused
+guard `go test ./internal/identity -run
+'TestScanLegacy|TestImportLegacy|TestImportAllLegacy|TestManagerLoadMigratesLegacyANPPrivateKeysToPKCS8'
+-count=1` passed. Focused non-mail system selectors
+`tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities`
+and `tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout`
+passed with the real Rust CLI. The new test file is 323 lines; existing
+`identity_contract.rs` remains 1191 lines, so this batch did not worsen the
+near-cap legacy identity test file. No dependency was added.
+
 Current mail module-batch evidence: on 2026-05-18, the batch followed the
 accelerated pipeline. Three read-only Native Agents mapped Go mail behavior,
 Rust mail implementation/test coverage, and `awiki-system-test` mail selectors

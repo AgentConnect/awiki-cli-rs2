@@ -20,6 +20,55 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Identity Legacy Import Module Batch
+
+Timestamp: 2026-05-18T23:58:00+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline. Read-only Native Agents mapped
+  Go identity legacy behavior, existing Rust implementation/test coverage, and
+  `awiki-system-test` identity selectors before implementation.
+- A GPT-5.5 xhigh Native Agent with the bounded write scope
+  `crates/awiki-cli/tests/identity_legacy_import_contract.rs` added only local
+  legacy-import edge contracts. The leader reviewed the diff, ran Go/Rust
+  focused tests, ran focused non-mail system selectors, and updated docs in one
+  batch.
+- No production Rust source, Cargo manifest, ANP SDK code, system-test helper,
+  or dependency changed. Mail selectors remained deferred and were not run.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/identity/legacy.go`, `legacy_test.go` | scan detects indexed layout, flat credential payloads, invalid JSON, non-credential JSON, and orphan E2EE artifacts | `src/identity/legacy.rs`, `tests/identity_legacy_import_contract.rs` | implemented; edge contract added | `scan_legacy_detects_indexed_flat_invalid_and_orphan_artifacts_like_go` | public flat+indexed import selector | low |
+| `internal/identity/legacy.go`, `legacy_test.go` | import without a name fails when multiple flat credentials exist | `src/identity/legacy.rs`, `tests/identity_legacy_import_contract.rs` | implemented; edge contract added | `import_legacy_requires_name_when_multiple_flat_credentials_exist_like_go` | covered locally; public selectors cover named/`--all`/missing envelopes | low |
+| `internal/identity/legacy.go`, `legacy_test.go` | import-all imports indexed default first and copies flat E2EE state | `src/identity/legacy.rs`, `tests/identity_legacy_import_contract.rs` | implemented; edge contract added | `import_all_legacy_imports_indexed_default_and_copies_flat_e2ee_state_like_go` | public flat+indexed import selector | low |
+| `internal/identity/legacy.go`, `legacy_test.go` | import-all skips conflicting flat credentials while importing non-conflicting ones | `src/identity/legacy.rs`, `tests/identity_legacy_import_contract.rs` | implemented; edge contract added | `import_all_legacy_skips_conflicting_flat_credentials_like_go` | covered locally; no separate public conflict selector | low |
+| `internal/identity/service.go`, `client.go`, `internal/cli/id.go` | live profile/resolve/bind execution | `src/identity/{service,client,wire}.rs`, identity live/wire tests | already system-verified; stale known-issues row corrected | existing identity live/wire contracts | focused `tests_v2/id` profile/resolve/bind selectors | documentation-only risk |
+
+Commands run:
+
+```text
+cargo +1.79.0 test -p awiki-cli --test identity_legacy_import_contract --locked
+cd ../awiki-cli && go test ./internal/identity -run 'TestScanLegacy|TestImportLegacy|TestImportAllLegacy|TestManagerLoadMigratesLegacyANPPrivateKeysToPKCS8' -count=1
+cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/id/test_identity_cli.py::test_id_import_v1_all_imports_flat_and_indexed_legacy_identities tests_v2/id/test_identity_cli.py::test_id_import_v1_reports_missing_legacy_layout -ra -q
+```
+
+Observed results:
+
+- Rust focused legacy import contract passed 4 tests.
+- Go focused legacy guard passed for `internal/identity`.
+- Focused non-mail `awiki-system-test` identity selectors passed: 2 passed in
+  2.66s.
+- The new Rust test file is 323 lines. `identity_contract.rs` remains 1191
+  lines and was not edited, preserving the 1200-line review cap.
+
+Boundary note: this batch adds parity regression coverage for Go
+`internal/identity/legacy_test.go` edge behavior. It does not add new public CLI
+behavior, broaden live identity HTTP coverage, run mail selectors, or change
+dependencies.
+
 ## 2026-05-18 Mail Module Batch
 
 Timestamp: 2026-05-18T23:35:00+0800.
