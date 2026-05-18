@@ -20,6 +20,22 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-19 Message Secure Rust Selector Batch
+
+Detailed report:
+`2026-05-19-message-secure-rust-selector.md`.
+
+Summary: the accelerated message secure selector batch used parallel Native
+Agents to map Go direct secure/E2EE behavior, current Rust message secure
+contract targets, and system-test selector gaps before editing. It added a
+Rust-only `awiki-system-test` wrapper for eight non-mail local, CLI-local, and
+loopback fake-service message secure Cargo targets. Rust direct validation
+passed 71 tests; focused Go message secure guards passed; the new non-mail
+selector passed with 1 test, 0 failed, and 0 skipped; structure and whitespace
+checks passed; no dependency changed; and mail selectors remained deferred.
+`message_secure_client_contract.rs` is 1198 lines and should be split before
+future expansion.
+
 ## 2026-05-19 Identity Rust Selector Batch
 
 Detailed report:

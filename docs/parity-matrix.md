@@ -42,6 +42,45 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current message secure selector batch evidence: on 2026-05-19, the batch
+followed the accelerated module-batch pipeline. Two read-only Native Agents
+mapped Go direct secure/E2EE behavior and current Rust message secure contract
+targets, another read-only Native Agent mapped the existing `awiki-system-test`
+Rust-only selector shape, and a bounded GPT-5.5 xhigh Native Agent wrote only a
+new message-secure Rust-only selector plus the nearest CLI directory docs
+entry. The selector exposes five pure-local message secure Cargo targets, one
+CLI-local target, and two loopback fake-service command-boundary targets. No
+production Rust code, manifests, dependencies, ANP SDK source, mail selector,
+or unrelated dirty helper file changed.
+
+Message secure gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/message/secure.go` | secure direct E2EE client setup, local DID document preference, Go P5 store roots, prekey publish shape, get-prekey retry without OPK, direct init/cipher processing, pending follow-up handling, and history decrypt ordering | `crates/awiki-cli/src/message/secure_client.rs`, `src/message/secure.rs`, ANP SDK adapter paths | implemented and focused-contract tested | `message_secure_client_contract` passed 14 tests | `tests_v2/cli/test_awiki_cli_message_secure_rust_contracts.py::test_awiki_cli_message_secure_rust_contracts` passed | low; pure local/injected RPC target; file is 1198 lines, so future additions should split before expanding |
+| `internal/message/secure_commands.go`, `internal/message/secure_control.go`, `internal/cli/msg.go` | `msg secure status/failed/drop/init/retry/repair` service behavior, active-identity filtering, redacted summaries, retry/drop validation, requeue/mark-sent/drop transitions, and command dry-run boundaries | `crates/awiki-cli/src/message/secure_commands.rs`, `src/app.rs`, `src/store/*` | implemented and focused-contract tested | `message_secure_commands_contract` passed 11 tests | same Rust-only selector | low; pure local target; file is 1150 lines and should be watched before adding more |
+| `internal/message/secure_incoming.go`, `internal/runtime/listener/server.go` | direct E2EE wire content types, incoming notification projection, decrypt ordering, hidden secure control/undecryptable rows, direct-init ACK creation, and queued outbox flush side effects | `crates/awiki-cli/src/message/secure_incoming.rs`, `src/runtime/listener/*` | implemented and focused-contract tested | `message_secure_incoming_contract` passed 12 tests | same Rust-only selector | low; pure in-process/injected side-effect target |
+| `internal/message/secure_control.go`, `internal/runtime/listener/server.go` | queued secure outbox stable ordering, peer filtering, invalid/unsupported payload handling, send failure retry metadata, sent message storage, ACK/init payload helpers, and current session lookup | `crates/awiki-cli/src/message/secure_control.rs`, `src/store/e2ee_outbox.rs`, `src/runtime/listener/*` | implemented and focused-contract tested | `message_secure_outbox_flush_contract` passed 23 tests | same Rust-only selector | low; local temp workspace and SQLite only |
+| `internal/message/secure.go`, `internal/message/secure_control.go` | secure send key-material gate, prekey publish-before-send, pending-confirmation queueing, and successful E2EE outbound persistence | `crates/awiki-cli/src/message/send.rs`, `src/message/secure_control.rs` | implemented and focused-contract tested | `message_secure_send_contract` passed 4 tests | same Rust-only selector | low; pure local/injected sender target |
+| `internal/message/secure.go`, `internal/message/secure_incoming.go` | direct reads publish secure prekeys before inbox/history and preserve read success when prekey publish warns | `crates/awiki-cli/src/app.rs`, `src/message/*`, `src/transportcfg/http.rs` | implemented and loopback fake-service tested | `msg_secure_prekey_read_live_contract` passed 2 tests | same Rust-only selector | low; binds `127.0.0.1:0` fake HTTP server, not real external service |
+| `internal/message/secure_commands.go`, `internal/message/secure_control.go` | `msg secure repair --with` resets peer state, requeues only matching failed outbox rows, and starts replacement direct init | `crates/awiki-cli/src/message/secure_commands.rs`, `src/app.rs`, `src/store/*` | implemented and loopback fake-service tested | `msg_secure_repair_live_contract` passed 1 test | same Rust-only selector | low; local CLI subprocess plus loopback fake HTTP only |
+| `internal/message/secure_commands.go`, `internal/cli/msg.go` | live CLI-local `status`, `failed`, and `drop` routing, local outbox filtering, redaction, and legacy `config.json` migration before status reads | `crates/awiki-cli/src/app.rs`, `src/message/secure_commands.rs`, `src/upgrade/*` | implemented and focused-contract tested | `msg_secure_status_failed_live_contract` passed 4 tests | same Rust-only selector | low; local CLI subprocess, temp workspace, and SQLite only |
+
+Verification evidence: direct Rust message secure contract targets passed 71
+tests; focused Go guards for `internal/message`, `internal/cli`, and
+`internal/runtime/listener` passed; wrapper syntax and whitespace checks
+passed; and the focused non-mail `awiki-system-test` message secure selector
+passed with 1 passed, 0 failed, and 0 skipped in 7.74s. Rust fmt/check/structure
+gates passed, and `xtask check-structure` reported no undocumented Rust files
+over 1200 lines. The new system-test wrapper is 86 lines and
+`tests_v2/cli/CLAUDE.md` is 41 lines. Scoped Rust test files are below the
+default 1200-line visibility target, but `message_secure_client_contract.rs` at
+1198 lines and `message_secure_commands_contract.rs` at 1150 lines are near the
+limit and should be split before substantial additions. No dependency was
+added; SQLite remains on the approved `rusqlite + bundled` path and TLS remains
+Rustls-first with no OpenSSL, `native-tls`, bundled OpenSSL, platform service,
+or SQLite backend change introduced.
+
 Current identity selector batch evidence: on 2026-05-19, the batch followed the
 accelerated module-batch pipeline. Three read-only Native Agents mapped Go
 identity package and CLI behavior, current Rust identity contract targets, and
