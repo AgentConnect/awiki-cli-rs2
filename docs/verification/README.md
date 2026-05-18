@@ -24,6 +24,30 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   traceable 1:1 translation would otherwise become less reviewable. Files above
   3000 lines are rare special exceptions only and require a documented reason.
 
+## 2026-05-19 tests_v2 Remote System-Test Audit
+
+Detailed report:
+`2026-05-19-tests-v2-remote-system-audit.md`.
+
+Summary: a broad non-mail `awiki-system-test/tests_v2` pass was run against the
+Rust CLI in the configured remote `awiki.info` environment. The first run used
+the current `.env` gates and produced 139 passed, 35 failed, 5 skipped, and 10
+errors; the errors were all hidden Group E2EE setup failures caused by
+`AWIKI_GROUP_E2EE_CONTRACT_TEST=1` plus a missing executable
+`/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls`. Attempts to build
+that local `anp-mls` prerequisite were blocked before compilation by the
+configured USTC crates.io mirror returning SSL errors and HTTP 429 rate limits.
+Direct endpoint probes showed `https://awiki.info/user-service/health` was 200,
+while `https://awiki.info/im/rpc` and `https://awiki.info/anp-im/rpc` returned
+502. Focused local debug DB selectors passed 5 tests, and focused
+runtime/listener local Rust contract selectors passed 12 tests. A second broad
+non-mail run with `AWIKI_GROUP_E2EE_CONTRACT_TEST=0` and
+`AWIKI_ENABLE_MAIL_TESTS=0` produced 139 passed, 34 failed, 16 skipped, and 0
+errors; all remaining failures are classified as blocked by the remote
+message-service HTTP/WebSocket 502 path. No Rust code, dependency, manifest,
+lockfile, or system-test helper was changed. Mail selectors remain deferred and
+were not counted as passed.
+
 ## 2026-05-19 Runtime Listener Session-RPC Structure Batch
 
 Detailed report:
