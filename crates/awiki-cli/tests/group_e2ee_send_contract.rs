@@ -274,6 +274,214 @@ fn msg_send_group_e2ee_websocket_mode_stays_http_only_like_go() {
     );
 }
 
+#[test]
+fn msg_send_group_e2ee_retries_after_stale_epoch_mismatch_like_go() {
+    let workspace = TempDir::new("group-e2ee-send-stale-retry").expect("workspace");
+    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
+    seed_cached_e2ee_group_snapshot(workspace.path());
+
+    let bin_dir = TempDir::new("group-e2ee-send-stale-bin").expect("bin dir");
+    let fake_mls = bin_dir.path().join("anp-mls");
+    let args_log = workspace.path().join("mls-args-stale.log");
+    let stdin_log = workspace.path().join("mls-stdin-stale.jsonl");
+    write_fake_anp_mls_group_send_stale_epoch_retry(&fake_mls, &args_log, &stdin_log);
+
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(group_snapshot())),
+        TestResponse::ok(&json_rpc_error(
+            -32000,
+            "group.e2ee.send epoch mismatch: local epoch 44, service epoch 45",
+        )),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": GROUP_DID,
+            "epoch": "45",
+            "group_state_version": "v45",
+            "crypto_group_id_b64u": "Y3J5cHRvLWdyb3Vw",
+            "actor_membership_status": "active",
+            "actor_membership_role": "member"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "notices": [
+                {
+                    "notice_id": "notice-stale-epoch-1",
+                    "notice_type": "commit-delivery",
+                    "group_did": GROUP_DID,
+                    "recipient_did": AGENT_DID,
+                    "subject_did": "did:wba:awiki.ai:bob:e1_bob",
+                    "subject_status": "active",
+                    "commit_b64u": "Y29tbWl0LTQ1",
+                    "ratchet_tree_b64u": "cmF0Y2hldC00NQ",
+                    "group_info_b64u": "Z3JvdXAtaW5mby00NQ",
+                    "operation_id": "op-notice-stale-repair",
+                    "crypto_group_id_b64u": "Y3J5cHRvLWdyb3Vw",
+                    "epoch_authenticator_b64u": "YXV0aC00NQ",
+                    "from_epoch": "44",
+                    "to_epoch": "45",
+                    "delivery_state": "pending"
+                }
+            ],
+            "pending_count": 1,
+            "delivered": 0
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "notices": [],
+            "pending_count": 0,
+            "delivered": 1,
+            "notice_ids": ["notice-stale-epoch-1"]
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "final_acceptance": true,
+            "group_did": GROUP_DID,
+            "group_event_seq": "45",
+            "group_state_version": "v45",
+            "accepted_at": "2026-05-16T09:10:11Z",
+            "source": "remote_http"
+        }))),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            IDENTITY,
+            "msg",
+            "send",
+            "--group",
+            GROUP_DID,
+            "--secure",
+            "on",
+            "--text",
+            "hello stale epoch",
+        ],
+        workspace.path(),
+        &[("AWIKI_ANP_MLS_BINARY", fake_mls.as_path())],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        provider_commands(&args_log),
+        vec![
+            "group status",
+            "message encrypt",
+            "group status",
+            "group status",
+            "commit process",
+            "group status",
+            "group status",
+            "message encrypt",
+        ]
+    );
+
+    let provider_stdin = provider_stdin_jsonl(&stdin_log);
+    assert_eq!(provider_stdin.len(), 8);
+    let first_encrypt = &provider_stdin[1];
+    let repair_commit = &provider_stdin[4];
+    let retry_encrypt = &provider_stdin[7];
+    assert!(first_encrypt["request_id"]
+        .as_str()
+        .expect("first encrypt request id")
+        .starts_with("group-e2ee-encrypt-"));
+    assert!(retry_encrypt["request_id"]
+        .as_str()
+        .expect("retry encrypt request id")
+        .starts_with("group-e2ee-encrypt-retry-"));
+    assert_eq!(
+        first_encrypt["params"]["group_state_ref"]["group_state_version"],
+        "v43"
+    );
+    assert_eq!(
+        retry_encrypt["params"]["group_state_ref"]["group_state_version"],
+        "v45"
+    );
+    assert_eq!(repair_commit["params"]["notice_id"], "notice-stale-epoch-1");
+    assert_eq!(repair_commit["params"]["commit_b64u"], "Y29tbWl0LTQ1");
+    assert_eq!(repair_commit["params"]["from_epoch"], "44");
+    assert_eq!(repair_commit["params"]["to_epoch"], "45");
+
+    let first_operation_id = first_encrypt["params"]["operation_id"]
+        .as_str()
+        .expect("first operation id");
+    let first_message_id = first_encrypt["params"]["message_id"]
+        .as_str()
+        .expect("first message id");
+    let retry_operation_id = retry_encrypt["params"]["operation_id"]
+        .as_str()
+        .expect("retry operation id");
+    let retry_message_id = retry_encrypt["params"]["message_id"]
+        .as_str()
+        .expect("retry message id");
+    assert_ne!(first_operation_id, retry_operation_id);
+    assert_ne!(first_message_id, retry_message_id);
+
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["summary"],
+        "Sent a group text message with group E2EE"
+    );
+    assert_eq!(
+        envelope["warnings"],
+        json!(["Group E2EE local epoch was stale; repaired pending notices and retried send."])
+    );
+    assert_eq!(envelope["data"]["message"]["id"], format!("{GROUP_DID}:45"));
+    assert_eq!(envelope["data"]["message"]["secure"], true);
+    assert_eq!(envelope["data"]["delivery"]["group_event_seq"], "45");
+    assert_eq!(envelope["data"]["delivery"]["message_id"], retry_message_id);
+    assert_eq!(
+        envelope["data"]["delivery"]["operation_id"],
+        retry_operation_id
+    );
+    assert_eq!(
+        envelope["data"]["e2ee"]["group_state_ref"]["group_state_version"],
+        "v45"
+    );
+    assert_eq!(envelope["data"]["e2ee"]["cipher_object_sent"], true);
+
+    let bodies = request_json_bodies(&server.requests());
+    assert_eq!(
+        rpc_methods(&bodies),
+        vec![
+            "group.get",
+            "group.e2ee.send",
+            "group.e2ee.head",
+            "group.e2ee.notice",
+            "group.e2ee.notice",
+            "group.e2ee.send",
+        ]
+    );
+    assert_eq!(bodies[1]["params"]["body"]["epoch"], 44);
+    assert_eq!(
+        bodies[1]["params"]["meta"]["operation_id"],
+        first_operation_id
+    );
+    assert_eq!(bodies[1]["params"]["meta"]["message_id"], first_message_id);
+    assert_eq!(bodies[2]["params"]["body"]["group_did"], GROUP_DID);
+    assert_eq!(bodies[3]["params"]["body"]["group_did"], GROUP_DID);
+    assert_eq!(bodies[3]["params"]["body"]["limit"], 50);
+    assert!(bodies[3]["params"]["body"]
+        .as_object()
+        .expect("pending notice body")
+        .get("mark_delivered")
+        .is_none());
+    assert_eq!(bodies[4]["params"]["body"]["group_did"], GROUP_DID);
+    assert_eq!(bodies[4]["params"]["body"]["limit"], 1);
+    assert_eq!(bodies[4]["params"]["body"]["mark_delivered"], true);
+    assert_eq!(
+        bodies[4]["params"]["body"]["notice_ids"],
+        json!(["notice-stale-epoch-1"])
+    );
+    assert_eq!(bodies[5]["params"]["body"]["epoch"], 45);
+    assert_eq!(
+        bodies[5]["params"]["body"]["private_message_b64u"],
+        "c2VjcmV0LWJvZHktMg"
+    );
+    assert_eq!(
+        bodies[5]["params"]["meta"]["operation_id"],
+        retry_operation_id
+    );
+    assert_eq!(bodies[5]["params"]["meta"]["message_id"], retry_message_id);
+}
+
 fn seed_cached_e2ee_group_snapshot(workspace: &Path) {
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(group_snapshot()))]);
     write_group_config(workspace, &server.base_url());
@@ -373,6 +581,155 @@ exit 2
         stdin_log = shell_quote_path(stdin_log),
         status_response = shell_quote(&status_response),
         encrypt_response = shell_quote(&encrypt_response),
+        wrong_command = shell_quote(&wrong_command),
+    );
+    std::fs::write(path, script).expect("write fake anp-mls");
+    make_executable(path);
+}
+
+fn write_fake_anp_mls_group_send_stale_epoch_retry(path: &Path, args_log: &Path, stdin_log: &Path) {
+    let status_stale_response = json!({
+        "ok": true,
+        "api_version": "anp-mls/v1",
+        "request_id": "group-e2ee-send-stale-status-test",
+        "result": {
+            "status": "active",
+            "epoch": "43",
+            "crypto_group_id_b64u": "Y3J5cHRvLWdyb3Vw",
+            "pending_commits": []
+        }
+    })
+    .to_string();
+    let status_repaired_response = json!({
+        "ok": true,
+        "api_version": "anp-mls/v1",
+        "request_id": "group-e2ee-send-repaired-status-test",
+        "result": {
+            "status": "active",
+            "epoch": "45",
+            "crypto_group_id_b64u": "Y3J5cHRvLWdyb3Vw",
+            "pending_commits": []
+        }
+    })
+    .to_string();
+    let first_encrypt_response = json!({
+        "ok": true,
+        "api_version": "anp-mls/v1",
+        "request_id": "group-e2ee-encrypt-stale-test",
+        "result": {
+            "group_cipher_object": {
+                "crypto_group_id_b64u": "Y3J5cHRvLWdyb3Vw",
+                "epoch": 44,
+                "private_message_b64u": "c2VjcmV0LWJvZHktMQ",
+                "group_state_ref": {
+                    "group_did": GROUP_DID,
+                    "group_state_version": "v44",
+                    "group_event_seq": 44
+                },
+                "epoch_authenticator": "YXV0aC00NA"
+            }
+        }
+    })
+    .to_string();
+    let retry_encrypt_response = json!({
+        "ok": true,
+        "api_version": "anp-mls/v1",
+        "request_id": "group-e2ee-encrypt-retry-test",
+        "result": {
+            "group_cipher_object": {
+                "crypto_group_id_b64u": "Y3J5cHRvLWdyb3Vw",
+                "epoch": 45,
+                "private_message_b64u": "c2VjcmV0LWJvZHktMg",
+                "group_state_ref": {
+                    "group_did": GROUP_DID,
+                    "group_state_version": "v45",
+                    "group_event_seq": 45
+                },
+                "epoch_authenticator": "YXV0aC00NQ"
+            }
+        }
+    })
+    .to_string();
+    let commit_response = json!({
+        "ok": true,
+        "api_version": "anp-mls/v1",
+        "request_id": "group-e2ee-send-stale-commit-test",
+        "result": {
+            "processed": true,
+            "epoch": "45",
+            "crypto_group_id_b64u": "Y3J5cHRvLWdyb3Vw",
+            "epoch_authenticator_b64u": "YXV0aC00NQ",
+            "group_state_ref": {
+                "group_did": GROUP_DID,
+                "group_state_version": "v45",
+                "group_event_seq": 45,
+                "epoch": "45"
+            }
+        }
+    })
+    .to_string();
+    let wrong_command = json!({
+        "ok": false,
+        "api_version": "anp-mls/v1",
+        "request_id": "group-e2ee-send-stale-test",
+        "error": {
+            "code": "wrong-command",
+            "message": "expected group status, message encrypt, or commit process"
+        }
+    })
+    .to_string();
+    let status_count = path.with_extension("status-count");
+    let encrypt_count = path.with_extension("encrypt-count");
+    let script = format!(
+        r#"#!/bin/sh
+next_count() {{
+  file=$1
+  if [ -f "$file" ]; then
+    count=$(cat "$file")
+  else
+    count=0
+  fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$file"
+  printf '%s\n' "$count"
+}}
+printf '%s %s\n' "$1" "$2" >> {args_log}
+body=$(cat)
+printf '%s\n' "$body" >> {stdin_log}
+if [ "$1" = "group" ] && [ "$2" = "status" ]; then
+  count=$(next_count {status_count})
+  if [ "$count" -lt 4 ]; then
+    printf '%s\n' {status_stale_response}
+  else
+    printf '%s\n' {status_repaired_response}
+  fi
+  exit 0
+fi
+if [ "$1" = "message" ] && [ "$2" = "encrypt" ]; then
+  count=$(next_count {encrypt_count})
+  if [ "$count" = "1" ]; then
+    printf '%s\n' {first_encrypt_response}
+  else
+    printf '%s\n' {retry_encrypt_response}
+  fi
+  exit 0
+fi
+if [ "$1" = "commit" ] && [ "$2" = "process" ]; then
+  printf '%s\n' {commit_response}
+  exit 0
+fi
+printf '%s\n' {wrong_command}
+exit 2
+"#,
+        args_log = shell_quote_path(args_log),
+        stdin_log = shell_quote_path(stdin_log),
+        status_count = shell_quote_path(&status_count),
+        encrypt_count = shell_quote_path(&encrypt_count),
+        status_stale_response = shell_quote(&status_stale_response),
+        status_repaired_response = shell_quote(&status_repaired_response),
+        first_encrypt_response = shell_quote(&first_encrypt_response),
+        retry_encrypt_response = shell_quote(&retry_encrypt_response),
+        commit_response = shell_quote(&commit_response),
         wrong_command = shell_quote(&wrong_command),
     );
     std::fs::write(path, script).expect("write fake anp-mls");
@@ -541,6 +898,18 @@ fn json_rpc_result(result: Value) -> String {
     json!({
         "jsonrpc": "2.0",
         "result": result,
+        "id": "req-1",
+    })
+    .to_string()
+}
+
+fn json_rpc_error(code: i64, message: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "error": {
+            "code": code,
+            "message": message,
+        },
         "id": "req-1",
     })
     .to_string()

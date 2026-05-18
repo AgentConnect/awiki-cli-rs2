@@ -473,6 +473,20 @@ material in tested storage boundaries. It does not cover recover-member,
 update-key, rejoin, WebSocket/local bridge transport, foreground listener group
 E2EE handling, mail, or full repository-wide system acceptance.
 
+Current group E2EE stale-retry/negative contract evidence: on 2026-05-18, an
+accelerated `message/group` batch used read-only Native Agents to map Go
+stale-epoch send retry, Rust implementation/tests, and non-mail system-test
+selector coverage before editing. Rust now has focused fake-service contract
+coverage for first `group.e2ee.send` epoch mismatch followed by repair,
+re-encrypt, and retry; deterministic remove submit failure aborting the local
+pending commit; retryable HTTP 5xx submit failure retaining the pending commit;
+and accepted hidden remove delivery with local finalize failure warning/null
+finalize data. The new Rust-only system-test wrapper
+`tests_v2/cli/test_awiki_cli_group_e2ee_rust_contracts.py::test_awiki_cli_group_e2ee_stale_retry_and_negative_rust_contracts`
+passed with 1 passed, 0 failed, and 0 skipped. This is deterministic contract
+selector evidence, not a live real-service forced epoch-mismatch selector; mail
+selectors remain deferred.
+
 Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
 broad non-mail `awiki-system-test` subprocess batch under
 `AWIKI_CLI_UNDER_TEST=rust` and `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`, covering

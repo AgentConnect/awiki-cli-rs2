@@ -46,6 +46,22 @@ by adding a focused Rust-only `awiki-system-test` wrapper for the existing
 WebSocket/cache tests; the focused Go guard passed; and the focused non-mail
 system-test selector passed with 1 test. Mail selectors remained deferred.
 
+## 2026-05-18 Message Group E2EE Stale/Negative Contract Batch
+
+Detailed report:
+`2026-05-18-message-group-e2ee-stale-negative.md`.
+
+Summary: the accelerated message/group E2EE batch used read-only Native Agents
+to map Go stale-epoch send retry, pending-commit submit/finalize/abort
+negative paths, current Rust coverage, and non-mail system-test selectors before
+editing. Rust production code already contained the translated behavior, so the
+batch added focused contract coverage for the stale `group.e2ee.send` retry
+loop and remove/leave submit/finalize negative paths, then exposed those
+contracts through a new Rust-only `awiki-system-test` selector. Rust direct
+validation passed 3 send tests and 6 remove/leave tests; the focused Go guard
+passed; structure checks passed; and the new non-mail selector passed with 1
+test. Mail selectors remained deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.
