@@ -94,6 +94,21 @@ group E2EE contracts. Rust direct validation passed 4 recover-member tests and
 the extended non-mail selector passed with 1 test. Mail selectors remained
 deferred.
 
+## 2026-05-18 Message Group E2EE Recover/Update RPC Deterministic Batch
+
+Detailed report:
+`2026-05-18-message-group-e2ee-recover-update-rpc-deterministic.md`.
+
+Summary: the accelerated message/group E2EE RPC deterministic batch confirmed
+production Rust already matched Go's `rpc_code >= 2000` deterministic abort
+classifier for recover-member and update-key submit failures. It added focused
+fake-service contracts for recover-member RPC 2001 abort and update-key RPC
+2001 abort, then extended the Rust-only `awiki-system-test` selector to cover
+all 12 current stale/negative group E2EE contracts. Rust direct validation
+passed 5 recover-member tests and 5 update-key tests; the focused Go guard
+passed; structure checks passed; and the extended non-mail selector passed with
+1 test. Mail selectors remained deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.

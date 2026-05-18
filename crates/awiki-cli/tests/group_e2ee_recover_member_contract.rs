@@ -339,6 +339,84 @@ fn group_e2ee_recover_member_deterministic_submit_failure_aborts_pending_commit_
 }
 
 #[test]
+fn group_e2ee_recover_member_rpc_deterministic_submit_failure_aborts_pending_commit_like_go() {
+    let workspace = TempDir::new("group-e2ee-recover-submit-rpc-2001").expect("workspace");
+    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
+    let bin_dir = TempDir::new("group-e2ee-recover-submit-rpc-2001-bin").expect("bin dir");
+    let fake_mls = bin_dir.path().join("anp-mls");
+    let args_log = workspace.path().join("mls-args.log");
+    let stdin_log = workspace.path().join("mls-stdin.jsonl");
+    write_fake_anp_mls_group_recover_member_with_terminal(
+        &fake_mls,
+        &args_log,
+        &stdin_log,
+        RecoverTerminalBehavior::AbortSucceeds,
+    );
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": GROUP_DID,
+            "epoch": "5",
+            "actor_membership_role": "owner",
+            "actor_membership_status": "active",
+            "actor_recovery_eligible": true
+        }))),
+        TestResponse::ok(&json_rpc_result(recovery_key_package())),
+        TestResponse::ok(&json_rpc_error(2001, "deterministic recovery rejection")),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            IDENTITY,
+            "group",
+            "e2ee",
+            "recover-member",
+            "--group",
+            GROUP_DID,
+            "--member",
+            MEMBER_DID,
+            "--device",
+            "bob-main",
+        ],
+        workspace.path(),
+        &[("AWIKI_ANP_MLS_BINARY", fake_mls.as_path())],
+    );
+
+    let error = error_json(&output);
+    assert_eq!(error["error"]["code"], "internal_error");
+    assert_text_contains(
+        error["error"]["message"].as_str().expect("error message"),
+        "service rpc error 2001: deterministic recovery rejection",
+    );
+    assert_text_contains(
+        error["error"]["message"].as_str().expect("error message"),
+        "local group E2EE recovery pending commit aborted",
+    );
+    assert_eq!(
+        provider_commands(&args_log),
+        vec!["group recover-member-prepare", "group commit-abort"]
+    );
+    let provider_stdin = provider_stdin_jsonl(&stdin_log);
+    assert_eq!(provider_stdin.len(), 2);
+    assert_eq!(
+        provider_stdin[1]["params"]["pending_commit_id"],
+        "pc-recover-1"
+    );
+    assert!(provider_stdin[1]["params"]["operation_id"].is_null());
+
+    let bodies = request_json_bodies(&server.requests());
+    assert_eq!(
+        rpc_methods(&bodies),
+        vec![
+            "group.e2ee.head",
+            "group.e2ee.get_key_package",
+            "group.e2ee.recover_member"
+        ]
+    );
+}
+
+#[test]
 fn group_e2ee_recover_member_retryable_submit_failure_retains_pending_commit_like_go() {
     let workspace = TempDir::new("group-e2ee-recover-submit-500").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
@@ -901,6 +979,18 @@ fn json_rpc_result(result: Value) -> String {
     json!({
         "jsonrpc": "2.0",
         "result": result,
+        "id": "req-1",
+    })
+    .to_string()
+}
+
+fn json_rpc_error(code: i64, message: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "error": {
+            "code": code,
+            "message": message,
+        },
         "id": "req-1",
     })
     .to_string()
