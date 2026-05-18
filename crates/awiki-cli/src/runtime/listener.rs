@@ -279,11 +279,18 @@ fn listener_host_notify_status(resolved: &Resolved) -> HostNotifyStatus {
         .as_ref()
         .map(|config| config.hook_url.clone())
         .unwrap_or_default();
+    let notify_url = runtime
+        .host_notify
+        .hermes
+        .as_ref()
+        .map(|config| config.notify_url.clone())
+        .unwrap_or_default();
     HostNotifyStatus {
         enabled: runtime.host_notify.enabled,
         sink: runtime.host_notify.sink,
         file_path: runtime.host_notify.file_path,
         hook_url,
+        notify_url,
         last_error: String::new(),
         ..HostNotifyStatus::default()
     }
@@ -535,6 +542,25 @@ mod tests {
         assert!(status.host_notify.agent_id.is_empty());
         assert!(status.host_notify.hook_name.is_empty());
         assert!(status.host_notify.notify_url.is_empty());
+    }
+
+    #[test]
+    fn status_for_hermes_host_notify_includes_notify_url_like_go_manager() {
+        let mut resolved = test_resolved();
+        resolved.host_notify_sink = "hermes".to_string();
+        resolved.host_notify_hermes_notify_url =
+            "http://127.0.0.1:8765/notify/host-event".to_string();
+
+        let status = status_for(&resolved, false, false, "rust-local").expect("listener status");
+
+        assert!(status.host_notify.enabled);
+        assert_eq!(status.host_notify.sink, "hermes");
+        assert!(status.host_notify.file_path.is_empty());
+        assert!(status.host_notify.hook_url.is_empty());
+        assert_eq!(
+            status.host_notify.notify_url,
+            "http://127.0.0.1:8765/notify/host-event"
+        );
     }
 
     #[test]

@@ -20,6 +20,16 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Release/Test/Packaging Static Asset Batch
+
+Detailed report: `2026-05-18-release-test-packaging.md`.
+
+Summary: the batch translated Go release/test assets into Rust-native Cargo
+scripts and GitHub Actions while preserving the npm installer artifact naming
+contract. The same batch fixed the Hermes host-notify status `notify_url`
+parity gap exposed by `scripts/test-unit.sh`. No Cargo dependency was added;
+mail selectors remained deferred.
+
 ## 2026-05-18 Docs/Scripts/Schema/Config Metadata Batch
 
 Timestamp: 2026-05-18T18:31:32+0800.

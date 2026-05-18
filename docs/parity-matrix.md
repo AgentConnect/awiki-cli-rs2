@@ -42,6 +42,44 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current release/test/packaging static asset batch evidence: on 2026-05-18, the
+batch followed the accelerated pipeline. Three read-only Native Agents mapped
+Go release/test assets, current Rust packaging/test coverage, and non-mail
+system-test selectors in parallel while the leader handled integration,
+layered validation, docs, commit, and push. Go release behavior was translated
+to a Rust-native pipeline rather than copying `.goreleaser.yml` byte-for-byte,
+because the Go file points at `cmd/awiki-cli` and Go `ldflags`. The Rust release
+workflow and `scripts/release/build-release-artifact.sh` preserve the installer
+artifact contract: `awiki-cli-<version>-<os>-<arch>.tar.gz|zip`, the
+`awiki-cli-<version>-checksums.txt` checksum file, and an archive root binary
+named `awiki-cli` or `awiki-cli.exe`. The batch also added Rust equivalents for
+Go unit/coverage scripts, release tag/publish/withdraw helpers, CI/release
+workflows, ignored generated release/coverage/cache artifacts, and kept the
+ANP helper default source at the workspace/user-mandated `../anp/rust`.
+`scripts/test-unit.sh` exposed an existing runtime parity bug: Hermes
+host-notify listener status omitted `notify_url` while Go
+`internal/runtime/listener/host_notify.go` includes it. Rust now includes the
+Hermes `notify_url` in listener host-notify status and has focused coverage for
+that behavior. Mail selectors remain deferred.
+
+Release/test/packaging gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `.goreleaser.yml`, `.github/workflows/release.yml` | Build linux/darwin/windows amd64/arm64 archives, embed version/commit/date/CGO metadata, publish GitHub assets, generate checksum file, publish stable npm | `.github/workflows/release.yml`, `scripts/release/build-release-artifact.sh` | translated to Rust-native release workflow; archive/checksum/installer names preserved | release dry-runs for host, Windows, and Linux arm64 plans; YAML parse | installer selectors verify artifact name expectations through `scripts/install.js` | medium until a real tag release runs; cross-target build depends on GitHub runner toolchains |
+| `.github/workflows/ci.yml`, `scripts/test-unit.sh`, `scripts/test-unit-cover.sh`, `scripts/check_go_coverage.py` | CI runs unit tests, coverage helper, script syntax checks, installer probes, and release plan smoke checks | `.github/workflows/ci.yml`, `scripts/test-unit.sh`, `scripts/test-unit-cover.sh`, `scripts/check_rust_coverage.py` | implemented for Cargo/Rust coverage shape | syntax checks, Python compile, Python helper tests, `cargo fmt --check`, `cargo check -p awiki-cli --locked` | focused non-mail core/update selectors passed | low for script contract; full coverage gate depends on optional `cargo-llvm-cov` |
+| `scripts/release/*.sh`, `scripts/release/release.env.example` | tag, one-click release, Gitee mirror, deletion, withdrawal, local release environment, ANP helper staging | `scripts/release/*.sh`, `.gitignore` | copied or translated with Rust build/test commands and workspace ANP path `../anp/rust` | `bash -n scripts/release/*.sh`, dry-run release helper checks | not directly system-tested; installer/update selectors cover public package surface | medium because publish paths require external credentials and real remote releases |
+| `scripts/install.js`, `scripts/run.js`, `package.json` | npm installer downloads the release archive names and runs `bin/awiki-cli(.exe)` | existing shared assets unchanged | already byte-for-byte/shared-asset parity from previous batch | Node installer contract probe | `tests_v2/update/test_install_script.py` passed | low; unchanged assets rely on release workflow preserving names |
+| `internal/runtime/listener/host_notify.go` | `HostNotifyStatus.NotifyURL` reflects configured Hermes notify URL | `crates/awiki-cli/src/runtime/listener.rs` | fixed in this batch | focused Rust host-notify sink/status tests | update/core focused selectors indirectly exercise runtime status commands; host-notify live selectors remain runtime batch work | low after focused Rust and Go guards |
+
+Verification evidence: script syntax checks, Python compile, YAML parse,
+release dry-runs, ANP helper dry-run, Python helper tests, Node installer
+contract probes, focused installer/update/core `awiki-system-test` selectors,
+focused Rust host-notify status tests, adjacent runtime contract tests, focused
+Go runtime listener guards, `cargo +1.79.0 fmt --check`, and
+`cargo +1.79.0 check -p awiki-cli --locked` passed. No Cargo dependency was
+added; `cargo-llvm-cov` remains optional external tooling for coverage mode.
+
 Current docs/scripts/schema/config metadata batch evidence: on 2026-05-18, the
 batch followed the accelerated pipeline with three read-only Native Agents
 mapping Go static assets, Rust implementation/tests, and non-mail system-test
