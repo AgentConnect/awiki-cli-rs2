@@ -20,6 +20,58 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Message Ordinary Group WebSocket/Cache Scan Batch
+
+Timestamp: 2026-05-18T18:02:49+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline for the ordinary
+  `message/group` WebSocket/local-cache cluster before deciding whether to edit.
+- Three read-only Native Agents mapped the Go reference implementation, current
+  Rust implementation/tests, and non-mail `awiki-system-test` selectors in
+  parallel. The scans converged on the same result: Rust already matches the Go
+  ordinary group transport/cache boundaries for this cluster.
+- No production code, tests, dependencies, or system-test helpers were changed
+  in this batch. The work is recorded as a no-gap scan with fresh focused Go and
+  Rust validation evidence.
+- Mail selectors remained deferred and were not run or counted.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/message/ws_proxy_client.go`, `internal/runtime/listener/server.go` | local bridge method mapping exposes ordinary `group.send` and `group.list_messages` | `src/message/group_ws.rs`, `src/message/ws_proxy.rs`, `src/runtime/listener_bridge_dispatch.rs` | already implemented | `msg_ws_group_live_contract` | `tests_v2/cli/test_awiki_cli_group_local.py::test_awiki_cli_can_create_group_add_member_send_and_list_messages` mapped but not rerun in this no-code scan | low; existing bridge contracts passed |
+| `internal/message/group_service.go` `sendGroup` | WebSocket runtime uses local bridge first, then falls back to HTTP; no local cache-only send path | `src/message/group_ws.rs`, `src/message/group_service.rs` | already implemented | `msg_ws_group_live_contract` | same ordinary group local selector | low |
+| `internal/message/group_service.go` `GroupMessages` | WebSocket runtime reads local bridge first, then local group cache, then HTTP | `src/message/group_ws.rs`, `src/message/group_service.rs`, `src/message/inbox.rs` | already implemented | `msg_ws_group_live_contract`; `msg_all_inbox_live_contract msg_inbox_scope_group` | same ordinary group local selector | low |
+| `internal/message/group_service.go` lifecycle/control methods | `group list/get/members` and other control paths stay HTTP-only under `runtime.mode=websocket` and emit the Go warning | `src/message/group_service.rs`, `src/message/group_create.rs` | already implemented in the previous group control batch | `group_live_contract` | ordinary group get/dry-run selectors mapped separately | low |
+| `internal/message/group_service.go` `ListGroups` | Go `group.list` does not refresh the local group cache | `src/message/group_service.rs` | Rust no-cache-refresh behavior is not a gap | existing group contracts; no new test needed | not applicable | low; confirmed as Go parity |
+| `internal/runtime/listener/server.go` group incoming/state-changed records | listener builds group message/member/system cache rows from protocol fields | `src/runtime/listener_message_records.rs`, `src/runtime/listener_bridge_dispatch.rs` | already implemented | existing listener/message record contracts; focused Go guard run for the reference behavior | host-notify selectors remain separate live evidence | low |
+| `internal/message/group_e2ee_service.go` | group E2EE send is outside ordinary group bridge/cache behavior and remains HTTP-only | `src/message/group_e2ee_send.rs`, `src/message/group_e2ee_transport.rs` | covered by the previous E2EE boundary batch | `group_e2ee_send_contract` | E2EE selectors remain separate | low; ordinary and E2EE boundaries kept separate |
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message ./internal/runtime/listener -run 'TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages|TestMessageRecordFromGroupIncomingUsesProtocolFieldsOnly|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage|TestShouldUseCachedGroupFallbackRejectsInactiveViewerErrors|TestMarkCachedGroupLeftClearsMembersAndResetsRole' -count=1
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_ws_group_live_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract msg_inbox_scope_group --locked
+```
+
+Observed results:
+
+- Focused Go guard passed for `internal/message` and
+  `internal/runtime/listener`.
+- `msg_ws_group_live_contract` passed 7 tests.
+- `msg_all_inbox_live_contract msg_inbox_scope_group` passed 4 focused group
+  inbox/cache tests.
+- The ordinary group system selector was mapped but not run in this no-code
+  scan batch. No mail selector was run.
+
+Boundary note: this batch records that no production Rust implementation gap
+was found for ordinary group WebSocket/local-cache parity. It does not claim
+fresh `awiki-system-test` acceptance for the ordinary group selector, group
+E2EE local-bridge transport, mail acceptance, or repository-wide acceptance.
+
 ## 2026-05-18 Message Group E2EE WebSocket Boundary Batch
 
 Timestamp: 2026-05-18T18:20:00+0800.

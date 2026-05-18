@@ -169,6 +169,19 @@ the default 1200-line cap. The helper test was split into
 `service/tests.rs` is 78 lines, and the touched `msg_live_contract.rs` remains
 at 1200 lines with no line-count increase, so no file-size exception is needed.
 
+Current ordinary group WebSocket/cache scan evidence: on 2026-05-18, the
+`message/group` ordinary WebSocket/local-cache batch followed the accelerated
+pipeline with three read-only Native Agents mapping Go behavior, current Rust
+coverage, and non-mail system selectors. The gap table found no production Rust
+implementation gap: Go and Rust both route ordinary group send/messages through
+the local bridge in WebSocket mode, preserve cache-before-HTTP fallback for
+group messages, keep group send bridge-before-HTTP fallback without a cache-only
+send path, keep group list/get/members on HTTP control transport with the Go
+warning, and do not treat `group.list` as a local group-cache refresh. Focused
+Rust contracts and Go guards passed. The ordinary group system selector was
+mapped but not rerun in this no-code scan batch, and mail selectors remained
+deferred/gated.
+
 Current command catalog metadata slice: Rust static schema metadata now matches
 the selected Go catalog fields for `upgrade` text/`side_effect`, identity
 short/flag usage text, command flag `choices` for `msg`, `group`, `runtime`,
