@@ -42,6 +42,43 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current ordinary message/group selector batch evidence: on 2026-05-19, the
+batch followed the accelerated module-batch pipeline. Read-only Native Agents
+mapped Go ordinary `msg`/`group` behavior, current Rust contract targets, and
+the existing `awiki-system-test` wrapper pattern in parallel. A bounded GPT-5.5
+xhigh Native Agent wrote only a new non-mail message/group Rust-only selector
+plus the nearest CLI directory docs entry. The selector exposes ordinary
+message CLI/dry-run, loopback fake-service direct message, JWT fallback trace,
+group wire, and loopback fake-service group live targets. No production Rust
+code, manifests, dependencies, ANP SDK source, mail selector, runtime listener
+selector, or unrelated dirty helper file changed.
+
+Ordinary message/group gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/cli/msg.go`, `internal/message/wire.go` | `msg` schema, dry-run plans, direct/group target validation, text/text-file and attachment argument boundaries, required-flag errors, inbox/history/mark-read local profile defaults, limits, cursor, and message ID validation | `crates/awiki-cli/src/app.rs`, `src/message/wire.rs` | implemented and focused-contract tested | `msg_contract` passed 6 tests | `tests_v2/cli/test_awiki_cli_message_group_rust_contracts.py::test_awiki_cli_message_group_rust_contracts` passed | low; CLI-local only |
+| `internal/message/service.go`, `internal/message/wire.go`, `internal/message/secure.go` | direct send fake-service RPC, outbound row persistence, secure-on direct send, secure init/retry live command paths, inbox/history/mark-read output shape, handle history merge, and secure wire-row filtering from handle history | `crates/awiki-cli/src/app.rs`, `src/message/*`, `src/store/*`, `src/transportcfg/http.rs` | implemented and loopback fake-service tested | `msg_live_contract` passed 7 tests | same Rust-only selector | moderate; local CLI subprocess plus `127.0.0.1:0` fake HTTP only; file is exactly 1200 lines and must not be expanded without splitting or documenting an exception |
+| `internal/message/service.go`, `internal/message/warnings.go`, `internal/message/ws_proxy_client.go`, `internal/traceutil/trace.go` | HTTP 401 JWT refresh and fallback trace behavior, persisted refreshed bearer, websocket-to-HTTP fallback warning readability, and trace timing visibility | `crates/awiki-cli/src/authsdk/*`, `src/message/*`, `src/traceutil.rs`, `src/transportcfg/http.rs` | implemented and loopback fake-service tested | `msg_jwt_fallback_trace_contract` passed 2 tests | same Rust-only selector | moderate; local fake HTTP plus trace stderr assertions, no external service |
+| `internal/message/group_wire.go`, `internal/message/proof.go`, `internal/cli/group.go` | group create/join/add/remove/leave/update/send/get/list/members/messages JSON-RPC params, origin proof, base vs local profiles, default limits, group policy, and validation errors | `crates/awiki-cli/src/message/group_wire.rs`, `src/app/group_handlers.rs` | implemented and focused-contract tested | `message_group_wire_contract` passed 6 tests | same Rust-only selector | low; pure local wire/proof/validation target |
+| `internal/cli/group.go`, `internal/cli/msg.go`, `internal/message/group_service.go`, `internal/message/service.go` | loopback group get/members/group-send flows, group control remaining HTTP in websocket mode, owner hint preservation on group add error, accepted delivery mapping, operation IDs, message ID suffix, and group event seq | `crates/awiki-cli/src/app/group_handlers.rs`, `src/message/group_service.rs`, `src/message/group_wire.rs`, `src/transportcfg/http.rs` | implemented and loopback fake-service tested | `group_live_contract` passed 5 tests | same Rust-only selector | moderate; local CLI subprocess plus `127.0.0.1:0` fake HTTP only |
+
+Verification evidence: direct Rust ordinary message/group contract targets
+passed 26 tests; focused Go guards for `internal/cli` and `internal/message`
+passed; wrapper syntax and whitespace checks passed; and the focused non-mail
+`awiki-system-test` message/group selector passed with 1 passed, 0 failed, and
+0 skipped in 42.74s. Rust fmt/check/structure gates passed, and
+`xtask check-structure` reported no undocumented Rust files over 1200 lines.
+The new system-test wrapper is 82 lines and `tests_v2/cli/CLAUDE.md` is 42
+lines. Scoped Rust test files are below or at the default 1200-line visibility
+target: `msg_contract.rs` 679, `message_group_wire_contract.rs` 410,
+`msg_jwt_fallback_trace_contract.rs` 546, `group_live_contract.rs` 707, and
+`msg_live_contract.rs` exactly 1200. Future additions to `msg_live_contract.rs`
+should split the target or document a file-size exception first. No dependency
+was added; SQLite remains on the approved `rusqlite + bundled` path and TLS
+remains Rustls-first with no OpenSSL, `native-tls`, bundled OpenSSL, platform
+service, or SQLite backend change introduced.
+
 Current message secure selector batch evidence: on 2026-05-19, the batch
 followed the accelerated module-batch pipeline. Two read-only Native Agents
 mapped Go direct secure/E2EE behavior and current Rust message secure contract

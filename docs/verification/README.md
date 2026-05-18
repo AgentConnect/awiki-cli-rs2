@@ -20,6 +20,21 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-19 Message Group Rust Selector Batch
+
+Detailed report:
+`2026-05-19-message-group-rust-selector.md`.
+
+Summary: the accelerated ordinary message/group selector batch used parallel
+Native Agents to map Go `msg`/`group` behavior, current Rust contract targets,
+and system-test selector gaps before editing. It added a Rust-only
+`awiki-system-test` wrapper for five non-mail CLI-local, pure wire, and loopback
+fake-service message/group Cargo targets. Rust direct validation passed 26
+tests; focused Go message/group guards passed; the new non-mail selector passed
+with 1 test, 0 failed, and 0 skipped; structure and whitespace checks passed; no
+dependency changed; and mail selectors remained deferred. `msg_live_contract.rs`
+is exactly 1200 lines and should be split before future expansion.
+
 ## 2026-05-19 Message Secure Rust Selector Batch
 
 Detailed report:
