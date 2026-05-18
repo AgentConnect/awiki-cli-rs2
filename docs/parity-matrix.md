@@ -261,6 +261,42 @@ passed with the real Rust CLI. The new test file is 323 lines; existing
 `identity_contract.rs` remains 1191 lines, so this batch did not worsen the
 near-cap legacy identity test file. No dependency was added.
 
+Current identity profile/resolve/bind/refresh batch evidence: on 2026-05-18,
+the batch followed the accelerated pipeline. Three read-only Native Agents
+mapped Go `internal/cli/id.go`, `internal/identity/service.go`,
+`internal/identity/client.go`, and `internal/authsdk/session.go` behavior,
+current Rust identity implementation/test coverage, and non-mail
+`awiki-system-test` identity selectors in parallel. Two bounded GPT-5.5 xhigh
+Native Agents then worked in non-overlapping write scopes:
+`crates/awiki-cli/tests/identity_live_contract.rs` and
+`awiki-system-test/tests_v2/id/test_identity_cli.py`. No production Rust code,
+manifest, dependency, ANP SDK, or mail selector changed. The batch gap table
+was:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `awiki-cli/internal/identity/service.go` `Resolve` | `resolve --did` returns success when required `did.profile.resolve` succeeds and optional handle/public-profile lookups fail, preserving warnings and omitting failed optional payloads | `crates/awiki-cli/src/identity/service.rs`, `crates/awiki-cli/tests/identity_live_contract.rs` | implemented; focused negative-path evidence added | `identity_resolve_did_live_warns_for_non_fatal_lookup_failures_like_go` | adjacent `tests_v2/id` resolve selectors cover public CLI migration boundaries | low |
+| `awiki-cli/internal/cli/id.go`, `service.go` profile get | `profile get --handle/--did` crosses service setup only after workspace upgrade | `crates/awiki-cli/src/app.rs`, `crates/awiki-cli/src/identity/service.rs` | implemented; selector visibility added | existing self/handle/DID live contracts | `test_id_profile_get_rust_migrates_legacy_config_json_before_public_service_boundary[handle]`, `[did]` | low; selector stops locally at migrated missing CA-bundle setup |
+| `awiki-cli/internal/cli/id.go`, `service.go` bind | `bind --email` shares the active-identity boundary with phone binding after workspace upgrade | `crates/awiki-cli/src/app.rs`, `crates/awiki-cli/src/identity/service.rs` | implemented; selector visibility added | existing phone/email bind live contracts | `test_id_bind_email_rust_migrates_legacy_config_json_before_identity_boundary` | low |
+| `awiki-cli/internal/cli/id.go`, `service.go` refresh-token | non-dry-run refresh upgrades before active identity lookup; dry-run plans DID-auth refresh and skips workspace upgrade like Go `resolveConfigForWorkspace` | `crates/awiki-cli/src/app.rs`, `crates/awiki-cli/src/identity/service.rs` | implemented; no dry-run migration selector by parity | existing dry-run and live refresh contracts | `test_id_refresh_token_rust_migrates_legacy_config_json_before_identity_boundary`; `test_id_refresh_token_public_command_dry_run_exposes_did_auth_refresh` | low |
+| `awiki-cli/internal/cli/id.go`, `service.go` resolve handle/DID | target validation happens before service calls; valid handle/DID service setup happens after workspace upgrade | `crates/awiki-cli/src/app.rs`, `crates/awiki-cli/src/identity/service.rs` | implemented; selector visibility added | existing validation, handle, DID, and new warning contracts | `test_id_resolve_rust_migrates_legacy_config_json_before_target_validation`; `test_id_resolve_rust_migrates_legacy_config_json_before_service_boundary[handle]`, `[did]` | low |
+
+Verification evidence: Rust identity batch contracts passed 64 tests:
+`cargo +1.79.0 test -p awiki-cli --test identity_wire_contract --test
+authsdk_contract --test identity_contract --test identity_live_contract --test
+identity_register_email_live_contract --test identity_profile_set_upgrade_contract
+--locked`. The focused Go guard passed:
+`go test ./internal/identity ./internal/cli ./internal/authsdk -run
+'Test.*(Profile|Resolve|Bind|Refresh|JWT|GetMe|Lookup|Phone|Email)' -count=1`.
+Focused non-mail `awiki-system-test` selectors passed with 6 tests:
+profile public service boundary handle/DID, bind email identity boundary,
+refresh-token identity boundary, and resolve service boundary handle/DID.
+`tests_v2/id/test_identity_cli.py` collected 34 tests and compiled with
+`uv run python -m py_compile`. `identity_live_contract.rs` is 1133 lines after
+the new test, below the 1200-line visibility target; the system-test identity
+file is 1286 lines, below the current ordinary 3000-line limit. No dependency
+was added, and mail selectors remain deferred.
+
 Current mail module-batch evidence: on 2026-05-18, the batch followed the
 accelerated pipeline. Three read-only Native Agents mapped Go mail behavior,
 Rust mail implementation/test coverage, and `awiki-system-test` mail selectors

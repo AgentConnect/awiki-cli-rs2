@@ -785,6 +785,51 @@ fn identity_resolve_did_live_matches_go_resolve_lookup_profile_sequence() {
     assert_eq!(profile_body["params"], json!({ "did": did }));
 }
 
+#[test]
+fn identity_resolve_did_live_warns_for_non_fatal_lookup_failures_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let did = "did:wba:awiki.ai:alice:e1_remote";
+    let server = TestServer::new(vec![
+        TestResponse::ok(&format!(
+            r#"{{"jsonrpc":"2.0","result":{{"did":"{did}","service_endpoint":"https://service.example"}},"id":"req-1"}}"#
+        )),
+        TestResponse::status(502, "lookup unavailable"),
+        TestResponse::status(502, "profile unavailable"),
+    ]);
+    write_service_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(&["id", "resolve", "--did", did], workspace.path());
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Identity resolved successfully");
+    assert_eq!(envelope["data"]["resolve"]["did"], did);
+    assert!(envelope["data"].get("lookup").is_none());
+    assert!(envelope["data"].get("public_profile").is_none());
+    assert_eq!(
+        envelope["warnings"],
+        json!([
+            "Handle lookup failed: service http error 502: lookup unavailable",
+            "Public profile lookup failed: service http error 502: profile unavailable",
+        ])
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    let resolve_body: Value = serde_json::from_str(request_body(&requests[0])).unwrap();
+    let lookup_body: Value = serde_json::from_str(request_body(&requests[1])).unwrap();
+    let profile_body: Value = serde_json::from_str(request_body(&requests[2])).unwrap();
+    assert_eq!(resolve_body["method"], "resolve");
+    assert_eq!(resolve_body["params"], json!({ "did": did }));
+    assert_eq!(lookup_body["method"], "lookup");
+    assert_eq!(lookup_body["params"], json!({ "did": did }));
+    assert_eq!(profile_body["method"], "get_public_profile");
+    assert_eq!(profile_body["params"], json!({ "did": did }));
+}
+
 fn write_service_config(workspace: &Path, base_url: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
@@ -929,6 +974,13 @@ impl TestResponse {
     fn ok(body: &str) -> Self {
         Self {
             status: 200,
+            body: body.to_string(),
+        }
+    }
+
+    fn status(status: u16, body: &str) -> Self {
+        Self {
+            status,
             body: body.to_string(),
         }
     }

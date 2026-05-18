@@ -20,6 +20,20 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Identity Profile/Resolve/Bind/Refresh Selector Batch
+
+Detailed report:
+`2026-05-18-identity-profile-resolve-bind-refresh.md`.
+
+Summary: the accelerated identity batch found no production Rust gap in
+`id profile get/set`, `id resolve`, `id bind`, or `id refresh-token`. It filled
+focused evidence gaps by adding a Rust warning contract for `resolve --did`
+non-fatal optional lookup failures and by expanding Rust-only, cache-only
+system-test selectors for profile handle/DID, resolve handle/DID, bind email,
+and refresh-token identity-boundary migration. Rust direct validation passed 64
+identity/auth tests; the focused Go guard passed; and the focused non-mail
+system-test selectors passed with 6 tests. Mail selectors remained deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.
