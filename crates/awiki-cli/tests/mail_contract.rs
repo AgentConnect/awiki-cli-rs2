@@ -258,6 +258,29 @@ fn mail_notify_reads_and_normalizes_local_sqlite_cache() {
 }
 
 #[test]
+fn mail_notify_accepts_legacy_content_type_rows_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+
+    let owner_did = setup_ready_mail_identity(workspace.path(), "alice-mail");
+    insert_legacy_mail_notification(workspace.path(), &owner_did);
+
+    let output = awiki_cmd(
+        &["--identity", "alice-mail", "mail", "notify"],
+        workspace.path(),
+    );
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 mail notification(s)");
+    assert_eq!(envelope["data"]["total"], 1);
+    let notification = &envelope["data"]["notifications"][0];
+    assert_eq!(notification["source_kind"], "mail");
+    assert_eq!(notification["title"], "[邮件] Legacy subject");
+    assert_contains(&notification["content"], "[邮件] 收件邮箱: legacy@awiki.ai");
+    assert_contains(&notification["content"], "主题: Legacy subject");
+    assert_contains(&notification["content"], "Legacy preview");
+}
+
+#[test]
 fn mail_notify_defaults_non_positive_limit_and_traces_local_db_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let owner_did = setup_ready_mail_identity(workspace.path(), "alice-mail");
@@ -332,6 +355,41 @@ fn register_identity_for_mail(
 }
 
 fn insert_mail_notification(workspace: &Path, owner_did: &str) {
+    insert_mail_notification_row(
+        workspace,
+        owner_did,
+        "mail-message-1",
+        "mail:alice@awiki.ai",
+        "text/plain",
+        "old content",
+        "[邮件] Old title",
+        r#"{"source_kind":"mail","mailbox_address":"alice@awiki.ai","from_addr":"sender@example.com","subject":"Mail subject","preview":"Preview text","has_attachments":"yes"}"#,
+    );
+}
+
+fn insert_legacy_mail_notification(workspace: &Path, owner_did: &str) {
+    insert_mail_notification_row(
+        workspace,
+        owner_did,
+        "mail-message-legacy",
+        "mail:legacy@awiki.ai",
+        "mail.notification",
+        "legacy content",
+        "[邮件] Legacy subject",
+        r#"{"mailbox_address":"legacy@awiki.ai","from_addr":"legacy@example.com","subject":"Legacy subject","preview":"Legacy preview","has_attachments":false}"#,
+    );
+}
+
+fn insert_mail_notification_row(
+    workspace: &Path,
+    owner_did: &str,
+    msg_id: &str,
+    thread_id: &str,
+    content_type: &str,
+    content: &str,
+    title: &str,
+    metadata: &str,
+) {
     let db_path = workspace.join("data").join("awiki-cli.db");
     let connection = rusqlite::Connection::open(db_path).unwrap();
     connection
@@ -341,17 +399,18 @@ INSERT INTO messages (
     msg_id, owner_did, thread_id, direction, receiver_did, content_type, content,
     title, sent_at, stored_at, is_read, metadata, credential_name
 ) VALUES (
-    ?1, ?2, ?3, 0, ?2, 'text/plain', ?4, ?5, ?6, ?6, 0, ?7, 'alice-mail'
+    ?1, ?2, ?3, 0, ?2, ?4, ?5, ?6, ?7, ?7, 0, ?8, 'alice-mail'
 )
 "#,
             rusqlite::params![
-                "mail-message-1",
+                msg_id,
                 owner_did,
-                "mail:alice@awiki.ai",
-                "old content",
-                "[邮件] Old title",
+                thread_id,
+                content_type,
+                content,
+                title,
                 "2026-05-14T00:00:00Z",
-                r#"{"source_kind":"mail","mailbox_address":"alice@awiki.ai","from_addr":"sender@example.com","subject":"Mail subject","preview":"Preview text","has_attachments":"yes"}"#
+                metadata
             ],
         )
         .unwrap();

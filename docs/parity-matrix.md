@@ -18,6 +18,12 @@ Future HTTPS/WebSocket lanes should begin with Rustls-backed clients and verify
 the dependency tree stays free of OpenSSL/`native-tls`; bundled OpenSSL is not a
 preferred fallback.
 
+File-size constraint: Rust source files should target 1200 non-generated lines
+by default. The normal relaxed limit is 3000 lines when the Go source is large
+or traceable 1:1 translation would otherwise become less reviewable. Files above
+3000 lines are rare special exceptions only and must be documented with a reason
+in the parity matrix or file-size exception notes before they are accepted.
+
 Parallel execution constraint: Native Agents may be used for independent
 module/file slices when that improves throughput. Any code-writing Native Agent
 must use GPT-5.5 with xhigh reasoning and a bounded, non-overlapping write
@@ -647,7 +653,12 @@ in parallel. The leader kept production writes to `crates/awiki-cli/src/mail/ser
 and local contract tests; a GPT-5.5 xhigh Native Agent with the bounded write
 scope `crates/awiki-cli/tests/mail_live_contract.rs` added only fake-server live
 success-path coverage. Mail system-test selectors remain deferred/gated and
-were not run or counted. The batch gap table was:
+were not run or counted. On 2026-05-19, a follow-up accelerated local coverage
+audit used three read-only Native Agents to confirm the only remaining
+system-selector gaps are the deferred mail targets, then added local contracts
+for Go `NewClient` empty mail-service URL validation and legacy
+`content_type = "mail.notification"` cache-row normalization. The batch gap
+table was:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -656,12 +667,12 @@ were not run or counted. The batch gap table was:
 | `awiki-cli/internal/cli/mail.go`, `awiki-cli/internal/mail/service.go` | `mail mark-read` positional IDs, `is_read:true`, summary from `updated` | `crates/awiki-cli/src/app/mail_handlers.rs`, `crates/awiki-cli/src/mail/{service,wire}.rs` | implemented; live success request coverage added | `mail_contract`, `mail_wire_contract`, `mail_live_contract` | `tests_v2/mail/test_awiki_cli_mail_local.py::test_awiki_cli_mail_mark_read_and_unread_filter_local` deferred/gated | medium before this batch because state mutation can only be fully accepted against live mail-service |
 | `awiki-cli/internal/cli/mail.go`, `awiki-cli/internal/mail/service.go` | `mail account` posts `mail.getMailbox` with empty params and summary `Loaded mailbox account` | `crates/awiki-cli/src/app/mail_handlers.rs`, `crates/awiki-cli/src/mail/{service,wire}.rs` | implemented; live success request coverage added | `mail_wire_contract`, `mail_live_contract` | `tests_v2/mail/test_awiki_cli_mail_local.py::test_awiki_cli_mail_account_reports_inbox_counts_local` deferred/gated | medium because account counts are environment-sensitive in the live selector |
 | `awiki-cli/internal/cli/mail.go`, `awiki-cli/internal/mail/service.go` | `mail attachment download` validation, RPC fetch, default filename/content type, base64 decode, parent dir `0700`, new file `0600`, overwrite semantics | `crates/awiki-cli/src/app/mail_handlers.rs`, `crates/awiki-cli/src/mail/{service,wire}.rs` | already implemented and locally covered | `mail_contract`, `mail_wire_contract`, `mail_live_contract` | disabled/commented attachment selector remains not counted | medium/high residual only for disabled live selector and real MIME service behavior |
-| `awiki-cli/internal/mail/service.go` | local `mail notify` reads SQLite cache, defaults `limit <= 0` to 20 at service layer, traces `read_mail_notifications`, and normalizes mail rows | `crates/awiki-cli/src/mail/service.rs`, `crates/awiki-cli/tests/mail_contract.rs` | implemented; explicit service-layer limit default and trace phase added | `mail_contract` | `tests_v2/mail/test_awiki_cli_mail_notification_local.py::test_awiki_cli_mail_notification_flow_local` deferred/gated | high for full system acceptance because live selector requires mail-service, message-service v2, listener service-manager flow, and local cache delivery |
-| `awiki-cli/internal/mail/client.go` and auth session in `service.go` | `/mail/rpc`, Rustls-backed shared HTTP transport, bearer seeding, DID-auth bootstrap, RPC/HTTP error mapping | `crates/awiki-cli/src/mail/client.rs`, `crates/awiki-cli/src/mail/service.rs` | already implemented and locally covered | `mail_live_contract`, `mail_wire_contract` | active mail selectors deferred/gated until reachable mail-service exists | medium residual for real service availability, CA/TLS environment edges, and live mail-service state |
+| `awiki-cli/internal/mail/service.go` | local `mail notify` reads SQLite cache, defaults `limit <= 0` to 20 at service layer, traces `read_mail_notifications`, normalizes current `metadata.source_kind = "mail"` rows, and accepts legacy `content_type = "mail.notification"` rows | `crates/awiki-cli/src/mail/service.rs`, `crates/awiki-cli/tests/mail_contract.rs` | implemented; explicit service-layer limit default, trace phase, and legacy content-type coverage added | `mail_contract` | `tests_v2/mail/test_awiki_cli_mail_notification_local.py::test_awiki_cli_mail_notification_flow_local` deferred/gated | high for full system acceptance because live selector requires mail-service, message-service v2, listener service-manager flow, and local cache delivery |
+| `awiki-cli/internal/mail/client.go` and auth session in `service.go` | `/mail/rpc`, required mail-service URL validation, Rustls-backed shared HTTP transport, bearer seeding, DID-auth bootstrap, RPC/HTTP error mapping | `crates/awiki-cli/src/mail/client.rs`, `crates/awiki-cli/src/mail/service.rs` | implemented and locally covered | `mail_live_contract`, `mail_wire_contract` | active mail selectors deferred/gated until reachable mail-service exists | medium residual for real service availability, CA/TLS environment edges, and live mail-service state |
 
 Verification evidence: `cargo +1.79.0 test -p awiki-cli --test
 mail_contract --test mail_wire_contract --test mail_live_contract --locked`
-passed 21 focused mail tests. Go focused guard `go test ./internal/mail
+passed 23 focused mail tests. Go focused guard `go test ./internal/mail
 ./internal/cli -run
 'Test.*Mail|TestNewClientRequiresMailServiceURL|TestServiceSendValidatesRequiredFields|TestServiceAttachmentValidatesIndex'
 -count=1` passed. `cargo +1.79.0 fmt --check`, `cargo +1.79.0 check -p
@@ -669,9 +680,12 @@ awiki-cli --locked`, `cargo +1.79.0 run --bin xtask --locked --
 check-structure`, and `git diff --check` passed. A dependency audit command for
 OpenSSL/`native-tls` produced no matches, and no dependency was added. The
 touched Rust files remain below the default 1200-line cap:
-`mail/service.rs` 430 lines, `mail_contract.rs` 477 lines, and
-`mail_live_contract.rs` 855 lines after formatting. Mail selectors in
-`tests_v2/mail` remain deferred/gated and were not run or counted as accepted.
+`mail/service.rs` 430 lines, `mail_contract.rs` 536 lines,
+`mail_wire_contract.rs` 270 lines, and `mail_live_contract.rs` 855 lines after
+formatting. The final selector gap scan reports only `mail_contract`,
+`mail_live_contract`, and `mail_wire_contract`, which are the intentionally
+deferred mail targets. Mail selectors in `tests_v2/mail` remain deferred/gated
+and were not run or counted as accepted.
 
 Current message/direct WebSocket/local-cache batch evidence: on 2026-05-18,
 three read-only Native Agents produced the Go reference, Rust gap, and

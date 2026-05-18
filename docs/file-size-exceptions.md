@@ -1,6 +1,6 @@
 # File Size Exceptions
 
-Rust source files should normally stay below about 3000 non-generated lines. Smaller files remain preferred, and exceptions above that target require a documented reason instead of becoming the normal module shape. The older structure checker still reports files over 1200 lines so large translation-time owners stay visible during review.
+Rust source files should target 1200 non-generated lines by default. The normal relaxed limit is 3000 lines when the Go source is large or a traceable translation owner would otherwise become less reviewable. Files above 3000 lines are rare special exceptions only and require a documented reason instead of becoming the normal module shape. The older structure checker still reports files over 1200 lines so large translation-time owners stay visible during review.
 
 | Rust path | Rust lines | Go path | Go lines | Reason |
 | --- | ---: | --- | ---: | --- |

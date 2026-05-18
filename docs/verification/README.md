@@ -19,6 +19,10 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   write/test lanes when useful, keep mail selectors deferred unless the batch is
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
+- File-size policy: Rust source files should target 1200 non-generated lines by
+  default. The normal relaxed limit is 3000 lines when the Go source is large or
+  traceable 1:1 translation would otherwise become less reviewable. Files above
+  3000 lines are rare special exceptions only and require a documented reason.
 
 ## 2026-05-19 Identity Live Rust Selector Batch
 
@@ -31,6 +35,25 @@ non-mail identity live Cargo targets through the existing identity
 focused Go identity live guards passed; the new non-mail selector passed with 1
 test, 0 failed, and 0 skipped; structure and whitespace checks passed; no
 dependency changed; and mail selectors remained deferred.
+
+## 2026-05-19 Mail Local Coverage Audit Batch
+
+Detailed report:
+`2026-05-19-mail-local-coverage-audit.md`.
+
+Summary: the accelerated mail local coverage audit used three read-only Native
+Agents to map remaining selector gaps, docs constraints, and Go/Rust mail
+coverage before editing. No system-test mail selector was run or counted as
+accepted. Local Rust mail validation passed 23 tests across `mail_contract`,
+`mail_wire_contract`, and `mail_live_contract`, including new direct coverage
+for Go `NewClient` empty mail-service URL validation and legacy
+`content_type = "mail.notification"` cache-row normalization. `cargo fmt
+--check`, `cargo check -p awiki-cli --locked`, `xtask check-structure`,
+`git diff --check`, and the OpenSSL/`native-tls` dependency audit passed.
+`mail_contract.rs` is 536 lines, `mail_wire_contract.rs` is 270 lines, and
+`mail_live_contract.rs` is 855 lines, all below the default 1200-line target.
+The final selector gap scan reports only the deferred mail targets:
+`mail_contract`, `mail_live_contract`, and `mail_wire_contract`.
 
 ## 2026-05-19 Runtime Small Rust Selector Batch
 
@@ -948,12 +971,14 @@ wc -l crates/awiki-cli/src/mail/service.rs crates/awiki-cli/tests/mail_contract.
 
 Observed results:
 
-- `mail_contract` passed 5 tests, including the new `mail notify --limit 0`
-  service-default and local DB trace phase contract.
+- `mail_contract` passed 6 tests, including `mail notify --limit 0`
+  service-default/local DB trace coverage and legacy
+  `content_type = "mail.notification"` normalization.
 - `mail_live_contract` passed 12 tests, including new fake-server success
   coverage for `mail read`, `mail mark-read`, `mail account`, and `mail send`.
-- `mail_wire_contract` passed 4 tests. The combined focused mail command passed
-  21 tests.
+- `mail_wire_contract` passed 5 tests, including the direct Go `NewClient`
+  empty mail-service URL validation contract. The combined focused mail command
+  passed 23 tests.
 - Go focused guard passed for `internal/mail` and `internal/cli`.
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
@@ -961,8 +986,8 @@ Observed results:
   was added; the mail path continues to reuse the existing Rustls/std authsdk
   transport and the approved `rusqlite + bundled` SQLite path.
 - File-size policy remains satisfied: `mail/service.rs` 430 lines,
-  `mail_contract.rs` 477 lines, and `mail_live_contract.rs` 855 lines, all
-  below the default 1200-line cap.
+  `mail_contract.rs` 536 lines, `mail_wire_contract.rs` 270 lines, and
+  `mail_live_contract.rs` 855 lines, all below the default 1200-line cap.
 
 Boundary note: this batch strengthens local/fake-server mail parity and fixes
 service-layer trace/default behavior. It does not run live `tests_v2/mail`
@@ -1058,9 +1083,9 @@ the WebSocket/TLS path remains std-socket plus Rustls without OpenSSL,
 `native-tls`, or a WebSocket crate.
 
 File-size note: `listener_supervisor_run.rs` remains a documented exception and
-is now 2304 lines, still below the user-approved special-file relaxation limit
-of about 5000 lines. `listener_ws_transport.rs` is 1040 lines, under the
-default 1200-line cap. No new Rust source/test file exceeds the default cap.
+is now 2304 lines, below the current ordinary 3000-line relaxed limit.
+`listener_ws_transport.rs` is 1040 lines, under the default 1200-line cap. No
+new Rust source/test file exceeds the default cap.
 
 ## 2026-05-18 Runtime Listener WebSocket Ping Timeout Batch
 
@@ -1522,8 +1547,8 @@ Observed results:
 - Rust `cargo check -p awiki-cli --locked`: passed.
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` remains the documented oversized
-  translation-time exception at 2304 lines, below the approved rare 5000-line
-  special-file ceiling.
+  translation-time exception at 2304 lines, below the current ordinary
+  3000-line relaxed limit.
 - `git diff --check`: passed.
 - Go focused runtime listener guards: passed.
 - Go focused message secure guards: passed.
@@ -1594,8 +1619,7 @@ Observed results:
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` remains the documented oversized
   translation-time exception at 2011 lines; this is above Go `server.go`'s 1802
-  lines but within the user-approved rare special-file allowance and below
-  5000 lines.
+  lines but below the current ordinary 3000-line relaxed limit.
 - `git diff --check`: passed.
 - Go focused listener guards, including the bridge request history/group skip
   guard: passed.
@@ -1675,8 +1699,8 @@ Observed results:
 - Rust `cargo check -p awiki-cli --locked`: passed.
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` remains the documented oversized
-  translation-time exception at 2123 lines, below the approved 5000-line rare
-  special-file ceiling.
+  translation-time exception at 2123 lines, below the current ordinary
+  3000-line relaxed limit.
 - `git diff --check`: passed.
 - `awiki-system-test` Batch 1 non-mail contract selector: 1 passed, 0 failed,
   0 skipped.
@@ -1753,8 +1777,8 @@ Observed results:
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` is documented as an oversized
   translation-time exception at 1810 lines, slightly above Go `server.go`'s
-  1802 lines and still far below the rare 5000-line cap allowed for special
-  files. `listener_ws_transport.rs` is 711 lines.
+  1802 lines and below the current ordinary 3000-line relaxed limit.
+  `listener_ws_transport.rs` is 711 lines.
 - Go focused listener guards: passed.
 - New `awiki-system-test` Batch 1 non-mail selector: 1 passed, 0 failed,
   0 skipped.

@@ -1,9 +1,10 @@
 use awiki_cli::authsdk::{HttpError, RpcError};
+use awiki_cli::config::{Paths, Resolved};
 use awiki_cli::mail::{
     account_summary, attachment_summary, build_account_rpc_call, build_attachment_rpc_call,
     build_inbox_rpc_call, build_mark_read_rpc_call, build_read_rpc_call, build_send_rpc_call,
     inbox_summary, mark_read_summary, read_summary, send_summary, AccountRequest,
-    AttachmentRequest, InboxRequest, MailError, MarkReadRequest, ReadRequest, SendRequest,
+    AttachmentRequest, Client, InboxRequest, MailError, MarkReadRequest, ReadRequest, SendRequest,
     ServiceError, MAIL_RPC_ENDPOINT,
 };
 use awiki_cli::transportcfg::Profile;
@@ -208,4 +209,62 @@ fn mail_service_error_display_matches_go_client_mapping() {
         data: None,
     };
     assert_eq!(plain.to_string(), "plain");
+}
+
+#[test]
+fn mail_client_rejects_empty_mail_service_url_like_go() {
+    let mut resolved = test_resolved();
+    resolved.mail_service_url = "  \t  ".to_string();
+
+    let err = Client::new(&resolved).expect_err("empty mail service url should fail");
+    assert!(matches!(err, MailError::Internal(_)));
+    assert_eq!(err.to_string(), "mail service url is required");
+}
+
+fn test_resolved() -> Resolved {
+    Resolved {
+        paths: Paths {
+            workspace_home_dir: String::new(),
+            root_dir: String::new(),
+            config_dir: String::new(),
+            data_dir: String::new(),
+            state_dir: String::new(),
+            cache_dir: String::new(),
+            logs_dir: String::new(),
+            config_file: String::new(),
+            identity_dir: String::new(),
+            database_file: String::new(),
+            legacy_credentials_dir: String::new(),
+            legacy_data_dir: String::new(),
+        },
+        config_schema_version: 0,
+        active_identity: String::new(),
+        runtime_mode: String::new(),
+        runtime_socket_path: String::new(),
+        runtime_listener_enabled: false,
+        runtime_listener_auto_install: false,
+        runtime_listener_auto_start: false,
+        host_notify_enabled: false,
+        host_notify_sink: String::new(),
+        host_notify_file_path: String::new(),
+        host_notify_openclaw_hook_url: String::new(),
+        host_notify_openclaw_agent_id: String::new(),
+        host_notify_openclaw_hook_name: String::new(),
+        host_notify_hermes_notify_url: String::new(),
+        host_notify_hermes_deliver: String::new(),
+        output_format: "json".to_string(),
+        no_color: false,
+        service_base_url: String::new(),
+        did_domain: String::new(),
+        anp_service_endpoint: String::new(),
+        anp_service_did: String::new(),
+        mail_service_url: "https://mail.example.test".to_string(),
+        ca_bundle: String::new(),
+        update_disable_strict_version: false,
+        update_metadata_cache_ttl_seconds: 0,
+        config_exists: false,
+        config_error: String::new(),
+        env_hits: Vec::new(),
+        sources: Default::default(),
+    }
 }
