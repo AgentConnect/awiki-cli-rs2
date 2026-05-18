@@ -32,6 +32,9 @@ use super::listener_secure_sync::{SECURE_PENDING_HISTORY_LIMIT, SECURE_UNREAD_IN
 use super::listener_service_did::{
     fetch_message_service_did, ListenerServiceDidRpc, ListenerServiceDidSession,
 };
+use super::listener_shutdown_signal::{
+    install_foreground_shutdown_handler, wait_for_foreground_shutdown,
+};
 use super::listener_ws_transport::{WsDialError, WsTransport};
 use crate::anpsdk::{
     self, ApplicationPlaintext, DirectEnvelopeMetadata, FileSessionStore, RatchetHeader,
@@ -121,6 +124,7 @@ impl ListenerSupervisor {
     }
 
     fn run(&mut self) -> anyhow::Result<()> {
+        install_foreground_shutdown_handler(self.shutdown.clone())?;
         if runtime::resolve(&self.resolved).mode != bridge::MODE_WEBSOCKET {
             anyhow::bail!("runtime mode must be websocket before starting the listener");
         }
@@ -1752,9 +1756,7 @@ fn running_in_listener_service_mode() -> bool {
 }
 
 fn wait_for_shutdown_signal(shutdown: Arc<AtomicBool>) {
-    while !shutdown.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(250));
-    }
+    wait_for_foreground_shutdown(&shutdown);
 }
 
 fn sleep_or_shutdown(shutdown: &AtomicBool, duration: Duration) {

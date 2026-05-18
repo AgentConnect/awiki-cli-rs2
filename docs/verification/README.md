@@ -14,6 +14,75 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Foreground Signal Shutdown
+
+Timestamp: 2026-05-18T01:57:52Z / 2026-05-18T09:57:52+0800.
+
+Scope: match Go `internal/runtime/listener/run_foreground_unix.go` and
+`run_foreground_windows.go` foreground shutdown behavior in the Rust foreground
+listener. Go creates a platform signal cancellation context before
+`Supervisor.Run`: Unix listens for `os.Interrupt` and `syscall.SIGTERM`, while
+Windows listens for `os.Interrupt`.
+
+Rust repository change:
+
+- Added `crates/awiki-cli/src/runtime/listener_shutdown_signal.rs`.
+- `ListenerSupervisor::run` now installs foreground shutdown handling before
+  websocket-mode validation, PID/status writes, socket startup, session startup,
+  and identity watch spawn.
+- Unix installs direct FFI handlers for SIGINT and SIGTERM. Windows installs a
+  direct FFI console Ctrl-C/Ctrl-Break handler. No signal crate, `libc`, or
+  `windows-sys` direct dependency was added.
+- The signal handler only flips a process-global atomic request flag; the normal
+  foreground wait loop promotes that request into the existing supervisor
+  `shutdown` flag so existing listener/session loops unwind through the same
+  cleanup path.
+- Added `runtime_listener_shutdown_signal_contract` helper tests and
+  Unix-only `runtime_listener_signal_cli_contract` subprocess tests.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_shutdown_signal_contract --test runtime_listener_signal_cli_contract --test runtime_listener_foreground_contract --test runtime_listener_service_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleNotificationDispatchesHostNotificationToSink|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- Rust focused listener/signal contracts: 35 passed, 0 failed.
+- Unix subprocess coverage proved `runtime listener run` exits with code 0 and
+  removes `listener.pid`, `listener.status.json`, and `message-daemon.sock` on
+  both SIGTERM and SIGINT.
+- Rust formatting check: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines. `listener_supervisor_run.rs` remains the documented oversized
+  translation-time exception, and the new signal module is 99 lines.
+- Go focused listener guards: passed.
+- Rust focused foreground listener selector: 1 passed, 0 failed, 0 skipped.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- No mail selector was run or counted.
+
+Boundary note: this slice implements foreground shutdown signal wiring only. It
+does not implement notification ping timeout parity, bridge RPC transport reuse,
+Windows named-pipe I/O, macOS launchd/Windows Service Manager execution, real
+child process `setsid` spawn integration, mail-system acceptance, or full
+repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Runtime Listener Local Secure ACK Queue Wiring
 
 Scope: match Go `internal/runtime/listener/server.go` local secure ACK queue
