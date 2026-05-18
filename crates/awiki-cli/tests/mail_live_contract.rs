@@ -165,6 +165,186 @@ fn mail_read_live_maps_rpc_not_found_like_go() {
 }
 
 #[test]
+fn mail_read_live_posts_get_message_and_returns_service_data_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"id":"msg-42","subject":"Hello","body_text":"Body text","is_read":false},"id":"req-1"}"#,
+    )]);
+    write_mail_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &["--identity", "alice-mail", "mail", "read", "--id", "msg-42"],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded message msg-42");
+    assert_eq!(
+        envelope["data"],
+        json!({
+            "id": "msg-42",
+            "subject": "Hello",
+            "body_text": "Body text",
+            "is_read": false,
+        })
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /mail/rpc HTTP/1.1"));
+    assert_contains_text(&requests[0], "Authorization: Bearer jwt-mail\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "mail.getMessage",
+            "params": {
+                "message_id": "msg-42",
+            }
+        })
+    );
+}
+
+#[test]
+fn mail_mark_read_live_posts_message_ids_as_read_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"updated":2,"message_ids":["msg-1","msg-2"]},"id":"req-1"}"#,
+    )]);
+    write_mail_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-mail",
+            "mail",
+            "mark-read",
+            "msg-1",
+            "msg-2",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Marked 2 message(s) as read");
+    assert_eq!(envelope["data"]["updated"], 2);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /mail/rpc HTTP/1.1"));
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "mail.markRead",
+            "params": {
+                "message_ids": ["msg-1", "msg-2"],
+                "is_read": true,
+            }
+        })
+    );
+}
+
+#[test]
+fn mail_account_live_posts_get_mailbox_with_empty_params_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"address":"alice@awiki.ai","quota_used":7},"id":"req-1"}"#,
+    )]);
+    write_mail_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &["--identity", "alice-mail", "mail", "account"],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded mailbox account");
+    assert_eq!(
+        envelope["data"],
+        json!({
+            "address": "alice@awiki.ai",
+            "quota_used": 7,
+        })
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /mail/rpc HTTP/1.1"));
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "mail.getMailbox",
+            "params": {}
+        })
+    );
+}
+
+#[test]
+fn mail_send_live_splits_recipients_and_posts_null_html_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");
+    let server = TestServer::new(vec![TestResponse::ok(
+        r#"{"jsonrpc":"2.0","result":{"message_id":"sent-1","queued":true},"id":"req-1"}"#,
+    )]);
+    write_mail_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_owned(
+        &[
+            "--identity".to_string(),
+            "alice-mail".to_string(),
+            "mail".to_string(),
+            "send".to_string(),
+            "--to".to_string(),
+            "ada@example.com, grace@example.com;linus@example.com".to_string(),
+            "--cc".to_string(),
+            "ops@example.com\tqa@example.com\nreview@example.com".to_string(),
+            "--subject".to_string(),
+            "Release notes".to_string(),
+            "--body".to_string(),
+            "Plain body".to_string(),
+            "--html".to_string(),
+            "".to_string(),
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Mail send request accepted");
+    assert_eq!(envelope["data"]["message_id"], "sent-1");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /mail/rpc HTTP/1.1"));
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "mail.send",
+            "params": {
+                "to": ["ada@example.com", "grace@example.com", "linus@example.com"],
+                "cc": ["ops@example.com", "qa@example.com", "review@example.com"],
+                "subject": "Release notes",
+                "body_text": "Plain body",
+                "body_html": null,
+            }
+        })
+    );
+}
+
+#[test]
 fn mail_attachment_live_decodes_base64_and_writes_output_like_go() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_mail_identity(workspace.path(), "alice-mail", "alice", "jwt-mail");

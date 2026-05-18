@@ -168,20 +168,26 @@ pub fn notifications(
     identity_name: &str,
     limit: i64,
 ) -> Result<CommandResult, MailError> {
+    let limit = if limit <= 0 { 20 } else { limit };
     let record = require_active_identity(resolved, manager, identity_name)?;
-    let db = store::open(&resolved.paths)?;
-    store::ensure_schema(&db)?;
-    let rows = store::list_notifications(&db, &record.did, limit)?;
-    let rows = normalize_notification_rows(rows);
-    let total = rows.len();
-    Ok(CommandResult {
-        data: json!({
-            "notifications": rows,
-            "total": total,
-        }),
-        summary: format!("Loaded {total} mail notification(s)"),
-        warnings: Vec::new(),
-    })
+    let mut phase = crate::traceutil::local_db_phase("read_mail_notifications");
+    let result = (|| {
+        let db = store::open(&resolved.paths)?;
+        store::ensure_schema(&db)?;
+        let rows = store::list_notifications(&db, &record.did, limit)?;
+        let rows = normalize_notification_rows(rows);
+        let total = rows.len();
+        Ok(CommandResult {
+            data: json!({
+                "notifications": rows,
+                "total": total,
+            }),
+            summary: format!("Loaded {total} mail notification(s)"),
+            warnings: Vec::new(),
+        })
+    })();
+    phase.finish();
+    result
 }
 
 pub fn notifications_plan(identity: &str, limit: i64) -> CommandResult {

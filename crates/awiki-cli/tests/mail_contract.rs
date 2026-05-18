@@ -236,23 +236,7 @@ fn mail_validation_errors_match_go_messages() {
 fn mail_notify_reads_and_normalizes_local_sqlite_cache() {
     let workspace = TempDir::new().expect("workspace");
 
-    let create = awiki_cmd(
-        &[
-            "id",
-            "create",
-            "--name",
-            "Alice Mail",
-            "--identity",
-            "alice-mail",
-        ],
-        workspace.path(),
-    );
-    assert_success(&create);
-    let owner_did =
-        register_identity_for_mail(workspace.path(), "alice-mail", "alice", "user-alice");
-
-    let init = awiki_cmd(&["init"], workspace.path());
-    assert_success(&init);
+    let owner_did = setup_ready_mail_identity(workspace.path(), "alice-mail");
     insert_mail_notification(workspace.path(), &owner_did);
 
     let output = awiki_cmd(
@@ -271,6 +255,46 @@ fn mail_notify_reads_and_normalizes_local_sqlite_cache() {
     assert_contains(&notification["content"], "主题: Mail subject");
     assert_contains(&notification["content"], "Preview text");
     assert_contains(&notification["content"], "(这封邮件包含附件)");
+}
+
+#[test]
+fn mail_notify_defaults_non_positive_limit_and_traces_local_db_like_go() {
+    let workspace = TempDir::new().expect("workspace");
+    let owner_did = setup_ready_mail_identity(workspace.path(), "alice-mail");
+    insert_mail_notification(workspace.path(), &owner_did);
+
+    let output = awiki_trace_cmd(
+        &["--identity", "alice-mail", "mail", "notify", "--limit", "0"],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json_with_stderr(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 mail notification(s)");
+    assert_eq!(envelope["data"]["total"], 1);
+    let trace = stderr_text(&output);
+    assert_text_contains(&trace, "本地数据库");
+    assert_text_contains(&trace, "read mail notifications");
+}
+
+fn setup_ready_mail_identity(workspace: &Path, identity_name: &str) -> String {
+    let create = awiki_cmd(
+        &[
+            "id",
+            "create",
+            "--name",
+            "Alice Mail",
+            "--identity",
+            identity_name,
+        ],
+        workspace,
+    );
+    assert_success(&create);
+    let owner_did = register_identity_for_mail(workspace, identity_name, "alice", "user-alice");
+
+    let init = awiki_cmd(&["init"], workspace);
+    assert_success(&init);
+    owner_did
 }
 
 fn register_identity_for_mail(
@@ -334,6 +358,14 @@ INSERT INTO messages (
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
+    awiki_command(args, workspace, false)
+}
+
+fn awiki_trace_cmd(args: &[&str], workspace: &Path) -> Output {
+    awiki_command(args, workspace, true)
+}
+
+fn awiki_command(args: &[&str], workspace: &Path, trace_timing: bool) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -345,6 +377,11 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT");
+    if trace_timing {
+        command.env("AWIKI_CLI_TRACE_TIMING", "1");
+    } else {
+        command.env_remove("AWIKI_CLI_TRACE_TIMING");
+    }
     command.output().expect("run awiki-cli binary")
 }
 
@@ -368,6 +405,10 @@ fn success_json(output: &Output) -> Value {
         "stderr should be empty: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    success_json_with_stderr(output)
+}
+
+fn success_json_with_stderr(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true);
@@ -390,6 +431,16 @@ fn assert_contains(value: &Value, needle: &str) {
     let haystack = value
         .as_str()
         .unwrap_or_else(|| panic!("expected string containing {needle:?}, got {value:?}"));
+    assert_text_contains(haystack, needle);
+}
+
+fn stderr_text(output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(!stderr.is_empty(), "stderr should contain trace output");
+    stderr
+}
+
+fn assert_text_contains(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
         "expected {haystack:?} to contain {needle:?}"

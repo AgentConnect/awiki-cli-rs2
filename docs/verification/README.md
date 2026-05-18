@@ -20,6 +20,73 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Mail Module Batch
+
+Timestamp: 2026-05-18T23:35:00+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline. Three read-only Native Agents
+  mapped Go mail behavior, existing Rust mail coverage, and `awiki-system-test`
+  mail selectors before implementation.
+- The leader kept production writes limited to
+  `crates/awiki-cli/src/mail/service.rs` and local notify contract coverage.
+  A GPT-5.5 xhigh Native Agent with the bounded write scope
+  `crates/awiki-cli/tests/mail_live_contract.rs` added only fake-server live
+  success-path tests.
+- Mail selectors in `tests_v2/mail` remain deferred/gated and were not run or
+  counted as acceptance evidence.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/cli/mail.go` | `mail send` validates CLI fields, splits `--to`/`--cc` on Go delimiters, omits body text/html content from dry-run, and posts `body_html:null` when HTML is blank | `src/app/mail_handlers.rs`, `src/mail/{service,wire}.rs` | implemented; live CLI request coverage added | `mail_contract`, `mail_wire_contract`, `mail_live_contract` | `tests_v2/mail/test_awiki_cli_mail_local.py::test_awiki_cli_mail_send_local` deferred/gated | medium |
+| `internal/cli/mail.go`, `internal/mail/service.go` | `mail read` posts `mail.getMessage`, preserves service data, summarizes `Loaded message <id>`, and maps RPC not-found to exit 5 | `src/app/mail_handlers.rs`, `src/mail/{service,wire}.rs` | implemented; live success coverage added | `mail_wire_contract`, `mail_live_contract` | `tests_v2/mail/test_awiki_cli_mail_local.py::test_awiki_cli_mail_inbox_and_read_local` deferred/gated | low until real service acceptance |
+| `internal/cli/mail.go`, `internal/mail/service.go` | `mail mark-read` posts `mail.markRead` with message IDs and `is_read:true`, summary from `updated` | `src/app/mail_handlers.rs`, `src/mail/{service,wire}.rs` | implemented; live success coverage added | `mail_contract`, `mail_wire_contract`, `mail_live_contract` | `tests_v2/mail/test_awiki_cli_mail_local.py::test_awiki_cli_mail_mark_read_and_unread_filter_local` deferred/gated | medium |
+| `internal/cli/mail.go`, `internal/mail/service.go` | `mail account` posts `mail.getMailbox` with `{}` params and summary `Loaded mailbox account` | `src/app/mail_handlers.rs`, `src/mail/{service,wire}.rs` | implemented; live success coverage added | `mail_wire_contract`, `mail_live_contract` | `tests_v2/mail/test_awiki_cli_mail_local.py::test_awiki_cli_mail_account_reports_inbox_counts_local` deferred/gated | medium |
+| `internal/cli/mail.go`, `internal/mail/service.go` | `mail attachment download` validates id/index, fetches attachment, decodes `content_base64`, handles default metadata/path, writes `0700` dirs and `0600` new files, and preserves overwrite mode behavior | `src/app/mail_handlers.rs`, `src/mail/{service,wire}.rs` | already implemented and locally covered | `mail_contract`, `mail_wire_contract`, `mail_live_contract` | commented/disabled attachment selector not counted | medium/high only for disabled live service selector |
+| `internal/mail/service.go` | `mail notify` reads local SQLite cache, defaults `limit <= 0` to 20 at service layer, traces `read_mail_notifications`, and normalizes mail rows | `src/mail/service.rs`, `tests/mail_contract.rs` | implemented; explicit service-layer default and trace phase added | `mail_contract` | `tests_v2/mail/test_awiki_cli_mail_notification_local.py::test_awiki_cli_mail_notification_flow_local` deferred/gated | high because full selector requires mail-service, message-service v2, listener service-manager, and cache delivery |
+
+Commands run:
+
+```text
+cargo +1.79.0 test -p awiki-cli --test mail_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_live_contract --locked
+cargo +1.79.0 test -p awiki-cli --test mail_contract --test mail_wire_contract --test mail_live_contract --locked
+cd ../awiki-cli && go test ./internal/mail ./internal/cli -run 'Test.*Mail|TestNewClientRequiresMailServiceURL|TestServiceSendValidatesRequiredFields|TestServiceAttachmentValidatesIndex' -count=1
+cargo +1.79.0 fmt
+cargo +1.79.0 fmt --check
+cargo +1.79.0 check -p awiki-cli --locked
+cargo +1.79.0 run --bin xtask --locked -- check-structure
+git diff --check
+cargo +1.79.0 tree -p awiki-cli --locked --edges normal | rg -i 'openssl|native-tls' || true
+wc -l crates/awiki-cli/src/mail/service.rs crates/awiki-cli/tests/mail_contract.rs crates/awiki-cli/tests/mail_live_contract.rs docs/parity-matrix.md
+```
+
+Observed results:
+
+- `mail_contract` passed 5 tests, including the new `mail notify --limit 0`
+  service-default and local DB trace phase contract.
+- `mail_live_contract` passed 12 tests, including new fake-server success
+  coverage for `mail read`, `mail mark-read`, `mail account`, and `mail send`.
+- `mail_wire_contract` passed 4 tests. The combined focused mail command passed
+  21 tests.
+- Go focused guard passed for `internal/mail` and `internal/cli`.
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
+  `git diff --check` passed.
+- Dependency audit for OpenSSL/`native-tls` produced no matches. No dependency
+  was added; the mail path continues to reuse the existing Rustls/std authsdk
+  transport and the approved `rusqlite + bundled` SQLite path.
+- File-size policy remains satisfied: `mail/service.rs` 430 lines,
+  `mail_contract.rs` 477 lines, and `mail_live_contract.rs` 855 lines, all
+  below the default 1200-line cap.
+
+Boundary note: this batch strengthens local/fake-server mail parity and fixes
+service-layer trace/default behavior. It does not run live `tests_v2/mail`
+selectors. Those remain deferred/gated until a reachable `awiki-mail-service`
+and related local mail/message/listener environment are available.
+
 ## 2026-05-18 Runtime Listener Lifecycle Reader-Error Shutdown Batch
 
 Timestamp: 2026-05-18T22:15:00+0800.
