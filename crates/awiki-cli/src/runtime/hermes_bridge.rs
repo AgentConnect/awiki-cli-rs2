@@ -13,14 +13,22 @@ mod service;
 
 pub use route::{ensure_route, EnsureRouteOptions};
 pub use service::{
-    adapter_command_plan_for, apply_decision_for, apply_service_plan, bridge_health_available_with,
-    bridge_status_ready, ensure_installed_plan, restart_service_plan, run_bridge_service,
-    run_bridge_service_with_stop, running_in_bridge_service_mode,
+    adapter_command_plan_for, apply_decision_for, apply_service, apply_service_plan,
+    apply_service_with_backend, bridge_health_available, bridge_health_available_with,
+    bridge_status_ready, ensure_installed, ensure_installed_plan, ensure_installed_with_backend,
+    parse_systemd_status, restart_service, restart_service_plan, restart_service_with_backend,
+    run_bridge_service, run_bridge_service_with_stop, running_in_bridge_service_mode,
     running_in_bridge_service_mode_with, service_config_plan_for, service_display_name_for,
-    service_name_for, start_service_plan, status_from_parts, stop_service_plan,
-    uninstall_service_plan, wait_for_bridge_status_with, BridgeAdapterCommandPlan,
-    BridgeAdapterExit, BridgeAdapterProcess, BridgeApplyDecision, BridgeServiceConfigPlan,
-    BridgeServiceLifecycleOperation, BridgeServiceStatusSnapshot, BRIDGE_ADAPTER_STOP_TIMEOUT,
+    service_enabled_by_env_value, service_name_for, service_platform, service_status_snapshot_for,
+    start_service, start_service_plan, start_service_with_backend, status_for_with_backend,
+    status_from_parts, stop_service, stop_service_plan, stop_service_with_backend,
+    systemd_service_supported, systemd_status_snapshot_with_runner, systemd_status_with_runner,
+    systemd_unit_for, uninstall_service, uninstall_service_plan, uninstall_service_with_backend,
+    unit_name_for, unit_path_for, wait_for_bridge_status_with, BridgeAdapterCommandPlan,
+    BridgeAdapterExit, BridgeAdapterProcess, BridgeApplyDecision, BridgeServiceBackend,
+    BridgeServiceConfigPlan, BridgeServiceLifecycleOperation, BridgeServiceStatusSnapshot,
+    BridgeSystemdCommandRunner, BridgeSystemdStatus, BridgeSystemdUnit, SystemctlCommandRunner,
+    SystemdBridgeServiceBackend, BRIDGE_ADAPTER_STOP_TIMEOUT, ENABLE_SYSTEMD_SERVICE_ENV,
     SERVICE_ARGUMENTS, SERVICE_DESCRIPTION, SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
 };
 
@@ -504,8 +512,8 @@ pub fn status_for(resolved: &Resolved) -> BridgeStatus {
     status_from_parts(
         service_name_for(Some(resolved)),
         resolve_bridge_config(resolved),
-        Ok(None),
-        |_| false,
+        service_status_snapshot_for(resolved),
+        bridge_health_available,
     )
 }
 

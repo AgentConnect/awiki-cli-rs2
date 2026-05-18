@@ -4,13 +4,18 @@ use awiki_cli::runtime::hermes_bridge::{
     BridgeStatus, RouteState, DEFAULT_WEBHOOK_PORT, SERVICE_ARGUMENTS, SERVICE_DESCRIPTION,
     SERVICE_DISPLAY_NAME_PREFIX, SERVICE_NAME_PREFIX,
 };
+use awiki_cli::runtime::hermes_bridge::{
+    BridgeServiceBackend, BridgeServiceStatusSnapshot, BridgeSystemdCommandRunner,
+};
 use hermes_bridge::BridgeServiceLifecycleOperation as Op;
 use std::fs;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex, MutexGuard,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn hermes_bridge_service_names_match_go_contract() {
@@ -75,6 +80,87 @@ fn hermes_bridge_service_config_plan_matches_go_new_service_config() {
 
     let windows_plan = hermes_bridge::service_config_plan_for(&resolved, "/tmp/hermes-home", true);
     assert_eq!(windows_plan.working_directory, "");
+}
+
+#[test]
+fn hermes_bridge_systemd_gate_defaults_off() {
+    assert!(!hermes_bridge::service_enabled_by_env_value(None));
+    assert!(!hermes_bridge::service_enabled_by_env_value(Some("")));
+    assert!(!hermes_bridge::service_enabled_by_env_value(Some("0")));
+    assert!(!hermes_bridge::service_enabled_by_env_value(Some("false")));
+    assert!(hermes_bridge::service_enabled_by_env_value(Some("1")));
+    assert!(hermes_bridge::service_enabled_by_env_value(Some(" true ")));
+}
+
+#[test]
+fn hermes_bridge_systemd_status_parser_matches_systemctl_show_values() {
+    assert_eq!(
+        hermes_bridge::parse_systemd_status("loaded\nactive\n"),
+        hermes_bridge::BridgeSystemdStatus {
+            installed: true,
+            running: true,
+            load_state: "loaded".to_string(),
+            active_state: "active".to_string(),
+        }
+    );
+    assert_eq!(
+        hermes_bridge::parse_systemd_status("loaded\nactivating\n"),
+        hermes_bridge::BridgeSystemdStatus {
+            installed: true,
+            running: true,
+            load_state: "loaded".to_string(),
+            active_state: "activating".to_string(),
+        }
+    );
+    assert_eq!(
+        hermes_bridge::parse_systemd_status("not-found\ninactive\n"),
+        hermes_bridge::BridgeSystemdStatus {
+            installed: false,
+            running: false,
+            load_state: "not-found".to_string(),
+            active_state: "inactive".to_string(),
+        }
+    );
+}
+
+#[test]
+fn hermes_bridge_systemd_status_snapshot_uses_runner_without_live_systemd() {
+    let resolved = test_resolved();
+    let mut runner = FakeSystemctlRunner::new(vec![Ok("loaded\nactive\n".to_string())]);
+
+    let snapshot =
+        hermes_bridge::systemd_status_snapshot_with_runner(&resolved, &mut runner).expect("status");
+
+    assert_eq!(
+        runner.calls,
+        vec![vec![
+            "show".to_string(),
+            hermes_bridge::unit_name_for(&resolved),
+            "--property=LoadState".to_string(),
+            "--property=ActiveState".to_string(),
+            "--value".to_string(),
+        ]]
+    );
+    assert_eq!(
+        snapshot,
+        BridgeServiceStatusSnapshot {
+            installed: true,
+            running: true,
+            platform: "linux-systemd".to_string(),
+            service_name: hermes_bridge::service_name_for(Some(&resolved)),
+        }
+    );
+}
+
+#[test]
+fn hermes_bridge_systemd_status_snapshot_propagates_real_status_errors() {
+    let resolved = test_resolved();
+    let mut runner = FakeSystemctlRunner::new(vec![Err("permission denied".to_string())]);
+
+    let err =
+        hermes_bridge::systemd_status_snapshot_with_runner(&resolved, &mut runner).unwrap_err();
+
+    assert_eq!(err.to_string(), "permission denied");
 }
 
 #[test]
@@ -567,6 +653,140 @@ fn apply_service_plan_matches_go_apply_branching() {
     );
 }
 
+#[test]
+fn hermes_bridge_status_for_with_backend_uses_rust_local_when_backend_unsupported() {
+    let resolved = test_resolved();
+    let mut backend = FakeBridgeBackend::new(vec![None]);
+    let mut health_calls = 0usize;
+
+    let status = hermes_bridge::status_from_parts(
+        hermes_bridge::service_name_for(Some(&resolved)),
+        Ok(test_bridge_config("/workspace/.hermes")),
+        backend.status_snapshot(&resolved),
+        |_| {
+            health_calls += 1;
+            true
+        },
+    );
+
+    assert_eq!(status.service_platform, "rust-local");
+    assert!(!status.installed);
+    assert!(!status.running);
+    assert!(!status.bridge_available);
+    assert_eq!(health_calls, 0);
+    assert_eq!(backend.events, vec!["status"]);
+}
+
+#[test]
+fn hermes_bridge_start_with_backend_installs_starts_and_waits_for_health() {
+    let resolved = test_resolved();
+    let _fixture = prepare_bridge_config_fixture(&resolved);
+    let mut backend = FakeBridgeBackend::new(vec![
+        Some(snapshot(false, false)),
+        Some(snapshot(false, false)),
+        Some(snapshot(true, false)),
+        Some(snapshot(true, true)),
+    ]);
+    let mut health_calls = 0usize;
+    let mut health = |_url: &str| {
+        health_calls += 1;
+        true
+    };
+
+    let status = hermes_bridge::start_service_with_backend(
+        &resolved,
+        &mut backend,
+        &mut health,
+        Duration::from_millis(50),
+        Duration::from_millis(1),
+    )
+    .expect("start");
+
+    assert!(status.installed);
+    assert!(status.running);
+    assert!(status.bridge_available);
+    assert_eq!(
+        backend.events,
+        vec!["status", "status", "install", "status", "start", "status"]
+    );
+    assert_eq!(health_calls, 1);
+}
+
+#[test]
+fn hermes_bridge_start_with_backend_timeout_returns_last_status_not_error() {
+    let resolved = test_resolved();
+    let _fixture = prepare_bridge_config_fixture(&resolved);
+    let mut backend = FakeBridgeBackend::new(vec![
+        Some(snapshot(true, false)),
+        Some(snapshot(true, true)),
+        Some(snapshot(true, true)),
+        Some(snapshot(true, true)),
+        Some(snapshot(true, true)),
+        Some(snapshot(true, true)),
+        Some(snapshot(true, true)),
+    ]);
+    let mut health = |_url: &str| false;
+
+    let status = hermes_bridge::start_service_with_backend(
+        &resolved,
+        &mut backend,
+        &mut health,
+        Duration::from_millis(3),
+        Duration::from_millis(1),
+    )
+    .expect("timeout returns last status");
+
+    assert!(status.installed);
+    assert!(status.running);
+    assert!(!status.bridge_available);
+    assert!(status
+        .warnings
+        .contains(&"Hermes bridge health endpoint is not responding".to_string()));
+    assert_eq!(backend.events[0], "status");
+    assert_eq!(backend.events[1], "start");
+}
+
+#[test]
+fn hermes_bridge_restart_requires_installed_like_go() {
+    let resolved = test_resolved();
+    let mut backend = FakeBridgeBackend::new(vec![Some(snapshot(false, false))]);
+    let mut health = |_url: &str| true;
+
+    let err = hermes_bridge::restart_service_with_backend(
+        &resolved,
+        &mut backend,
+        &mut health,
+        Duration::from_millis(10),
+        Duration::from_millis(1),
+    )
+    .unwrap_err();
+
+    assert_eq!(err.to_string(), "Hermes bridge service is not installed");
+    assert_eq!(backend.events, vec!["status"]);
+}
+
+#[test]
+fn hermes_bridge_uninstall_with_backend_stops_running_service_first() {
+    let resolved = test_resolved();
+    let _fixture = prepare_bridge_config_fixture(&resolved);
+    let mut backend = FakeBridgeBackend::new(vec![
+        Some(snapshot(true, true)),
+        Some(snapshot(false, false)),
+    ]);
+    let mut health = |_url: &str| true;
+
+    let status =
+        hermes_bridge::uninstall_service_with_backend(&resolved, &mut backend, &mut health)
+            .expect("uninstall");
+
+    assert!(!status.installed);
+    assert!(!status.running);
+    assert_eq!(
+        backend.events,
+        vec!["status", "stop", "uninstall", "status"]
+    );
+}
+
 fn first_12_sha256_hex(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(value.as_bytes());
@@ -634,9 +854,125 @@ fn path_string(path: &std::path::Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn prepare_bridge_config_fixture(resolved: &Resolved) -> BridgeConfigFixture {
+    let env_lock = ENV_LOCK.lock().expect("env lock");
+    let workspace = std::path::Path::new(&resolved.paths.workspace_home_dir);
+    let hermes_home = workspace.join("hermes-home");
+    let bin_dir = workspace.join("bin");
+    fs::create_dir_all(&hermes_home).expect("Hermes home");
+    fs::create_dir_all(&bin_dir).expect("test bin");
+    fs::write(
+        hermes_home.join("config.yaml"),
+        r#"platforms:
+  webhook:
+    enabled: true
+    extra:
+      port: 8644
+      routes:
+        notify:
+          secret: route-secret
+          deliver: log
+"#,
+    )
+    .expect("Hermes config");
+    fs::write(
+        &resolved.paths.config_file,
+        r#"runtime:
+  host_notify:
+    enabled: true
+    sink: hermes
+    hermes:
+      notify_url: http://127.0.0.1:8765/notify/host-event
+      deliver: log
+      secret: notify-secret
+    webhook:
+      notify_url: http://127.0.0.1:8765/notify/host-event
+      secret: notify-secret
+"#,
+    )
+    .expect("awiki config");
+    write_executable(&bin_dir.join("python3"), "#!/bin/sh\nexit 0\n");
+    let adapter_script = adapter_script_fixture_path();
+    fs::create_dir_all(adapter_script.parent().expect("adapter script parent"))
+        .expect("adapter script dir");
+    fs::write(&adapter_script, "def main():\n    pass\n").expect("adapter script");
+
+    let mut path_entries = vec![bin_dir];
+    if let Some(current_path) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&current_path));
+    }
+    let joined_path = std::env::join_paths(path_entries).expect("join PATH");
+    BridgeConfigFixture {
+        _env_guards: vec![
+            EnvGuard::set("HERMES_HOME", &hermes_home),
+            EnvGuard::set("PATH", joined_path),
+            EnvGuard::remove("AWIKI_HOST_NOTIFY_HERMES_SECRET"),
+            EnvGuard::remove("AWIKI_HOST_NOTIFY_WEBHOOK_SECRET"),
+        ],
+        _env_lock: env_lock,
+    }
+}
+
+fn adapter_script_fixture_path() -> std::path::PathBuf {
+    let exe_path = std::env::current_exe().expect("current test exe");
+    exe_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join("..")
+        .join("scripts")
+        .join("hermes_notify_adapter.py")
+}
+
+fn write_executable(path: &std::path::Path, body: &str) {
+    fs::write(path, body).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)
+            .expect("executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod executable");
+    }
+}
+
 #[cfg(unix)]
 fn shell_quote(path: &std::path::Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+struct BridgeConfigFixture {
+    _env_guards: Vec<EnvGuard>,
+    _env_lock: MutexGuard<'static, ()>,
+}
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        if let Some(value) = self.original.as_ref() {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
 }
 
 struct TempDir {
@@ -665,6 +1001,101 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+struct FakeSystemctlRunner {
+    calls: Vec<Vec<String>>,
+    outputs: Vec<anyhow::Result<String>>,
+}
+
+impl FakeSystemctlRunner {
+    fn new(outputs: Vec<Result<String, String>>) -> Self {
+        Self {
+            calls: Vec::new(),
+            outputs: outputs
+                .into_iter()
+                .map(|result| result.map_err(anyhow::Error::msg))
+                .collect(),
+        }
+    }
+}
+
+impl BridgeSystemdCommandRunner for FakeSystemctlRunner {
+    fn run(&mut self, args: &[&str]) -> anyhow::Result<String> {
+        self.calls
+            .push(args.iter().map(|value| (*value).to_string()).collect());
+        if self.outputs.is_empty() {
+            return Ok(String::new());
+        }
+        self.outputs.remove(0)
+    }
+}
+
+struct FakeBridgeBackend {
+    events: Vec<&'static str>,
+    snapshots: Vec<Option<BridgeServiceStatusSnapshot>>,
+    repeat: Option<Option<BridgeServiceStatusSnapshot>>,
+}
+
+impl FakeBridgeBackend {
+    fn new(snapshots: Vec<Option<BridgeServiceStatusSnapshot>>) -> Self {
+        Self {
+            events: Vec::new(),
+            snapshots,
+            repeat: None,
+        }
+    }
+}
+
+impl BridgeServiceBackend for FakeBridgeBackend {
+    fn status_snapshot(
+        &mut self,
+        _resolved: &Resolved,
+    ) -> anyhow::Result<Option<BridgeServiceStatusSnapshot>> {
+        self.events.push("status");
+        if let Some(snapshot) = self.repeat.as_ref() {
+            return Ok(snapshot.clone());
+        }
+        Ok(if self.snapshots.is_empty() {
+            None
+        } else {
+            self.snapshots.remove(0)
+        })
+    }
+
+    fn install(&mut self, _resolved: &Resolved) -> anyhow::Result<()> {
+        self.events.push("install");
+        Ok(())
+    }
+
+    fn start(&mut self, _resolved: &Resolved) -> anyhow::Result<()> {
+        self.events.push("start");
+        Ok(())
+    }
+
+    fn stop(&mut self, _resolved: &Resolved) -> anyhow::Result<()> {
+        self.events.push("stop");
+        Ok(())
+    }
+
+    fn restart(&mut self, _resolved: &Resolved) -> anyhow::Result<()> {
+        self.events.push("restart");
+        Ok(())
+    }
+
+    fn uninstall(&mut self, _resolved: &Resolved) -> anyhow::Result<()> {
+        self.events.push("uninstall");
+        Ok(())
+    }
+}
+
+fn snapshot(installed: bool, running: bool) -> BridgeServiceStatusSnapshot {
+    BridgeServiceStatusSnapshot {
+        installed,
+        running,
+        platform: "linux-systemd".to_string(),
+        service_name: "awiki-cli-hermes-bridge-test.service".to_string(),
     }
 }
 

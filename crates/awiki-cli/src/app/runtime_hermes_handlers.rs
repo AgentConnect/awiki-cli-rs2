@@ -314,15 +314,12 @@ impl App {
                     "Hermes host notify setup was written, but the listener could not be restarted to apply it.",
                 )
             })?;
-        let bridge_status = runtime::hermes_bridge::status_for(&resolved);
+        let (bridge_status, bridge_service_warnings) = apply_hermes_bridge_for_setup(&resolved)?;
         let mut warnings = listener_warnings;
         warnings.extend(host_notify_guidance_warnings_for(&resolved, &deliver));
         warnings.extend(route_state.warnings.clone());
         warnings.extend(bridge_status.warnings.clone());
-        warnings.push(
-            "Hermes bridge service install/start is deferred in this Rust parity slice; run `awiki-cli runtime host-notify hermes status` after the bridge execution slice lands."
-                .to_string(),
-        );
+        warnings.extend(bridge_service_warnings);
         if deliver != "log" && !route_state.home_channel_configured {
             if route_state.home_channel_key.is_empty() {
                 warnings.push(format!(
@@ -510,6 +507,29 @@ fn changed_flag(command: &ParsedCommand, name: &str) -> Option<String> {
         .iter()
         .any(|flag| flag == name)
         .then(|| command.flags.get(name).cloned().unwrap_or_default())
+}
+
+fn apply_hermes_bridge_for_setup(
+    resolved: &Resolved,
+) -> Result<(runtime::hermes_bridge::BridgeStatus, Vec<String>), ExitError> {
+    if runtime::hermes_bridge::systemd_service_supported() {
+        let status = runtime::hermes_bridge::apply_service(resolved).map_err(|err| {
+            ExitError::new(
+                "internal_error",
+                1,
+                err.to_string(),
+                "Hermes was configured, but the local Hermes bridge could not be started.",
+            )
+        })?;
+        return Ok((status, Vec::new()));
+    }
+    Ok((
+        runtime::hermes_bridge::status_for(resolved),
+        vec![format!(
+            "Hermes bridge service install/start requires {}=1 on Linux with a user systemd session; reporting passive bridge status.",
+            runtime::hermes_bridge::ENABLE_SYSTEMD_SERVICE_ENV
+        )],
+    ))
 }
 
 fn resolve_hermes_deliver_target(resolved: &Resolved, override_value: &str) -> String {

@@ -20,6 +20,118 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Hermes Bridge Linux User-Systemd Batch
+
+Timestamp: 2026-05-18T08:30:00Z / 2026-05-18T16:30:00+0800.
+
+Scope: close the Hermes bridge/platform-service execution batch for the Linux
+user-systemd slice. Mail selectors remain deferred and were not run or counted.
+
+Pipeline note:
+
+- Three read-only Native Agents ran in parallel. One mapped Go
+  `internal/runtime/hermesbridge/service.go` plus CLI setup/status behavior,
+  one mapped dirty Rust implementation/test risks, and one mapped the focused
+  `awiki-system-test` selector and required Rust contract names.
+- The leader kept write integration local to the Hermes bridge runtime/app
+  files, the Rust contract tests, the system-test runtime selector, and batched
+  docs. No code-writing child agent touched the same files.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `awiki-cli/internal/runtime/hermesbridge/service.go` | `StatusFor` resolves config, inspects service status, and probes health only when running | `crates/awiki-cli/src/runtime/hermes_bridge/service.rs` | implemented for gated Linux user-systemd; passive `rust-local` when unsupported | `runtime_hermes_bridge_service_contract` | `test_runtime_host_notify_hermes_bridge_platform_service_contracts` | medium; non-Linux managers deferred |
+| `awiki-cli/internal/runtime/hermesbridge/service.go` | `EnsureInstalled`, `StartService`, `StopService`, `RestartService`, `Uninstall`, and `Apply` branching | same | implemented through fakeable `BridgeServiceBackend` plus real `systemctl --user` backend | same | same | medium; live systemd install not run in CI selector |
+| `awiki-cli/internal/runtime/hermesbridge/service.go` | user-service config shape and bridge service command | same | implemented as generated user unit with `runtime host-notify hermes bridge service-run` | same | same | low |
+| `awiki-cli/internal/cli/runtime.go` | `runtime host-notify hermes setup` calls bridge `Apply` after config write, route ensure, and listener refresh | `crates/awiki-cli/src/app/runtime_hermes_handlers.rs` | implemented when `AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE=1` and user systemd is available; gate-off path reports passive status with explicit warning | `runtime_hermes_setup_dry_run_contract` focused non-dry-run tests | same | medium; staged parity differs from Go default service-manager availability |
+| `awiki-system-test/tests_v2/runtime/test_runtime_cli.py` | focused selector can validate the Rust Hermes platform contracts quickly | `tests_v2/runtime/test_runtime_cli.py` | updated to guard 27 Rust contracts and run by target/filter | pytest focused selector | same | low |
+
+Rust repository changes:
+
+- `crates/awiki-cli/src/runtime/hermes_bridge/service.rs`: added a fakeable
+  service backend, Linux user-systemd status/install/start/stop/restart/uninstall
+  execution, generated unit content/path helpers, `systemctl --user` runner,
+  std-only HTTP health probe, and Go-shaped lifecycle/apply functions.
+- `crates/awiki-cli/src/runtime/hermes_bridge.rs`: re-exported the new service
+  API and changed `status_for` to consult the gated service snapshot and owned
+  health probe.
+- `crates/awiki-cli/src/app/runtime_hermes_handlers.rs`: setup now delegates to
+  `apply_service` when the systemd gate is supported, otherwise keeps the
+  no-side-effect passive bridge status and emits the explicit gate warning.
+- `crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs`: added
+  fake backend/systemctl tests for the new status and lifecycle execution
+  branches without live systemd.
+- `crates/awiki-cli/tests/runtime_hermes_setup_dry_run_contract.rs`: updated
+  the default non-dry-run expectation from a generic deferred warning to the
+  explicit systemd gate warning.
+
+System-test repository change:
+
+- `tests_v2/runtime/test_runtime_cli.py`: the focused Rust selector now guards
+  27 Hermes bridge/platform contract names, runs the full
+  `runtime_hermes_bridge_service_contract` target plus focused service-run and
+  setup targets, and expects the systemd gate warning in default setup output.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract hermes_setup_non_dry_run --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract hermes_bridge_service_run --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/hermesbridge ./internal/cli -run 'Test.*Hermes|TestRefreshListenerForHostNotifyChange' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+cd /home/ecs-user/awiki-space/awiki-system-test && uv run pytest --collect-only tests_v2/runtime/test_runtime_cli.py -q
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_bridge_platform_service_contracts -ra -q
+```
+
+Observed results:
+
+- Rust Hermes bridge service contract: 26 passed, 0 failed.
+- Rust Hermes setup non-dry-run focused tests: 2 passed, 0 failed.
+- Rust Hermes CLI service-run focused tests: 2 passed, 0 failed.
+- Rust formatting, `cargo check`, `xtask check-structure`, and `git diff
+  --check`: passed.
+- Go focused Hermes reference command: `internal/cli` passed; the selected
+  `internal/runtime/hermesbridge` filter had no matching tests.
+- System-test syntax/collection: `19 tests collected`, 0 collection failures.
+- Focused `awiki-system-test` selector: 1 passed, 0 failed, 0 skipped in 2.16s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- `AWIKI_SYSTEM_TEST_MODE`, user-service URL, message-service URL, WebSocket
+  URL, and DID domain were not set by this selector command because this is a
+  Rust-contract wrapper, not a live service selector.
+- Mail selectors were not run. Failed 0. Skipped 0.
+
+Boundary note: this batch proves Rust contract and focused system-test coverage
+for the staged Linux user-systemd bridge service execution path. It does not
+prove a live `systemctl --user` install/start on this CI host, macOS launchd,
+Windows SCM, full `kardianos/service` cross-platform behavior, real Hermes
+end-to-end delivery, mail acceptance, or full repository-wide acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile are
+unchanged. The service-manager path uses std filesystem/process/TCP I/O and
+`systemctl --user`; no platform service crate, libdbus/systemd binding,
+OpenSSL, `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crate,
+YAML crate, async runtime, or new SQLite backend was introduced. SQLite remains
+on the approved `rusqlite + bundled` path, and TLS choices remain Rustls-first.
+
+File-size note: changed Rust source/test files remain under the default
+1200-line cap after formatting. The largest touched Rust files are
+`service.rs` at 1193 lines and `runtime_hermes_bridge_service_contract.rs` at
+1147 lines, so no file-size exception is needed. The system-test runtime file is
+1324 lines; that Python test module was already over the Rust source-file cap
+scope and is not a Rust-source exception.
+
 ## 2026-05-18 Message Direct WebSocket Local-Cache Batch
 
 Timestamp: 2026-05-18T04:11:37Z / 2026-05-18T12:11:37+0800.

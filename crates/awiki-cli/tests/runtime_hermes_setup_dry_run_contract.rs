@@ -284,8 +284,8 @@ fn hermes_setup_non_dry_run_writes_local_awiki_and_hermes_files_without_bridge_s
             .is_some_and(|warnings| warnings.iter().any(|value| value
                 .as_str()
                 .unwrap_or_default()
-                .contains("Hermes bridge service install/start is deferred"))),
-        "this Rust slice must not imply the bridge service was started"
+                .contains("Hermes bridge service install/start requires"))),
+        "gate-off setup must report passive bridge status instead of implying the bridge service was started"
     );
 
     let config = std::fs::read_to_string(workspace.path().join("config.yaml"))
