@@ -24,6 +24,28 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   traceable 1:1 translation would otherwise become less reviewable. Files above
   3000 lines are rare special exceptions only and require a documented reason.
 
+## 2026-05-19 Runtime Listener Secure Outbox Local Queue Selector Batch
+
+Detailed report:
+`2026-05-19-runtime-listener-secure-outbox-local-queue-selector.md`.
+
+Summary: the accelerated runtime listener foreground/session-loop batch used
+parallel read-only Native Agents to map Go listener behavior, current Rust
+runtime/listener implementation/tests, and non-mail system-test selector
+coverage before editing. No production Rust gap was found in the scoped
+secure-outbox/local-queue cluster. The batch added a focused
+`awiki-system-test` selector that runs the existing Rust
+`runtime_listener_secure_normalize_contract`,
+`runtime_listener_secure_ack_in_process_contract`,
+`runtime_listener_secure_outbox_flush_contract`,
+`runtime_listener_local_notifications_contract`, and
+`runtime_listener_local_notification_flush_contract` targets without pulling in
+the broader 20-target session/secure-replay/host-notify wrapper. Existing core
+selectors passed with 2 tests, 0 failed, 0 skipped in 32.43s; the new focused
+selector passed with 1 test, 0 failed, 0 skipped in 0.50s; syntax,
+whitespace, and Rust structure checks passed; no dependency changed; and mail
+selectors remained deferred.
+
 ## 2026-05-19 Identity Live Rust Selector Batch
 
 Detailed report:
