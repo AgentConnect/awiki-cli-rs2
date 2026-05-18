@@ -36,6 +36,23 @@ focused Go identity live guards passed; the new non-mail selector passed with 1
 test, 0 failed, and 0 skipped; structure and whitespace checks passed; no
 dependency changed; and mail selectors remained deferred.
 
+## 2026-05-19 Runtime Hermes Bridge Linux Service Batch
+
+Detailed report:
+`2026-05-19-runtime-hermes-bridge-linux-service.md`.
+
+Summary: the accelerated runtime Hermes bridge service batch added a focused
+gated Linux user-systemd selector proving that `runtime host-notify hermes
+setup` installs and starts the real service-managed Hermes bridge. The selector
+passed with 1 test, failed 0, skipped 0 in 15.67s under
+`AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1`, `AWIKI_CLI_UNDER_TEST=rust`, and the
+Hermes-specific `AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE=1` subprocess
+gate. It prepared an installation-like adapter script layout for the pytest
+binary, verified installed/running `linux-systemd` setup and status output, and
+left no matching `awiki-cli-hermes-bridge-*.service` unit behind. It does not
+claim `bridge_available=true` health readiness, macOS launchd, Windows Service
+Manager, final Hermes delivery, or mail acceptance.
+
 ## 2026-05-19 Mail Local Coverage Audit Batch
 
 Detailed report:
