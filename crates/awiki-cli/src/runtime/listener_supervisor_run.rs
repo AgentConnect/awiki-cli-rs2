@@ -4,7 +4,10 @@ use super::listener::{self, SessionStatus, Status};
 use super::listener_bridge_connection::{
     execute_listener_bridge_request, ListenerBridgeRuntime, ListenerBridgeSession,
 };
-use super::listener_bridge_runtime::host_notify_for_bridge_created_session;
+use super::listener_bridge_runtime::{
+    bridge_session_bootstrap_signal_pair, host_notify_for_bridge_created_session,
+    wait_for_bridge_session_bootstrap, BridgeSessionBootstrapResult, BridgeSessionBootstrapSignal,
+};
 use super::listener_handle_lookup::lookup_listener_handle_by_did;
 use super::listener_notification_handler::handle_listener_notification;
 use super::listener_notification_plan::{
@@ -200,6 +203,7 @@ impl ListenerSupervisor {
                                 shutdown.clone(),
                                 summary.identity_name,
                                 summary.did,
+                                None,
                             );
                         }
                     }
@@ -226,6 +230,7 @@ impl ListenerSupervisor {
             self.shutdown.clone(),
             identity_name.to_string(),
             did.to_string(),
+            None,
         );
     }
 
@@ -268,17 +273,7 @@ impl ListenerBridgeRuntime for BridgeRuntime {
             .as_ref()
             .map(|record| record.did.clone())
             .unwrap_or_default();
-        let connected = self
-            .status
-            .lock()
-            .map(|status| {
-                status
-                    .sessions
-                    .iter()
-                    .any(|session| session.identity_name == identity_name && session.connected)
-            })
-            .unwrap_or(false);
-        if !self
+        let known_session = self
             .status
             .lock()
             .map(|status| {
@@ -287,8 +282,10 @@ impl ListenerBridgeRuntime for BridgeRuntime {
                     .iter()
                     .any(|session| session.identity_name == identity_name)
             })
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        if !known_session {
+            let (initial_signal, initial_waiter) =
+                bridge_session_bootstrap_signal_pair(&identity_name);
             spawn_session_loop(
                 self.resolved.clone(),
                 self.manager.clone(),
@@ -297,8 +294,18 @@ impl ListenerBridgeRuntime for BridgeRuntime {
                 self.shutdown.clone(),
                 identity_name.clone(),
                 did,
+                Some(initial_signal),
             );
+            match wait_for_bridge_session_bootstrap(initial_waiter) {
+                BridgeSessionBootstrapResult::Connected => {}
+                BridgeSessionBootstrapResult::InitialError(error)
+                | BridgeSessionBootstrapResult::Timeout(error) => {
+                    return Err(anyhow::anyhow!(error))
+                }
+            }
         }
+        let record = self.manager.load(&identity_name).ok();
+        let connected = session_is_connected(&self.status, &identity_name);
         Ok(if connected {
             ListenerBridgeSession::connected(identity_name, record.unwrap_or_default())
         } else {
@@ -434,6 +441,7 @@ fn spawn_session_loop(
     shutdown: Arc<AtomicBool>,
     identity_name: String,
     did: String,
+    initial_signal: Option<BridgeSessionBootstrapSignal>,
 ) {
     {
         let mut guard = status.lock().expect("listener status mutex poisoned");
@@ -450,10 +458,14 @@ fn spawn_session_loop(
     }
     thread::spawn(move || {
         let mut delay = SESSION_RECONNECT_BASE_DELAY;
+        let mut initial_signal = initial_signal;
         while !shutdown.load(Ordering::SeqCst) {
             match connect_session(&resolved, &manager, &identity_name) {
                 Ok((record, mut transport)) => {
                     mark_session_connected(&status, &identity_name, &record.did);
+                    if let Some(signal) = initial_signal.take() {
+                        signal.signal_success();
+                    }
                     delay = SESSION_RECONNECT_BASE_DELAY;
                     spawn_secure_backlog_poller(
                         resolved.clone(),
@@ -486,6 +498,9 @@ fn spawn_session_loop(
                         .map(|record| record.did)
                         .unwrap_or_default();
                     mark_session_disconnected(&status, &identity_name, did, Some(err.to_string()));
+                    if let Some(signal) = initial_signal.take() {
+                        signal.signal_error(err.to_string());
+                    }
                 }
             }
             sleep_or_shutdown(&shutdown, delay);

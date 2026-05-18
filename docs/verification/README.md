@@ -14,6 +14,68 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Bridge Session Bootstrap Wait
+
+Scope: match Go `internal/runtime/listener/server.go` `ensureSession` for
+local bridge-created sessions. Go inserts a new session, starts
+`runSessionLoop`, and waits up to 15 seconds for the first connect success or
+first connect error before the bridge request continues. Existing sessions
+still return immediately and may fail later at the disconnected-session bridge
+boundary.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_bridge_runtime.rs`: added one-shot
+  bridge bootstrap signal/wait helpers backed by `std::sync::mpsc`, reusing the
+  existing `SESSION_BOOTSTRAP_TIMEOUT` and Go timeout text.
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: when
+  `BridgeRuntime::ensure_session` creates a missing bridge session, it now
+  passes an initial signal into `spawn_session_loop` and waits for success,
+  error, or timeout before returning. Startup/watch-created sessions pass
+  `None` and keep their existing background behavior.
+- `crates/awiki-cli/tests/runtime_listener_bridge_runtime_contract.rs`: added
+  focused one-shot success, error, and timeout coverage.
+- `docs/file-size-exceptions.md`: refreshed the existing documented
+  `listener_supervisor_run.rs` exception line count from 1515 to 1530.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_runtime_contract --test runtime_listener_session_bootstrap_contract --test runtime_listener_bridge_connection_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --test runtime_listener_session_methods_contract --test runtime_listener_foreground_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleNotificationDispatchesHostNotificationToSink|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- Rust bootstrap/bridge focused contracts: 22 passed, 0 failed.
+- Rust adjacent foreground/session-loop/session-method contracts: 31 passed,
+  0 failed.
+- Rust formatting check: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines.
+- `git diff --check`: passed.
+- Go focused listener guards: passed.
+- Rust focused foreground listener selector: 1 passed, 0 failed, 0 skipped.
+
+Boundary note: this slice only wires Go-style first-result waiting for
+bridge-created sessions. It does not change startup-discovered session
+semantics, bridge RPC transport reuse, notification ping timeout behavior,
+local secure-ack queue integration, OS signal shutdown handling, Windows
+named-pipe I/O, platform service-manager execution, mail notification
+acceptance, or full repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. The implementation uses `std`
+channels and the existing Rust listener modules. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Runtime Listener Bridge-Created Host-Notify Sink
 
 Scope: match Go `internal/runtime/listener/server.go` foreground Supervisor
