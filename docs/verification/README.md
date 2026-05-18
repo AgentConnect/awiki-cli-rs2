@@ -20,6 +20,23 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-19 Identity Rust Selector Batch
+
+Detailed report:
+`2026-05-19-identity-rust-selector.md`.
+
+Summary: the accelerated identity selector batch used parallel Native Agents to
+map Go identity package/CLI behavior, current Rust identity contract targets,
+and system-test selector gaps before editing. It added a Rust-only
+`awiki-system-test` wrapper for eight deterministic local, wire,
+upgrade-boundary, key-compatibility, legacy-import, and loopback fake-service
+identity Cargo targets. Rust direct validation passed 55 tests; focused Go
+identity guards passed; the new non-mail selector passed with 1 test, 0 failed,
+and 0 skipped; structure and whitespace checks passed; no dependency changed;
+and mail selectors remained deferred. More specific email-registration,
+recover, and replace-did live identity targets remain separate follow-up
+batches.
+
 ## 2026-05-19 Page Site Rust Selector Batch
 
 Detailed report:

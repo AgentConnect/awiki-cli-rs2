@@ -42,6 +42,44 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current identity selector batch evidence: on 2026-05-19, the batch followed the
+accelerated module-batch pipeline. Three read-only Native Agents mapped Go
+identity package and CLI behavior, current Rust identity contract targets, and
+non-mail system-test selector gaps in parallel. A bounded GPT-5.5 xhigh Native
+Agent wrote only a new Rust-only identity `awiki-system-test` wrapper and the
+nearest CLI directory docs entry. The selector includes deterministic local,
+wire, upgrade-boundary, key compatibility, legacy import, and loopback
+fake-service identity contracts. It intentionally excludes
+`identity_register_email_live_contract`, `identity_recover_live_contract`, and
+`identity_replace_did_live_contract` for separate live-identity batches. No
+production Rust code, manifests, dependencies, ANP SDK source, or mail selector
+changed. Existing dirty helper files in `awiki-system-test` were not touched or
+staged.
+
+Identity gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/identity/{did,handle_input,store}.go`, `internal/cli/id.go` | e1 DID generation, Ed25519 `key-1`, ANP service helpers, handle normalization, local create/list/current/use/status, dry-run validation, and legacy-config migration before local identity boundaries | `crates/awiki-cli/src/identity/*`, `src/app.rs` | implemented and focused-contract tested | `identity_contract` passed 17 tests | `tests_v2/cli/test_awiki_cli_identity_rust_contracts.py::test_awiki_cli_identity_rust_contracts` passed | low; local CLI/filesystem only; file is 1191 lines, near the 1200 visibility target |
+| `internal/identity/store.go`, key compatibility and legacy import tests | legacy ANP PEM migration, bad-key error shape, flat/indexed legacy scan/import, conflict handling, and E2EE legacy state copy | `crates/awiki-cli/src/identity/{key_compat,legacy,store}.rs` | implemented and focused-contract tested | `identity_key_compat_contract` passed 3 tests; `identity_legacy_import_contract` passed 4 | same Rust-only selector | low; local filesystem only |
+| `internal/identity/{client,service,public}.go` | JSON-RPC/REST endpoint constants, request payloads, profile/register/recover/replace/bind/refresh result shapes, handle lookup interpretation, public data stripping, and warning preservation | `crates/awiki-cli/src/identity/wire.rs`, `src/authsdk/*`, `src/transportcfg.rs` | implemented and focused-contract tested | `identity_wire_contract` passed 11 tests | same Rust-only selector | low; pure in-process wire/result assertions |
+| `internal/upgrade/*`, `internal/cli/id.go`, identity service tests | profile-set/register/replace-did legacy `config.json` upgrade-before-boundary behavior and validation ordering | `crates/awiki-cli/src/upgrade/*`, `src/config/*`, `src/app.rs`, `src/identity/*` | implemented and focused-contract tested | `identity_profile_set_upgrade_contract` passed 2 tests; `identity_register_upgrade_contract` passed 1; `identity_replace_did_upgrade_contract` passed 1 | same Rust-only selector | low; Go has closest upgrade/service guards rather than exact per-command selector tests |
+| `internal/identity/service*.go`, `internal/cli/id.go` | register phone, refresh-token, bind phone/email, profile get/set, resolve by handle/DID, authenticated HTTP request shape, JWT persistence, and non-fatal warning handling | `crates/awiki-cli/src/identity/{service,client,wire,store}.rs`, `src/authsdk/*`, `src/transportcfg/http.rs` | implemented and loopback fake-service tested | `identity_live_contract` passed 16 tests | same Rust-only selector | low; target uses `127.0.0.1:0` fake server, not real external service; file is 1133 lines |
+
+Verification evidence: direct Rust identity contract targets passed 55 tests;
+focused Go guards for `internal/identity`, `internal/cli`, and
+`internal/upgrade` passed; wrapper syntax and whitespace checks passed; and the
+focused non-mail `awiki-system-test` identity selector passed with 1 passed, 0
+failed, and 0 skipped in 1.76s. Rust fmt/check/structure gates passed, and
+`xtask check-structure` reported no undocumented Rust files over 1200 lines.
+The new system-test wrapper is 81 lines and `tests_v2/cli/CLAUDE.md` is 40
+lines. The largest scoped Rust target, `identity_contract.rs`, is 1191 lines,
+and `identity_live_contract.rs` is 1133 lines; both remain below the default
+1200-line visibility target. No dependency was added; SQLite remains on the
+approved `rusqlite + bundled` path and TLS remains Rustls-first with no OpenSSL,
+`native-tls`, bundled OpenSSL, platform service, or SQLite backend change
+introduced.
+
 Current page/site selector batch evidence: on 2026-05-19, the batch followed
 the accelerated module-batch pipeline. Three read-only Native Agents mapped Go
 page/site CLI and service behavior, current Rust page/site contract targets,
