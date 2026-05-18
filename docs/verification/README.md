@@ -20,6 +20,22 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-19 Page Site Rust Selector Batch
+
+Detailed report:
+`2026-05-19-page-site-rust-selector.md`.
+
+Summary: the accelerated page/site selector batch used parallel Native Agents
+to map Go page/site CLI and service behavior, current Rust page/site contract
+targets, and system-test selector gaps before editing. It added a Rust-only
+`awiki-system-test` wrapper for `page_contract`, `page_live_contract`,
+`site_wire_contract`, and `site_live_contract`; `site_contract` remains covered
+by the parser/Cobra wrapper to avoid duplicate failure surfaces. Rust direct
+validation passed 19 tests; focused Go page/site guards passed; the new
+non-mail selector passed with 1 test, 0 failed, and 0 skipped; structure and
+whitespace checks passed; no dependency changed; and mail selectors remained
+deferred.
+
 ## 2026-05-19 Foundation Rust Selector Batch
 
 Detailed report:

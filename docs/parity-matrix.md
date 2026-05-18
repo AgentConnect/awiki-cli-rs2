@@ -42,6 +42,41 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current page/site selector batch evidence: on 2026-05-19, the batch followed
+the accelerated module-batch pipeline. Three read-only Native Agents mapped Go
+page/site CLI and service behavior, current Rust page/site contract targets,
+and non-mail system-test selector gaps in parallel. A bounded GPT-5.5 xhigh
+Native Agent wrote only a new Rust-only page/site `awiki-system-test` wrapper
+and the nearest CLI directory docs entry. The selector intentionally excludes
+`site_contract` because it is already exposed by the parser/Cobra selector. No
+production Rust code, manifests, dependencies, ANP SDK source, or mail selector
+changed. Existing dirty helper files in `awiki-system-test` were not touched or
+staged.
+
+Page/site gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/cli/page.go`, `internal/cli/page_test.go` | page schema, dry-run plan envelopes, body-source handling, visibility pass-through, required flag validation, non-dry-run active-identity boundary, legacy config migration before identity lookup | `crates/awiki-cli/src/app/page_handlers.rs`, `src/content/*` | implemented and focused-contract tested | `page_contract` passed 7 tests | `tests_v2/cli/test_awiki_cli_page_site_rust_contracts.py::test_awiki_cli_page_site_rust_contracts` passed | low; local CLI subprocess only |
+| `internal/content/service.go`, `service_test.go` | `/content/rpc` authenticated JSON-RPC payloads, bearer auth, service error mapping, visibility normalization, JWT bootstrap and persistence | `crates/awiki-cli/src/content/*`, `src/authsdk/*`, `src/transportcfg/http.rs` | implemented and fake-service tested | `page_live_contract` passed 4 tests | same Rust-only selector | low; target uses loopback fake HTTP server, not live service |
+| `internal/site/service.go`, `service_test.go` | `/site/rpc` builders, domain/slug validation, summaries, action/result shapes, endpoint/method/profile params | `crates/awiki-cli/src/site/wire.rs`, `src/site/types.rs` | implemented and focused-contract tested | `site_wire_contract` passed 4 tests | same Rust-only selector | low; deterministic local wire/helper target |
+| `internal/site/service.go`, `internal/cli/site.go`, related tests | authenticated site JSON-RPC execution through `/site/rpc`, domain-normalized payloads, forbidden/business error mapping, JWT bootstrap and persistence | `crates/awiki-cli/src/app/site_handlers.rs`, `src/site/*`, `src/authsdk/*`, `src/transportcfg/http.rs` | implemented and fake-service tested | `site_live_contract` passed 4 tests | same Rust-only selector | low; target uses loopback fake HTTP server, not live service |
+| `internal/cli/site.go`, `site_test.go` | site schema and dry-run plan contracts | `crates/awiki-cli/tests/site_contract.rs` | already exposed by parser/Cobra wrapper; not duplicated in this batch | `site_contract` remains covered by parser selector | `tests_v2/cli/test_awiki_cli_parser_rust_contracts.py::test_awiki_cli_parser_rust_contracts` | low; avoid duplicate failure surface |
+
+Verification evidence: direct Rust page/site contract targets passed 19 tests;
+focused Go guards for `internal/cli`, `internal/content`, and `internal/site`
+passed; wrapper syntax and whitespace checks passed; and the focused non-mail
+`awiki-system-test` page/site selector passed with 1 passed, 0 failed, and 0
+skipped in 19.83s. Rust fmt/check/structure gates passed, and
+`xtask check-structure` reported no undocumented Rust files over 1200 lines. The
+new system-test wrapper is 77 lines and `tests_v2/cli/CLAUDE.md` is 39 lines.
+Scoped Rust target files are all below 1200 lines: `page_contract.rs` 562,
+`page_live_contract.rs` 452, `site_wire_contract.rs` 368, and
+`site_live_contract.rs` 485. No dependency was added; SQLite remains on the
+approved `rusqlite + bundled` path and TLS remains Rustls-first with no OpenSSL,
+`native-tls`, bundled OpenSSL, platform service, or SQLite backend change
+introduced.
+
 Current foundation/local selector batch evidence: on 2026-05-19, the batch
 followed the accelerated module-batch pipeline. Three read-only Native Agents
 mapped Go foundation packages, current Rust contract targets, and non-mail
