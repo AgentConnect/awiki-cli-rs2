@@ -69,6 +69,20 @@ filtered runtime host-notify tests, and 19 additional Hermes config/route tests;
 the focused Go guard passed; and the new non-mail selector passed with 1 test.
 Mail selectors remained deferred.
 
+## 2026-05-18 Runtime Local Bridge Deterministic Selector Batch
+
+Detailed report:
+`2026-05-18-runtime-local-bridge-contracts.md`.
+
+Summary: the accelerated runtime local bridge batch found no production Rust
+gap in deterministic Unix/local bridge helpers, bridge framing, listener bridge
+connection/dispatch, listener service-DID, or message WebSocket proxy
+behavior. It filled the Rust-only selector visibility gap by adding a focused
+`awiki-system-test` selector that avoids live WebSocket probes and mail
+selectors. Rust direct validation passed 49 tests across five local bridge
+targets; the focused Go guard passed; and the new non-mail selector passed with
+1 test. Windows named-pipe runtime I/O remains deferred.
+
 ## 2026-05-18 Docs/Scripts/Schema/Config Metadata Batch
 
 Timestamp: 2026-05-18T18:31:32+0800.
