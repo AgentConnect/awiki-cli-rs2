@@ -6,12 +6,20 @@ use super::listener_bridge_connection::{
 };
 use super::listener_bridge_runtime::{
     bridge_session_bootstrap_signal_pair, host_notify_for_bridge_created_session,
-    wait_for_bridge_session_bootstrap, BridgeSessionBootstrapResult, BridgeSessionBootstrapSignal,
+    local_notifications_for_bridge_created_session, wait_for_bridge_session_bootstrap,
+    BridgeSessionBootstrapResult, BridgeSessionBootstrapSignal,
 };
 use super::listener_handle_lookup::lookup_listener_handle_by_did;
+use super::listener_local_notification_flush::{
+    flush_queued_local_notifications, LocalNotificationFlushTargetSession,
+};
+use super::listener_local_notifications::{LocalNotification, LocalNotificationQueue};
 use super::listener_notification_handler::handle_listener_notification;
 use super::listener_notification_plan::{
     NotificationSessionContext, SecureNotificationNormalization,
+};
+use super::listener_secure_ack_delivery::{
+    deliver_local_secure_ack_plan, LocalSecureAckDeliveryAction,
 };
 use super::listener_secure_notifications::{
     is_direct_secure_incoming_notification, plaintext_body_to_notification_body,
@@ -71,6 +79,7 @@ struct ListenerSupervisor {
     shutdown: Arc<AtomicBool>,
     listener: Option<bridge::BridgeListener>,
     host_notify: Arc<HostNotifySinkImpl>,
+    local_notifications: Arc<Mutex<LocalNotificationQueue>>,
 }
 
 impl ListenerSupervisor {
@@ -107,6 +116,7 @@ impl ListenerSupervisor {
             shutdown: Arc::new(AtomicBool::new(false)),
             listener: None,
             host_notify: Arc::new(host_notify),
+            local_notifications: Arc::new(Mutex::new(LocalNotificationQueue::default())),
         })
     }
 
@@ -141,6 +151,7 @@ impl ListenerSupervisor {
         let resolved = self.resolved.clone();
         let manager = self.manager.clone();
         let host_notify = self.host_notify.clone();
+        let local_notifications = self.local_notifications.clone();
         let shutdown = self.shutdown.clone();
         let listener_for_loop = listener;
         thread::spawn(move || {
@@ -152,6 +163,7 @@ impl ListenerSupervisor {
                             manager: manager.clone(),
                             status: status.clone(),
                             host_notify: host_notify.clone(),
+                            local_notifications: local_notifications.clone(),
                             shutdown: shutdown.clone(),
                         };
                         thread::spawn(move || handle_bridge_stream(stream, runtime));
@@ -181,6 +193,7 @@ impl ListenerSupervisor {
         let status = self.status.clone();
         let shutdown = self.shutdown.clone();
         let host_notify = self.host_notify.clone();
+        let local_notifications = self.local_notifications.clone();
         thread::spawn(move || {
             while !shutdown.load(Ordering::SeqCst) {
                 if let Ok(identities) = manager.list() {
@@ -200,6 +213,7 @@ impl ListenerSupervisor {
                                 manager.clone(),
                                 status.clone(),
                                 host_notify.clone(),
+                                local_notifications.clone(),
                                 shutdown.clone(),
                                 summary.identity_name,
                                 summary.did,
@@ -227,6 +241,7 @@ impl ListenerSupervisor {
             self.manager.clone(),
             self.status.clone(),
             self.host_notify.clone(),
+            self.local_notifications.clone(),
             self.shutdown.clone(),
             identity_name.to_string(),
             did.to_string(),
@@ -262,6 +277,7 @@ struct BridgeRuntime {
     manager: Manager,
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
+    local_notifications: Arc<Mutex<LocalNotificationQueue>>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -291,6 +307,7 @@ impl ListenerBridgeRuntime for BridgeRuntime {
                 self.manager.clone(),
                 self.status.clone(),
                 host_notify_for_bridge_created_session(&self.host_notify),
+                local_notifications_for_bridge_created_session(&self.local_notifications),
                 self.shutdown.clone(),
                 identity_name.clone(),
                 did,
@@ -438,9 +455,10 @@ fn spawn_session_loop(
     manager: Manager,
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
+    local_notifications: Arc<Mutex<LocalNotificationQueue>>,
     shutdown: Arc<AtomicBool>,
     identity_name: String,
-    did: String,
+    _did: String,
     initial_signal: Option<BridgeSessionBootstrapSignal>,
 ) {
     {
@@ -449,7 +467,7 @@ fn spawn_session_loop(
             &mut guard,
             SessionStatus {
                 identity_name: identity_name.clone(),
-                did,
+                did: String::new(),
                 connected: false,
                 last_error: String::new(),
             },
@@ -467,11 +485,20 @@ fn spawn_session_loop(
                         signal.signal_success();
                     }
                     delay = SESSION_RECONNECT_BASE_DELAY;
+                    flush_local_notifications_for_session(
+                        &resolved,
+                        &manager,
+                        &status,
+                        &host_notify,
+                        &local_notifications,
+                        &record,
+                    );
                     spawn_secure_backlog_poller(
                         resolved.clone(),
                         manager.clone(),
                         status.clone(),
                         host_notify.clone(),
+                        local_notifications.clone(),
                         shutdown.clone(),
                         record.identity_name.clone(),
                     );
@@ -480,6 +507,7 @@ fn spawn_session_loop(
                         &manager,
                         &status,
                         &host_notify,
+                        &local_notifications,
                         &record,
                         &mut transport,
                         &shutdown,
@@ -493,11 +521,12 @@ fn spawn_session_loop(
                     mark_session_disconnected(&status, &identity_name, record.did, error);
                 }
                 Err(err) => {
-                    let did = manager
-                        .load(&identity_name)
-                        .map(|record| record.did)
-                        .unwrap_or_default();
-                    mark_session_disconnected(&status, &identity_name, did, Some(err.to_string()));
+                    mark_session_disconnected(
+                        &status,
+                        &identity_name,
+                        String::new(),
+                        Some(err.to_string()),
+                    );
                     if let Some(signal) = initial_signal.take() {
                         signal.signal_error(err.to_string());
                     }
@@ -581,6 +610,7 @@ fn spawn_secure_backlog_poller(
     manager: Manager,
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
+    local_notifications: Arc<Mutex<LocalNotificationQueue>>,
     shutdown: Arc<AtomicBool>,
     identity_name: String,
 ) {
@@ -602,12 +632,20 @@ fn spawn_secure_backlog_poller(
             let Ok(record) = manager.load(&identity_name) else {
                 continue;
             };
-            sync_unread_secure_direct_inbox(&resolved, &manager, &status, &host_notify, &record);
+            sync_unread_secure_direct_inbox(
+                &resolved,
+                &manager,
+                &status,
+                &host_notify,
+                &local_notifications,
+                &record,
+            );
             sync_pending_confirmation_secure_history(
                 &resolved,
                 &manager,
                 &status,
                 &host_notify,
+                &local_notifications,
                 &record,
             );
         }
@@ -619,6 +657,7 @@ fn sync_unread_secure_direct_inbox(
     manager: &Manager,
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     record: &StoredIdentity,
 ) {
     let Ok(mut rpc) = one_shot_rpc_for_record(resolved, manager, record) else {
@@ -644,6 +683,7 @@ fn sync_unread_secure_direct_inbox(
         manager,
         status,
         host_notify,
+        local_notifications,
         record,
         &result,
         false,
@@ -655,6 +695,7 @@ fn sync_pending_confirmation_secure_history(
     manager: &Manager,
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     record: &StoredIdentity,
 ) {
     for peer_did in listener_secure_sessions::pending_confirmation_peer_dids(
@@ -685,6 +726,7 @@ fn sync_pending_confirmation_secure_history(
             manager,
             status,
             host_notify,
+            local_notifications,
             record,
             &result,
             true,
@@ -697,6 +739,7 @@ fn replay_secure_messages_from_rpc_result(
     manager: &Manager,
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     record: &StoredIdentity,
     result: &Map<String, Value>,
     skip_self_sent: bool,
@@ -729,6 +772,7 @@ fn replay_secure_messages_from_rpc_result(
             manager,
             status,
             host_notify,
+            local_notifications,
             record,
             &candidate.notification,
         );
@@ -740,11 +784,19 @@ fn handle_replayed_secure_notification(
     manager: &Manager,
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     record: &StoredIdentity,
     notification: &Value,
 ) {
-    let secure_normalization =
-        normalize_secure_notification(resolved, manager, record, notification);
+    let secure_normalization = normalize_secure_notification(
+        resolved,
+        manager,
+        status,
+        host_notify,
+        local_notifications,
+        record,
+        notification,
+    );
     let mut connection = match store::open(&resolved.paths) {
         Ok(connection) => connection,
         Err(_) => return,
@@ -764,6 +816,89 @@ fn handle_replayed_secure_notification(
         Some(host_notify.as_ref()),
         &mut guard,
         notification,
+        &session,
+        secure_normalization,
+        None,
+        Some(&mut lookup),
+    );
+    let _ = listener::write_status(&guard.status_file, &guard);
+}
+
+fn flush_local_notifications_for_session(
+    resolved: &Resolved,
+    manager: &Manager,
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    record: &StoredIdentity,
+) {
+    let target_session = LocalNotificationFlushTargetSession::new(
+        record.identity_name.clone(),
+        record.identity_name.clone(),
+        Some(record.did.clone()),
+    );
+    let mut queued = Vec::new();
+    {
+        let mut queue = local_notifications
+            .lock()
+            .expect("local notification queue mutex poisoned");
+        flush_queued_local_notifications(
+            &mut queue,
+            Some(&target_session),
+            |_, _, notification| queued.push(notification),
+        );
+    }
+    for notification in queued {
+        handle_local_notification(
+            resolved,
+            manager,
+            status,
+            host_notify,
+            local_notifications,
+            record,
+            notification,
+        );
+    }
+}
+
+fn handle_local_notification(
+    resolved: &Resolved,
+    manager: &Manager,
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    record: &StoredIdentity,
+    notification: LocalNotification,
+) {
+    let notification = Value::Object(notification);
+    let secure_normalization = normalize_secure_notification(
+        resolved,
+        manager,
+        status,
+        host_notify,
+        local_notifications,
+        record,
+        &notification,
+    );
+    let mut connection = match store::open(&resolved.paths) {
+        Ok(connection) => connection,
+        Err(_) => return,
+    };
+    if store::ensure_schema(&connection).is_err() {
+        return;
+    }
+    let mut guard = status.lock().expect("listener status mutex poisoned");
+    let session = NotificationSessionContext {
+        identity_name: record.identity_name.clone(),
+        did: record.did.clone(),
+        handle: record.handle.clone(),
+    };
+    let mut lookup = |did: &str| lookup_listener_handle_by_did(resolved, did);
+    let _ = handle_listener_notification(
+        &mut connection,
+        Some(host_notify.as_ref()),
+        &mut guard,
+        &notification,
         &session,
         secure_normalization,
         None,
@@ -801,6 +936,7 @@ fn consume_notifications(
     manager: &Manager,
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     record: &StoredIdentity,
     transport: &mut WsTransport,
     shutdown: &Arc<AtomicBool>,
@@ -811,8 +947,15 @@ fn consume_notifications(
             continue;
         }
         let notification = Value::Object(notification);
-        let secure_normalization =
-            normalize_secure_notification(resolved, manager, record, &notification);
+        let secure_normalization = normalize_secure_notification(
+            resolved,
+            manager,
+            status,
+            host_notify,
+            local_notifications,
+            record,
+            &notification,
+        );
         let mut connection = store::open(&resolved.paths)?;
         store::ensure_schema(&connection)?;
         let mut guard = status.lock().expect("listener status mutex poisoned");
@@ -840,6 +983,9 @@ fn consume_notifications(
 fn normalize_secure_notification(
     resolved: &Resolved,
     manager: &Manager,
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     record: &StoredIdentity,
     notification: &Value,
 ) -> SecureNotificationNormalization {
@@ -890,6 +1036,8 @@ fn normalize_secure_notification(
             if !deliver_local_secure_ack_in_process(
                 resolved,
                 manager,
+                status,
+                local_notifications,
                 record,
                 &sender_did,
                 &session_id,
@@ -905,6 +1053,9 @@ fn normalize_secure_notification(
                     deliver_local_secure_ack(
                         resolved,
                         manager,
+                        status,
+                        host_notify,
+                        local_notifications,
                         record,
                         &sender_did,
                         &ack_id,
@@ -1054,6 +1205,8 @@ fn flush_secure_outbox(
 fn deliver_local_secure_ack_in_process(
     resolved: &Resolved,
     manager: &Manager,
+    status: &Arc<Mutex<Status>>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     sender_record: &StoredIdentity,
     recipient_did: &str,
     session_id: &str,
@@ -1117,8 +1270,62 @@ fn deliver_local_secure_ack_in_process(
     if sender_store.save_session(&candidate_session).is_err() {
         return false;
     }
-    let _ = flush_secure_outbox(resolved, manager, &recipient_record, &sender_record.did);
-    true
+    if active_session_by_did(status, recipient_did).is_some() {
+        let _ = flush_secure_outbox(resolved, manager, &recipient_record, &sender_record.did);
+        return true;
+    }
+    if has_runtime_session_for_did(status, manager, recipient_did) {
+        let notification = Value::Object(Map::from_iter([
+            (
+                "method".to_string(),
+                Value::String("direct.incoming".to_string()),
+            ),
+            (
+                "params".to_string(),
+                Value::Object(Map::from_iter([
+                    (
+                        "meta".to_string(),
+                        Value::Object(Map::from_iter([
+                            (
+                                "sender_did".to_string(),
+                                Value::String(metadata.sender_did.clone()),
+                            ),
+                            (
+                                "target".to_string(),
+                                Value::Object(Map::from_iter([
+                                    ("kind".to_string(), Value::String("agent".to_string())),
+                                    (
+                                        "did".to_string(),
+                                        Value::String(metadata.recipient_did.clone()),
+                                    ),
+                                ])),
+                            ),
+                            (
+                                "message_id".to_string(),
+                                Value::String(metadata.message_id.clone()),
+                            ),
+                            (
+                                "profile".to_string(),
+                                Value::String(metadata.profile.clone()),
+                            ),
+                            (
+                                "security_profile".to_string(),
+                                Value::String(metadata.security_profile.clone()),
+                            ),
+                            (
+                                "content_type".to_string(),
+                                Value::String("application/anp-direct-cipher+json".to_string()),
+                            ),
+                        ])),
+                    ),
+                    ("body".to_string(), ack_body_value),
+                ])),
+            ),
+        ]));
+        queue_local_notification(local_notifications, recipient_did, notification);
+        return true;
+    }
+    false
 }
 
 fn recipient_can_process_local_secure_ack(
@@ -1226,6 +1433,9 @@ fn recipient_can_process_local_secure_ack(
 fn deliver_local_secure_ack(
     resolved: &Resolved,
     manager: &Manager,
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
     sender_record: &StoredIdentity,
     recipient_did: &str,
     fallback_message_id: &str,
@@ -1234,59 +1444,27 @@ fn deliver_local_secure_ack(
     let Some(recipient_record) = identity_record_by_did(manager, recipient_did) else {
         return;
     };
-    let Some(body) = ack_result.get("body").and_then(Value::as_object) else {
+    let active = active_session_by_did(status, recipient_did).is_some();
+    let plan = deliver_local_secure_ack_plan(
+        active,
+        &sender_record.did,
+        recipient_did,
+        fallback_message_id,
+        ack_result,
+    );
+    let Some(notification) = ack_delivery_notification(&plan.actions) else {
         return;
     };
-    if body.is_empty() {
-        return;
-    }
-    let message_id = fallback_string(
-        string_value(ack_result.get("message_id")),
-        fallback_message_id,
+    let notification = Value::Object(notification);
+    let secure_normalization = normalize_secure_notification(
+        resolved,
+        manager,
+        status,
+        host_notify,
+        local_notifications,
+        &recipient_record,
+        &notification,
     );
-    let notification = Value::Object(Map::from_iter([
-        (
-            "method".to_string(),
-            Value::String("direct.incoming".to_string()),
-        ),
-        (
-            "params".to_string(),
-            Value::Object(Map::from_iter([
-                (
-                    "meta".to_string(),
-                    Value::Object(Map::from_iter([
-                        (
-                            "sender_did".to_string(),
-                            Value::String(sender_record.did.clone()),
-                        ),
-                        (
-                            "target".to_string(),
-                            Value::Object(Map::from_iter([
-                                ("kind".to_string(), Value::String("agent".to_string())),
-                                ("did".to_string(), Value::String(recipient_did.to_string())),
-                            ])),
-                        ),
-                        ("message_id".to_string(), Value::String(message_id)),
-                        (
-                            "profile".to_string(),
-                            Value::String("anp.direct.e2ee.v1".to_string()),
-                        ),
-                        (
-                            "security_profile".to_string(),
-                            Value::String("direct-e2ee".to_string()),
-                        ),
-                        (
-                            "content_type".to_string(),
-                            Value::String("application/anp-direct-cipher+json".to_string()),
-                        ),
-                    ])),
-                ),
-                ("body".to_string(), Value::Object(body.clone())),
-            ])),
-        ),
-    ]));
-    let secure_normalization =
-        normalize_secure_notification(resolved, manager, &recipient_record, &notification);
     let mut connection = match store::open(&resolved.paths) {
         Ok(connection) => connection,
         Err(_) => return,
@@ -1294,7 +1472,7 @@ fn deliver_local_secure_ack(
     if store::ensure_schema(&connection).is_err() {
         return;
     }
-    let mut status = Status::default();
+    let mut guard = status.lock().expect("listener status mutex poisoned");
     let session = NotificationSessionContext {
         identity_name: recipient_record.identity_name.clone(),
         did: recipient_record.did.clone(),
@@ -1303,14 +1481,15 @@ fn deliver_local_secure_ack(
     let mut lookup = |did: &str| lookup_listener_handle_by_did(resolved, did);
     let _ = handle_listener_notification(
         &mut connection,
-        None,
-        &mut status,
+        Some(host_notify.as_ref()),
+        &mut guard,
         &notification,
         &session,
         secure_normalization,
         None,
         Some(&mut lookup),
     );
+    let _ = listener::write_status(&guard.status_file, &guard);
 }
 
 fn identity_record_by_did(manager: &Manager, did: &str) -> Option<StoredIdentity> {
@@ -1324,6 +1503,66 @@ fn identity_record_by_did(manager: &Manager, did: &str) -> Option<StoredIdentity
         .into_iter()
         .find(|summary| summary.did == did)
         .and_then(|summary| manager.load(&summary.identity_name).ok())
+}
+
+fn active_session_by_did(status: &Arc<Mutex<Status>>, did: &str) -> Option<SessionStatus> {
+    if did.trim().is_empty() {
+        return None;
+    }
+    status
+        .lock()
+        .ok()?
+        .sessions
+        .iter()
+        .find(|session| session.did == did)
+        .cloned()
+}
+
+fn has_runtime_session_for_did(status: &Arc<Mutex<Status>>, manager: &Manager, did: &str) -> bool {
+    if did.trim().is_empty() {
+        return false;
+    }
+    let sessions = status
+        .lock()
+        .map(|status| status.sessions.clone())
+        .unwrap_or_default();
+    for session in sessions {
+        if session.did == did {
+            return true;
+        }
+        if manager
+            .load(&session.identity_name)
+            .is_ok_and(|record| record.did == did)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn queue_local_notification(
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    recipient_did: &str,
+    notification: Value,
+) {
+    let Value::Object(notification) = notification else {
+        return;
+    };
+    local_notifications
+        .lock()
+        .expect("local notification queue mutex poisoned")
+        .queue_local_notification(recipient_did.to_string(), Some(notification));
+}
+
+fn ack_delivery_notification(
+    actions: &[LocalSecureAckDeliveryAction],
+) -> Option<Map<String, Value>> {
+    match actions {
+        [LocalSecureAckDeliveryAction::HandleNotification { notification }] => {
+            notification.as_object().cloned()
+        }
+        _ => None,
+    }
 }
 
 fn set_notification_method(notification: &mut Value, method: &str) {
@@ -1346,14 +1585,6 @@ fn string_value(value: Option<&Value>) -> String {
 fn nonempty_string(value: Option<&Value>) -> Option<String> {
     let value = string_value(value);
     (!value.is_empty()).then_some(value)
-}
-
-fn fallback_string(value: String, fallback: &str) -> String {
-    if value.trim().is_empty() {
-        fallback.to_string()
-    } else {
-        value
-    }
 }
 
 fn mark_session_connected(status: &Arc<Mutex<Status>>, identity_name: &str, did: &str) {
@@ -1389,6 +1620,16 @@ fn mark_session_disconnected(
     error: Option<String>,
 ) {
     let mut guard = status.lock().expect("listener status mutex poisoned");
+    let did = if did.is_empty() {
+        guard
+            .sessions
+            .iter()
+            .find(|session| session.identity_name == identity_name)
+            .map(|session| session.did.clone())
+            .unwrap_or_default()
+    } else {
+        did
+    };
     upsert_session(
         &mut guard,
         SessionStatus {

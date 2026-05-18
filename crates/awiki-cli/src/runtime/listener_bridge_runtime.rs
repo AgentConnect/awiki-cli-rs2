@@ -1,12 +1,19 @@
 use super::host_notify_sink::HostNotifySinkImpl;
+use super::listener_local_notifications::LocalNotificationQueue;
 use super::listener_session_bootstrap::SESSION_BOOTSTRAP_TIMEOUT;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 pub fn host_notify_for_bridge_created_session(
     supervisor_host_notify: &Arc<HostNotifySinkImpl>,
 ) -> Arc<HostNotifySinkImpl> {
     Arc::clone(supervisor_host_notify)
+}
+
+pub fn local_notifications_for_bridge_created_session(
+    supervisor_local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+) -> Arc<Mutex<LocalNotificationQueue>> {
+    Arc::clone(supervisor_local_notifications)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

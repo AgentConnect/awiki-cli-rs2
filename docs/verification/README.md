@@ -14,6 +14,80 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Local Secure ACK Queue Wiring
+
+Scope: match Go `internal/runtime/listener/server.go` local secure ACK queue
+ownership and flush behavior for foreground runtime sessions. Go keeps a single
+Supervisor-owned `localNotifications` map, queues encrypted local ACK
+notifications for managed-but-not-yet-active recipient sessions, and flushes
+that queue after a session is marked connected.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: added one
+  Supervisor-owned `Arc<Mutex<LocalNotificationQueue>>`, passed it through
+  startup, identity-watcher, bridge runtime, bridge-created sessions, secure
+  backlog replay, and notification consume paths, and flushes queued local
+  notifications immediately after `mark_session_connected` and before secure
+  backlog polling starts.
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: real
+  `deliver_local_secure_ack_in_process` now follows the Go post-save branch:
+  target sessions with a current DID/record flush queued secure outbox and return
+  true, managed runtime sessions without a current DID/record queue the encrypted
+  `direct.incoming` wrapper and return true, and unmanaged recipients return
+  false so the existing network fallback remains available.
+- `crates/awiki-cli/src/runtime/listener_bridge_runtime.rs`: added a small
+  queue clone helper mirroring the existing host-notify bridge-created-session
+  helper, keeping shared queue selection testable outside the oversized
+  supervisor file.
+- `crates/awiki-cli/tests/runtime_listener_bridge_runtime_contract.rs`: added
+  focused shared-queue `Arc` coverage for bridge-created sessions.
+- `docs/file-size-exceptions.md`: refreshed the existing documented
+  `listener_supervisor_run.rs` exception line count from 1530 to 1771 and
+  records that local queue/flush primitives remain in smaller helper modules.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_runtime_contract --test runtime_listener_local_notifications_contract --test runtime_listener_local_notification_flush_contract --test runtime_listener_secure_ack_delivery_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_session_loop_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestSessionLoopReconnectsAndStoresNotifications' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- Rust focused queue/ACK/session contracts: 45 passed, 0 failed.
+- Rust formatting check: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines.
+- `git diff --check`: passed.
+- Go focused listener guards: passed.
+- Rust focused foreground listener selector: 1 passed, 0 failed, 0 skipped.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- No mail selector was run or counted.
+
+Boundary note: this slice wires the already translated local notification queue
+and secure ACK queue branches into the real foreground runtime. It does not
+change network ACK fallback semantics, notification ping timeout behavior,
+bridge RPC transport reuse, OS signal shutdown handling, Windows named-pipe I/O,
+platform service-manager execution, mail notification acceptance, or full
+repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Runtime Listener Bridge Session Bootstrap Wait
 
 Scope: match Go `internal/runtime/listener/server.go` `ensureSession` for
