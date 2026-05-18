@@ -380,6 +380,28 @@ status propagation, a separately cancelable 15-second ping context, Windows
 named-pipe I/O, and full repository-wide acceptance. Mail selectors remain
 deferred/gated, and no dependency was added.
 
+Current runtime listener secure backlog shared-RPC evidence: on 2026-05-18,
+Rust secure backlog polling stopped opening a fresh `OneShotSessionRpc`
+websocket for the Go `pollUnreadSecureDirectInbox` helper path. The connected
+session loop now passes its `SessionRpcRegistry` handle into the secure backlog
+poller; unread secure direct inbox replay sends `inbox.get` through
+`SessionSharedRpc` with the existing Go 15-second `SECURE_DIRECT_SYNC_TIMEOUT`,
+and pending-confirmation secure history replay sends each `direct.get_history`
+through the same active session RPC channel instead of dialing per peer. Pending
+shared RPC entries now track optional deadlines, expire timed-out calls with
+`context deadline exceeded`, and continue to use the single foreground
+WebSocket reader plus `ListenerWsPendingDispatch` for responses. Focused Rust
+internal/shared-RPC and secure replay/sync/session/poll tests passed; `cargo
+fmt`, `cargo check`, `xtask check-structure`, and `git diff --check` passed;
+and the non-mail Batch 1 `awiki-system-test` selector passed with 1 passed,
+0 failed, and 0 skipped. This covers the session-loop secure backlog RPCs that
+Go receives as the `client *WSClient` argument. Remaining connection-depth work
+still includes the `secure_client_for_record` E2EE client factory used by secure
+normalization, ACK fallback, and queued secure outbox flush paths; prekey
+publish retry remains intentionally outside the shared session RPC lane because
+Go calls `message.PublishSecurePrekeys` rather than the session `WSClient`.
+Mail selectors remain deferred/gated, and no dependency was added.
+
 Current debug handle-history selector evidence: on 2026-05-17, a new Rust
 subprocess selector
 `tests_v2/debug/test_debug_cli.py::test_debug_db_handle_history_reads_contact_bindings`

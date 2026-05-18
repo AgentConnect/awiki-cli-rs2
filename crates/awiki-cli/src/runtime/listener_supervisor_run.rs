@@ -29,7 +29,9 @@ use super::listener_secure_replay::{
     secure_pending_history_replay_candidates, secure_unread_replay_candidates, ReplayStoreLookup,
 };
 use super::listener_secure_sessions;
-use super::listener_secure_sync::{SECURE_PENDING_HISTORY_LIMIT, SECURE_UNREAD_INBOX_LIMIT};
+use super::listener_secure_sync::{
+    SECURE_DIRECT_SYNC_TIMEOUT, SECURE_PENDING_HISTORY_LIMIT, SECURE_UNREAD_INBOX_LIMIT,
+};
 use super::listener_service_did::{
     fetch_message_service_did, ListenerServiceDidRpc, ListenerServiceDidSession,
 };
@@ -417,7 +419,13 @@ impl SessionRpcRegistry {
 struct SessionRpcRequest {
     method: String,
     params: Map<String, Value>,
+    timeout: Option<Duration>,
     response_tx: mpsc::Sender<anyhow::Result<Map<String, Value>>>,
+}
+
+struct PendingSessionRpc {
+    response_tx: mpsc::Sender<anyhow::Result<Map<String, Value>>>,
+    expires_at: Option<Instant>,
 }
 
 struct SessionSharedRpc {
@@ -440,6 +448,27 @@ impl SessionSharedRpc {
             })?;
         Ok(Self { sender })
     }
+
+    fn send_rpc_with_timeout(
+        &mut self,
+        method: &str,
+        params: Map<String, Value>,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<Map<String, Value>> {
+        let (response_tx, response_rx) = mpsc::channel();
+        self.sender
+            .tx
+            .send(SessionRpcRequest {
+                method: method.to_string(),
+                params,
+                timeout,
+                response_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?;
+        response_rx
+            .recv()
+            .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?
+    }
 }
 
 impl ListenerServiceDidRpc for SessionSharedRpc {
@@ -448,18 +477,7 @@ impl ListenerServiceDidRpc for SessionSharedRpc {
         method: &str,
         params: Map<String, Value>,
     ) -> anyhow::Result<Map<String, Value>> {
-        let (response_tx, response_rx) = mpsc::channel();
-        self.sender
-            .tx
-            .send(SessionRpcRequest {
-                method: method.to_string(),
-                params,
-                response_tx,
-            })
-            .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?;
-        response_rx
-            .recv()
-            .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?
+        self.send_rpc_with_timeout(method, params, None)
     }
 }
 
@@ -620,6 +638,7 @@ fn spawn_session_loop(
                         status.clone(),
                         host_notify.clone(),
                         local_notifications.clone(),
+                        session_rpcs.clone(),
                         shutdown.clone(),
                         record.identity_name.clone(),
                     );
@@ -734,6 +753,7 @@ fn spawn_secure_backlog_poller(
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
     local_notifications: Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: Arc<Mutex<SessionRpcRegistry>>,
     shutdown: Arc<AtomicBool>,
     identity_name: String,
 ) {
@@ -761,6 +781,7 @@ fn spawn_secure_backlog_poller(
                 &status,
                 &host_notify,
                 &local_notifications,
+                &session_rpcs,
                 &record,
             );
             sync_pending_confirmation_secure_history(
@@ -769,6 +790,7 @@ fn spawn_secure_backlog_poller(
                 &status,
                 &host_notify,
                 &local_notifications,
+                &session_rpcs,
                 &record,
             );
         }
@@ -781,9 +803,10 @@ fn sync_unread_secure_direct_inbox(
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
 ) {
-    let Ok(mut rpc) = one_shot_rpc_for_record(resolved, manager, record) else {
+    let Ok(mut rpc) = SessionSharedRpc::new(session_rpcs, &record.identity_name) else {
         return;
     };
     let params = message::build_inbox_rpc_params(
@@ -798,7 +821,9 @@ fn sync_unread_secure_direct_inbox(
     let Value::Object(params) = params else {
         return;
     };
-    let Ok(result) = rpc.send_rpc("inbox.get", params) else {
+    let Ok(result) =
+        rpc.send_rpc_with_timeout("inbox.get", params, Some(SECURE_DIRECT_SYNC_TIMEOUT))
+    else {
         return;
     };
     replay_secure_messages_from_rpc_result(
@@ -819,12 +844,20 @@ fn sync_pending_confirmation_secure_history(
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
 ) {
-    for peer_did in listener_secure_sessions::pending_confirmation_peer_dids(
+    let peer_dids = listener_secure_sessions::pending_confirmation_peer_dids(
         Some(manager),
         &record.identity_name,
-    ) {
+    );
+    if peer_dids.is_empty() {
+        return;
+    }
+    let Ok(mut rpc) = SessionSharedRpc::new(session_rpcs, &record.identity_name) else {
+        return;
+    };
+    for peer_did in peer_dids {
         let Ok(params) = message::build_history_rpc_params(
             record,
             message::HistoryRequest {
@@ -838,10 +871,11 @@ fn sync_pending_confirmation_secure_history(
         let Value::Object(params) = params else {
             continue;
         };
-        let Ok(mut rpc) = one_shot_rpc_for_record(resolved, manager, record) else {
-            continue;
-        };
-        let Ok(result) = rpc.send_rpc("direct.get_history", params) else {
+        let Ok(result) = rpc.send_rpc_with_timeout(
+            "direct.get_history",
+            params,
+            Some(SECURE_DIRECT_SYNC_TIMEOUT),
+        ) else {
             continue;
         };
         replay_secure_messages_from_rpc_result(
@@ -1042,18 +1076,6 @@ fn cached_message_exists(resolved: &Resolved, owner_did: &str, message_id: &str)
         .unwrap_or(true)
 }
 
-fn one_shot_rpc_for_record(
-    resolved: &Resolved,
-    manager: &Manager,
-    record: &StoredIdentity,
-) -> anyhow::Result<OneShotSessionRpc> {
-    OneShotSessionRpc::connect(
-        resolved,
-        manager,
-        &ListenerBridgeSession::connected(record.identity_name.clone(), record.clone()),
-    )
-}
-
 fn set_session_rpc_sender(
     registry: &Arc<Mutex<SessionRpcRegistry>>,
     identity_name: &str,
@@ -1075,14 +1097,20 @@ fn drain_session_rpc_requests(
     rpc_rx: &mpsc::Receiver<SessionRpcRequest>,
     next_id: &mut i64,
     dispatch: &mut super::listener_wsclient::ListenerWsPendingDispatch,
-    pending_rpc_responses: &mut BTreeMap<String, mpsc::Sender<anyhow::Result<Map<String, Value>>>>,
+    pending_rpc_responses: &mut BTreeMap<String, PendingSessionRpc>,
 ) -> anyhow::Result<()> {
     loop {
         match rpc_rx.try_recv() {
             Ok(request) => {
                 let request_id = super::listener_wsclient::next_ws_rpc_request_id(next_id);
                 dispatch.register_pending(request_id.clone());
-                pending_rpc_responses.insert(request_id.clone(), request.response_tx);
+                pending_rpc_responses.insert(
+                    request_id.clone(),
+                    PendingSessionRpc {
+                        response_tx: request.response_tx,
+                        expires_at: request.timeout.map(|timeout| Instant::now() + timeout),
+                    },
+                );
                 let payload = super::listener_wsclient::build_ws_rpc_request(
                     &request_id,
                     &request.method,
@@ -1090,8 +1118,8 @@ fn drain_session_rpc_requests(
                 );
                 if let Err(err) = transport.send_json(&payload) {
                     let _ = dispatch.remove_pending(&request_id);
-                    if let Some(response_tx) = pending_rpc_responses.remove(&request_id) {
-                        let _ = response_tx.send(Err(err));
+                    if let Some(pending) = pending_rpc_responses.remove(&request_id) {
+                        let _ = pending.response_tx.send(Err(err));
                     }
                 }
             }
@@ -1104,7 +1132,7 @@ fn drain_session_rpc_requests(
 fn route_session_rpc_response(
     message: Map<String, Value>,
     dispatch: &mut super::listener_wsclient::ListenerWsPendingDispatch,
-    pending_rpc_responses: &mut BTreeMap<String, mpsc::Sender<anyhow::Result<Map<String, Value>>>>,
+    pending_rpc_responses: &mut BTreeMap<String, PendingSessionRpc>,
 ) {
     let outcome = dispatch.route_incoming_message(message);
     let super::listener_wsclient::ListenerWsDispatchOutcome::RoutedResponse { request_id } =
@@ -1116,15 +1144,17 @@ fn route_session_rpc_response(
         return;
     };
     let _ = dispatch.remove_pending(&request_id);
-    if let Some(response_tx) = pending_rpc_responses.remove(&request_id) {
-        let _ = response_tx.send(super::listener_wsclient::decode_ws_rpc_result(&response));
+    if let Some(pending) = pending_rpc_responses.remove(&request_id) {
+        let _ = pending
+            .response_tx
+            .send(super::listener_wsclient::decode_ws_rpc_result(&response));
     }
 }
 
 fn fail_session_rpc_pending(
     error: &str,
     dispatch: &mut super::listener_wsclient::ListenerWsPendingDispatch,
-    pending_rpc_responses: &mut BTreeMap<String, mpsc::Sender<anyhow::Result<Map<String, Value>>>>,
+    pending_rpc_responses: &mut BTreeMap<String, PendingSessionRpc>,
 ) {
     for request_id in dispatch.fail_pending_requests(error) {
         let response = dispatch
@@ -1133,8 +1163,34 @@ fn fail_session_rpc_pending(
                 super::listener_wsclient::pending_failure_response(&request_id, error)
             });
         let _ = dispatch.remove_pending(&request_id);
-        if let Some(response_tx) = pending_rpc_responses.remove(&request_id) {
-            let _ = response_tx.send(super::listener_wsclient::decode_ws_rpc_result(&response));
+        if let Some(pending) = pending_rpc_responses.remove(&request_id) {
+            let _ = pending
+                .response_tx
+                .send(super::listener_wsclient::decode_ws_rpc_result(&response));
+        }
+    }
+}
+
+fn expire_session_rpc_pending(
+    now: Instant,
+    dispatch: &mut super::listener_wsclient::ListenerWsPendingDispatch,
+    pending_rpc_responses: &mut BTreeMap<String, PendingSessionRpc>,
+) {
+    let expired = pending_rpc_responses
+        .iter()
+        .filter_map(|(request_id, pending)| {
+            pending
+                .expires_at
+                .filter(|expires_at| *expires_at <= now)
+                .map(|_| request_id.clone())
+        })
+        .collect::<Vec<_>>();
+    for request_id in expired {
+        let _ = dispatch.remove_pending(&request_id);
+        if let Some(pending) = pending_rpc_responses.remove(&request_id) {
+            let _ = pending
+                .response_tx
+                .send(Err(anyhow::anyhow!("context deadline exceeded")));
         }
     }
 }
@@ -1153,8 +1209,7 @@ fn consume_notifications(
     let mut next_ping = Instant::now() + SESSION_PING_INTERVAL;
     let mut next_id = 0_i64;
     let mut dispatch = super::listener_wsclient::ListenerWsPendingDispatch::default();
-    let mut pending_rpc_responses =
-        BTreeMap::<String, mpsc::Sender<anyhow::Result<Map<String, Value>>>>::new();
+    let mut pending_rpc_responses = BTreeMap::<String, PendingSessionRpc>::new();
     while !shutdown.load(Ordering::SeqCst) {
         drain_session_rpc_requests(
             transport,
@@ -1163,6 +1218,7 @@ fn consume_notifications(
             &mut dispatch,
             &mut pending_rpc_responses,
         )?;
+        expire_session_rpc_pending(Instant::now(), &mut dispatch, &mut pending_rpc_responses);
         if Instant::now() >= next_ping {
             transport
                 .ping()
@@ -2008,4 +2064,60 @@ fn is_not_found(err: &anyhow::Error) -> bool {
     err.downcast_ref::<std::io::Error>()
         .is_some_and(|err| err.kind() == std::io::ErrorKind::NotFound)
         || err.to_string().contains("No such file")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn session_shared_rpc_sends_timeout_bound_request_through_session_channel() {
+        let (tx, rx) = mpsc::channel();
+        let mut rpc = SessionSharedRpc {
+            sender: SessionRpcSender { tx },
+        };
+        let handle = thread::spawn(move || {
+            let mut params = Map::new();
+            params.insert("limit".to_string(), json!(100));
+            rpc.send_rpc_with_timeout("inbox.get", params, Some(SECURE_DIRECT_SYNC_TIMEOUT))
+        });
+
+        let request = rx.recv().expect("session rpc request");
+        assert_eq!(request.method, "inbox.get");
+        assert_eq!(request.timeout, Some(SECURE_DIRECT_SYNC_TIMEOUT));
+        assert_eq!(request.params["limit"], 100);
+        request
+            .response_tx
+            .send(Ok(Map::from_iter([("ok".to_string(), json!(true))])))
+            .expect("send response");
+
+        let result = handle.join().expect("rpc thread").expect("rpc result");
+        assert_eq!(result["ok"], true);
+    }
+
+    #[test]
+    fn expired_session_rpc_pending_removes_pending_and_wakes_caller() {
+        let mut dispatch = crate::runtime::listener_wsclient::ListenerWsPendingDispatch::default();
+        dispatch.register_pending("req-1");
+        let (response_tx, response_rx) = mpsc::channel();
+        let now = Instant::now();
+        let mut pending = BTreeMap::from_iter([(
+            "req-1".to_string(),
+            PendingSessionRpc {
+                response_tx,
+                expires_at: Some(now - Duration::from_millis(1)),
+            },
+        )]);
+
+        expire_session_rpc_pending(now, &mut dispatch, &mut pending);
+
+        assert!(!dispatch.has_pending("req-1"));
+        assert!(pending.is_empty());
+        let error = response_rx
+            .recv()
+            .expect("timeout response")
+            .expect_err("timeout should fail");
+        assert_eq!(error.to_string(), "context deadline exceeded");
+    }
 }
