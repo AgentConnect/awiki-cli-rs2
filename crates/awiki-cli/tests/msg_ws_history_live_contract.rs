@@ -204,6 +204,82 @@ fn msg_history_websocket_mode_uses_local_cache_before_http_like_go() {
 }
 
 #[test]
+fn msg_history_websocket_unresolved_handle_uses_local_history_cache_like_go() {
+    let workspace = TempDir::new("msg-ws-history-handle-cache").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-ws-history-handle", "bob", "jwt-bob");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let alice_old = "did:wba:awiki.ai:alice:e1_old";
+    seed_contact(
+        workspace.path(),
+        bob_did,
+        alice_old,
+        "alice",
+        "2026-05-16T03:00:00Z",
+    );
+    seed_direct_message(
+        workspace.path(),
+        bob_did,
+        alice_old,
+        "msg-ws-history-handle-cache-1",
+        "hello from unresolved handle cache",
+        "2026-05-16T03:04:05Z",
+    );
+    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({}))),
+        TestResponse::internal_error(
+            r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"handle lookup failed"},"id":"req-1"}"#,
+        ),
+    ]);
+    write_msg_ws_config(
+        workspace.path(),
+        &server.base_url(),
+        missing_socket.to_str().expect("socket path"),
+    );
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "bob-ws-history-handle",
+            "msg",
+            "history",
+            "--with",
+            "alice.awiki.ai",
+            "--limit",
+            "5",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["summary"],
+        "Loaded history from local handle history cache"
+    );
+    assert_eq!(envelope["data"]["source"], "local_handle_history_cache");
+    assert_eq!(envelope["data"]["with"], "alice");
+    assert_eq!(envelope["data"]["resolved_dids"], json!([alice_old]));
+    assert_eq!(
+        envelope["data"]["messages"][0]["msg_id"],
+        "msg-ws-history-handle-cache-1"
+    );
+    assert!(envelope["warnings"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .is_empty());
+
+    let requests = server.requests();
+    assert!(!requests.is_empty());
+    assert!(
+        !requests
+            .iter()
+            .any(|request| assert_request_method(request, "direct.get_history")),
+        "unresolved handle cache fallback should not call direct.get_history HTTP fallback: {requests:?}"
+    );
+}
+
+#[test]
 fn msg_history_websocket_mode_double_failure_returns_http_error_like_go() {
     let workspace = TempDir::new("msg-ws-history-double-failure").expect("workspace");
     register_ready_msg_identity(workspace.path(), "bob-ws-history-fail", "bob", "jwt-bob");
@@ -387,6 +463,21 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
     .unwrap();
 }
 
+fn seed_contact(workspace: &Path, owner_did: &str, peer_did: &str, handle: &str, seen_at: &str) {
+    execute_sql(
+        workspace,
+        format!(
+            "INSERT INTO contacts (owner_did, did, handle, messaged, first_seen_at, last_seen_at) VALUES ('{owner_did}', '{peer_did}', '{handle}', 1, '{seen_at}', '{seen_at}')",
+        ),
+    );
+    execute_sql(
+        workspace,
+        format!(
+            "UPDATE contact_handle_bindings SET is_current = 1, last_seen_at = '{seen_at}', credential_name = 'bob-msg' WHERE owner_did = '{owner_did}' AND handle = '{handle}' AND did = '{peer_did}'",
+        ),
+    );
+}
+
 fn seed_direct_message(
     workspace: &Path,
     owner_did: &str,
@@ -532,6 +623,18 @@ fn assert_contains_text(haystack: &str, needle: &str) {
         haystack.contains(needle),
         "expected text to contain {needle:?}, got:\n{haystack}"
     );
+}
+
+fn assert_request_method(raw: &str, method: &str) -> bool {
+    serde_json::from_str::<Value>(request_body(raw))
+        .ok()
+        .and_then(|body| {
+            body.get("method")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .map(|actual| actual == method)
+        .unwrap_or(false)
 }
 
 fn json_rpc_result(result: Value) -> String {

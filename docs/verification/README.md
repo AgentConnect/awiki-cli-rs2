@@ -20,6 +20,125 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Message Direct WebSocket Local-Cache Batch
+
+Timestamp: 2026-05-18T04:11:37Z / 2026-05-18T12:11:37+0800.
+
+Scope: close the `message/direct` WebSocket/local-cache module batch by adding
+the missing unresolved-handle cache contracts for direct inbox/history and by
+promoting the existing focused Rust message/direct WebSocket/cache contracts to
+an `awiki-system-test` selector. Mail selectors remain deferred and were not
+run or counted.
+
+Pipeline note:
+
+- Three read-only Native Agents ran in parallel. One mapped Go
+  `internal/message/service.go`, `ws_proxy_client.go`, and `contact_sync.go`
+  behavior; one mapped existing Rust `src/message` helpers/tests and file-size
+  risks; one mapped available non-mail `awiki-system-test` selectors.
+- A GPT-5.5 xhigh Native Agent with write scope limited to
+  `tests_v2/cli/test_awiki_cli_runtime_listener_local.py` added the system-test
+  selector wrapper. The leader kept Rust writes to
+  `crates/awiki-cli/tests/msg_ws_history_live_contract.rs` and
+  `crates/awiki-cli/tests/msg_ws_inbox_live_contract.rs`, then handled
+  integration, validation, and docs.
+- The first wrapper version executed one Cargo process per Rust function and
+  was stopped after about 4 minutes because it violated the new throughput
+  pipeline. The wrapper now checks each required function exists, then runs one
+  Cargo process per Rust test target.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `awiki-cli/internal/message/ws_proxy_client.go` | bridge method mapping for direct send, inbox, history, and mark-read | `crates/awiki-cli/src/message/ws_proxy.rs` | already implemented | `message_ws_proxy_contract` | `test_awiki_cli_runtime_listener_message_direct_ws_local_cache_contracts` | low |
+| `awiki-cli/internal/message/service.go` direct send branch | WebSocket `direct.send` and HTTP fallback | `crates/awiki-cli/src/message/service.rs` | already implemented | `msg_ws_proxy_live_contract` | same selector | low |
+| `awiki-cli/internal/message/service.go` direct inbox branch | WebSocket `inbox.get`, cache-before-HTTP fallback, double failure, mark-read, unresolved-handle cache fallback | `crates/awiki-cli/src/message/inbox.rs` | implemented; new unresolved-handle WebSocket contract added | `msg_ws_inbox_live_contract` | same selector | medium before this batch |
+| `awiki-cli/internal/message/service.go` history branch | WebSocket `direct.get_history`, cache-before-HTTP fallback, double failure, unresolved-handle local history cache fallback | `crates/awiki-cli/src/message/history.rs` | implemented; new unresolved-handle WebSocket contract added | `msg_ws_history_live_contract` | same selector | medium before this batch |
+| `awiki-cli/internal/message/service.go` mark-read branch | WebSocket `inbox.mark_read`, HTTP fallback, group/mail local-only row handling | `crates/awiki-cli/src/message/mark_read.rs` | already implemented | `msg_ws_mark_read_live_contract` | same selector | low |
+| `awiki-cli/internal/message/service.go` `allInbox` branch | default all-inbox direct/group/mail-like local cache merge and mark-read | `crates/awiki-cli/src/message/inbox.rs` | already implemented | `msg_all_inbox_live_contract` | same selector | low; mail-service selectors deferred |
+
+Rust repository changes:
+
+- `crates/awiki-cli/tests/msg_ws_history_live_contract.rs`: added a
+  WebSocket-mode unresolved-handle test that seeds local contact history and a
+  direct history row, forces remote handle lookup failure, verifies
+  `local_handle_history_cache`, verifies `resolved_dids`, and verifies the
+  command does not continue to `direct.get_history` HTTP fallback. Existing
+  secure-prekey publish side effects are allowed because they precede message
+  reads in the current Go-parity path.
+- `crates/awiki-cli/tests/msg_ws_inbox_live_contract.rs`: added the analogous
+  scoped direct inbox unresolved-handle local-cache test and verifies no
+  `inbox.get` HTTP fallback is attempted after the local cache result.
+
+System-test repository change:
+
+- `tests_v2/cli/test_awiki_cli_runtime_listener_local.py`: added
+  `test_awiki_cli_runtime_listener_message_direct_ws_local_cache_contracts`.
+  The selector skips unless `AWIKI_CLI_UNDER_TEST=rust`, resolves the selected
+  Rust repo, asserts every required contract function exists, and runs one
+  focused Cargo command per Rust test target. It does not run mail selectors.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract msg_history_websocket_unresolved_handle_uses_local_history_cache_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract msg_inbox_websocket_unresolved_handle_uses_local_history_cache_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --test msg_ws_proxy_live_contract --test msg_ws_inbox_live_contract --test msg_ws_history_live_contract --test msg_ws_mark_read_live_contract --test msg_all_inbox_live_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider --collect-only tests_v2/cli/test_awiki_cli_runtime_listener_local.py -q
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_message_direct_ws_local_cache_contracts -ra -q
+```
+
+Observed results:
+
+- Focused new Rust history unresolved-handle contract: 1 passed, 0 failed.
+- Focused new Rust inbox unresolved-handle contract: 1 passed, 0 failed.
+- Rust message/direct WebSocket/cache target batch: 30 passed, 0 failed across
+  `message_ws_proxy_contract`, `msg_ws_proxy_live_contract`,
+  `msg_ws_inbox_live_contract`, `msg_ws_history_live_contract`,
+  `msg_ws_mark_read_live_contract`, and `msg_all_inbox_live_contract`.
+- Rust formatting, package check, `xtask check-structure`, and `git diff
+  --check`: passed.
+- System-test wrapper syntax/collection: `4 tests collected`, 0 collection
+  failures.
+- Focused `awiki-system-test` selector: 1 passed, 0 failed, 0 skipped in
+  116.63s.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- `AWIKI_SYSTEM_TEST_MODE`, user-service URL, message-service URL, WebSocket
+  URL, and DID domain were not set by this selector command because this is a
+  Rust-contract wrapper, not a live service selector.
+- Mail selectors were not run. Failed 0. Skipped 0.
+
+Boundary note: this batch proves system-test visibility for the focused Rust
+message/direct WebSocket and local-cache contracts. It does not add new live
+message-service behavior, does not claim mail-service selectors, and does not
+turn the wrapper into full repository-wide acceptance. The seeded mail-like
+cache row in `msg_all_inbox_live_contract` remains local-cache normalization
+coverage only; mail system tests remain deferred.
+
+Dependency note: no dependency was added. Cargo manifests and lockfile are
+unchanged. The batch reuses the existing std/Rustls message client,
+`WSProxyTransport`, local store helpers, and the approved `rusqlite + bundled`
+SQLite lane. No OpenSSL, `native-tls`, WebSocket crate, async runtime, YAML
+crate, platform service library, or alternate SQLite backend was introduced.
+
+File-size note: the changed Rust test files remain below the default 1200-line
+cap after formatting: `msg_ws_history_live_contract.rs` is 809 lines and
+`msg_ws_inbox_live_contract.rs` is 927 lines. The system-test wrapper is 465
+lines. No file-size exception is needed.
+
 ## 2026-05-18 Runtime Listener Secure Factory Shared RPC
 
 Timestamp: 2026-05-18T07:30:00Z / 2026-05-18T15:30:00+0800.
