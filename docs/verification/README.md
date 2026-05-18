@@ -50,6 +50,23 @@ Rust contracts passed 14 focused parser/group/site tests; the focused Go guard
 passed; the new non-mail Rust contract system-test selector passed with 1 test;
 structure and whitespace checks passed; and mail selectors remained deferred.
 
+## 2026-05-19 CLI Parser Unknown Global Long Flags Batch
+
+Detailed report:
+`2026-05-19-cli-parser-unknown-global-flags.md`.
+
+Summary: the accelerated CLI parser/Cobra follow-up batch used two parallel
+read-only Native Agents to map Go unknown-long-flag placement, current Rust
+parser behavior, and non-mail system-test selector exposure before editing. It
+fixed the localized divergence where root/global unknown long flags before any
+command word, such as `--bogus status`, bare `--bogus`, and
+`--format json --bogus status`, returned Rust's `missing command.` envelope
+instead of Go/Cobra's `internal_error` `unknown flag: --bogus` envelope. The
+focused Rust parser contract passed with 3 tests; the same Rust-only non-mail
+system-test selector continues to expose `cli_parser_contract`,
+`group_contract`, and `site_contract`; structure and whitespace checks passed;
+and mail selectors remained deferred.
+
 ## 2026-05-18 Workspace Config Update Selector Batch
 
 Detailed report:

@@ -58,6 +58,9 @@ where
                 globals.identity = take_flag_value("identity", value, &mut iter)?;
                 globals.identity_changed = true;
             }
+            Some((name, _)) if command_words.is_empty() && !name.is_empty() => {
+                return Err(unknown_long_flag(name));
+            }
             _ => {
                 if !arg.starts_with("--") {
                     command_words.push(arg.clone());
@@ -471,12 +474,16 @@ fn validate_local_flag(command_name: &str, flag_name: &str) -> Result<(), ExitEr
     if known {
         return Ok(());
     }
-    Err(ExitError::new(
+    Err(unknown_long_flag(flag_name))
+}
+
+fn unknown_long_flag(flag_name: &str) -> ExitError {
+    ExitError::new(
         "internal_error",
         1,
         format!("unknown flag: --{flag_name}"),
         "",
-    ))
+    )
 }
 
 fn split_long_flag(arg: &str) -> Option<(&str, Option<&str>)> {

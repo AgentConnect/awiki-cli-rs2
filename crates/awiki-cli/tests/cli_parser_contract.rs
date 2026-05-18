@@ -62,6 +62,23 @@ fn unknown_shorthand_flags_fail_like_go_cobra_before_handler_execution() {
     assert_eq!(envelope["command"], "awiki-cli status");
 }
 
+#[test]
+fn unknown_global_long_flags_fail_like_go_cobra_before_missing_command() {
+    for args in [
+        &["--bogus", "status"][..],
+        &["--bogus"][..],
+        &["--format", "json", "--bogus", "status"][..],
+    ] {
+        let output = awiki_cmd(args);
+        assert_code(&output, 1);
+        assert_stdout_empty(&output);
+        let envelope = error_json(&output);
+        assert_eq!(envelope["error"]["code"], "internal_error");
+        assert_eq!(envelope["error"]["message"], "unknown flag: --bogus");
+        assert_eq!(envelope["error"]["hint"], Value::Null);
+    }
+}
+
 fn awiki_cmd(args: &[&str]) -> Output {
     let workspace = TempDir::new().expect("temp workspace");
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
