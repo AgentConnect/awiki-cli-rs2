@@ -10,9 +10,13 @@ use super::listener_notification_plan::{
     NotificationSessionContext, SecureNotificationNormalization,
 };
 use super::listener_secure_notifications::{
-    is_direct_secure_incoming_notification, is_secure_direct_wire_content_type,
-    plaintext_body_to_notification_body, secure_notification_from_message_view,
+    is_direct_secure_incoming_notification, plaintext_body_to_notification_body,
 };
+use super::listener_secure_replay::{
+    secure_pending_history_replay_candidates, secure_unread_replay_candidates, ReplayStoreLookup,
+};
+use super::listener_secure_sessions;
+use super::listener_secure_sync::{SECURE_PENDING_HISTORY_LIMIT, SECURE_UNREAD_INBOX_LIMIT};
 use super::listener_service_did::{
     fetch_message_service_did, ListenerServiceDidRpc, ListenerServiceDidSession,
 };
@@ -40,7 +44,6 @@ use time::OffsetDateTime;
 const SESSION_RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
 const SESSION_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 const WATCH_IDENTITIES_INTERVAL: Duration = Duration::from_secs(3);
-const SECURE_DIRECT_INBOX_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 pub fn run_foreground(resolved: Resolved) -> anyhow::Result<()> {
     run_listener(resolved)
@@ -570,7 +573,10 @@ fn spawn_secure_backlog_poller(
             if run_immediately {
                 run_immediately = false;
             } else {
-                sleep_or_shutdown(&shutdown, SECURE_DIRECT_INBOX_POLL_INTERVAL);
+                sleep_or_shutdown(
+                    &shutdown,
+                    super::listener_secure_inbox_poll::SECURE_DIRECT_INBOX_POLL_INTERVAL,
+                );
                 if shutdown.load(Ordering::SeqCst) || !session_is_connected(&status, &identity_name)
                 {
                     break;
@@ -606,7 +612,7 @@ fn sync_unread_secure_direct_inbox(
         message::InboxRequest {
             scope: "direct".to_string(),
             unread_only: true,
-            limit: 100,
+            limit: SECURE_UNREAD_INBOX_LIMIT,
             ..message::InboxRequest::default()
         },
     );
@@ -634,12 +640,15 @@ fn sync_pending_confirmation_secure_history(
     host_notify: &Arc<HostNotifySinkImpl>,
     record: &StoredIdentity,
 ) {
-    for peer_did in pending_confirmation_peer_dids(manager, record) {
+    for peer_did in listener_secure_sessions::pending_confirmation_peer_dids(
+        Some(manager),
+        &record.identity_name,
+    ) {
         let Ok(params) = message::build_history_rpc_params(
             record,
             message::HistoryRequest {
                 with: peer_did,
-                limit: 50,
+                limit: SECURE_PENDING_HISTORY_LIMIT,
                 ..message::HistoryRequest::default()
             },
         ) else {
@@ -680,32 +689,31 @@ fn replay_secure_messages_from_rpc_result(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for message in messages {
-        let Some(view) = message.as_object() else {
-            continue;
-        };
-        if !is_secure_direct_wire_content_type(&string_from_object(Some(view), "content_type")) {
-            continue;
+    let mut lookup = |message_id: &str, owner_did: &str, _credential_name: &str| {
+        if cached_message_exists(resolved, owner_did, message_id) {
+            ReplayStoreLookup::Exists
+        } else {
+            ReplayStoreLookup::Missing
         }
-        if skip_self_sent && string_from_object(Some(view), "sender_did") == record.did {
-            continue;
-        }
-        let owner_did =
-            fallback_string(string_from_object(Some(view), "receiver_did"), &record.did);
-        let message_id = string_from_object(Some(view), "id");
-        if cached_message_exists(resolved, &owner_did, &message_id) {
-            continue;
-        }
-        let Ok(notification) = secure_notification_from_message_view(&message) else {
-            continue;
-        };
+    };
+    let candidates = if skip_self_sent {
+        secure_pending_history_replay_candidates(
+            &messages,
+            &record.did,
+            &record.identity_name,
+            &mut lookup,
+        )
+    } else {
+        secure_unread_replay_candidates(&messages, &record.did, &record.identity_name, &mut lookup)
+    };
+    for candidate in candidates {
         handle_replayed_secure_notification(
             resolved,
             manager,
             status,
             host_notify,
             record,
-            &notification,
+            &candidate.notification,
         );
     }
 }
@@ -757,37 +765,6 @@ fn cached_message_exists(resolved: &Resolved, owner_did: &str, message_id: &str)
     store::list_messages_by_ids(&connection, owner_did, &[message_id.to_string()])
         .map(|messages| !messages.is_empty())
         .unwrap_or(true)
-}
-
-fn pending_confirmation_peer_dids(manager: &Manager, record: &StoredIdentity) -> Vec<String> {
-    let Ok(paths) = manager.paths_for_identity(&record.identity_name) else {
-        return Vec::new();
-    };
-    let root = std::path::Path::new(&paths.identity_dir).join("p5-e2ee-sessions");
-    let Ok(entries) = fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut peers = Vec::new();
-    for entry in entries.flatten() {
-        if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(raw) = fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        if string_value(value.get("status")) != "pending-confirmation" {
-            continue;
-        }
-        let peer_did = string_value(value.get("peer_did"));
-        if peer_did.is_empty() || peers.iter().any(|seen| seen == &peer_did) {
-            continue;
-        }
-        peers.push(peer_did);
-    }
-    peers
 }
 
 fn one_shot_rpc_for_record(

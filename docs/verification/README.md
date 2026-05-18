@@ -14,6 +14,71 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Secure Replay Wiring Consolidation
+
+Scope: keep the Rust foreground listener aligned with Go
+`internal/runtime/listener/server.go` secure backlog replay while reducing
+duplicate inline logic in the existing oversized supervisor file. This is a
+translation/wiring slice, not an optimization pass: runtime code now calls the
+already translated helper modules for poll interval constants, unread/pending
+history limits, pending-confirmation session scanning, and secure replay
+candidate filtering.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: replaced local
+  secure inbox polling constants, hard-coded inbox/history limits, inline
+  pending-confirmation peer scanning, and inline secure message filtering with
+  calls to `listener_secure_inbox_poll`, `listener_secure_sync`,
+  `listener_secure_sessions`, and `listener_secure_replay`.
+- `docs/file-size-exceptions.md`: refreshed the existing documented exception
+  line count from 1536 to 1513 and recorded that new helper behavior should
+  stay in smaller modules where practical.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_replay_contract --test runtime_listener_secure_sync_contract --test runtime_listener_secure_sessions_contract --test runtime_listener_secure_inbox_poll_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message ./internal/runtime/listener -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation|TestSessionLoopReconnectsAndStoresNotifications' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- Rust secure replay/sync/session/poll focused tests: 20 passed, 0 failed.
+- Rust formatting check: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines.
+- `git diff --check`: passed.
+- Go focused message/listener secure guards: passed for both packages.
+- Rust focused listener system selector: 1 passed, 0 failed, 0 skipped.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- No mail selector was run or counted.
+
+Boundary note: this slice consolidates the Rust runtime wiring for behavior
+already translated in helper modules. It does not introduce new secure replay
+behavior beyond the Go-equivalent helper calls, does not implement new mail
+behavior, does not prove Windows named-pipe I/O, platform service-manager
+execution, real Hermes/OpenClaw delivery, or full repository-wide system
+acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. The slice keeps SQLite on the approved `rusqlite + bundled`
+path and keeps TLS policy Rustls-first with no OpenSSL/native-tls
+introduction.
+
 ## 2026-05-18 Runtime Listener Offline Host-Notify Status Shape
 
 Scope: match Go `internal/runtime/listener/manager.go` `StatusFor` for the

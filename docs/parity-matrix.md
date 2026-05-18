@@ -214,6 +214,24 @@ running-only saved sink/file_path/hook_url overrides through system tests,
 platform service-manager lifecycle, real foreground listener execution, or
 mail-system acceptance.
 
+Current runtime listener secure replay wiring evidence: on 2026-05-18,
+`listener_supervisor_run.rs` was reduced from 1536 to 1513 lines by reusing the
+existing Rust helper modules for Go `server.go` secure backlog behavior:
+`listener_secure_inbox_poll::SECURE_DIRECT_INBOX_POLL_INTERVAL`,
+`listener_secure_sync::{SECURE_UNREAD_INBOX_LIMIT, SECURE_PENDING_HISTORY_LIMIT}`,
+`listener_secure_sessions::pending_confirmation_peer_dids`, and
+`listener_secure_replay::{secure_unread_replay_candidates,
+secure_pending_history_replay_candidates}`. Focused Rust secure listener
+contract tests passed with 20 tests across replay, sync, sessions, and inbox
+polling; Go focused message/listener secure guards passed; `cargo check`,
+`xtask check-structure`, and `git diff --check` passed; and the Rust focused
+system selector
+`tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds`
+passed with 1 passed, 0 failed, and 0 skipped. This is wiring consolidation for
+already translated secure replay behavior; it does not add a dependency, does
+not expand the documented large-file exception, and does not count mail
+selectors.
+
 Current debug handle-history selector evidence: on 2026-05-17, a new Rust
 subprocess selector
 `tests_v2/debug/test_debug_cli.py::test_debug_db_handle_history_reads_contact_bindings`
