@@ -1023,6 +1023,52 @@ the wrapper into full repository-wide acceptance. The seeded mail-like cache
 row in `msg_all_inbox_live_contract` remains local-cache normalization coverage
 only; mail system tests remain deferred.
 
+Strict non-mail selector hygiene update:
+
+- A later accelerated pass found that the Rust-only selector still referenced
+  two deterministic Cargo tests that seeded mail-like rows as local cache guard
+  data. Those tests remain useful Rust guards, but they are no longer selected
+  by the non-mail `awiki-system-test` wrapper.
+- Added `msg_mark_read_websocket_mode_keeps_group_rows_local_like_go` to prove
+  local group-row mark-read behavior without mail-like rows.
+- Added
+  `msg_inbox_default_scope_all_merges_local_direct_and_group_like_go` to prove
+  default all-inbox direct/group local-cache merging without mail-like rows.
+- Updated
+  `test_awiki_cli_runtime_listener_message_direct_ws_local_cache_contracts` to
+  call those strict non-mail replacements instead of the mail-mixed guard tests.
+
+Additional commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_ws_mark_read_live_contract msg_mark_read_websocket_mode_keeps_group_rows_local_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract msg_inbox_default_scope_all_merges_local_direct_and_group_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test message_contract --test message_ws_proxy_contract --test msg_ws_proxy_live_contract --test msg_ws_inbox_live_contract --test msg_ws_history_live_contract --test msg_ws_mark_read_live_contract --test msg_all_inbox_live_contract --test store_contact_contract --test store_helpers_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message ./internal/store ./internal/cli -run 'Test.*(WSProxy|Inbox|History|MarkRead|Mark|Direct|Contact|Handle|MessageQuery|DryRun)' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_message_direct_ws_local_cache_contracts -ra -q
+cd /home/ecs-user/awiki-space/awiki-system-test && python3 -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check -- tests_v2/cli/test_awiki_cli_runtime_listener_local.py
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+```
+
+Additional observed results:
+
+- The two new strict non-mail Rust contracts passed individually.
+- The broader focused Rust message/direct batch passed 47 tests across the
+  selected contract targets, including the two strict non-mail replacements.
+- The focused Go guard passed for `internal/message`, `internal/store`, and
+  `internal/cli`.
+- The updated non-mail `awiki-system-test` selector passed with 1 passed,
+  0 failed, and 0 skipped in 130.91s.
+- File sizes remain below both the older 1200-line visibility target and the
+  current ordinary 3000-line target:
+  `msg_ws_mark_read_live_contract.rs` is 865 lines,
+  `msg_all_inbox_live_contract.rs` is 919 lines, and
+  `test_awiki_cli_runtime_listener_local.py` is 1121 lines.
+
 Dependency note: no dependency was added. Cargo manifests and lockfile are
 unchanged. The batch reuses the existing std/Rustls message client,
 `WSProxyTransport`, local store helpers, and the approved `rusqlite + bundled`

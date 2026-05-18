@@ -311,11 +311,14 @@ deferred. The batch gap table was:
 | `awiki-cli/internal/message/service.go` `allInbox` and group/mail-like local cache merge | default all-inbox direct/group/mail-like local cache merge and local mark-read | `crates/awiki-cli/src/message/inbox.rs`, `crates/awiki-cli/tests/msg_all_inbox_live_contract.rs` | already implemented | `msg_all_inbox_live_contract` | same focused non-mail Rust selector wrapper | low; mail-service selectors remain deferred |
 
 Verification evidence: `cargo +1.79.0 test -p awiki-cli --test
-message_ws_proxy_contract --test msg_ws_proxy_live_contract --test
-msg_ws_inbox_live_contract --test msg_ws_history_live_contract --test
-msg_ws_mark_read_live_contract --test msg_all_inbox_live_contract --locked`
-passed 30 tests across the selected targets, including the two new
-unresolved-handle local-cache contracts. The direct handle-history merge
+message_contract --test message_ws_proxy_contract --test
+msg_ws_proxy_live_contract --test msg_ws_inbox_live_contract --test
+msg_ws_history_live_contract --test msg_ws_mark_read_live_contract --test
+msg_all_inbox_live_contract --test store_contact_contract --test
+store_helpers_contract --locked` passed 47 tests across the selected targets,
+including the two unresolved-handle local-cache contracts and the strict
+non-mail replacements for group-only mark-read and direct/group all-inbox
+merge. The direct handle-history merge
 continuation then passed 3 focused Rust helper tests, 2 focused
 `msg_live_contract` handle-history tests, and the Go focused message guard for
 `mergeDirectHistoryMessages`, historical handle bindings, and contact rebind
@@ -323,15 +326,16 @@ preservation. This proves the direct `msg history --with <handle>` cache merge
 path now matches Go cache-wins, `server_seq`, anonymous-row, sort-time, and
 limit/empty-side helper semantics while retaining Rust's existing
 `message_id` compatibility fallback for bridge/cache rows. The optimized
-`awiki-system-test`
-selector
+`awiki-system-test` selector
 `AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2
 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p
 no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_message_direct_ws_local_cache_contracts -ra -q`
-was rerun after the helper continuation and passed with 1 passed, 0 failed, 0
-skipped in 119.96s. The wrapper checks each
-required contract function exists, then runs contracts by Rust test target to
-avoid one Cargo invocation per function. No dependency was added, mail
+now points at those strict non-mail replacement contracts and passed 1 test in
+130.91s. The older mail-like local-cache guard contracts remain in Rust as
+deterministic unit coverage, but they are not counted by the non-mail
+system-test selector while mail selectors remain deferred. The wrapper checks
+each required contract function exists, then runs contracts by Rust test target
+to avoid one Cargo invocation per function. No dependency was added, mail
 system-test selectors remain deferred, and changed Rust test files stay below
 the default 1200-line cap. The helper test was split into
 `crates/awiki-cli/src/message/service/tests.rs` instead of growing

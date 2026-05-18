@@ -79,6 +79,66 @@ fn msg_inbox_default_scope_all_merges_local_direct_group_and_mail_like_go() {
 }
 
 #[test]
+fn msg_inbox_default_scope_all_merges_local_direct_and_group_like_go() {
+    let workspace = TempDir::new("msg-all-inbox-direct-group").expect("workspace");
+    register_ready_msg_identity(
+        workspace.path(),
+        "alice-all-direct-group",
+        "alice",
+        "jwt-alice",
+    );
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    seed_direct_message(
+        workspace.path(),
+        alice_did,
+        "did:wba:awiki.ai:bob:e1_bob",
+        "direct-local-1",
+        "hello direct",
+        "2026-05-16T10:00:00Z",
+        false,
+    );
+    seed_group_message(
+        workspace.path(),
+        alice_did,
+        "did:wba:awiki.ai:groups:demo:e1_group",
+        "group-local-1",
+        "hello group",
+        "2026-05-16T10:01:00Z",
+        false,
+    );
+    write_msg_ws_config(workspace.path(), "https://placeholder.invalid");
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-all-direct-group",
+            "msg",
+            "inbox",
+            "--limit",
+            "10",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 2 inbox messages");
+    assert_eq!(
+        envelope["data"]["source"],
+        "local_direct_cache+local_group_cache"
+    );
+    assert_eq!(envelope["data"]["total"], 2);
+    assert_eq!(
+        message_id(&envelope["data"]["messages"][0]),
+        "group-local-1"
+    );
+    assert_eq!(
+        message_id(&envelope["data"]["messages"][1]),
+        "direct-local-1"
+    );
+}
+
+#[test]
 fn msg_inbox_default_scope_all_unread_filters_local_sources_like_go() {
     let workspace = TempDir::new("msg-all-inbox-unread").expect("workspace");
     register_ready_msg_identity(workspace.path(), "alice-all-unread", "alice", "jwt-alice");

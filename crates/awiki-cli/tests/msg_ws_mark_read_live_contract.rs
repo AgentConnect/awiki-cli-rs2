@@ -309,6 +309,59 @@ fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_like_go() {
     assert_eq!(rows[1]["is_read"], 1);
 }
 
+#[test]
+fn msg_mark_read_websocket_mode_keeps_group_rows_local_like_go() {
+    let workspace = TempDir::new("msg-ws-mark-read-group-local").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-ws-group-local", "bob", "jwt-bob");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    seed_group_message(
+        workspace.path(),
+        bob_did,
+        "did:wba:awiki.ai:groups:demo:e1_group",
+        "msg-group-read-local",
+        "group hello",
+        "2026-05-16T04:05:06Z",
+    );
+    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let server = TestServer::new(Vec::new());
+    write_msg_ws_config(
+        workspace.path(),
+        &server.base_url(),
+        missing_socket.to_str().expect("socket path"),
+    );
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "bob-ws-group-local",
+            "msg",
+            "mark-read",
+            "msg-group-read-local",
+        ],
+        workspace.path(),
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Marked 1 messages as read");
+    assert_eq!(envelope["data"]["action"], "mark_read");
+    assert_eq!(envelope["data"]["updated_count"], 1);
+    assert_eq!(
+        envelope["data"]["message_ids"],
+        json!(["msg-group-read-local"])
+    );
+    assert_no_http_fallback_warning(&envelope);
+    assert!(server.requests().is_empty());
+
+    let rows = query_rows(
+        workspace.path(),
+        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-group-read-local'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["msg_id"], "msg-group-read-local");
+    assert_eq!(rows[0]["is_read"], 1);
+}
+
 fn spawn_bridge_server(
     socket_path: &Path,
     result: Value,
