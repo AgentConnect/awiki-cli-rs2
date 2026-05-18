@@ -890,10 +890,11 @@ tests). The selector passed with 1 passed, 0 failed, and 0 skipped in 82.24s
 under `AWIKI_CLI_UNDER_TEST=rust`,
 `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`, and
 `AWIKI_CLI_UPDATE_CACHE_ONLY=1`. This is deterministic Rust contract selector
-evidence, not a new live real-service acceptance claim. The Go mapper also
-identified group attachment send HTTP-warning/backfill parity as a good next
-non-mail message/group batch; it is not part of this E2EE selector evidence.
-Mail selectors remain deferred.
+evidence, not a new live real-service acceptance claim. A later attachment gap
+audit confirmed group attachment HTTP warning/backfill parity is already
+covered by the attachment Rust selector and the direct/group attachment live
+HTTP slice, so it should not be reselected as a production-code batch unless a
+new Go behavior delta is found. Mail selectors remain deferred.
 
 Current attachment Rust selector evidence: on 2026-05-18, an accelerated
 `message` attachment batch used read-only Native Agents to map Go
@@ -911,8 +912,19 @@ attachment functions in `message_contract`. The selector passed with 1 passed,
 evidence for direct/group attachment live HTTP, group id backfill, wire and
 manifest construction, selection, service discovery, and error mapping. It is
 not a new production behavior change, not a live forced websocket group-send
-warning acceptance claim, and not mail selector evidence. Mail selectors remain
-deferred.
+warning acceptance claim, and not mail selector evidence. A 2026-05-19
+accelerated gap audit reran the focused evidence after the stale E2EE note was
+found: `go test ./internal/message ./internal/cli -run
+'Test.*Attachment|TestRunMsgSendDryRun|TestRenderMessageResult' -count=1`
+passed, `cargo +1.79.0 test -p awiki-cli --test attachment_live_contract
+--locked` passed 4 tests, and
+`AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2
+AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p
+no:cacheprovider
+tests_v2/cli/test_awiki_cli_attachment_rust_contracts.py::test_awiki_cli_attachment_rust_contracts
+-ra -q` passed 1 test, 0 failed, 0 skipped in 28.45s. This confirms the
+current best next non-mail implementation lane is not attachment production
+code; mail selectors remain deferred.
 
 Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
 broad non-mail `awiki-system-test` subprocess batch under
