@@ -24,6 +24,26 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   traceable 1:1 translation would otherwise become less reviewable. Files above
   3000 lines are rare special exceptions only and require a documented reason.
 
+## 2026-05-19 Runtime Listener Session-RPC Structure Batch
+
+Detailed report:
+`2026-05-19-runtime-listener-session-rpc-structure.md`.
+
+Summary: the accelerated runtime/listener structure batch split the foreground
+session-RPC sender/registry/request/pending lifecycle out of
+`listener_supervisor_run.rs` into the focused 318-line
+`listener_session_rpc.rs` module. This preserves the existing shared active
+session WebSocket behavior and moved the three focused session-RPC unit tests
+with the helper code. `listener_supervisor_run.rs` dropped from 2334 to 2030
+lines and remains a documented exception under the ordinary 3000-line relaxed
+limit. Rust fmt/check passed, moved session-RPC unit tests passed 3 tests,
+focused bridge/wsclient/secure-replay/notification-consume/secure-inbox-poll
+regression targets passed 57 tests, structure and whitespace checks passed, and
+the focused non-mail local bridge deterministic system selector passed 1 test.
+No dependency was added. Mail selectors, full repository-wide acceptance,
+live Windows named-pipe acceptance, and non-Linux service-manager execution
+remain separate.
+
 ## 2026-05-19 Runtime Bridge Windows Named-Pipe I/O Batch
 
 Detailed report:
@@ -555,8 +575,9 @@ focused Rust-only `awiki-system-test` selector for the existing
 `runtime_listener_secure_sessions_contract`, and
 `runtime_listener_local_notifications_contract` targets. Rust direct validation
 passed 13 tests; wrapper syntax passed; the new non-mail selector passed with
-1 test; `listener_supervisor_run.rs` remains an existing 2334-line integration
-hub under the current 3000-line relaxed limit; and mail selectors remained
+1 test; `listener_supervisor_run.rs` was an existing 2334-line integration
+hub under the current 3000-line relaxed limit at the time of that selector
+batch; and mail selectors remained
 deferred.
 
 ## 2026-05-18 Runtime Listener Foreground Signal Selector Batch
