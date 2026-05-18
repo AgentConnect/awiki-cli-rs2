@@ -137,6 +137,21 @@ validation passed 12 focused contracts; the focused Go guard passed; wrapper
 syntax and whitespace checks passed; and the new non-mail selector passed with
 1 test. Mail selectors remained deferred.
 
+## 2026-05-18 Message Attachment Rust Selector Batch
+
+Detailed report:
+`2026-05-18-message-attachment-rust-selector.md`.
+
+Summary: the accelerated message attachment batch confirmed existing Rust
+production and fake-service contracts already covered direct/group attachment
+live HTTP execution, group attachment id backfill, wire/manifest construction,
+selection, service discovery, and error mapping. It added a separate Rust-only
+`awiki-system-test` selector that verifies the expected Rust contract functions
+exist, then runs the two Cargo targets once each. Rust direct validation passed
+4 attachment live contracts; the focused Go guard passed; wrapper syntax and
+whitespace checks passed; and the new non-mail selector passed with 1 test.
+Mail selectors remained deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.

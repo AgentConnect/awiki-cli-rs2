@@ -538,6 +538,25 @@ identified group attachment send HTTP-warning/backfill parity as a good next
 non-mail message/group batch; it is not part of this E2EE selector evidence.
 Mail selectors remain deferred.
 
+Current attachment Rust selector evidence: on 2026-05-18, an accelerated
+`message` attachment batch used read-only Native Agents to map Go
+`attachment_service.go`, `attachment.go`, `attachment_wire.go`, CLI warning
+display behavior, current Rust attachment implementation/tests, and the
+non-mail system-test selector surface. No production Rust gap was found. The
+new Rust-only system-test wrapper
+`tests_v2/cli/test_awiki_cli_attachment_rust_contracts.py::test_awiki_cli_attachment_rust_contracts`
+verifies 8 expected Rust attachment fake-service contract functions, then runs
+the two Cargo targets once each: `attachment_live_contract` (4 tests) and the
+attachment functions in `message_contract`. The selector passed with 1 passed,
+0 failed, and 0 skipped in 46.19s under `AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`, and
+`AWIKI_CLI_UPDATE_CACHE_ONLY=1`. This is deterministic Rust contract selector
+evidence for direct/group attachment live HTTP, group id backfill, wire and
+manifest construction, selection, service discovery, and error mapping. It is
+not a new production behavior change, not a live forced websocket group-send
+warning acceptance claim, and not mail selector evidence. Mail selectors remain
+deferred.
+
 Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
 broad non-mail `awiki-system-test` subprocess batch under
 `AWIKI_CLI_UNDER_TEST=rust` and `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`, covering
