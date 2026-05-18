@@ -44,6 +44,27 @@ No dependency was added. Mail selectors, full repository-wide acceptance,
 live Windows named-pipe acceptance, and non-Linux service-manager execution
 remain separate.
 
+## 2026-05-19 Runtime Listener Service-Manager Dry-Contract Batch
+
+Detailed report:
+`2026-05-19-runtime-listener-service-manager-dry-contract.md`.
+
+Summary: the accelerated runtime/listener service-manager batch used two
+read-only Native Agents to map Go `internal/runtime/listener/service.go`,
+foreground helper, current Rust listener service-manager coverage, system-test
+selectors, and line-count risk. Two bounded GPT-5.5 xhigh Native Agents then
+implemented independent dry contracts for macOS launchd and Windows Service
+Manager with non-overlapping write scopes, while the leader fixed the
+non-systemd fallback `runtime listener restart` semantic so missing services
+now fail with `listener service is not installed` instead of auto-installing via
+`start`. Rust fmt/check passed; launchd and Windows service dry-contract tests
+passed 6 tests; the focused restart-missing-service CLI contract passed;
+structure and whitespace checks passed; and the focused non-mail runtime
+listener foreground/status system selector passed 1 test in 6.06s. New Rust
+source/test files are all below 1200 lines. This batch does not enable or claim
+live macOS `launchctl` or Windows SCM service execution. No dependency changed,
+and mail selectors remain deferred.
+
 ## 2026-05-19 Runtime Bridge Windows Named-Pipe I/O Batch
 
 Detailed report:

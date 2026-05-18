@@ -22,6 +22,7 @@ pub mod listener_handle_lookup;
 pub mod listener_identity_watch;
 pub mod listener_json_helpers;
 pub mod listener_known_sessions;
+pub mod listener_launchd;
 pub mod listener_local_notification_flush;
 pub mod listener_local_notifications;
 pub mod listener_message_records;
@@ -51,6 +52,7 @@ pub mod listener_supervisor_init;
 pub mod listener_supervisor_run;
 pub mod listener_supervisor_shutdown;
 pub mod listener_systemd;
+pub mod listener_windows_service;
 pub mod listener_ws_transport;
 pub mod listener_wsclient;
 pub mod openclaw_host_notify;
@@ -250,7 +252,14 @@ pub fn restart_listener(resolved: &Resolved) -> anyhow::Result<Value> {
     if listener_systemd::is_supported() {
         return Ok(listener::to_value(listener_systemd::restart(resolved)?));
     }
-    start_listener(resolved)
+    if !listener_installed(resolved) {
+        anyhow::bail!("listener service is not installed");
+    }
+    if resolve(resolved).mode != "websocket" {
+        anyhow::bail!("runtime mode must be websocket before starting the listener");
+    }
+    write_listener_state(resolved, true, true)?;
+    Ok(listener_status(resolved, true, true))
 }
 
 pub fn stop_listener(resolved: &Resolved) -> anyhow::Result<Value> {

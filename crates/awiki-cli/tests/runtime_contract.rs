@@ -153,6 +153,20 @@ fn listener_status_merges_saved_sessions_and_host_notify_state() {
 }
 
 #[test]
+fn listener_restart_requires_installed_service_like_go_contract() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let output = awiki_cmd_with_workspace(&["runtime", "listener", "restart"], workspace.path());
+
+    assert_code(&output, 1);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "internal_error");
+    assert_contains(
+        &envelope["error"]["message"],
+        "listener service is not installed",
+    );
+}
+
+#[test]
 fn host_notify_openclaw_config_redacts_token() {
     let workspace = TempDir::new().expect("temp workspace");
 

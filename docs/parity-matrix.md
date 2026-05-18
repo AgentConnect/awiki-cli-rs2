@@ -423,6 +423,42 @@ checks for the system-test wrapper passed; and the new focused non-mail
 `awiki-system-test` selector passed with 1 passed in 0.40s. No Rust production
 code, manifests, ANP SDK code, or dependencies changed in this batch.
 
+Current runtime/listener service-manager dry-contract evidence: on 2026-05-19,
+the batch followed the accelerated module-batch pipeline. Two read-only Native
+Agents mapped Go runtime/listener service lifecycle behavior, current Rust
+listener service-manager coverage, system-test selectors, and line-count risk.
+Two bounded GPT-5.5 xhigh Native Agents then implemented independent dry
+contracts for macOS launchd and Windows Service Manager with non-overlapping
+write scopes while the leader fixed the Go `RestartService` fallback semantic:
+`runtime listener restart` must fail with `listener service is not installed`
+when no service is installed, rather than auto-installing via `start`.
+This batch does not enable live macOS `launchctl` or Windows SCM calls; those
+remain separate platform acceptance lanes. Mail selectors remain deferred.
+
+Runtime/listener service-manager dry-contract gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/listener/service.go` | `RestartService` constructs the service, checks installed state, and returns `listener service is not installed` when missing; it does not auto-install on restart | `crates/awiki-cli/src/runtime/mod.rs` fallback service path | implemented for the non-systemd local fallback | `runtime_contract::listener_restart_requires_installed_service_like_go_contract` passed | `test_awiki_cli_runtime_listener_service_foreground_status_contracts` passed after the change | low for local fallback semantics; real systemd restart remains covered by `listener_systemd.rs` |
+| `internal/runtime/listener/service.go` via `kardianos/service` launchd backend | launch agent service intent: per-workspace service label/name, `runtime listener service-run` program arguments, workspace and service-mode environment variables, RunAtLoad/KeepAlive, working directory, stdout/stderr logs, and status interpretation from launchctl output | `crates/awiki-cli/src/runtime/listener_launchd.rs` | dry-contract implemented; no live launchctl calls or command routing yet | `runtime_listener_launchd_contract` passed 3 tests | same non-mail listener foreground/status selector confirms adjacent Rust listener entrypoint remains healthy | medium until macOS live launchctl install/start/status acceptance is added |
+| `internal/runtime/listener/service.go` via `kardianos/service` Windows backend | Windows service intent: per-workspace service name/display name, empty working directory, `runtime listener service-run` arguments, workspace and service-mode environment variables, automatic start, restart-on-failure intent, logs/PID option projection, and Windows service-state mapping | `crates/awiki-cli/src/runtime/listener_windows_service.rs` | dry-contract implemented; no live Windows SCM calls or command routing yet | `runtime_listener_windows_service_contract` passed 3 tests | same non-mail listener foreground/status selector confirms adjacent Rust listener entrypoint remains healthy | medium until Windows SCM live install/start/status acceptance is added |
+
+Verification evidence: `cargo +1.79.0 fmt --check`,
+`cargo +1.79.0 check -p awiki-cli --locked`,
+`cargo +1.79.0 test -p awiki-cli --test runtime_listener_launchd_contract --test runtime_listener_windows_service_contract --locked`,
+focused `runtime_contract` restart-missing-service coverage,
+`cargo +1.79.0 run --bin xtask --locked -- check-structure`, `git diff
+--check`, and the focused non-mail `awiki-system-test` listener
+foreground/status selector passed. New Rust files are below the default
+1200-line target: `listener_launchd.rs` 281 lines,
+`listener_windows_service.rs` 187 lines,
+`runtime_listener_launchd_contract.rs` 225 lines, and
+`runtime_listener_windows_service_contract.rs` 253 lines. No dependency was
+added; Cargo manifests and lockfile remain unchanged, SQLite stays on the
+approved `rusqlite + bundled` path, and TLS remains Rustls-first with no
+OpenSSL, `native-tls`, bundled OpenSSL, platform service-manager crate, or
+alternate SQLite backend introduced.
+
 Current runtime/listener contact-sync/notification/service-DID/session-lookup
 selector batch evidence: on 2026-05-18, the batch followed the accelerated
 module-batch pipeline. Three read-only Native Agents mapped Go runtime/listener
