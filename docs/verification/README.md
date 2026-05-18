@@ -35,6 +35,21 @@ parser contracts passed with 2 tests; the focused Go guard passed; the focused
 non-mail system-test parser selectors passed with 2 tests; structure and
 whitespace checks passed; and mail selectors remained deferred.
 
+## 2026-05-18 CLI Parser Required Empty Values Batch
+
+Detailed report:
+`2026-05-18-cli-parser-required-empty.md`.
+
+Summary: the accelerated CLI parser/Cobra follow-up batch used parallel
+read-only Native Agents to map Go required-flag presence semantics, current
+Rust group/site/page handling, and non-mail system-test selector exposure
+before editing. It fixed the localized group/site divergence where explicit
+empty required flags such as `--group=`, `--name=`, `--domain=`, and `--slug=`
+were treated as missing instead of reaching dry-run handlers like Go Cobra.
+Rust contracts passed 14 focused parser/group/site tests; the focused Go guard
+passed; the new non-mail Rust contract system-test selector passed with 1 test;
+structure and whitespace checks passed; and mail selectors remained deferred.
+
 ## 2026-05-18 Workspace Config Update Selector Batch
 
 Detailed report:

@@ -77,6 +77,20 @@ fn group_create_and_update_dry_run_match_go_policy_contracts() {
     assert_eq!(request["MemberMaxMessages"], Value::Null);
     assert_eq!(request["MemberMaxTotalChars"], Value::Null);
 
+    let empty_name = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice",
+            "group",
+            "create",
+            "--dry-run",
+            "--name=",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(empty_name["summary"], "Dry run: group create planned");
+    assert_eq!(empty_name["data"]["plan"]["request"]["Name"], "");
+
     let update = success_json(&awiki_cmd(
         &[
             "--identity",
@@ -133,6 +147,13 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
     assert_eq!(get["summary"], "Dry run: group show planned");
     assert_eq!(get["data"]["plan"]["action"], "group.show");
     assert_eq!(get["data"]["plan"]["group"], group);
+
+    let empty_group = success_json(&awiki_cmd(
+        &["group", "get", "--dry-run", "--group="],
+        workspace.path(),
+    ));
+    assert_eq!(empty_group["summary"], "Dry run: group show planned");
+    assert_eq!(empty_group["data"]["plan"]["group"], "");
 
     let show = success_json(&awiki_cmd(
         &[
@@ -192,6 +213,14 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
     assert_eq!(add_request["ReasonText"], "");
     assert_eq!(add_request["E2EE"], true);
     assert_eq!(add_request["LeaveRequestID"], "");
+
+    let empty_membership = success_json(&awiki_cmd(
+        &["group", "add", "--dry-run", "--group=", "--member="],
+        workspace.path(),
+    ));
+    let empty_membership_request = &empty_membership["data"]["plan"]["request"];
+    assert_eq!(empty_membership_request["Group"], "");
+    assert_eq!(empty_membership_request["Member"], "");
 
     let remove = success_json(&awiki_cmd(
         &[

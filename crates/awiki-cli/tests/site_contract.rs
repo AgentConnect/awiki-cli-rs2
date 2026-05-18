@@ -109,6 +109,24 @@ fn site_root_dry_run_plans_match_go_contracts() {
         set["data"]["plan"]["request"],
         json!({ "domain": "tenant.example", "body_bytes": 4 })
     );
+
+    let empty_domain = success_json(&awiki_cmd(
+        &[
+            "--dry-run",
+            "site",
+            "root",
+            "set",
+            "--domain=",
+            "--markdown",
+            "body",
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(empty_domain["summary"], "Dry run: site root set planned");
+    assert_eq!(
+        empty_domain["data"]["plan"]["request"],
+        json!({ "domain": "", "body_bytes": 4 })
+    );
 }
 
 #[test]
@@ -150,6 +168,16 @@ fn site_page_dry_run_plans_match_go_contracts() {
     assert_eq!(
         get["data"]["plan"]["request"],
         json!({ "domain": "tenant.example", "slug": "hello" })
+    );
+
+    let empty_get = success_json(&awiki_cmd(
+        &["--dry-run", "site", "page", "get", "--domain=", "--slug="],
+        workspace.path(),
+    ));
+    assert_eq!(empty_get["summary"], "Dry run: site page get planned");
+    assert_eq!(
+        empty_get["data"]["plan"]["request"],
+        json!({ "domain": "", "slug": "" })
     );
 
     let body_file = workspace.path().join("site-page.md");

@@ -380,7 +380,7 @@ fn require_flags(command: &ParsedCommand, names: &[&str]) -> Result<(), ExitErro
     let missing: Vec<_> = names
         .iter()
         .copied()
-        .filter(|name| string_flag(command, name).trim().is_empty())
+        .filter(|name| !changed_flag(command, name))
         .collect();
     if missing.is_empty() {
         return Ok(());

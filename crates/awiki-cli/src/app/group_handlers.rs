@@ -9,7 +9,7 @@ impl App {
     pub fn run_group_create(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let name = string_flag(command, "name");
-        if name.trim().is_empty() {
+        if !changed(command, "name") {
             return Err(ExitError::new(
                 "invalid_argument",
                 2,
@@ -529,7 +529,7 @@ fn required_string_flag(
     help: &str,
 ) -> Result<String, ExitError> {
     let value = string_flag(command, name);
-    if value.trim().is_empty() {
+    if !changed(command, name) {
         return Err(ExitError::new(
             "invalid_argument",
             2,
