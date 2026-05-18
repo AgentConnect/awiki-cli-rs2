@@ -123,6 +123,20 @@ Rust direct validation passed 15 focused contracts; the focused Go guard
 passed; wrapper syntax and whitespace checks passed; and the new non-mail
 selector passed with 1 test. Mail selectors remained deferred.
 
+## 2026-05-18 Message Group E2EE Create/Add/Repair/Decrypt Selector Batch
+
+Detailed report:
+`2026-05-18-message-group-e2ee-create-add-repair-decrypt-selector.md`.
+
+Summary: the accelerated message/group E2EE selector batch confirmed existing
+Rust production and fake-service contracts already covered Go create, add,
+repair, rejoin, and decrypt/cache-projection behavior. It added a separate
+Rust-only `awiki-system-test` selector that verifies the expected Rust contract
+functions exist and then runs the four Cargo targets once each. Rust direct
+validation passed 12 focused contracts; the focused Go guard passed; wrapper
+syntax and whitespace checks passed; and the new non-mail selector passed with
+1 test. Mail selectors remained deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.

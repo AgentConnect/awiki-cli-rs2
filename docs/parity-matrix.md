@@ -520,6 +520,24 @@ passed, 0 failed, and 0 skipped in 47.27s under `AWIKI_CLI_UNDER_TEST=rust`,
 evidence, not a new live real-service acceptance claim; mail selectors remain
 deferred.
 
+Current group E2EE create/add/repair/decrypt selector evidence: on
+2026-05-18, an accelerated `message/group` batch used read-only Native Agents
+to map Go/Rust/system-test coverage for group E2EE create, add, repair,
+rejoin, and decrypt/cache-projection behavior. No production Rust gap was
+found. The Rust-only system-test wrapper now exposes a separate selector,
+`tests_v2/cli/test_awiki_cli_group_e2ee_rust_contracts.py::test_awiki_cli_group_e2ee_create_add_repair_decrypt_rust_contracts`,
+which verifies and runs four existing Rust fake-service targets:
+`group_e2ee_create_contract` (2 tests), `group_e2ee_add_contract` (6 tests),
+`group_e2ee_repair_contract` (1 test), and `group_e2ee_decrypt_contract` (3
+tests). The selector passed with 1 passed, 0 failed, and 0 skipped in 82.24s
+under `AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`, and
+`AWIKI_CLI_UPDATE_CACHE_ONLY=1`. This is deterministic Rust contract selector
+evidence, not a new live real-service acceptance claim. The Go mapper also
+identified group attachment send HTTP-warning/backfill parity as a good next
+non-mail message/group batch; it is not part of this E2EE selector evidence.
+Mail selectors remain deferred.
+
 Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
 broad non-mail `awiki-system-test` subprocess batch under
 `AWIKI_CLI_UNDER_TEST=rust` and `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`, covering
