@@ -339,6 +339,80 @@ fn group_e2ee_recover_member_deterministic_submit_failure_aborts_pending_commit_
 }
 
 #[test]
+fn group_e2ee_recover_member_retryable_submit_failure_retains_pending_commit_like_go() {
+    let workspace = TempDir::new("group-e2ee-recover-submit-500").expect("workspace");
+    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
+    let bin_dir = TempDir::new("group-e2ee-recover-submit-500-bin").expect("bin dir");
+    let fake_mls = bin_dir.path().join("anp-mls");
+    let args_log = workspace.path().join("mls-args.log");
+    let stdin_log = workspace.path().join("mls-stdin.jsonl");
+    write_fake_anp_mls_group_recover_member_with_terminal(
+        &fake_mls,
+        &args_log,
+        &stdin_log,
+        RecoverTerminalBehavior::FinalizeSucceeds,
+    );
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": GROUP_DID,
+            "epoch": "5",
+            "actor_membership_role": "owner",
+            "actor_membership_status": "active",
+            "actor_recovery_eligible": true
+        }))),
+        TestResponse::ok(&json_rpc_result(recovery_key_package())),
+        TestResponse::status(500, "retry later"),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            IDENTITY,
+            "group",
+            "e2ee",
+            "recover-member",
+            "--group",
+            GROUP_DID,
+            "--member",
+            MEMBER_DID,
+            "--device",
+            "bob-main",
+        ],
+        workspace.path(),
+        &[("AWIKI_ANP_MLS_BINARY", fake_mls.as_path())],
+    );
+
+    let error = error_json(&output);
+    assert_eq!(error["error"]["code"], "internal_error");
+    assert_text_contains(
+        error["error"]["message"].as_str().expect("error message"),
+        "service http error 500: retry later",
+    );
+    assert_eq!(
+        provider_commands(&args_log),
+        vec!["group recover-member-prepare"]
+    );
+    let provider_stdin = provider_stdin_jsonl(&stdin_log);
+    assert_eq!(provider_stdin.len(), 1);
+    assert_eq!(provider_stdin[0]["params"]["group_did"], GROUP_DID);
+    assert_eq!(
+        provider_stdin[0]["params"]["recovery_key_package_id"],
+        "kp-bob-recovery"
+    );
+
+    let bodies = request_json_bodies(&server.requests());
+    assert_eq!(
+        rpc_methods(&bodies),
+        vec![
+            "group.e2ee.head",
+            "group.e2ee.get_key_package",
+            "group.e2ee.recover_member"
+        ]
+    );
+}
+
+#[test]
 fn group_e2ee_recover_member_finalize_failure_keeps_service_delivery_with_warning_like_go() {
     let workspace = TempDir::new("group-e2ee-recover-finalize-fails").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");

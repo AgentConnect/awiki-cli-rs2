@@ -488,9 +488,13 @@ preserving service delivery with `mls_finalize=null`, deterministic
 `group.e2ee.update` submit failure aborting through
 `group update-member-abort`, and update-key finalize failure preserving
 service delivery with `mls_finalize=null`. The Rust-only system-test wrapper
+then gained recover/update HTTP 500 retryable submit coverage proving those
+paths call only `group recover-member-prepare` or
+`group update-member-prepare` and do not call abort/finalize before returning
+the service error, matching Go's local recover/update submit handling. The
 `tests_v2/cli/test_awiki_cli_group_e2ee_rust_contracts.py::test_awiki_cli_group_e2ee_stale_retry_and_negative_rust_contracts`
-now exposes 8 focused contracts and passed with 1 passed, 0 failed, and 0
-skipped in 115.64s. This is deterministic contract selector evidence, not a
+now exposes 10 focused contracts and passed with 1 passed, 0 failed, and 0
+skipped in 143.56s. This is deterministic contract selector evidence, not a
 live real-service forced epoch-mismatch or recover/update forced-failure
 selector; mail selectors remain deferred.
 

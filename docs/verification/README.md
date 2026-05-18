@@ -78,6 +78,22 @@ update-key tests; the focused Go guard passed; structure checks passed; and the
 extended non-mail selector passed with 1 test. Mail selectors remained
 deferred.
 
+## 2026-05-18 Message Group E2EE Recover/Update Retryable Submit Batch
+
+Detailed report:
+`2026-05-18-message-group-e2ee-recover-update-retryable.md`.
+
+Summary: the accelerated message/group E2EE retryable-submit batch confirmed
+production Rust already matched Go HTTP 500 behavior for recover-member and
+update-key: prepare happens, the hidden submit RPC returns the service error,
+and no abort/finalize terminal provider command is invoked. It added focused
+fake-service contracts for those prepare-only HTTP 500 paths and extended the
+Rust-only `awiki-system-test` selector to cover all 10 current stale/negative
+group E2EE contracts. Rust direct validation passed 4 recover-member tests and
+4 update-key tests; the focused Go guard passed; structure checks passed; and
+the extended non-mail selector passed with 1 test. Mail selectors remained
+deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.
