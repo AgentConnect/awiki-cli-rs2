@@ -4,6 +4,7 @@ use super::listener::{self, SessionStatus, Status};
 use super::listener_bridge_connection::{
     execute_listener_bridge_request, ListenerBridgeRuntime, ListenerBridgeSession,
 };
+use super::listener_bridge_runtime::host_notify_for_bridge_created_session;
 use super::listener_handle_lookup::lookup_listener_handle_by_did;
 use super::listener_notification_handler::handle_listener_notification;
 use super::listener_notification_plan::{
@@ -136,6 +137,7 @@ impl ListenerSupervisor {
         let status = self.status.clone();
         let resolved = self.resolved.clone();
         let manager = self.manager.clone();
+        let host_notify = self.host_notify.clone();
         let shutdown = self.shutdown.clone();
         let listener_for_loop = listener;
         thread::spawn(move || {
@@ -146,6 +148,7 @@ impl ListenerSupervisor {
                             resolved: resolved.clone(),
                             manager: manager.clone(),
                             status: status.clone(),
+                            host_notify: host_notify.clone(),
                             shutdown: shutdown.clone(),
                         };
                         thread::spawn(move || handle_bridge_stream(stream, runtime));
@@ -253,6 +256,7 @@ struct BridgeRuntime {
     resolved: Arc<Resolved>,
     manager: Manager,
     status: Arc<Mutex<Status>>,
+    host_notify: Arc<HostNotifySinkImpl>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -289,9 +293,7 @@ impl ListenerBridgeRuntime for BridgeRuntime {
                 self.resolved.clone(),
                 self.manager.clone(),
                 self.status.clone(),
-                Arc::new(super::host_notify_sink::HostNotifySinkImpl::Noop(
-                    super::host_notify_sink::NoopHostNotifySink,
-                )),
+                host_notify_for_bridge_created_session(&self.host_notify),
                 self.shutdown.clone(),
                 identity_name.clone(),
                 did,

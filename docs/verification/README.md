@@ -14,6 +14,65 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Bridge-Created Host-Notify Sink
+
+Scope: match Go `internal/runtime/listener/server.go` foreground Supervisor
+ownership for host notifications when a session is first created by local
+bridge traffic rather than by startup identity scanning. Go has one
+Supervisor-owned host-notify sink; Rust previously passed a fresh noop sink in
+the bridge-created session path.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: `BridgeRuntime`
+  now carries the Supervisor-owned `Arc<HostNotifySinkImpl>` and passes it to
+  `spawn_session_loop` when `ensure_session` creates a missing session.
+- `crates/awiki-cli/src/runtime/listener_bridge_runtime.rs`: added a small
+  helper that clones the shared sink for bridge-created sessions, keeping the
+  behavior testable outside the oversized supervisor file.
+- `crates/awiki-cli/tests/runtime_listener_bridge_runtime_contract.rs`: locks
+  the shared-`Arc` contract and prevents a regression back to fresh noop sink
+  replacement.
+- `docs/file-size-exceptions.md`: refreshed the existing documented
+  `listener_supervisor_run.rs` exception line count from 1513 to 1515 and
+  records that the new sink-selection behavior remains in a small helper.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_runtime_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --test runtime_listener_notification_execute_contract --test runtime_listener_notification_handler_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestSessionLoopReconnectsAndStoresNotifications' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- Rust bridge-runtime focused contract: 2 passed, 0 failed.
+- Rust adjacent bridge/notification contracts: 19 passed, 0 failed.
+- Rust formatting check: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines.
+- `git diff --check`: passed.
+- Go focused listener guards: passed.
+- Rust focused foreground file-sink host-notify selector: 1 passed, 0 failed,
+  0 skipped.
+
+Boundary note: this slice only fixes shared host-notify sink wiring for
+bridge-created sessions. It does not implement Go's 15-second bridge-session
+bootstrap wait, notification ping timeout behavior, local secure-ack queue
+integration, Windows named-pipe I/O, platform service-manager execution, mail
+notification acceptance, or full repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Runtime Listener Secure Replay Wiring Consolidation
 
 Scope: keep the Rust foreground listener aligned with Go

@@ -232,6 +232,23 @@ already translated secure replay behavior; it does not add a dependency, does
 not expand the documented large-file exception, and does not count mail
 selectors.
 
+Current runtime listener bridge-created host-notify evidence: on 2026-05-18,
+Rust `BridgeRuntime::ensure_session` stopped creating a fresh `NoopHostNotifySink`
+for sessions first discovered through foreground bridge traffic. It now carries
+the Supervisor-owned `HostNotifySinkImpl` into the bridge runtime and passes a
+cloned `Arc` to `spawn_session_loop`, matching Go's single Supervisor-owned
+host-notify sink behavior for both startup-discovered and bridge-created
+sessions. The small `listener_bridge_runtime` helper keeps this wiring
+testable outside the already oversized supervisor file. Focused Rust tests
+passed for the helper, bridge request execution, notification execution, and
+notification handler behavior; `cargo check`, `xtask check-structure`, and
+`git diff --check` passed; Go listener host-notify/session-loop guards passed;
+and the Rust file-sink foreground listener selector
+`tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds`
+passed with 1 passed, 0 failed, and 0 skipped. This does not change bridge
+bootstrap wait semantics, notification ping timeout parity, local secure ack
+queue integration, mail selector status, or dependency selection.
+
 Current debug handle-history selector evidence: on 2026-05-17, a new Rust
 subprocess selector
 `tests_v2/debug/test_debug_cli.py::test_debug_db_handle_history_reads_contact_bindings`
