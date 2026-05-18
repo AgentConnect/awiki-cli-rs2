@@ -216,6 +216,19 @@ passed; wrapper syntax and whitespace checks passed; the new non-mail selector
 passed with 1 test; and Rust formatting/check/structure gates passed. Mail
 selectors remained deferred.
 
+## 2026-05-18 Runtime Listener Foreground Signal Selector Batch
+
+Detailed report:
+`2026-05-18-runtime-listener-foreground-signal-selector.md`.
+
+Summary: the accelerated runtime/listener foreground signal batch confirmed the
+existing Rust Unix foreground listener smoke target already covered SIGINT and
+SIGTERM cleanup. It added a Rust-only `awiki-system-test` selector that
+verifies and runs the target once. Rust direct validation passed 2 signal
+tests; the focused Go guard passed; wrapper syntax and whitespace checks
+passed; the new non-mail selector passed with 1 test; and Rust
+formatting/check/structure gates passed. Mail selectors remained deferred.
+
 ## 2026-05-18 Runtime Local Bridge Deterministic Selector Batch
 
 Detailed report:

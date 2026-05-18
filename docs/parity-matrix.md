@@ -719,6 +719,20 @@ failed, and 0 skipped in 1.34s under `AWIKI_CLI_UNDER_TEST=rust`,
 evidence, not a new live foreground signal, real WebSocket secure-replay, or
 mail acceptance claim. Mail selectors remain deferred.
 
+Current runtime listener foreground signal selector evidence: on 2026-05-18,
+an accelerated runtime/listener batch mapped Go Unix foreground signal handling
+and the existing Rust `runtime_listener_signal_cli_contract` target. No
+production Rust gap was found. The Rust-only system-test wrapper now exposes
+`tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_foreground_signal_cli_contracts`,
+which verifies and runs `runtime_listener_signal_cli_contract` once. The
+selector passed with 1 passed, 0 failed, and 0 skipped in 0.45s under
+`AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`, and
+`AWIKI_CLI_UPDATE_CACHE_ONLY=1`. The underlying Rust target passed 2 Unix
+foreground listener smoke tests for SIGINT/SIGTERM cleanup. This is not a
+Windows signal acceptance claim, not a platform service-manager claim, and not
+mail selector evidence. Mail selectors remain deferred.
+
 Current runtime listener bridge-created host-notify evidence: on 2026-05-18,
 Rust `BridgeRuntime::ensure_session` stopped creating a fresh `NoopHostNotifySink`
 for sessions first discovered through foreground bridge traffic. It now carries
