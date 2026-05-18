@@ -570,7 +570,7 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     let envelope = success_json(&history);
     assert_eq!(envelope["summary"], "Loaded 2 direct history messages");
     assert_eq!(envelope["data"]["source"], "remote_http+handle_history");
-    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-new");
+    assert_eq!(envelope["data"]["messages"][0]["msg_id"], "msg-new");
     assert_eq!(envelope["data"]["messages"][1]["msg_id"], "msg-old");
     assert_eq!(
         envelope["data"]["resolved_dids"],
@@ -665,7 +665,7 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
         .unwrap();
 
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0]["id"], "msg-new");
+    assert_eq!(messages[0]["msg_id"], "msg-new");
     assert_eq!(messages[1]["msg_id"], "msg-plain");
     assert!(!messages.iter().any(|message| {
         message["msg_id"] == "msg-wire"

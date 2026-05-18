@@ -116,6 +116,7 @@ deferred. The batch gap table was:
 | `awiki-cli/internal/message/service.go` direct `Send` WebSocket branch | `direct.send` bridge success and HTTP fallback | `crates/awiki-cli/src/message/service.rs`, `crates/awiki-cli/tests/msg_ws_proxy_live_contract.rs` | already implemented | `msg_ws_proxy_live_contract` | same focused non-mail Rust selector wrapper | low |
 | `awiki-cli/internal/message/service.go` direct `Inbox` WebSocket/cache branch | bridge success, cache-before-HTTP fallback, HTTP fallback, mark-read, unresolved-handle local cache fallback | `crates/awiki-cli/src/message/inbox.rs`, `crates/awiki-cli/tests/msg_ws_inbox_live_contract.rs` | implemented; unresolved-handle contract added | `msg_ws_inbox_live_contract` | same focused non-mail Rust selector wrapper | medium before this batch because unresolved-handle fallback lacked a WebSocket-mode contract |
 | `awiki-cli/internal/message/service.go` direct `History` WebSocket/cache branch | bridge success, cache-before-HTTP fallback, HTTP fallback, unresolved-handle local history cache fallback | `crates/awiki-cli/src/message/history.rs`, `crates/awiki-cli/tests/msg_ws_history_live_contract.rs` | implemented; unresolved-handle contract added | `msg_ws_history_live_contract` | same focused non-mail Rust selector wrapper | medium before this batch because unresolved-handle fallback lacked a WebSocket-mode contract |
+| `awiki-cli/internal/message/service.go` direct `History` handle-history merge helper | `mergeDirectHistoryMessages` merges direct handle-history cache rows before remote rows so cache wins duplicate IDs, preserves anonymous rows with Go `idx:<n>` dedupe keys, sorts by `server_seq` desc then `sent_at`/`created_at`/`stored_at` desc then identity desc, and preserves Go empty-side/`limit <= 0` helper behavior | `crates/awiki-cli/src/message/service.rs`, `crates/awiki-cli/src/message/service/tests.rs`, `crates/awiki-cli/tests/msg_live_contract.rs` | implemented; focused helper parity coverage added and handle-history live contract assertions updated for cache-wins output | `cargo +1.79.0 test -p awiki-cli --lib --locked message::service::tests`; focused `msg_live_contract` handle-history tests | local Rust/Go guard only for this narrowed helper update; previous focused non-mail selector remains the WebSocket/cache system-test visibility evidence | low after focused validation; group cache and mail-service selectors remain separate/deferred |
 | `awiki-cli/internal/message/service.go` `MarkRead` WebSocket branch | bridge success, HTTP fallback, HTTP-side errors, group/mail local-only rows | `crates/awiki-cli/src/message/mark_read.rs`, `crates/awiki-cli/tests/msg_ws_mark_read_live_contract.rs` | already implemented | `msg_ws_mark_read_live_contract` | same focused non-mail Rust selector wrapper | low |
 | `awiki-cli/internal/message/service.go` `allInbox` and group/mail-like local cache merge | default all-inbox direct/group/mail-like local cache merge and local mark-read | `crates/awiki-cli/src/message/inbox.rs`, `crates/awiki-cli/tests/msg_all_inbox_live_contract.rs` | already implemented | `msg_all_inbox_live_contract` | same focused non-mail Rust selector wrapper | low; mail-service selectors remain deferred |
 
@@ -124,16 +125,29 @@ message_ws_proxy_contract --test msg_ws_proxy_live_contract --test
 msg_ws_inbox_live_contract --test msg_ws_history_live_contract --test
 msg_ws_mark_read_live_contract --test msg_all_inbox_live_contract --locked`
 passed 30 tests across the selected targets, including the two new
-unresolved-handle local-cache contracts. The optimized `awiki-system-test`
+unresolved-handle local-cache contracts. The direct handle-history merge
+continuation then passed 3 focused Rust helper tests, 2 focused
+`msg_live_contract` handle-history tests, and the Go focused message guard for
+`mergeDirectHistoryMessages`, historical handle bindings, and contact rebind
+preservation. This proves the direct `msg history --with <handle>` cache merge
+path now matches Go cache-wins, `server_seq`, anonymous-row, sort-time, and
+limit/empty-side helper semantics while retaining Rust's existing
+`message_id` compatibility fallback for bridge/cache rows. The optimized
+`awiki-system-test`
 selector
 `AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2
 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p
 no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_message_direct_ws_local_cache_contracts -ra -q`
-passed with 1 passed, 0 failed, 0 skipped in 116.63s. The wrapper checks each
+was rerun after the helper continuation and passed with 1 passed, 0 failed, 0
+skipped in 119.96s. The wrapper checks each
 required contract function exists, then runs contracts by Rust test target to
 avoid one Cargo invocation per function. No dependency was added, mail
 system-test selectors remain deferred, and changed Rust test files stay below
-the default 1200-line cap.
+the default 1200-line cap. The helper test was split into
+`crates/awiki-cli/src/message/service/tests.rs` instead of growing
+`service.rs`; after this continuation `service.rs` is 1149 lines,
+`service/tests.rs` is 78 lines, and the touched `msg_live_contract.rs` remains
+at 1200 lines with no line-count increase, so no file-size exception is needed.
 
 Current command catalog metadata slice: Rust static schema metadata now matches
 the selected Go catalog fields for `upgrade` text/`side_effect`, identity

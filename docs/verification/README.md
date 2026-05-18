@@ -458,6 +458,7 @@ Gap table:
 | `awiki-cli/internal/message/service.go` direct send branch | WebSocket `direct.send` and HTTP fallback | `crates/awiki-cli/src/message/service.rs` | already implemented | `msg_ws_proxy_live_contract` | same selector | low |
 | `awiki-cli/internal/message/service.go` direct inbox branch | WebSocket `inbox.get`, cache-before-HTTP fallback, double failure, mark-read, unresolved-handle cache fallback | `crates/awiki-cli/src/message/inbox.rs` | implemented; new unresolved-handle WebSocket contract added | `msg_ws_inbox_live_contract` | same selector | medium before this batch |
 | `awiki-cli/internal/message/service.go` history branch | WebSocket `direct.get_history`, cache-before-HTTP fallback, double failure, unresolved-handle local history cache fallback | `crates/awiki-cli/src/message/history.rs` | implemented; new unresolved-handle WebSocket contract added | `msg_ws_history_live_contract` | same selector | medium before this batch |
+| `awiki-cli/internal/message/service.go` direct history merge helper | `mergeDirectHistoryMessages` gives local handle-history cache rows precedence over remote duplicates, preserves anonymous rows with Go `idx:<n>` dedupe keys, sorts by `server_seq` desc then `sent_at`/`created_at`/`stored_at` desc then identity desc, and preserves empty-side/`limit <= 0` helper behavior | `crates/awiki-cli/src/message/service.rs`, `crates/awiki-cli/src/message/service/tests.rs`, `crates/awiki-cli/tests/msg_live_contract.rs` | implemented; helper tests split out to avoid growing near-cap `service.rs` | `message::service::tests`, focused `msg_live_contract` handle-history tests | local Rust/Go guard only for this narrowed continuation; previous selector remains WebSocket/cache system visibility evidence | low after validation |
 | `awiki-cli/internal/message/service.go` mark-read branch | WebSocket `inbox.mark_read`, HTTP fallback, group/mail local-only row handling | `crates/awiki-cli/src/message/mark_read.rs` | already implemented | `msg_ws_mark_read_live_contract` | same selector | low |
 | `awiki-cli/internal/message/service.go` `allInbox` branch | default all-inbox direct/group/mail-like local cache merge and mark-read | `crates/awiki-cli/src/message/inbox.rs` | already implemented | `msg_all_inbox_live_contract` | same selector | low; mail-service selectors deferred |
 
@@ -488,6 +489,10 @@ Commands run:
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_ws_history_live_contract msg_history_websocket_unresolved_handle_uses_local_history_cache_like_go --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract msg_inbox_websocket_unresolved_handle_uses_local_history_cache_like_go --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --test msg_ws_proxy_live_contract --test msg_ws_inbox_live_contract --test msg_ws_history_live_contract --test msg_ws_mark_read_live_contract --test msg_all_inbox_live_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib --locked message::service::tests
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked msg_history_with_handle_merges_local_handle_history_cache_like_go
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_cache_like_go
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message -run 'TestMergeDirectHistoryMessagesPrefersCacheAndOrdersBySeq|TestReadHistoryFromCacheByPeerDIDsAggregatesHistoricalBindings|TestSyncPeerHandleRebindsCurrentContactAndPreservesHistory' -count=1
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -506,12 +511,23 @@ Observed results:
   `message_ws_proxy_contract`, `msg_ws_proxy_live_contract`,
   `msg_ws_inbox_live_contract`, `msg_ws_history_live_contract`,
   `msg_ws_mark_read_live_contract`, and `msg_all_inbox_live_contract`.
+- Direct handle-history merge continuation: 3 focused Rust helper tests passed,
+  proving Go cache-wins precedence, anonymous-row preservation with synthetic
+  dedupe keys, `server_seq`/time/identity ordering, `client_msg_id` fallback,
+  empty-side fast paths, and `limit <= 0` helper behavior.
+- Focused `msg_live_contract` handle-history merge/filter tests passed after
+  updating expectations to the Go cache-wins output shape: the persisted cache
+  row with `msg_id` wins over the matching remote `id` row.
+- Go focused message guard passed for `mergeDirectHistoryMessages`, historical
+  handle binding aggregation, and contact rebind preservation.
 - Rust formatting, package check, `xtask check-structure`, and `git diff
   --check`: passed.
 - System-test wrapper syntax/collection: `4 tests collected`, 0 collection
   failures.
 - Focused `awiki-system-test` selector: 1 passed, 0 failed, 0 skipped in
-  116.63s.
+  116.63s during the original WebSocket/cache batch and 1 passed, 0 failed, 0
+  skipped in 119.96s when rerun after the direct handle-history merge helper
+  continuation.
 
 System-test configuration context:
 
@@ -525,11 +541,14 @@ System-test configuration context:
 - Mail selectors were not run. Failed 0. Skipped 0.
 
 Boundary note: this batch proves system-test visibility for the focused Rust
-message/direct WebSocket and local-cache contracts. It does not add new live
-message-service behavior, does not claim mail-service selectors, and does not
-turn the wrapper into full repository-wide acceptance. The seeded mail-like
-cache row in `msg_all_inbox_live_contract` remains local-cache normalization
-coverage only; mail system tests remain deferred.
+message/direct WebSocket and local-cache contracts. The narrowed direct
+handle-history merge continuation covers only direct `msg history --with
+<handle>` cache expansion/merge semantics and the private helper parity it
+depends on. It does not add new live message-service behavior, does not promote
+group-cache behavior, does not claim mail-service selectors, and does not turn
+the wrapper into full repository-wide acceptance. The seeded mail-like cache
+row in `msg_all_inbox_live_contract` remains local-cache normalization coverage
+only; mail system tests remain deferred.
 
 Dependency note: no dependency was added. Cargo manifests and lockfile are
 unchanged. The batch reuses the existing std/Rustls message client,
@@ -537,10 +556,14 @@ unchanged. The batch reuses the existing std/Rustls message client,
 SQLite lane. No OpenSSL, `native-tls`, WebSocket crate, async runtime, YAML
 crate, platform service library, or alternate SQLite backend was introduced.
 
-File-size note: the changed Rust test files remain below the default 1200-line
-cap after formatting: `msg_ws_history_live_contract.rs` is 809 lines and
-`msg_ws_inbox_live_contract.rs` is 927 lines. The system-test wrapper is 465
-lines. No file-size exception is needed.
+File-size note: the changed Rust files remain within the default 1200-line cap
+after formatting. The direct helper tests were split into
+`crates/awiki-cli/src/message/service/tests.rs` instead of growing near-cap
+`service.rs`: `service.rs` is 1149 lines, `service/tests.rs` is 78 lines, and
+the touched `msg_live_contract.rs` remains exactly 1200 lines with no
+line-count increase. Existing earlier-batch files
+`msg_ws_history_live_contract.rs` and `msg_ws_inbox_live_contract.rs` remain
+below the cap. No file-size exception is needed.
 
 ## 2026-05-18 Runtime Listener Secure Factory Shared RPC
 

@@ -956,29 +956,49 @@ pub(crate) fn merge_handle_history_messages(
 }
 
 fn merge_direct_history_messages(remote: &[Value], cached: Vec<Value>, limit: i64) -> Vec<Value> {
+    if remote.is_empty() {
+        return limit_messages(cached, limit);
+    }
+    if cached.is_empty() {
+        return remote.to_vec();
+    }
     let mut merged = Vec::with_capacity(remote.len() + cached.len());
     let mut seen = Vec::new();
-    for message in remote.iter().cloned().chain(cached) {
-        let id = message_identity(&message);
-        if id.is_empty() || seen.iter().any(|known| known == &id) {
+    for message in cached.into_iter().chain(remote.iter().cloned()) {
+        let mut id = message_identity(&message);
+        if id.is_empty() {
+            id = format!("idx:{}", merged.len());
+        }
+        if seen.iter().any(|known| known == &id) {
             continue;
         }
         seen.push(id);
         merged.push(message);
     }
     merged.sort_by(|left, right| {
-        comparable_message_time(right)
-            .cmp(&comparable_message_time(left))
+        comparable_server_seq(right)
+            .cmp(&comparable_server_seq(left))
+            .then_with(|| comparable_message_time(right).cmp(&comparable_message_time(left)))
             .then_with(|| message_identity(right).cmp(&message_identity(left)))
     });
-    let limit = if limit <= 0 { 50 } else { limit as usize };
-    merged.truncate(limit);
-    merged
+    limit_messages(merged, limit)
+}
+
+fn limit_messages(mut messages: Vec<Value>, limit: i64) -> Vec<Value> {
+    if limit > 0 {
+        messages.truncate(limit as usize);
+    }
+    messages
+}
+
+fn comparable_server_seq(message: &Value) -> i64 {
+    i64_value(message.get("server_seq")).unwrap_or_default()
 }
 
 fn comparable_message_time(message: &Value) -> String {
     message
         .get("sent_at")
+        .or_else(|| message.get("created_at"))
         .or_else(|| message.get("stored_at"))
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -1040,6 +1060,7 @@ fn message_identity(message: &Value) -> String {
                 .get("id")
                 .or_else(|| object.get("message_id"))
                 .or_else(|| object.get("msg_id"))
+                .or_else(|| object.get("client_msg_id"))
         })
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -1123,3 +1144,6 @@ pub(crate) fn bool_value(value: Option<&Value>) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests;
