@@ -14,6 +14,85 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Notification Ping Loop
+
+Timestamp: 2026-05-18T05:10:00Z / 2026-05-18T13:10:00+0800.
+
+Scope: wire Go `consumeNotifications` ping cadence into the real Rust
+foreground listener runtime without adding a WebSocket crate or async runtime.
+This follows the prior pending-dispatch slice and still leaves bridge RPC
+transport reuse for the next shared-client slice.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_ws_transport.rs`: added
+  `WsTransport::read_json_message_timeout(Duration) -> Result<Option<_>>`.
+  The method temporarily applies a short read timeout, calls the same
+  frame/JSON reader, returns `Ok(None)` for `WouldBlock`/`TimedOut`, restores
+  the default 90-second read timeout, and preserves text/binary JSON decoding,
+  Ping-to-Pong auto-response, Pong skip behavior, and Close error behavior.
+- `crates/awiki-cli/src/runtime/listener_ws_transport.rs`: kept the transport
+  dependency-free by adding timeout support to the private `ReadWrite` trait
+  for `TcpStream` and `rustls::StreamOwned<ClientConnection, TcpStream>`.
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: real
+  `consume_notifications` now polls reads every 500ms and calls
+  `transport.ping()` on the existing 60-second `SESSION_PING_INTERVAL`. Ping
+  failures return `websocket ping failed: <err>`, allowing the existing session
+  loop to close, mark disconnected, back off, and reconnect.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib listener_ws_transport --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --test runtime_listener_foreground_contract --test runtime_listener_session_loop_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleNotificationDispatchesHostNotificationToSink|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts -ra -q
+```
+
+Observed results:
+
+- Transport inline tests: 4 passed, 0 failed.
+- Focused foreground/notification/session-loop contracts: 30 passed, 0 failed.
+- Rust formatting check: passed.
+- Rust `git diff --check`: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines. `listener_supervisor_run.rs` is documented as an oversized
+  translation-time exception at 1810 lines, slightly above Go `server.go`'s
+  1802 lines and still far below the rare 5000-line cap allowed for special
+  files. `listener_ws_transport.rs` is 711 lines.
+- Go focused listener guards: passed.
+- New `awiki-system-test` Batch 1 non-mail selector: 1 passed, 0 failed,
+  0 skipped.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- `AWIKI_SYSTEM_TEST_MODE`, `E2E_USER_SERVICE_URL`,
+  `E2E_MESSAGE_SERVICE_URL`, `E2E_MESSAGE_SERVICE_WS_URL`, and
+  `E2E_DID_DOMAIN` were not needed by this selector because it runs local Rust
+  contracts through pytest rather than contacting live services.
+- No mail selector was run or counted. Mail remains deferred/gated.
+
+Boundary note: this slice wires the real ping cadence and timeout-capable poll
+read, but it does not yet implement Go's full shared long-lived `WSClient`
+runtime owner, bridge RPC transport reuse through the current session client,
+or a separate cancelable 15-second ping context beyond the existing transport
+write timeout. It also does not cover Windows named-pipe I/O,
+macOS/Windows service-manager execution, mail-system acceptance, or full
+repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 Runtime Listener WebSocket Pending Dispatch
 
 Timestamp: 2026-05-18T04:28:00Z / 2026-05-18T12:28:00+0800.

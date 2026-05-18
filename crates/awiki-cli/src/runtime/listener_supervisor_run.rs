@@ -14,6 +14,7 @@ use super::listener_local_notification_flush::{
     flush_queued_local_notifications, LocalNotificationFlushTargetSession,
 };
 use super::listener_local_notifications::{LocalNotification, LocalNotificationQueue};
+use super::listener_notification_consume::SESSION_PING_INTERVAL;
 use super::listener_notification_handler::handle_listener_notification;
 use super::listener_notification_plan::{
     NotificationSessionContext, SecureNotificationNormalization,
@@ -53,12 +54,13 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 
 const SESSION_RECONNECT_BASE_DELAY: Duration = Duration::from_secs(1);
 const SESSION_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 const WATCH_IDENTITIES_INTERVAL: Duration = Duration::from_secs(3);
+const SESSION_NOTIFICATION_READ_POLL: Duration = Duration::from_millis(500);
 
 pub fn run_foreground(resolved: Resolved) -> anyhow::Result<()> {
     run_listener(resolved)
@@ -969,8 +971,19 @@ fn consume_notifications(
     transport: &mut WsTransport,
     shutdown: &Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
+    let mut next_ping = Instant::now() + SESSION_PING_INTERVAL;
     while !shutdown.load(Ordering::SeqCst) {
-        let notification = transport.read_json_message()?;
+        if Instant::now() >= next_ping {
+            transport
+                .ping()
+                .map_err(|err| anyhow::anyhow!("websocket ping failed: {err}"))?;
+            next_ping = Instant::now() + SESSION_PING_INTERVAL;
+        }
+        let Some(notification) =
+            transport.read_json_message_timeout(SESSION_NOTIFICATION_READ_POLL)?
+        else {
+            continue;
+        };
         if notification.get("id").is_some() {
             continue;
         }

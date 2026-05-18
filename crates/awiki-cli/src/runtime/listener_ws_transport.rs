@@ -5,7 +5,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use serde_json::{Map, Value};
 use std::fmt;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::Arc;
@@ -14,6 +14,7 @@ use std::time::Duration;
 const READ_HEADER_LIMIT: usize = 16 * 1024;
 const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024;
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WsDialError {
@@ -31,11 +32,34 @@ impl std::error::Error for WsDialError {}
 
 pub struct WsTransport {
     stream: Box<dyn ReadWrite>,
+    default_read_timeout: Option<Duration>,
 }
 
-trait ReadWrite: Read + Write + Send {}
+trait ReadWrite: Read + Write + Send {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()>;
 
-impl<T> ReadWrite for T where T: Read + Write + Send {}
+    #[cfg(test)]
+    fn timeout_events(&self) -> Vec<Option<Duration>> {
+        Vec::new()
+    }
+
+    #[cfg(test)]
+    fn written_bytes(&self) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+impl ReadWrite for TcpStream {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()> {
+        TcpStream::set_read_timeout(self, timeout)
+    }
+}
+
+impl ReadWrite for StreamOwned<ClientConnection, TcpStream> {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.sock.set_read_timeout(timeout)
+    }
+}
 
 impl WsTransport {
     pub fn connect(
@@ -49,7 +73,10 @@ impl WsTransport {
         write_handshake_request(&mut stream, &parsed, bearer_token, &key)?;
         let headers = read_http_headers(&mut stream)?;
         validate_handshake_response(&headers, &key)?;
-        Ok(Self { stream })
+        Ok(Self {
+            stream,
+            default_read_timeout: Some(DEFAULT_READ_TIMEOUT),
+        })
     }
 
     pub fn send_json(&mut self, payload: &Map<String, Value>) -> anyhow::Result<()> {
@@ -76,6 +103,23 @@ impl WsTransport {
                 WsFrame::Pong => {}
                 WsFrame::Close => anyhow::bail!("websocket notification loop closed"),
             }
+        }
+    }
+
+    pub fn read_json_message_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> anyhow::Result<Option<Map<String, Value>>> {
+        self.stream.set_read_timeout(Some(timeout))?;
+        let result = self.read_json_message();
+        let restore_result = self.stream.set_read_timeout(self.default_read_timeout);
+        match (result, restore_result) {
+            (Ok(message), Ok(())) => Ok(Some(message)),
+            (Err(err), Ok(())) if is_timeout_error(&err) => Ok(None),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(_), Err(restore_err)) => Err(restore_err.into()),
+            (Err(err), Err(restore_err)) if is_timeout_error(&err) => Err(restore_err.into()),
+            (Err(err), Err(_)) => Err(err),
         }
     }
 
@@ -155,6 +199,12 @@ fn decode_json_object(raw: &[u8]) -> anyhow::Result<Map<String, Value>> {
         Value::Object(map) => Ok(map),
         _ => anyhow::bail!("websocket JSON message must be an object"),
     }
+}
+
+fn is_timeout_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<std::io::Error>()
+        .map(|err| matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut))
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -490,8 +540,11 @@ fn dial_error(status_code: Option<u16>, message: impl Into<String>) -> WsDialErr
 
 #[cfg(test)]
 mod tests {
-    use super::{sha1_digest, websocket_accept};
+    use super::{sha1_digest, websocket_accept, ReadWrite, WsTransport};
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use std::collections::VecDeque;
+    use std::io::{Error, ErrorKind, Read, Write};
+    use std::time::Duration;
 
     #[test]
     fn sha1_digest_matches_known_websocket_accept_vector() {
@@ -503,5 +556,156 @@ mod tests {
             websocket_accept("dGhlIHNhbXBsZSBub25jZQ=="),
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         );
+    }
+
+    #[test]
+    fn timeout_read_returns_none_and_restores_default_timeout() {
+        let stream = ScriptedStream {
+            read_error: Some(ErrorKind::WouldBlock),
+            ..ScriptedStream::default()
+        };
+        let mut transport = test_transport(stream, Some(Duration::from_secs(90)));
+
+        let result = transport
+            .read_json_message_timeout(Duration::from_millis(5))
+            .expect("timeout poll");
+
+        assert_eq!(result, None);
+        assert_eq!(
+            transport.stream.timeout_events(),
+            vec![
+                Some(Duration::from_millis(5)),
+                Some(Duration::from_secs(90))
+            ]
+        );
+    }
+
+    #[test]
+    fn timeout_read_decodes_text_message_and_restores_default_timeout() {
+        let mut stream = ScriptedStream::default();
+        stream.reads.push_back(server_text_frame(br#"{"ok":true}"#));
+        let mut transport = test_transport(stream, Some(Duration::from_secs(90)));
+
+        let result = transport
+            .read_json_message_timeout(Duration::from_millis(5))
+            .expect("timeout poll")
+            .expect("message");
+
+        assert_eq!(result["ok"], true);
+        assert_eq!(
+            transport.stream.timeout_events(),
+            vec![
+                Some(Duration::from_millis(5)),
+                Some(Duration::from_secs(90))
+            ]
+        );
+    }
+
+    #[test]
+    fn timeout_read_still_auto_pongs_ping_before_message() {
+        let mut stream = ScriptedStream::default();
+        stream.reads.push_back(server_ping_frame(b"hi"));
+        stream
+            .reads
+            .push_back(server_text_frame(br#"{"after_ping":true}"#));
+        let mut transport = test_transport(stream, Some(Duration::from_secs(90)));
+
+        let result = transport
+            .read_json_message_timeout(Duration::from_millis(5))
+            .expect("timeout poll")
+            .expect("message");
+
+        assert_eq!(result["after_ping"], true);
+        assert!(
+            !transport.stream.written_bytes().is_empty(),
+            "ping should cause an automatic pong frame write"
+        );
+        assert_eq!(transport.stream.written_bytes()[0] & 0x0F, 0xA);
+    }
+
+    fn test_transport(
+        stream: ScriptedStream,
+        default_read_timeout: Option<Duration>,
+    ) -> WsTransport {
+        WsTransport {
+            stream: Box::new(stream),
+            default_read_timeout,
+        }
+    }
+
+    fn server_text_frame(payload: &[u8]) -> Vec<u8> {
+        server_frame(0x1, payload)
+    }
+
+    fn server_ping_frame(payload: &[u8]) -> Vec<u8> {
+        server_frame(0x9, payload)
+    }
+
+    fn server_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.push(0x80 | (opcode & 0x0F));
+        frame.push(payload.len() as u8);
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    #[derive(Default)]
+    struct ScriptedStream {
+        reads: VecDeque<Vec<u8>>,
+        current: VecDeque<u8>,
+        writes: Vec<u8>,
+        timeout_events: Vec<Option<Duration>>,
+        read_error: Option<ErrorKind>,
+    }
+
+    impl Read for ScriptedStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(kind) = self.read_error {
+                return Err(Error::new(kind, "scripted read timeout"));
+            }
+            if self.current.is_empty() {
+                if let Some(next) = self.reads.pop_front() {
+                    self.current = VecDeque::from(next);
+                }
+            }
+            if self.current.is_empty() {
+                return Ok(0);
+            }
+            let mut count = 0;
+            while count < buf.len() {
+                let Some(byte) = self.current.pop_front() else {
+                    break;
+                };
+                buf[count] = byte;
+                count += 1;
+            }
+            Ok(count)
+        }
+    }
+
+    impl Write for ScriptedStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ReadWrite for ScriptedStream {
+        fn set_read_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()> {
+            self.timeout_events.push(timeout);
+            Ok(())
+        }
+
+        fn timeout_events(&self) -> Vec<Option<Duration>> {
+            self.timeout_events.clone()
+        }
+
+        fn written_bytes(&self) -> Vec<u8> {
+            self.writes.clone()
+        }
     }
 }
