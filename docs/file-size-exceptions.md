@@ -1,6 +1,6 @@
 # File Size Exceptions
 
-Rust source files should stay at or below 1200 non-generated lines. Exceptions require a corresponding oversized Go source file and a documented reason.
+Rust source files should stay at or below 1200 non-generated lines by default. Exceptions require a corresponding oversized Go source file and a documented reason. A genuinely special file may be relaxed up to about 5000 lines when justified, but exception use must remain rare rather than becoming the normal module shape.
 
 | Rust path | Rust lines | Go path | Go lines | Reason |
 | --- | ---: | --- | ---: | --- |
