@@ -109,6 +109,20 @@ passed 5 recover-member tests and 5 update-key tests; the focused Go guard
 passed; structure checks passed; and the extended non-mail selector passed with
 1 test. Mail selectors remained deferred.
 
+## 2026-05-18 Message Group E2EE Status/Pending/Publish/Wire Selector Batch
+
+Detailed report:
+`2026-05-18-message-group-e2ee-status-pending-publish-selector.md`.
+
+Summary: the accelerated message/group E2EE selector batch confirmed existing
+Rust production and fake-service contracts already covered Go status, pending
+notice pull, KeyPackage publish, and hidden wire selector behavior. It added a
+separate Rust-only `awiki-system-test` selector that verifies the expected
+Rust contract functions exist and then runs the four Cargo targets once each.
+Rust direct validation passed 15 focused contracts; the focused Go guard
+passed; wrapper syntax and whitespace checks passed; and the new non-mail
+selector passed with 1 test. Mail selectors remained deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.

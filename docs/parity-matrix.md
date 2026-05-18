@@ -501,6 +501,25 @@ skipped in 179.52s. This is deterministic contract selector evidence, not a
 live real-service forced epoch-mismatch or recover/update forced-failure
 selector; mail selectors remain deferred.
 
+Current group E2EE status/pending/publish/wire selector evidence: on
+2026-05-18, an accelerated `message/group` batch used a read-only Native Agent
+to map Go `group e2ee status`, `group e2ee pending`,
+`group e2ee publish-key-package`, hidden KeyPackage/head/notice wire selector
+behavior, and adjacent Go tests. Additional Native Agents could not be started
+because the session had reached its agent limit, so the leader performed Rust
+and system-test mapping locally. No production Rust gap was found. The
+Rust-only system-test wrapper now exposes a separate selector,
+`tests_v2/cli/test_awiki_cli_group_e2ee_rust_contracts.py::test_awiki_cli_group_e2ee_status_pending_publish_rust_contracts`,
+which verifies and runs four existing Rust fake-service targets:
+`group_e2ee_status_contract` (2 tests), `group_e2ee_pending_contract` (2
+tests), `group_e2ee_publish_contract` (4 tests), and
+`message_group_e2ee_wire_contract` (7 tests). The selector passed with 1
+passed, 0 failed, and 0 skipped in 47.27s under `AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`, and
+`AWIKI_CLI_UPDATE_CACHE_ONLY=1`. This is deterministic Rust contract selector
+evidence, not a new live real-service acceptance claim; mail selectors remain
+deferred.
+
 Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
 broad non-mail `awiki-system-test` subprocess batch under
 `AWIKI_CLI_UNDER_TEST=rust` and `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`, covering
