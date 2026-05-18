@@ -17,6 +17,7 @@ const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024;
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(90);
 const PING_TIMEOUT: Duration = Duration::from_secs(15);
+const PING_CANCEL_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WsDialError {
@@ -93,10 +94,21 @@ impl WsTransport {
     }
 
     pub fn ping_with_timeout(&mut self, timeout: Duration) -> anyhow::Result<()> {
+        self.ping_with_timeout_until(timeout, || false)
+    }
+
+    pub fn ping_with_timeout_until<F>(
+        &mut self,
+        timeout: Duration,
+        should_cancel: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn() -> bool,
+    {
         self.ping_counter = self.ping_counter.wrapping_add(1);
         let payload = self.ping_counter.to_string().into_bytes();
         self.write_frame(0x9, &payload)?;
-        let result = self.wait_for_pong(&payload, timeout);
+        let result = self.wait_for_pong_until(&payload, timeout, should_cancel);
         let restore_result = self.stream.set_read_timeout(self.default_read_timeout);
         match (result, restore_result) {
             (Ok(()), Ok(())) => Ok(()),
@@ -168,16 +180,33 @@ impl WsTransport {
         Ok(())
     }
 
+    #[cfg(test)]
     fn wait_for_pong(&mut self, expected_payload: &[u8], timeout: Duration) -> anyhow::Result<()> {
+        self.wait_for_pong_until(expected_payload, timeout, || false)
+    }
+
+    fn wait_for_pong_until<F>(
+        &mut self,
+        expected_payload: &[u8],
+        timeout: Duration,
+        should_cancel: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn() -> bool,
+    {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| anyhow::anyhow!("websocket ping timeout is too large: {timeout:?}"))?;
         let mut deferred_frames = VecDeque::new();
         let result = loop {
-            let read_timeout = match deadline.checked_duration_since(Instant::now()) {
+            if should_cancel() {
+                break Err(anyhow::anyhow!("context canceled"));
+            }
+            let remaining = match deadline.checked_duration_since(Instant::now()) {
                 Some(remaining) if !remaining.is_zero() => remaining,
                 _ => break Err(timeout_error("websocket pong timed out")),
             };
+            let read_timeout = bounded_ping_read_timeout(remaining);
             if let Err(err) = self.stream.set_read_timeout(Some(read_timeout)) {
                 break Err(err.into());
             }
@@ -195,6 +224,7 @@ impl WsTransport {
                 Ok(WsFrame::Close) => {
                     break Err(anyhow::anyhow!("websocket notification loop closed"));
                 }
+                Err(err) if is_timeout_error(&err) && Instant::now() < deadline => {}
                 Err(err) => break Err(err),
             }
         };
@@ -260,6 +290,14 @@ impl WsTransport {
             0xA => Ok(WsFrame::Pong(payload)),
             _ => anyhow::bail!("unsupported websocket frame opcode: {opcode}"),
         }
+    }
+}
+
+fn bounded_ping_read_timeout(remaining: Duration) -> Duration {
+    if remaining > PING_CANCEL_POLL {
+        PING_CANCEL_POLL
+    } else {
+        remaining
     }
 }
 
@@ -720,6 +758,7 @@ fn dial_error(status_code: Option<u16>, message: impl Into<String>) -> WsDialErr
 mod tests {
     use super::{sha1_digest, websocket_accept, ReadWrite, WsTransport};
     use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    use std::cell::Cell;
     use std::collections::VecDeque;
     use std::io::{Error, ErrorKind, Read, Write};
     use std::time::Duration;
@@ -828,6 +867,39 @@ mod tests {
         assert!(
             !transport.stream.written_bytes().is_empty(),
             "ping should write a websocket ping frame before waiting"
+        );
+        assert_eq!(
+            client_frame(&transport.stream.written_bytes()),
+            (0x9, b"1".to_vec())
+        );
+    }
+
+    #[test]
+    fn ping_with_timeout_until_returns_context_cancel_and_restores_default_timeout() {
+        let stream = ScriptedStream {
+            read_error: Some(ErrorKind::TimedOut),
+            ..ScriptedStream::default()
+        };
+        let mut transport = test_transport(stream, Some(Duration::from_secs(90)));
+        let polls = Cell::new(0);
+
+        let err = transport
+            .ping_with_timeout_until(Duration::from_secs(15), || {
+                let next = polls.get() + 1;
+                polls.set(next);
+                next > 1
+            })
+            .expect_err("shutdown cancellation should stop the ping wait");
+
+        assert_eq!(err.to_string(), "context canceled");
+        let timeout_events = transport.stream.timeout_events();
+        assert_eq!(timeout_events.last(), Some(&Some(Duration::from_secs(90))));
+        assert!(
+            timeout_events
+                .first()
+                .and_then(|event| *event)
+                .is_some_and(|timeout| timeout <= Duration::from_millis(100)),
+            "shutdown-aware ping should poll in short intervals: {timeout_events:?}"
         );
         assert_eq!(
             client_frame(&transport.stream.written_bytes()),

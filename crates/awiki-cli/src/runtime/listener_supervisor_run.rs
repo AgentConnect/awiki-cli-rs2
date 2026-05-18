@@ -35,6 +35,7 @@ use super::listener_secure_sync::{
 use super::listener_service_did::{
     fetch_message_service_did, ListenerServiceDidRpc, ListenerServiceDidSession,
 };
+use super::listener_session_methods::SessionDisconnectReason;
 use super::listener_shutdown_signal::{
     install_foreground_shutdown_handler, wait_for_foreground_shutdown,
 };
@@ -593,16 +594,27 @@ fn spawn_session_loop(
                     remove_session_rpc_sender(&session_rpcs, &identity_name);
                     let _ = transport.close();
                     if shutdown.load(Ordering::SeqCst) {
+                        mark_session_disconnected(
+                            &status,
+                            &identity_name,
+                            record.did,
+                            Some(SessionDisconnectReason::ContextCanceled),
+                        );
                         break;
                     }
-                    mark_session_disconnected(&status, &identity_name, record.did, error);
+                    mark_session_disconnected(
+                        &status,
+                        &identity_name,
+                        record.did,
+                        error.map(SessionDisconnectReason::Other),
+                    );
                 }
                 Err(err) => {
                     mark_session_disconnected(
                         &status,
                         &identity_name,
                         String::new(),
-                        Some(err.to_string()),
+                        Some(SessionDisconnectReason::Other(err.to_string())),
                     );
                     if let Some(signal) = initial_signal.take() {
                         signal.signal_error(err.to_string());
@@ -1264,7 +1276,10 @@ fn consume_notifications(
         expire_session_rpc_pending(Instant::now(), &mut dispatch, &mut pending_rpc_responses);
         if Instant::now() >= next_ping {
             if let Err(err) = transport
-                .ping()
+                .ping_with_timeout_until(
+                    super::listener_notification_consume::SESSION_PING_TIMEOUT,
+                    || shutdown.load(Ordering::SeqCst),
+                )
                 .map_err(|err| anyhow::anyhow!("websocket ping failed: {err}"))
             {
                 loop_result = Err(err);
@@ -2007,9 +2022,10 @@ fn mark_session_disconnected(
     status: &Arc<Mutex<Status>>,
     identity_name: &str,
     did: String,
-    error: Option<String>,
+    error: Option<SessionDisconnectReason>,
 ) {
     let mut guard = status.lock().expect("listener status mutex poisoned");
+    let last_error = disconnected_last_error(&guard, identity_name, error);
     let did = if did.is_empty() {
         guard
             .sessions
@@ -2026,10 +2042,26 @@ fn mark_session_disconnected(
             identity_name: identity_name.to_string(),
             did,
             connected: false,
-            last_error: error.unwrap_or_default(),
+            last_error,
         },
     );
     let _ = listener::write_status(&guard.status_file, &guard);
+}
+
+fn disconnected_last_error(
+    status: &Status,
+    identity_name: &str,
+    error: Option<SessionDisconnectReason>,
+) -> String {
+    match error {
+        Some(SessionDisconnectReason::Other(error)) if !error.is_empty() => error,
+        _ => status
+            .sessions
+            .iter()
+            .find(|session| session.identity_name == identity_name)
+            .map(|session| session.last_error.clone())
+            .unwrap_or_default(),
+    }
 }
 
 fn upsert_session(status: &mut Status, session: SessionStatus) {
@@ -2232,5 +2264,41 @@ mod tests {
             .expect("timeout response")
             .expect_err("timeout should fail");
         assert_eq!(error.to_string(), "context deadline exceeded");
+    }
+
+    #[test]
+    fn disconnected_last_error_preserves_shutdown_and_records_reader_errors_like_go() {
+        let status = Status {
+            sessions: vec![SessionStatus {
+                identity_name: "alice".to_string(),
+                did: "did:alice".to_string(),
+                connected: true,
+                last_error: "previous reader error".to_string(),
+            }],
+            ..Status::default()
+        };
+
+        assert_eq!(
+            disconnected_last_error(
+                &status,
+                "alice",
+                Some(SessionDisconnectReason::Other("reader stopped".to_string())),
+            ),
+            "reader stopped"
+        );
+        assert_eq!(
+            disconnected_last_error(
+                &status,
+                "alice",
+                Some(SessionDisconnectReason::ContextCanceled),
+            ),
+            "previous reader error",
+            "Go markDisconnected ignores context.Canceled rather than overwriting lastError"
+        );
+        assert_eq!(
+            disconnected_last_error(&status, "alice", None),
+            "previous reader error",
+            "closeCurrentClient-style shutdown does not mutate lastError"
+        );
     }
 }

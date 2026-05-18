@@ -20,6 +20,99 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Runtime Listener Lifecycle Reader-Error Shutdown Batch
+
+Timestamp: 2026-05-18T22:15:00+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline. The batch started from
+  parallel read-only Native Agent maps for Go listener lifecycle behavior, Rust
+  runtime listener gaps, and `awiki-system-test` selector coverage.
+- The leader kept Rust writes limited to runtime listener transport/session
+  owner files. A GPT-5.5 xhigh Native Agent with a non-overlapping write scope
+  added only the focused system-test selector wrapper in
+  `tests_v2/cli/test_awiki_cli_runtime_listener_local.py`.
+- Mail selectors remain deferred and were not run or counted.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/listener/wsclient.go` | `readLoop` stores the terminal reader error, fails pending RPC waiters, closes notifications, and lets `consumeNotifications` return `ReaderError()` before reconnect. | `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`, `crates/awiki-cli/src/runtime/listener_ws_transport.rs` | Strengthened: real session loop preserves reader/transport errors in disconnected status while pending RPC failure remains on the shared session loop path. | `cargo +1.79.0 test -p awiki-cli --lib runtime::listener_supervisor_run::tests --locked`; lifecycle contract targets listed below. | `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_lifecycle_reader_error_shutdown_contracts` | Low for the covered contract path; live remote reader failure system probing remains later broad acceptance. |
+| `internal/runtime/listener/server.go` | `markDisconnected(err)` closes the current client, marks disconnected, and records `lastError` only when the error is non-nil and not `context.Canceled`. | `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`, `crates/awiki-cli/src/runtime/listener_session_methods.rs`, `crates/awiki-cli/src/runtime/listener_session_state.rs` | Translated in live supervisor status updates and already covered in helper/session-state contracts. Shutdown/context-canceled disconnects now write disconnected status without overwriting the prior error. | `runtime_listener_session_methods_contract`, `runtime_listener_session_state_contract`, and the new supervisor lib contract. | Same lifecycle selector. | Low for status mutation semantics; foreground cleanup artifact removal remains covered by the existing signal selector. |
+| `internal/runtime/listener/server.go` | `consumeNotifications` ping uses a context with 15s timeout derived from the session context, so session shutdown can cancel an in-flight ping wait. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs`, `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Strengthened: `WsTransport::ping_with_timeout_until` still uses the Go 15s total timeout and Go-style payloads, but polls the socket in short intervals so the supervisor shutdown flag can return `context canceled` promptly. | `cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked`; `runtime_listener_notification_consume_contract`. | Same lifecycle selector. | Low for shutdown-aware ping wait; full live shutdown under every network timing remains later broad acceptance. |
+| `internal/runtime/listener/server.go` | `Supervisor.Close` cancels sessions, closes current clients, then closes listener/host notify/database without treating normal cancellation as a session error. | `crates/awiki-cli/src/runtime/listener_supervisor_shutdown.rs`, `crates/awiki-cli/src/runtime/listener_shutdown_signal.rs`, `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Existing shutdown-order and signal helpers are now grouped with the live status/ping changes under one focused system selector. | `runtime_listener_supervisor_shutdown_contract`, `runtime_listener_shutdown_signal_contract`, supervisor lib contract. | Same lifecycle selector. | Medium residual risk only for non-Linux service manager and Windows named-pipe runtime I/O. |
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib runtime::listener_supervisor_run::tests --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --test runtime_listener_session_loop_contract --test runtime_listener_session_methods_contract --test runtime_listener_supervisor_shutdown_contract --test runtime_listener_shutdown_signal_contract --test runtime_listener_session_state_contract --locked
+cd /home/ecs-user/awiki-space/awiki-system-test && uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_lifecycle_reader_error_shutdown_contracts -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'Test.*Session|Test.*Reader|Test.*Reconnect|Test.*Close|Test.*Shutdown' -count=1
+```
+
+Observed results:
+
+- Rust `listener_ws_transport` unit tests: 7 passed, 0 failed.
+- Rust `listener_supervisor_run` unit tests: 4 passed, 0 failed.
+- Rust lifecycle integration contracts: 39 passed, 0 failed across
+  notification consume, session loop, session methods, supervisor shutdown,
+  shutdown signal, and session state targets.
+- Focused `awiki-system-test` selector: 1 passed, 0 failed, 0 skipped.
+- Go focused runtime listener reference guard: passed.
+- `cargo fmt --check`, `cargo check`, `xtask check-structure`, and `git diff
+  --check`: passed.
+- `uv run python -m py_compile` for the touched system-test selector: passed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- This selector is a Rust-contract wrapper and does not require live
+  user-service, message-service, WebSocket URL, DID domain, or mail-service
+  configuration.
+- Mail selectors were not run. Failed 0. Skipped 0.
+
+Scope:
+
+- `WsTransport::ping_with_timeout_until` keeps the existing Go 15-second ping
+  timeout and incrementing string payload behavior while allowing the
+  foreground supervisor to cancel a ping wait promptly during shutdown.
+- Foreground session shutdown now records disconnected status for the active
+  session without overwriting `last_error` with a normal cancellation, matching
+  Go `markDisconnected`/`closeCurrentClient` semantics.
+- Real reader/transport errors continue to flow into the reconnect path as
+  disconnected-session `last_error` text.
+- The new system-test selector groups the lifecycle, reader-error, and shutdown
+  contracts so later batches can run this focused acceptance layer without
+  touching mail selectors.
+
+Boundary note: this batch is focused runtime listener lifecycle parity. It does
+not claim Windows named-pipe I/O, non-Linux service-manager execution, mail
+system-test acceptance, live network failure injection for every reader-error
+timing, or full repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite stays on the approved `rusqlite + bundled` path, and
+the WebSocket/TLS path remains std-socket plus Rustls without OpenSSL,
+`native-tls`, or a WebSocket crate.
+
+File-size note: `listener_supervisor_run.rs` remains a documented exception and
+is now 2304 lines, still below the user-approved special-file relaxation limit
+of about 5000 lines. `listener_ws_transport.rs` is 1040 lines, under the
+default 1200-line cap. No new Rust source/test file exceeds the default cap.
+
 ## 2026-05-18 Runtime Listener WebSocket Ping Timeout Batch
 
 Timestamp: 2026-05-18T18:30:00+0800.
@@ -42,7 +135,7 @@ Gap table:
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
 | `internal/runtime/listener/wsclient.go` | `WSClient.Ping(ctx)` delegates to `coder/websocket.Conn.Ping(ctx)`, which writes a Ping and waits for the matching Pong or context timeout. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs` | Translated: `WsTransport::ping()` now sends a Go-style incrementing string payload and waits up to 15s for the matching Pong. | `cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked`; `cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked` | `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts` | Low. Real network selector remains non-mail focused; broader repository acceptance remains later. |
-| `internal/runtime/listener/server.go` | `consumeNotifications` uses 60s ping cadence and wraps a 15s ping timeout error as `websocket ping failed: <err>`. | `crates/awiki-cli/src/runtime/listener_notification_consume.rs`; `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Already wired before this batch; this batch closes the transport wait-for-Pong nuance underneath the existing cadence. | `cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked` | Same non-mail Batch 1 selector. | Medium residual runtime risk: deeper reader-error/lifecycle edges are not full repository-wide acceptance. |
+| `internal/runtime/listener/server.go` | `consumeNotifications` uses 60s ping cadence and wraps a 15s ping timeout error as `websocket ping failed: <err>`. | `crates/awiki-cli/src/runtime/listener_notification_consume.rs`; `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Already wired before this batch; this batch closes the transport wait-for-Pong nuance underneath the existing cadence. The later lifecycle batch covers reader-error status propagation and shutdown cancellation during ping waits. | `cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked` | Same non-mail Batch 1 selector. | Medium residual runtime risk: broader live reader-failure injection is not full repository-wide acceptance. |
 | `github.com/coder/websocket@v1.8.12/conn.go` | Ping payload is the incrementing string counter, and unrelated frames can still be read by the active reader while Ping waits. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs` | Translated locally without adding a WebSocket crate: first payload is `"1"`, inbound peer Ping auto-Pongs, Text/Binary frames read while waiting are deferred and replayed to `read_json_message`. | Source tests assert timeout restoration, Go-style payload, auto-Pong during ping wait, and deferred-message replay. Integration test asserts delayed-Pong waiting. | Same non-mail Batch 1 selector. | Low. Uses blocking std/Rustls transport already accepted by foreground runtime. |
 
 Commands run:
@@ -411,7 +504,7 @@ Observed results:
 - Rust `cargo check -p awiki-cli --locked`: passed.
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` remains the documented oversized
-  translation-time exception at 2236 lines, below the approved rare 5000-line
+  translation-time exception at 2304 lines, below the approved rare 5000-line
   special-file ceiling.
 - `git diff --check`: passed.
 - Go focused runtime listener guards: passed.
@@ -661,11 +754,11 @@ System-test configuration context:
 - No mail selector was run or counted. Mail remains deferred/gated.
 
 Boundary note: this slice wires the real ping cadence and timeout-capable poll
-read. The later WebSocket ping timeout batch closes the wait-for-matching-Pong
-behavior. Remaining runtime depth is now outside that ping boundary: deeper
-reader-error propagation, shutdown cancellation while a ping wait is in
-progress, Windows named-pipe I/O, macOS/Windows service-manager execution,
-mail-system acceptance, and full repository-wide system acceptance.
+read. Later focused batches close the wait-for-matching-Pong behavior plus the
+reader-error status and shutdown-cancellation lifecycle edges. Remaining
+runtime depth is now outside that ping/lifecycle boundary: broader live
+reader-failure injection, Windows named-pipe I/O, macOS/Windows service-manager
+execution, mail-system acceptance, and full repository-wide system acceptance.
 
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
