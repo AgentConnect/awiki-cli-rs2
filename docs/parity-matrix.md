@@ -42,6 +42,39 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current runtime small selector batch evidence: on 2026-05-19, the batch followed
+the accelerated module-batch pipeline. The leader pre-scanned the two remaining
+small runtime targets, reused existing `awiki-system-test` runtime Rust selector
+helpers, and added a focused runtime-small selector to the existing runtime
+system-test aggregation file. The selector exposes local Hermes bridge helper
+contracts and listener JSON helper contracts. No production Rust code,
+manifests, dependencies, ANP SDK source, mail selector, or unrelated dirty
+helper file changed.
+
+Runtime small gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/hermesbridge/hermes_config.go`, `internal/cli/runtime.go`, Hermes bridge helpers | Hermes bridge defaults, local notify URL loopback validation, deliver target helpers, home-channel env/display names, `.env` line parsing, route status inspection, fixed target cleanup, legacy notify skill cleanup, and migration predicates | `crates/awiki-cli/src/runtime/hermes_bridge/*`, `src/app/runtime_handlers.rs` | implemented and focused-contract tested | `runtime_hermes_bridge_contract` passed 10 tests | `tests_v2/runtime/test_runtime_cli.py::test_runtime_small_rust_contracts` passed | low; pure local helper target |
+| `internal/runtime/listener` JSON marshal/unmarshal helper behavior | `structToMap`-style JSON object projection, marshal failure fallback, non-object fallback, and JSON null preservation as nil-map equivalent | `crates/awiki-cli/src/runtime/listener/*` | implemented and focused-contract tested | `runtime_listener_json_helpers_contract` passed 4 tests | same Rust-only selector | low; pure local helper target |
+
+Verification evidence: direct Rust runtime small targets passed 14 tests;
+focused Go guards for `internal/runtime/hermesbridge`,
+`internal/runtime/listener`, and `internal/cli` passed; wrapper syntax and
+whitespace checks passed; and the focused non-mail `awiki-system-test` runtime
+small selector passed with 1 passed, 0 failed, and 0 skipped in 0.23s. Rust
+fmt/check/structure gates passed, and `xtask check-structure` reported no
+undocumented Rust files over 1200 lines. The scoped Rust target files are
+small: `runtime_hermes_bridge_contract.rs` 370 lines and
+`runtime_listener_json_helpers_contract.rs` 70 lines. The system-test file
+`tests_v2/runtime/test_runtime_cli.py` is a pre-existing runtime aggregation
+file and is now 1630 lines; this is a documented system-test aggregation
+exception, and this batch added only 70 lines to reuse existing runtime selector
+helpers instead of creating another fragmented runtime wrapper. No dependency
+was added; SQLite remains on the approved `rusqlite + bundled` path and TLS
+remains Rustls-first with no OpenSSL, `native-tls`, bundled OpenSSL, platform
+service, or SQLite backend change introduced.
+
 Current ordinary message/group selector batch evidence: on 2026-05-19, the
 batch followed the accelerated module-batch pipeline. Read-only Native Agents
 mapped Go ordinary `msg`/`group` behavior, current Rust contract targets, and

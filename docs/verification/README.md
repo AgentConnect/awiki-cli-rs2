@@ -20,6 +20,20 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-19 Runtime Small Rust Selector Batch
+
+Detailed report:
+`2026-05-19-runtime-small-rust-selector.md`.
+
+Summary: the accelerated runtime small selector batch exposed the remaining
+non-mail runtime helper Cargo targets through the existing runtime
+`awiki-system-test` selector module. Rust direct validation passed 14 tests;
+focused Go runtime guards passed; the new non-mail selector passed with 1 test,
+0 failed, and 0 skipped; structure and whitespace checks passed; no dependency
+changed; and mail selectors remained deferred. `tests_v2/runtime/test_runtime_cli.py`
+is a pre-existing runtime aggregation file and grew by 70 lines to reuse shared
+runtime selector helpers.
+
 ## 2026-05-19 Message Group Rust Selector Batch
 
 Detailed report:
