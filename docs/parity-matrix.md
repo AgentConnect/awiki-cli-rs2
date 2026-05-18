@@ -42,6 +42,35 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current workspace/config/update selector batch evidence: on 2026-05-18, the
+batch followed the accelerated module-batch pipeline. Three read-only Native
+Agents mapped Go config/update/upgrade behavior, current Rust
+implementation/tests, and non-mail system-test selector coverage in parallel.
+They found no production Rust gap in the scoped cluster. The remaining gap was
+`awiki-system-test` visibility for existing Rust config, update, and workspace
+upgrade Cargo contract targets. The new Rust-only selector
+`tests_v2/cli/test_awiki_cli_workspace_config_update_rust_contracts.py::test_awiki_cli_workspace_config_update_rust_contracts`
+runs `update_contract`, `config_policy_contract`, `config_writer_contract`,
+`workspace_upgrade_contract`, `workspace_upgrade_if_needed_contract`, and
+`workspace_migration_v0_to_v1_contract` once each. Mail selectors remain
+deferred.
+
+Workspace/config/update gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/config/config.go`, `internal/config/write.go`, `internal/cli/config.go` | config resolution, deprecated service URL guards, config snapshot, `config set --did-domain`, atomic writer and mutators | `crates/awiki-cli/src/config/mod.rs`, `src/config/write.rs`, `src/app.rs` | implemented; selector visibility added | `config_policy_contract` passed 4 tests; `config_writer_contract` passed 7 tests | new workspace/config/update Rust selector passed | low |
+| `internal/update/update.go`, `internal/cli/root.go`, `internal/cli/upgrade.go` | cache-only update policy, strict disable/minimum-version handling, root preflight exemptions, upgrade status/install decision path | `crates/awiki-cli/src/update/*`, `src/app/update_preflight.rs`, `src/app/update_handlers.rs` | implemented; selector visibility added | `update_contract` passed 6 tests | same focused selector; existing `tests_v2/update/test_update_policy.py` passed 4 tests | low; live npm install and external registry path not claimed |
+| `internal/upgrade/*`, `internal/cli/app.go`, `internal/cli/init.go` | workspace detect/inspect, automatic `upgrade_if_needed`, backup, lock, journal, meta, migration chain 0->1->2->3, status surfaces | `crates/awiki-cli/src/upgrade/*`, `src/app.rs`, `src/doctor/mod.rs` | implemented; selector visibility added | `workspace_upgrade_contract` passed 20 tests; `workspace_upgrade_if_needed_contract` passed 13; `workspace_migration_v0_to_v1_contract` passed 25 | same focused selector | low; no standalone workspace-upgrade CLI command is claimed |
+
+Verification evidence: Rust direct workspace/config/update targets passed 75
+tests total; focused Go `internal/config`, `internal/upgrade`, and
+`internal/cli` guard passed; existing update policy system-test selector passed
+4 tests; new focused non-mail selector passed with 1 passed, 0 failed, and 0
+skipped in 1.14s; wrapper syntax/whitespace checks and Rust
+fmt/check/structure gates passed. No production Rust code, manifests, ANP SDK
+code, or dependencies changed in this batch.
+
 Current release/test/packaging static asset batch evidence: on 2026-05-18, the
 batch followed the accelerated pipeline. Three read-only Native Agents mapped
 Go release/test assets, current Rust packaging/test coverage, and non-mail

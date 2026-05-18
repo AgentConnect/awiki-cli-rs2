@@ -20,6 +20,20 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Workspace Config Update Selector Batch
+
+Detailed report:
+`2026-05-18-workspace-config-update-selector.md`.
+
+Summary: the accelerated workspace/config/update/local-upgrade batch found no
+production Rust gap in config policy/writer behavior, update/root-preflight
+policy, or local workspace upgrade/migration behavior. It filled the
+system-test visibility gap by adding a Rust-only selector that runs the six
+existing Cargo contract targets once each. Rust direct validation passed 75
+workspace/config/update tests; the focused Go guard passed; the existing
+non-mail update policy selector passed with 4 tests; and the new non-mail
+selector passed with 1 test. Mail selectors remained deferred.
+
 ## 2026-05-18 Identity Profile/Resolve/Bind/Refresh Selector Batch
 
 Detailed report:
