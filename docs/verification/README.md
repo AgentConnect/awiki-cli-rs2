@@ -201,6 +201,21 @@ filtered runtime host-notify tests, and 19 additional Hermes config/route tests;
 the focused Go guard passed; and the new non-mail selector passed with 1 test.
 Mail selectors remained deferred.
 
+## 2026-05-18 Runtime Listener Session/Secure/Host-Notify Selector Batch
+
+Detailed report:
+`2026-05-18-runtime-listener-session-secure-host-notify-selector.md`.
+
+Summary: the accelerated runtime/listener selector batch confirmed existing
+Rust contracts already covered session bootstrap, known sessions, identity
+watch, secure replay/sync, secure notification reconstruction, secure ack and
+outbox flush, local notification queue, and host-notify event/sink/config
+behavior. It added a Rust-only target-level `awiki-system-test` selector that
+verifies and runs 20 existing Cargo targets once each. The focused Go guard
+passed; wrapper syntax and whitespace checks passed; the new non-mail selector
+passed with 1 test; and Rust formatting/check/structure gates passed. Mail
+selectors remained deferred.
+
 ## 2026-05-18 Runtime Local Bridge Deterministic Selector Batch
 
 Detailed report:

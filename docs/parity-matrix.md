@@ -701,6 +701,24 @@ already translated secure replay behavior; it does not add a dependency, does
 not expand the documented large-file exception, and does not count mail
 selectors.
 
+Current runtime listener session/secure replay/host-notify selector evidence:
+on 2026-05-18, an accelerated runtime/listener batch used read-only Native
+Agents to map Go foreground/session/secure replay/host-notify behavior,
+current Rust contract targets, and non-mail `awiki-system-test` selector
+surface. No production Rust gap was found in the selected deterministic
+targets. The Rust-only system-test wrapper now exposes
+`tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_session_secure_replay_host_notify_contracts`,
+which verifies and runs 20 existing Cargo targets once each: session bootstrap,
+known sessions, identity watch, connect/session methods, bridge runtime,
+supervisor shutdown, secure replay/sync/notification/ack/outbox/local queue,
+host event normalization, host-notify sinks, Hermes, OpenClaw, and
+host-notify enable/disable contracts. The selector passed with 1 passed, 0
+failed, and 0 skipped in 1.34s under `AWIKI_CLI_UNDER_TEST=rust`,
+`AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`, and
+`AWIKI_CLI_UPDATE_CACHE_ONLY=1`. This is deterministic Rust contract selector
+evidence, not a new live foreground signal, real WebSocket secure-replay, or
+mail acceptance claim. Mail selectors remain deferred.
+
 Current runtime listener bridge-created host-notify evidence: on 2026-05-18,
 Rust `BridgeRuntime::ensure_session` stopped creating a fresh `NoopHostNotifySink`
 for sessions first discovered through foreground bridge traffic. It now carries
