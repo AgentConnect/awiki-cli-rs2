@@ -140,6 +140,41 @@ passed with 1 passed in 0.95s. No Rust production code, manifests, ANP SDK code,
 or dependencies changed in this batch. The modified system-test wrapper is
 1079 lines, below the ordinary 1200-line limit.
 
+Current runtime host-notify/OpenClaw/Hermes local selector batch evidence: on
+2026-05-18, the batch followed the accelerated module-batch pipeline. Three
+read-only Native Agents mapped Go host-notify, OpenClaw, Hermes, config,
+enable/disable, route, and webhook behavior against the existing Rust
+implementation/tests and `awiki-system-test` selectors in parallel. They found
+no production Rust gap in the scoped deterministic cluster. The remaining gap
+was local Rust-only selector visibility: existing CLI host-notify probe wrappers
+exercise live message-service/WebSocket paths and are therefore too flaky for
+this deterministic batch. A bounded GPT-5.5 xhigh Native Agent modified only
+`tests_v2/runtime/test_runtime_cli.py`, adding
+`test_runtime_host_notify_local_rust_contracts`. Existing dirty helper files in
+`awiki-system-test` were not touched or staged. Mail selectors remain deferred.
+
+Runtime host-notify/OpenClaw/Hermes local selector gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/listener/host_notify.go` | direct/group/group-state host event normalization, ID fallbacks, handle merge, sink dispatch status, and non-mail file/noop/log/OpenClaw/Hermes sink construction | `crates/awiki-cli/src/runtime/host_notify.rs`, `host_notify_sink.rs` | implemented; deterministic selector visibility added | `runtime_host_notify_sink_contract` passed 10 tests; selected non-mail `runtime_host_notify_contract` tests passed | `test_runtime_host_notify_local_rust_contracts` runs local Rust contracts when `AWIKI_CLI_UNDER_TEST=rust` | low; mail host-notify event tests remain local-contract-only and live mail selectors stay deferred |
+| `internal/runtime/listener/hermes_host_notify.go`, `internal/cli/runtime.go` Hermes commands | Hermes notify URL validation, secret precedence, HMAC signing, POST status mapping, config write/secret redaction, and local route-file setup helpers | `crates/awiki-cli/src/runtime/hermes_host_notify.rs`, `src/app/runtime_hermes_handlers.rs`, Hermes route/config helpers | implemented; selector visibility added | `runtime_hermes_host_notify_contract` passed 8 tests; `runtime_hermes_config_write_contract` passed 11; `runtime_hermes_ensure_route_contract` passed 8 | same focused selector | low; real Hermes bridge/service-manager/live delivery remains separate |
+| `internal/runtime/listener/openclaw_host_notify.go`, `internal/runtime/openclawnotify/{config,routes,webhook}.go`, `internal/cli/runtime_host_notify_routes.go` | OpenClaw config probing, hook validation, CLI dry-run validation order, route fan-out and failure aggregation, and route/config CLI surface | `crates/awiki-cli/src/runtime/openclaw_host_notify.rs`, `openclaw_routes.rs`, `openclaw_webhook.rs`, OpenClaw config helpers, `src/app/runtime_handlers.rs` | implemented; selector visibility added | `runtime_openclaw_config_contract` passed 5 tests; `runtime_openclaw_cli_contract` passed 1; selected non-mail `runtime_openclaw_host_notify_contract` tests passed; `runtime_contract host_notify` passed 10 | same focused selector | low; live OpenClaw/Hermes WebSocket probes remain environment-risky and are not counted here |
+| `internal/cli/runtime.go` host-notify enable/disable/config set | host-notify enable/disable persistence, sink preservation, dry-run, listener refresh/restart warnings, and offline status view | `crates/awiki-cli/src/app/runtime_handlers.rs`, `runtime_host_notify_refresh.rs`, `runtime/mod.rs` | implemented; selector visibility added | `runtime_host_notify_enable_disable_contract` passed 5 tests; `runtime_contract host_notify` passed 10 | same focused selector | low |
+
+Verification evidence: Rust direct validation passed 50 local
+host-notify/OpenClaw/Hermes tests plus 10 filtered `runtime_contract
+host_notify` tests; additional local Hermes config/route direct validation
+passed 19 tests before selector integration; the focused Go guard for
+host-notify/OpenClaw/Hermes/config/CLI behavior passed; Python compile and
+whitespace checks for the system-test wrapper passed; and the new focused
+non-mail `awiki-system-test` selector passed with 1 passed in 1.85s. No Rust
+production code, manifests, ANP SDK code, or dependencies changed in this
+batch. The modified `tests_v2/runtime/test_runtime_cli.py` wrapper is 1560
+lines, above the older 1200-line review threshold but below the current
+ordinary 3000-line limit; the exception is localized to an existing system-test
+wrapper that aggregates runtime command and local Rust contract selectors.
+
 Current docs/scripts/schema/config metadata batch evidence: on 2026-05-18, the
 batch followed the accelerated pipeline with three read-only Native Agents
 mapping Go static assets, Rust implementation/tests, and non-mail system-test

@@ -55,6 +55,20 @@ code. It filled the selector visibility gap by adding a focused Rust-only
 tests plus 38 focused contract tests; the focused Go guard passed; and the new
 non-mail selector passed with 1 test. Mail selectors remained deferred.
 
+## 2026-05-18 Runtime Host-Notify/OpenClaw/Hermes Local Selector Batch
+
+Detailed report:
+`2026-05-18-runtime-host-notify-local-contracts.md`.
+
+Summary: the accelerated runtime host-notify batch found no production Rust gap
+in the deterministic host-notify, OpenClaw, Hermes, config, enable/disable, or
+route surfaces. It filled the local Rust-only selector visibility gap by adding
+a focused `awiki-system-test` selector that avoids live WebSocket probes and
+mail selectors. Rust direct validation passed 50 local contract tests, 10
+filtered runtime host-notify tests, and 19 additional Hermes config/route tests;
+the focused Go guard passed; and the new non-mail selector passed with 1 test.
+Mail selectors remained deferred.
+
 ## 2026-05-18 Docs/Scripts/Schema/Config Metadata Batch
 
 Timestamp: 2026-05-18T18:31:32+0800.
