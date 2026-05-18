@@ -20,6 +20,88 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Runtime Listener WebSocket Ping Timeout Batch
+
+Timestamp: 2026-05-18T18:30:00+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline rather than random one-off
+  repairs.
+- Used bounded Native Agents in parallel after a runtime-listener pre-scan:
+  one implementation lane owned only
+  `crates/awiki-cli/src/runtime/listener_ws_transport.rs`, and one test lane
+  owned only
+  `crates/awiki-cli/tests/runtime_listener_wsclient_contract.rs`.
+- Leader integrated the results, added source-level edge tests, ran final
+  validation, and updated this batch documentation.
+- Mail selectors remain deferred and were not run or counted.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/listener/wsclient.go` | `WSClient.Ping(ctx)` delegates to `coder/websocket.Conn.Ping(ctx)`, which writes a Ping and waits for the matching Pong or context timeout. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs` | Translated: `WsTransport::ping()` now sends a Go-style incrementing string payload and waits up to 15s for the matching Pong. | `cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked`; `cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked` | `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts` | Low. Real network selector remains non-mail focused; broader repository acceptance remains later. |
+| `internal/runtime/listener/server.go` | `consumeNotifications` uses 60s ping cadence and wraps a 15s ping timeout error as `websocket ping failed: <err>`. | `crates/awiki-cli/src/runtime/listener_notification_consume.rs`; `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Already wired before this batch; this batch closes the transport wait-for-Pong nuance underneath the existing cadence. | `cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked` | Same non-mail Batch 1 selector. | Medium residual runtime risk: deeper reader-error/lifecycle edges are not full repository-wide acceptance. |
+| `github.com/coder/websocket@v1.8.12/conn.go` | Ping payload is the incrementing string counter, and unrelated frames can still be read by the active reader while Ping waits. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs` | Translated locally without adding a WebSocket crate: first payload is `"1"`, inbound peer Ping auto-Pongs, Text/Binary frames read while waiting are deferred and replayed to `read_json_message`. | Source tests assert timeout restoration, Go-style payload, auto-Pong during ping wait, and deferred-message replay. Integration test asserts delayed-Pong waiting. | Same non-mail Batch 1 selector. | Low. Uses blocking std/Rustls transport already accepted by foreground runtime. |
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'Test.*WSClient|Test.*Ping|Test.*SessionLoop' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
+```
+
+Observed results:
+
+- Rust `listener_ws_transport` unit tests: 6 passed, 0 failed.
+- Rust `runtime_listener_wsclient_contract`: 31 passed, 0 failed.
+- Rust `runtime_listener_notification_consume_contract`: 7 passed, 0 failed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines.
+- Touched file sizes stayed below the default cap:
+  `listener_ws_transport.rs` 968 lines and
+  `runtime_listener_wsclient_contract.rs` 1153 lines.
+- `git diff --check`: passed.
+- Go focused runtime listener reference test: passed.
+- Focused non-mail `awiki-system-test` selector: 1 passed, 0 failed.
+- Dependency audit shows existing `rustls`/`webpki` and the approved
+  `rusqlite + bundled` path; no `openssl`, `native-tls`, `tungstenite`,
+  `tokio-tungstenite`, `reqwest`, `hyper`, YAML crate, platform-service crate,
+  or new SQLite path was added.
+
+Scope:
+
+- Closes the runtime listener notification ping timeout nuance: Rust now waits
+  for the matching Pong instead of returning immediately after writing Ping.
+- Preserves Go's first ping payload shape (`"1"`) and subsequent incrementing
+  string payload strategy.
+- Preserves the existing 60-second ping cadence and 15-second ping timeout.
+- Preserves control-frame handling while waiting: peer Ping receives Pong, and
+  unmatched Pong frames are ignored.
+- Avoids dropping notification/RPC data frames read during ping wait by
+  deferring Text/Binary frames back into the transport stream for the next JSON
+  read.
+
+Boundary note: this is a focused runtime listener transport slice. It does not
+claim Windows named-pipe I/O, non-Linux service-manager behavior, mail
+system-test acceptance, or full repository-wide system acceptance. Mail
+selectors remain deferred/gated.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS/WebSocket transport remains Rustls-first/std-socket without OpenSSL,
+`native-tls`, or a WebSocket crate.
+
 ## 2026-05-18 Hermes Bridge Linux User-Systemd Batch
 
 Timestamp: 2026-05-18T08:30:00Z / 2026-05-18T16:30:00+0800.
@@ -579,12 +661,11 @@ System-test configuration context:
 - No mail selector was run or counted. Mail remains deferred/gated.
 
 Boundary note: this slice wires the real ping cadence and timeout-capable poll
-read, but it does not yet implement Go's full shared long-lived `WSClient`
-runtime owner, bridge RPC transport reuse through the current session client,
-or a separate cancelable 15-second ping context beyond the existing transport
-write timeout. It also does not cover Windows named-pipe I/O,
-macOS/Windows service-manager execution, mail-system acceptance, or full
-repository-wide system acceptance.
+read. The later WebSocket ping timeout batch closes the wait-for-matching-Pong
+behavior. Remaining runtime depth is now outside that ping boundary: deeper
+reader-error propagation, shutdown cancellation while a ping wait is in
+progress, Windows named-pipe I/O, macOS/Windows service-manager execution,
+mail-system acceptance, and full repository-wide system acceptance.
 
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
@@ -736,10 +817,9 @@ System-test configuration context:
 - No mail selector was run or counted.
 
 Boundary note: this slice implements foreground shutdown signal wiring only. It
-does not implement notification ping timeout parity, bridge RPC transport reuse,
-Windows named-pipe I/O, macOS launchd/Windows Service Manager execution, real
-child process `setsid` spawn integration, mail-system acceptance, or full
-repository-wide system acceptance.
+does not implement bridge RPC transport reuse, Windows named-pipe I/O, macOS
+launchd/Windows Service Manager execution, real child process `setsid` spawn
+integration, mail-system acceptance, or full repository-wide system acceptance.
 
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
@@ -810,10 +890,9 @@ System-test configuration context:
 
 Boundary note: this slice wires the already translated local notification queue
 and secure ACK queue branches into the real foreground runtime. It does not
-change network ACK fallback semantics, notification ping timeout behavior,
-bridge RPC transport reuse, OS signal shutdown handling, Windows named-pipe I/O,
-platform service-manager execution, mail notification acceptance, or full
-repository-wide system acceptance.
+change network ACK fallback semantics, bridge RPC transport reuse, OS signal
+shutdown handling, Windows named-pipe I/O, platform service-manager execution,
+mail notification acceptance, or full repository-wide system acceptance.
 
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
@@ -871,10 +950,10 @@ Observed results:
 
 Boundary note: this slice only wires Go-style first-result waiting for
 bridge-created sessions. It does not change startup-discovered session
-semantics, bridge RPC transport reuse, notification ping timeout behavior,
-local secure-ack queue integration, OS signal shutdown handling, Windows
-named-pipe I/O, platform service-manager execution, mail notification
-acceptance, or full repository-wide system acceptance.
+semantics, bridge RPC transport reuse, local secure-ack queue integration, OS
+signal shutdown handling, Windows named-pipe I/O, platform service-manager
+execution, mail notification acceptance, or full repository-wide system
+acceptance.
 
 Dependency note: no Rust dependency was added. The implementation uses `std`
 channels and the existing Rust listener modules. Cargo manifests and lockfile
@@ -932,9 +1011,9 @@ Observed results:
 
 Boundary note: this slice only fixes shared host-notify sink wiring for
 bridge-created sessions. It does not implement Go's 15-second bridge-session
-bootstrap wait, notification ping timeout behavior, local secure-ack queue
-integration, Windows named-pipe I/O, platform service-manager execution, mail
-notification acceptance, or full repository-wide system acceptance.
+bootstrap wait, local secure-ack queue integration, Windows named-pipe I/O,
+platform service-manager execution, mail notification acceptance, or full
+repository-wide system acceptance.
 
 Dependency note: no Rust dependency was added. Cargo manifests and lockfile
 remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and

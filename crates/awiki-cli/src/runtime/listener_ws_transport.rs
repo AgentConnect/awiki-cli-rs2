@@ -3,18 +3,20 @@ use rand::RngCore;
 use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use serde_json::{Map, Value};
+use std::collections::VecDeque;
 use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const READ_HEADER_LIMIT: usize = 16 * 1024;
 const MAX_FRAME_SIZE: u64 = 16 * 1024 * 1024;
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(90);
+const PING_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WsDialError {
@@ -33,6 +35,7 @@ impl std::error::Error for WsDialError {}
 pub struct WsTransport {
     stream: Box<dyn ReadWrite>,
     default_read_timeout: Option<Duration>,
+    ping_counter: i32,
 }
 
 trait ReadWrite: Read + Write + Send {
@@ -76,6 +79,7 @@ impl WsTransport {
         Ok(Self {
             stream,
             default_read_timeout: Some(DEFAULT_READ_TIMEOUT),
+            ping_counter: 0,
         })
     }
 
@@ -85,7 +89,25 @@ impl WsTransport {
     }
 
     pub fn ping(&mut self) -> anyhow::Result<()> {
-        self.write_frame(0x9, b"")
+        self.ping_with_timeout(PING_TIMEOUT)
+    }
+
+    pub fn ping_with_timeout(&mut self, timeout: Duration) -> anyhow::Result<()> {
+        self.ping_counter = self.ping_counter.wrapping_add(1);
+        let payload = self.ping_counter.to_string().into_bytes();
+        self.write_frame(0x9, &payload)?;
+        let result = self.wait_for_pong(&payload, timeout);
+        let restore_result = self.stream.set_read_timeout(self.default_read_timeout);
+        match (result, restore_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) if is_timeout_error(&err) => {
+                anyhow::bail!("websocket pong timed out after {timeout:?}")
+            }
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(restore_err)) => Err(restore_err.into()),
+            (Err(err), Err(restore_err)) if is_timeout_error(&err) => Err(restore_err.into()),
+            (Err(err), Err(_)) => Err(err),
+        }
     }
 
     pub fn close(&mut self) -> anyhow::Result<()> {
@@ -100,7 +122,7 @@ impl WsTransport {
                 WsFrame::Ping(payload) => {
                     self.write_frame(0xA, &payload)?;
                 }
-                WsFrame::Pong => {}
+                WsFrame::Pong(_) => {}
                 WsFrame::Close => anyhow::bail!("websocket notification loop closed"),
             }
         }
@@ -146,6 +168,61 @@ impl WsTransport {
         Ok(())
     }
 
+    fn wait_for_pong(&mut self, expected_payload: &[u8], timeout: Duration) -> anyhow::Result<()> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| anyhow::anyhow!("websocket ping timeout is too large: {timeout:?}"))?;
+        let mut deferred_frames = VecDeque::new();
+        let result = loop {
+            let read_timeout = match deadline.checked_duration_since(Instant::now()) {
+                Some(remaining) if !remaining.is_zero() => remaining,
+                _ => break Err(timeout_error("websocket pong timed out")),
+            };
+            if let Err(err) = self.stream.set_read_timeout(Some(read_timeout)) {
+                break Err(err.into());
+            }
+            match self.read_frame() {
+                Ok(WsFrame::Ping(payload)) => {
+                    if let Err(err) = self.write_frame(0xA, &payload) {
+                        break Err(err);
+                    }
+                }
+                Ok(WsFrame::Pong(payload)) if payload == expected_payload => break Ok(()),
+                Ok(WsFrame::Pong(_)) => {}
+                Ok(frame @ (WsFrame::Text(_) | WsFrame::Binary(_))) => {
+                    deferred_frames.push_back(frame);
+                }
+                Ok(WsFrame::Close) => {
+                    break Err(anyhow::anyhow!("websocket notification loop closed"));
+                }
+                Err(err) => break Err(err),
+            }
+        };
+        let defer_result = self.defer_frames(deferred_frames);
+        match (result, defer_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(err)) => Err(err),
+            (Err(err), Err(_)) => Err(err),
+        }
+    }
+
+    fn defer_frames(&mut self, frames: VecDeque<WsFrame>) -> anyhow::Result<()> {
+        if frames.is_empty() {
+            return Ok(());
+        }
+        let mut prefix = Vec::new();
+        for frame in frames {
+            append_unmasked_frame(&mut prefix, frame)?;
+        }
+        let inner = std::mem::replace(&mut self.stream, Box::new(EmptyReadWrite));
+        self.stream = Box::new(PrefixedReadWrite {
+            prefix: VecDeque::from(prefix),
+            inner,
+        });
+        Ok(())
+    }
+
     fn read_frame(&mut self) -> anyhow::Result<WsFrame> {
         let mut head = [0_u8; 2];
         self.stream.read_exact(&mut head)?;
@@ -180,9 +257,81 @@ impl WsTransport {
             0x2 => Ok(WsFrame::Binary(payload)),
             0x8 => Ok(WsFrame::Close),
             0x9 => Ok(WsFrame::Ping(payload)),
-            0xA => Ok(WsFrame::Pong),
+            0xA => Ok(WsFrame::Pong(payload)),
             _ => anyhow::bail!("unsupported websocket frame opcode: {opcode}"),
         }
+    }
+}
+
+struct PrefixedReadWrite {
+    prefix: VecDeque<u8>,
+    inner: Box<dyn ReadWrite>,
+}
+
+impl Read for PrefixedReadWrite {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.prefix.is_empty() {
+            return self.inner.read(buf);
+        }
+        let mut count = 0;
+        while count < buf.len() {
+            let Some(byte) = self.prefix.pop_front() else {
+                break;
+            };
+            buf[count] = byte;
+            count += 1;
+        }
+        Ok(count)
+    }
+}
+
+impl Write for PrefixedReadWrite {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl ReadWrite for PrefixedReadWrite {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.inner.set_read_timeout(timeout)
+    }
+
+    #[cfg(test)]
+    fn timeout_events(&self) -> Vec<Option<Duration>> {
+        self.inner.timeout_events()
+    }
+
+    #[cfg(test)]
+    fn written_bytes(&self) -> Vec<u8> {
+        self.inner.written_bytes()
+    }
+}
+
+struct EmptyReadWrite;
+
+impl Read for EmptyReadWrite {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl Write for EmptyReadWrite {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl ReadWrite for EmptyReadWrite {
+    fn set_read_timeout(&mut self, _timeout: Option<Duration>) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -190,7 +339,7 @@ enum WsFrame {
     Text(String),
     Binary(Vec<u8>),
     Ping(Vec<u8>),
-    Pong,
+    Pong(Vec<u8>),
     Close,
 }
 
@@ -205,6 +354,35 @@ fn is_timeout_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<std::io::Error>()
         .map(|err| matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut))
         .unwrap_or(false)
+}
+
+fn timeout_error(message: &'static str) -> anyhow::Error {
+    std::io::Error::new(ErrorKind::TimedOut, message).into()
+}
+
+fn append_unmasked_frame(buffer: &mut Vec<u8>, frame: WsFrame) -> anyhow::Result<()> {
+    match frame {
+        WsFrame::Text(raw) => append_unmasked_frame_parts(buffer, 0x1, raw.as_bytes()),
+        WsFrame::Binary(raw) => append_unmasked_frame_parts(buffer, 0x2, &raw),
+        WsFrame::Ping(_) | WsFrame::Pong(_) | WsFrame::Close => {
+            anyhow::bail!("cannot defer websocket control frame")
+        }
+    }
+    Ok(())
+}
+
+fn append_unmasked_frame_parts(buffer: &mut Vec<u8>, opcode: u8, payload: &[u8]) {
+    buffer.push(0x80 | (opcode & 0x0F));
+    if payload.len() < 126 {
+        buffer.push(payload.len() as u8);
+    } else if payload.len() <= u16::MAX as usize {
+        buffer.push(126);
+        buffer.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        buffer.push(127);
+        buffer.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    buffer.extend_from_slice(payload);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -623,6 +801,66 @@ mod tests {
         assert_eq!(transport.stream.written_bytes()[0] & 0x0F, 0xA);
     }
 
+    #[test]
+    fn ping_with_timeout_returns_timeout_and_restores_default_timeout() {
+        let stream = ScriptedStream {
+            read_error: Some(ErrorKind::TimedOut),
+            ..ScriptedStream::default()
+        };
+        let mut transport = test_transport(stream, Some(Duration::from_secs(90)));
+
+        let err = transport
+            .ping_with_timeout(Duration::from_millis(50))
+            .expect_err("ping should time out without a pong");
+
+        assert_eq!(err.to_string(), "websocket pong timed out after 50ms");
+        let timeout_events = transport.stream.timeout_events();
+        assert_eq!(timeout_events.last(), Some(&Some(Duration::from_secs(90))));
+        assert!(
+            timeout_events
+                .first()
+                .and_then(|event| *event)
+                .is_some_and(
+                    |timeout| timeout <= Duration::from_millis(50) && timeout > Duration::ZERO
+                ),
+            "first timeout should be bounded by the requested ping timeout: {timeout_events:?}"
+        );
+        assert!(
+            !transport.stream.written_bytes().is_empty(),
+            "ping should write a websocket ping frame before waiting"
+        );
+        assert_eq!(
+            client_frame(&transport.stream.written_bytes()),
+            (0x9, b"1".to_vec())
+        );
+    }
+
+    #[test]
+    fn wait_for_pong_auto_pongs_and_preserves_deferred_message_frame() {
+        let mut stream = ScriptedStream::default();
+        stream.reads.push_back(server_ping_frame(b"server-ping"));
+        stream
+            .reads
+            .push_back(server_text_frame(br#"{"queued":true}"#));
+        stream.reads.push_back(server_pong_frame(b"expected"));
+        let mut transport = test_transport(stream, Some(Duration::from_secs(90)));
+
+        transport
+            .wait_for_pong(b"expected", Duration::from_secs(1))
+            .expect("wait for expected pong");
+
+        assert!(
+            !transport.stream.written_bytes().is_empty(),
+            "server ping during ping wait should cause an automatic pong write"
+        );
+        assert_eq!(transport.stream.written_bytes()[0] & 0x0F, 0xA);
+
+        let message = transport
+            .read_json_message()
+            .expect("deferred data frame should be readable after pong");
+        assert_eq!(message["queued"], true);
+    }
+
     fn test_transport(
         stream: ScriptedStream,
         default_read_timeout: Option<Duration>,
@@ -630,6 +868,7 @@ mod tests {
         WsTransport {
             stream: Box::new(stream),
             default_read_timeout,
+            ping_counter: 0,
         }
     }
 
@@ -641,12 +880,30 @@ mod tests {
         server_frame(0x9, payload)
     }
 
+    fn server_pong_frame(payload: &[u8]) -> Vec<u8> {
+        server_frame(0xA, payload)
+    }
+
     fn server_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
         let mut frame = Vec::new();
         frame.push(0x80 | (opcode & 0x0F));
         frame.push(payload.len() as u8);
         frame.extend_from_slice(payload);
         frame
+    }
+
+    fn client_frame(raw: &[u8]) -> (u8, Vec<u8>) {
+        let opcode = raw[0] & 0x0F;
+        let masked = raw[1] & 0x80 != 0;
+        assert!(masked, "client websocket frames must be masked");
+        let len = usize::from(raw[1] & 0x7F);
+        assert!(len < 126, "test helper only decodes small frames");
+        let mask = &raw[2..6];
+        let mut payload = raw[6..6 + len].to_vec();
+        for (idx, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[idx % 4];
+        }
+        (opcode, payload)
     }
 
     #[derive(Default)]

@@ -1,7 +1,13 @@
 use awiki_cli::config::{self, Paths, Resolved};
+use awiki_cli::runtime::listener_ws_transport::WsTransport;
 use awiki_cli::runtime::listener_wsclient;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::ser::{Serialize, Serializer};
 use serde_json::json;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[test]
 fn listener_ws_client_endpoints_match_go_new_ws_client_derivation() {
@@ -807,6 +813,23 @@ fn host_for_url_matches_go_net_url_host_boundary() {
     );
 }
 
+#[test]
+fn ws_transport_ping_waits_for_peer_pong_before_succeeding() {
+    let peer = DelayedPongWebsocketPeer::spawn(Duration::from_millis(300));
+    let mut transport =
+        WsTransport::connect(&peer.websocket_url, "session-token", "").expect("connect peer");
+    let started = Instant::now();
+    let result = transport.ping().map_err(|err| err.to_string());
+    let elapsed = started.elapsed();
+    peer.join();
+
+    assert_eq!(result, Ok(()));
+    assert!(
+        elapsed >= Duration::from_millis(300),
+        "WsTransport::ping returned after {elapsed:?}, before the peer sent its delayed pong; Go Conn.Ping waits for pong or context timeout"
+    );
+}
+
 fn dial_action(token: &str) -> listener_wsclient::ListenerWsConnectAction {
     listener_wsclient::ListenerWsConnectAction::DialBearer {
         token: token.to_string(),
@@ -914,4 +937,217 @@ impl Serialize for FailingSerialize {
     {
         Err(serde::ser::Error::custom("forced serialize error"))
     }
+}
+
+struct DelayedPongWebsocketPeer {
+    websocket_url: String,
+    join: thread::JoinHandle<()>,
+}
+
+impl DelayedPongWebsocketPeer {
+    fn spawn(pong_delay: Duration) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind websocket peer");
+        let addr = listener.local_addr().expect("peer address");
+        let join = thread::spawn(move || run_delayed_pong_peer(listener, pong_delay));
+
+        Self {
+            websocket_url: format!("ws://{addr}/im/ws"),
+            join,
+        }
+    }
+
+    fn join(self) {
+        self.join.join().expect("join websocket peer");
+    }
+}
+
+fn run_delayed_pong_peer(listener: TcpListener, pong_delay: Duration) {
+    let (mut stream, _) = listener.accept().expect("accept websocket client");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set peer read timeout");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .expect("set peer write timeout");
+
+    let request = read_http_request(&mut stream);
+    let websocket_key = http_header_value(&request, "Sec-WebSocket-Key")
+        .expect("websocket handshake should include Sec-WebSocket-Key");
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {}\r\n\
+         \r\n",
+        websocket_accept(&websocket_key)
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("write websocket handshake response");
+    stream.flush().expect("flush websocket handshake response");
+
+    let (opcode, payload) = read_ws_frame(&mut stream);
+    assert_eq!(opcode, 0x9, "client should send a websocket ping frame");
+    assert_eq!(
+        payload, b"1",
+        "Go coder/websocket Conn.Ping starts with ping payload \"1\""
+    );
+    thread::sleep(pong_delay);
+    let _ = write_ws_frame(&mut stream, 0xA, &payload);
+}
+
+fn read_http_request(stream: &mut TcpStream) -> String {
+    let mut raw = Vec::new();
+    let mut byte = [0_u8; 1];
+    while raw.len() < 16 * 1024 {
+        let read = stream.read(&mut byte).expect("read HTTP request");
+        assert!(read != 0, "HTTP request ended before header terminator");
+        raw.push(byte[0]);
+        if raw.ends_with(b"\r\n\r\n") {
+            return String::from_utf8(raw).expect("HTTP request is UTF-8");
+        }
+    }
+    panic!("HTTP request exceeded header limit");
+}
+
+fn http_header_value(request: &str, name: &str) -> Option<String> {
+    let expected = name.to_ascii_lowercase();
+    request.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key.trim().eq_ignore_ascii_case(&expected)).then(|| value.trim().to_string())
+    })
+}
+
+fn read_ws_frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
+    let mut head = [0_u8; 2];
+    stream.read_exact(&mut head).expect("read websocket frame");
+    let opcode = head[0] & 0x0F;
+    let masked = head[1] & 0x80 != 0;
+    let mut len = u64::from(head[1] & 0x7F);
+    if len == 126 {
+        let mut bytes = [0_u8; 2];
+        stream
+            .read_exact(&mut bytes)
+            .expect("read websocket frame length");
+        len = u64::from(u16::from_be_bytes(bytes));
+    } else if len == 127 {
+        let mut bytes = [0_u8; 8];
+        stream
+            .read_exact(&mut bytes)
+            .expect("read websocket frame length");
+        len = u64::from_be_bytes(bytes);
+    }
+
+    let mut mask = [0_u8; 4];
+    if masked {
+        stream.read_exact(&mut mask).expect("read websocket mask");
+    }
+    let mut payload = vec![0_u8; len as usize];
+    stream
+        .read_exact(&mut payload)
+        .expect("read websocket payload");
+    if masked {
+        for (idx, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[idx % 4];
+        }
+    }
+    (opcode, payload)
+}
+
+fn write_ws_frame(stream: &mut TcpStream, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
+    let mut frame = Vec::with_capacity(10 + payload.len());
+    frame.push(0x80 | (opcode & 0x0F));
+    if payload.len() < 126 {
+        frame.push(payload.len() as u8);
+    } else if payload.len() <= u16::MAX as usize {
+        frame.push(126);
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        frame.push(127);
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    frame.extend_from_slice(payload);
+    stream.write_all(&frame)?;
+    stream.flush()
+}
+
+fn websocket_accept(key: &str) -> String {
+    const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    let mut raw = Vec::with_capacity(key.len() + WS_GUID.len());
+    raw.extend_from_slice(key.as_bytes());
+    raw.extend_from_slice(WS_GUID.as_bytes());
+    BASE64_STANDARD.encode(sha1_digest(&raw))
+}
+
+fn sha1_digest(input: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x67452301;
+    let mut h1: u32 = 0xEFCDAB89;
+    let mut h2: u32 = 0x98BADCFE;
+    let mut h3: u32 = 0x10325476;
+    let mut h4: u32 = 0xC3D2E1F0;
+
+    let bit_len = (input.len() as u64) * 8;
+    let mut data = input.to_vec();
+    data.push(0x80);
+    while data.len() % 64 != 56 {
+        data.push(0);
+    }
+    data.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in data.chunks_exact(64) {
+        let mut words = [0_u32; 80];
+        for (idx, word) in words.iter_mut().take(16).enumerate() {
+            let offset = idx * 4;
+            *word = u32::from_be_bytes([
+                chunk[offset],
+                chunk[offset + 1],
+                chunk[offset + 2],
+                chunk[offset + 3],
+            ]);
+        }
+        for idx in 16..80 {
+            words[idx] = (words[idx - 3] ^ words[idx - 8] ^ words[idx - 14] ^ words[idx - 16])
+                .rotate_left(1);
+        }
+
+        let mut a = h0;
+        let mut b = h1;
+        let mut c = h2;
+        let mut d = h3;
+        let mut e = h4;
+
+        for (idx, word) in words.iter().enumerate() {
+            let (f, k) = match idx {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut out = [0_u8; 20];
+    out[..4].copy_from_slice(&h0.to_be_bytes());
+    out[4..8].copy_from_slice(&h1.to_be_bytes());
+    out[8..12].copy_from_slice(&h2.to_be_bytes());
+    out[12..16].copy_from_slice(&h3.to_be_bytes());
+    out[16..20].copy_from_slice(&h4.to_be_bytes());
+    out
 }
