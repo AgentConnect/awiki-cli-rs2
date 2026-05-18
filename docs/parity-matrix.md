@@ -481,11 +481,18 @@ coverage for first `group.e2ee.send` epoch mismatch followed by repair,
 re-encrypt, and retry; deterministic remove submit failure aborting the local
 pending commit; retryable HTTP 5xx submit failure retaining the pending commit;
 and accepted hidden remove delivery with local finalize failure warning/null
-finalize data. The new Rust-only system-test wrapper
+finalize data. A follow-up accelerated recover/update negative-edge batch added
+focused contracts for deterministic `group.e2ee.recover_member` submit
+failure aborting through `group commit-abort`, recover-member finalize failure
+preserving service delivery with `mls_finalize=null`, deterministic
+`group.e2ee.update` submit failure aborting through
+`group update-member-abort`, and update-key finalize failure preserving
+service delivery with `mls_finalize=null`. The Rust-only system-test wrapper
 `tests_v2/cli/test_awiki_cli_group_e2ee_rust_contracts.py::test_awiki_cli_group_e2ee_stale_retry_and_negative_rust_contracts`
-passed with 1 passed, 0 failed, and 0 skipped. This is deterministic contract
-selector evidence, not a live real-service forced epoch-mismatch selector; mail
-selectors remain deferred.
+now exposes 8 focused contracts and passed with 1 passed, 0 failed, and 0
+skipped in 115.64s. This is deterministic contract selector evidence, not a
+live real-service forced epoch-mismatch or recover/update forced-failure
+selector; mail selectors remain deferred.
 
 Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
 broad non-mail `awiki-system-test` subprocess batch under

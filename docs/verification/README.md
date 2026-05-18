@@ -62,6 +62,22 @@ validation passed 3 send tests and 6 remove/leave tests; the focused Go guard
 passed; structure checks passed; and the new non-mail selector passed with 1
 test. Mail selectors remained deferred.
 
+## 2026-05-18 Message Group E2EE Recover/Update Negative Contract Batch
+
+Detailed report:
+`2026-05-18-message-group-e2ee-recover-update-negative.md`.
+
+Summary: the accelerated message/group E2EE recover/update batch confirmed
+production Rust already matched Go deterministic submit abort and
+finalize-failure warning behavior. It added focused fake-service contracts for
+recover-member HTTP 403 abort, recover-member finalize failure, update-key
+HTTP 403 abort, and update-key finalize failure, then extended the Rust-only
+`awiki-system-test` selector to cover all 8 current stale/negative group E2EE
+contracts. Rust direct validation passed 3 recover-member tests and 3
+update-key tests; the focused Go guard passed; structure checks passed; and the
+extended non-mail selector passed with 1 test. Mail selectors remained
+deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.

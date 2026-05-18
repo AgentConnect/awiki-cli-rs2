@@ -231,6 +231,174 @@ fn group_e2ee_update_key_live_leases_update_key_package_prepares_hidden_update_a
     );
 }
 
+#[test]
+fn group_e2ee_update_key_deterministic_submit_failure_aborts_pending_update_like_go() {
+    let workspace = TempDir::new("group-e2ee-update-submit-403").expect("workspace");
+    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
+    let bin_dir = TempDir::new("group-e2ee-update-submit-403-bin").expect("bin dir");
+    let fake_mls = bin_dir.path().join("anp-mls");
+    let args_log = workspace.path().join("mls-args.log");
+    let stdin_log = workspace.path().join("mls-stdin.jsonl");
+    write_fake_anp_mls_group_update_key_with_terminal(
+        &fake_mls,
+        &args_log,
+        &stdin_log,
+        TerminalBehavior::AbortSucceeds,
+    );
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": GROUP_DID,
+            "epoch": "5",
+            "actor_membership_role": "owner",
+            "actor_membership_status": "active"
+        }))),
+        TestResponse::ok(&json_rpc_result(update_key_package())),
+        TestResponse::status(403, "deterministic rejection"),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            IDENTITY,
+            "group",
+            "e2ee",
+            "update-key",
+            "--group",
+            GROUP_DID,
+            "--member",
+            MEMBER_DID,
+            "--device",
+            "bob-main",
+        ],
+        workspace.path(),
+        &[("AWIKI_ANP_MLS_BINARY", fake_mls.as_path())],
+    );
+
+    let error = error_json(&output);
+    assert_eq!(error["error"]["code"], "internal_error");
+    assert_text_contains(
+        error["error"]["message"].as_str().expect("error message"),
+        "service http error 403: deterministic rejection",
+    );
+    assert_text_contains(
+        error["error"]["message"].as_str().expect("error message"),
+        "local group E2EE update-key pending commit aborted",
+    );
+    assert_eq!(
+        provider_commands(&args_log),
+        vec!["group update-member-prepare", "group update-member-abort"]
+    );
+    let provider_stdin = provider_stdin_jsonl(&stdin_log);
+    assert_eq!(provider_stdin.len(), 2);
+    assert_eq!(provider_stdin[1]["params"]["group_did"], GROUP_DID);
+    assert_eq!(
+        provider_stdin[1]["params"]["commit_b64u"],
+        "dXBkYXRlLWNvbW1pdA"
+    );
+    assert_eq!(
+        provider_stdin[1]["params"]["pending_commit_id"],
+        "pc-update-1"
+    );
+    assert_eq!(provider_stdin[1]["params"]["from_epoch"], "5");
+    assert_eq!(provider_stdin[1]["params"]["to_epoch"], "6");
+    assert!(provider_stdin[1]["params"]["operation_id"].is_null());
+
+    let bodies = request_json_bodies(&server.requests());
+    assert_eq!(
+        rpc_methods(&bodies),
+        vec![
+            "group.e2ee.head",
+            "group.e2ee.get_key_package",
+            "group.e2ee.update"
+        ]
+    );
+}
+
+#[test]
+fn group_e2ee_update_key_finalize_failure_keeps_service_delivery_with_warning_like_go() {
+    let workspace = TempDir::new("group-e2ee-update-finalize-fails").expect("workspace");
+    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
+    let bin_dir = TempDir::new("group-e2ee-update-finalize-fails-bin").expect("bin dir");
+    let fake_mls = bin_dir.path().join("anp-mls");
+    let args_log = workspace.path().join("mls-args.log");
+    let stdin_log = workspace.path().join("mls-stdin.jsonl");
+    write_fake_anp_mls_group_update_key_with_terminal(
+        &fake_mls,
+        &args_log,
+        &stdin_log,
+        TerminalBehavior::FinalizeFails,
+    );
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": GROUP_DID,
+            "epoch": "5",
+            "actor_membership_role": "owner",
+            "actor_membership_status": "active"
+        }))),
+        TestResponse::ok(&json_rpc_result(update_key_package())),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "group_did": GROUP_DID,
+            "operation_id": "op-e2ee-update-finalize-fails",
+            "epoch": "6",
+            "source": "remote_http"
+        }))),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            IDENTITY,
+            "group",
+            "e2ee",
+            "update-key",
+            "--group",
+            GROUP_DID,
+            "--member",
+            MEMBER_DID,
+            "--device",
+            "bob-main",
+        ],
+        workspace.path(),
+        &[("AWIKI_ANP_MLS_BINARY", fake_mls.as_path())],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        provider_commands(&args_log),
+        vec![
+            "group update-member-prepare",
+            "group update-member-finalize"
+        ]
+    );
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["data"]["delivery"]["operation_id"],
+        "op-e2ee-update-finalize-fails"
+    );
+    assert_eq!(envelope["data"]["mls_finalize"], Value::Null);
+    assert_warning_contains_all(
+        &envelope,
+        &[
+            "update-key accepted by service",
+            "local finalize failed",
+            "anp-mls error",
+        ],
+    );
+
+    let bodies = request_json_bodies(&server.requests());
+    assert_eq!(
+        rpc_methods(&bodies),
+        vec![
+            "group.e2ee.head",
+            "group.e2ee.get_key_package",
+            "group.e2ee.update"
+        ]
+    );
+}
+
 fn update_key_package() -> Value {
     json!({
         "leased": true,
@@ -269,6 +437,27 @@ fn service_leased_update_key_package() -> Value {
 }
 
 fn write_fake_anp_mls_group_update_key(path: &Path, args_log: &Path, stdin_log: &Path) {
+    write_fake_anp_mls_group_update_key_with_terminal(
+        path,
+        args_log,
+        stdin_log,
+        TerminalBehavior::FinalizeSucceeds,
+    );
+}
+
+#[derive(Copy, Clone)]
+enum TerminalBehavior {
+    FinalizeSucceeds,
+    FinalizeFails,
+    AbortSucceeds,
+}
+
+fn write_fake_anp_mls_group_update_key_with_terminal(
+    path: &Path,
+    args_log: &Path,
+    stdin_log: &Path,
+    terminal_behavior: TerminalBehavior,
+) {
     let update_response = json!({
         "ok": true,
         "api_version": "anp-mls/v1",
@@ -297,7 +486,7 @@ fn write_fake_anp_mls_group_update_key(path: &Path, args_log: &Path, stdin_log: 
         }
     })
     .to_string();
-    let finalize_response = json!({
+    let finalize_ok_response = json!({
         "ok": true,
         "api_version": "anp-mls/v1",
         "request_id": "group-e2ee-update-finalize-test",
@@ -315,16 +504,43 @@ fn write_fake_anp_mls_group_update_key(path: &Path, args_log: &Path, stdin_log: 
         }
     })
     .to_string();
+    let finalize_fail_response = json!({
+        "ok": false,
+        "api_version": "anp-mls/v1",
+        "request_id": "group-e2ee-update-finalize-test",
+        "error": {
+            "code": "finalize-failed",
+            "message": "local update finalize unavailable"
+        }
+    })
+    .to_string();
+    let abort_response = json!({
+        "ok": true,
+        "api_version": "anp-mls/v1",
+        "request_id": "group-e2ee-update-abort-test",
+        "result": {
+            "pending_commit_id": "pc-update-1",
+            "aborted": true,
+            "group_did": GROUP_DID
+        }
+    })
+    .to_string();
     let wrong_command = json!({
         "ok": false,
         "api_version": "anp-mls/v1",
         "request_id": "group-e2ee-update-test",
         "error": {
             "code": "wrong-command",
-            "message": "expected group update-member-prepare or group update-member-finalize"
+            "message": "expected group update-member-prepare, group update-member-finalize, or group update-member-abort"
         }
     })
     .to_string();
+    let finalize_response = match terminal_behavior {
+        TerminalBehavior::FinalizeSucceeds | TerminalBehavior::AbortSucceeds => {
+            finalize_ok_response.as_str()
+        }
+        TerminalBehavior::FinalizeFails => finalize_fail_response.as_str(),
+    };
     let script = format!(
         r#"#!/bin/sh
 printf '%s %s\n' "$1" "$2" >> {args_log}
@@ -336,6 +552,10 @@ if [ "$1" = "group" ] && [ "$2" = "update-member-prepare" ]; then
 fi
 if [ "$1" = "group" ] && [ "$2" = "update-member-finalize" ]; then
   printf '%s\n' {finalize_response}
+  {finalize_exit}
+fi
+if [ "$1" = "group" ] && [ "$2" = "update-member-abort" ]; then
+  printf '%s\n' {abort_response}
   exit 0
 fi
 printf '%s\n' {wrong_command}
@@ -344,7 +564,12 @@ exit 2
         args_log = shell_quote_path(args_log),
         stdin_log = shell_quote_path(stdin_log),
         update_response = shell_quote(&update_response),
-        finalize_response = shell_quote(&finalize_response),
+        finalize_response = shell_quote(finalize_response),
+        finalize_exit = match terminal_behavior {
+            TerminalBehavior::FinalizeFails => "exit 2",
+            TerminalBehavior::FinalizeSucceeds | TerminalBehavior::AbortSucceeds => "exit 0",
+        },
+        abort_response = shell_quote(&abort_response),
         wrong_command = shell_quote(&wrong_command),
     );
     std::fs::write(path, script).expect("write fake anp-mls");
@@ -486,6 +711,25 @@ fn success_json(output: &Output) -> Value {
     envelope
 }
 
+fn error_json(output: &Output) -> Value {
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "expected failure; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "stdout should be empty on failure: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let envelope: Value =
+        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
+    assert_eq!(envelope["ok"], false);
+    envelope
+}
+
 fn provider_commands(args_log: &Path) -> Vec<String> {
     std::fs::read_to_string(args_log)
         .expect("read fake anp-mls args")
@@ -500,6 +744,25 @@ fn provider_stdin_jsonl(stdin_log: &Path) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).expect("fake anp-mls stdin line should be JSON"))
         .collect()
+}
+
+fn assert_warning_contains_all(envelope: &Value, needles: &[&str]) {
+    let warnings = envelope["warnings"].as_array().expect("warnings array");
+    assert_eq!(warnings.len(), 1);
+    let warning = warnings[0].as_str().expect("warning").to_ascii_lowercase();
+    for needle in needles {
+        assert!(
+            warning.contains(&needle.to_ascii_lowercase()),
+            "warning {warning:?} should contain {needle:?}"
+        );
+    }
+}
+
+fn assert_text_contains(text: &str, expected: &str) {
+    assert!(
+        text.contains(expected),
+        "text {text:?} should contain {expected:?}"
+    );
 }
 
 fn rewrite_did_document_ids(document: &mut Value, old_did: &str, new_did: &str) {
@@ -557,6 +820,13 @@ impl TestResponse {
     fn ok(body: &str) -> Self {
         Self {
             status: 200,
+            body: body.to_string(),
+        }
+    }
+
+    fn status(status: u16, body: &str) -> Self {
+        Self {
+            status,
             body: body.to_string(),
         }
     }
