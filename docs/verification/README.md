@@ -277,6 +277,24 @@ passed; wrapper syntax and whitespace checks passed; the new non-mail selector
 passed with 1 test; and Rust formatting/check/structure gates passed. Mail
 selectors remained deferred.
 
+## 2026-05-19 Runtime Listener Secure Session Local Queue Selector Batch
+
+Detailed report:
+`2026-05-19-runtime-listener-secure-session-local-queue-selector.md`.
+
+Summary: the accelerated runtime/listener follow-up batch used parallel
+read-only Native Agents to map Go listener secure replay/local queue behavior,
+current Rust contracts, and non-mail system-test selector visibility. It found
+no production Rust gap in the scoped deterministic helpers, then added a
+focused Rust-only `awiki-system-test` selector for the existing
+`runtime_listener_secure_inbox_poll_contract`,
+`runtime_listener_secure_sessions_contract`, and
+`runtime_listener_local_notifications_contract` targets. Rust direct validation
+passed 13 tests; wrapper syntax passed; the new non-mail selector passed with
+1 test; `listener_supervisor_run.rs` remains an existing 2334-line integration
+hub under the current 3000-line relaxed limit; and mail selectors remained
+deferred.
+
 ## 2026-05-18 Runtime Listener Foreground Signal Selector Batch
 
 Detailed report:

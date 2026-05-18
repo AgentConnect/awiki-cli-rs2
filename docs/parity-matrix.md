@@ -204,6 +204,41 @@ lines, above the older 1200-line review threshold but below the current
 ordinary 3000-line limit; the exception is localized to an existing system-test
 wrapper that aggregates runtime command and local Rust contract selectors.
 
+Current runtime listener secure-session/local-queue selector batch evidence:
+on 2026-05-19, the batch followed the accelerated module-batch pipeline. Three
+read-only Native Agents mapped Go listener secure replay/local queue behavior,
+current Rust runtime/listener implementation/tests, and non-mail system-test
+selector coverage in parallel. They found no production Rust gap in the scoped
+deterministic helper cluster. The actionable gap was selector visibility for
+three existing Rust targets. A bounded GPT-5.5 xhigh Native Agent modified only
+`tests_v2/cli/test_awiki_cli_runtime_listener_local.py` and
+`tests_v2/cli/CLAUDE.md`. Existing dirty helper files in `awiki-system-test`
+were not touched or staged. Mail selectors remain deferred.
+
+Runtime listener secure-session/local-queue selector gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/listener/server.go` | secure unread inbox polling runs unread replay plus pending-confirmation history sync before the ticker and repeats both syncs on each tick | `crates/awiki-cli/src/runtime/listener_secure_inbox_poll.rs` | implemented; selector visibility added | `runtime_listener_secure_inbox_poll_contract` passed 4 tests | `test_awiki_cli_runtime_listener_secure_session_local_queue_contracts` | low for deterministic ordering; live reconnect/backlog replay remains separate |
+| `internal/runtime/listener/server.go` | pending-confirmation peer discovery scans secure session files, ignores malformed/missing inputs, and returns peer DIDs for pending sessions | `crates/awiki-cli/src/runtime/listener_secure_sessions.rs` | implemented; selector visibility added | `runtime_listener_secure_sessions_contract` passed 4 tests | same focused selector | low for local file-scan helper behavior; live secure session mutation remains broader listener work |
+| `internal/runtime/listener/server.go` | local notifications for managed-but-not-active recipients queue by exact DID, skip blank/nil analogs, preserve order, and delete on flush | `crates/awiki-cli/src/runtime/listener_local_notifications.rs` | implemented; selector visibility added | `runtime_listener_local_notifications_contract` passed 5 tests | same focused selector | low for queue semantics; end-to-end inactive-recipient secure ACK flush through live session activation remains separate |
+
+Verification evidence: Rust direct validation passed 13 tests across
+`runtime_listener_secure_inbox_poll_contract`,
+`runtime_listener_secure_sessions_contract`, and
+`runtime_listener_local_notifications_contract`; system-test wrapper syntax
+passed; and the new focused non-mail `awiki-system-test` selector passed with
+1 passed in 0.25s. No Rust production code, manifests, ANP SDK code, or
+dependencies changed. `listener_supervisor_run.rs` remains 2334 lines, above
+the default 1200-line target but below the current ordinary 3000-line relaxed
+limit, and this batch did not grow it. Future runtime/listener work should
+prefer helper modules instead of increasing that integration hub unless
+integration code is unavoidable. The modified
+`tests_v2/cli/test_awiki_cli_runtime_listener_local.py` wrapper is 1322 lines,
+above the default 1200-line target but below the current ordinary 3000-line
+relaxed limit; the exception is localized to an existing runtime listener
+selector wrapper.
+
 Current docs/scripts/schema/config metadata batch evidence: on 2026-05-18, the
 batch followed the accelerated pipeline with three read-only Native Agents
 mapping Go static assets, Rust implementation/tests, and non-mail system-test
