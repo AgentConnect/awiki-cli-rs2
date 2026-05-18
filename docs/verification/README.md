@@ -13,6 +13,116 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   Rust build cache and pytest cache, while preserving source files,
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
+- Use the accelerated module-batch pipeline for the Go-to-Rust port: scan a Go
+  package/function cluster into a parity gap table, use Native Agents in
+  parallel for independent read-only mapping and bounded non-overlapping
+  write/test lanes when useful, keep mail selectors deferred unless the batch is
+  explicitly mail-focused, run layered validation, and batch documentation
+  updates at the end of the module batch.
+
+## 2026-05-18 Runtime Listener Secure Factory Shared RPC
+
+Timestamp: 2026-05-18T07:30:00Z / 2026-05-18T15:30:00+0800.
+
+Scope: complete the runtime/listener secure session-RPC batch by routing the
+secure E2EE client factory used by notification normalization, secure ACK
+fallback, and queued secure outbox flush through the active foreground session
+WebSocket. Also add the missing listener-connect secure prekey retry path using
+Go's non-session publisher boundary. Mail selectors remain deferred.
+
+Pipeline note:
+
+- Two read-only Native Agents ran in parallel. One mapped Go
+  `internal/runtime/listener/server.go` behavior around
+  `normalizeDirectSecureNotification`, `flushPeerQueuedSecureOutbox`,
+  `deliverLocalSecureAckInProcess`, `session.secureRPC`, and
+  `retryPublishSecurePrekeys`. The other mapped focused Rust, Go, and
+  `awiki-system-test` selectors.
+- The leader kept the write scope to
+  `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`,
+  `crates/awiki-cli/src/message/mod.rs`, and docs, then performed integration,
+  validation, docs, commit, and push.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`: removed the
+  remaining one-shot secure E2EE client RPC path. `secure_client_for_record`
+  now constructs `MessageServiceE2EEClient` over `SessionSharedRpc`, so secure
+  `ProcessIncoming`, network ACK fallback, and queued secure outbox flush use
+  the connected session WebSocket like Go `session.secureRPC()`.
+- `consume_notifications` now keeps the WebSocket owner loop responsible for
+  draining shared RPC requests, writing frames, routing response frames,
+  reading notifications, and ping cadence, while a per-session notification
+  handler thread performs secure normalization and store/host-notify side
+  effects. This preserves Go's read-loop concurrency without introducing an
+  async runtime or WebSocket dependency.
+- `SessionRpcSender` now carries a mutex-protected active gate. Closing the
+  gate and enqueueing a request are mutually exclusive, so callers fail
+  immediately after the owner loop closes rather than queueing behind a stopped
+  reader. Pending and queued RPC calls are woken with the real close/read/ping
+  error where available.
+- Replayed secure backlog notifications and queued local notifications now pass
+  the active session RPC registry into secure normalization, so replay, ACK, and
+  outbox paths share the same connected session channel.
+- Listener connect now starts `spawn_secure_prekey_retry`, which calls the
+  existing `message::maybe_publish_secure_prekeys` HTTP/client-backed publisher
+  until warnings clear or the session disconnects. This intentionally does not
+  use `SessionSharedRpc`, matching Go `retryPublishSecurePrekeys`, which calls
+  `message.PublishSecurePrekeys` rather than `session.secureRPC()`.
+- `crates/awiki-cli/src/message/mod.rs`: re-exported
+  `maybe_publish_secure_prekeys` as crate-visible so runtime listener code can
+  reuse the message-layer publisher without creating a new public API.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib runtime::listener_supervisor_run::tests --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --test runtime_listener_secure_normalize_contract --test runtime_listener_secure_notifications_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_secure_outbox_flush_contract --test runtime_listener_session_bootstrap_contract --test runtime_listener_bridge_dispatch_contract --test runtime_listener_foreground_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestSessionLoopReconnectsAndStoresNotifications|TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message -run 'TestPollingInboxDecryptsDirectInitAndSendsSecureAck|TestFlushQueuedSecureOutboxSendsCipherAfterConfirmation|TestServiceSecureRetryMarksQueuedRecordSent|TestServiceSecureFailedAndDropOperateOnOutbox' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts -ra -q
+```
+
+Observed results:
+
+- Rust internal shared-session RPC lifecycle tests: 3 passed, 0 failed.
+- Rust focused runtime listener contracts: 73 passed, 0 failed across session
+  loop, secure normalization, secure notification helpers, in-process ACK,
+  secure outbox flush, session bootstrap, bridge dispatch, and foreground
+  listener surfaces.
+- Rust formatting check: passed.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; no undocumented Rust source file over
+  1200 lines. `listener_supervisor_run.rs` remains the documented oversized
+  translation-time exception at 2236 lines, below the approved rare 5000-line
+  special-file ceiling.
+- `git diff --check`: passed.
+- Go focused runtime listener guards: passed.
+- Go focused message secure guards: passed.
+- `awiki-system-test` Batch 1 non-mail contract selector: 1 passed, 0 failed,
+  0 skipped.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1` and `pytest -p no:cacheprovider`.
+- No mail selector was run or counted. Mail remains deferred/gated.
+
+Boundary note: this batch covers Go `session.secureRPC()` parity for the secure
+E2EE client factory and Go `retryPublishSecurePrekeys` parity as a non-session
+publisher. It does not prove live secure WebSocket push acceptance in
+`awiki-system-test`, Windows named-pipe I/O, macOS/Windows service-manager
+execution, mail-system acceptance, or full repository-wide acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
 
 ## 2026-05-18 Runtime Listener Shared Bridge RPC
 

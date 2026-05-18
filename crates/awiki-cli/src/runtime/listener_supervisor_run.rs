@@ -395,6 +395,7 @@ impl Drop for BridgeRuntime {
 #[derive(Clone)]
 struct SessionRpcSender {
     tx: mpsc::Sender<SessionRpcRequest>,
+    active: Arc<Mutex<bool>>,
 }
 
 #[derive(Default)]
@@ -428,6 +429,10 @@ struct PendingSessionRpc {
     expires_at: Option<Instant>,
 }
 
+struct SessionNotificationTask {
+    notification: Map<String, Value>,
+}
+
 struct SessionSharedRpc {
     sender: SessionRpcSender,
 }
@@ -456,15 +461,25 @@ impl SessionSharedRpc {
         timeout: Option<Duration>,
     ) -> anyhow::Result<Map<String, Value>> {
         let (response_tx, response_rx) = mpsc::channel();
-        self.sender
-            .tx
-            .send(SessionRpcRequest {
-                method: method.to_string(),
-                params,
-                timeout,
-                response_tx,
-            })
-            .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?;
+        {
+            let active = self
+                .sender
+                .active
+                .lock()
+                .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?;
+            if !*active {
+                anyhow::bail!("websocket session rpc loop is closed");
+            }
+            self.sender
+                .tx
+                .send(SessionRpcRequest {
+                    method: method.to_string(),
+                    params,
+                    timeout,
+                    response_tx,
+                })
+                .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?;
+        }
         response_rx
             .recv()
             .map_err(|_| anyhow::anyhow!("websocket session rpc loop is closed"))?
@@ -478,101 +493,6 @@ impl ListenerServiceDidRpc for SessionSharedRpc {
         params: Map<String, Value>,
     ) -> anyhow::Result<Map<String, Value>> {
         self.send_rpc_with_timeout(method, params, None)
-    }
-}
-
-struct OneShotSessionRpc {
-    transport: WsTransport,
-    next_id: i64,
-}
-
-impl OneShotSessionRpc {
-    fn connect(
-        resolved: &Resolved,
-        manager: &Manager,
-        session: &ListenerBridgeSession,
-    ) -> anyhow::Result<Self> {
-        let record = session.record.as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "websocket session is not connected for identity {}",
-                session.identity_name
-            )
-        })?;
-        let mut auth = message::auth_session(resolved, manager, record)?;
-        seed_message_scopes(resolved, &mut auth, record.jwt_token.trim());
-        let token = ensure_ws_bearer(resolved, &mut auth)?;
-        if token.trim() != record.jwt_token.trim() {
-            let _ = manager.update_jwt(&record.identity_name, token.trim());
-        }
-        let endpoints = super::listener_wsclient::listener_ws_client_endpoints(resolved)?;
-        let transport = connect_ws_with_refresh(
-            resolved,
-            manager,
-            &record.identity_name,
-            &mut auth,
-            &endpoints.websocket_url,
-            &token,
-        )?;
-        Ok(Self {
-            transport,
-            next_id: 0,
-        })
-    }
-
-    fn send_rpc(
-        &mut self,
-        method: &str,
-        params: Map<String, Value>,
-    ) -> anyhow::Result<Map<String, Value>> {
-        let mut dispatch = super::listener_wsclient::ListenerWsPendingDispatch::default();
-        let request_id = super::listener_wsclient::next_ws_rpc_request_id(&mut self.next_id);
-        dispatch.register_pending(request_id.clone());
-        let request =
-            super::listener_wsclient::build_ws_rpc_request(&request_id, method, Some(params));
-        self.transport.send_json(&request)?;
-        loop {
-            let message = match self.transport.read_json_message() {
-                Ok(message) => message,
-                Err(err) => {
-                    let error = err.to_string();
-                    dispatch.fail_pending_requests(&error);
-                    let response =
-                        dispatch
-                            .take_pending_response(&request_id)
-                            .unwrap_or_else(|| {
-                                super::listener_wsclient::pending_failure_response(
-                                    &request_id,
-                                    &error,
-                                )
-                            });
-                    let _ = dispatch.remove_pending(&request_id);
-                    return super::listener_wsclient::decode_ws_rpc_result(&response);
-                }
-            };
-            match dispatch.route_incoming_message(message) {
-                super::listener_wsclient::ListenerWsDispatchOutcome::RoutedResponse {
-                    request_id: routed_id,
-                } if routed_id == request_id => {
-                    let response =
-                        dispatch.take_pending_response(&request_id).ok_or_else(|| {
-                            anyhow::anyhow!("websocket response missing pending entry")
-                        })?;
-                    let _ = dispatch.remove_pending(&request_id);
-                    return super::listener_wsclient::decode_ws_rpc_result(&response);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-impl ListenerServiceDidRpc for OneShotSessionRpc {
-    fn send_rpc(
-        &mut self,
-        method: &str,
-        params: Map<String, Value>,
-    ) -> anyhow::Result<Map<String, Value>> {
-        OneShotSessionRpc::send_rpc(self, method, params)
     }
 }
 
@@ -614,10 +534,14 @@ fn spawn_session_loop(
             match connect_session(&resolved, &manager, &identity_name) {
                 Ok((record, mut transport)) => {
                     let (rpc_tx, rpc_rx) = mpsc::channel();
+                    let rpc_active = Arc::new(Mutex::new(true));
                     set_session_rpc_sender(
                         &session_rpcs,
                         &identity_name,
-                        SessionRpcSender { tx: rpc_tx },
+                        SessionRpcSender {
+                            tx: rpc_tx,
+                            active: rpc_active.clone(),
+                        },
                     );
                     mark_session_connected(&status, &identity_name, &record.did);
                     if let Some(signal) = initial_signal.take() {
@@ -630,7 +554,15 @@ fn spawn_session_loop(
                         &status,
                         &host_notify,
                         &local_notifications,
+                        &session_rpcs,
                         &record,
+                    );
+                    spawn_secure_prekey_retry(
+                        resolved.clone(),
+                        manager.clone(),
+                        status.clone(),
+                        shutdown.clone(),
+                        record.clone(),
                     );
                     spawn_secure_backlog_poller(
                         resolved.clone(),
@@ -651,10 +583,13 @@ fn spawn_session_loop(
                         &record,
                         &mut transport,
                         &rpc_rx,
+                        &session_rpcs,
+                        &rpc_active,
                         &shutdown,
                     )
                     .err()
                     .map(|err| err.to_string());
+                    close_session_rpc_active(&rpc_active);
                     remove_session_rpc_sender(&session_rpcs, &identity_name);
                     let _ = transport.close();
                     if shutdown.load(Ordering::SeqCst) {
@@ -747,6 +682,57 @@ fn format_dial_error(err: WsDialError) -> anyhow::Error {
     anyhow::anyhow!(err)
 }
 
+fn spawn_secure_prekey_retry(
+    resolved: Arc<Resolved>,
+    manager: Manager,
+    status: Arc<Mutex<Status>>,
+    shutdown: Arc<AtomicBool>,
+    record: StoredIdentity,
+) {
+    let identity_name = record.identity_name.clone();
+    thread::spawn(move || {
+        while !shutdown.load(Ordering::SeqCst) && session_is_connected(&status, &identity_name) {
+            let warnings = message::maybe_publish_secure_prekeys(&resolved, &manager, &record);
+            match super::listener_session_loop::secure_prekey_retry_decision(
+                &identity_name,
+                &warnings,
+            ) {
+                super::listener_session_loop::SecurePrekeyRetryDecision::Finished => return,
+                super::listener_session_loop::SecurePrekeyRetryDecision::Retry {
+                    log_line,
+                    sleep_delay,
+                } => {
+                    eprintln!("{log_line}");
+                    if !sleep_or_shutdown_or_disconnected(
+                        &shutdown,
+                        &status,
+                        &identity_name,
+                        sleep_delay,
+                    ) {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn sleep_or_shutdown_or_disconnected(
+    shutdown: &AtomicBool,
+    status: &Arc<Mutex<Status>>,
+    identity_name: &str,
+    duration: Duration,
+) -> bool {
+    let deadline = Instant::now() + duration;
+    while !shutdown.load(Ordering::SeqCst)
+        && session_is_connected(status, identity_name)
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(100));
+    }
+    !shutdown.load(Ordering::SeqCst) && session_is_connected(status, identity_name)
+}
+
 fn spawn_secure_backlog_poller(
     resolved: Arc<Resolved>,
     manager: Manager,
@@ -832,6 +818,7 @@ fn sync_unread_secure_direct_inbox(
         status,
         host_notify,
         local_notifications,
+        session_rpcs,
         record,
         &result,
         false,
@@ -884,6 +871,7 @@ fn sync_pending_confirmation_secure_history(
             status,
             host_notify,
             local_notifications,
+            session_rpcs,
             record,
             &result,
             true,
@@ -897,6 +885,7 @@ fn replay_secure_messages_from_rpc_result(
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
     result: &Map<String, Value>,
     skip_self_sent: bool,
@@ -930,6 +919,7 @@ fn replay_secure_messages_from_rpc_result(
             status,
             host_notify,
             local_notifications,
+            session_rpcs,
             record,
             &candidate.notification,
         );
@@ -942,6 +932,7 @@ fn handle_replayed_secure_notification(
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
     notification: &Value,
 ) {
@@ -951,6 +942,7 @@ fn handle_replayed_secure_notification(
         status,
         host_notify,
         local_notifications,
+        session_rpcs,
         record,
         notification,
     );
@@ -987,6 +979,7 @@ fn flush_local_notifications_for_session(
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
 ) {
     let target_session = LocalNotificationFlushTargetSession::new(
@@ -1012,6 +1005,7 @@ fn flush_local_notifications_for_session(
             status,
             host_notify,
             local_notifications,
+            session_rpcs,
             record,
             notification,
         );
@@ -1024,6 +1018,7 @@ fn handle_local_notification(
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
     notification: LocalNotification,
 ) {
@@ -1034,6 +1029,7 @@ fn handle_local_notification(
         status,
         host_notify,
         local_notifications,
+        session_rpcs,
         record,
         &notification,
     );
@@ -1171,6 +1167,25 @@ fn fail_session_rpc_pending(
     }
 }
 
+fn fail_session_rpc_queued(error: &str, rpc_rx: &mpsc::Receiver<SessionRpcRequest>) {
+    loop {
+        match rpc_rx.try_recv() {
+            Ok(request) => {
+                let _ = request
+                    .response_tx
+                    .send(Err(anyhow::anyhow!(error.to_string())));
+            }
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+        }
+    }
+}
+
+fn close_session_rpc_active(active: &Arc<Mutex<bool>>) {
+    if let Ok(mut active) = active.lock() {
+        *active = false;
+    }
+}
+
 fn expire_session_rpc_pending(
     now: Instant,
     dispatch: &mut super::listener_wsclient::ListenerWsPendingDispatch,
@@ -1204,25 +1219,57 @@ fn consume_notifications(
     record: &StoredIdentity,
     transport: &mut WsTransport,
     rpc_rx: &mpsc::Receiver<SessionRpcRequest>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
+    rpc_active: &Arc<Mutex<bool>>,
     shutdown: &Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
+    let (notification_tx, notification_rx) = mpsc::channel::<SessionNotificationTask>();
+    let handler_resolved = resolved.clone();
+    let handler_manager = manager.clone();
+    let handler_status = status.clone();
+    let handler_host_notify = host_notify.clone();
+    let handler_local_notifications = local_notifications.clone();
+    let handler_session_rpcs = session_rpcs.clone();
+    let handler_record = record.clone();
+    let handler = thread::spawn(move || {
+        while let Ok(task) = notification_rx.recv() {
+            handle_session_notification(
+                &handler_resolved,
+                &handler_manager,
+                &handler_status,
+                &handler_host_notify,
+                &handler_local_notifications,
+                &handler_session_rpcs,
+                &handler_record,
+                task.notification,
+            );
+        }
+    });
     let mut next_ping = Instant::now() + SESSION_PING_INTERVAL;
     let mut next_id = 0_i64;
     let mut dispatch = super::listener_wsclient::ListenerWsPendingDispatch::default();
     let mut pending_rpc_responses = BTreeMap::<String, PendingSessionRpc>::new();
+    let mut loop_result = Ok(());
     while !shutdown.load(Ordering::SeqCst) {
-        drain_session_rpc_requests(
+        if let Err(err) = drain_session_rpc_requests(
             transport,
             rpc_rx,
             &mut next_id,
             &mut dispatch,
             &mut pending_rpc_responses,
-        )?;
+        ) {
+            loop_result = Err(err);
+            break;
+        }
         expire_session_rpc_pending(Instant::now(), &mut dispatch, &mut pending_rpc_responses);
         if Instant::now() >= next_ping {
-            transport
+            if let Err(err) = transport
                 .ping()
-                .map_err(|err| anyhow::anyhow!("websocket ping failed: {err}"))?;
+                .map_err(|err| anyhow::anyhow!("websocket ping failed: {err}"))
+            {
+                loop_result = Err(err);
+                break;
+            }
             next_ping = Instant::now() + SESSION_PING_INTERVAL;
         }
         let notification = match transport.read_json_message_timeout(SESSION_NOTIFICATION_READ_POLL)
@@ -1230,52 +1277,80 @@ fn consume_notifications(
             Ok(Some(notification)) => notification,
             Ok(None) => continue,
             Err(err) => {
-                let error = err.to_string();
-                fail_session_rpc_pending(&error, &mut dispatch, &mut pending_rpc_responses);
-                return Err(err);
+                loop_result = Err(err);
+                break;
             }
         };
         if notification.get("id").is_some() {
             route_session_rpc_response(notification, &mut dispatch, &mut pending_rpc_responses);
             continue;
         }
-        let notification = Value::Object(notification);
-        let secure_normalization = normalize_secure_notification(
-            resolved,
-            manager,
-            status,
-            host_notify,
-            local_notifications,
-            record,
-            &notification,
-        );
-        let mut connection = store::open(&resolved.paths)?;
-        store::ensure_schema(&connection)?;
-        let mut guard = status.lock().expect("listener status mutex poisoned");
-        let session = NotificationSessionContext {
-            identity_name: record.identity_name.clone(),
-            did: record.did.clone(),
-            handle: record.handle.clone(),
-        };
-        let mut lookup = |did: &str| lookup_listener_handle_by_did(resolved, did);
-        let _ = handle_listener_notification(
-            &mut connection,
-            Some(host_notify.as_ref()),
-            &mut guard,
-            &notification,
-            &session,
-            secure_normalization,
-            None,
-            Some(&mut lookup),
-        );
-        let _ = listener::write_status(&guard.status_file, &guard);
+        if notification_tx
+            .send(SessionNotificationTask { notification })
+            .is_err()
+        {
+            loop_result = Err(anyhow::anyhow!("websocket notification handler is closed"));
+            break;
+        }
     }
-    fail_session_rpc_pending(
-        "websocket notification loop closed",
-        &mut dispatch,
-        &mut pending_rpc_responses,
+    let close_error = loop_result
+        .as_ref()
+        .err()
+        .map(|err| err.to_string())
+        .unwrap_or_else(|| "websocket notification loop closed".to_string());
+    close_session_rpc_active(rpc_active);
+    fail_session_rpc_pending(&close_error, &mut dispatch, &mut pending_rpc_responses);
+    fail_session_rpc_queued(&close_error, rpc_rx);
+    drop(notification_tx);
+    let _ = handler.join();
+    loop_result
+}
+
+fn handle_session_notification(
+    resolved: &Resolved,
+    manager: &Manager,
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
+    record: &StoredIdentity,
+    notification: Map<String, Value>,
+) {
+    let notification = Value::Object(notification);
+    let secure_normalization = normalize_secure_notification(
+        resolved,
+        manager,
+        status,
+        host_notify,
+        local_notifications,
+        session_rpcs,
+        record,
+        &notification,
     );
-    Ok(())
+    let Ok(mut connection) = store::open(&resolved.paths) else {
+        return;
+    };
+    if store::ensure_schema(&connection).is_err() {
+        return;
+    }
+    let mut guard = status.lock().expect("listener status mutex poisoned");
+    let session = NotificationSessionContext {
+        identity_name: record.identity_name.clone(),
+        did: record.did.clone(),
+        handle: record.handle.clone(),
+    };
+    let mut lookup = |did: &str| lookup_listener_handle_by_did(resolved, did);
+    let _ = handle_listener_notification(
+        &mut connection,
+        Some(host_notify.as_ref()),
+        &mut guard,
+        &notification,
+        &session,
+        secure_normalization,
+        None,
+        Some(&mut lookup),
+    );
+    let _ = listener::write_status(&guard.status_file, &guard);
 }
 
 fn normalize_secure_notification(
@@ -1284,6 +1359,7 @@ fn normalize_secure_notification(
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
     notification: &Value,
 ) -> SecureNotificationNormalization {
@@ -1294,7 +1370,7 @@ fn normalize_secure_notification(
         Some(params) => params.clone(),
         None => return SecureNotificationNormalization::KeepOriginal,
     };
-    let mut client = match secure_client_for_record(resolved, manager, record) {
+    let mut client = match secure_client_for_record(manager, session_rpcs, record) {
         Ok(client) => client,
         Err(_) => return SecureNotificationNormalization::KeepOriginal,
     };
@@ -1315,7 +1391,7 @@ fn normalize_secure_notification(
         apply_decrypted_secure_plaintext(&mut normalized, &plaintext);
 
     if message::is_secure_ack_plaintext(&plaintext) {
-        let _ = flush_secure_outbox(resolved, manager, record, &sender_did);
+        let _ = flush_secure_outbox(resolved, manager, session_rpcs, record, &sender_did);
         set_notification_method(&mut normalized, "direct.secure.ack");
         return SecureNotificationNormalization::Replace(normalized);
     }
@@ -1336,6 +1412,7 @@ fn normalize_secure_notification(
                 manager,
                 status,
                 local_notifications,
+                session_rpcs,
                 record,
                 &sender_did,
                 &session_id,
@@ -1354,6 +1431,7 @@ fn normalize_secure_notification(
                         status,
                         host_notify,
                         local_notifications,
+                        session_rpcs,
                         record,
                         &sender_did,
                         &ack_id,
@@ -1361,7 +1439,13 @@ fn normalize_secure_notification(
                     );
                 }
             }
-            let _ = flush_peer_queued_secure_outbox(resolved, manager, &sender_did, &record.did);
+            let _ = flush_peer_queued_secure_outbox(
+                resolved,
+                manager,
+                session_rpcs,
+                &sender_did,
+                &record.did,
+            );
         }
     }
 
@@ -1414,21 +1498,16 @@ fn apply_decrypted_secure_plaintext(
 }
 
 fn secure_client_for_record(
-    resolved: &Resolved,
     manager: &Manager,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
 ) -> Result<message::MessageServiceE2EEClient, String> {
-    let rpc_resolved = resolved.clone();
-    let rpc_manager = manager.clone();
-    let identity_name = record.identity_name.clone();
+    let mut rpc_sender = SessionSharedRpc::new(session_rpcs, &record.identity_name)
+        .map_err(|err| err.to_string())?;
     let rpc: Box<message::SecureE2EERpc> = Box::new(move |method, params| {
-        let record = rpc_manager
-            .load(&identity_name)
-            .map_err(|err| err.to_string())?;
-        let session = ListenerBridgeSession::connected(identity_name.clone(), record);
-        let mut rpc = OneShotSessionRpc::connect(&rpc_resolved, &rpc_manager, &session)
-            .map_err(|err| err.to_string())?;
-        rpc.send_rpc(method, params).map_err(|err| err.to_string())
+        rpc_sender
+            .send_rpc(method, params)
+            .map_err(|err| err.to_string())
     });
     message::new_secure_e2ee_client_for_record(Some(manager), Some(record), rpc)
 }
@@ -1436,18 +1515,20 @@ fn secure_client_for_record(
 fn flush_peer_queued_secure_outbox(
     resolved: &Resolved,
     manager: &Manager,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     owner_did: &str,
     peer_did: &str,
 ) -> Vec<String> {
     let Some(record) = identity_record_by_did(manager, owner_did) else {
         return Vec::new();
     };
-    flush_secure_outbox(resolved, manager, &record, peer_did)
+    flush_secure_outbox(resolved, manager, session_rpcs, &record, peer_did)
 }
 
 fn flush_secure_outbox(
     resolved: &Resolved,
     manager: &Manager,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     record: &StoredIdentity,
     peer_did: &str,
 ) -> Vec<String> {
@@ -1458,7 +1539,7 @@ fn flush_secure_outbox(
     if let Err(err) = store::ensure_schema(&connection) {
         return vec![format!("Failed to ensure secure outbox schema: {err}")];
     }
-    let mut client = match secure_client_for_record(resolved, manager, record) {
+    let mut client = match secure_client_for_record(manager, session_rpcs, record) {
         Ok(client) => client,
         Err(err) => return vec![format!("Failed to initialize secure outbox flusher: {err}")],
     };
@@ -1505,6 +1586,7 @@ fn deliver_local_secure_ack_in_process(
     manager: &Manager,
     status: &Arc<Mutex<Status>>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     sender_record: &StoredIdentity,
     recipient_did: &str,
     session_id: &str,
@@ -1568,8 +1650,16 @@ fn deliver_local_secure_ack_in_process(
     if sender_store.save_session(&candidate_session).is_err() {
         return false;
     }
-    if active_session_by_did(status, recipient_did).is_some() {
-        let _ = flush_secure_outbox(resolved, manager, &recipient_record, &sender_record.did);
+    if let Some(active_session) = active_session_by_did(status, recipient_did) {
+        if SessionSharedRpc::new(session_rpcs, &active_session.identity_name).is_ok() {
+            let _ = flush_secure_outbox(
+                resolved,
+                manager,
+                session_rpcs,
+                &recipient_record,
+                &sender_record.did,
+            );
+        }
         return true;
     }
     if has_runtime_session_for_did(status, manager, recipient_did) {
@@ -1734,6 +1824,7 @@ fn deliver_local_secure_ack(
     status: &Arc<Mutex<Status>>,
     host_notify: &Arc<HostNotifySinkImpl>,
     local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
     sender_record: &StoredIdentity,
     recipient_did: &str,
     fallback_message_id: &str,
@@ -1760,6 +1851,7 @@ fn deliver_local_secure_ack(
         status,
         host_notify,
         local_notifications,
+        session_rpcs,
         &recipient_record,
         &notification,
     );
@@ -2075,7 +2167,10 @@ mod tests {
     fn session_shared_rpc_sends_timeout_bound_request_through_session_channel() {
         let (tx, rx) = mpsc::channel();
         let mut rpc = SessionSharedRpc {
-            sender: SessionRpcSender { tx },
+            sender: SessionRpcSender {
+                tx,
+                active: Arc::new(Mutex::new(true)),
+            },
         };
         let handle = thread::spawn(move || {
             let mut params = Map::new();
@@ -2094,6 +2189,24 @@ mod tests {
 
         let result = handle.join().expect("rpc thread").expect("rpc result");
         assert_eq!(result["ok"], true);
+    }
+
+    #[test]
+    fn inactive_session_shared_rpc_fails_before_queueing_request() {
+        let (tx, rx) = mpsc::channel();
+        let mut rpc = SessionSharedRpc {
+            sender: SessionRpcSender {
+                tx,
+                active: Arc::new(Mutex::new(false)),
+            },
+        };
+
+        let error = rpc
+            .send_rpc_with_timeout("inbox.get", Map::new(), Some(SECURE_DIRECT_SYNC_TIMEOUT))
+            .expect_err("inactive rpc should fail");
+
+        assert!(error.to_string().contains("rpc loop is closed"));
+        assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
     }
 
     #[test]

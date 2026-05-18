@@ -22,6 +22,14 @@ Parallel execution constraint: Native Agents may be used for independent
 module/file slices when that improves throughput. Any code-writing Native Agent
 must use GPT-5.5 with xhigh reasoning and a bounded, non-overlapping write
 scope; read-only Native Agents may use lighter settings.
+Current translation pipeline uses module-batch execution rather than random
+small-difference closure: pre-scan the Go/Rust gap table for a package or
+function cluster, delegate independent read-only mapping and bounded write/test
+lanes through Native Agents when useful, keep the leader responsible for
+integration, layered validation, docs, commit, and push, and update docs once
+per completed batch instead of once per helper. Each worker must declare Go
+reference files, Rust target files, disallowed files, expected tests, and
+mail-selector deferral before editing.
 
 Current operational constraints: mail-related system-test selectors are deferred
 for now and must be reported as deferred/gated, not passed, until a later
@@ -401,6 +409,35 @@ normalization, ACK fallback, and queued secure outbox flush paths; prekey
 publish retry remains intentionally outside the shared session RPC lane because
 Go calls `message.PublishSecurePrekeys` rather than the session `WSClient`.
 Mail selectors remain deferred/gated, and no dependency was added.
+
+Current runtime listener secure factory shared-RPC and prekey retry evidence:
+on 2026-05-18, Rust secure notification normalization stopped using a one-shot
+WebSocket helper for `MessageServiceE2EEClient` RPCs and now builds the secure
+client over `SessionSharedRpc`, matching Go `session.secureRPC()` fallback to
+the active `WSClient.SendRPC`. Because Rust's WebSocket owner loop is a single
+reader, notifications are forwarded to a per-session handler thread while the
+owner loop keeps draining session RPC requests, writing frames, routing RPC
+responses, sending pings, and failing pending/queued requests on exit. The
+session RPC sender now carries a mutex-protected active gate so close and
+request enqueue are mutually exclusive, and callers fail immediately after the
+owner loop closes rather than blocking behind a stopped reader. Secure ACK
+plaintext flush, secure-init network ACK fallback, peer queued secure outbox
+flush, replayed backlog notifications, and queued local notifications all pass
+the active session RPC registry into the secure client path. Go's listener
+connect prekey retry was also added through the existing
+`message::maybe_publish_secure_prekeys` HTTP/client-backed publisher and remains
+intentionally outside `SessionSharedRpc`, because Go calls
+`message.PublishSecurePrekeys` rather than `session.secureRPC()` for this
+bootstrap maintenance path. Focused Rust internal/session-loop/secure
+normalize/secure notification/ACK/outbox/bootstrap/bridge/foreground tests
+passed; `cargo fmt --check`, `cargo check`, `xtask check-structure`, and `git
+diff --check` passed; Go listener/message guards passed; and the non-mail Batch
+1 `awiki-system-test` selector passed with 1 passed, 0 failed, and 0 skipped.
+Two read-only Native Agents mapped the Go reference behavior and focused test
+selector coverage in parallel while the leader integrated the Rust changes.
+This batch does not claim Windows named-pipe I/O, platform service-manager
+execution, live secure WebSocket push system acceptance, full repository-wide
+acceptance, or mail selectors. No dependency was added.
 
 Current debug handle-history selector evidence: on 2026-05-17, a new Rust
 subprocess selector
