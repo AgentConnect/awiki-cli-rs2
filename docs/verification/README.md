@@ -20,6 +20,85 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Docs/Scripts/Schema/Config Metadata Batch
+
+Timestamp: 2026-05-18T18:31:32+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline for the static
+  docs/scripts/schema/config asset cluster before editing.
+- Three read-only Native Agents mapped Go reference assets, current Rust
+  implementation/tests, and non-mail `awiki-system-test` selectors in
+  parallel. The leader then ran mechanical asset diffs plus real Go/Rust
+  `schema` and `docs` output comparisons.
+- The batch found one production Rust gap in Go-visible static schema output:
+  Rust emitted empty flag fields that Go omits through `omitempty`, and a few
+  command catalog entries were ordered differently from Go. The implementation
+  change was kept to `cmdmeta` serialization/order plus a small focused Rust
+  contract file.
+- No dependency changed. Mail selectors remained deferred and were not run or
+  counted.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/cmdmeta/catalog.go` | `schema` command list preserves Go catalog order and flag JSON omits empty `default`, `required`, `choices`, and `deprecated` fields | `src/cmdmeta/mod.rs`, `tests/cmdmeta_schema_contract.rs` | fixed in this batch | `cmdmeta_schema_contract`; `core_contract` schema metadata focused test | `tests_v2/core/test_basic_commands.py`, `tests_v2/core/test_output_contracts_cli.py` passed in the broad static batch | low after real Go/Rust schema diff reached zero |
+| `internal/docs/topics.go` | `docs` topic names, summaries, references, lookup, and list output | `src/docs/mod.rs`, `docs/**`, `skills/**` | already implemented | `core_contract` docs tests | core docs/schema selectors passed | low; Go/Rust docs output diff reached zero after volatile meta normalization |
+| `config.template.yaml`, `internal/config/config.go`, `internal/config/write.go` | static template, config resolution, deprecated field guard, quoted `#` parsing, durable writes, DID-domain mutation | `config.template.yaml`, `src/config/{mod,write}.rs` | already implemented for this batch scope | `config_policy_contract`, `config_writer_contract`, `core_contract` | core/config and multi-tenant selectors passed | medium for full `yaml.v3` edge parity; no new gap in this batch |
+| `scripts/install.js`, `scripts/run.js`, Hermes/OpenClaw helper scripts | shared JS/Python helper assets match Go for installed binary and host-notify helper surfaces | `scripts/install.js`, `scripts/run.js`, `scripts/hermes_notify_adapter.py`, `scripts/host_notify_webhook_server.py` | already copied byte-for-byte for shared assets | script asset probes remain in system tests | `tests_v2/update/test_install_script.py` passed | low for shared assets; Go-only release/test helper scripts remain outside CLI behavior unless a release parity batch scopes them in |
+| `package.json` | npm package metadata and install wrapper wiring | `package.json` | byte-identical to Go in this batch | not a Rust unit target | install-script selectors passed | low |
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && diff -u ../awiki-cli/config.template.yaml config.template.yaml
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && diff -u ../awiki-cli/package.json package.json
+cd /home/ecs-user/awiki-space/awiki-cli && diff -u scripts/install.js ../awiki-cli-rs2/scripts/install.js && diff -u scripts/run.js ../awiki-cli-rs2/scripts/run.js && diff -u scripts/hermes_notify_adapter.py ../awiki-cli-rs2/scripts/hermes_notify_adapter.py && diff -u scripts/host_notify_webhook_server.py ../awiki-cli-rs2/scripts/host_notify_webhook_server.py
+cd /home/ecs-user/awiki-space/awiki-cli && go build -o /tmp/awiki-cli-go ./cmd/awiki-cli
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 build -p awiki-cli --locked
+/tmp/awiki-cli-go schema --format json > /tmp/awiki-schema-go.json
+/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli schema --format json > /tmp/awiki-schema-rust.json
+/tmp/awiki-cli-go docs --format json > /tmp/awiki-docs-go.json
+/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli docs --format json > /tmp/awiki-docs-rust.json
+python3 <normalization script comparing Go/Rust schema and docs after dropping volatile meta.generated_at and meta.identity>
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test cmdmeta_schema_contract --test core_contract --test config_policy_contract --test config_writer_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cmdmeta ./internal/docs ./internal/config ./internal/cli -run 'Test.*Catalog|Test.*Schema|Test.*Docs|Test.*Config|Test.*Write|Test.*Completion' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py tests_v2/core/test_output_contracts_cli.py tests_v2/update/test_update_policy.py tests_v2/update/test_install_script.py tests_v2/multi_tenant/test_awiki_cli_tenant_config.py -ra -q
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+```
+
+Observed results:
+
+- Shared `config.template.yaml`, `package.json`, `scripts/install.js`,
+  `scripts/run.js`, `scripts/hermes_notify_adapter.py`, and
+  `scripts/host_notify_webhook_server.py` matched Go byte-for-byte.
+- Go and Rust `schema` output initially differed only in Go `omitempty` flag
+  field omission and command catalog order. After the patch, real Go/Rust
+  `schema` and `docs` outputs had zero diff after volatile meta normalization.
+- Focused Rust schema/config/core tests passed 33 tests:
+  `cmdmeta_schema_contract` 2, `config_policy_contract` 4,
+  `config_writer_contract` 7, and `core_contract` 20.
+- Focused Go guard passed for `internal/cmdmeta`, `internal/docs`,
+  `internal/config`, and `internal/cli`.
+- Focused non-mail `awiki-system-test` batch passed with 31 passed in 8.65s.
+- `cargo fmt --check`, `cargo check -p awiki-cli --locked`, `xtask
+  check-structure`, and `git diff --check` passed.
+- File sizes stayed within the current constraints: `cmdmeta/mod.rs` is 379
+  lines, new `cmdmeta_schema_contract.rs` is 178 lines, and the already-near-cap
+  `core_contract.rs` did not grow.
+
+Boundary note: this batch covers static docs/scripts/schema/config metadata and
+asset parity. It does not implement Go-only release helper scripts, broaden
+completion generation beyond the already verified shell markers, replace the
+current hand-written config YAML parser with a full `yaml.v3` equivalent, or
+claim any mail system-test selector.
+
 ## 2026-05-18 Message Direct Secure Verification Batch
 
 Timestamp: 2026-05-18T18:16:20+0800.

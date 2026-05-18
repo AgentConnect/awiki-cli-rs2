@@ -1,9 +1,8 @@
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct FlagSpec {
     pub name: &'static str,
-    #[serde(rename = "type")]
     pub flag_type: &'static str,
     pub usage: &'static str,
     pub default: &'static str,
@@ -181,10 +180,10 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "id.list", use_: "list", short: "List local identities", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "id.current", use_: "current", short: "Show the default identity", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.current", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "id.use", use_: "use <identity>", short: "Switch the default identity", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.use", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
-        CommandSpec { name: "id.import-v1", use_: "import-v1", short: "Import credentials from the v1 awiki-agent-id-message layout", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.import-v1", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("name", "string", "Import one legacy identity by name"), flag!("all", "bool", "Import all detected legacy identities")] },
         CommandSpec { name: "id.profile", use_: "profile", short: "Read or update DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "id.profile.get", use_: "get", short: "Get DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.profile.get", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("self", "bool", "Read the active identity profile"), flag!("handle", "string", "Read a profile by handle"), flag!("did", "string", "Read a profile by DID")] },
         CommandSpec { name: "id.profile.set", use_: "set", short: "Update DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.profile.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("display-name", "string", "Profile display name"), flag!("bio", "string", "Profile bio"), flag!("tags", "string", "Comma-separated tags"), flag!("markdown", "string", "Inline markdown body"), flag!("markdown-file", "string", "Markdown file path")] },
+        CommandSpec { name: "id.import-v1", use_: "import-v1", short: "Import credentials from the v1 awiki-agent-id-message layout", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.import-v1", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("name", "string", "Import one legacy identity by name"), flag!("all", "bool", "Import all detected legacy identities")] },
         CommandSpec { name: "msg", use_: "msg", short: "Messaging commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "msg.send", use_: "send", short: "Send a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.send", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("to", "string", "Direct message target"), flag!("group", "string", "Group target"), flag!("text", "string", "Inline message text or attachment caption"), flag!("text-file", "string", "Message body or attachment caption file path"), flag!("file", "string", "Attachment file path"), flag!("mime-type", "string", "Attachment MIME type override"), flag!("type", "string", "Message type", default = "text"), flag!("secure", "string", "Secure mode", default = "off", choices = ["off", "on"])] },
         CommandSpec { name: "msg.attachment", use_: "attachment", short: "Attachment commands", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
@@ -239,10 +238,6 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "runtime.mode", use_: "mode", short: "Inspect or update runtime mode", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "runtime.mode.get", use_: "get", short: "Get the current runtime mode", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.mode.get", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "runtime.mode.set", use_: "set <MODE>", short: "Set the runtime mode", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.mode.set", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
-        CommandSpec { name: "runtime.heartbeat", use_: "heartbeat", short: "Manage heartbeat tasks", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
-        CommandSpec { name: "runtime.heartbeat.status", use_: "status", short: "Show heartbeat status", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
-        CommandSpec { name: "runtime.heartbeat.install", use_: "install", short: "Install heartbeat automation", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("every", "string", "Heartbeat schedule", default = "15m")] },
-        CommandSpec { name: "runtime.heartbeat.run-once", use_: "run-once", short: "Run heartbeat once", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "runtime.listener", use_: "listener", short: "Manage the realtime listener service", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("runtime.listener.status", "status", "Show listener status", "phase7", "runtime.listener.status"),
         CommandSpec { name: "runtime.listener.install", use_: "install", short: "Install the listener service", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.install", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
@@ -250,11 +245,11 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "runtime.listener.stop", use_: "stop", short: "Stop the listener service", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.stop", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "runtime.listener.restart", use_: "restart", short: "Restart the listener service", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.restart", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "runtime.listener.uninstall", use_: "uninstall", short: "Uninstall the listener service", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.uninstall", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
-        CommandSpec { name: "runtime.listener.enable", use_: "enable", short: "Enable the listener and apply runtime state", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.enable", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
-        CommandSpec { name: "runtime.listener.disable", use_: "disable", short: "Disable the listener and apply runtime state", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.disable", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "runtime.listener.config", use_: "config", short: "Inspect or update listener configuration", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("runtime.listener.config.show", "show", "Show listener configuration", "phase7", "runtime.listener.config.show"),
         CommandSpec { name: "runtime.listener.config.set", use_: "set", short: "Update listener configuration", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.config.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("enabled", "bool", "Enable or disable listener management"), flag!("auto-install", "bool", "Automatically install the listener service"), flag!("auto-start", "bool", "Automatically start the listener service")] },
+        CommandSpec { name: "runtime.listener.enable", use_: "enable", short: "Enable the listener and apply runtime state", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.enable", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "runtime.listener.disable", use_: "disable", short: "Disable the listener and apply runtime state", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.disable", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "runtime.host-notify", use_: "host-notify", short: "Inspect or update host notification settings", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "runtime.host-notify.config", use_: "config", short: "Inspect or update host notification configuration", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("runtime.host-notify.config.show", "show", "Show host notification configuration", "phase7", "runtime.host-notify.config.show"),
@@ -278,6 +273,10 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "runtime.host-notify.hermes.set", use_: "set", short: "Update Hermes host notification settings", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.host-notify.hermes.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("notify-url", "string", "Hermes notify endpoint URL"), flag!("deliver", "string", "Hermes route deliver target")] },
         CommandSpec { name: "runtime.host-notify.hermes.set-secret", use_: "set-secret", short: "Store the Hermes signing secret in config", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.host-notify.hermes.set-secret", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("value", "string", "Hermes signing secret", required)] },
         CommandSpec { name: "runtime.host-notify.hermes.clear-secret", use_: "clear-secret", short: "Clear the stored Hermes signing secret", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.host-notify.hermes.clear-secret", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "runtime.heartbeat", use_: "heartbeat", short: "Manage heartbeat tasks", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "runtime.heartbeat.status", use_: "status", short: "Show heartbeat status", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "runtime.heartbeat.install", use_: "install", short: "Install heartbeat automation", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("every", "string", "Heartbeat schedule", default = "15m")] },
+        CommandSpec { name: "runtime.heartbeat.run-once", use_: "run-once", short: "Run heartbeat once", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "people", use_: "people", short: "People, relationships, and contacts commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "people.search", use_: "search <QUERY>", short: "Search users", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "people.follow", use_: "follow <TARGET>", short: "Follow a user", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
@@ -308,14 +307,40 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "site.page.delete", use_: "delete", short: "Delete a tenant site page", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "site.page.delete", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("domain", "string", "Tenant bare domain", required), flag!("slug", "string", "Page slug", required)] },
         CommandSpec { name: "debug", use_: "debug", short: "Debugging and raw inspection commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "debug.db", use_: "db", short: "Database inspection helpers", long: "", aliases: &[], phase: "phase4", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "debug.db.handle-history", use_: "handle-history <HANDLE>", short: "Show the local DID history recorded for one handle", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "debug.db.handle-history", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "debug.db.query", use_: "query <SQL>", short: "Execute a local SQLite query", long: "", aliases: &[], phase: "phase4", hidden: false, implemented: true, handler: "debug.db.query", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "debug.db.import-v1", use_: "import-v1", short: "Import a legacy v1 local SQLite database", long: "", aliases: &[], phase: "phase4", hidden: false, implemented: true, handler: "debug.db.import-v1", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("path", "string", "Explicit legacy database path override")] },
-        CommandSpec { name: "debug.db.handle-history", use_: "handle-history <HANDLE>", short: "Show the local DID history recorded for one handle", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "debug.db.handle-history", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "debug.raw", use_: "raw", short: "Raw RPC helpers", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "debug.raw.rpc", use_: "rpc", short: "Call raw RPC endpoints", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "debug.schema-cache", use_: "schema-cache", short: "Inspect generated schema metadata", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
         CommandSpec { name: "debug.logs", use_: "logs", short: "Tail runtime logs", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["ndjson", "pretty"], flags: &[flag!("follow", "bool", "Follow log output")] },
     ]
+}
+
+impl Serialize for FlagSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("name", self.name)?;
+        map.serialize_entry("type", self.flag_type)?;
+        map.serialize_entry("usage", self.usage)?;
+        if !self.default.is_empty() {
+            map.serialize_entry("default", self.default)?;
+        }
+        if self.required {
+            map.serialize_entry("required", &self.required)?;
+        }
+        if !self.choices.is_empty() {
+            map.serialize_entry("choices", self.choices)?;
+        }
+        if self.deprecated {
+            map.serialize_entry("deprecated", &self.deprecated)?;
+        }
+        map.end()
+    }
 }
 
 impl Serialize for CommandSpec {
