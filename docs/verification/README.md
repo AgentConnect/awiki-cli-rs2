@@ -20,6 +20,63 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Message Group E2EE WebSocket Boundary Batch
+
+Timestamp: 2026-05-18T18:20:00+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline for the `message/group` E2EE
+  WebSocket/local-bridge candidate before editing.
+- Three read-only Native Agents mapped Go group E2EE transport behavior, current
+  Rust group E2EE/WS implementation, and non-mail system-test selectors in
+  parallel. The scans converged on the same boundary: Go `group.e2ee.send` and
+  hidden group E2EE control-plane calls use HTTP plus local `anp-mls`; the Go
+  local bridge supports ordinary `group.send` and `group.list_messages`, not
+  `group.e2ee.send`.
+- This batch therefore did not add a new E2EE local-bridge transport. That would
+  be an optimization/new behavior, not a 1:1 Go translation. The implemented
+  work adds a focused Rust contract proving E2EE send remains HTTP-only under
+  `runtime.mode=websocket` and fixes a Go-visible retry-encrypt diagnostic
+  string.
+- Mail selectors remained deferred. No dependency changed.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/message/group_e2ee_service.go` `sendGroupE2EE` | sync `group.get`, run local `anp-mls message encrypt`, then POST hidden `group.e2ee.send` over HTTP even when runtime mode is WebSocket | `src/message/group_e2ee_send.rs`, `src/message/group_e2ee_transport.rs`, `tests/group_e2ee_send_contract.rs` | implemented and now explicitly contract-tested under WebSocket runtime | `group_e2ee_send_contract::msg_send_group_e2ee_websocket_mode_stays_http_only_like_go` | existing `tests_v2/cli/test_awiki_cli_group_e2ee_local.py` remains the live E2EE selector evidence; not rerun for this fake-service boundary batch | low; test-only boundary assertion plus diagnostic string |
+| `internal/runtime/listener/server.go` / `internal/message/ws_proxy_client.go` | local bridge exposes ordinary `group.send` and `group.list_messages`; no `group.e2ee.send` method | `src/message/group_ws.rs`, `src/message/ws_proxy.rs`, runtime bridge modules | already implemented for ordinary group transport; no E2EE bridge method added | existing `msg_ws_group_live_contract` and file-sink probe evidence | file-sink selector remains the focused non-mail group local-bridge selector | low; avoided non-Go behavior |
+| `internal/message/group_e2ee_service.go` retry encrypt branch | retry path distinguishes missing cipher object with `anp-mls retry encrypt response missing group_cipher_object` | `src/message/group_e2ee_send.rs` | diagnostic string corrected | covered by compile/check; broader stale-epoch retry remains future edge coverage | deferred | medium only for unexercised stale-epoch branch |
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test group_e2ee_send_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+```
+
+Observed results:
+
+- `group_e2ee_send_contract`: 2 passed, including the new WebSocket-mode
+  HTTP-only group E2EE send contract.
+- `cargo fmt --check`, `cargo check`, structure check, and whitespace check
+  passed.
+- `group_e2ee_send.rs` is 348 lines and
+  `group_e2ee_send_contract.rs` is 743 lines. Both stay below the active
+  3000-line ordinary file target and below the current 1200-line structure
+  visibility threshold, so no file-size exception is needed.
+
+Boundary note: this batch records the Go-compatible HTTP-only group E2EE
+transport boundary under WebSocket runtime mode. It does not add or claim a
+`group.e2ee.send` local bridge method, foreground listener group E2EE handling,
+broader stale-epoch repair/retry system coverage, mail acceptance, or
+repository-wide acceptance.
+
 ## 2026-05-18 Message Group Control Warning Batch
 
 Timestamp: 2026-05-18T09:28:18Z / 2026-05-18T17:28:18+0800.

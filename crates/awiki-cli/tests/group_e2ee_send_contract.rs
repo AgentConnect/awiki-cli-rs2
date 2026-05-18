@@ -182,6 +182,98 @@ fn msg_send_group_secure_on_encrypts_and_posts_hidden_group_e2ee_send_like_go() 
     assert_eq!(envelope["data"]["e2ee"]["cipher_object_sent"], true);
 }
 
+#[test]
+fn msg_send_group_e2ee_websocket_mode_stays_http_only_like_go() {
+    let workspace = TempDir::new("group-e2ee-send-ws-http").expect("workspace");
+    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
+    seed_cached_e2ee_group_snapshot(workspace.path());
+
+    let bin_dir = TempDir::new("group-e2ee-send-ws-bin").expect("bin dir");
+    let fake_mls = bin_dir.path().join("anp-mls");
+    let args_log = workspace.path().join("mls-args-ws.log");
+    let stdin_log = workspace.path().join("mls-stdin-ws.jsonl");
+    write_fake_anp_mls_group_send(&fake_mls, &args_log, &stdin_log);
+
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(group_snapshot())),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "final_acceptance": true,
+            "group_did": GROUP_DID,
+            "message_id": "msg-e2ee-ws-http",
+            "operation_id": "op-e2ee-ws-http",
+            "group_event_seq": "45",
+            "group_state_version": "v45",
+            "accepted_at": "2026-05-16T06:07:08Z",
+            "source": "remote_http"
+        }))),
+    ]);
+    write_group_websocket_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            IDENTITY,
+            "msg",
+            "send",
+            "--group",
+            GROUP_DID,
+            "--secure",
+            "on",
+            "--text",
+            "hello e2ee in websocket mode",
+        ],
+        workspace.path(),
+        &[("AWIKI_ANP_MLS_BINARY", fake_mls.as_path())],
+    );
+
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(
+        envelope["summary"],
+        "Sent a group text message with group E2EE"
+    );
+    assert!(envelope.get("warnings").is_none());
+    assert_eq!(envelope["data"]["message"]["secure"], true);
+    assert_eq!(
+        envelope["data"]["message"]["security_profile"],
+        "group-e2ee"
+    );
+    assert_eq!(envelope["data"]["source"], "remote_http");
+    assert_eq!(envelope["data"]["e2ee"]["encrypted"], true);
+
+    let provider_stdin = provider_stdin_jsonl(&stdin_log);
+    assert_eq!(provider_stdin.len(), 2);
+    assert_eq!(
+        provider_stdin[1]["params"]["application_plaintext"]["text"],
+        "hello e2ee in websocket mode"
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
+    let bodies = request_json_bodies(&requests);
+    assert_eq!(rpc_methods(&bodies), vec!["group.get", "group.e2ee.send"]);
+    let body = &bodies[1];
+    assert_eq!(body["params"]["meta"]["profile"], "anp.group.e2ee.v1");
+    assert_eq!(body["params"]["meta"]["security_profile"], "group-e2ee");
+    assert_eq!(
+        body["params"]["meta"]["content_type"],
+        "application/anp-group-cipher+json"
+    );
+    assert_eq!(
+        body["params"]["meta"]["target"],
+        json!({"kind": "group", "did": GROUP_DID})
+    );
+    assert!(
+        body["params"]["body"]
+            .get("application_plaintext")
+            .is_none(),
+        "hidden group E2EE send must not leak plaintext through HTTP"
+    );
+}
+
 fn seed_cached_e2ee_group_snapshot(workspace: &Path) {
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(group_snapshot()))]);
     write_group_config(workspace, &server.base_url());
@@ -354,6 +446,14 @@ fn write_group_config(workspace: &Path, base_url: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
         format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
+    )
+    .unwrap();
+}
+
+fn write_group_websocket_config(workspace: &Path, base_url: &str) {
+    std::fs::write(
+        workspace.join("config.yaml"),
+        format!("runtime:\n  mode: websocket\nservices:\n  service_base_url: {base_url}\n"),
     )
     .unwrap();
 }

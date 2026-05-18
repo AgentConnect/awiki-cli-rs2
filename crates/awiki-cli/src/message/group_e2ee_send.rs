@@ -179,9 +179,12 @@ fn encrypt_and_send_group_e2ee(
         .cloned()
         .filter(|cipher| !cipher.is_empty())
         .ok_or_else(|| {
-            MessageError::Internal(
-                "anp-mls encrypt response missing group_cipher_object".to_string(),
-            )
+            let detail = if retry {
+                "anp-mls retry encrypt response missing group_cipher_object"
+            } else {
+                "anp-mls encrypt response missing group_cipher_object"
+            };
+            MessageError::Internal(detail.to_string())
         })?;
     let mut transport = GroupE2eeTransport::new(resolved, manager, record)?;
     let delivery = transport.send_group_e2ee(&request.group, cipher, &operation_id, &message_id)?;
