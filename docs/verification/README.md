@@ -20,6 +20,76 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Message Direct Secure Verification Batch
+
+Timestamp: 2026-05-18T18:16:20+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline for the remaining
+  `message/direct` secure execution boundary before deciding whether to edit.
+- Three read-only Native Agents mapped the Go secure direct send/control,
+  current Rust secure direct implementation/tests, and non-mail
+  `awiki-system-test` selectors in parallel. The scans converged on the same
+  boundary: Go secure direct send/control paths use the HTTP/P5 E2EE client
+  path; Go does not expose secure-specific local bridge methods.
+- No production Rust code, tests, dependencies, or system-test helpers were
+  changed in this batch. The work records that adding `direct.secure.*`,
+  `msg.secure.*`, or other secure local bridge methods would be new behavior,
+  not a one-to-one Go translation.
+- Mail selectors remained deferred. Service-level secure direct selectors were
+  attempted but are not counted as accepted because the configured
+  `https://awiki.info/im/rpc` endpoint returned HTTP 502 before secure-specific
+  assertions ran.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/message/secure.go`, `internal/message/service.go` `sendSecureDirect` | `msg send --secure on` resolves the peer and sends through the secure HTTP/P5 E2EE client, not the ordinary WebSocket bridge | `src/message/service.rs`, `src/message/secure_client.rs`, `src/app/msg_handlers.rs` | implemented; no bridge gap found | `message_secure_send_contract`, `message_secure_client_contract` | direct secure manual-confirmation selector attempted; blocked by HTTP 502 before assertions | medium until service endpoint is healthy enough for focused live rerun |
+| `internal/message/secure.go` `PublishSecurePrekeys`, `NewSecureE2EEClientForRecord` | build the direct E2EE client over local key/session/prekey stores and message-service RPC methods | `src/message/secure_client.rs` | implemented | `message_secure_client_contract`, `msg_secure_prekey_read_live_contract` | no separate live selector in this batch | low |
+| `internal/message/secure_commands.go`, `internal/message/secure_control.go` `SecureInit` | manual secure init uses the same HTTP/P5 secure sender path | `src/message/secure_commands.rs`, `src/message/secure_control.rs` | implemented | `message_secure_commands_contract` | secure-init selector attempted; blocked by HTTP 502 before assertions | medium until live service rerun |
+| `internal/message/secure_commands.go`, `internal/message/secure_control.go` `SecureRetry` / `FlushQueuedSecureOutbox` | queued failed rows are reset/flushed through the secure sender path | `src/message/secure_commands.rs`, `src/message/secure_outbox_flush.rs`, `src/store/e2ee_outbox.rs` | implemented | `message_secure_commands_contract`, `message_secure_outbox_flush_contract`, `store_e2ee_outbox_contract` | secure-retry selector attempted; blocked by HTTP 502 before assertions | medium until live service rerun |
+| `internal/message/secure_commands.go`, `internal/message/secure_control.go` `SecureRepair` | failed peer rows are reset and a replacement secure init is sent through the secure sender path | `src/message/secure_commands.rs`, `src/message/secure_control.rs` | implemented | `msg_secure_repair_live_contract`, `message_secure_commands_contract` | secure-repair selector attempted; blocked by HTTP 502 before assertions | medium until live service rerun |
+| `internal/message/secure_commands.go` `SecureStatus` / `Failed` / `Drop` | local SQLite/filesystem-backed outbox/session commands do not require message-service | `src/message/secure_commands.rs`, `src/store/e2ee_outbox.rs` | implemented and locally system-verified | `message_secure_commands_contract`, `msg_secure_status_failed_live_contract`, `store_e2ee_outbox_contract` | local no-service selectors passed | low |
+| `internal/message/secure_incoming.go` `maybeDecryptDirectE2EEMessages` | polling decrypt applies plaintext, sends ACKs, and flushes queued outbox rows in Go order | `src/message/secure_incoming.rs`, `src/message/secure_outbox_flush.rs` | implemented | `message_secure_incoming_contract`, `message_secure_client_contract`, `message_secure_outbox_flush_contract` | service-level display selectors were not accepted in this batch because pre-warm failed with HTTP 502 | medium for fresh live service evidence |
+| `internal/message/ws_proxy_client.go`, `internal/runtime/listener/server.go` ordinary bridge | Go bridge maps ordinary `direct.send`, `inbox.get`, `direct.get_history`, and `inbox.mark_read`; no secure-specific bridge method exists | `src/message/ws_proxy.rs`, `src/runtime/listener_bridge_dispatch.rs` | Rust intentionally has no secure local bridge method | `message_ws_proxy_contract`, listener bridge contracts | not applicable | low; adding a secure bridge would be an optimization/new behavior |
+| `internal/runtime/listener/server.go` secure foreground processing | listener secure normalize, ACK, replay, inbox poll, sync, and outbox flush helpers process secure notifications | `src/runtime/listener_secure_*.rs`, `src/runtime/listener_foreground.rs` | implemented | focused runtime listener secure contracts | Rust-only listener wrapper selectors passed; live service probe not rerun due current 502 risk | medium for external service health |
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --test message_secure_send_contract --test message_secure_commands_contract --test message_secure_incoming_contract --test message_secure_outbox_flush_contract --test msg_secure_status_failed_live_contract --test msg_secure_repair_live_contract --test msg_secure_prekey_read_live_contract --test store_e2ee_outbox_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_normalize_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_secure_ack_delivery_contract --test runtime_listener_secure_replay_contract --test runtime_listener_secure_sync_contract --test runtime_listener_secure_inbox_poll_contract --test runtime_listener_secure_outbox_flush_contract --test runtime_listener_bridge_dispatch_contract --test runtime_listener_foreground_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message ./internal/runtime/listener ./internal/store -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestPollingInboxDecryptsDirectInitAndSendsSecureAck|TestServiceSecureStatusReturnsSessionAndOutboxSummary|TestServiceSecureFailedAndDropOperateOnOutbox|TestServiceSecureRetryMarksQueuedRecordSent|TestServiceSecureRepairResetsFailedOutboxAndStartsNewInit|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestStoreMessageUpdatesCachedRawWireWithDecryptedContent|TestStoreMessagePreservesDecryptedContentWhenRawWireArrivesLater|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_lifecycle_reader_error_shutdown_contracts -ra -q
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_failed_and_drop_use_local_outbox_without_services tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_migrates_legacy_config_json_before_local_outbox_read -ra -q
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_secure_init_local.py::test_awiki_cli_msg_secure_init_command_sends_manual_direct_init tests_v2/cli/test_awiki_cli_secure_retry_local.py::test_awiki_cli_msg_secure_retry_flushes_failed_outbox_as_direct_cipher tests_v2/cli/test_awiki_cli_secure_repair_local.py::test_awiki_cli_msg_secure_repair_resets_state_and_sends_manual_direct_init tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_can_send_secure_direct_messages_with_manual_reply_confirmation -ra -q
+```
+
+Observed results:
+
+- Secure message focused Rust tests passed 77 tests across the selected message
+  secure targets.
+- Secure listener focused Rust tests passed 72 tests across the selected
+  runtime listener targets.
+- Focused Go guard passed for `internal/message`, `internal/runtime/listener`,
+  and `internal/store`.
+- Rust-only non-mail listener wrapper selectors passed with 2 passed in
+  24.04s.
+- Local no-service secure outbox selectors passed with 2 passed in 2.94s.
+- The four service-level secure direct selectors failed before their secure
+  assertions because the pre-warm command
+  `awiki-cli --identity bob-a msg inbox --scope direct --with <alice_did> --limit 1`
+  received `service http error 502` from `https://awiki.info/im/rpc`. These
+  selectors are recorded as environment-blocked, not accepted.
+
+Boundary note: secure direct local-bridge methods are not a Go parity gap. Go
+secure direct send/control execution stays on the HTTP/P5 secure client path
+even when ordinary direct message transport can use WebSocket/local bridge
+methods. A secure local bridge could be considered later only as a separate
+optimization after parity acceptance.
+
 ## 2026-05-18 Message Ordinary Group WebSocket/Cache Scan Batch
 
 Timestamp: 2026-05-18T18:02:49+0800.

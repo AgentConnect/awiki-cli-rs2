@@ -42,6 +42,24 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current message/direct secure verification evidence: on 2026-05-18, the batch
+followed the accelerated pipeline with three read-only Native Agents mapping Go
+secure direct send/control, current Rust secure direct implementation/tests, and
+non-mail system-test selectors in parallel. The scan found no production Rust
+gap requiring code changes. Go and Rust both keep `msg send --secure on`,
+`msg secure init`, `msg secure retry`, and `msg secure repair` on the HTTP/P5
+secure client path rather than the ordinary WebSocket/local bridge. Go has no
+secure-specific local bridge methods, so adding `direct.secure.*` or
+`msg.secure.*` bridge calls would be new behavior, not parity work. Focused Rust
+message secure tests passed 77 tests; focused Rust listener secure tests passed
+72 tests; focused Go message/listener/store guards passed; Rust-only non-mail
+listener wrapper selectors passed; and local no-service secure
+status/failed/drop selectors passed. The service-level secure direct selectors
+for init/retry/repair/manual confirmation are not counted as accepted in the
+current environment because `https://awiki.info/im/rpc` returned HTTP 502 during
+the shared pre-warm inbox call before secure-specific assertions ran. Mail
+selectors remain deferred.
+
 Current runtime listener known-session batch evidence: on 2026-05-18, the
 runtime/listener module batch followed the accelerated pipeline. A read-only
 Native Agent mapped Go `internal/runtime/listener/server.go` known-session
