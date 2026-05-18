@@ -93,6 +93,7 @@ dependencies = [
  "sha2",
  "time",
  "webpki-roots 0.26.11",
+ "windows-sys",
 ]
 
 [[package]]

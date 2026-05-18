@@ -24,6 +24,29 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   traceable 1:1 translation would otherwise become less reviewable. Files above
   3000 lines are rare special exceptions only and require a documented reason.
 
+## 2026-05-19 Runtime Bridge Windows Named-Pipe I/O Batch
+
+Detailed report:
+`2026-05-19-runtime-bridge-windows-named-pipe.md`.
+
+Summary: the accelerated runtime/local bridge batch used parallel read-only
+Native Agents to map Go `internal/runtime/bridge_windows.go`,
+`bridge_unix.go`, `config.go`, and listener bridge behavior against the current
+Rust implementation. The Rust port now implements target-gated Windows
+named-pipe bridge I/O using direct `windows-sys` Win32 calls: listener pending
+pipe creation, `ConnectNamedPipe` accept, stale zero-timeout probe cleanup,
+blocking byte-mode accepted streams, `ERROR_PIPE_BUSY` dial retry until the Go
+timeout, and overlapped client read/write with `CancelIoEx` deadline
+cancellation for Go `SetReadDeadline`/`SetWriteDeadline` parity. No named-pipe
+crate, async runtime, WebSocket crate, OpenSSL/`native-tls`, YAML crate,
+platform service-manager crate, or new SQLite backend was added. Rust
+fmt/check passed, focused Rust bridge tests passed 37 tests, structure and
+whitespace checks passed, and the focused non-mail runtime local bridge system
+selector passed 1 test in 4.31s. Windows target compilation/live named-pipe
+tests remain pending because the configured USTC Cargo mirror failed while
+downloading Windows target crates before Rust compilation. Mail selectors
+remain deferred.
+
 ## 2026-05-19 Group E2EE Stale Docs Reconciliation
 
 Detailed report:
