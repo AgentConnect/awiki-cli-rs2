@@ -20,6 +20,99 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Runtime Listener Known-Session / Host-Notify Depth Batch
+
+Timestamp: 2026-05-18T23:59:00+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline for the runtime/listener
+  package cluster instead of closing one-off diffs.
+- A read-only Native Agent mapped Go `server.go` startup/session behavior,
+  current Rust listener implementation/tests, and Hermes/OpenClaw system-test
+  probe depth. The leader kept Rust writes scoped to runtime listener startup
+  files and batched docs at the end.
+- The host-notify probe lane changed only the scoped Hermes/OpenClaw probe and
+  wrapper files in `awiki-system-test`; pre-existing dirty helper files in that
+  repository were not included in this batch.
+- Mail selectors remained deferred and were not run or counted.
+- No Cargo dependency or ANP SDK dependency changed.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/listener/server.go` `startKnownSessions` | list all identities, call `ensureSession` for each, wait for the first session bootstrap result, record per-session startup errors, continue startup, then refresh status | `src/runtime/listener_supervisor_run.rs`, `src/runtime/listener_known_sessions.rs` | implemented in live foreground supervisor path | `runtime_listener_known_sessions_contract`; adjacent foreground/bootstrap/identity-watch contracts | host-notify selectors depend on the live listener sessions; current run blocked by remote WS 502 | medium until live selector reruns against a healthy message-service WebSocket |
+| `internal/runtime/listener/server.go` `ensureSession` | skip already-known sessions; new sessions start the loop and wait up to 15s; initial errors/timeouts are surfaced to the caller | `src/runtime/listener_known_sessions.rs`, `src/runtime/listener_supervisor_run.rs`, existing `listener_bridge_runtime.rs` bootstrap signal helpers | implemented for startup-discovered sessions; bridge-created session behavior preserved separately | `runtime_listener_known_sessions_contract`, `runtime_listener_session_bootstrap_contract`, `runtime_listener_bridge_runtime_contract` | same selectors | low for helper/foreground wiring; WebSocket stack health remains external |
+| `internal/runtime/listener/server.go` `recordSessionError` | missing session status is created disconnected; existing DID is preserved unless empty; last error is updated; status is refreshed | `src/runtime/listener_known_sessions.rs`, `src/runtime/listener_supervisor_run.rs` | implemented; status file write called after mutation | `runtime_listener_known_sessions_contract` | same selectors | low |
+| Host-notify foreground selectors | direct, group-state, and group incoming delivery should be observable for Hermes and OpenClaw sinks | `awiki-system-test/tests_v2/cli/probes/run_awiki_cli_host_notify_{hermes,openclaw}_local_probe.py` | probe assertions expanded; acceptance not yet passed in current environment | Python compile and diff checks passed | `test_awiki_cli_host_notify_hermes_local_probe_succeeds`; `test_awiki_cli_host_notify_openclaw_local_probe_succeeds` | medium; both live runs failed before assertions at WebSocket HTTP 502 |
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_known_sessions_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --test runtime_listener_bridge_runtime_contract --test runtime_listener_session_bootstrap_contract --test runtime_listener_identity_watch_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages|TestStartSocketPersistsBridgeAvailability|TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && python3 -m py_compile tests_v2/cli/probes/run_awiki_cli_host_notify_hermes_local_probe.py tests_v2/cli/probes/run_awiki_cli_host_notify_openclaw_local_probe.py tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py::test_awiki_cli_host_notify_hermes_local_probe_succeeds -ra -q
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py::test_awiki_cli_host_notify_openclaw_local_probe_succeeds -ra -q
+```
+
+Observed results:
+
+- Rust formatting, focused known-session contract, adjacent listener contracts,
+  `cargo check`, structure check, and whitespace check passed.
+- The new known-session contract passed 6 tests. Adjacent listener foreground,
+  bridge-runtime, session-bootstrap, and identity-watch contracts passed 34
+  tests total.
+- Focused Go listener guard passed.
+- Python compile and whitespace checks for the scoped `awiki-system-test`
+  Hermes/OpenClaw probe files passed.
+- Focused live Hermes selector failed: 1 failed, 0 passed, 0 skipped. The probe
+  reached the configured v2 stack but failed before the new host-notify
+  assertions with `HOST_NOTIFY_HERMES_PROBE_ERROR: server rejected WebSocket
+  connection: HTTP 502`.
+- Focused live OpenClaw selector failed: 1 failed, 0 passed, 0 skipped. The
+  probe failed at the same remote WebSocket stage with
+  `HOST_NOTIFY_PROBE_ERROR: server rejected WebSocket connection: HTTP 502`.
+
+System-test configuration context for the failed live selectors:
+
+```text
+AWIKI_SYSTEM_TEST_MODE=local
+user-service URL=https://awiki.info
+message-service URL=https://awiki.info
+WebSocket URL=wss://awiki.info/im/ws
+DID domain=awiki.info
+AWIKI_CLI_UNDER_TEST=rust
+AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2
+AWIKI_CLI_UPDATE_CACHE_ONLY=1
+```
+
+Boundary note: this batch implements Rust startup-known-session parity and
+deepens the Hermes/OpenClaw host-notify selectors, but it does not claim live
+Hermes/OpenClaw group/group-state acceptance because the current message-service
+WebSocket returned HTTP 502. Mail selectors remain deferred. Windows named-pipe
+I/O, non-Linux service-manager parity, a real Hermes service/bridge lifecycle,
+and broad repository-wide system acceptance remain separate work.
+
+File-size note: `listener_supervisor_run.rs` is 2334 lines after this batch,
+below the current ordinary 3000-line target but still documented as a large
+runtime owner because the structure checker keeps the older 1200-line
+visibility threshold. New helper/test files are small:
+`listener_known_sessions.rs` 74 lines and
+`runtime_listener_known_sessions_contract.rs` 137 lines.
+
+Operational cleanup note: disposable `__pycache__`/`.pytest_cache` directories
+and `target/debug/incremental` were cleaned where permissions allowed. A small
+root-owned `log-manager` pycache set could not be removed without elevated
+permissions. Disk usage remained about 72-73% with roughly 27G free on `/`.
+
 ## 2026-05-18 Identity Legacy Import Module Batch
 
 Timestamp: 2026-05-18T23:58:00+0800.

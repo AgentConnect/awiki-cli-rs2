@@ -10,6 +10,10 @@ use super::listener_bridge_runtime::{
     BridgeSessionBootstrapResult, BridgeSessionBootstrapSignal,
 };
 use super::listener_handle_lookup::lookup_listener_handle_by_did;
+use super::listener_known_sessions::{
+    known_session_startup_decision, known_session_startup_error,
+    record_known_session_startup_error, KnownSessionStartupDecision, KnownSessionStartupError,
+};
 use super::listener_local_notification_flush::{
     flush_queued_local_notifications, LocalNotificationFlushTargetSession,
 };
@@ -196,7 +200,9 @@ impl ListenerSupervisor {
     fn start_known_sessions(&self) -> anyhow::Result<()> {
         let identities = self.manager.list()?;
         for summary in identities {
-            self.ensure_session_background(&summary.identity_name, &summary.did);
+            if let Err(err) = self.ensure_known_session(&summary.identity_name, &summary.did) {
+                self.record_session_error(&summary.identity_name, &summary.did, &err.to_string());
+            }
         }
         self.refresh_status();
         Ok(())
@@ -244,15 +250,18 @@ impl ListenerSupervisor {
         });
     }
 
-    fn ensure_session_background(&self, identity_name: &str, did: &str) {
+    fn ensure_known_session(&self, identity_name: &str, did: &str) -> anyhow::Result<()> {
         let already_known = self
             .lock_status()
             .sessions
             .iter()
             .any(|session| session.identity_name == identity_name);
-        if already_known {
-            return;
-        }
+        let KnownSessionStartupDecision::StartAndWait { .. } =
+            known_session_startup_decision(identity_name, already_known)
+        else {
+            return Ok(());
+        };
+        let (initial_signal, initial_waiter) = bridge_session_bootstrap_signal_pair(identity_name);
         spawn_session_loop(
             self.resolved.clone(),
             self.manager.clone(),
@@ -263,8 +272,29 @@ impl ListenerSupervisor {
             self.shutdown.clone(),
             identity_name.to_string(),
             did.to_string(),
-            None,
+            Some(initial_signal),
         );
+        match known_session_startup_error(
+            identity_name,
+            did,
+            wait_for_bridge_session_bootstrap(initial_waiter),
+        ) {
+            Some(error) => Err(anyhow::anyhow!(error.error)),
+            None => Ok(()),
+        }
+    }
+
+    fn record_session_error(&self, identity_name: &str, did: &str, error: &str) {
+        let mut status = self.lock_status();
+        record_known_session_startup_error(
+            &mut status,
+            KnownSessionStartupError {
+                identity_name: identity_name.to_string(),
+                did: did.to_string(),
+                error: error.to_string(),
+            },
+        );
+        let _ = listener::write_status(&status.status_file, &status);
     }
 
     fn set_bridge_available(&self, available: bool) {
