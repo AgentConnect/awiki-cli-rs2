@@ -109,6 +109,37 @@ checks for the system-test wrapper passed; and the new focused non-mail
 `awiki-system-test` selector passed with 1 passed in 0.40s. No Rust production
 code, manifests, ANP SDK code, or dependencies changed in this batch.
 
+Current runtime/listener contact-sync/notification/service-DID/session-lookup
+selector batch evidence: on 2026-05-18, the batch followed the accelerated
+module-batch pipeline. Three read-only Native Agents mapped Go runtime/listener
+contact-sync, notification handling, service-DID lookup, session lookup, Rust
+coverage, and non-mail system-test selector visibility in parallel. They found
+no production Rust gap in the scoped cluster. The remaining gap was
+`awiki-system-test` visibility for existing Rust contracts. A bounded GPT-5.5
+xhigh Native Agent modified only
+`tests_v2/cli/test_awiki_cli_runtime_listener_local.py`, adding
+`test_awiki_cli_runtime_listener_contact_notification_lookup_contracts`.
+Existing dirty helper files in `awiki-system-test` were not touched or staged.
+Mail selectors remain deferred.
+
+Runtime/listener contact/notification/lookup selector gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/listener/contact_sync.go` | trim owner/sender DIDs, skip blank/self, prefer local contact handle, fallback to optional remote DID-to-handle lookup, normalize handles, and upsert direct/group contact metadata | `crates/awiki-cli/src/runtime/listener_contact_sync.rs` | implemented; selector visibility added | 9 inline `runtime::listener_contact_sync` lib tests passed | `test_awiki_cli_runtime_listener_contact_notification_lookup_contracts` runs the lib tests when `AWIKI_CLI_UNDER_TEST=rust` | low production risk; selector gap closed without live-service flake |
+| `internal/runtime/listener/server.go` notification route/execute/handler | plan direct/mail/group/group-state notification side effects, sync direct/group contacts, enrich host-notify handles, store before dispatch, and preserve host-notify status semantics | `crates/awiki-cli/src/runtime/listener_notification_plan.rs`, `listener_notification_execute.rs`, `listener_notification_handler.rs` | implemented; selector visibility added | `runtime_listener_notification_plan_contract` passed 10 tests; `runtime_listener_notification_execute_contract` passed 6; `runtime_listener_notification_handler_contract` passed 3 | same focused selector runs full contract targets | low production risk; mail branch remains local-contract-only and live mail selectors stay deferred |
+| `internal/runtime/listener/server.go` service DID lookup | connected session sends `anp.get_capabilities` and decodes string `service_did`; disconnected/missing/non-string errors match Go | `crates/awiki-cli/src/runtime/listener_service_did.rs` | implemented; selector visibility added | `runtime_listener_service_did_contract` passed 9 tests | same focused selector | low |
+| `internal/runtime/listener/server.go` runtime session lookup | active session scan, record-by-DID manager lookup, and fallback runtime-session existence checks preserve Go blank gates and first-match behavior | `crates/awiki-cli/src/runtime/listener_session_lookup.rs` | implemented; selector visibility added | `runtime_listener_session_lookup_contract` passed 10 tests | same focused selector | low |
+
+Verification evidence: direct Rust validation passed 9 listener contact-sync
+lib tests and 38 focused notification/service-DID/session-lookup contract tests;
+the focused Go guard for listener notification/contact and store contact
+behavior passed; Python compile and whitespace checks for the system-test
+wrapper passed; and the new focused non-mail `awiki-system-test` selector
+passed with 1 passed in 0.95s. No Rust production code, manifests, ANP SDK code,
+or dependencies changed in this batch. The modified system-test wrapper is
+1079 lines, below the ordinary 1200-line limit.
+
 Current docs/scripts/schema/config metadata batch evidence: on 2026-05-18, the
 batch followed the accelerated pipeline with three read-only Native Agents
 mapping Go static assets, Rust implementation/tests, and non-mail system-test

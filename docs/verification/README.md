@@ -43,6 +43,18 @@ contracts passed 36 tests plus the focused saved-status merge test; the focused
 Go guard passed; and the new non-mail system-test selector passed with 1 test.
 Mail selectors remained deferred.
 
+## 2026-05-18 Runtime Listener Contact/Notification/Lookup Selector Batch
+
+Detailed report:
+`2026-05-18-runtime-listener-contact-notification-lookup.md`.
+
+Summary: the accelerated runtime/listener batch found no production Rust gap in
+contact-sync, notification plan/execute/handler, service-DID, or session-lookup
+code. It filled the selector visibility gap by adding a focused Rust-only
+`awiki-system-test` selector. Rust direct validation passed 9 contact-sync lib
+tests plus 38 focused contract tests; the focused Go guard passed; and the new
+non-mail selector passed with 1 test. Mail selectors remained deferred.
+
 ## 2026-05-18 Docs/Scripts/Schema/Config Metadata Batch
 
 Timestamp: 2026-05-18T18:31:32+0800.
