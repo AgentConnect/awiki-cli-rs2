@@ -388,9 +388,11 @@ the local bridge in WebSocket mode, preserve cache-before-HTTP fallback for
 group messages, keep group send bridge-before-HTTP fallback without a cache-only
 send path, keep group list/get/members on HTTP control transport with the Go
 warning, and do not treat `group.list` as a local group-cache refresh. Focused
-Rust contracts and Go guards passed. The ordinary group system selector was
-mapped but not rerun in this no-code scan batch, and mail selectors remained
-deferred/gated.
+Rust contracts and Go guards passed. A follow-up selector-visibility batch
+added `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_message_group_ws_local_cache_contracts`,
+which runs the existing `msg_ws_group_live_contract` target through
+`awiki-system-test`; the selector passed with 1 passed, 0 failed, and 0 skipped.
+Mail selectors remained deferred/gated.
 
 Current command catalog metadata slice: Rust static schema metadata now matches
 the selected Go catalog fields for `upgrade` text/`side_effect`, identity

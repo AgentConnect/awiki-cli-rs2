@@ -34,6 +34,18 @@ and refresh-token identity-boundary migration. Rust direct validation passed 64
 identity/auth tests; the focused Go guard passed; and the focused non-mail
 system-test selectors passed with 6 tests. Mail selectors remained deferred.
 
+## 2026-05-18 Message Group WebSocket/Cache Selector Batch
+
+Detailed report:
+`2026-05-18-message-group-ws-selector.md`.
+
+Summary: the accelerated message/group pre-scan found no production Rust gap in
+ordinary group WebSocket/cache behavior. It filled the selector visibility gap
+by adding a focused Rust-only `awiki-system-test` wrapper for the existing
+`msg_ws_group_live_contract` target. Rust direct validation passed 7 group
+WebSocket/cache tests; the focused Go guard passed; and the focused non-mail
+system-test selector passed with 1 test. Mail selectors remained deferred.
+
 ## 2026-05-18 Release/Test/Packaging Static Asset Batch
 
 Detailed report: `2026-05-18-release-test-packaging.md`.
