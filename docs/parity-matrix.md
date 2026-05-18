@@ -42,6 +42,37 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current identity live selector batch evidence: on 2026-05-19, the batch followed
+the accelerated module-batch pipeline. The leader pre-scanned the remaining
+identity live subflow targets, reused the existing identity Rust-only
+`awiki-system-test` wrapper, and added a separate live selector function for
+email registration, recover, and replace-did loopback fake-service contracts.
+No production Rust code, manifests, dependencies, ANP SDK source, mail selector,
+or unrelated dirty helper file changed.
+
+Identity live gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/identity/service_contract_test.go`, `internal/cli/id.go` | email registration without wait, already-verified wait, send-then-poll wait flow, scoped verification request shape, identity persistence, and legacy config handling around register validation | `crates/awiki-cli/src/identity/service.rs`, `src/identity/client.rs`, `src/app.rs` | implemented and loopback fake-service tested | `identity_register_email_live_contract` passed 3 tests | `tests_v2/cli/test_awiki_cli_identity_rust_contracts.py::test_awiki_cli_identity_live_rust_contracts` passed | low; local CLI subprocess plus `127.0.0.1:0` fake HTTP only |
+| `internal/identity/service_test.go`, `internal/cli/id_test.go` | recover without OTP sends OTP and does not create identity, legacy config migration before send-OTP, recover with OTP posts recover-handle and finalizes local identity | `crates/awiki-cli/src/identity/recover.rs`, `src/identity/service.rs`, `src/app/id_recover_handlers.rs` | implemented and loopback fake-service tested | `identity_recover_live_contract` passed 3 tests | same Rust-only selector | low; local CLI subprocess plus `127.0.0.1:0` fake HTTP only |
+| `internal/identity/service_test.go`, `internal/upgrade/*`, `internal/cli/id.go` | authenticated replace-did RPC, local store rebind, null optional role/endpoint mapping, DID-auth bootstrap via get-me when JWT is absent, and backup-root failure stopping before remote mutation | `crates/awiki-cli/src/identity/replace_did.rs`, `src/identity/service.rs`, `src/app/id_replace_did_handlers.rs`, `src/store/*` | implemented and loopback fake-service tested | `identity_replace_did_live_contract` passed 4 tests | same Rust-only selector | low; local CLI subprocess plus `127.0.0.1:0` fake HTTP only |
+
+Verification evidence: direct Rust identity live targets passed 10 tests;
+focused Go guards for `internal/identity` and `internal/cli` passed; wrapper
+syntax and whitespace checks passed; and the focused non-mail
+`awiki-system-test` identity live selector passed with 1 passed, 0 failed, and
+0 skipped in 5.51s. Rust fmt/check/structure gates passed, and
+`xtask check-structure` reported no undocumented Rust files over 1200 lines.
+The updated system-test wrapper is 112 lines and `tests_v2/cli/CLAUDE.md` is 42
+lines. Scoped Rust target files are below the default 1200-line visibility
+target: `identity_register_email_live_contract.rs` 442,
+`identity_recover_live_contract.rs` 609, and
+`identity_replace_did_live_contract.rs` 744. No dependency was added; SQLite
+remains on the approved `rusqlite + bundled` path and TLS remains Rustls-first
+with no OpenSSL, `native-tls`, bundled OpenSSL, platform service, or SQLite
+backend change introduced.
+
 Current runtime small selector batch evidence: on 2026-05-19, the batch followed
 the accelerated module-batch pipeline. The leader pre-scanned the two remaining
 small runtime targets, reused existing `awiki-system-test` runtime Rust selector
