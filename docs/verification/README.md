@@ -14,6 +14,83 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   configuration, committed evidence, unrelated dirty work, and useful build
   outputs unless disk pressure requires a broader cleanup.
 
+## 2026-05-18 Runtime Listener Offline Host-Notify Status Shape
+
+Scope: match Go `internal/runtime/listener/manager.go` `StatusFor` for the
+offline listener status host-notify JSON shape. Go initializes offline listener
+status with `enabled`, `sink`, `file_path`, and OpenClaw `hook_url` only when
+the resolved sink is `openclaw`; `agent_id`, `hook_name`, and Hermes
+`notify_url` are runtime sink fields from `newHostNotifySink`, not default
+offline status fields.
+
+Rust repository change:
+
+- `crates/awiki-cli/src/runtime/listener.rs`: `listener_host_notify_status`
+  now derives `hook_url` from the resolved OpenClaw branch only and leaves
+  `agent_id`, `hook_name`, and `notify_url` empty for offline status.
+- Added focused unit coverage for non-OpenClaw status omitting
+  `hook_url`/OpenClaw/Hermes runtime fields and OpenClaw status keeping only
+  the hook URL.
+
+System-test change:
+
+- `tests_v2/runtime/test_runtime_cli.py`: corrected
+  `test_runtime_listener_status_merges_saved_sessions_and_host_notify_without_service_manager`
+  to assert that `file` sink offline status omits `hook_url`, `agent_id`,
+  `hook_name`, and `notify_url`. The previous expectation failed under the Go
+  implementation as well as Rust.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib status_for_ --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib 'runtime::listener::tests::' --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestMergeSavedRuntimeStatus|TestSessionWarnings|TestHasDisconnectedSessions' -count=1
+cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=go AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_listener_status_merges_saved_sessions_and_host_notify_without_service_manager -ra -q
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_listener_status_merges_saved_sessions_and_host_notify_without_service_manager -ra -q
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check
+```
+
+Observed results:
+
+- Rust focused `status_for_` unit tests: 2 passed, 0 failed, 92 filtered out.
+- Rust full `runtime::listener::tests::` unit filter: 8 passed, 0 failed,
+  86 filtered out.
+- Rust `cargo check -p awiki-cli --locked`: passed.
+- Rust `xtask check-structure`: passed; `listener.rs` is 627 lines, under the
+  1200-line soft cap.
+- Go focused listener reference tests: passed in 0.003s.
+- Python compile check for `tests_v2/runtime/test_runtime_cli.py`: passed.
+- Go system selector: 1 passed, 0 failed, 0 skipped in 0.62s.
+- Rust system selector: 1 passed, 0 failed, 0 skipped in 0.86s.
+- `git diff --check` passed in both repositories.
+
+System-test configuration context:
+
+- Rust run used `AWIKI_CLI_UNDER_TEST=rust`,
+  `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`,
+  `AWIKI_CLI_UPDATE_CACHE_ONLY=1`, and `PYTHONDONTWRITEBYTECODE=1`.
+- Go reference run used `AWIKI_CLI_UNDER_TEST=go`,
+  `AWIKI_CLI_UPDATE_CACHE_ONLY=1`, and `PYTHONDONTWRITEBYTECODE=1`.
+- No `AWIKI_CLI_BINARY` override was used. The selector uses isolated local
+  temp workspaces and does not require mail-service, message-service,
+  user-service, live OpenClaw/Hermes, or service-manager permissions.
+
+Boundary note: this is offline status JSON-shape parity only. It does not prove
+foreground `newHostNotifySink` status, running-only saved sink overrides,
+platform service-manager lifecycle, foreground listener execution, Windows
+named-pipe I/O, real host-notify delivery, mail notification acceptance, or
+full repository-wide system acceptance.
+
+Dependency note: no Rust dependency was added. Cargo manifests and lockfile
+remain unchanged. SQLite remains on the approved `rusqlite + bundled` path, and
+TLS policy remains Rustls-first with no OpenSSL/native-tls introduction.
+
 ## 2026-05-18 OpenClaw Dry-Run Hook URL Validation Order
 
 Scope: match Go's `runtime host-notify openclaw set --dry-run` validation

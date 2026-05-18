@@ -273,16 +273,19 @@ pub fn to_value(status: Status) -> Value {
 
 fn listener_host_notify_status(resolved: &Resolved) -> HostNotifyStatus {
     let runtime = super::resolve(resolved);
-    let settings = super::effective_openclaw_settings(resolved);
+    let hook_url = runtime
+        .host_notify
+        .openclaw
+        .as_ref()
+        .map(|config| config.hook_url.clone())
+        .unwrap_or_default();
     HostNotifyStatus {
         enabled: runtime.host_notify.enabled,
         sink: runtime.host_notify.sink,
         file_path: runtime.host_notify.file_path,
-        hook_url: settings.hook_url,
-        agent_id: resolved.host_notify_openclaw_agent_id.clone(),
-        hook_name: resolved.host_notify_openclaw_hook_name.clone(),
-        notify_url: resolved.host_notify_hermes_notify_url.clone(),
+        hook_url,
         last_error: String::new(),
+        ..HostNotifyStatus::default()
     }
 }
 
@@ -492,6 +495,46 @@ mod tests {
         assert_eq!(status.pid, 200);
         assert!(status.boot_id.is_empty());
         assert_eq!(status.host_notify.sink, "openclaw");
+    }
+
+    #[test]
+    fn status_for_non_openclaw_host_notify_matches_go_manager_shape() {
+        let mut resolved = test_resolved();
+        resolved.host_notify_sink = "log".to_string();
+        resolved.host_notify_openclaw_hook_url = "http://127.0.0.1:9999/hooks/agent".to_string();
+        resolved.host_notify_openclaw_agent_id = "agent-from-config".to_string();
+        resolved.host_notify_openclaw_hook_name = "Hook From Config".to_string();
+        resolved.host_notify_hermes_notify_url =
+            "http://127.0.0.1:8765/notify/host-event".to_string();
+
+        let status = status_for(&resolved, false, false, "rust-local").expect("listener status");
+
+        assert!(status.host_notify.enabled);
+        assert_eq!(status.host_notify.sink, "log");
+        assert!(status.host_notify.file_path.is_empty());
+        assert!(status.host_notify.hook_url.is_empty());
+        assert!(status.host_notify.agent_id.is_empty());
+        assert!(status.host_notify.hook_name.is_empty());
+        assert!(status.host_notify.notify_url.is_empty());
+    }
+
+    #[test]
+    fn status_for_openclaw_host_notify_omits_sink_runtime_metadata_like_go_manager() {
+        let mut resolved = test_resolved();
+        resolved.host_notify_sink = "openclaw".to_string();
+        resolved.host_notify_openclaw_agent_id = "agent-from-config".to_string();
+        resolved.host_notify_openclaw_hook_name = "Hook From Config".to_string();
+        resolved.host_notify_hermes_notify_url =
+            "http://127.0.0.1:8765/notify/host-event".to_string();
+
+        let status = status_for(&resolved, false, false, "rust-local").expect("listener status");
+
+        assert!(status.host_notify.enabled);
+        assert_eq!(status.host_notify.sink, "openclaw");
+        assert!(status.host_notify.hook_url.starts_with("http://127.0.0.1:"));
+        assert!(status.host_notify.agent_id.is_empty());
+        assert!(status.host_notify.hook_name.is_empty());
+        assert!(status.host_notify.notify_url.is_empty());
     }
 
     #[test]

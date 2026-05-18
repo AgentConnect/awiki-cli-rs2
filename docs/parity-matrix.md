@@ -196,19 +196,23 @@ message-service local topology, Hermes, or real user service-manager
 permissions.
 
 Current runtime listener saved-status selector evidence: on 2026-05-18, the
-Rust subprocess selector
+Go and Rust subprocess selector
 `tests_v2/runtime/test_runtime_cli.py::test_runtime_listener_status_merges_saved_sessions_and_host_notify_without_service_manager`
-passed with 1 passed, 0 failed, and 0 skipped under
-`AWIKI_CLI_UNDER_TEST=rust` and `AWIKI_CLI_UPDATE_CACHE_ONLY=1`. It proves the
-public offline `runtime listener status` path and adjacent `runtime status`
-aggregate path merge seeded
+passed with 1 passed, 0 failed, and 0 skipped under both
+`AWIKI_CLI_UNDER_TEST=go` and `AWIKI_CLI_UNDER_TEST=rust`, with
+`AWIKI_CLI_UPDATE_CACHE_ONLY=1`. It proves the public offline
+`runtime listener status` path and adjacent `runtime status` aggregate path
+merge seeded
 `listener.status.json` `pid`, `boot_id`, `started_at`, `sessions`, and
-`host_notify.last_error`, emits disconnected-session warnings, and preserves
-configured host-notify sink/path/hook values while stopped. Both commands now
-promote the listener warnings to the top-level success envelope like Go
-`renderSuccess(..., status.Warnings, ...)`. It does not claim running-only saved
-sink/file_path/hook_url overrides through system tests, platform service-manager
-lifecycle, real foreground listener execution, or mail-system acceptance.
+`host_notify.last_error`, emits disconnected-session warnings, preserves the
+configured host-notify sink/path while stopped, and omits OpenClaw/Hermes
+sink-runtime fields (`hook_url`, `agent_id`, `hook_name`, and `notify_url`)
+from non-OpenClaw offline listener status just like Go `StatusFor`. Both
+commands now promote the listener warnings to the top-level success envelope
+like Go `renderSuccess(..., status.Warnings, ...)`. It does not claim
+running-only saved sink/file_path/hook_url overrides through system tests,
+platform service-manager lifecycle, real foreground listener execution, or
+mail-system acceptance.
 
 Current debug handle-history selector evidence: on 2026-05-17, a new Rust
 subprocess selector
