@@ -1,7 +1,7 @@
 use super::group_e2ee_create::create_group_e2ee;
 use super::group_service::{
     cached_group_members, cached_group_snapshot, compact_warnings, group_control_source,
-    group_did_from_result, normalize_group_snapshot, sync_group_state,
+    group_control_warnings, group_did_from_result, normalize_group_snapshot, sync_group_state,
 };
 use super::service::{auth_session, require_active_identity, CommandResult};
 use super::{
@@ -34,7 +34,10 @@ pub fn create_group(
         &mut auth,
     )?;
     let group_did = group_did_from_result(&raw);
-    let mut warnings = sync_group_state(resolved, manager, &record, &group_did, true);
+    let mut warnings = group_control_warnings(resolved);
+    warnings.extend(sync_group_state(
+        resolved, manager, &record, &group_did, true,
+    ));
     let mut e2ee_result = None;
     if group_request_uses_e2ee(&request) {
         let (candidate, e2ee_warnings) = create_group_e2ee(resolved, manager, &record, &group_did);

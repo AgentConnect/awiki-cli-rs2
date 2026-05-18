@@ -133,6 +133,101 @@ fn group_members_live_posts_group_list_members_and_maps_members_like_go() {
 }
 
 #[test]
+fn group_control_websocket_mode_stays_http_and_warns_like_go() {
+    let workspace = TempDir::new("group-live-ws-control-warning").expect("workspace");
+    register_ready_group_identity(workspace.path(), "alice-group", "alice", "jwt-alice");
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "groups": [{
+                "group_did": group_did,
+                "name": "Demo Group",
+                "member_role": "owner",
+                "member_status": "active"
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {"display_name": "Demo Group"},
+            "member_role": "owner",
+            "member_status": "active",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "members": [{
+                "member_did": "did:wba:awiki.ai:bob:e1_bob",
+                "member_handle": "bob.awiki.ai",
+                "role": "member",
+                "status": "active"
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+    ]);
+    write_group_websocket_config(workspace.path(), &server.base_url());
+
+    let list = success_json(&awiki_cmd(
+        &["--identity", "alice-group", "group", "list"],
+        workspace.path(),
+    ));
+    assert_eq!(list["summary"], "Loaded 1 groups");
+    assert_eq!(list["data"]["source"], "remote_http");
+    assert_has_group_control_websocket_warning(&list);
+
+    let get = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice-group",
+            "group",
+            "get",
+            "--group",
+            group_did,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(get["summary"], "Loaded group snapshot");
+    assert_eq!(get["data"]["source"], "remote_http");
+    assert_has_group_control_websocket_warning(&get);
+
+    let members = success_json(&awiki_cmd(
+        &[
+            "--identity",
+            "alice-group",
+            "group",
+            "members",
+            "--group",
+            group_did,
+        ],
+        workspace.path(),
+    ));
+    assert_eq!(members["summary"], "Loaded 1 group members");
+    assert_eq!(members["data"]["source"], "remote_http");
+    assert_has_group_control_websocket_warning(&members);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    let methods = requests
+        .iter()
+        .map(|raw| {
+            serde_json::from_str::<Value>(request_body(raw)).expect("request body")["method"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        vec!["group.list", "group.get", "group.list_members"]
+    );
+    for request in requests {
+        assert!(request.starts_with("POST /im/rpc HTTP/1.1"));
+        assert_contains_text(&request, "Authorization: Bearer jwt-alice\r\n");
+    }
+}
+
+#[test]
 fn group_add_live_error_preserves_go_owner_hint() {
     let workspace = TempDir::new("group-live-add-owner-hint").expect("workspace");
     register_ready_group_identity(workspace.path(), "bob-group", "bob", "jwt-bob");
@@ -330,6 +425,14 @@ fn write_group_config(workspace: &Path, base_url: &str) {
     .unwrap();
 }
 
+fn write_group_websocket_config(workspace: &Path, base_url: &str) {
+    std::fs::write(
+        workspace.join("config.yaml"),
+        format!("runtime:\n  mode: websocket\nservices:\n  service_base_url: {base_url}\n"),
+    )
+    .unwrap();
+}
+
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     awiki_cmd_owned(
         &args
@@ -407,6 +510,17 @@ fn assert_contains_text(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
         "expected request to contain {needle:?}, got:\n{haystack}"
+    );
+}
+
+fn assert_has_group_control_websocket_warning(envelope: &Value) {
+    let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
+    assert!(
+        warnings.iter().any(|warning| {
+            warning.as_str().unwrap_or_default()
+                == "Group lifecycle commands use HTTP transport even when runtime.mode is websocket."
+        }),
+        "expected group lifecycle websocket warning, got: {warnings:?}"
     );
 }
 

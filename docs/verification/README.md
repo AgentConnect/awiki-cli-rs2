@@ -20,6 +20,65 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 Message Group Control Warning Batch
+
+Timestamp: 2026-05-18T09:28:18Z / 2026-05-18T17:28:18+0800.
+
+Pipeline note:
+
+- Followed the accelerated module-batch pipeline for `message/group` instead of
+  repeating already-covered direct-message work.
+- Three read-only Native Agents mapped Go group behavior, current Rust group
+  implementation/tests, and non-mail group/system-test selectors. They
+  confirmed ordinary group HTTP/WebSocket and many group E2EE happy paths are
+  already implemented; the larger remaining candidates are group E2EE
+  WebSocket/local bridge transport, foreground listener group E2EE handling,
+  and focused failed submit/abort edge output.
+- This implementation batch was deliberately small and bounded: it restores the
+  Go-visible `groupControlTransport` warning for group lifecycle/control
+  commands under `runtime.mode=websocket`. It does not mix in the larger E2EE
+  WebSocket/foreground listener work.
+- Mail selectors remained deferred and were not run or counted. No dependency
+  changed.
+
+Gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/message/group_service.go` `groupControlTransport` | group lifecycle/control commands use HTTP even when `runtime.mode=websocket` and append warning `Group lifecycle commands use HTTP transport even when runtime.mode is websocket.` | `src/message/group_service.rs`, `src/message/group_create.rs` | implemented for create/get/join/add/remove/leave/update/list/members representative control paths | `group_live_contract::group_control_websocket_mode_stays_http_and_warns_like_go` | not run for this small local/fake-service slice | low; output-warning parity only |
+| `internal/message/group_service.go` `sendGroup` / `GroupMessages` | ordinary group send/messages WebSocket bridge/cache/fallback behavior | `src/message/group_ws.rs`, `src/message/group_service.rs` | already implemented before this batch | `msg_ws_group_live_contract` | existing file-sink host-notify selector evidence remains separate | low; not changed |
+| `internal/message/group_e2ee_service.go` group E2EE WebSocket/local bridge intersection | Go-shaped E2EE send/messages behavior should compose with WebSocket/local bridge where applicable | `src/message/group_ws.rs`, `src/message/group_e2ee_{send,decrypt}.rs` | still a future batch candidate | none specific to group E2EE WebSocket transport | deferred | high; real next group batch candidate |
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
+cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message -run 'TestHTTPTransportGroupMethodsUseExpectedRPCMethods|TestWSProxyTransportCallsLocalBridgeAndDecodesResponses|TestWebSocketFallbackWarnings' -count=1
+```
+
+Observed results:
+
+- `group_live_contract`: 5 passed, including the new WebSocket-mode group
+  control warning contract.
+- `cargo fmt --check`, `cargo check`, structure check, whitespace check, and
+  focused Go reference tests passed.
+- `group_service.rs` is 1188 lines, `group_create.rs` is 69 lines, and
+  `group_live_contract.rs` is 707 lines. They remain below the active 3000-line
+  ordinary file target and below the current 1200-line structure checker
+  visibility threshold for source files, so no new file-size exception is
+  needed.
+
+Boundary note: this batch only restores Go-visible warning parity for group
+control commands that intentionally remain HTTP-only under WebSocket runtime
+mode. It does not claim group E2EE WebSocket/local bridge transport, foreground
+listener group E2EE handling, group attachment WebSocket transport, mail
+acceptance, or full repository-wide system acceptance.
+
 ## 2026-05-18 Runtime Listener Known-Session / Host-Notify Depth Batch
 
 Timestamp: 2026-05-18T23:59:00+0800.

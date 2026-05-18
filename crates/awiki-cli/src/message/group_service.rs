@@ -4,7 +4,7 @@ use super::group_e2ee_add::{
 use super::group_e2ee_remove::{leave_group_e2ee, remove_group_member_e2ee_result};
 use super::service::{
     auth_session, bool_value, content_string, int_value, metadata_string, normalize_handle_value,
-    require_active_identity, resolve_target, string_value, CommandResult,
+    require_active_identity, resolve_target, runtime_mode, string_value, CommandResult,
 };
 use super::types::{
     GroupGetRequest, GroupJoinRequest, GroupLeaveRequest, GroupListRequest, GroupMemberRequest,
@@ -56,7 +56,8 @@ pub fn get_group(
         params,
         &mut auth,
     )?;
-    let mut warnings = persist_group_snapshot(resolved, &record, &raw);
+    let mut warnings = group_control_warnings(resolved);
+    warnings.extend(persist_group_snapshot(resolved, &record, &raw));
     let snapshot = cached_group_snapshot(resolved, &record, &request.group)
         .or_else(|| normalize_group_snapshot(&raw))
         .unwrap_or(Value::Null);
@@ -90,7 +91,10 @@ pub fn join_group(
         &mut auth,
     )?;
     let group_did = default_string(&group_did_from_result(&raw), &request.group);
-    let mut warnings = sync_group_state(resolved, manager, &record, &group_did, true);
+    let mut warnings = group_control_warnings(resolved);
+    warnings.extend(sync_group_state(
+        resolved, manager, &record, &group_did, true,
+    ));
     let snapshot = cached_group_snapshot(resolved, &record, &group_did)
         .or_else(|| normalize_group_snapshot(&raw))
         .unwrap_or_else(|| json!({ "group_did": group_did }));
@@ -170,7 +174,14 @@ fn mutate_group_member(
         params,
         &mut auth,
     )?;
-    let mut warnings = sync_group_state(resolved, manager, &record, &request.group, true);
+    let mut warnings = group_control_warnings(resolved);
+    warnings.extend(sync_group_state(
+        resolved,
+        manager,
+        &record,
+        &request.group,
+        true,
+    ));
     let snapshot = cached_group_snapshot(resolved, &record, &request.group)
         .or_else(|| normalize_group_snapshot(&raw))
         .unwrap_or_else(|| json!({ "group_did": request.group }));
@@ -244,7 +255,8 @@ pub fn leave_group(
         params,
         &mut auth,
     )?;
-    let mut warnings = mark_cached_group_left(resolved, &record, &request.group);
+    let mut warnings = group_control_warnings(resolved);
+    warnings.extend(mark_cached_group_left(resolved, &record, &request.group));
     Ok(CommandResult {
         data: json!({
             "delivery": raw,
@@ -311,7 +323,14 @@ pub fn update_group(
         )?;
         responses.push(raw);
     }
-    let mut warnings = sync_group_state(resolved, manager, &record, &request.group, false);
+    let mut warnings = group_control_warnings(resolved);
+    warnings.extend(sync_group_state(
+        resolved,
+        manager,
+        &record,
+        &request.group,
+        false,
+    ));
     let snapshot = cached_group_snapshot(resolved, &record, &request.group)
         .unwrap_or_else(|| json!({ "group_did": request.group }));
     Ok(CommandResult {
@@ -349,7 +368,7 @@ pub fn list_groups(
             "source": group_control_source(&raw),
         }),
         summary: format!("Loaded {total} groups"),
-        warnings: Vec::new(),
+        warnings: group_control_warnings(resolved),
     })
 }
 
@@ -372,7 +391,13 @@ pub fn group_members(
         params,
         &mut auth,
     )?;
-    let mut warnings = persist_group_members(resolved, &record, &request.group, &raw);
+    let mut warnings = group_control_warnings(resolved);
+    warnings.extend(persist_group_members(
+        resolved,
+        &record,
+        &request.group,
+        &raw,
+    ));
     let members = cached_group_members(resolved, &record, &request.group, request.limit)
         .filter(|items| !items.is_empty())
         .unwrap_or_else(|| values_from_array(raw.get("members")));
@@ -469,6 +494,17 @@ pub(crate) fn sync_group_state(
         }
     }
     warnings
+}
+
+pub(crate) fn group_control_warnings(resolved: &Resolved) -> Vec<String> {
+    if runtime_mode(resolved) == crate::runtime::bridge::MODE_WEBSOCKET {
+        vec![
+            "Group lifecycle commands use HTTP transport even when runtime.mode is websocket."
+                .to_string(),
+        ]
+    } else {
+        Vec::new()
+    }
 }
 
 fn persist_group_snapshot(
