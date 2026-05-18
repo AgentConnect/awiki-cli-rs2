@@ -55,6 +55,20 @@ for Go `NewClient` empty mail-service URL validation and legacy
 The final selector gap scan reports only the deferred mail targets:
 `mail_contract`, `mail_live_contract`, and `mail_wire_contract`.
 
+## 2026-05-19 Runtime Linux Service-Managed Restart Batch
+
+Detailed report:
+`2026-05-19-runtime-listener-service-managed-restart.md`.
+
+Summary: the accelerated runtime service-manager batch added a focused gated
+Linux user-systemd selector proving that a running service-managed listener is
+restarted after `runtime host-notify config set --sink file`. The focused
+service-manager batch passed 3 selectors, 0 failed, 0 skipped in 21.49s under
+`AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1`, `AWIKI_CLI_UNDER_TEST=rust`, and
+`AWIKI_CLI_ENABLE_SYSTEMD_LISTENER_SERVICE=1` via the system-test helper. It
+does not claim macOS launchd or Windows Service Manager parity. Mail selectors
+were not run and remain deferred.
+
 ## 2026-05-19 Runtime Small Rust Selector Batch
 
 Detailed report:
@@ -6418,9 +6432,11 @@ Coverage boundary:
   current binary with `runtime listener service-run`, sets
   `AWIKI_CLI_WORKSPACE_HOME_DIR` plus `AWIKI_LISTENER_SERVICE_MODE=1`, and
   reports `service_platform=linux-systemd`.
-- Does not prove macOS launchd, Windows Service Manager, or
-  host-notify-triggered live restart of an already service-managed foreground
-  listener.
+- This 2026-05-17 batch did not prove macOS launchd, Windows Service Manager,
+  or host-notify-triggered live restart of an already service-managed
+  foreground listener. A later focused 2026-05-19 Linux user-systemd batch
+  covered the Linux host-notify-triggered live restart case; macOS launchd and
+  Windows Service Manager remain deferred.
 - Does not count mail-related selectors as passed; mail system tests remain
   deferred to a later mail-focused validation pass.
 
