@@ -20,6 +20,21 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-18 CLI Parser Shorthand Flag Batch
+
+Detailed report:
+`2026-05-18-cli-parser-shorthand-flags.md`.
+
+Summary: the accelerated CLI parser/Cobra batch used parallel read-only Native
+Agents to map Go Cobra behavior, current Rust parser coverage, and system-test
+selector gaps before editing. The pre-scan confirmed the representative
+persistent-global ordering case already matched Go, then fixed the actionable
+gap where unknown shorthand flags such as `-v`, `-g`, and `-vh` must fail
+before handler execution with Cobra/pflag `internal_error` messages. Rust
+parser contracts passed with 2 tests; the focused Go guard passed; the focused
+non-mail system-test parser selectors passed with 2 tests; structure and
+whitespace checks passed; and mail selectors remained deferred.
+
 ## 2026-05-18 Workspace Config Update Selector Batch
 
 Detailed report:

@@ -218,6 +218,14 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
 }
 
 fn command_name(tokens: &[String]) -> Result<String, ExitError> {
+    for token in tokens
+        .iter()
+        .take_while(|token| !token.starts_with("--"))
+        .filter(|token| is_unknown_shorthand_flag(token))
+    {
+        return Err(unknown_shorthand_flag(token));
+    }
+
     let words: Vec<_> = tokens
         .iter()
         .take_while(|token| !token.starts_with("--"))
@@ -443,6 +451,8 @@ fn parse_local_tail(
             };
             flags.insert(name.to_string(), value);
             changed_flags.push(name.to_string());
+        } else if is_unknown_shorthand_flag(token) {
+            return Err(unknown_shorthand_flag(token));
         } else {
             args.push(token.to_string());
         }
@@ -475,6 +485,24 @@ fn split_long_flag(arg: &str) -> Option<(&str, Option<&str>)> {
         return Some((name, Some(value)));
     }
     Some((body, None))
+}
+
+fn is_unknown_shorthand_flag(token: &str) -> bool {
+    token.starts_with('-') && !token.starts_with("--") && token.len() > 1 && token != "-h"
+}
+
+fn unknown_shorthand_flag(token: &str) -> ExitError {
+    let shorthand = token
+        .trim_start_matches('-')
+        .chars()
+        .next()
+        .unwrap_or_default();
+    ExitError::new(
+        "internal_error",
+        1,
+        format!("unknown shorthand flag: '{shorthand}' in {token}"),
+        "",
+    )
 }
 
 fn take_flag_value<I>(
