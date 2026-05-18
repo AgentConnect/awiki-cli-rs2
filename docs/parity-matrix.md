@@ -42,6 +42,40 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current foundation/local selector batch evidence: on 2026-05-19, the batch
+followed the accelerated module-batch pipeline. Three read-only Native Agents
+mapped Go foundation packages, current Rust contract targets, and non-mail
+system-test selector visibility in parallel. A bounded GPT-5.5 xhigh Native
+Agent wrote only a new Rust-only `awiki-system-test` wrapper and the nearest CLI
+directory docs entry. The leader verified the existing Rust foundation/local
+contract targets directly, ran focused Go guards, ran the new system selector,
+and batched this evidence. No production Rust code, manifests, dependencies,
+ANP SDK source, or mail selector changed. Existing dirty helper files in
+`awiki-system-test` were not touched or staged.
+
+Foundation/local gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/anpsdk/registry.go` | ANP SDK facade symbols, DID-WBA helpers, proof helpers, direct E2EE store/file shapes | `crates/awiki-cli/src/anpsdk.rs` | implemented and focused-contract tested | `anpsdk_contract` passed 16 tests | `tests_v2/cli/test_awiki_cli_foundation_rust_contracts.py::test_awiki_cli_foundation_rust_contracts` passed | low; SDK drift remains a dependency-version risk |
+| `internal/authsdk/session.go` | token capture scope, signed JSON headers, challenge retry, JSON-RPC request/response and JWT fallback behavior | `crates/awiki-cli/src/authsdk/*`, `src/transportcfg/http.rs` | implemented and focused-contract tested | `authsdk_contract` passed 15 tests | same Rust-only selector | low; tests use loopback HTTP only |
+| `internal/transportcfg/config.go` | timeout/profile defaults, env override parsing, HTTP client CA/proxy/timeout boundaries | `crates/awiki-cli/src/transportcfg.rs`, `src/transportcfg/http.rs` | implemented and focused-contract tested | `transportcfg_contract` passed 4 tests; `transportcfg_http_contract` passed 10 | same Rust-only selector | low; local timeout tests are timing-sensitive but non-service |
+| `internal/cmdmeta/catalog.go`, `internal/cli/root.go` | command metadata schema emission, flag field omission, command ordering, core CLI envelopes and root/status/docs/schema/version/init/config/debug contracts | `crates/awiki-cli/src/cmdmeta/*`, `src/app.rs`, `src/cli/*`, `src/output.rs` | implemented and focused-contract tested | `cmdmeta_schema_contract` passed 2 tests; `core_contract` passed 20 | same Rust-only selector | low; `core_contract.rs` is 1183 lines, near the 1200 visibility target but below it |
+| `internal/cli/debug.go`, `internal/doctor/doctor.go`, `internal/traceutil/trace.go`, `internal/content/service.go` | debug handle-history/query/import, doctor local checks and fake `anp-mls` probe, trace formatting/call-site visibility, content/page wire builders and result shapes | `crates/awiki-cli/src/app/debug_handlers.rs`, `src/doctor/*`, `src/traceutil.rs`, `src/content/*` | implemented and focused-contract tested | `debug_contract` passed 5 tests; `doctor_contract` passed 4; `traceutil_contract` passed 9; `content_wire_contract` passed 3 | same Rust-only selector | low; all selector paths are deterministic local contracts |
+
+Verification evidence: direct Rust foundation/local contract targets passed 88
+tests; focused Go guards for `internal/authsdk`, `internal/transportcfg`,
+`internal/cmdmeta`, `internal/traceutil`, `internal/content`, `internal/site`,
+`internal/doctor`, selected `internal/cli`, and selected `internal/message`
+passed; wrapper syntax and whitespace checks passed; and the focused non-mail
+`awiki-system-test` selector passed with 1 passed, 0 failed, and 0 skipped in
+12.09s. Rust fmt/check/structure gates passed, and `xtask check-structure`
+reported no undocumented Rust files over 1200 lines. The new system-test wrapper
+is 85 lines and `tests_v2/cli/CLAUDE.md` is 38 lines. No dependency was added;
+SQLite remains on the approved `rusqlite + bundled` path and TLS remains
+Rustls-first with no OpenSSL, `native-tls`, bundled OpenSSL, platform service,
+or SQLite backend change introduced.
+
 Current store selector batch evidence: on 2026-05-19, the batch followed the
 accelerated module-batch pipeline. Three read-only Native Agents mapped Go
 `internal/store` behavior, current Rust store implementation/test coverage, and

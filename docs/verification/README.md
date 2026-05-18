@@ -20,6 +20,22 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
 
+## 2026-05-19 Foundation Rust Selector Batch
+
+Detailed report:
+`2026-05-19-foundation-rust-selector.md`.
+
+Summary: the accelerated foundation/local selector batch used parallel Native
+Agents to map Go reference packages, current Rust contract targets, and
+system-test selector gaps before editing. It added a Rust-only
+`awiki-system-test` wrapper for ten deterministic local Cargo targets covering
+ANP SDK facade, auth SDK, transport config/HTTP client, command metadata schema,
+core CLI, debug, doctor, trace utility, and content wire contracts. Rust direct
+validation passed 88 tests; focused Go foundation guards passed; the new
+non-mail selector passed with 1 test, 0 failed, and 0 skipped; structure and
+whitespace checks passed; no dependency changed; and mail selectors remained
+deferred.
+
 ## 2026-05-19 Store Rust Selector Batch
 
 Detailed report:
