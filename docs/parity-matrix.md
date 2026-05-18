@@ -80,6 +80,35 @@ Go runtime listener guards, `cargo +1.79.0 fmt --check`, and
 `cargo +1.79.0 check -p awiki-cli --locked` passed. No Cargo dependency was
 added; `cargo-llvm-cov` remains optional external tooling for coverage mode.
 
+Current runtime/listener service/foreground/status-init selector batch evidence:
+on 2026-05-18, the batch followed the accelerated module-batch pipeline. Three
+read-only Native Agents mapped Go runtime/listener service, foreground, and
+status-initialization behavior; current Rust implementation/tests; and
+non-mail system-test selector coverage in parallel. The scan found that the
+Rust production modules already had focused contract coverage for this cluster,
+but `awiki-system-test` lacked a focused Rust selector that exposed those
+contracts to the acceptance harness. The only system-test write in this batch
+was `tests_v2/cli/test_awiki_cli_runtime_listener_local.py`, adding
+`test_awiki_cli_runtime_listener_service_foreground_status_contracts`; existing
+dirty helper files in `awiki-system-test` were not touched or staged. Mail
+selectors remain deferred.
+
+Runtime/listener service/foreground/status-init gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/runtime/listener/service.go` | service install/start/stop/restart/uninstall planning, service status wait, boot-id handoff, runtime artifact cleanup, service-mode detection, service program start/stop ordering | `crates/awiki-cli/src/runtime/listener_service.rs`, `crates/awiki-cli/src/runtime/listener_systemd.rs` | implemented and unit-verified; selector visibility added in system-test | `runtime_listener_service_contract` passed 18 tests | `test_awiki_cli_runtime_listener_service_foreground_status_contracts` runs the full Rust target when `AWIKI_CLI_UNDER_TEST=rust` | low for deterministic planner/status behavior; real non-Linux service-manager execution remains separate |
+| `internal/runtime/listener/run_foreground_unix.go`, `run_foreground_windows.go`, `sysproc_unix.go`, `sysproc_windows.go` | platform foreground signal sets and child-process setup intent | `crates/awiki-cli/src/runtime/listener_service.rs`, `crates/awiki-cli/src/runtime/listener_foreground.rs` | implemented and unit-verified; selector visibility added | `runtime_listener_service_contract`, `runtime_listener_foreground_contract` | same focused selector | low for helper parity; actual platform process-control edges remain broader runtime work |
+| `internal/runtime/listener/server.go` | foreground run ordering, non-websocket rejection before side effects, PID/status write order, socket startup branch, listener store/bridge availability, accept-loop branch behavior | `crates/awiki-cli/src/runtime/listener_foreground.rs` | implemented and unit-verified; selector visibility added | `runtime_listener_foreground_contract` passed 13 tests | same focused selector | low for orchestration helper behavior; live WebSocket health remains environment-dependent |
+| `internal/runtime/listener/manager.go`, `files.go`, supervisor initialization paths | store open/schema/boot-id/path/host-notify initialization order, cleanup order, supplied host-notify status preservation, saved listener status merge | `crates/awiki-cli/src/runtime/listener_supervisor_init.rs`, `crates/awiki-cli/src/runtime/listener.rs` | implemented and unit-verified; selector visibility added | `runtime_listener_supervisor_init_contract` passed 5 tests; `runtime_contract::listener_status_merges_saved_sessions_and_host_notify_state` passed | same focused selector runs target-level and focused per-contract tests | low for local deterministic behavior; full live listener acceptance remains in later runtime batches |
+
+Verification evidence: Rust direct service/foreground/supervisor-init contract
+targets passed 36 tests; the focused Rust saved-status merge contract passed;
+the focused Go runtime/listener guard passed; Python compile and whitespace
+checks for the system-test wrapper passed; and the new focused non-mail
+`awiki-system-test` selector passed with 1 passed in 0.40s. No Rust production
+code, manifests, ANP SDK code, or dependencies changed in this batch.
+
 Current docs/scripts/schema/config metadata batch evidence: on 2026-05-18, the
 batch followed the accelerated pipeline with three read-only Native Agents
 mapping Go static assets, Rust implementation/tests, and non-mail system-test

@@ -30,6 +30,19 @@ contract. The same batch fixed the Hermes host-notify status `notify_url`
 parity gap exposed by `scripts/test-unit.sh`. No Cargo dependency was added;
 mail selectors remained deferred.
 
+## 2026-05-18 Runtime Listener Service/Foreground/Status-Init Selector Batch
+
+Detailed report:
+`2026-05-18-runtime-listener-service-foreground-status.md`.
+
+Summary: the accelerated runtime/listener batch found no production Rust gap in
+the service, foreground, supervisor-init, and saved-status cluster. It filled
+the system-test visibility gap by adding a focused Rust selector in
+`awiki-system-test` that runs the existing contract targets. Rust direct
+contracts passed 36 tests plus the focused saved-status merge test; the focused
+Go guard passed; and the new non-mail system-test selector passed with 1 test.
+Mail selectors remained deferred.
+
 ## 2026-05-18 Docs/Scripts/Schema/Config Metadata Batch
 
 Timestamp: 2026-05-18T18:31:32+0800.
