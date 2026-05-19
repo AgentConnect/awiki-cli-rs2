@@ -937,12 +937,15 @@ pub(crate) fn merge_handle_history_messages(
         inbox_only,
     ) {
         Ok(cached) if !cached.is_empty() => {
+            let cache_has_pending_direct_e2ee = contains_pending_direct_e2ee_wire_messages(&cached);
             let cached = super::secure_incoming::filter_displayable_direct_e2ee_messages(cached);
             if cached.is_empty() {
                 return Some(dids);
             }
+            let should_prefer_cache = !cache_has_pending_direct_e2ee
+                && should_prefer_direct_cache_messages(messages, &cached);
             let merged = merge_direct_history_messages(messages, cached, limit);
-            if merged.len() > messages.len() || !merged.is_empty() {
+            if merged.len() > messages.len() || should_prefer_cache {
                 *messages = merged;
                 if !source.ends_with("+handle_history") {
                     source.push_str("+handle_history");
@@ -953,6 +956,33 @@ pub(crate) fn merge_handle_history_messages(
         Err(err) => warnings.push(format!("Failed to load handle history from cache: {err}")),
     }
     Some(dids)
+}
+
+fn should_prefer_direct_cache_messages(remote: &[Value], cached: &[Value]) -> bool {
+    !cached.is_empty() && !contains_processed_direct_e2ee_messages(remote)
+}
+
+fn contains_processed_direct_e2ee_messages(messages: &[Value]) -> bool {
+    messages.iter().any(|message| {
+        let Some(object) = message.as_object() else {
+            return false;
+        };
+        if !bool_value(object.get("secure")) {
+            return false;
+        }
+        let state = string_value(object.get("decryption_state"));
+        state == "decrypted" || state == "undecryptable" || bool_value(object.get("secure_control"))
+    })
+}
+
+fn contains_pending_direct_e2ee_wire_messages(messages: &[Value]) -> bool {
+    messages.iter().any(|message| {
+        message
+            .get("content_type")
+            .and_then(Value::as_str)
+            .map(super::secure_incoming::is_direct_e2ee_wire_content_type)
+            .unwrap_or(false)
+    })
 }
 
 fn merge_direct_history_messages(remote: &[Value], cached: Vec<Value>, limit: i64) -> Vec<Value> {

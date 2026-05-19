@@ -1,4 +1,4 @@
-use super::{merge_direct_history_messages, message_identity};
+use super::{merge_direct_history_messages, message_identity, should_prefer_direct_cache_messages};
 use serde_json::{json, Value};
 
 #[test]
@@ -71,6 +71,47 @@ fn message_identity_accepts_go_client_msg_id_fallback() {
         message_identity(&json!({"client_msg_id": "client-1"})),
         "client-1"
     );
+}
+
+#[test]
+fn direct_cache_is_not_preferred_over_processed_secure_remote_like_go() {
+    let decrypted_remote = vec![json!({
+        "id": "msg-secure-1",
+        "secure": true,
+        "decryption_state": "decrypted",
+        "content": "remote plaintext",
+    })];
+    let cached_same_message = vec![json!({
+        "msg_id": "msg-secure-1",
+        "is_e2ee": 1,
+        "content": "cached plaintext",
+    })];
+
+    assert!(!should_prefer_direct_cache_messages(
+        &decrypted_remote,
+        &cached_same_message
+    ));
+    assert_eq!(
+        message_ids(&merge_direct_history_messages(
+            &decrypted_remote,
+            cached_same_message,
+            20,
+        )),
+        ["msg-secure-1"]
+    );
+
+    let plain_remote = vec![json!({
+        "id": "msg-plain-remote",
+        "content": "remote plain",
+    })];
+    let cached_plain = vec![json!({
+        "msg_id": "msg-plain-cache",
+        "content": "cached plain",
+    })];
+    assert!(should_prefer_direct_cache_messages(
+        &plain_remote,
+        &cached_plain
+    ));
 }
 
 fn message_ids(messages: &[Value]) -> Vec<String> {

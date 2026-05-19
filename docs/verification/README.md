@@ -48,6 +48,26 @@ message-service HTTP/WebSocket 502 path. No Rust code, dependency, manifest,
 lockfile, or system-test helper was changed. Mail selectors remain deferred and
 were not counted as passed.
 
+## 2026-05-19 tests_v2 Non-Mail Broad Pass
+
+Detailed report:
+`2026-05-19-tests-v2-non-mail-broad-pass.md`.
+
+Summary: the system-test-first lane fixed a Rust CLI direct secure handle-cache
+parity issue so processed secure remote rows are no longer replaced by local
+handle-cache rows. Focused Rust verification and the focused secure direct
+selector passed. A broad non-mail `tests_v2` run first exposed a local
+message-service runtime configuration mismatch: the pytest run used
+`AWIKI_GROUP_E2EE_CONTRACT_TEST=0`, but `message-service.toml` had
+`security.group_e2ee_contract_test_enabled = true`, causing the flag-off P6
+contract selector to receive `anp.invalid_params_shape` instead of
+`anp.not_supported`. After setting the local service runtime back to flag-off
+and restarting `message-service`, the focused flag-off selector passed and the
+final broad non-mail run passed with 173 passed, 0 failed, and 16 skipped in
+618.98s. Mail selectors remain deferred. One earlier secure direct prekey 1404
+was not reproduced by a focused rerun and is recorded as a timing/service-state
+observation rather than a current blocker.
+
 ## 2026-05-19 Runtime Listener Session-RPC Structure Batch
 
 Detailed report:
