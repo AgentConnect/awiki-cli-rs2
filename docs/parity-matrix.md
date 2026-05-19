@@ -48,6 +48,38 @@ clearly disposable build/test intermediates may be removed when needed while
 preserving source, configuration, committed evidence, unrelated dirty work, and
 useful build outputs unless disk pressure requires a broader cleanup.
 
+Current identity k1 upgrade subprocess acceptance evidence: on 2026-05-19, the
+system-test-first lane followed the accelerated module-batch pipeline after the
+broad non-mail `tests_v2` run was green. Three read-only Native Agents mapped
+the Go/Rust workspace-upgrade and system-test coverage. No Rust production gap
+was found; the remaining high-value gap was true `awiki-system-test`
+subprocess evidence for `id current` triggering the existing v2->v3 automatic
+handle `k1` to `e1` replacement path. The selector uses a local
+`127.0.0.1:0` fake `did-auth.replace_did` JSON-RPC server, asserts the bearer
+request and generated `e1` DID, then verifies persisted identity state,
+replace-did backup manifest, upgrade meta, and journal cleanup. Mail selectors
+remain deferred. No production Rust code, dependency, manifest, lockfile, ANP
+SDK source, or dirty helper file changed.
+
+Identity k1 upgrade subprocess gap table:
+
+| Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| `internal/upgrade/*`, `internal/identity/service.go`, `internal/identity/replace_did.go`, `internal/cli/id.go` | command preflight runs workspace v2->v3 migration, detects current handle-shaped `k1` DIDs, calls authenticated `did-auth.replace_did`, stores the generated `e1` DID, rotates JWT, writes backup manifest, stamps schema version 3, and clears the journal | `crates/awiki-cli/src/upgrade/migration_v2_to_v3.rs`, `src/identity/replace_did.rs`, `src/app.rs` | implemented; subprocess acceptance added | `workspace_upgrade_if_needed_contract` already covers current-k1 success and warning paths | `tests_v2/id/test_identity_cli.py::test_id_current_rust_auto_replaces_current_k1_did_during_workspace_upgrade` passed | low; loopback fake HTTP only, not live external user-service |
+
+Verification evidence: `python3 -m py_compile
+tests_v2/id/test_identity_cli.py` passed; the focused Rust-only subprocess
+selector passed with 1 passed, 0 failed, and 0 skipped in 0.82s; and the
+combined focused run of that selector plus
+`tests_v2/cli/test_awiki_cli_workspace_config_update_rust_contracts.py::test_awiki_cli_workspace_config_update_rust_contracts`
+passed with 2 passed, 0 failed, and 0 skipped in 2.03s. The system-test
+coverage note `tests_v2/id/CLAUDE.md` was updated to remove the now-closed
+legacy current-k1 replacement gap while leaving PKCS#8 k1 signing replacement
+deferred. No dependency changed; SQLite remains on the approved
+`rusqlite + bundled` path and TLS remains Rustls-first with no OpenSSL,
+`native-tls`, bundled OpenSSL, platform service, or SQLite backend change
+introduced.
+
 Current identity live selector batch evidence: on 2026-05-19, the batch followed
 the accelerated module-batch pipeline. The leader pre-scanned the remaining
 identity live subflow targets, reused the existing identity Rust-only

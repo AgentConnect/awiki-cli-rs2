@@ -88,6 +88,25 @@ broad non-mail flag-off `tests_v2` rerun passed with 173 passed, 0 failed, and
 source, system-test helper, or mail selector was changed. Mail selectors remain
 deferred and were not counted as passed.
 
+## 2026-05-19 Identity K1 Upgrade Subprocess Selector
+
+Detailed report:
+`2026-05-19-identity-k1-upgrade-subprocess-selector.md`.
+
+Summary: after the broad non-mail `tests_v2` pass was green, the
+system-test-first lane closed a focused acceptance gap for existing workspace
+v2->v3 current handle `k1` DID replacement. A new Rust-only
+`tests_v2/id/test_identity_cli.py` selector runs the real Rust `awiki-cli id
+current` subprocess against a schema-version-2 workspace, uses a local
+`127.0.0.1:0` fake `did-auth.replace_did` JSON-RPC server, and verifies the
+authenticated bearer request, generated `e1` DID, persisted identity/auth/DID
+document state, replace-did backup manifest, schema-version-3 upgrade meta,
+and journal cleanup. The focused selector passed with 1 passed, 0 failed, and
+0 skipped in 0.82s; the combined selector run with the workspace/config/update
+wrapper passed with 2 passed, 0 failed, and 0 skipped in 2.03s. No production
+Rust code, dependency, manifest, lockfile, ANP SDK source, dirty system-test
+helper, or mail selector was changed. Mail selectors remain deferred.
+
 ## 2026-05-19 Runtime Listener Session-RPC Structure Batch
 
 Detailed report:
