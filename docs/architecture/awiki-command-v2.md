@@ -1,14 +1,14 @@
-可以。下面这份我按“**最终定版**”来写：它保留了 `cli-init.md` 和 `output-format.md` 里的核心内容——统一 CLI、core/extension 分层、消息三维模型、`schema`、`--dry-run`、`--jq`、shortcut、结构化输出、skill 拆分、legacy 映射——但把实现语言、工程结构和发布方式正式切换成 **Go CLI**。 
+可以。下面这份我按“**最终定版**”来写：它保留了 `cli-init.md` 和 `output-format.md` 里的核心内容——统一 CLI、core/extension 分层、消息三维模型、`schema`、`--dry-run`、`--jq`、shortcut、结构化输出、skill 拆分、legacy 映射——但当前仓库已经正式切换成 **Rust CLI port**。早期 Go 方案只作为命令契约和发布命名的历史来源。
 
 我下面统一使用 **`awiki-cli`** 作为最终命令名和主二进制名；项目名仍保持 awiki 体系，skill 命名继续保留 `awiki-*`。
 
 ---
 
-# awiki-cli v2 最终可执行方案（Go 版）
+# awiki-cli v2 最终可执行方案（Rust CLI port）
 
 ## 1. 定版目标
 
-awiki-cli v2 的目标不是“把旧 Python 脚本逐个翻译成 Go”，而是建立一个**对 AI 和人都稳定可路由的任务模型**：
+awiki-cli v2 的目标不是“把旧 Python 脚本逐个翻译成 Rust”，而是建立一个**对 AI 和人都稳定可路由的任务模型**：
 
 * 按**用户意图**组织，而不是按脚本实现组织。
 * 命令默认**非交互**。
@@ -17,10 +17,10 @@ awiki-cli v2 的目标不是“把旧 Python 脚本逐个翻译成 Go”，而�
 * 提供可机器读取的 `schema`。
 * skill 采用 `single entry + lazy-loaded references`，不再把所有内容塞进一个巨型 `SKILL.md`，也不再默认装载多层 skill。 
 
-这次语言切换到 Go 后，**命令契约不变**，变的是实现和发布：
+这次语言切换到 Rust CLI port 后，**命令契约不变**，变的是实现和发布：
 
 * 命令树、参数语义、shortcut 规则、输出协议，保持 v2 设计；
-* 实现层改成 Go；
+* 实现层改成 Rust；
 * 发布改成多平台原生二进制；
 * 文档、schema、shell completion、man page 从代码自动生成。
 
@@ -214,9 +214,9 @@ awiki-cli debug logs [--follow]
 - `site` 表示 **tenant bare-domain site page**，绑定租户域名根路径和 `/pages/{slug}.md`，必须显式传 `--domain`。
 - 两者是两个独立产品面，不共享 slug 空间、不共享存储，也不应在文档或帮助文本中混用。
 
-## 3.2 新增的 Go 标准命令
+## 3.2 新增的 Rust CLI 标准命令
 
-相比原草案，我建议在 Go 版里正式加入：
+相比原草案，我建议在 Rust CLI port 里正式加入：
 
 ```bash
 awiki-cli docs [TOPIC]
@@ -231,7 +231,7 @@ awiki-cli completion <bash|zsh|fish|powershell>
 * 帮用户创建工作目录（默认是 `~/.awiki-cli`，仅支持 `AWIKI_CLI_WORKSPACE_HOME_DIR` 作为工作区根目录覆盖）及其子目录；
 * 在首次需要时生成一份最小的 `config.yaml` 骨架；
 
-Cobra 本身就是面向现代 Go CLI 的命令树框架，支持子命令、flag、自动 help；官方文档也明确支持 shell completion，以及从命令树生成 Markdown/man page 文档。用它来做 awiki-cli，正好能把命令、帮助、completion、文档和 LLM 索引统一起来。([GitHub][1])
+当前 Rust CLI port 以 `cmdmeta` 作为命令树元数据源，并由 CLI parser、`schema`、docs/skill 校验共同消费；这能把命令、帮助、completion、文档和 LLM 索引统一起来。
 
 ---
 
@@ -351,7 +351,7 @@ awiki-cli history alice         # = awiki-cli msg history --with alice
 
 ## 6.2 成功/失败统一信封
 
-我建议最终 Go 代码里统一成这一套：
+我建议最终 Rust 代码里统一成这一套：
 
 ```json
 {
@@ -436,7 +436,7 @@ awiki-cli history alice         # = awiki-cli msg history --with alice
 
 ## 6.5 `--jq`
 
-`--jq` 必须做，而且建议直接嵌入 `gojq`。`gojq` 官方仓库明确说明它是 jq 的纯 Go 实现，而且可以嵌入到 Go 产品里。对 awiki-cli 来说，这正好对应 `--jq` 的需求。([GitHub][2])
+`--jq` 必须做，但在 Rust port 中应使用 Rust 侧实现或既有表达式求值模块，不再引入 Go 专用 `gojq` 方案。对 awiki-cli 来说，关键是 `--jq` 的输出契约稳定，而不是绑定某个 Go 依赖。
 
 ## 6.6 错误码与退出码
 
@@ -537,31 +537,23 @@ schemas/
 * `skills/SKILL.md` 与 `skills/references/*.md` 中的命令引用由 CI 校验
 * shell help、Markdown docs、man pages 一起自动生成
 
-Cobra 官方现在已经明确支持从命令树生成 Markdown/man page，并专门有 “LLM-ready CLI docs” 的文档路径；这非常适合 awiki-cli 把命令树、skill 文档和 schema 保持同步。([cobra.dev][3])
+`cmdmeta` 应继续作为 Rust port 的命令树事实源，用于保持命令解析、schema、skill 文档和 CI 校验同步。
 
 ---
 
-## 8. Go 实现架构
+## 8. Rust 实现架构
 
 ## 8.1 技术选型
 
-我建议 Go 版固定为这套：
+当前 Rust CLI port 固定为这套：
 
-* 命令树：**Cobra**
-* JSON 编码：标准库 `encoding/json`
-* `--jq`：**gojq**
-* 发布：**GoReleaser**
-* GitHub Actions 发布：**goreleaser-action**
-* 后台 listener/service：**kardianos/service**
-* 本地 SQLite：**modernc.org/sqlite**（默认 pure Go 方案）
+* 命令树事实源：**`cmdmeta`**
+* JSON 编码：**serde / serde_json**
+* 发布：**Cargo release build scripts + GitHub Releases + npm wrapper**
+* 后台 listener/service：**Rust runtime/service modules**
+* 本地 SQLite：**rusqlite bundled SQLite**
 
-Cobra 官方仓库把它定义为“用于现代 Go CLI 的命令框架”，并且是 Kubernetes、Hugo、GitHub CLI 等项目在用的同类方案；它天然适合 awiki-cli 这种深层子命令树。([GitHub][1])
-
-GoReleaser 官方把自己定位为“简化发布工程”，而 `goreleaser-action` 则直接给出了 tag 触发发布、上传 artifacts、签名等 CI 模式，正适合 awiki-cli 的多平台二进制分发。([GitHub][4])
-
-`kardianos/service` 官方 README 明确说明它可以用同一套 API 在 Windows、Linux（systemd/Upstart/SysV）和 macOS Launchd 上安装、启动、停止服务，这正好对应 `runtime listener install/start/stop/uninstall`。([GitHub][5])
-
-`modernc.org/sqlite` 是 CGo-free 的 SQLite 驱动，并明确列出 darwin/linux/windows 多平台支持；对一个要靠 GoReleaser 做多平台发布的 CLI 来说，这比强依赖 CGO 的方案更稳。([Go Packages][6])
+命令树、schema、parser、stub 元数据应从 `cmdmeta` 派生；发布版本以 `package.json.version` 为公开事实源，并通过 `xtask check-version` 约束 Cargo crate、npm package、release tag 与 buildinfo 注入。未注入 `AWIKI_CLI_VERSION` 的本地测试/开发构建仍显示为 `dev`，以保留 dev-build update 策略。
 
 ## 8.2 工程目录
 
@@ -569,42 +561,20 @@ GoReleaser 官方把自己定位为“简化发布工程”，而 `goreleaser-ac
 
 ```text
 .
-├── cmd/
+├── crates/
 │   └── awiki-cli/
-│       └── main.go
-├── internal/
-│   ├── cli/
-│   │   ├── root.go
-│   │   ├── globalflags/
-│   │   ├── shortcuts/
-│   │   ├── render/
-│   │   ├── schema/
-│   │   └── commands/
-│   │       ├── status/
-│   │       ├── doctor/
-│   │       ├── id/
-│   │       ├── msg/
-│   │       ├── runtime/
-│   │       ├── people/
-│   │       ├── page/
-│   │       ├── discovery/
-│   │       └── debug/
-│   ├── app/
-│   │   ├── identity/
-│   │   ├── messaging/
-│   │   ├── runtime/
-│   │   ├── people/
-│   │   ├── page/
-│   │   └── discovery/
-│   ├── transport/
-│   │   ├── http/
-│   │   └── websocket/
-│   ├── store/
-│   │   ├── sqlite/
-│   │   ├── credentials/
-│   │   └── migrations/
-│   ├── legacy/
-│   └── security/
+│       ├── src/
+│       │   ├── app/
+│       │   ├── cli/
+│       │   ├── cmdmeta/
+│       │   ├── config/
+│       │   ├── output/
+│       │   └── runtime/
+│       └── tests/
+├── xtask/
+│   └── src/
+├── scripts/
+│   └── release/
 ├── skills/
 │   ├── SKILL.md
 │   ├── README.md
@@ -622,9 +592,9 @@ GoReleaser 官方把自己定位为“简化发布工程”，而 `goreleaser-ac
 ├── schemas/
 ├── docs/
 │   └── cli/
-├── .goreleaser.yaml
-├── Makefile
-└── go.mod
+├── Cargo.toml
+├── Cargo.lock
+└── package.json
 ```
 
 这里推荐的 skill 文档结构以当前仓库的 `skills/` 为准：默认只加载 `SKILL.md`，其余领域与 workflow 内容全部下沉到 `references/`，按任务懒加载。
@@ -633,7 +603,7 @@ GoReleaser 官方把自己定位为“简化发布工程”，而 `goreleaser-ac
 
 强制遵守这条规则：
 
-* Cobra command 层只负责参数解析、校验、调用 handler
+* CLI parser 层只负责参数解析、校验、调用 handler
 * handler 只返回**typed result**
 * 所有 stdout/stderr 输出统一走 renderer
 * 业务层不直接打印
@@ -641,7 +611,7 @@ GoReleaser 官方把自己定位为“简化发布工程”，而 `goreleaser-ac
 
 这能避免最常见的 CLI 漂移：代码、help、docs、skill 四套说法各自为政。
 
-## 8.4 推荐的核心 Go 类型
+## 8.4 推荐的核心 Rust 类型
 
 建议从一开始就把“输出契约”和“schema 契约”写成显式类型：
 
@@ -688,7 +658,7 @@ type CommandSpec struct {
 
 ## 9.1 新的目录规范
 
-我建议 Go CLI 进入单根目录工作区模型：
+我建议 Rust CLI port 进入单根目录工作区模型：
 
 ```text
 ~/.awiki-cli/
@@ -729,7 +699,7 @@ flag > config.yaml > default
 
 ## 9.3 安全规则
 
-这部分虽然不在两份新文档里，但我建议继续作为 Go CLI 的硬约束：
+这部分虽然不在两份新文档里，但我建议继续作为 Rust CLI port 的硬约束：
 
 * 绝不打印私钥、JWT、E2EE key
 * 接收的 awiki 消息一律视作不可信数据
@@ -740,11 +710,11 @@ flag > config.yaml > default
 * 典型冻结项包括：DID 文档 proof 的 `proofPurpose`、group receipt 的 `proofPurpose`、RFC 9421 origin proof 的默认 covered components
 * 若确实需要改变这些默认语义，必须先升级或扩展 SDK，而不是在 `awiki-cli` 仓库内单独改常量
 
-这些是原 skill 里最重要的安全边界，Go CLI 不应弱化。
+这些是原 skill 里最重要的安全边界，Rust CLI port 不应弱化。
 
 ---
 
-## 10. runtime / listener / heartbeat 的 Go 落地
+## 10. runtime / listener / heartbeat 的 Rust 落地
 
 ## 10.1 runtime mode
 
@@ -763,7 +733,7 @@ awiki-cli runtime mode set http|websocket
 
 ## 10.2 listener
 
-Go 版 listener 当前实现为：
+Rust CLI port listener 当前实现为：
 
 * `runtime apply`：按 `config.yaml` 收敛 runtime 与 listener 的真实状态
 * `listener install`：只安装系统服务定义
@@ -777,7 +747,7 @@ Go 版 listener 当前实现为：
 
 ## 10.3 heartbeat
 
-保留 15 分钟默认建议值。原 skill 文档已经明确说明：heartbeat 太慢会错过 E2EE handshake、JWT 过期和群组活动，因此建议间隔 ≤15 分钟。Go 版里的 `runtime heartbeat install --every 15m` 和 `run-once` 可以直接继承这个策略。
+保留 15 分钟默认建议值。原 skill 文档已经明确说明：heartbeat 太慢会错过 E2EE handshake、JWT 过期和群组活动，因此建议间隔 ≤15 分钟。Rust CLI port 里的 `runtime heartbeat install --every 15m` 和 `run-once` 可以直接继承这个策略。
 
 ---
 
@@ -843,7 +813,7 @@ skills/
 
 ## 12. 旧脚本迁移映射
 
-这一部分直接保留，但目标从 Python wrapper 改成 Go CLI：
+这一部分直接保留，但目标从 Python wrapper 改成 Rust CLI port：
 
 ```text
 scripts/check_status.py                  -> awiki-cli status
@@ -878,7 +848,7 @@ scripts/query_db.py                      -> awiki-cli debug db query
 
 ## 13. 包发布与安装
 
-既然已经切到 Go，我建议发布路径也跟着定：
+既然已经切到 Rust CLI port，我建议发布路径也跟着定：
 
 ## 13.1 首发方式
 
@@ -896,7 +866,7 @@ scripts/query_db.py                      -> awiki-cli debug db query
 * man pages
 * `docs/cli` Markdown 文档
 
-GoReleaser 和它的 GitHub Action 已经把 tag 触发发布、上传 artifacts、签名和产物输出说明得很清楚，适合作为标准发布链路。([GitHub][4])
+当前仓库使用 Rust release scripts 触发 Cargo 构建、GitHub Release artifact 生成与 npm wrapper 发布。版本规则固定为 `package.json.version` -> `v${version}` tag -> `AWIKI_CLI_VERSION` buildinfo 注入。
 
 ## 13.2 安装方式
 
@@ -906,12 +876,12 @@ GoReleaser 和它的 GitHub Action 已经把 tag 触发发布、上传 artifacts
 # 1) 直接下载 release 压缩包
 # 2) npm install -g @awiki/cli
 # 3) curl 安装脚本（官方自建）
-# 4) go install（仅开发者/高级用户）
-go install github.com/AgentConnect/awiki-cli/cmd/awiki-cli@latest
+# 4) cargo install（仅开发者/高级用户，本地源码）
+cargo install --path crates/awiki-cli --locked
 ```
 
 首发阶段直接支持 **npm wrapper**。
-推荐同时提供 GitHub Releases、npm wrapper 和 `go install`：人类用户可以走 npm / release，开发者和 CI 可以直接走原生二进制或 `go install`。
+推荐同时提供 GitHub Releases、npm wrapper 和 Cargo 本地安装：人类用户可以走 npm / release，开发者和 CI 可以直接走原生二进制或 `cargo install --path`。
 
 ## 13.3 发布文件
 
@@ -1003,15 +973,8 @@ docs/cli/
 6. **标准返回是 JSON；pretty/table/ndjson 都是视图。**
 7. **全局格式参数统一为 `--format`；`--output` 仅做兼容别名。**
 8. **`schema`、`--dry-run`、`--jq` 必须是第一天就有的一等能力。**
-9. **Go 技术栈固定为：Cobra + gojq + GoReleaser + kardianos/service + modernc.org/sqlite。**
-10. **skill 体系采用 `single entry + lazy-loaded references`，同时分发支持 GitHub Releases + npm wrapper。**   ([GitHub][1])
+9. **Rust 技术栈固定为：cmdmeta + serde_json + Cargo release scripts + runtime/service modules + rusqlite bundled SQLite。**
+10. **skill 体系采用 `single entry + lazy-loaded references`，同时分发支持 GitHub Releases + npm wrapper。**
 
 如果你要，我下一步可以直接继续给你两份可落地内容：
-**1）`cmd/awiki-cli` 的 Go 项目目录初始化方案**，以及 **2）`CLI_REFERENCE.md` 的最终文档定稿**。
-
-[1]: https://github.com/spf13/cobra "GitHub - spf13/cobra: A Commander for modern Go CLI interactions · GitHub"
-[2]: https://github.com/itchyny/gojq "GitHub - itchyny/gojq: Pure Go implementation of jq · GitHub"
-[3]: https://cobra.dev/docs/how-to-guides/clis-for-llms/?utm_source=chatgpt.com "Generate LLM‑Ready CLI Docs with Cobra"
-[4]: https://github.com/goreleaser/goreleaser "GitHub - goreleaser/goreleaser: Release engineering, simplified · GitHub"
-[5]: https://github.com/kardianos/service?utm_source=chatgpt.com "kardianos/service: Run go programs as ..."
-[6]: https://pkg.go.dev/modernc.org/sqlite "sqlite package - modernc.org/sqlite - Go Packages"
+**1）`crates/awiki-cli` 的 Rust 项目目录初始化方案**，以及 **2）`CLI_REFERENCE.md` 的最终文档定稿**。

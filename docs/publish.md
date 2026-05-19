@@ -2,21 +2,26 @@
 
 本文档描述 awiki-cli 的发布主链路、预发布/回滚脚本，以及在出现坏版本时的处理建议。目标是让日常发版在几条标准命令内完成，并且可以安全地撤回。
 
-当前发布只使用以下三个脚本：
+当前发布只使用以下脚本：
 
+- `scripts/release/release-one-click.sh`
+- `scripts/release/build-release-artifact.sh`
 - `scripts/release/release-tag-stable.sh`
 - `scripts/release/release-tag-prerelease.sh`
 - `scripts/release/publish-gitee-release.sh`
 
 ## 1. 版本号与 Tag 约定
 
-- 单一版本真相：仓库根目录的 `package.json.version`，npm 包名为 `@awiki/cli`。
+- 单一公开版本真相：仓库根目录的 `package.json.version`，npm 包名为 `@awiki/cli`。
+- Rust crate 版本：`crates/awiki-cli/Cargo.toml` 的 `[package].version` 必须与 `package.json.version` 一致，`Cargo.lock` 中的 `awiki-cli` package 版本也必须同步。
+- npm 支持策略：`package.json.awikiCli.minSupportedVersion` 当前必须与 `package.json.version` 一致；如果未来引入兼容矩阵，需要先调整 `xtask check-version` 规则。
 - Git Tag 规则：
   - 正式版：`vX.Y.Z`（例如 `v0.1.0`）。
   - 预发布版：`vX.Y.Z-<pre>`（例如 `v0.2.0-beta.1` / `v0.2.0-rc.1`）。
-- Go 构建版本：通过 GoReleaser 将 Tag 版本注入 `internal/buildinfo.Version`。
+- Rust buildinfo 注入：release/build 脚本通过 `AWIKI_CLI_VERSION`、`AWIKI_CLI_COMMIT`、`AWIKI_CLI_BUILD_DATE` 注入构建信息；未注入 `AWIKI_CLI_VERSION` 的本地测试/开发构建显示为 `dev`，以保留 dev-build update 策略。
+- 一致性检查：`cargo run -p xtask -- check-version` 必须通过，确认 package version、minSupportedVersion、crate version 三者一致。release artifact 构建还会运行 `cargo run -p xtask -- check-version --expect "${VERSION}"`，确认 tag/build 参数与版本真相一致。
 
-**注意**：修改版本号时必须先改 `package.json.version`，并提交到当前分支，任何 Tag 都必须与该版本严格一致。
+**注意**：推荐用 `scripts/release/release-one-click.sh <version>` 修改版本号；它会同步 `package.json.version`、`package.json.awikiCli.minSupportedVersion`、`crates/awiki-cli/Cargo.toml` 和 `Cargo.lock`。如果手动修改版本号，也必须同步这四处并提交到当前分支。任何 Tag 都必须是 `v${package.json.version}`。
 
 ## 2. 正式发布（stable）
 
@@ -29,13 +34,29 @@
    git push
    ```
 
-2. 确认 `package.json.version` 为标准 semver（不带 `-beta` / `-rc` 等）。
+2. 确认目标版本为标准 semver（不带 `-beta` / `-rc` 等）。推荐直接使用一键脚本：
 
-3. 在 GitHub 仓库的 workflow secrets 中配置 npm 凭据：
+   ```bash
+   scripts/release/release-one-click.sh X.Y.Z --channel stable
+   ```
+
+   如果只想预览本地版本文件修改，可以先运行：
+
+   ```bash
+   scripts/release/release-one-click.sh X.Y.Z --channel stable --no-commit
+   ```
+
+3. 如果走手动版本修改和 tag 路径，必须先运行：
+
+   ```bash
+   cargo run -p xtask -- check-version
+   ```
+
+4. 在 GitHub 仓库的 workflow secrets 中配置 npm 凭据：
 
    - `NPM_TOKEN`：具有发布 `@awiki/cli` 的权限。
 
-4. 添加 secrets 的位置：
+5. 添加 secrets 的位置：
 
    - 打开 GitHub 仓库页面。
    - 进入 `Settings`。
@@ -44,7 +65,9 @@
 
 ### 2.2 创建并推送 Tag
 
-在 awiki-cli 仓库根目录执行：
+推荐使用 `scripts/release/release-one-click.sh` 完成版本更新、测试、提交、推送、tag、GitHub Release 等待、Gitee 同步和 npm 发布/校验。它会在提交前运行 `xtask check-version --expect`，并在 commit 中同时包含 npm 与 Cargo 版本文件。
+
+低层 tag 脚本仍可用于手动流程。在 awiki-cli 仓库根目录执行：
 
 ```bash
 scripts/release/release-tag-stable.sh
@@ -57,13 +80,13 @@ scripts/release/release-tag-stable.sh
 - 检查本地和远端是否已有同名 Tag；
 - 创建 `vX.Y.Z` 的 annotated tag 并 push 到 origin。
 
-这是正式版唯一入口脚本。
+这是正式版的低层 tag 入口；使用它之前必须已经提交并推送同步后的 `package.json`、`crates/awiki-cli/Cargo.toml` 和 `Cargo.lock`。
 
 ### 2.3 CI 行为
 
 推送 `vX.Y.Z` Tag 后，`.github/workflows/release.yml` 会自动执行：
 
-1. 使用 GoReleaser 按 `.goreleaser.yml` 构建多平台二进制，并创建 GitHub Release；
+1. 使用 Rust release 构建脚本构建多平台二进制，并创建 GitHub Release；
 2. 对稳定 Tag（`vX.Y.Z` 且不包含 `-`）执行一次 npm 发布：
 
    ```bash
@@ -120,12 +143,19 @@ scripts/release/publish-gitee-release.sh v0.2.0-beta.1
 - `GITHUB_REPO`：默认 `awiki-cli`
 - `GITHUB_TOKEN`：可选；公开仓库通常不需要，遇到 GitHub API rate limit 时可配置
 
-正式版的最小操作顺序就是：
+正式版的一键操作顺序就是：
 
-1. 修改 `package.json.version` 为稳定版版本号并提交。
-2. 运行 `scripts/release/release-tag-stable.sh`。
-3. 等 GitHub Actions 完成 GitHub Release 和 npm 发布。
-4. 在本地运行 `scripts/release/publish-gitee-release.sh vX.Y.Z`。
+1. 配置本地 release 环境和必要 token。
+2. 运行 `scripts/release/release-one-click.sh X.Y.Z --channel stable`。
+3. 等脚本完成 GitHub Release、Gitee mirror 和 npm 发布/校验。
+
+正式版的手动操作顺序是：
+
+1. 同步修改 `package.json.version`、`package.json.awikiCli.minSupportedVersion`、`crates/awiki-cli/Cargo.toml` 和 `Cargo.lock` 并提交。
+2. 运行 `cargo run -p xtask -- check-version`。
+3. 运行 `scripts/release/release-tag-stable.sh`。
+4. 等 GitHub Actions 完成 GitHub Release 和 npm 发布。
+5. 在本地运行 `scripts/release/publish-gitee-release.sh vX.Y.Z`。
 
 ## 3. 预发布版本（beta/rc）
 
@@ -133,7 +163,13 @@ scripts/release/publish-gitee-release.sh v0.2.0-beta.1
 
 ### 3.1 调整版本号
 
-将 `package.json.version` 修改为带预发布后缀的版本，例如：
+推荐直接使用一键脚本，它会同步 npm 与 Cargo 版本文件：
+
+```bash
+scripts/release/release-one-click.sh 0.2.0-beta.1 --channel beta --dist-tag beta
+```
+
+如果走手动流程，将版本同步修改为带预发布后缀的版本，例如：
 
 - `0.2.0-beta.1`
 - `0.2.0-rc.1`
@@ -173,13 +209,20 @@ export GITEE_TOKEN=<你的 Gitee 个人访问令牌>
 scripts/release/publish-gitee-release.sh vX.Y.Z-<pre>
 ```
 
-预发布的最小操作顺序就是：
+预发布的一键操作顺序就是：
 
-1. 修改 `package.json.version` 为预发布版本并提交。
-2. 运行 `scripts/release/release-tag-prerelease.sh <dist-tag>`。
-3. 等 GitHub Actions 完成 GitHub pre-release。
-4. 在本地运行 `NODE_AUTH_TOKEN=... npm publish --access public --tag <dist-tag>`。
-5. 如需同步 Gitee Release，再运行：
+1. 配置本地 release 环境和必要 token。
+2. 运行 `scripts/release/release-one-click.sh X.Y.Z-<pre> --channel beta --dist-tag <dist-tag>`。
+3. 等脚本完成 GitHub pre-release、Gitee mirror 和 npm 发布/校验。
+
+预发布的手动操作顺序是：
+
+1. 同步修改 `package.json.version`、`package.json.awikiCli.minSupportedVersion`、`crates/awiki-cli/Cargo.toml` 和 `Cargo.lock` 并提交。
+2. 运行 `cargo run -p xtask -- check-version`。
+3. 运行 `scripts/release/release-tag-prerelease.sh <dist-tag>`。
+4. 等 GitHub Actions 完成 GitHub pre-release。
+5. 在本地运行 `NODE_AUTH_TOKEN=... npm publish --access public --tag <dist-tag>`。
+6. 如需同步 Gitee Release，再运行：
 
 ```bash
 scripts/release/publish-gitee-release.sh vX.Y.Z-<pre>
@@ -234,7 +277,7 @@ scripts/release/withdraw-release.sh 0.2.0-beta.1
 
 ## 5. 与版本策略/强制升级的关系
 
-awiki-cli 内部通过 `internal/update` 模块和配置项：
+awiki-cli 内部通过 Rust `update` 模块和配置项：
 
 - `update.disable_strict_version`
 - `update.metadata_cache_ttl_seconds`

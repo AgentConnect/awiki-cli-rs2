@@ -70,8 +70,9 @@ where
         }
     }
 
-    let name = command_name(&remaining)?;
-    let path_len = name.split('.').filter(|part| !part.is_empty()).count();
+    let resolved = command_name(&remaining)?;
+    let name = resolved.name;
+    let path_len = resolved.consumed_words;
     let tail = drop_command_words(&remaining, path_len);
     let (flags, changed_flags, args) = parse_local_tail(&name, &tail)?;
     Ok(ParsedCommand {
@@ -220,7 +221,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
     }
 }
 
-fn command_name(tokens: &[String]) -> Result<String, ExitError> {
+fn command_name(tokens: &[String]) -> Result<cmdmeta::ResolvedCommand, ExitError> {
     for token in tokens
         .iter()
         .take_while(|token| !token.starts_with("--"))
@@ -234,177 +235,17 @@ fn command_name(tokens: &[String]) -> Result<String, ExitError> {
         .take_while(|token| !token.starts_with("--"))
         .map(String::as_str)
         .collect();
-    let name = match words.as_slice() {
-        [] => "",
-        ["status", ..] => "status",
-        ["version", ..] => "version",
-        ["upgrade", ..] => "upgrade",
-        ["doctor", ..] => "doctor",
-        ["docs", ..] => "docs",
-        ["schema", ..] => "schema",
-        ["init", ..] => "init",
-        ["config", "show", ..] => "config.show",
-        ["config", "set", ..] => "config.set",
-        ["completion", "bash", ..] => "completion.bash",
-        ["completion", "zsh", ..] => "completion.zsh",
-        ["completion", "fish", ..] => "completion.fish",
-        ["completion", "powershell", ..] => "completion.powershell",
-        ["id", "create", ..] => "id.create",
-        ["id", "register", ..] => "id.register",
-        ["id", "list", ..] => "id.list",
-        ["id", "current", ..] => "id.current",
-        ["id", "use", ..] => "id.use",
-        ["id", "status", ..] => "id.status",
-        ["id", "import-v1", ..] => "id.import-v1",
-        ["id", "bind", ..] => "id.bind",
-        ["id", "refresh-token", ..] => "id.refresh-token",
-        ["id", "resolve", ..] => "id.resolve",
-        ["id", "recover", ..] => "id.recover",
-        ["id", "replace-did", ..] => "id.replace-did",
-        ["id", "profile", "get", ..] => "id.profile.get",
-        ["id", "profile", "set", ..] => "id.profile.set",
-        ["msg", "send", ..] => "msg.send",
-        ["msg", "attachment", "download", ..] => "msg.attachment.download",
-        ["msg", "inbox", ..] => "msg.inbox",
-        ["msg", "history", ..] => "msg.history",
-        ["msg", "mark-read", ..] => "msg.mark-read",
-        ["msg", "secure", "status", ..] => "msg.secure.status",
-        ["msg", "secure", "init", ..] => "msg.secure.init",
-        ["msg", "secure", "repair", ..] => "msg.secure.repair",
-        ["msg", "secure", "failed", ..] => "msg.secure.failed",
-        ["msg", "secure", "retry", ..] => "msg.secure.retry",
-        ["msg", "secure", "drop", ..] => "msg.secure.drop",
-        ["mail", "inbox", ..] => "mail.inbox",
-        ["mail", "read", ..] => "mail.read",
-        ["mail", "mark-read", ..] => "mail.mark-read",
-        ["mail", "account", ..] => "mail.account",
-        ["mail", "send", ..] => "mail.send",
-        ["mail", "attachment", "download", ..] => "mail.attachment.download",
-        ["mail", "notify", ..] => "mail.notify",
-        ["group", "create", ..] => "group.create",
-        ["group", "get", ..] | ["group", "show", ..] => "group.get",
-        ["group", "join", ..] => "group.join",
-        ["group", "add", ..] => "group.add",
-        ["group", "remove", ..] | ["group", "kick", ..] => "group.remove",
-        ["group", "leave", ..] => "group.leave",
-        ["group", "update", ..] => "group.update",
-        ["group", "list", ..] => "group.list",
-        ["group", "members", ..] => "group.members",
-        ["group", "messages", ..] => "group.messages",
-        ["group", "e2ee", "status", ..] => "group.e2ee.status",
-        ["group", "e2ee", "publish-key-package", ..] => "group.e2ee.publish-key-package",
-        ["group", "e2ee", "pending", ..] => "group.e2ee.pending",
-        ["group", "e2ee", "repair", ..] => "group.e2ee.repair",
-        ["group", "e2ee", "update-key", ..] => "group.e2ee.update-key",
-        ["group", "e2ee", "rejoin", ..] => "group.e2ee.rejoin",
-        ["group", "e2ee", "recover-member", ..] => "group.e2ee.recover-member",
-        ["group", "e2ee", "process-leave-request", ..] => "group.e2ee.process-leave-request",
-        ["group", "e2ee", unknown, ..] => {
-            return Err(unknown_subcommand("group e2ee", unknown));
-        }
-        ["group", "code", "get", ..] => "group.code.get",
-        ["group", "code", "refresh", ..] => "group.code.refresh",
-        ["group", "code", "enable", ..] => "group.code.enable",
-        ["page", "create", ..] => "page.create",
-        ["page", "list", ..] => "page.list",
-        ["page", "get", ..] => "page.get",
-        ["page", "update", ..] => "page.update",
-        ["page", "rename", ..] => "page.rename",
-        ["page", "delete", ..] => "page.delete",
-        ["site", "root", "get", ..] => "site.root.get",
-        ["site", "root", "set", ..] => "site.root.set",
-        ["site", "page", "list", ..] => "site.page.list",
-        ["site", "page", "get", ..] => "site.page.get",
-        ["site", "page", "create", ..] => "site.page.create",
-        ["site", "page", "update", ..] => "site.page.update",
-        ["site", "page", "rename", ..] => "site.page.rename",
-        ["site", "page", "delete", ..] => "site.page.delete",
-        ["runtime", "status", ..] => "runtime.status",
-        ["runtime", "apply", ..] => "runtime.apply",
-        ["runtime", "setup", ..] => "runtime.setup",
-        ["runtime", "mode", "get", ..] => "runtime.mode.get",
-        ["runtime", "mode", "set", ..] => "runtime.mode.set",
-        ["runtime", "heartbeat", "status", ..] => "runtime.heartbeat.status",
-        ["runtime", "heartbeat", "install", ..] => "runtime.heartbeat.install",
-        ["runtime", "heartbeat", "run-once", ..] => "runtime.heartbeat.run-once",
-        ["runtime", "listener", "status", ..] => "runtime.listener.status",
-        ["runtime", "listener", "install", ..] => "runtime.listener.install",
-        ["runtime", "listener", "start", ..] => "runtime.listener.start",
-        ["runtime", "listener", "stop", ..] => "runtime.listener.stop",
-        ["runtime", "listener", "restart", ..] => "runtime.listener.restart",
-        ["runtime", "listener", "uninstall", ..] => "runtime.listener.uninstall",
-        ["runtime", "listener", "config", "show", ..] => "runtime.listener.config.show",
-        ["runtime", "listener", "config", "set", ..] => "runtime.listener.config.set",
-        ["runtime", "listener", "enable", ..] => "runtime.listener.enable",
-        ["runtime", "listener", "disable", ..] => "runtime.listener.disable",
-        ["runtime", "listener", "run", ..] => "runtime.listener.run",
-        ["runtime", "listener", "service-run", ..] => "runtime.listener.service-run",
-        ["runtime", "host-notify", "enable", ..] => "runtime.host-notify.enable",
-        ["runtime", "host-notify", "disable", ..] => "runtime.host-notify.disable",
-        ["runtime", "host-notify", "config", "show", ..] => "runtime.host-notify.config.show",
-        ["runtime", "host-notify", "config", "set", ..] => "runtime.host-notify.config.set",
-        ["runtime", "host-notify", "openclaw", "set", ..] => "runtime.host-notify.openclaw.set",
-        ["runtime", "host-notify", "openclaw", "set-token", ..] => {
-            "runtime.host-notify.openclaw.set-token"
-        }
-        ["runtime", "host-notify", "openclaw", "clear-token", ..] => {
-            "runtime.host-notify.openclaw.clear-token"
-        }
-        ["runtime", "host-notify", "openclaw", "route", "add", ..] => {
-            "runtime.host-notify.openclaw.route.add"
-        }
-        ["runtime", "host-notify", "openclaw", "route", "list", ..] => {
-            "runtime.host-notify.openclaw.route.list"
-        }
-        ["runtime", "host-notify", "openclaw", "route", "remove", ..] => {
-            "runtime.host-notify.openclaw.route.remove"
-        }
-        ["runtime", "host-notify", "hermes" | "webhook", "guide", ..] => {
-            "runtime.host-notify.hermes.guide"
-        }
-        ["runtime", "host-notify", "hermes" | "webhook", "status", ..] => {
-            "runtime.host-notify.hermes.status"
-        }
-        ["runtime", "host-notify", "hermes" | "webhook", "setup", ..] => {
-            "runtime.host-notify.hermes.setup"
-        }
-        ["runtime", "host-notify", "hermes" | "webhook", "set", ..] => {
-            "runtime.host-notify.hermes.set"
-        }
-        ["runtime", "host-notify", "hermes" | "webhook", "set-secret", ..] => {
-            "runtime.host-notify.hermes.set-secret"
-        }
-        ["runtime", "host-notify", "hermes" | "webhook", "clear-secret", ..] => {
-            "runtime.host-notify.hermes.clear-secret"
-        }
-        ["runtime", "host-notify", "hermes" | "webhook", "bridge", "service-run", ..] => {
-            "runtime.host-notify.hermes.bridge.service-run"
-        }
-        ["people", "search", ..] => "people.search",
-        ["people", "follow", ..] => "people.follow",
-        ["people", "unfollow", ..] => "people.unfollow",
-        ["people", "status", ..] => "people.status",
-        ["people", "followers", ..] => "people.followers",
-        ["people", "following", ..] => "people.following",
-        ["people", "contacts", "list", ..] => "people.contacts.list",
-        ["people", "contacts", "save", ..] => "people.contacts.save",
-        ["debug", "db", "query", ..] => "debug.db.query",
-        ["debug", "db", "import-v1", ..] => "debug.db.import-v1",
-        ["debug", "db", "handle-history", ..] => "debug.db.handle-history",
-        ["debug", "raw", "rpc", ..] => "debug.raw.rpc",
-        ["debug", "schema-cache", ..] => "debug.schema-cache",
-        ["debug", "logs", ..] => "debug.logs",
-        [head, ..] => head,
-    };
-    if name.is_empty() {
-        return Err(ExitError::new(
+    cmdmeta::resolve_command(&words).map_err(|err| match err {
+        cmdmeta::CommandResolveError::MissingCommand => ExitError::new(
             "invalid_argument",
             2,
             "missing command.",
             "Use `awiki-cli schema` to list command contracts.",
-        ));
-    }
-    Ok(name.to_string())
+        ),
+        cmdmeta::CommandResolveError::UnknownSubcommand { parent, subcommand } => {
+            unknown_subcommand(parent, &subcommand)
+        }
+    })
 }
 
 fn unknown_subcommand(parent: &str, subcommand: &str) -> ExitError {
@@ -442,7 +283,7 @@ fn parse_local_tail(
             validate_local_flag(command_name, name)?;
             let value = match value {
                 Some(value) => value.to_string(),
-                None if is_bool_local_flag(name) => "true".to_string(),
+                None if cmdmeta::is_local_bool_flag(command_name, name) => "true".to_string(),
                 None => iter.next().map(|value| value.to_string()).ok_or_else(|| {
                     ExitError::new(
                         "invalid_argument",
@@ -464,14 +305,7 @@ fn parse_local_tail(
 }
 
 fn validate_local_flag(command_name: &str, flag_name: &str) -> Result<(), ExitError> {
-    let Some(spec) = cmdmeta::lookup(command_name) else {
-        return Ok(());
-    };
-    let known = spec
-        .flags
-        .iter()
-        .any(|flag| flag.name.eq_ignore_ascii_case(flag_name));
-    if known {
+    if cmdmeta::lookup(command_name).is_none() || cmdmeta::has_local_flag(command_name, flag_name) {
         return Ok(());
     }
     Err(unknown_long_flag(flag_name))
@@ -535,27 +369,6 @@ where
 
 fn is_id_create_context(words: &[String]) -> bool {
     words.len() >= 2 && words[0] == "id" && words[1] == "create"
-}
-
-fn is_bool_local_flag(name: &str) -> bool {
-    matches!(
-        name,
-        "enabled"
-            | "auto-install"
-            | "auto-start"
-            | "all"
-            | "wait"
-            | "self"
-            | "unread"
-            | "mark-read"
-            | "is-public"
-            | "is-agent"
-            | "e2ee"
-            | "recovery"
-            | "contract-test"
-            | "attachments-allowed"
-            | "follow"
-    )
 }
 
 fn is_go_stub_command(command: &str) -> bool {

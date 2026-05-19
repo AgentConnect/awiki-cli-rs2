@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::process::{Command, Output};
 
 #[test]
@@ -113,6 +114,213 @@ fn schema_command_list_preserves_go_catalog_order_for_drift_prone_groups() {
             "debug.raw",
         ],
     );
+}
+
+#[test]
+fn cmdmeta_resolves_canonical_paths_and_aliases_as_single_command_tree() {
+    for (words, name, consumed) in [
+        (&["status"][..], "status", 1),
+        (&["group", "get"][..], "group.get", 2),
+        (&["group", "show"][..], "group.get", 2),
+        (&["group", "remove"][..], "group.remove", 2),
+        (&["group", "kick"][..], "group.remove", 2),
+        (
+            &["runtime", "host-notify", "hermes", "guide"][..],
+            "runtime.host-notify.hermes.guide",
+            4,
+        ),
+        (
+            &["runtime", "host-notify", "webhook", "guide"][..],
+            "runtime.host-notify.hermes.guide",
+            4,
+        ),
+    ] {
+        let resolved = awiki_cli::cmdmeta::resolve_command(words).expect("command resolves");
+        assert_eq!(resolved.name, name, "words: {words:?}");
+        assert_eq!(resolved.consumed_words, consumed, "words: {words:?}");
+    }
+}
+
+#[test]
+fn cmdmeta_rejects_unknown_group_e2ee_subcommands_like_cli_boundary() {
+    let err = awiki_cli::cmdmeta::resolve_command(&["group", "e2ee", "leave-requests"])
+        .expect_err("unknown group e2ee subcommand should fail");
+    assert_eq!(
+        err,
+        awiki_cli::cmdmeta::CommandResolveError::UnknownSubcommand {
+            parent: "group e2ee",
+            subcommand: "leave-requests".to_string(),
+        }
+    );
+}
+
+#[test]
+fn cmdmeta_bool_flag_lookup_is_command_scoped() {
+    assert!(awiki_cli::cmdmeta::is_local_bool_flag(
+        "runtime.listener.config.set",
+        "enabled"
+    ));
+    assert!(awiki_cli::cmdmeta::is_local_bool_flag(
+        "debug.logs",
+        "follow"
+    ));
+    assert!(!awiki_cli::cmdmeta::is_local_bool_flag(
+        "config.set",
+        "did-domain"
+    ));
+    assert!(!awiki_cli::cmdmeta::is_local_bool_flag("status", "enabled"));
+}
+
+#[test]
+fn cmdmeta_handler_catalog_matches_cli_dispatch_table() {
+    let dispatch_names = cli_dispatch_names();
+    let metadata_names: BTreeSet<_> = awiki_cli::cmdmeta::specs()
+        .into_iter()
+        .map(|spec| spec.name.to_string())
+        .collect();
+
+    for command in &dispatch_names {
+        assert!(
+            metadata_names.contains(*command),
+            "dispatch command {command:?} must have a cmdmeta entry"
+        );
+    }
+
+    let undispatched: Vec<_> = awiki_cli::cmdmeta::specs()
+        .into_iter()
+        .filter(|spec| {
+            spec.implemented
+                && !spec.handler.is_empty()
+                && spec.handler != "stub"
+                && !dispatch_names.contains(spec.name)
+        })
+        .map(|spec| spec.name)
+        .collect();
+    assert!(
+        undispatched.is_empty(),
+        "implemented cmdmeta handlers must be dispatched: {undispatched:?}"
+    );
+}
+
+fn cli_dispatch_names() -> BTreeSet<&'static str> {
+    [
+        "status",
+        "version",
+        "upgrade",
+        "config.show",
+        "config.set",
+        "doctor",
+        "docs",
+        "schema",
+        "init",
+        "completion.bash",
+        "completion.zsh",
+        "completion.fish",
+        "completion.powershell",
+        "id.create",
+        "id.register",
+        "id.list",
+        "id.current",
+        "id.use",
+        "id.status",
+        "id.import-v1",
+        "id.bind",
+        "id.refresh-token",
+        "id.resolve",
+        "id.recover",
+        "id.replace-did",
+        "id.profile.get",
+        "id.profile.set",
+        "msg.send",
+        "msg.attachment.download",
+        "msg.inbox",
+        "msg.history",
+        "msg.mark-read",
+        "msg.secure.status",
+        "msg.secure.init",
+        "msg.secure.repair",
+        "msg.secure.failed",
+        "msg.secure.retry",
+        "msg.secure.drop",
+        "mail.inbox",
+        "mail.read",
+        "mail.mark-read",
+        "mail.account",
+        "mail.send",
+        "mail.attachment.download",
+        "mail.notify",
+        "group.create",
+        "group.get",
+        "group.join",
+        "group.add",
+        "group.remove",
+        "group.leave",
+        "group.update",
+        "group.list",
+        "group.members",
+        "group.messages",
+        "group.e2ee.status",
+        "group.e2ee.publish-key-package",
+        "group.e2ee.pending",
+        "group.e2ee.repair",
+        "group.e2ee.update-key",
+        "group.e2ee.rejoin",
+        "group.e2ee.recover-member",
+        "group.e2ee.process-leave-request",
+        "page.create",
+        "page.list",
+        "page.get",
+        "page.update",
+        "page.rename",
+        "page.delete",
+        "site.root.get",
+        "site.root.set",
+        "site.page.list",
+        "site.page.get",
+        "site.page.create",
+        "site.page.update",
+        "site.page.rename",
+        "site.page.delete",
+        "runtime.status",
+        "runtime.apply",
+        "runtime.setup",
+        "runtime.mode.get",
+        "runtime.mode.set",
+        "runtime.listener.status",
+        "runtime.listener.install",
+        "runtime.listener.start",
+        "runtime.listener.stop",
+        "runtime.listener.restart",
+        "runtime.listener.uninstall",
+        "runtime.listener.run",
+        "runtime.listener.service-run",
+        "runtime.listener.config.show",
+        "runtime.listener.config.set",
+        "runtime.listener.enable",
+        "runtime.listener.disable",
+        "runtime.host-notify.enable",
+        "runtime.host-notify.disable",
+        "runtime.host-notify.config.show",
+        "runtime.host-notify.config.set",
+        "runtime.host-notify.openclaw.set",
+        "runtime.host-notify.openclaw.set-token",
+        "runtime.host-notify.openclaw.clear-token",
+        "runtime.host-notify.openclaw.route.add",
+        "runtime.host-notify.openclaw.route.list",
+        "runtime.host-notify.openclaw.route.remove",
+        "runtime.host-notify.hermes.guide",
+        "runtime.host-notify.hermes.status",
+        "runtime.host-notify.hermes.setup",
+        "runtime.host-notify.hermes.bridge.service-run",
+        "runtime.host-notify.hermes.set",
+        "runtime.host-notify.hermes.set-secret",
+        "runtime.host-notify.hermes.clear-secret",
+        "debug.db.query",
+        "debug.db.import-v1",
+        "debug.db.handle-history",
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn schema_for(path: &[&str]) -> Value {

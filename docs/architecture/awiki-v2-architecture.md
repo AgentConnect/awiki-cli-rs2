@@ -1,8 +1,8 @@
 # awiki v2 系统架构设计文档
 
-**文档状态**：Draft v1.0  
-**项目代号**：awiki v2  
-**适用范围**：awiki CLI 核心重写、skill 体系重构、运行时与分发体系设计  
+**文档状态**：Draft v1.0
+**项目代号**：awiki v2
+**适用范围**：awiki CLI 核心重写、skill 体系重构、运行时与分发体系设计
 **目标读者**：产品负责人、架构师、CLI/SDK 开发者、平台接入开发者、AI Agent 集成人员
 
 ---
@@ -17,15 +17,15 @@
 
 本文档重点回答以下问题：
 
-1. awiki v2 要解决什么问题，边界在哪里  
-2. 为什么要重写，以及为什么最终选择 Go  
-3. 参考了飞书 CLI/skill 的哪些设计思想，哪些吸收，哪些不照搬  
-4. awiki v2 的目标架构层次、核心模块与职责划分是什么  
-5. Go 单二进制 CLI、跨平台编译、分发、skill、输出协议、运行时模式如何设计  
-6. 如何在保留 awiki 现有优势的前提下，完成从 v1 到 v2 的系统演进  
+1. awiki v2 要解决什么问题，边界在哪里
+2. 为什么要重写，以及当前 Rust CLI port 如何继承早期实现契约
+3. 参考了飞书 CLI/skill 的哪些设计思想，哪些吸收，哪些不照搬
+4. awiki v2 的目标架构层次、核心模块与职责划分是什么
+5. Rust 单二进制 CLI、跨平台编译、分发、skill、输出协议、运行时模式如何设计
+6. 如何在保留 awiki 现有优势的前提下，完成从 v1 到 v2 的系统演进
 
-> 说明：  
-> 本文档只描述 CLI 的架构层方案、命令分层原则与输出契约，不展开具体命令参数细节。  
+> 说明：
+> 本文档只描述 CLI 的架构层方案、命令分层原则与输出契约，不展开具体命令参数细节。
 > 详细 CLI 设计以单独的 CLI 规范文档为准。
 
 ---
@@ -44,7 +44,7 @@ awiki v1 已经具备一套相当完整的 Agent 原生能力，包括：
 但 v1 仍然是“Python 脚本集合 + 巨型 SKILL.md”的形态，带来以下系统性问题：
 
 ### 2.1 路由层问题
-当前主要能力通过多个脚本分散暴露，例如身份、消息、群组、E2EE、listener、query_db 等分别由不同脚本承载。  
+当前主要能力通过多个脚本分散暴露，例如身份、消息、群组、E2EE、listener、query_db 等分别由不同脚本承载。
 这使得 AI 必须先猜“应该运行哪个脚本”，而不是先理解“我现在要完成的任务是什么”。
 
 ### 2.2 文档层问题
@@ -79,7 +79,7 @@ v1 的安装、升级、分发、诊断与帮助体系仍偏向工程仓使用�
 
 awiki v2 的总目标是：
 
-**构建一个以 Go 为核心、统一入口、跨平台分发、对人类与 AI 都友好的 agent-native identity & messaging CLI 产品。**
+**构建一个以 Rust CLI port 为核心、统一入口、跨平台分发、对人类与 AI 都友好的 agent-native identity & messaging CLI 产品。**
 
 其本质不是“把旧脚本换成新语言”，而是完成一次完整的产品化重构。
 
@@ -151,11 +151,11 @@ E2EE 会话、失败 outbox、自动处理控制消息、本地 SQLite 历史与
 awiki v2 参考飞书的不是业务范围，而是**结构设计与产品组织方法**。
 
 ### 4.2.1 统一 CLI 入口
-飞书通过 `lark-cli` 提供统一执行入口，将配置、认证、业务命令、schema、doctor 等整合到一个产品面上。  
+飞书通过 `lark-cli` 提供统一执行入口，将配置、认证、业务命令、schema、doctor 等整合到一个产品面上。
 awiki v2 也应只有一个统一入口：`awiki-cli`。
 
 ### 4.2.2 单入口 + reference 懒加载
-飞书的启发在于：共享规则不能散落在每个 skill 中，默认上下文也不能无限膨胀。  
+飞书的启发在于：共享规则不能散落在每个 skill 中，默认上下文也不能无限膨胀。
 awiki v2 当前正式方案不再采用 `shared skill + domain skill` 的多层装载，而是将共享规则收敛到单一入口 `skills/SKILL.md`，再按任务懒加载 `references/*.md`。
 
 ### 4.2.3 三层命令体系
@@ -167,12 +167,12 @@ awiki v2 当前正式方案不再采用 `shared skill + domain skill` 的多层�
 awiki v2 应吸收这种“分层暴露能力”的思想，但不盲目复制全部语法形式。
 
 ### 4.2.4 CLI 自省与产品化能力
-飞书 CLI 将 `schema`、`dry-run`、格式输出、诊断、completion 等做成一等能力。  
+飞书 CLI 将 `schema`、`dry-run`、格式输出、诊断、completion 等做成一等能力。
 awiki v2 也应如此。
 
 ### 4.2.5 单二进制 + npm wrapper + 多平台发布
-飞书以 Go 为核心，辅以 GoReleaser 和 npm 包装层。  
-awiki v2 可采用相似分发模型。
+飞书采用单二进制 CLI + npm 包装层的产品化路径。
+awiki v2 的当前 Rust port 采用相似分发模型，但实现与发布脚本以 Rust/Cargo 为准。
 
 ## 4.3 不照搬飞书的部分
 
@@ -227,11 +227,11 @@ identity 是系统第一层对象，不是附属配置。
 
 awiki v2 的目标产品形态如下：
 
-1. **Go 单二进制 CLI**：`awiki-cli`
+1. **Rust 单二进制 CLI**：`awiki-cli`
 2. **内建文档与自省系统**：`awiki-cli docs` / `awiki-cli schema` / `awiki-cli doctor`
 3. **单入口 + reference skill 体系**
 4. **可选平台接入层**（如 OpenClaw 插件），但与 CLI 核心解耦
-5. **GitHub Releases + GoReleaser + npm wrapper + 可选包管理器分发**
+5. **GitHub Releases + Rust release scripts + npm wrapper + 可选包管理器分发**
 
 ---
 
@@ -300,11 +300,11 @@ awiki v2 的目标产品形态如下：
 - 密钥与机密保护
 
 ### Layer 5：Skill & Documentation
-负责 AI 路由、最佳实践、共享规则与领域技能说明。  
+负责 AI 路由、最佳实践、共享规则与领域技能说明。
 不承载 CLI 的唯一知识。
 
 ### Layer 6：Host Integration
-将 CLI 能力接入特定宿主平台，如 OpenClaw。  
+将 CLI 能力接入特定宿主平台，如 OpenClaw。
 该层与 CLI 核心解耦。
 
 当前 websocket listener 到宿主 Agent 的统一通知事件 v1 方案见：
@@ -411,30 +411,30 @@ Message =
 
 ## 9.1 技术选型总览
 
-- **实现语言**：Go
-- **CLI 框架**：Cobra
+- **实现语言**：Rust
+- **CLI 命令元数据**：`cmdmeta`
 - **配置合并**：Koanf
 - **日志**：`log/slog`
 - **本地数据库**：SQLite
-- **SQLite 驱动**：`modernc.org/sqlite`（无 CGO）
+- **SQLite 驱动**：`rusqlite` bundled SQLite
 - **迁移工具**：goose
 - **类型安全 SQL**：sqlc
 - **WebSocket**：`github.com/coder/websocket`
 - **系统服务**：`github.com/kardianos/service`
 - **系统凭证存储**：`github.com/99designs/keyring`
-- **发布工具**：GoReleaser
+- **发布工具**：Cargo + `scripts/release/*` + npm wrapper
 
-## 9.2 为什么最终统一使用 Go
+## 9.2 为什么当前实现统一为 Rust CLI port
 
-虽然前期讨论与基础资料中曾保留过“继续用 Python”的过渡方案，但 v2 已明确统一为 Go，原因如下：
+虽然前期讨论与基础资料中曾保留过“继续用 Python”或早期 Go 实现的过渡方案，但当前仓库已明确统一为 Rust CLI port，原因如下：
 
-1. 目标产品是跨平台单二进制 CLI  
-2. 需要稳定的 service / listener / IPC / websocket 运行时  
-3. 需要一致的多平台分发体验  
-4. 需要更强的安装可控性与更轻的运行依赖  
-5. 参考飞书产品化路径后，Go 是更适合的基础实现语言  
+1. 目标产品是跨平台单二进制 CLI
+2. 需要稳定的 service / listener / IPC / websocket 运行时
+3. 需要一致的多平台分发体验
+4. 需要更强的安装可控性与更轻的运行依赖
+5. 当前代码、测试、发布脚本和 npm wrapper 已围绕 Rust workspace 收敛
 
-因此，所有“继续使用 Python 作为 v2 CLI 主实现”的旧判断，在本架构中全部作废。
+因此，所有“继续使用 Python 或 Go 作为当前仓库主实现”的旧判断，在本架构中全部作废；早期 Go 设计只作为命令契约和发布命名的历史来源。
 
 ---
 
@@ -444,15 +444,18 @@ Message =
 
 ```text
 /
-├── cmd/
-│   └── awiki/
-├── internal/
-│   ├── app/
-│   ├── cli/
-│   ├── config/
-│   ├── docs/
-│   ├── schema/
-│   ├── doctor/
+├── crates/
+│   └── awiki-cli/
+│       ├── src/
+│       │   ├── app/
+│       │   ├── cli/
+│       │   ├── cmdmeta/
+│       │   ├── config/
+│       │   ├── docs/
+│       │   └── runtime/
+│       └── tests/
+├── xtask/
+├── scripts/
 │   ├── output/
 │   ├── identity/
 │   ├── messaging/
@@ -538,13 +541,13 @@ npm 仅作为安装入口：
 - AI 环境统一执行入口
 - 多平台稳定发布
 - 国内外网络环境适配
-- 与飞书当前“Go 二进制 + npm 包装层”的产品路径兼容
+- 与飞书当前“单二进制 + npm 包装层”的产品路径兼容
 
 ---
 
 ## 12. 三层命令体系（架构层）
 
-> 说明：详细命令设计在单独 CLI 文档中定义。  
+> 说明：详细命令设计在单独 CLI 文档中定义。
 > 本节只描述架构意图与分层原则。
 
 ## 12.1 目标
@@ -554,7 +557,7 @@ npm 仅作为安装入口：
 ## 12.2 三层定义
 
 ### Layer A：Task Layer
-面向人类与 AI 的默认入口，覆盖高频任务。  
+面向人类与 AI 的默认入口，覆盖高频任务。
 例如：
 - init
 - status
@@ -564,7 +567,7 @@ npm 仅作为安装入口：
 - runtime setup
 
 ### Layer B：Resource Layer
-面向对象级操作与进阶能力。  
+面向对象级操作与进阶能力。
 例如：
 - id resolve
 - group members
@@ -572,7 +575,7 @@ npm 仅作为安装入口：
 - people discover
 
 ### Layer C：Raw / Debug Layer
-面向调试、兜底和专家场景。  
+面向调试、兜底和专家场景。
 例如：
 - api
 - debug db
@@ -710,7 +713,7 @@ skill 的详细目录结构、loading policy、workflow 边界与当前实现状
 
 ## 14.2 dry-run
 
-所有有副作用命令必须支持 `--dry-run`。  
+所有有副作用命令必须支持 `--dry-run`。
 `--dry-run` 返回执行计划，而不是仅返回“未执行”。
 
 ## 14.3 schema
@@ -775,7 +778,7 @@ CLI 与 skill 体系必须保证：
 - 为了兼容单个后端行为，在命令层偷偷覆盖 SDK 默认安全语义
 - 在多个模块各自维护一份“默认协议常量表”
 
-判断标准：凡是同一能力需要在 Go / Python 两个客户端上保持一致时，默认应收敛到 SDK；若语义只存在于 `awiki-cli` 仓库而不在 SDK 中，就视为架构风险。
+判断标准：凡是同一能力需要在 Rust CLI port / legacy Python 两个客户端上保持一致时，默认应收敛到 SDK；若语义只存在于 `awiki-cli` 仓库而不在 SDK 中，就视为架构风险。
 
 ## 15.5 凭证与密钥存储策略
 
@@ -918,7 +921,7 @@ heartbeat 继续保留，但职责清晰化：
 
 建议为命令定义统一 metadata，并用它生成：
 
-- Cobra help
+- `cmdmeta` / CLI help
 - docs 内容
 - schema 输出
 - README 示例
@@ -974,7 +977,7 @@ v2 初期可先单仓，待命令树和 runtime 稳定后再拆。
 - `schema`
 - `doctor`
 - 输出协议
-- GoReleaser 基础链路
+- Rust release scripts 基础链路
 
 ## Phase 2：Identity 域
 - create / register / bind / resolve / recover / profile
@@ -1018,16 +1021,16 @@ v2 初期可先单仓，待命令树和 runtime 稳定后再拆。
 
 当以下条件全部满足时，可认为 awiki v2 架构目标成立：
 
-1. 所有核心能力都通过 `awiki-cli` 统一入口暴露  
-2. 核心命令无需依赖外部 skill 即可被发现、理解和诊断  
-3. 多 identity 成为一等能力  
-4. direct / group / secure / runtime 语义边界清晰  
-5. JSON 输出、schema、doctor、dry-run 形成统一协议  
-6. `http` / `websocket` 模式切换清晰、可诊断  
-7. v1 本地数据可迁移  
-8. 文档、help、skill、schema 基于统一元数据生成  
-9. 至少支持 macOS / Linux / Windows 多平台稳定发布  
-10. 安全规则可在 CLI、skill、runtime 三层一致落实  
+1. 所有核心能力都通过 `awiki-cli` 统一入口暴露
+2. 核心命令无需依赖外部 skill 即可被发现、理解和诊断
+3. 多 identity 成为一等能力
+4. direct / group / secure / runtime 语义边界清晰
+5. JSON 输出、schema、doctor、dry-run 形成统一协议
+6. `http` / `websocket` 模式切换清晰、可诊断
+7. v1 本地数据可迁移
+8. 文档、help、skill、schema 基于统一元数据生成
+9. 至少支持 macOS / Linux / Windows 多平台稳定发布
+10. 安全规则可在 CLI、skill、runtime 三层一致落实
 
 ---
 
@@ -1037,7 +1040,7 @@ awiki v2 不是对现有 Python skill 仓的增量修补，而是一轮完整的
 
 本次架构设计的核心结论是：
 
-- **以 Go 单二进制 CLI 为核心重建产品面**
+- **以 Rust 单二进制 CLI 为核心重建产品面**
 - **保留 awiki 的 DID / Handle / E2EE / 多 identity / heartbeat / local store 优势**
 - **吸收飞书的统一 CLI、两层 skill 装载、三层命令、自省与分发思路**
 - **避免飞书在文档依赖、profile 不一等、上下文过重方面暴露的问题**
@@ -1106,6 +1109,6 @@ awiki-cli debug
 
 但已做出以下统一修正：
 
-- **实现语言统一为 Go**
+- **实现语言统一为 Rust CLI port**
 - **CLI 细节留给单独 CLI 规范文档**
 - **本文件只保留架构级别约束与方向**

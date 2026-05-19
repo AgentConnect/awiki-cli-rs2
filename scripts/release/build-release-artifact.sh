@@ -146,6 +146,8 @@ else
   cargo_cmd=("${cargo_bin}")
 fi
 
+"${cargo_cmd[@]}" run -p xtask -- check-version --expect "${VERSION}"
+
 commit="${AWIKI_CLI_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || printf '%s' unknown)}"
 build_date="${AWIKI_CLI_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 bin_name="awiki-cli"

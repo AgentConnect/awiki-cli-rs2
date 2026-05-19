@@ -27,8 +27,8 @@ Usage: scripts/release/release-one-click.sh [version] [options]
 Publishes an awiki-cli release end-to-end:
   1. Load local release environment.
   2. Optionally export a configured proxy for GitHub/npm access.
-  3. Update package.json version and awikiCli.minSupportedVersion.
-  4. Run tests.
+  3. Update package.json, Cargo.toml, and Cargo.lock release versions.
+  4. Check package/Cargo version consistency and run tests.
   5. Commit and push the package metadata change.
   6. Create and push the release tag.
   7. Wait for the GitHub release workflow/assets.
@@ -137,6 +137,34 @@ fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`);
 NODE
 }
 
+update_cargo_manifest_version() {
+  local version="$1"
+
+  node - "${version}" <<'NODE'
+const fs = require('fs');
+const version = process.argv[2];
+const path = 'crates/awiki-cli/Cargo.toml';
+const input = fs.readFileSync(path, 'utf8');
+let inPackage = false;
+let replaced = false;
+const output = input.split(/\n/).map((line) => {
+  const trimmed = line.trim();
+  if (trimmed.startsWith('[')) {
+    inPackage = trimmed === '[package]';
+  }
+  if (inPackage && !replaced && /^\s*version\s*=/.test(line)) {
+    replaced = true;
+    return line.replace(/version\s*=\s*"[^"]*"/, `version = "${version}"`);
+  }
+  return line;
+}).join('\n');
+if (!replaced) {
+  throw new Error(`${path} is missing [package] version`);
+}
+fs.writeFileSync(path, output);
+NODE
+}
+
 json_value() {
   local json_file="$1"
   local expression="$2"
@@ -201,10 +229,10 @@ commit_package_change() {
   local tested_summary
   local not_tested_summary
 
-  if git diff --quiet -- package.json; then
-    echo "package.json already matches version ${version}; no metadata commit needed."
+  if git diff --quiet -- package.json crates/awiki-cli/Cargo.toml Cargo.lock; then
+    echo "package.json, Cargo.toml, and Cargo.lock already match version ${version}; no metadata commit needed."
   else
-    git add package.json
+    git add package.json crates/awiki-cli/Cargo.toml Cargo.lock
 
     if [[ "${RUN_TESTS}" == "1" ]]; then
       tested_summary="scripts/test-unit.sh"
@@ -217,15 +245,15 @@ commit_package_change() {
     git commit -F - <<EOF
 Prepare awiki-cli ${version} release
 
-Package metadata is advanced before tagging so GitHub Release,
-npm package metadata, and installer download URLs all resolve the
-same artifact version.
+Package and crate metadata are advanced before tagging so GitHub
+Release, npm package metadata, Cargo metadata, and installer download
+URLs all resolve the same artifact version.
 
-Constraint: Existing release tag scripts read package.json.version as the source of truth.
+Constraint: Existing release tag scripts read package.json.version as the public source of truth.
 Constraint: awikiCli.minSupportedVersion is set to ${min_supported_version} for installer compatibility gates.
 Confidence: high
 Scope-risk: narrow
-Directive: Keep package.json version and awikiCli.minSupportedVersion intentional when cutting releases.
+Directive: Keep package.json version, awikiCli.minSupportedVersion, and the awiki-cli Cargo package version aligned when cutting releases.
 Tested: ${tested_summary}
 Not-tested: ${not_tested_summary}
 EOF
@@ -619,9 +647,19 @@ EOF
 
 ensure_clean_worktree
 update_package_json "${VERSION}" "${MIN_SUPPORTED_VERSION}"
+update_cargo_manifest_version "${VERSION}"
+cargo_bin="${CARGO:-cargo}"
+toolchain="${AWIKI_CLI_RUST_TOOLCHAIN:-1.79.0}"
+if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
+  cargo_cmd=(cargo "+${toolchain}")
+else
+  cargo_cmd=("${cargo_bin}")
+fi
+"${cargo_cmd[@]}" generate-lockfile
+"${cargo_cmd[@]}" run -p xtask -- check-version --expect "${VERSION}"
 
 if [[ "${AUTO_COMMIT}" != "1" ]]; then
-  echo "Updated package.json only because --no-commit was set."
+  echo "Updated package.json, Cargo.toml, and Cargo.lock only because --no-commit was set."
   echo "Review and commit the change, then run without --no-commit to publish."
   exit 0
 fi

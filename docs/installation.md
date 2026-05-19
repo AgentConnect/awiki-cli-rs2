@@ -2,56 +2,57 @@
 
 ## 概述
 
-awiki-cli 是 awiki 的命令行客户端，用 Go 编写，通过 CLI 命令编排对后端服务的 API 调用。支持 DID 身份管理、消息收发（私聊/群聊）、群组管理、WebSocket 实时监听等能力。
+awiki-cli 是 awiki 的命令行客户端。当前仓库是 Awiki CLI 合约的 Rust CLI port，通过 CLI 命令编排对后端服务的 API 调用，并保留早期 Go 设计中的命令面、输出契约和发布产物命名。它支持 DID 身份管理、消息收发（私聊/群聊）、群组管理、WebSocket 实时监听等能力。
 
-**技术栈**: Go 1.22 (pure Go, no CGO) + Cobra + SQLite + ANP SDK
+**技术栈**: Rust 1.78+ workspace + Cargo + bundled SQLite (`rusqlite`) + ANP Rust SDK
 
 ---
 
 ## 1. 编译工具
 
-### 1.1 Go 1.22
+### 1.1 Rust toolchain
 
-版本基线固定为 Go 1.22.x，不使用 CGO。
+`Cargo.toml` 中的最低 Rust 版本为 1.78。发布脚本默认使用 `AWIKI_CLI_RUST_TOOLCHAIN=1.79.0`，如本机已安装兼容 toolchain，也可以通过环境变量覆盖。
 
 ```bash
 # macOS (Homebrew)
-brew install go@1.22
+brew install rustup-init
+rustup-init
 
 # 或从官网下载
-# https://go.dev/dl/
+# https://www.rust-lang.org/tools/install
 
 # 验证版本
-go version
-# go version go1.22.x darwin/arm64
+rustc --version
+cargo --version
 ```
 
-### 1.2 ANP Go SDK（P5 secure direct）
+### 1.2 ANP Rust SDK（P5 secure direct）
 
-awiki-cli 的依赖基线是 ANP Go SDK `v0.8.7`：
+awiki-cli 的 ANP 依赖来自同级 Rust workspace 路径 `../anp/rust`。拉取或构建本仓库时，需要保证该 sibling repository 可用：
 
 ```bash
-go get github.com/agent-network-protocol/anp/golang@v0.8.7
+ls ../anp/rust/Cargo.toml
 ```
 
-P5 secure direct / OPK 客户端能力已随 `v0.8.7` 发布；主线 `go.mod` 应直接依赖远端模块，不再提交同级工作区 `replace`。首次拉取依赖时请确保本机可以访问公开 Go module proxy 或对应源码仓库。
+P5 secure direct / OPK 客户端能力由 Rust SDK 依赖提供。首次拉取依赖时请确保本机可以访问 crates.io 和对应源码仓库。
 
 Direct E2EE 的 CLI 编排、session/prekey/outbox 本地状态和 discovery 收口见 [`docs/architecture/direct-e2ee-operations.md`](architecture/direct-e2ee-operations.md)。
 
-### 1.3 Docker 备选（无本地 Go 时）
+### 1.3 Docker 备选（无本地 Rust 时）
 
-如本机未安装 Go，可使用 Docker 镜像：
+如本机未安装 Rust，可使用 Rust Docker 镜像：
 
 ```bash
-docker run --rm -v "$PWD":/app -w /app golang:1.22 go build ./...
-docker run --rm -v "$PWD":/app -w /app golang:1.22 go test ./...
+docker run --rm -v "$PWD":/app -w /app rust:1.79 cargo build --workspace --locked
+docker run --rm -v "$PWD":/app -w /app rust:1.79 cargo test --workspace --all-features
 ```
 
 ---
 
 ## 2. 数据库
 
-awiki-cli 使用 **pure Go SQLite** 作为本地存储，无需安装外部数据库。
+awiki-cli 使用 bundled SQLite 作为本地存储，无需安装外部数据库。
 
 ### 2.1 自动初始化
 
@@ -140,7 +141,7 @@ awiki-cli 默认采用单根目录工作区模型，默认路径如下：
 
 ### 3.3 `anp-mls` binary discovery and release staging
 
-Group E2EE commands keep the Go CLI pure-Go/no-CGO by invoking the Rust `anp-mls` binary as a one-shot process. See [`docs/architecture/group-e2ee-operations.md`](architecture/group-e2ee-operations.md) for the full hidden/test-only CLI orchestration, repair, recovery, update-key, and rejoin model. Discovery order is:
+Group E2EE commands keep the Rust CLI port decoupled from MLS private state by invoking the Rust `anp-mls` binary as a one-shot process. See [`docs/architecture/group-e2ee-operations.md`](architecture/group-e2ee-operations.md) for the full hidden/test-only CLI orchestration, repair, recovery, update-key, and rejoin model. Discovery order is:
 
 1. `AWIKI_ANP_MLS_BINARY` absolute path override.
 2. Runtime/test injected provider path.
@@ -320,7 +321,7 @@ identities/
 
 > 私钥文件权限为 `0600`，目录权限为 `0700`。
 
-当前 `awiki-cli` 的活跃身份规范为 `e1` / Ed25519 `key-1`。当你把 Python v1 `awiki-agent-id-message` 本地数据默认升级到 Go 版 workspace 时，CLI 会自动尝试把已导入的 handle `k1` DID 通过 `replace_did` 换绑为新的 `e1` DID，并同步重绑本地 SQLite 的 `owner_did`。替换前，旧 DID document、旧私钥和旧 identity 目录会备份到 `identities/.legacy-backup/replace-did/`；这些备份仍包含敏感密钥材料，不要上传或分享。若个别身份无法自动替换，升级会继续完成，但会把失败原因记录到 upgrade warning 与 `doctor` 输出中，后续需要手动处理。
+当前 `awiki-cli` 的活跃身份规范为 `e1` / Ed25519 `key-1`。当你把 Python v1 `awiki-agent-id-message` 本地数据默认升级到 Rust CLI port workspace 时，CLI 会自动尝试把已导入的 handle `k1` DID 通过 `replace_did` 换绑为新的 `e1` DID，并同步重绑本地 SQLite 的 `owner_did`。替换前，旧 DID document、旧私钥和旧 identity 目录会备份到 `identities/.legacy-backup/replace-did/`；这些备份仍包含敏感密钥材料，不要上传或分享。若个别身份无法自动替换，升级会继续完成，但会把失败原因记录到 upgrade warning 与 `doctor` 输出中，后续需要手动处理。
 
 同一 handle 在本地联系人缓存中若经历 DID 切换，`awiki-cli` 会保留对应的历史 DID 映射，并在按 handle 读取 direct inbox/history 时聚合这些历史 DID 关联的消息；如需排查本地记录，可使用 `awiki-cli debug db handle-history <handle>` 查看。
 
@@ -341,15 +342,15 @@ identities/
 ### 4.1 安装依赖
 
 ```bash
-cd awiki-cli
-go mod tidy
+cd awiki-cli-rs2
+cargo fetch --locked
 ```
 
 ### 4.2 编译
 
 ```bash
-# pure Go 编译（必须 CGO_ENABLED=0）
-CGO_ENABLED=0 go build -o awiki-cli ./cmd/awiki-cli/
+cargo build -p awiki-cli --bin awiki-cli --release --locked
+cp target/release/awiki-cli ./awiki-cli
 ```
 
 ### 4.3 验证
@@ -374,13 +375,13 @@ CGO_ENABLED=0 go build -o awiki-cli ./cmd/awiki-cli/
 ### 4.4 运行测试
 
 ```bash
-CGO_ENABLED=0 go test ./...
+cargo test --workspace --all-features
 ```
 
 ### 4.5 代码格式化
 
 ```bash
-gofmt -w $(find cmd internal -name '*.go')
+cargo fmt --all
 ```
 
 ---
@@ -536,29 +537,26 @@ awiki-cli 是纯客户端，不需要本地数据库服务，但需要连接以�
 
 ## 7. 常见问题
 
-### Q: 编译报错 `CGO_ENABLED` 相关
+### Q: 编译时报 SQLite 或 native 依赖相关错误
 
-本项目必须以 `CGO_ENABLED=0` 编译。SQLite 使用的是 pure Go 实现 (`modernc.org/sqlite`)，不依赖 C 库：
-
-```bash
-CGO_ENABLED=0 go build ./cmd/awiki-cli/
-```
+本项目通过 `rusqlite` 的 bundled SQLite 特性构建本地数据库支持，不需要预装系统 SQLite。优先确认 Rust toolchain、linker 和目标平台依赖完整，然后重新执行 `cargo build -p awiki-cli --bin awiki-cli --release --locked`。
 
 ### Q: 编译报错找不到 ANP SDK
 
-确认当前模块依赖已成功下载，并且 `go.mod` 中保留了 `github.com/agent-network-protocol/anp/golang v0.8.7` 远端依赖：
+确认同级 ANP Rust SDK 路径存在，并且 Cargo 可以读取 workspace path dependency：
 
 ```bash
-go get github.com/agent-network-protocol/anp/golang@v0.8.7
-grep 'github.com/agent-network-protocol/anp/golang v0.8.7' go.mod
+ls ../anp/rust/Cargo.toml
+cargo check -p awiki-cli --all-features
 ```
 
-### Q: `go mod tidy` 报错
+### Q: `cargo fetch` 或 `cargo check` 报错
 
-可能是远端依赖下载失败，或 Go 版本不匹配。确认使用 Go 1.22.x：
+可能是远端依赖下载失败，或 Rust 版本不匹配。确认使用 Rust 1.78+：
 
 ```bash
-go version
+rustc --version
+cargo --version
 ```
 
 ### Q: doctor 命令报数据库异常

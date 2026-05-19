@@ -1,13 +1,13 @@
 # awiki-cli
 
-[![Go Version](https://img.shields.io/badge/go-%3E%3D1.22-blue.svg)](https://go.dev/)
+[![Rust Version](https://img.shields.io/badge/rust-%3E%3D1.78-blue.svg)](https://www.rust-lang.org/)
 [![npm version](https://img.shields.io/npm/v/@awiki/cli.svg)](https://www.npmjs.com/package/@awiki/cli)
 
-[中文说明](./README.zh.md) | English
+English
 
-awiki-cli is the official Awiki command-line client and Skill backend. It is designed to be used by both humans and AI Agents, providing a single binary for identity, messaging, and runtime operations.
+awiki-cli is the official Awiki command-line client and Skill backend. This repository contains the Rust CLI port of the Awiki CLI contract, preserving the command surface and release artifact naming inherited from the earlier Go design while using a Rust workspace for the current implementation.
 
-Quick links: [Onboarding](./onboarding.en.md) · [Command Tree](./docs/architecture/awiki-command-v2.md) · [Architecture](./docs/architecture/awiki-v2-architecture.md)
+Quick links: [Onboarding](./onboarding.md) · [Command Tree](./docs/architecture/awiki-command-v2.md) · [Architecture](./docs/architecture/awiki-v2-architecture.md)
 
 ## What is awiki-cli?
 
@@ -44,12 +44,14 @@ awiki-cli init
 
 For the full first-time flow (identity registration or recovery, runtime setup, and status checks), please follow the onboarding guide:
 
-- English onboarding: [onboarding.en.md](./onboarding.en.md)
+- Onboarding: [onboarding.md](./onboarding.md)
 
 ## Project Layout
 
-- `cmd/` — CLI entrypoint and top-level command wiring
-- `internal/` — core implementation (config, identity, runtime, messaging, store, update, etc.)
+- `crates/awiki-cli/src/` — Rust CLI implementation, command metadata, handlers, runtime, storage, and update logic
+- `crates/awiki-cli/tests/` — Rust integration and contract tests
+- `xtask/` — repository checks such as structure and version consistency
+- `scripts/` — release, install, and verification scripts
 - `skills/` — Awiki Skills exposed to AI Agents
 - `docs/` — architecture and command-level documentation
 

@@ -27,6 +27,21 @@ pub struct CommandSpec {
     pub flags: &'static [FlagSpec],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCommand {
+    pub name: String,
+    pub consumed_words: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandResolveError {
+    MissingCommand,
+    UnknownSubcommand {
+        parent: &'static str,
+        subcommand: String,
+    },
+}
+
 impl CommandSpec {
     pub fn json_use(&self) -> &'static str {
         self.use_
@@ -56,6 +71,62 @@ pub fn children_of(parent: &str) -> Vec<CommandSpec> {
     children
 }
 
+pub fn resolve_command(words: &[&str]) -> Result<ResolvedCommand, CommandResolveError> {
+    if words.is_empty() {
+        return Err(CommandResolveError::MissingCommand);
+    }
+
+    let mut best: Option<ResolvedCommand> = None;
+    for spec in default_specs() {
+        for path in command_paths(spec) {
+            if path.len() > words.len() || !path_matches(&path, words) {
+                continue;
+            }
+            let is_better = match best.as_ref() {
+                Some(current) => path.len() > current.consumed_words,
+                None => true,
+            };
+            if is_better {
+                best = Some(ResolvedCommand {
+                    name: spec.name.to_string(),
+                    consumed_words: path.len(),
+                });
+            }
+        }
+    }
+
+    if let Some(resolved) = best {
+        if resolved.name == "group.e2ee" && words.len() > resolved.consumed_words {
+            return Err(CommandResolveError::UnknownSubcommand {
+                parent: "group e2ee",
+                subcommand: words[resolved.consumed_words].to_string(),
+            });
+        }
+        return Ok(resolved);
+    }
+
+    Ok(ResolvedCommand {
+        name: words[0].to_string(),
+        consumed_words: 1,
+    })
+}
+
+pub fn has_local_flag(command_name: &str, flag_name: &str) -> bool {
+    lookup(command_name).is_some_and(|spec| {
+        spec.flags
+            .iter()
+            .any(|flag| flag.name.eq_ignore_ascii_case(flag_name))
+    })
+}
+
+pub fn is_local_bool_flag(command_name: &str, flag_name: &str) -> bool {
+    lookup(command_name).is_some_and(|spec| {
+        spec.flags
+            .iter()
+            .any(|flag| flag.name.eq_ignore_ascii_case(flag_name) && flag.flag_type == "bool")
+    })
+}
+
 pub fn normalize_name(raw: &str) -> String {
     raw.trim()
         .strip_prefix("awiki-cli")
@@ -64,6 +135,40 @@ pub fn normalize_name(raw: &str) -> String {
         .replace(' ', ".")
         .trim_matches('.')
         .to_ascii_lowercase()
+}
+
+fn command_paths(spec: &CommandSpec) -> Vec<Vec<&'static str>> {
+    let segments: Vec<_> = spec.name.split('.').collect();
+    let mut paths: Vec<Vec<&'static str>> = vec![Vec::new()];
+    for index in 0..segments.len() {
+        let mut segment_names = vec![segments[index]];
+        segment_names.extend(aliases_for_prefix(&segments[..=index]));
+
+        let mut next_paths = Vec::new();
+        for path in &paths {
+            for segment_name in &segment_names {
+                let mut next_path = path.clone();
+                next_path.push(*segment_name);
+                next_paths.push(next_path);
+            }
+        }
+        paths = next_paths;
+    }
+    paths
+}
+
+fn aliases_for_prefix(prefix_segments: &[&str]) -> &'static [&'static str] {
+    default_specs()
+        .iter()
+        .find(|spec| spec.name.split('.').eq(prefix_segments.iter().copied()))
+        .map(|spec| spec.aliases)
+        .unwrap_or(&[])
+}
+
+fn path_matches(path: &[&str], words: &[&str]) -> bool {
+    path.iter()
+        .zip(words.iter())
+        .all(|(expected, actual)| expected == actual)
 }
 
 fn parent_name(name: &str) -> String {
@@ -245,6 +350,8 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "runtime.listener.stop", use_: "stop", short: "Stop the listener service", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.stop", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "runtime.listener.restart", use_: "restart", short: "Restart the listener service", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.restart", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "runtime.listener.uninstall", use_: "uninstall", short: "Uninstall the listener service", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.uninstall", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "runtime.listener.run", use_: "run", short: "Run the listener supervisor in the foreground", long: "", aliases: &[], phase: "phase7", hidden: true, implemented: true, handler: "runtime.listener.run", side_effect: true, outputs: &[], flags: &[] },
+        CommandSpec { name: "runtime.listener.service-run", use_: "service-run", short: "Run the listener supervisor under the service manager", long: "", aliases: &[], phase: "phase7", hidden: true, implemented: true, handler: "runtime.listener.service-run", side_effect: true, outputs: &[], flags: &[] },
         CommandSpec { name: "runtime.listener.config", use_: "config", short: "Inspect or update listener configuration", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("runtime.listener.config.show", "show", "Show listener configuration", "phase7", "runtime.listener.config.show"),
         CommandSpec { name: "runtime.listener.config.set", use_: "set", short: "Update listener configuration", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: true, handler: "runtime.listener.config.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("enabled", "bool", "Enable or disable listener management"), flag!("auto-install", "bool", "Automatically install the listener service"), flag!("auto-start", "bool", "Automatically start the listener service")] },

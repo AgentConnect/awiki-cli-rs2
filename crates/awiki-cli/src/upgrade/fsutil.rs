@@ -58,6 +58,7 @@ pub(super) fn copy_file(src: &str, dst: &str, mode: u32) -> std::io::Result<()> 
     let mut to =
         open_destination_file(dst_path, mode).map_err(|err| prefix_io("open dst file", err))?;
     std::io::copy(&mut from, &mut to).map_err(|err| prefix_io("copy file", err))?;
+    set_file_mode(dst_path, mode).map_err(|err| prefix_io("chmod dst file", err))?;
     to.sync_all()
         .map_err(|err| prefix_io("sync dst file", err))?;
     Ok(())
