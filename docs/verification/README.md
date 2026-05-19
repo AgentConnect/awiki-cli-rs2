@@ -127,6 +127,26 @@ SDK source, system-test helper, or mail selector changed. The full broad
 non-mail rerun then passed with 174 passed, 0 failed, and 16 skipped in
 841.35s. Mail selectors remain deferred.
 
+## 2026-05-19 Config Set Legacy Identity SQLite Selector
+
+Detailed report:
+`2026-05-19-config-set-legacy-identity-sqlite-selector.md`.
+
+Summary: the system-test-first lane added a Rust-only public CLI subprocess
+selector for the existing `config set --did-domain` workspace-upgrade preflight
+path. The selector removes `config.yaml`, seeds legacy OpenClaw `settings.json`,
+a flat legacy identity, and legacy SQLite message data, then runs real Rust
+`awiki-cli config set --did-domain " Tenant.Example. "`. It verifies the
+loopback `did-auth.replace_did` request, imported k1 to e1 identity rewrite,
+replace-did backup manifest, schema-version-3 upgrade meta, journal cleanup,
+SQLite owner rebinding, and final normalized `tenant.example` config write.
+The focused selector passed with 1 passed, 0 failed, and 0 skipped in 0.88s;
+the config-set focused batch passed with 5 passed, 0 failed, and 0 skipped in
+2.05s; and the full core basic command file passed with 22 passed, 0 failed,
+and 0 skipped in 4.85s. Rust migration contracts passed 25 and 13 tests. No
+production Rust code, dependency, manifest, lockfile, ANP SDK source, dirty
+system-test helper, or mail selector changed. Mail selectors remain deferred.
+
 ## 2026-05-19 Runtime Listener Session-RPC Structure Batch
 
 Detailed report:
@@ -8223,6 +8243,77 @@ legacy DB import, identity replacement RPCs, rollback, or cleanup migrations.
 
 Dependency note: no Rust dependency was added. The exercised path is local JSON
 metadata/journal inspection only.
+
+## 2026-05-19 Config Set Legacy OpenClaw/SQLite Auto-Upgrade System Selector
+
+Timestamp: 2026-05-19T22:10:00+0800.
+
+Scope: add and run a Rust subprocess `awiki-system-test` selector proving
+`config set --did-domain` runs the existing workspace upgrade path for a legacy
+OpenClaw identity plus legacy SQLite fixture before persisting the updated DID
+domain.
+
+System-test change:
+
+- Added
+  `tests_v2/core/test_basic_commands.py::test_config_set_auto_upgrades_legacy_openclaw_identity_and_sqlite`.
+- Updated `tests_v2/core/CLAUDE.md` to include Rust `config set` legacy
+  OpenClaw identity plus legacy SQLite auto-upgrade coverage.
+
+Commands run:
+
+```text
+cd /home/ecs-user/awiki-space/awiki-system-test && python3 -m py_compile tests_v2/core/test_basic_commands.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -ra -q -s tests_v2/core/test_basic_commands.py::test_config_set_auto_upgrades_legacy_openclaw_identity_and_sqlite
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -ra -q tests_v2/core/test_basic_commands.py::test_config_set_did_domain_persists_normalized_domain_and_rejects_invalid_inputs tests_v2/core/test_basic_commands.py::test_config_set_migrates_legacy_config_json_before_persisting_did_domain tests_v2/core/test_basic_commands.py::test_config_set_auto_upgrades_legacy_openclaw_identity_and_sqlite tests_v2/core/test_basic_commands.py::test_config_set_runs_v1_to_v2_cleanup_for_legacy_openclaw_artifacts tests_v2/core/test_basic_commands.py::test_config_set_workspace_upgrade_backup_includes_sqlite_and_go_named_files
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -ra -q tests_v2/core/test_basic_commands.py
+cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check -- tests_v2/core/test_basic_commands.py tests_v2/core/CLAUDE.md
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
+```
+
+Observed results:
+
+- Python syntax check passed.
+- Focused selector: 1 passed, 0 failed, 0 skipped in 0.88s.
+- Config-set focused batch: 5 passed, 0 failed, 0 skipped in 2.05s.
+- Core basic command file: 22 passed, 0 failed, 0 skipped in 4.85s.
+- Touched system-test core file whitespace check passed.
+- `workspace_migration_v0_to_v1_contract`: 25 passed, 0 failed.
+- `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed.
+
+System-test configuration context:
+
+- `AWIKI_CLI_UNDER_TEST=rust`.
+- `AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2`.
+- `AWIKI_CLI_UPDATE_CACHE_ONLY=1`.
+- `PYTHONDONTWRITEBYTECODE=1`.
+- The selector used an isolated awiki-cli workspace and a loopback
+  `127.0.0.1:0` fake `did-auth.replace_did` JSON-RPC server.
+- It did not require mail-service, external message-service, WebSocket, tenant
+  env gates, or real user service-manager permissions.
+
+Coverage:
+
+- Verifies public CLI `config set --did-domain` auto-runs workspace upgrade for
+  legacy OpenClaw identity state plus legacy SQLite state before the config
+  write.
+- Verifies the imported handle-shaped k1 DID is replaced through
+  `did-auth.replace_did`, the identity/auth/DID document state is rewritten,
+  the replace-did backup manifest is created, the SQLite owner is rebound, and
+  the journal is cleared.
+- Verifies the final config write persists the requested normalized
+  `tenant.example` DID domain after upgrade success.
+
+Boundary note: this is public CLI evidence for the local legacy
+workspace-upgrade branch through a loopback fake service. It does not claim
+live external identity-service acceptance, rollback, every YAML
+parser/serializer edge, platform listener cleanup, platform service-manager
+behavior, broad non-mail repository acceptance for this specific batch, or mail
+selectors. Mail selectors remain deferred and were not run or counted.
+
+Dependency note: no Rust dependency was added. SQLite remains on the approved
+`rusqlite + bundled` path, and TLS policy remains Rustls-first.
 
 ## 2026-05-17 Config Set DID Domain System Selector
 
