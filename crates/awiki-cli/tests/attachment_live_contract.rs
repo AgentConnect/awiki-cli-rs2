@@ -968,7 +968,7 @@ impl Drop for TestServer {
 }
 
 fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
     loop {
         match listener.accept() {
             Ok((stream, _)) => return Some(stream),

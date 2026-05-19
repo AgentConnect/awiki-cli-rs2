@@ -107,6 +107,26 @@ wrapper passed with 2 passed, 0 failed, and 0 skipped in 2.03s. No production
 Rust code, dependency, manifest, lockfile, ANP SDK source, dirty system-test
 helper, or mail selector was changed. Mail selectors remain deferred.
 
+## 2026-05-19 Attachment Contract Timeout System-Test Fix
+
+Detailed report:
+`2026-05-19-attachment-contract-timeout-system-test-fix.md`.
+
+Summary: a broad non-mail `tests_v2` run after the K1 subprocess selector
+reported 173 passed, 1 failed, and 16 skipped in 1016.72s. The only failure
+was the Rust-only attachment contract wrapper, which surfaced a local
+`attachment_live_contract` fake-server lifetime issue: under broad-run load the
+loopback server could stop before the real Rust CLI subprocess reached it,
+producing `Connection refused`/`internal_error` instead of the intended
+attachment `not_found` mapping. The fake server accept deadline was extended
+from 30 seconds to 120 seconds. Focused Rust target verification passed 4
+tests, the focused failing function passed, and the focused non-mail
+`awiki-system-test` wrapper passed with 1 passed, 0 failed, and 0 skipped in
+74.86s. No production attachment behavior, dependency, manifest, lockfile, ANP
+SDK source, system-test helper, or mail selector changed. The full broad
+non-mail rerun then passed with 174 passed, 0 failed, and 16 skipped in
+841.35s. Mail selectors remain deferred.
+
 ## 2026-05-19 Runtime Listener Session-RPC Structure Batch
 
 Detailed report:

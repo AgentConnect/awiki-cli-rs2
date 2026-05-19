@@ -1017,6 +1017,21 @@ tests_v2/cli/test_awiki_cli_attachment_rust_contracts.py::test_awiki_cli_attachm
 current best next non-mail implementation lane is not attachment production
 code; mail selectors remain deferred.
 
+Attachment selector system-test failure closure: on 2026-05-19, the broad
+non-mail `tests_v2` run after the K1 subprocess selector produced 173 passed,
+1 failed, and 16 skipped in 1016.72s. The single failure was the Rust-only
+attachment wrapper. The underlying Rust target returned `Connection refused`
+from its loopback fake server under broad-run load, which mapped to
+`internal_error` before the expected attachment `not_found` assertion could be
+observed. This was a fixture lifetime issue, not a production attachment
+parity gap. `attachment_live_contract.rs` now keeps the fake server accept loop
+alive for 120 seconds instead of 30 seconds. The focused failing Rust function
+passed, the full `attachment_live_contract` target passed 4 tests, and the
+focused non-mail wrapper passed with 1 passed, 0 failed, and 0 skipped in
+74.86s. The full broad non-mail `tests_v2` rerun after this fixture fix passed
+with 174 passed, 0 failed, and 16 skipped in 841.35s. Mail selectors remain
+deferred.
+
 Current broad CLI selector evidence: on 2026-05-17, the Rust binary passed a
 broad non-mail `awiki-system-test` subprocess batch under
 `AWIKI_CLI_UNDER_TEST=rust` and `AWIKI_GROUP_E2EE_CONTRACT_TEST=1`, covering
