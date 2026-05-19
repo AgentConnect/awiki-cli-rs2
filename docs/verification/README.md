@@ -68,6 +68,26 @@ final broad non-mail run passed with 173 passed, 0 failed, and 16 skipped in
 was not reproduced by a focused rerun and is recorded as a timing/service-state
 observation rather than a current blocker.
 
+## 2026-05-19 tests_v2 Group E2EE Enabled and Broad Rerun
+
+Detailed report:
+`2026-05-19-tests-v2-group-e2ee-enabled-and-broad-rerun.md`.
+
+Summary: the system-test-first lane covered the non-mail Group E2EE selectors
+that are skipped in the normal flag-off broad run. A read-only Native Agent
+mapped the selector prerequisites and confirmed the selectors are mail
+independent. The local ANP Rust SDK `anp-mls` binary was built after temporarily
+switching Cargo from the configured USTC mirror to crates.io sparse; the Cargo
+config was restored afterward. `message-service` was temporarily started with
+`security.group_e2ee_contract_test_enabled = true` for focused enabled-mode
+tests, then restored to `false`. Focused enabled-mode results were 1 passed for
+the real MLS smoke selector, 12 passed across the enabled local Group E2EE
+files, and 3 passed for the Rust-only Group E2EE contract wrapper. A final
+broad non-mail flag-off `tests_v2` rerun passed with 173 passed, 0 failed, and
+16 skipped in 667.65s. No Rust code, dependency, manifest, lockfile, ANP SDK
+source, system-test helper, or mail selector was changed. Mail selectors remain
+deferred and were not counted as passed.
+
 ## 2026-05-19 Runtime Listener Session-RPC Structure Batch
 
 Detailed report:
