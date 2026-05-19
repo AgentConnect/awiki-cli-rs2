@@ -1562,15 +1562,17 @@ non-verbose behavior, and local/recovery command exemptions for
 message-service local topology, service-manager permissions, or registered
 identities.
 
-Current full-suite attempt evidence: on 2026-05-17, `AWIKI_CLI_UNDER_TEST=rust`
-with `AWIKI_GROUP_E2EE_CONTRACT_TEST=1` ran `uv run pytest tests_v2 -ra -q`.
-The result was 97 passed, 1 failed, and 9 skipped in 127.85s. The only failure
-was `tests_v2/mail/test_awiki_cli_mail_notification_local.py::test_awiki_cli_mail_notification_flow_local`
-because `awiki-mail-service` was not reachable at `http://127.0.0.1:9899`;
-four additional mail cases skipped for the same unavailable service. This is
-tracked as an environment blocker rather than Rust CLI acceptance. Full
-`tests_v2` acceptance remains pending until mail-service-backed selectors are
-run against a reachable mail service.
+Current broad non-mail system-test evidence: on 2026-05-19, after the
+config-set legacy identity/SQLite selector landed, a Rust-under-test broad run
+used `AWIKI_GROUP_E2EE_CONTRACT_TEST=0`, `AWIKI_ENABLE_MAIL_TESTS=0`, and
+`--ignore=tests_v2/mail`:
+`AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -ra -q --ignore=tests_v2/mail tests_v2`.
+The result was 175 passed, 0 failed, and 16 skipped in 778.04s. The skipped
+selectors were limited to hidden Group E2EE enabled-mode gates, one local
+topology-only direct test, and three multi-tenant admission tests gated on
+extra tenant env/data. Mail selectors remain deferred and are not counted as
+passed; full mail-backed `tests_v2` acceptance remains pending until the
+mail-service-backed selectors are explicitly run.
 
 | Go path | Go symbol / feature | Rust path | Status | Tests | Notes |
 | --- | --- | --- | --- | --- | --- |

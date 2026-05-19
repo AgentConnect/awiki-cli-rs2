@@ -48,6 +48,24 @@ message-service HTTP/WebSocket 502 path. No Rust code, dependency, manifest,
 lockfile, or system-test helper was changed. Mail selectors remain deferred and
 were not counted as passed.
 
+## 2026-05-19 tests_v2 Non-Mail Broad Pass After Config Selector
+
+Detailed report:
+`2026-05-19-tests-v2-non-mail-broad-pass-after-config-selector.md`.
+
+Summary: after the config-set legacy OpenClaw identity plus legacy SQLite
+selector and Rust evidence docs were committed and pushed, a broad non-mail
+`tests_v2` pass was run against the Rust CLI with
+`AWIKI_GROUP_E2EE_CONTRACT_TEST=0`, `AWIKI_ENABLE_MAIL_TESTS=0`, and
+`--ignore=tests_v2/mail`. The run passed with 175 passed, 0 failed, and 16
+skipped in 778.04s (0:12:58). The skip set was limited to hidden Group E2EE
+enabled-mode selectors, one local-topology direct test, and three multi-tenant
+tenant-gated selectors. User-service health returned HTTP 200, message-service
+and ANP message-service GET probes returned HTTP 405 method guards, and the
+local `message-service` process was active. No main-flow system-test failure was
+found and no Rust production fix was needed. Mail selectors remain deferred and
+were not run or counted.
+
 ## 2026-05-19 tests_v2 Non-Mail Broad Pass
 
 Detailed report:
