@@ -66,6 +66,23 @@ local `message-service` process was active. No main-flow system-test failure was
 found and no Rust production fix was needed. Mail selectors remain deferred and
 were not run or counted.
 
+## 2026-05-19 Site Write Live Selector
+
+Detailed report:
+`2026-05-19-site-write-live-selector.md`.
+
+Summary: the system-test-first lane added focused live acceptance for the
+already implemented Rust `site root set` and `site page create` commands. The
+new selector runs real Rust subprocesses against the configured `/site/rpc`
+service boundary, verifies Go-shaped non-admin `forbidden` envelopes, and
+checks `meta.dry_run=false`. Rust `site_contract` and `site_live_contract`
+passed 10 tests; the focused live site write selector passed with 1 passed, 0
+failed, and 0 skipped in 1.69s; and the full `tests_v2/site/test_site_cli.py`
+file passed with 3 passed, 0 failed, and 0 skipped in 3.13s. No Rust
+production code, dependency, manifest, lockfile, ANP SDK source, or mail
+selector changed. Live tenant-admin CRUD success and state-dependent
+update/rename/delete write acceptance remain future fixture-dependent work.
+
 ## 2026-05-19 tests_v2 Non-Mail Broad Pass
 
 Detailed report:
