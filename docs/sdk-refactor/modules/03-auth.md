@@ -6,15 +6,14 @@
 
 ## 1. 目标
 
-`auth` 负责 DID auth、JWT/session 刷新、401 重试策略和会话状态转换。登录是 `im-core` 功能，因为 CLI 和 App 都需要。
+`auth` 负责 DID auth、JWT/session 刷新、401 重试策略和会话状态转换。登录是 `im-core` 功能，因为 CLI 和 App 都需要。公开 SDK 入口应挂在绑定身份的 `ImClient` 上，不要求调用方传 `ActorContext`、`IdentityPaths` 或 `AuthStatePaths`。
 
 ## 2. 主要职责
 
-- `login_with_did(actor)`。
-- `refresh_session(actor)`。
-- `ensure_session(actor, scope)`。
-- `logout(actor)`。
-- `build_did_auth_request(...)`。
+- `login()`。
+- `refresh_session()`。
+- `ensure_session(scope)`。
+- `logout()`。
 - 处理服务端 token 返回、过期、401 重试策略。
 - 返回 `SessionUpdate`，Phase A 可按显式 auth/session 路径保存，也可返回给调用方二次持久化。
 
@@ -30,44 +29,24 @@ token 存储位置由 CLI 或 App 通过路径参数决定；`im-core` 不自行
 
 ```rust
 pub struct AuthService<'a> {
-    core: &'a ImCore,
+    client: &'a ImClient,
 }
 
 impl AuthService<'_> {
-    pub async fn login_with_did(
-        &self,
-        actor: ActorContext,
-        paths: &IdentityPaths,
-        auth_paths: &AuthStatePaths,
-    ) -> ImResult<SessionBundle>;
+    pub async fn login(&self) -> ImResult<SessionBundle>;
 
-    pub async fn refresh_session(
-        &self,
-        actor: ActorContext,
-        auth_paths: &AuthStatePaths,
-    ) -> ImResult<SessionUpdate>;
+    pub async fn refresh_session(&self) -> ImResult<SessionUpdate>;
 
     pub async fn ensure_session(
         &self,
-        actor: ActorContext,
         scope: AuthScope,
-        auth_paths: &AuthStatePaths,
     ) -> ImResult<SessionBundle>;
 
-    pub fn build_did_auth_request(
-        &self,
-        actor: &ActorContext,
-        paths: &IdentityPaths,
-        challenge: DidAuthChallenge,
-    ) -> ImResult<DidAuthRequest>;
-
-    pub fn logout(
-        &self,
-        actor: ActorContext,
-        auth_paths: &AuthStatePaths,
-    ) -> ImResult<SessionUpdate>;
+    pub fn logout(&self) -> ImResult<SessionUpdate>;
 }
 ```
+
+内部实现可以有 `build_did_auth_request(actor, paths, challenge)` 这类 helper，但它不作为 SDK 主接口暴露。
 
 ## 5. CLI 边界
 

@@ -6,7 +6,7 @@
 
 ## 1. 目标
 
-`discovery` 根据 DID document、profile 和服务能力选择 message、WebSocket、attachment 等 endpoint。它不解析 CLI config，也不选择 workspace 路径。
+`discovery` 根据 DID document、profile 和服务能力选择 message、WebSocket、attachment 等 endpoint。它不解析 CLI config，也不选择 workspace 路径。该模块主要是 `messages`、`attachments`、`realtime` 等模块的内部能力，不建议作为 App 面向的主 SDK 模块暴露。
 
 ## 2. 主要职责
 
@@ -17,42 +17,42 @@
 - 选择 attachment service。
 - 校验 profile/security profile 支持情况。
 
-## 3. 接口草案
+## 3. 内部接口草案
 
 ```rust
-pub struct DiscoveryService<'a> {
+pub(crate) struct DiscoveryService<'a> {
     core: &'a ImCore,
 }
 
 impl DiscoveryService<'_> {
-    pub fn parse_did_document(
+    pub(crate) fn parse_did_document(
         &self,
         document: DidDocument,
     ) -> ImResult<DiscoveredServices>;
 
-    pub async fn discover_peer_services(
+    pub(crate) async fn discover_peer_services(
         &self,
         peer: PeerRef,
     ) -> ImResult<DiscoveredServices>;
 
-    pub async fn capabilities(
+    pub(crate) async fn capabilities(
         &self,
         endpoint: ServiceEndpoint,
     ) -> ImResult<ServiceCapabilities>;
 
-    pub fn select_message_endpoint(
+    pub(crate) fn select_message_endpoint(
         &self,
         services: &DiscoveredServices,
         requirements: MessageEndpointRequirements,
     ) -> ImResult<ServiceEndpoint>;
 
-    pub fn select_websocket_endpoint(
+    pub(crate) fn select_websocket_endpoint(
         &self,
         services: &DiscoveredServices,
         requirements: RealtimeEndpointRequirements,
     ) -> ImResult<ServiceEndpoint>;
 
-    pub fn select_attachment_endpoint(
+    pub(crate) fn select_attachment_endpoint(
         &self,
         services: &DiscoveredServices,
         requirements: AttachmentEndpointRequirements,
@@ -65,3 +65,4 @@ impl DiscoveryService<'_> {
 - 网络 endpoint 来自 `ImCoreConfig`、DID document 或领域请求。
 - `discovery` 不读取 CLI 配置文件。
 - `discovery` 不知道当前调用方是 CLI 还是 App。
+- App/CLI 通常不直接调用 endpoint selection API；高层业务接口应在发送消息、下载附件或启动 realtime 时自动完成 discovery。

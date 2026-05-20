@@ -10,8 +10,8 @@
 
 ## 2. 主要职责
 
-- `connect(actor, options) -> RealtimeSession`。
-- `send_rpc(session, request)`。
+- `run(options, shutdown) -> RealtimeExit`。
+- `connect(options) -> RealtimeHandle`。
 - `consume(session) -> Stream<ImEvent>` 或同步等价接口。
 - WebSocket response / notification 分类。
 - pending request 路由。
@@ -42,32 +42,24 @@ pub struct RealtimeHandle {
 }
 
 pub struct RealtimeService<'a> {
-    core: &'a ImCore,
+    client: &'a ImClient,
 }
 
 impl RealtimeService<'_> {
     pub async fn connect(
         &self,
-        actor: ActorContext,
         options: RealtimeOptions,
-    ) -> ImResult<RealtimeSession>;
+    ) -> ImResult<RealtimeHandle>;
 
     pub async fn run_until_shutdown(
         &self,
-        actor: ActorContext,
         options: RealtimeOptions,
         shutdown: ShutdownSignal,
     ) -> ImResult<RealtimeExit>;
-
-    pub async fn send_rpc(
-        &self,
-        session: &RealtimeSession,
-        request: RealtimeRpcRequest,
-    ) -> ImResult<RealtimeRpcResponse>;
 }
 ```
 
-实际落地时可以选择 stream、callback、channel 或 handle，但必须保持一个原则：`im-core` 提供可运行的 IM realtime engine，CLI/App 选择如何启动和停止它。
+实际落地时可以选择 stream、callback、channel 或 handle，但必须保持一个原则：`im-core` 提供可运行的 IM realtime engine，CLI/App 选择如何启动和停止它。`send_rpc`、raw `RealtimeSession` 和 WebSocket frame 处理属于内部 transport 层，不作为 SDK 主接口暴露。
 
 ## 5. 不负责
 

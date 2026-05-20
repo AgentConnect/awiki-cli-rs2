@@ -6,20 +6,17 @@
 
 ## 1. 目标
 
-`identity` 包含当前 CLI 的大部分 `id.*` 业务能力，但不包含 CLI 的本地文件布局。它负责注册、恢复、绑定、解析、profile、DID 替换等业务顺序和验证规则。
+`identity` 包含当前 CLI 的大部分 `id.*` 业务能力，但不包含 CLI 的本地文件布局。它负责注册、恢复、绑定、解析、profile、DID 替换等业务顺序和验证规则。公开 SDK 应以 `IdentityRegistry` 和绑定身份的 `ImClient` 为入口，避免 App/CLI 直接传路径或 actor。
 
 ## 2. 主要职责
 
-- `register_handle(actor/input)`：注册 handle-backed identity。
+- `register_handle(input)`：注册 handle-backed identity。
 - `recover_handle(input)`：恢复 handle。
-- `bind_contact(actor, phone/email/otp)`：绑定手机号或邮箱。
+- `bind_contact(phone/email/otp)`：绑定手机号或邮箱。
 - `resolve_identity(handle_or_did)`：DID / handle 解析。
-- `load_identity(paths)`：从显式 DID document、签名私钥、E2EE 私钥、auth/session 路径加载当前身份上下文。
-- `summarize_identity(paths)`：读取显式路径并返回 status/profile/security 摘要。
-- `summarize_identities(identity_path_set)`：对 CLI 或 App 已经枚举出的 identity 路径集合做业务摘要；不自行扫描工作区。
 - `switch_identity(identity_ref)`：返回切换意图和所需目标 identity 信息；默认 identity 文件更新由 CLI 完成。
-- `get_profile(subject)` / `update_profile(actor, patch)`。
-- `replace_did(actor, request, output_paths)`：使用调用方传入的输出路径保存新 DID document 和私钥，并返回明确风险信息。
+- `get_profile(subject)` / `update_profile(patch)`。
+- `replace_did(request)`：生成并保存新 DID document 和私钥，并返回明确风险信息。
 - `import_legacy_identity(plan)`：可作为迁移能力，但 CLI 负责选择 legacy 路径。
 
 ## 3. Phase A 路径需求
@@ -38,7 +35,7 @@
 - `ImCore` 是环境级入口，不绑定单个身份。它持有 `ImCoreConfig`、`ImCorePaths` 和身份注册表访问能力。
 - `IdentityRegistry` 负责列出、解析、加载和设置默认身份。
 - `IdentitySelector` 表达调用方选择身份的方式，例如 default、identity id、DID、handle、CLI identity name。
-- `ImClient` / `ImSession` 是绑定单个 `ActorContext` 和单个 `IdentityRecord` 的业务客户端。
+- `ImClient` / `ImSession` 是绑定单个身份运行时的业务客户端；公开层只暴露 `IdentitySummary`、DID、handle 等身份摘要，不暴露 `ActorContext`、私钥路径、auth 路径或 secure 路径。
 - `messages`、`groups`、`attachments`、`secure`、`realtime` 等业务能力对外应优先通过绑定身份的 `ImClient` 调用。
 
 不推荐把“当前身份”作为 `im-core` 的全局隐式状态。`Default identity` 是 CLI 或 App 的 UX 选择，真正执行业务的身份必须在 `ImClient` 中显式绑定。
@@ -63,7 +60,7 @@ alice_client.realtime()
 多身份下的隔离规则：
 
 - auth/session 必须按身份隔离，`alice.auth()` 只读写 alice 的 auth paths，`bob.auth()` 只读写 bob 的 auth paths。
-- secure / MLS 必须按身份隔离，`IdentityPaths.e2ee_private_path`、direct session、prekey、secure outbox、MLS state 都应绑定在 `IdentityRecord` 或 `ImClient` 上。
+- secure / MLS 必须按身份隔离，`IdentityPaths.e2ee_private_path`、direct session、prekey、secure outbox、MLS state 都应绑定在内部 `IdentityRecord` / `ClientIdentityRuntime` 上，并由 `ImClient` 间接持有。
 - 本地 SQLite 可以在 Phase A 使用共享数据库，但所有 message/group/contact/outbox 记录和查询必须按 `owner_did` 或 `owner_identity_id` 隔离。
 - `ImClient` 应自动向本地状态查询注入 owner，避免 CLI handler 或 App 手动拼 owner 条件。
 - `realtime` 多身份监听可以由调用方为多个 `ImClient` 分别启动 runner；第一版不要求提供 `run_many` convenience API。
@@ -78,17 +75,29 @@ pub struct ImCorePaths {
 }
 
 pub struct IdentityRegistryPaths {
-    pub identity_root_dir: PathBuf,
+    pub entries: Vec<IdentityPathBundle>,
+    pub identity_root_dir: Option<PathBuf>,
     pub default_identity_path: Option<PathBuf>,
     pub registry_path: Option<PathBuf>,
 }
 
-pub struct IdentityRecord {
+pub struct IdentitySummary {
     pub id: IdentityId,
     pub did: Did,
     pub handle: Option<String>,
     pub name: Option<String>,
     pub device_id: Option<String>,
+    pub is_default: bool,
+}
+
+pub(crate) struct IdentityRecord {
+    pub summary: IdentitySummary,
+    pub paths: IdentityRuntimePaths,
+}
+
+pub struct IdentityPathBundle {
+    pub id: IdentityId,
+    pub name: Option<String>,
     pub paths: IdentityRuntimePaths,
 }
 
@@ -99,7 +108,7 @@ pub struct IdentityRuntimePaths {
 }
 ```
 
-如果当前没有 registry 文件，`identity_root_dir` 可以作为显式枚举入口。关键限制不变：`im-core` 可以在调用方传入的目录下枚举身份，但不能自己发现 workspace，也不能读取 CLI config。
+`IdentityPathBundle` 是 Phase A 构造 `ImCore` 时的路径参数，不是业务 API 的返回值。公开身份枚举仍返回 `IdentitySummary`。如果当前没有 registry 文件，`identity_root_dir` 可以作为显式枚举入口。关键限制不变：`im-core` 可以在调用方传入的目录下枚举身份，但不能自己发现 workspace，也不能读取 CLI config。
 
 ## 5. 接口草案
 
@@ -117,7 +126,7 @@ pub struct IdentityRegistry<'a> {
 }
 
 pub struct IdentityService<'a> {
-    core: &'a ImCore,
+    client: &'a ImClient,
 }
 
 impl ImCore {
@@ -130,42 +139,39 @@ impl ImCore {
 }
 
 impl IdentityRegistry<'_> {
-    pub fn list(&self) -> ImResult<Vec<IdentityRecord>>;
-
-    pub fn resolve(
-        &self,
-        selector: IdentitySelector,
-    ) -> ImResult<IdentityRecord>;
-
-    pub fn load(
-        &self,
-        selector: IdentitySelector,
-    ) -> ImResult<LoadedIdentity>;
-
-    pub fn default_identity(&self) -> ImResult<Option<IdentityRecord>>;
-
-    pub fn set_default_identity(
-        &self,
-        selector: IdentitySelector,
-    ) -> ImResult<IdentityRecord>;
-}
-
-impl IdentityService<'_> {
     pub async fn register_handle(
         &self,
         request: RegisterHandleRequest,
-        output_paths: IdentityOutputPaths,
     ) -> ImResult<IdentityRegistration>;
 
     pub async fn recover_handle(
         &self,
         request: RecoverHandleRequest,
-        output_paths: IdentityOutputPaths,
     ) -> ImResult<RecoveredIdentity>;
 
+    pub fn list(&self) -> ImResult<Vec<IdentitySummary>>;
+
+    pub fn resolve(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<IdentitySummary>;
+
+    pub(crate) fn load(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<LoadedIdentity>;
+
+    pub fn default_identity(&self) -> ImResult<Option<IdentitySummary>>;
+
+    pub fn set_default_identity(
+        &self,
+        selector: IdentitySelector,
+    ) -> ImResult<IdentitySummary>;
+}
+
+impl IdentityService<'_> {
     pub async fn bind_contact(
         &self,
-        actor: ActorContext,
         request: BindContactRequest,
     ) -> ImResult<BindContactResult>;
 
@@ -174,37 +180,23 @@ impl IdentityService<'_> {
         subject: IdentitySubject,
     ) -> ImResult<ResolvedIdentity>;
 
-    pub fn load_identity(
-        &self,
-        paths: &IdentityPaths,
-    ) -> ImResult<ActorContext>;
-
-    pub fn summarize_identity(
-        &self,
-        paths: &IdentityPaths,
-    ) -> ImResult<IdentitySummary>;
-
-    pub async fn get_profile(
-        &self,
-        subject: IdentitySubject,
-    ) -> ImResult<Profile>;
+    pub async fn profile(&self) -> ImResult<Profile>;
 
     pub async fn update_profile(
         &self,
-        actor: ActorContext,
         patch: ProfilePatch,
     ) -> ImResult<Profile>;
 
     pub async fn replace_did(
         &self,
-        actor: ActorContext,
         request: ReplaceDidRequest,
-        output_paths: IdentityOutputPaths,
     ) -> ImResult<ReplaceDidResult>;
 }
 ```
 
-`IdentityRegistry::list()` 应尽量只读 metadata，不读取私钥。`IdentityRegistry::load()` 或 `ImCore::client(selector)` 才读取 DID document、校验关键路径并构造 `ActorContext`。
+`IdentityRegistry::list()` / `resolve()` / `default_identity()` 只返回 `IdentitySummary`。`IdentityRegistry::load()` 是 `pub(crate)` 内部装配函数，或由 `ImCore::client(selector)` 间接使用；只有这一步才读取 DID document、校验关键路径并构造内部 `ActorContext`。注册、恢复、默认身份选择属于环境级 identity registry 能力；绑定手机号/邮箱、更新 profile、replace DID 属于已绑定身份的 `client.identity()` 能力。
+
+路径级函数如 `load_identity(paths)`、`summarize_identity(paths)`、`summarize_identities(identity_path_set)` 和需要 `IdentityOutputPaths` 的写入步骤属于 registry/client 构造和注册恢复流程的内部实现，不作为 App 面向主接口暴露。公开接口不能返回 `IdentityRecord` 或 `IdentityRuntimePaths`，否则调用方会拿到私钥、auth、secure 状态路径，破坏高层 SDK 边界。
 
 ## 6. CLI 边界
 

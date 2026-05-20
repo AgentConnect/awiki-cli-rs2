@@ -12,21 +12,21 @@
 
 - handle 补全与规范化。
 - DID/handle lookup。
-- 联系人 upsert、查询、来源标注。
+- 联系人保存、查询、来源标注。
 - profile 读取结果到联系人模型的投影。
 - 关系状态查询和关系事件记录。
 
 ## 3. Phase A 状态需求
 
-- 可通过 `LocalStatePaths.database_file` 使用本地 SQLite contact cache。
+- 可通过 `ImClient` 内部绑定的本地 SQLite contact cache 读写联系人。
 - 远端 lookup 使用 `ImCoreConfig` 中的服务端点。
-- CLI 负责传入 owner DID 和数据库路径，不让 `im-core` 扫描当前 workspace。
+- CLI 负责在构造 `ImCorePaths` 时传入数据库路径，不让 `im-core` 扫描当前 workspace；公开 directory 调用不传 owner DID 或数据库路径。
 
 ## 4. 接口草案
 
 ```rust
 pub struct DirectoryService<'a> {
-    core: &'a ImCore,
+    client: &'a ImClient,
 }
 
 impl DirectoryService<'_> {
@@ -40,27 +40,24 @@ impl DirectoryService<'_> {
         handle: Handle,
     ) -> ImResult<ResolvedIdentity>;
 
-    pub fn upsert_contact(
+    pub fn save_contact(
         &self,
-        owner: Did,
-        contact: ContactRecord,
-        local_state: &LocalStatePaths,
-    ) -> ImResult<()>;
+        request: SaveContactRequest,
+    ) -> ImResult<Contact>;
 
-    pub fn list_contacts(
+    pub fn contacts(
         &self,
-        owner: Did,
         query: ContactQuery,
-        local_state: &LocalStatePaths,
     ) -> ImResult<ContactPage>;
 
     pub async fn relation_status(
         &self,
-        actor: ActorContext,
         peer: PeerRef,
     ) -> ImResult<RelationStatus>;
 }
 ```
+
+`ContactRecord`、`upsert_contact_record(owner, record, paths)` 这类 store 级对象和函数属于内部实现。公开接口使用 `SaveContactRequest`、`Contact`、`ContactPage` 等领域 DTO，避免调用方绕过 owner 注入、缓存合并和关系状态规则。
 
 ## 5. CLI 边界
 
@@ -72,3 +69,5 @@ CLI 负责：
 - 是否展示缓存命中、刷新策略等 CLI UX。
 
 `directory` 不负责读取 CLI config 或选择 SQLite 文件位置。
+
+公开接口挂在 `ImClient` 上，自动注入 owner DID 和 local state。`owner`、`LocalStatePaths` 只允许出现在内部 store helper 中。

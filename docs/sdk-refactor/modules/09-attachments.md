@@ -10,18 +10,14 @@
 
 ## 2. 主要职责
 
-- `prepare_upload(source)`：Phase A 从显式 `AttachmentSourceRef::Path` 读取 bytes、识别 mime、计算 digest。
-- `create_slot(actor, target, prepared)`。
-- `commit_object(actor, slot, object)`。
-- `build_manifest(object, caption)`。
-- `send(actor, target, source, caption)`。
+- `send(target, AttachmentSendRequest)`：完成读取、digest、slot、上传、commit、manifest 和消息发送。
 - `select_for_download(messages, message_id, attachment_id)`。
-- `download(actor, target, message_id, attachment_id, sink)`。
+- `download(DownloadAttachmentRequest)`：完成附件定位、ticket 获取、下载和写入目标。
 
 ## 3. Phase A 路径需求
 
-- `AttachmentSourceRef::Path(PathBuf)`：CLI 从 `--file`、`--text-file`、stdin 临时文件等输入转换而来。
-- `AttachmentSinkRef::Path(PathBuf)`：CLI 从 `--output` 转换而来。
+- `AttachmentInput::LocalFile(PathBuf)`：CLI 从 `--file`、`--text-file`、stdin 临时文件等输入转换而来；App 可使用自己的 sandbox path。
+- `AttachmentDestination::LocalFile(PathBuf)`：CLI 从 `--output` 转换而来；App 可使用自己的 sandbox path。
 - `AttachmentTempPaths`：可选，用于大文件 digest、分片上传、下载临时文件和原子 rename。
 - `ImCoreConfig`：attachment service endpoint。
 
@@ -29,54 +25,27 @@
 
 ```rust
 pub struct AttachmentService<'a> {
-    core: &'a ImCore,
+    client: &'a ImClient,
 }
 
 impl AttachmentService<'_> {
-    pub fn prepare_upload(
-        &self,
-        source: AttachmentSourceRef,
-    ) -> ImResult<PreparedAttachment>;
-
-    pub async fn create_slot(
-        &self,
-        actor: ActorContext,
-        target: MessageTarget,
-        prepared: PreparedAttachment,
-    ) -> ImResult<AttachmentSlot>;
-
-    pub async fn commit_object(
-        &self,
-        actor: ActorContext,
-        slot: AttachmentSlot,
-        object: PreparedAttachment,
-    ) -> ImResult<AttachmentObject>;
-
-    pub fn build_manifest(
-        &self,
-        object: AttachmentObject,
-        caption: Option<String>,
-    ) -> ImResult<AttachmentManifest>;
-
     pub async fn send(
         &self,
-        actor: ActorContext,
         target: MessageTarget,
-        source: AttachmentSourceRef,
-        caption: Option<String>,
+        request: AttachmentSendRequest,
     ) -> ImResult<SendMessageResult>;
 
     pub async fn download(
         &self,
-        actor: ActorContext,
         request: DownloadAttachmentRequest,
-        sink: AttachmentSinkRef,
     ) -> ImResult<DownloadedAttachment>;
 }
 ```
 
+`prepare_upload`、`create_slot`、`commit_object`、`build_manifest` 是内部步骤，不应作为 App/CLI 主接口暴露。测试需要时可以放在 internal module 或 feature-gated helper 中。
+
 ## 5. CLI 边界
 
-- `im-core` 不接收 CLI 的 `--output` 字符串作为业务概念；它接收 `AttachmentSinkRef::Path`。
+- `im-core` 不接收 CLI 的 `--output` 字符串作为业务概念；它接收 `AttachmentDestination::LocalFile` 这类领域化目的地。
 - 本地路径合法性、覆盖策略、文件权限由 CLI 在调用前决定。
 - Phase B 可把 path source/sink 扩展为 memory、app storage 或外部 blob 能力。

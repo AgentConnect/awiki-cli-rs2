@@ -19,44 +19,59 @@
 - owner DID 隔离规则。
 - 迁移前后数据一致性规则。
 
-## 3. 接口草案
+## 3. 生命周期入口与内部接口
+
+本地状态初始化/迁移是 CLI 和 App 都可能需要的生命周期能力，可以通过 `core.bootstrap()` 暴露成高层入口：
 
 ```rust
-pub struct LocalStateService<'a> {
+pub struct CoreBootstrap<'a> {
+    core: &'a ImCore,
+}
+
+impl CoreBootstrap<'_> {
+    pub fn initialize_local_state(&self) -> ImResult<LocalStateStatus>;
+    pub fn migrate_local_state(&self) -> ImResult<MigrationReport>;
+}
+```
+
+下面的 owner/path 级接口属于 `im-core` 内部持久化实现或测试辅助，不作为 App/CLI 主 SDK 暴露：
+
+```rust
+pub(crate) struct LocalStateService<'a> {
     core: &'a ImCore,
 }
 
 impl LocalStateService<'_> {
-    pub fn initialize(
+    pub(crate) fn initialize(
         &self,
         paths: &LocalStatePaths,
     ) -> ImResult<LocalStateStatus>;
 
-    pub fn migrate(
+    pub(crate) fn migrate(
         &self,
         paths: &LocalStatePaths,
     ) -> ImResult<MigrationReport>;
 
-    pub fn open(
+    pub(crate) fn open(
         &self,
         paths: &LocalStatePaths,
     ) -> ImResult<LocalStateConnection>;
 
-    pub fn store_messages(
+    pub(crate) fn store_messages(
         &self,
         owner: Did,
         messages: Vec<MessageRecord>,
         paths: &LocalStatePaths,
     ) -> ImResult<()>;
 
-    pub fn query_inbox(
+    pub(crate) fn query_inbox(
         &self,
         owner: Did,
         query: InboxQuery,
         paths: &LocalStatePaths,
     ) -> ImResult<MessagePage>;
 
-    pub fn mark_read(
+    pub(crate) fn mark_read(
         &self,
         owner: Did,
         ids: Vec<MessageId>,
@@ -74,6 +89,8 @@ impl LocalStateService<'_> {
 - legacy 路径自动发现。
 
 CLI 负责决定何时调用 path-based 初始化/迁移函数，并把 SQLite 文件路径传入 `im-core`。
+
+`local_state` 不建议作为 App 面向的主 SDK 模块暴露。App 和 CLI 应通过 `client.messages()`、`client.groups()`、`client.directory()`、`client.secure()` 等高层接口读写本地状态。`LocalStateService` 是 core 内部持久化能力和测试辅助，避免调用方绕过 owner 隔离、缓存合并和业务规则。
 
 ## 5. Phase B 可选演进
 

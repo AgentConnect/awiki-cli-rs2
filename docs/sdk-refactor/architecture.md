@@ -194,7 +194,7 @@ im-core = { path = "../im-core" }
 - service base URL / did domain / runtime mode 的 CLI 默认值。
 - config upgrade。
 
-CLI 把配置转换成 `ImCoreConfig` 和 `ImCorePaths` / `IdentityPaths` / `LocalStatePaths` 等路径参数。
+CLI 把配置转换成 `ImCoreConfig` 和 `ImCorePaths`。`IdentityPaths`、`LocalStatePaths`、`SecureStatePaths` 等子路径 DTO 只在构造 path bundle、身份注册/恢复和 bootstrap 阶段出现；业务 handler 不直接持有或传递这些底层路径，而是通过 `core.client(selector)` 得到绑定身份的 `ImClient`。
 
 ### 5.3 本机状态初始化
 
@@ -245,11 +245,28 @@ CLI 在 Phase A 负责构造路径 bundle，例如 DID document path、key1 priv
 
 ```rust
 pub struct ImCorePaths {
+    pub identities: IdentityRegistryPaths,
+    pub local_state: LocalStatePaths,
+    pub runtime: RuntimePaths,
+}
+
+pub struct IdentityRegistryPaths {
+    pub entries: Vec<IdentityPathBundle>,
+    pub identity_root_dir: Option<PathBuf>,
+    pub default_identity_path: Option<PathBuf>,
+    pub registry_path: Option<PathBuf>,
+}
+
+pub struct IdentityPathBundle {
+    pub id: IdentityId,
+    pub name: Option<String>,
+    pub paths: IdentityRuntimePaths,
+}
+
+pub struct IdentityRuntimePaths {
     pub identity: IdentityPaths,
     pub auth: AuthStatePaths,
-    pub local_state: LocalStatePaths,
     pub secure: SecureStatePaths,
-    pub runtime: RuntimePaths,
 }
 
 pub struct IdentityPaths {
@@ -287,18 +304,19 @@ pub struct RuntimePaths {
     pub notification_queue_path: Option<PathBuf>,
 }
 
-pub enum AttachmentSourceRef {
-    Path(PathBuf),
+pub enum AttachmentInput {
+    LocalFile(PathBuf),
 }
 
-pub enum AttachmentSinkRef {
-    Path(PathBuf),
+pub enum AttachmentDestination {
+    LocalFile(PathBuf),
 }
 ```
 
 路径参数规则：
 
 - DTO 字段表达 core 需要的语义，不表达 CLI 目录布局规则。
+- 多身份场景下，CLI/App 应优先传入 `IdentityPathBundle` 列表，为每个身份显式提供 DID document、签名私钥、E2EE 私钥、auth/session、secure state 路径；`identity_root_dir` 只作为兼容当前 CLI 布局的枚举入口。
 - `im-core` 可以读取/写入这些显式路径，但不能自己拼出 workspace 默认路径。
 - `im-core` 可以校验“路径缺失、文件不可读、格式错误”，但不负责 chmod、备份、目录创建策略。
 - CLI 在调用前创建目录、检查覆盖策略、设置权限，并在需要时把 legacy 路径转换成新路径。
@@ -308,30 +326,16 @@ pub enum AttachmentSinkRef {
 
 ```rust
 let paths = ImCorePaths {
-    identity: IdentityPaths {
-        identity_dir,
-        did_document_path,
-        key1_private_path,
-        e2ee_private_path,
-        metadata_path,
-    },
-    auth: AuthStatePaths {
-        auth_path,
-        session_path,
-        token_cache_path,
+    identities: IdentityRegistryPaths {
+        entries: identity_path_bundles,
+        identity_root_dir,
+        default_identity_path,
+        registry_path,
     },
     local_state: LocalStatePaths {
         database_file,
         migration_dir,
         temp_dir,
-    },
-    secure: SecureStatePaths {
-        direct_session_dir,
-        signed_prekey_dir,
-        one_time_prekey_dir,
-        secure_outbox_dir,
-        mls_state_dir,
-        mls_provider_binary,
     },
     runtime: RuntimePaths {
         runtime_dir,
@@ -358,12 +362,31 @@ Phase B 的目标不是改变业务 API，也不是删除当前 SQLite、HTTP、
 
 ## 8. API 风格和 DTO 规则
 
+### 8.1 外部 SDK 与内部接口
+
+外部 SDK 接口必须是高层、身份绑定的接口。`ImCore` 是环境级入口，`ImClient` 是绑定单个身份后的业务入口。业务模块对外不要要求调用方传 `ActorContext`、`IdentityPaths`、`AuthStatePaths`、`SecureStatePaths`、`LocalStatePaths`、RPC params、wire payload、slot id、raw session handle 等底层对象。
+
+公开接口规则：
+
+- `core.client(selector)` 负责解析身份、加载 DID document、绑定 auth/secure/local state paths，并返回 `ImClient`。
+- `IdentityRegistry::list()` / `resolve()` / `default_identity()` 返回 `IdentitySummary`，不返回包含路径的 `IdentityRecord`。`IdentityRecord`、`LoadedIdentity`、`ClientIdentityRuntime` 是内部装配对象。
+- `ImClient` 对外提供 `current_identity()`、`did()`、`handle()` 等摘要访问器，不提供 `actor()` 或 `paths()` 逃逸口。
+- `client.messages()`、`client.groups()`、`client.attachments()`、`client.secure()`、`client.realtime()` 自动使用该身份的 actor 和路径。
+- SDK 请求 DTO 表达用户意图，例如 “发送消息”、“下载附件”、“确保登录”、“启动 realtime”，不表达底层 wire/RPC/SQLite 操作。
+- `*Paths`、`LocalStatePaths`、`SecureStatePaths` 可以作为 `ImCore::new(config, paths)` 的构造期 DTO 或 bootstrap 输入，因为 Phase A 采用路径参数版；但它们不应出现在 App/CLI 面向的主业务 API 参数或返回值中。
+- `ActorContext`、`ClientIdentityRuntime`、RPC params、wire payload、SQLite connection、内部 attachment source/sink 应作为 `pub(crate)` 内部实现类型或测试辅助。
+- `build_*_rpc_params`、`prepare_upload`、`create_slot`、`commit_object`、`send_rpc`、`project_notification` 这类函数属于内部 helper 或测试辅助，不作为 SDK 主接口暴露。
+- 本地状态初始化/迁移可以通过 `core.bootstrap()` 这类生命周期接口暴露，不能要求 CLI 调 store 层、SQLite connection 或 owner-level query helper。
+
+CLI 也应调用高层接口。CLI handler 负责把 `--identity` 转为 `IdentitySelector`，把 `--file` / `--output` 转为高层请求 DTO，然后调用绑定身份的 `ImClient`。CLI 不应直接调用 wire/helper/store 级接口来绕过 core 业务流程。
+
 CLI handler 目标形态：
 
 ```rust
 pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
     let cli_context = self.resolve_cli_context()?;
     let core = self.build_im_core(&cli_context)?;
+    let client = core.client(parse_identity_selector(command)?).await?;
 
     let request = SendMessageRequest {
         target: parse_message_target(command)?,
@@ -372,7 +395,7 @@ pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         client_message_id: None,
     };
 
-    let result = core.messages().send(cli_context.actor(), request)
+    let result = client.messages().send(request)
         .map_err(map_im_error)?;
 
     self.render_im_result("awiki-cli msg send", result)
@@ -383,17 +406,17 @@ App 目标形态：
 
 ```rust
 let core = ImCore::new(config, app_paths)?;
-let actor = core.identity().current_identity()?;
-let page = core.messages().inbox(&actor, InboxQuery::default())?;
+let client = core.client(IdentitySelector::Default).await?;
+let page = client.messages().inbox(InboxQuery::default()).await?;
 ```
 
 关键差异：
 
 - CLI 和 App 都调用同一个 `im-core`。
 - CLI 的 `ParsedCommand` 不进入 `im-core`。
-- App 不需要知道 CLI config 和 runtime service 文件；第一阶段只需要提供自己的 sandbox 路径集合。
+- App 不需要知道 CLI config、runtime service 文件、actor 注入细节和本地路径细节；第一阶段只需要提供自己的 sandbox 路径集合，并通过 `IdentitySelector` 选择身份。
 
-`im-core` DTO 必须使用领域语言，例如 `ActorContext`、`PeerRef`、`GroupRef`、`ThreadRef`、`MessageTarget`、`MessageBody`、`MessageSecurityMode`、`InboxQuery`、`HistoryQuery`、`GroupPolicyPatch`、`AttachmentSourceRef`、`AttachmentSinkRef`、`SessionBundle`。
+`im-core` 对外 DTO 必须使用领域语言，例如 `IdentitySelector`、`PeerRef`、`GroupRef`、`ThreadRef`、`MessageTarget`、`MessageBody`、`MessageSecurityMode`、`InboxQuery`、`HistoryQuery`、`GroupPolicyPatch`、`AttachmentInput`、`AttachmentDestination`、`SessionStatus`。
 
 禁止使用 CLI 语言：
 

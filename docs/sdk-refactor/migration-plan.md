@@ -21,7 +21,8 @@
 - 把 `crates/im-core` 加入 workspace，并让 `crates/awiki-cli` 后续通过 path dependency 依赖它。
 - 确认 `crates/awiki-cli` 不重新引入 `../../../awiki-im-core/...` 这类仓库外失败版本依赖。
 - 增加 compile fence：`im-core` 不能引用 CLI 类型。
-- 定义 `ImCoreConfig`、`ImCorePaths`、`IdentityPaths`、`AuthStatePaths`、`LocalStatePaths`、`SecureStatePaths`。
+- 定义 `ImCoreConfig`、`ImCorePaths`、`IdentityRegistryPaths`、`IdentitySummary` 和内部 `IdentityPaths` / `AuthStatePaths` / `LocalStatePaths` / `SecureStatePaths`。
+- 建立高层入口形态：`core.client(selector)` 绑定身份，`client.messages()` / `client.groups()` / `client.attachments()` / `client.secure()` / `client.realtime()` 承载业务调用，`core.bootstrap()` 承载初始化/迁移生命周期调用。
 - 增加最小 tempdir/path bundle 测试，证明 core 可以在显式路径上工作。
 
 ### Phase 1：移动纯领域 DTO 和错误类型
@@ -82,29 +83,31 @@
 
 ## 4. 当前命令到目标边界的映射
 
+所有业务命令都先把 `--identity` 转换为 `IdentitySelector`，通过 `core.client(selector)` 获得绑定身份的 `ImClient`，再调用对应服务。注册、恢复、默认身份选择属于 `core.identities()`；数据库初始化/迁移属于 `core.bootstrap()`。CLI 不应直接调用 actor/path/RPC/store helper。
+
 | 当前 CLI 命令 | 目标 im-core API | CLI 保留内容 |
 | --- | --- | --- |
-| `id status` | `identity.status()` | 渲染、默认 identity 选择 |
-| `id register` | `identity.register_handle()` | 参数解析、OTP 输入、输出路径、文件权限 |
-| `id bind` | `identity.bind_contact()` | 参数解析、等待策略展示 |
-| `id refresh-token` | `auth.refresh_session()` | 读取当前 identity、保存 token |
-| `id resolve` | `identity.resolve()` / `directory.resolve_peer()` | 输出格式 |
-| `id recover` | `identity.recover_handle()` | 本地路径、密钥保存、旧状态合并 |
-| `id replace-did` | `identity.replace_did()` | 危险命令 UX、备份路径、私钥保存 |
-| `id profile get/set` | `identity.get_profile()` / `identity.update_profile()` | 参数解析、markdown-file 读取 |
-| `msg send` | `messages.send()` | `--text-file`/`--file` 读取、dry-run 呈现 |
-| `msg inbox` | `messages.inbox()` | table/pretty 输出 |
-| `msg history` | `messages.history()` | 参数解析 |
-| `msg mark-read` | `messages.mark_read()` | 参数解析 |
-| `msg attachment download` | `attachments.download()` | 输出路径和文件权限 |
-| `msg secure *` | `secure.direct_*()` | outbox id 参数解析、诊断输出 |
-| `group create` | `groups.create()` | 参数解析 |
-| `group get/list/members/messages` | `groups.get/list/members/messages()` | 输出格式 |
-| `group join/add/remove/leave/update` | `groups.*()` | 参数解析、dry-run 呈现 |
-| `group e2ee *` | `secure.group_*()` | MLS/session 路径初始化和命令 UX |
-| `runtime mode/status` | `realtime.runtime_status()` 可提供领域状态 | config 文件读写仍在 CLI |
-| `runtime listener *` | `realtime.run_until_shutdown()` / `realtime.connect()` | service install/start/stop、daemon socket、进程生命周期在 CLI |
-| `runtime host-notify *` | `realtime.normalize_host_event()` | OpenClaw/Hermes 配置和投递在 CLI |
+| `id status` | `core.identities().default_identity()` / `core.identities().list()` / `client.current_identity()` | 渲染、默认 identity 选择 |
+| `id register` | `core.identities().register_handle()` | 参数解析、OTP 输入、输出路径、文件权限 |
+| `id bind` | `client.identity().bind_contact()` | 参数解析、等待策略展示 |
+| `id refresh-token` | `client.auth().refresh_session()` | 读取当前 identity、保存 token |
+| `id resolve` | `core.identities().resolve()` / `client.directory().resolve_peer()` | 输出格式 |
+| `id recover` | `core.identities().recover_handle()` | 本地路径、密钥保存、旧状态合并 |
+| `id replace-did` | `client.identity().replace_did()` | 危险命令 UX、备份路径、私钥保存 |
+| `id profile get/set` | `client.identity().profile()` / `client.identity().update_profile()` | 参数解析、markdown-file 读取 |
+| `msg send` | `client.messages().send()` | `--text-file`/`--file` 读取、dry-run 呈现 |
+| `msg inbox` | `client.messages().inbox()` | table/pretty 输出 |
+| `msg history` | `client.messages().history()` | 参数解析 |
+| `msg mark-read` | `client.messages().mark_read()` | 参数解析 |
+| `msg attachment download` | `client.attachments().download()` | 输出路径和文件权限 |
+| `msg secure *` | `client.secure().direct_*()` | outbox id 参数解析、诊断输出 |
+| `group create` | `client.groups().create()` | 参数解析 |
+| `group get/list/members/messages` | `client.groups().get/list/members/messages()` | 输出格式 |
+| `group join/add/remove/leave/update` | `client.groups().*()` | 参数解析、dry-run 呈现 |
+| `group e2ee *` | `client.secure().group_*()` | MLS/session 路径初始化和命令 UX |
+| `runtime mode/status` | `client.realtime().status()` 可提供领域状态 | config 文件读写仍在 CLI |
+| `runtime listener *` | `client.realtime().run_until_shutdown()` / `client.realtime().connect()` | service install/start/stop、daemon socket、进程生命周期在 CLI |
+| `runtime host-notify *` | `client.realtime().normalize_host_event()` | OpenClaw/Hermes 配置和投递在 CLI |
 
 ## 5. 完成判定
 

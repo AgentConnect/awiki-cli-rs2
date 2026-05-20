@@ -10,15 +10,17 @@
 
 ## 2. 主要职责
 
-- `send(actor, SendMessageRequest) -> SendMessageResult`。
+- `send(SendMessageRequest) -> SendMessageResult`。
 - direct text / group text 统一发送。
 - `send_secure_direct(...)` 入口可在这里路由到 `secure`。
-- `inbox(actor, InboxQuery) -> MessagePage`。
-- `history(actor, ThreadRef, HistoryQuery) -> MessagePage`。
-- `mark_read(actor, MessageIds)`。
+- `inbox(InboxQuery) -> MessagePage`。
+- `history(ThreadRef, HistoryQuery) -> MessagePage`。
+- `mark_read(MessageIds)`。
 - message content type 规范化。
 - inbox/history 远端结果与本地 cache 合并。
 - 收到 direct/group notification 后投影成本地 message record。
+
+公开接口挂在 `ImClient` 上，自动使用 client 绑定的 actor、auth session 和 local state owner。调用方不应传 `ActorContext`、`LocalStatePaths` 或 owner DID。
 
 ## 3. DTO 草案
 
@@ -52,36 +54,38 @@ pub enum ThreadRef {
 
 ```rust
 pub struct MessageService<'a> {
-    core: &'a ImCore,
+    client: &'a ImClient,
 }
 
 impl MessageService<'_> {
     pub async fn send(
         &self,
-        actor: ActorContext,
         request: SendMessageRequest,
     ) -> ImResult<SendMessageResult>;
 
     pub async fn inbox(
         &self,
-        actor: ActorContext,
         query: InboxQuery,
     ) -> ImResult<MessagePage>;
 
     pub async fn history(
         &self,
-        actor: ActorContext,
         thread: ThreadRef,
         query: HistoryQuery,
     ) -> ImResult<MessagePage>;
 
     pub async fn mark_read(
         &self,
-        actor: ActorContext,
         ids: Vec<MessageId>,
     ) -> ImResult<MarkReadResult>;
+}
+```
 
-    pub fn project_notification(
+内部 helper 允许保留 notification 投影和本地状态合并接口，但不作为 SDK 主入口：
+
+```rust
+impl MessageServiceInternal {
+    pub(crate) fn project_notification(
         &self,
         owner: Did,
         event: MessageNotification,
@@ -97,6 +101,6 @@ CLI 负责：
 - `--to`、`--group`、`--text-file`、`--file` 参数解析；
 - dry-run 呈现；
 - table/pretty/json 输出；
-- 当前 identity 和 SQLite 路径传入。
+- 把 `--identity` 转为 `IdentitySelector` 并构造 `ImClient`。
 
 消息业务规则、远端结果与本地 cache 合并、已读状态更新归 `messages`。

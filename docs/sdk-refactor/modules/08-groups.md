@@ -10,17 +10,17 @@
 
 ## 2. 主要职责
 
-- `create(actor, CreateGroupRequest) -> GroupSnapshot`。
-- `get(actor, group)`。
-- `list(actor, query)`。
-- `join(actor, group, reason)`。
-- `leave(actor, group, reason, security_mode)`。
-- `add_member(actor, group, member, role, options)`。
-- `remove_member(actor, group, member, reason, options)`。
-- `update_profile(actor, group, patch)`。
-- `update_policy(actor, group, patch)`。
-- `members(actor, group, query)`。
-- `messages(actor, group, query)`。
+- `create(CreateGroupRequest) -> GroupSnapshot`。
+- `get(group)`。
+- `list(query)`。
+- `join(group, reason)`。
+- `leave(group, request)`。
+- `add_member(group, member, options)`。
+- `remove_member(group, member, options)`。
+- `update_profile(group, patch)`。
+- `update_policy(group, patch)`。
+- `members(group, query)`。
+- `messages(group, query)`。
 - 群状态变更 notification 投影。
 
 ## 3. 群组和消息边界
@@ -33,45 +33,39 @@
 
 ```rust
 pub struct GroupService<'a> {
-    core: &'a ImCore,
+    client: &'a ImClient,
 }
 
 impl GroupService<'_> {
     pub async fn create(
         &self,
-        actor: ActorContext,
         request: CreateGroupRequest,
     ) -> ImResult<GroupSnapshot>;
 
     pub async fn get(
         &self,
-        actor: ActorContext,
         group: GroupRef,
     ) -> ImResult<GroupSnapshot>;
 
     pub async fn list(
         &self,
-        actor: ActorContext,
         query: GroupQuery,
     ) -> ImResult<GroupPage>;
 
     pub async fn join(
         &self,
-        actor: ActorContext,
         group: GroupRef,
         reason: Option<String>,
     ) -> ImResult<GroupMembershipChange>;
 
     pub async fn leave(
         &self,
-        actor: ActorContext,
         group: GroupRef,
         request: LeaveGroupRequest,
     ) -> ImResult<GroupMembershipChange>;
 
     pub async fn add_member(
         &self,
-        actor: ActorContext,
         group: GroupRef,
         member: PeerRef,
         options: AddMemberOptions,
@@ -79,7 +73,6 @@ impl GroupService<'_> {
 
     pub async fn remove_member(
         &self,
-        actor: ActorContext,
         group: GroupRef,
         member: PeerRef,
         options: RemoveMemberOptions,
@@ -87,28 +80,24 @@ impl GroupService<'_> {
 
     pub async fn update_profile(
         &self,
-        actor: ActorContext,
         group: GroupRef,
         patch: GroupProfilePatch,
     ) -> ImResult<GroupSnapshot>;
 
     pub async fn update_policy(
         &self,
-        actor: ActorContext,
         group: GroupRef,
         patch: GroupPolicyPatch,
     ) -> ImResult<GroupSnapshot>;
 
     pub async fn members(
         &self,
-        actor: ActorContext,
         group: GroupRef,
         query: MemberQuery,
     ) -> ImResult<GroupMemberPage>;
 
     pub async fn messages(
         &self,
-        actor: ActorContext,
         group: GroupRef,
         query: HistoryQuery,
     ) -> ImResult<MessagePage>;
@@ -118,3 +107,5 @@ impl GroupService<'_> {
 ## 5. CLI 边界
 
 CLI 负责参数解析、dry-run 呈现、输出格式和命令 UX。群状态、成员规则、远端调用和本地投影归 `groups`。
+
+公开接口挂在 `ImClient` 上，自动使用绑定身份。内部实现可以继续把 actor 传入底层 transport/store helper，但 SDK 主接口不暴露 `ActorContext`。

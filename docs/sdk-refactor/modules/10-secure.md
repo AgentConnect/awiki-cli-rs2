@@ -10,28 +10,28 @@
 
 ## 2. Direct secure 职责
 
-- `direct_status(actor, peer)`。
-- `init_direct_session(actor, peer)`。
-- `repair_direct_session(actor, peer)`。
-- `process_direct_incoming(actor, message)`。
-- `send_direct_cipher(actor, peer, plaintext)`。
-- `list_failed_outbox(actor)`。
-- `retry_outbox(actor, outbox_id)`。
-- `drop_outbox(actor, outbox_id)`。
-- `flush_outbox(actor, peer)`。
-- `sync_unread_secure_inbox(actor)`。
+- `direct_status(peer)`。
+- `init_direct_session(peer)`。
+- `repair_direct_session(peer)`。
+- `process_direct_incoming(message)`。
+- `prepare_direct_session(peer)`：供 `client.messages().send(... SecureDirect ...)` 内部使用，必要时也可作为诊断/修复入口。
+- `list_failed_outbox()`。
+- `retry_outbox(outbox_id)`。
+- `drop_outbox(outbox_id)`。
+- `flush_outbox(peer)`。
+- `sync_unread_secure_inbox()`。
 
 ## 3. Group E2EE 职责
 
-- `group_status(actor, group)`。
-- `publish_key_package(actor, request)`。
-- `pending_notices(actor, group_filter)`。
-- `repair_notices(actor, group_filter)`。
-- `recover_member(actor, group, member, device)`。
-- `update_member_key(actor, group, member, device)`。
-- `rejoin_member(actor, group, member, role)`。
-- `process_leave_request(actor, group, member, request_id, reason)`。
-- `decrypt_group_message(actor, group, message)`。
+- `group_status(group)`。
+- `publish_key_package(request)`。
+- `pending_notices(group_filter)`。
+- `repair_notices(group_filter)`。
+- `recover_member(group, member, device)`。
+- `update_member_key(group, member, device)`。
+- `rejoin_member(group, member, role)`。
+- `process_leave_request(group, member, request_id, reason)`。
+- `process_group_event(event)`：供 realtime/messages 内部投影和诊断使用。
 
 ## 4. Phase A 路径需求
 
@@ -48,73 +48,52 @@
 
 ```rust
 pub struct SecureService<'a> {
-    core: &'a ImCore,
+    client: &'a ImClient,
 }
 
 impl SecureService<'_> {
     pub async fn direct_status(
         &self,
-        actor: ActorContext,
         peer: PeerRef,
     ) -> ImResult<DirectSecureStatus>;
 
     pub async fn init_direct_session(
         &self,
-        actor: ActorContext,
         peer: PeerRef,
-        paths: &SecureStatePaths,
     ) -> ImResult<DirectSessionStatus>;
 
     pub async fn repair_direct_session(
         &self,
-        actor: ActorContext,
         peer: PeerRef,
-        paths: &SecureStatePaths,
     ) -> ImResult<DirectSessionStatus>;
 
-    pub async fn send_direct_cipher(
-        &self,
-        actor: ActorContext,
-        peer: PeerRef,
-        plaintext: MessageBody,
-        paths: &SecureStatePaths,
-    ) -> ImResult<SendMessageResult>;
-
-    pub fn list_failed_outbox(
-        &self,
-        actor: ActorContext,
-        paths: &SecureStatePaths,
-    ) -> ImResult<Vec<SecureOutboxEntry>>;
+    pub fn list_failed_outbox(&self) -> ImResult<Vec<SecureOutboxEntry>>;
 
     pub async fn retry_outbox(
         &self,
-        actor: ActorContext,
         outbox_id: SecureOutboxId,
-        paths: &SecureStatePaths,
     ) -> ImResult<SecureOutboxResult>;
 
     pub async fn group_status(
         &self,
-        actor: ActorContext,
         group: GroupRef,
     ) -> ImResult<GroupE2eeStatus>;
 
     pub async fn publish_key_package(
         &self,
-        actor: ActorContext,
         request: PublishKeyPackageRequest,
-        paths: &SecureStatePaths,
     ) -> ImResult<PublishKeyPackageResult>;
 
-    pub async fn decrypt_group_message(
+    pub async fn repair_group_state(
         &self,
-        actor: ActorContext,
         group: GroupRef,
-        message: MessageRecord,
-        paths: &SecureStatePaths,
-    ) -> ImResult<MessageBody>;
+    ) -> ImResult<GroupE2eeStatus>;
 }
 ```
+
+公开接口挂在 `ImClient` 上，自动使用身份绑定的 E2EE 私钥、direct session、prekey、secure outbox 和 MLS state。`SecureStatePaths`、`IdentityPaths` 和 MLS provider binary path 不应出现在 App/CLI 主业务调用参数中。
+
+普通 secure 消息发送不建议暴露为 `send_direct_cipher(peer, plaintext)` 这类低层 API。App/CLI 应调用 `client.messages().send(SendMessageRequest { security: MessageSecurityMode::SecureDirect, ... })`，由 messages 模块编排 discovery、auth、secure session、outbox、本地投影和远端发送。group message 解密和 incoming secure 处理也应作为 messages/realtime 投影流程的内部步骤，除诊断/修复接口外不让调用方直接传 ciphertext 或 `MessageRecord`。
 
 ## 6. 边界说明
 
