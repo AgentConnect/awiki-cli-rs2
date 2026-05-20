@@ -1,7 +1,7 @@
 # im-core / cli 整体架构
 
-**状态**：Draft  
-**日期**：2026-05-20  
+**状态**：Draft
+**日期**：2026-05-21
 **适用仓库**：`awiki-cli-rs2`
 
 ## 1. 设计结论
@@ -16,7 +16,8 @@ crates/awiki-cli    # 命令行产品壳：命令解析、配置、路径解析�
 核心原则：
 
 - `im-core` 是 **IM 产品能力层**，不是低层 wire helper 集合。当前 CLI 的大部分业务能力都应收敛到这里，包括身份、登录、消息、群组、附件、secure direct、group E2EE、实时事件和本地状态抽象。
-- 第一阶段不采用 provider 方案。`cli` 负责解析配置和本机路径，然后把私钥路径、DID document 路径、auth 路径、SQLite 路径、E2EE/MLS 状态目录等显式传给 `im-core`。这样迁移面更小，也更接近当前 CLI 代码。
+- 第一阶段不采用 provider 方案。`cli` 负责解析配置和本机路径，然后把私钥路径、DID document 路径、auth 路径、SQLite 路径等显式传给 `im-core`。这样迁移面更小，也更接近当前 CLI 代码。
+- 第一阶段实施范围只包含 core 框架、身份鉴权、Handle 注册、消息私聊和群聊。附件、完整群管理、secure direct、group E2EE、realtime 和完整 directory/profile/recover 等能力是后续迁移阶段。
 - `cli` 是 **命令行适配层**，负责把命令行输入、配置文件、工作区路径、系统服务、OpenClaw/Hermes 等 CLI 特有环境转换成 `im-core` 的配置、路径参数和业务请求。
 - App 未来直接依赖 `im-core`。第一阶段 App 也可以传入自己的路径集合；第二阶段如果需要，再增加外部能力接管或适配层；内置 SQLite、HTTP、WebSocket 等底层实现仍保留。
 - `im-core` 不能依赖 `cli`。依赖方向只能是 `cli -> im-core`。
@@ -24,7 +25,7 @@ crates/awiki-cli    # 命令行产品壳：命令解析、配置、路径解析�
 
 阶段化口径：
 
-- **Phase A：路径参数版**。先把业务流程搬进 `im-core`，由 `cli` 传入已经解析好的本地路径。允许 `im-core` 在这些显式路径上读取私钥、DID document、auth/session 文件和本地状态，但禁止 `im-core` 自己做 workspace/config 自动发现。
+- **Phase A：路径参数版**。先用显式路径参数把最小业务闭环搬进 `im-core`，由 `cli` 传入已经解析好的本地路径。第一阶段允许 `im-core` 在这些显式路径上读取私钥、DID document、auth/session 文件和本地状态，覆盖身份鉴权、Handle 注册、私聊/群聊消息；后续阶段再按同一边界迁移附件、secure、realtime 等能力。`im-core` 禁止自己做 workspace/config 自动发现。
 - **Phase B：可选外部能力版**。业务边界稳定后，再按需增加 `CredentialVault`、`Store`、`Transport`、`CryptoProvider` 等外部能力接口，让 App 可以选择接管存储、密钥和网络实现；这不要求移除 `im-core` 当前内置的 SQLite、HTTP、WebSocket 等底层依赖。
 
 ## 2. 分层模型
@@ -131,7 +132,7 @@ im-core = { path = "../im-core" }
 - 必要的 ANP 协议类型，前提是不会把 CLI 文件布局带入 core；
 - 当前底层实现依赖，例如 SQLite、HTTP client、WebSocket client、TLS、serde/json、tokio/async runtime、加密/签名/MLS 相关库。
 
-第一阶段允许 `im-core` 使用标准库文件系统读取调用方传入的明确路径，例如私钥文件、DID document、auth/session 文件、SQLite 数据库文件、E2EE session 目录。限制是：`im-core` 不能自己发现 workspace、不能自己解析 `config.yaml`、不能假定路径来自 CLI，也不能把 CLI 的目录命名作为公共语义。
+第一阶段允许 `im-core` 使用标准库文件系统读取调用方传入的明确路径，例如私钥文件、DID document、auth/session 文件和 SQLite 数据库文件。E2EE/MLS 相关路径可以先保留在路径 DTO 中，但第一阶段不实现 secure 业务。限制是：`im-core` 不能自己发现 workspace、不能自己解析 `config.yaml`、不能假定路径来自 CLI，也不能把 CLI 的目录命名作为公共语义。
 
 是否允许 `im-core` 直接依赖系统 keychain、平台 service、CLI config、OpenClaw/Hermes、process manager，应默认回答为否。SQLite、HTTP、WebSocket 这类底层实现依赖按当前设计保留在 `im-core` 中；边界变化只是不让它们携带 CLI workspace/config 语义。所有数据库路径都必须放在 `LocalStatePaths` 之类的显式 DTO 中，所有网络 endpoint 都必须来自 `ImCoreConfig` 或领域请求，而不是从 CLI 配置文件自动解析。
 
@@ -153,10 +154,10 @@ im-core = { path = "../im-core" }
 | 登录/JWT/DID auth 流程 | 负责业务 API 和状态转换 | 负责 session 持久化、凭证读取、命令输出 |
 | 消息发送/收件箱/历史/已读 | 负责 | 只适配命令 |
 | 群组生命周期/成员/群消息 | 负责 | 只适配命令 |
-| 附件上传/manifest/下载流程 | 负责；Phase A 可读写显式附件路径 | 负责解析 CLI 输入路径和输出路径 |
-| Secure direct / E2EE outbox | 负责业务流程；Phase A 使用显式 session/outbox 路径 | 负责路径选择、目录创建和权限 |
-| Group E2EE / MLS 编排 | 负责业务流程；Phase A 使用显式 MLS 状态路径 | 负责路径选择和命令入口 |
-| WebSocket 消息分类/通知投影 | 负责 | 负责 listener 进程和本地 daemon |
+| 附件上传/manifest/下载流程 | 后续阶段负责；Phase A 不迁移 | 负责解析 CLI 输入路径和输出路径 |
+| Secure direct / E2EE outbox | 后续阶段负责；Phase A 不迁移 | 负责路径选择、目录创建和权限 |
+| Group E2EE / MLS 编排 | 后续阶段负责；Phase A 不迁移 | 负责路径选择和命令入口 |
+| WebSocket 消息分类/通知投影 | 后续阶段负责；Phase A 不迁移 | 负责 listener 进程和本地 daemon |
 | systemd/launchd/Windows service | 不负责 | 负责 |
 | OpenClaw/Hermes 配置 UX | 不负责 | 负责 |
 | Host notification 标准事件 | 负责生成领域事件 | 负责投递到具体 host sink |
@@ -222,7 +223,7 @@ CLI 负责决定何时调用 `im-core` 暴露的 path-based 初始化/迁移函�
 - 备份和恢复目录。
 - JWT / auth.json 持久化。
 
-CLI 在 Phase A 负责构造路径 bundle，例如 DID document path、key1 private path、E2EE private path、auth/session path、prekey dir、MLS state dir。Phase B 才考虑由 CLI 实现 `CredentialVault`、`SignerProvider`、`CryptoProvider`。
+CLI 在 Phase A 负责构造路径 bundle，例如 DID document path、key1 private path、E2EE private path、auth/session path、prekey dir、MLS state dir。第一阶段实际只使用身份鉴权和消息私聊/群聊所需的子集；secure/MLS 相关路径可以先保留在 DTO 中，为后续迁移做兼容。Phase B 才考虑由 CLI 实现 `CredentialVault`、`SignerProvider`、`CryptoProvider`。
 
 ### 5.5 Runtime service 与主机集成
 
@@ -239,7 +240,7 @@ CLI 在 Phase A 负责构造路径 bundle，例如 DID document path、key1 priv
 
 ## 6. Phase A 路径参数边界
 
-第一阶段的目标是减少改动面：CLI 继续拥有配置解析、workspace 解析、identity 文件布局、权限设置和目录创建；`im-core` 只接收已经解析好的路径。这样可以先把身份、登录、消息、群组、附件和 secure 业务流程下沉，而不用同时重写本地存储和密钥抽象。
+第一阶段的目标是减少改动面：CLI 继续拥有配置解析、workspace 解析、identity 文件布局、权限设置和目录创建；`im-core` 只接收已经解析好的路径。这样先把 core 框架、身份鉴权、Handle 注册、消息私聊和群聊下沉，而不用同时迁移附件、secure、realtime、完整群管理或重写本地存储和密钥抽象。
 
 建议先定义一个总路径 DTO，并按模块拆成子 DTO：
 

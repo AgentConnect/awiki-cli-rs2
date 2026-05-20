@@ -1,8 +1,8 @@
 # im-core 与 cli 边界设计索引
 
-**状态**：Draft  
-**日期**：2026-05-20  
-**适用仓库**：`awiki-cli-rs2`  
+**状态**：Draft
+**日期**：2026-05-21
+**适用仓库**：`awiki-cli-rs2`
 **目标读者**：CLI 开发者、App 接入方、IM 引擎开发者、后续重构执行者
 
 本目录记录 `awiki-cli-rs2` 内部拆分为 `crates/im-core` 和 `crates/awiki-cli` 的设计。原来的单一边界文档已经拆成整体架构、模块接口和迁移计划三类文档，避免后续重复维护。
@@ -11,7 +11,8 @@
 
 - `im-core` 是 IM 产品能力层，承载身份、登录、消息、群组、附件、secure direct、group E2EE、realtime 和本地状态等业务能力。
 - `cli` 是命令行适配层，保留命令解析、配置读取、workspace 路径解析、数据库初始化触发、私钥文件布局和权限、system service、OpenClaw/Hermes UX、输出渲染。
-- 第一阶段采用 **路径参数版**，不先引入 provider：CLI 或 App 传入 DID document、私钥、auth/session、SQLite、E2EE/MLS 等显式路径。
+- 第一阶段采用 **路径参数版**，不先引入 provider：CLI 或 App 传入 DID document、私钥、auth/session、SQLite 等显式路径；E2EE/MLS 路径可先作为 DTO 预留，但不实现 secure 业务。
+- 第一阶段实施范围收窄为 **core 框架 + 身份鉴权 + Handle 注册 + 私聊/群聊消息**。附件、完整群管理、secure、realtime、完整 directory/profile/recover 等能力后续逐步迁移。
 - SQLite、HTTP、WebSocket 等当前底层实现依赖继续保留在 `im-core`；禁止的是依赖上层 CLI 类型和 CLI workspace/config 语义。
 - `realtime` 是可嵌入 runner，同一套运行循环同时支持 CLI 后台进程和 App 线程/task。
 - 当前仓库基线中 `crates/awiki-cli` 已经没有外部 `awiki-im-core` 依赖；后续抽取应从 `awiki-cli` 内部现有模块迁移到新 `crates/im-core`，不要重新引入 sibling path dependency。
