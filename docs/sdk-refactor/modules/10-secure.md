@@ -1,5 +1,6 @@
 # secure 模块接口设计
 
+**阅读顺序**：10 / 11  
 **所属 crate**：`crates/im-core`  
 **模块职责**：direct E2EE、group E2EE、secure outbox 和修复流程。
 

@@ -26,17 +26,17 @@
 
 | 模块 | 文档 | 主要内容 |
 | --- | --- | --- |
-| `core` | [modules/core.md](modules/core.md) | `ImCore`、`ImCoreConfig`、路径总入口、错误、上下文 |
-| `identity` | [modules/identity.md](modules/identity.md) | 多身份模型、注册、恢复、绑定、解析、profile、replace DID |
-| `auth` | [modules/auth.md](modules/auth.md) | DID auth、JWT/session、refresh、logout |
-| `directory` | [modules/directory.md](modules/directory.md) | 联系人、关系、handle lookup、profile 投影 |
-| `messages` | [modules/messages.md](modules/messages.md) | 发送、收件箱、历史、已读、本地消息投影 |
-| `groups` | [modules/groups.md](modules/groups.md) | 群生命周期、成员、群消息 |
-| `attachments` | [modules/attachments.md](modules/attachments.md) | 附件上传、manifest、发送、下载 |
-| `secure` | [modules/secure.md](modules/secure.md) | direct E2EE、group E2EE、secure outbox、修复 |
-| `realtime` | [modules/realtime.md](modules/realtime.md) | WebSocket、notification、可嵌入 runner、CLI/App 启动模式 |
-| `local_state` | [modules/local-state.md](modules/local-state.md) | SQLite 状态、schema、迁移、本地缓存 |
-| `discovery` | [modules/discovery.md](modules/discovery.md) | DID document、service capabilities、endpoint 选择 |
+| `01-core` | [modules/01-core.md](modules/01-core.md) | `ImCore`、`ImCoreConfig`、路径总入口、错误、上下文 |
+| `02-identity` | [modules/02-identity.md](modules/02-identity.md) | 多身份模型、注册、恢复、绑定、解析、profile、replace DID |
+| `03-auth` | [modules/03-auth.md](modules/03-auth.md) | DID auth、JWT/session、refresh、logout |
+| `04-local_state` | [modules/04-local-state.md](modules/04-local-state.md) | SQLite 状态、schema、迁移、本地缓存 |
+| `05-discovery` | [modules/05-discovery.md](modules/05-discovery.md) | DID document、service capabilities、endpoint 选择 |
+| `06-directory` | [modules/06-directory.md](modules/06-directory.md) | 联系人、关系、handle lookup、profile 投影 |
+| `07-messages` | [modules/07-messages.md](modules/07-messages.md) | 发送、收件箱、历史、已读、本地消息投影 |
+| `08-groups` | [modules/08-groups.md](modules/08-groups.md) | 群生命周期、成员、群消息 |
+| `09-attachments` | [modules/09-attachments.md](modules/09-attachments.md) | 附件上传、manifest、发送、下载 |
+| `10-secure` | [modules/10-secure.md](modules/10-secure.md) | direct E2EE、group E2EE、secure outbox、修复 |
+| `11-realtime` | [modules/11-realtime.md](modules/11-realtime.md) | WebSocket、notification、可嵌入 runner、CLI/App 启动模式 |
 
 ## 4. 一句话边界
 

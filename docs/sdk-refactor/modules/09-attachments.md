@@ -1,5 +1,6 @@
 # attachments 模块接口设计
 
+**阅读顺序**：09 / 11  
 **所属 crate**：`crates/im-core`  
 **模块职责**：附件上传、manifest、发送和下载。
 

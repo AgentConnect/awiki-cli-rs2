@@ -1,5 +1,6 @@
 # realtime 模块接口设计
 
+**阅读顺序**：11 / 11  
 **所属 crate**：`crates/im-core`  
 **模块职责**：实时连接、WebSocket 消息处理、notification 标准化和事件流。
 

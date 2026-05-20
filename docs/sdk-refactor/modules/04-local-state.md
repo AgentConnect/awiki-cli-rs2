@@ -1,5 +1,6 @@
 # local_state 模块接口设计
 
+**阅读顺序**：04 / 11  
 **所属 crate**：`crates/im-core`  
 **模块职责**：本地 SQLite 状态、领域模型、缓存合并和迁移。
 

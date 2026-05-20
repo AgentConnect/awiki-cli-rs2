@@ -1,5 +1,6 @@
 # directory 模块接口设计
 
+**阅读顺序**：06 / 11  
 **所属 crate**：`crates/im-core`  
 **模块职责**：联系人、关系、handle 缓存和公开资料读取。
 
