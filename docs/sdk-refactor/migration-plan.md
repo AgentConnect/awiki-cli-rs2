@@ -11,13 +11,15 @@
 - `im-core` 接收显式路径，承载身份、登录、消息、群组、附件、secure、realtime 等业务流程。
 - SQLite、HTTP、WebSocket 等当前底层实现依赖继续保留在 `im-core`，不要求替换。
 - App 接入先通过 sandbox/tempdir 路径集合验证，不依赖 CLI。
+- 当前仓库基线中 `crates/awiki-cli` 已经没有外部 `awiki-im-core` 依赖；迁移来源是 `awiki-cli` 内部模块，不是 sibling crate。
 
 ## 2. 迁移顺序
 
 ### Phase 0：建立新 crate、路径 DTO 和边界测试
 
 - 新增 `crates/im-core`。
-- 从 `crates/awiki-cli` 移除对失败 sibling `awiki-im-core` 的依赖。
+- 把 `crates/im-core` 加入 workspace，并让 `crates/awiki-cli` 后续通过 path dependency 依赖它。
+- 确认 `crates/awiki-cli` 不重新引入 `../../../awiki-im-core/...` 这类仓库外失败版本依赖。
 - 增加 compile fence：`im-core` 不能引用 CLI 类型。
 - 定义 `ImCoreConfig`、`ImCorePaths`、`IdentityPaths`、`AuthStatePaths`、`LocalStatePaths`、`SecureStatePaths`。
 - 增加最小 tempdir/path bundle 测试，证明 core 可以在显式路径上工作。
@@ -61,7 +63,24 @@
 - 该阶段是可选扩展，不要求替换当前 SQLite、HTTP、WebSocket 等底层实现依赖。
 - 该阶段必须保持前面沉淀下来的业务 DTO 和 handler 调用形态稳定，避免再次改动 CLI 命令层。
 
-## 3. 当前命令到目标边界的映射
+## 3. 当前代码迁移来源
+
+当前 `crates/awiki-cli` 已经包含 IM 相关业务模块。迁移应从这些模块拆分能力，而不是参考或依赖仓库外 `awiki-im-core`。
+
+| 现有代码位置 | 目标模块 | 说明 |
+| --- | --- | --- |
+| `src/identity/*` | `im-core::identity` | identity layout 细节留在 CLI adapter；注册、恢复、DID/profile 业务下沉 |
+| `src/authsdk/*` | `im-core::auth` | DID auth、session/JWT wire helper 和刷新流程下沉 |
+| `src/message/service.rs`、`src/message/wire.rs`、`src/message/client.rs` | `im-core::messages` | direct send、inbox、history、mark-read、message DTO 下沉 |
+| `src/message/group_*` | `im-core::groups`、`im-core::secure` | 群生命周期和 group E2EE 分别归 groups/secure |
+| `src/message/attachment*` | `im-core::attachments` | 附件 manifest、slot、download ticket、send/download 下沉 |
+| `src/message/secure_*` | `im-core::secure` | direct E2EE、secure outbox、incoming processing 下沉 |
+| `src/message/service_discovery.rs` | `im-core::discovery` | DID document service selection 和 capability 选择下沉 |
+| `src/runtime/listener_*` | `im-core::realtime` + CLI runtime shell | WebSocket 分类、notification 投影、runner 下沉；service install/daemon/socket 留在 CLI |
+| `src/store/*` | `im-core::local_state` | SQLite schema、message/group/contact/outbox state 下沉；workspace 路径解析留在 CLI |
+| `src/app/*_handlers.rs` | CLI adapter | handler 保留 parse -> core call -> render |
+
+## 4. 当前命令到目标边界的映射
 
 | 当前 CLI 命令 | 目标 im-core API | CLI 保留内容 |
 | --- | --- | --- |
@@ -87,7 +106,7 @@
 | `runtime listener *` | `realtime.run_until_shutdown()` / `realtime.connect()` | service install/start/stop、daemon socket、进程生命周期在 CLI |
 | `runtime host-notify *` | `realtime.normalize_host_event()` | OpenClaw/Hermes 配置和投递在 CLI |
 
-## 4. 完成判定
+## 5. 完成判定
 
 边界设计落地后，应满足：
 

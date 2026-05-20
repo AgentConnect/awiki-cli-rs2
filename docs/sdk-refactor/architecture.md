@@ -20,7 +20,7 @@ crates/awiki-cli    # 命令行产品壳：命令解析、配置、路径解析�
 - `cli` 是 **命令行适配层**，负责把命令行输入、配置文件、工作区路径、系统服务、OpenClaw/Hermes 等 CLI 特有环境转换成 `im-core` 的配置、路径参数和业务请求。
 - App 未来直接依赖 `im-core`。第一阶段 App 也可以传入自己的路径集合；第二阶段如果需要，再增加外部能力接管或适配层；内置 SQLite、HTTP、WebSocket 等底层实现仍保留。
 - `im-core` 不能依赖 `cli`。依赖方向只能是 `cli -> im-core`。
-- 旧的 sibling `awiki-im-core` 失败版本不作为设计输入，不作为目标 API，不作为迁移基线。目标是在本仓库内新增 `crates/im-core`，再让 `crates/awiki-cli` 依赖它。
+- 当前仓库基线中 `crates/awiki-cli` 已经没有外部 `awiki-im-core` 依赖。旧的 sibling `awiki-im-core` 失败版本不作为设计输入，不作为目标 API，不作为迁移基线；目标是在本仓库内新增 `crates/im-core`，从 `awiki-cli` 内部现有模块抽取能力，再让 `crates/awiki-cli` 依赖它。
 
 阶段化口径：
 
@@ -94,7 +94,18 @@ members = [
 im-core = { path = "../im-core" }
 ```
 
-具体 package 名称可以后续定，但路径和职责以 `crates/im-core` 为准。现有对仓库外失败版本的依赖必须移除，不能继续通过 `../../../awiki-im-core/...` 形成隐式设计约束。
+具体 package 名称可以后续定，但路径和职责以 `crates/im-core` 为准。当前 `crates/awiki-cli` 已无 `awiki-im-core` dependency，重构时不得重新通过 `../../../awiki-im-core/...` 引入仓库外失败版本形成隐式设计约束。
+
+当前迁移来源是 `crates/awiki-cli` 内部模块，而不是 sibling crate：
+
+| 现有模块 | 迁移方向 |
+| --- | --- |
+| `identity/*`、`authsdk/*` | `im-core::identity`、`im-core::auth` |
+| `message/*` | `im-core::messages`、`im-core::groups`、`im-core::attachments`、`im-core::secure`、`im-core::discovery` |
+| `runtime/listener_*`、`runtime/host_notify*` | `im-core::realtime` 的事件分类、投影和 runner；service/daemon 管理留在 CLI |
+| `store/*` | `im-core::local_state` 的 SQLite schema、读写、owner 隔离和迁移入口 |
+| `mail/*` | 暂不纳入 IM core 主边界；只抽取与 IM notification / realtime 共用的纯协议 helper |
+| `config/*`、`cli/*`、`cmdmeta/*`、`docs/*`、`output.rs` | 保留在 `awiki-cli` |
 
 `im-core` 禁止依赖：
 

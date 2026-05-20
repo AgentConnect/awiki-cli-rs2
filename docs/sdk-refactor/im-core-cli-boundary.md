@@ -14,7 +14,7 @@
 - 第一阶段采用 **路径参数版**，不先引入 provider：CLI 或 App 传入 DID document、私钥、auth/session、SQLite、E2EE/MLS 等显式路径。
 - SQLite、HTTP、WebSocket 等当前底层实现依赖继续保留在 `im-core`；禁止的是依赖上层 CLI 类型和 CLI workspace/config 语义。
 - `realtime` 是可嵌入 runner，同一套运行循环同时支持 CLI 后台进程和 App 线程/task。
-- 旧的 sibling `awiki-im-core` 失败版本不作为设计输入，不作为目标 API，不作为迁移基线。
+- 当前仓库基线中 `crates/awiki-cli` 已经没有外部 `awiki-im-core` 依赖；后续抽取应从 `awiki-cli` 内部现有模块迁移到新 `crates/im-core`，不要重新引入 sibling path dependency。
 
 ## 2. 阅读顺序
 
