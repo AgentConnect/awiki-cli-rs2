@@ -27,7 +27,7 @@
 | 模块 | 文档 | 主要内容 |
 | --- | --- | --- |
 | `core` | [modules/core.md](modules/core.md) | `ImCore`、`ImCoreConfig`、路径总入口、错误、上下文 |
-| `identity` | [modules/identity.md](modules/identity.md) | 注册、恢复、绑定、解析、profile、replace DID |
+| `identity` | [modules/identity.md](modules/identity.md) | 多身份模型、注册、恢复、绑定、解析、profile、replace DID |
 | `auth` | [modules/auth.md](modules/auth.md) | DID auth、JWT/session、refresh、logout |
 | `directory` | [modules/directory.md](modules/directory.md) | 联系人、关系、handle lookup、profile 投影 |
 | `messages` | [modules/messages.md](modules/messages.md) | 发送、收件箱、历史、已读、本地消息投影 |
