@@ -20,9 +20,7 @@ struct MsgSendPlan<'a> {
 
 impl App {
     pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        if crate::im_core_adapter::use_im_core_mvp()
-            && string_flag(command, "group").trim().is_empty()
-        {
+        if crate::im_core_adapter::use_im_core_mvp() {
             return self.run_msg_send_im_core_mvp(command);
         }
         self.run_msg_send_legacy(command)
@@ -43,15 +41,20 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let request =
             crate::im_core_adapter::messages::send_message_request(command, &resolved.did_domain)?;
+        let auth_scope = crate::im_core_adapter::messages::send_auth_scope(&request);
+        let legacy_request = crate::im_core_adapter::messages::legacy_text_send_request(
+            &self.globals.identity,
+            request.clone(),
+        )?;
         if self.globals.dry_run {
             return self.render_msg_send_plan(
                 &resolved,
                 MsgSendPlan {
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
-                    group: "",
-                    text: &string_flag(command, "text"),
-                    message_type: &string_flag(command, "type"),
+                    group: &string_flag(command, "group"),
+                    text: &legacy_request.text,
+                    message_type: &legacy_request.message_type,
                     file_path: "",
                     mime_type: "",
                     has_attachment: false,
@@ -67,13 +70,9 @@ impl App {
         )?;
         client
             .auth()
-            .ensure_session(im_core::prelude::AuthScope::Messaging)
+            .ensure_session(auth_scope)
             .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg send"))?;
 
-        let legacy_request = crate::im_core_adapter::messages::legacy_direct_text_send_request(
-            &self.globals.identity,
-            request,
-        )?;
         let result = message::send(&resolved, &manager, legacy_request).map_err(|err| {
             message_exit(
                 err,
@@ -322,6 +321,44 @@ impl App {
     }
 
     pub fn run_msg_inbox(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if crate::im_core_adapter::use_im_core_mvp()
+            && string_flag(command, "with").trim().is_empty()
+            && string_flag(command, "group").trim().is_empty()
+            && !bool_flag(command, "mark-read")
+        {
+            return self.run_msg_inbox_im_core_mvp(command);
+        }
+        self.run_msg_inbox_legacy(command)
+    }
+
+    fn run_msg_inbox_im_core_mvp(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let query = crate::im_core_adapter::messages::inbox_query(command)?;
+        let legacy_request =
+            crate::im_core_adapter::messages::legacy_inbox_request(&self.globals.identity, query)?;
+        if !self.globals.dry_run {
+            let manager = self.identity_manager(&resolved);
+            let client = crate::im_core_adapter::build_im_client(
+                &resolved,
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            client
+                .auth()
+                .ensure_session(im_core::prelude::AuthScope::Messaging)
+                .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg inbox"))?;
+            let result = message::inbox(&resolved, &manager, legacy_request).map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the active identity is ready and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg inbox", &resolved, result);
+        }
+        self.render_msg_inbox_plan(command, &resolved)
+    }
+
+    fn run_msg_inbox_legacy(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let result = message::inbox(
@@ -345,6 +382,14 @@ impl App {
             })?;
             return self.render_message_result("awiki-cli msg inbox", &resolved, result);
         }
+        self.render_msg_inbox_plan(command, &resolved)
+    }
+
+    fn render_msg_inbox_plan(
+        &self,
+        command: &ParsedCommand,
+        resolved: &Resolved,
+    ) -> Result<(), ExitError> {
         let with = string_flag(command, "with");
         let mut plan = Map::new();
         plan.insert("action".to_string(), Value::String("inbox.get".to_string()));
@@ -381,6 +426,45 @@ impl App {
     }
 
     pub fn run_msg_history(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if crate::im_core_adapter::use_im_core_mvp() {
+            return self.run_msg_history_im_core_mvp(command);
+        }
+        self.run_msg_history_legacy(command)
+    }
+
+    fn run_msg_history_im_core_mvp(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        require_flags(command, &["with"])?;
+        let resolved = self.resolve_config_for_workspace()?;
+        let (thread, query) =
+            crate::im_core_adapter::messages::history_request(command, &resolved.did_domain)?;
+        let legacy_request = crate::im_core_adapter::messages::legacy_history_request(
+            &self.globals.identity,
+            thread,
+            query,
+        )?;
+        if !self.globals.dry_run {
+            let manager = self.identity_manager(&resolved);
+            let client = crate::im_core_adapter::build_im_client(
+                &resolved,
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            client
+                .auth()
+                .ensure_session(im_core::prelude::AuthScope::Messaging)
+                .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg history"))?;
+            let result = message::history(&resolved, &manager, legacy_request).map_err(|err| {
+                message_exit(
+                    err,
+                    "Ensure the peer is valid and the message service is reachable.",
+                )
+            })?;
+            return self.render_message_result("awiki-cli msg history", &resolved, result);
+        }
+        self.render_msg_history_plan(command, &resolved)
+    }
+
+    fn run_msg_history_legacy(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["with"])?;
         let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
@@ -403,6 +487,14 @@ impl App {
             })?;
             return self.render_message_result("awiki-cli msg history", &resolved, result);
         }
+        self.render_msg_history_plan(command, &resolved)
+    }
+
+    fn render_msg_history_plan(
+        &self,
+        command: &ParsedCommand,
+        resolved: &Resolved,
+    ) -> Result<(), ExitError> {
         let with = string_flag(command, "with");
         let mut plan = Map::new();
         plan.insert(

@@ -275,7 +275,7 @@ fn msg_dry_run_plans_match_go_contracts() {
 }
 
 #[test]
-fn msg_send_im_core_mvp_dry_run_routes_direct_text_and_keeps_group_legacy() {
+fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
     let workspace = TempDir::new().expect("workspace");
     let direct = success_json(&awiki_cmd_with_env(
         &[
@@ -337,8 +337,33 @@ fn msg_send_im_core_mvp_dry_run_routes_direct_text_and_keeps_group_legacy() {
         &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(group["data"]["plan"]["action"], "group.send");
+    assert_eq!(group["data"]["plan"]["identity"], "alice");
+    assert_eq!(group["data"]["plan"]["message_type"], "text");
     assert_eq!(
         group["data"]["plan"]["target"],
+        json!({ "did": "did:wba:awiki.ai:groups:demo:e1_group", "kind": "group" })
+    );
+
+    let group_text_path = workspace.path().join("group-body.txt");
+    std::fs::write(&group_text_path, "hello group from file").expect("write group text file");
+    let group_text_file = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--group",
+            "did:wba:awiki.ai:groups:demo:e1_group",
+            "--text-file",
+            group_text_path.to_str().unwrap(),
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(group_text_file["data"]["plan"]["action"], "group.send");
+    assert_eq!(
+        group_text_file["data"]["plan"]["target"],
         json!({ "did": "did:wba:awiki.ai:groups:demo:e1_group", "kind": "group" })
     );
 }
@@ -390,6 +415,118 @@ fn msg_send_im_core_mvp_rejects_attachment_and_secure_direct() {
     let secure = error_json(&secure);
     assert_eq!(secure["error"]["code"], "unsupported_capability");
     assert_contains(&secure["error"]["message"], "secure direct");
+}
+
+#[test]
+fn msg_read_im_core_mvp_dry_run_routes_inbox_and_history_subset() {
+    let workspace = TempDir::new().expect("workspace");
+
+    let inbox = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--scope",
+            "group",
+            "--unread",
+            "--limit",
+            "5",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(inbox["summary"], "Dry run: inbox read planned");
+    assert_eq!(inbox["data"]["plan"]["action"], "inbox.get");
+    assert_eq!(inbox["data"]["plan"]["identity"], "alice");
+    assert_eq!(inbox["data"]["plan"]["scope"], "group");
+    assert_eq!(inbox["data"]["plan"]["with"], "");
+    assert_eq!(inbox["data"]["plan"]["group"], "");
+    assert_eq!(inbox["data"]["plan"]["limit"], 5);
+    assert_eq!(inbox["data"]["plan"]["mark_read"], false);
+
+    let history = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "history",
+            "--with",
+            "bob",
+            "--limit",
+            "5",
+            "--cursor",
+            "seq-2",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(history["summary"], "Dry run: direct history read planned");
+    assert_eq!(history["data"]["plan"]["action"], "direct.get_history");
+    assert_eq!(history["data"]["plan"]["identity"], "alice");
+    assert_eq!(history["data"]["plan"]["with"], "bob");
+    assert_eq!(history["data"]["plan"]["with_handle"], "bob.awiki.ai");
+    assert_eq!(history["data"]["plan"]["limit"], 5);
+    assert_eq!(history["data"]["plan"]["cursor"], "seq-2");
+}
+
+#[test]
+fn msg_inbox_im_core_mvp_keeps_filter_and_mark_read_on_legacy_plan() {
+    let workspace = TempDir::new().expect("workspace");
+
+    let with_filter = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--with",
+            "bob",
+            "--limit",
+            "7",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(with_filter["data"]["plan"]["action"], "inbox.get");
+    assert_eq!(with_filter["data"]["plan"]["with"], "bob");
+    assert_eq!(with_filter["data"]["plan"]["with_handle"], "bob.awiki.ai");
+    assert_eq!(with_filter["data"]["plan"]["limit"], 7);
+
+    let group_filter = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--group",
+            "did:wba:awiki.ai:groups:demo:e1_group",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(
+        group_filter["data"]["plan"]["group"],
+        "did:wba:awiki.ai:groups:demo:e1_group"
+    );
+
+    let mark_read = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "inbox",
+            "--mark-read",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(mark_read["data"]["plan"]["mark_read"], true);
 }
 
 #[test]

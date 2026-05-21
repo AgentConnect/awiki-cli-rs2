@@ -1,9 +1,9 @@
 use std::fs;
 
 use im_core::prelude::{
-    Cursor, GroupRef, HistoryQuery, InboxQuery, InboxScope, MessageBody, MessageDeliveryOptions,
-    MessageKind, MessageSecurityMode, MessageTarget, PageLimit, PeerRef, SendMessageRequest,
-    ThreadRef,
+    AuthScope, Cursor, GroupRef, HistoryQuery, InboxQuery, InboxScope, MessageBody,
+    MessageDeliveryOptions, MessageKind, MessageSecurityMode, MessageTarget, PageLimit, PeerRef,
+    SendMessageRequest, ThreadRef,
 };
 
 use crate::cli::ParsedCommand;
@@ -16,7 +16,7 @@ pub fn send_message_request(
 ) -> Result<SendMessageRequest, ExitError> {
     let target = message_target(command, default_domain)?;
     let body = message_body(command)?;
-    let security = message_security(command)?;
+    let security = message_security(command, &target)?;
     Ok(SendMessageRequest {
         target,
         body,
@@ -70,20 +70,13 @@ pub fn history_request(
     ))
 }
 
-pub fn legacy_direct_text_send_request(
+pub fn legacy_text_send_request(
     identity_name: &str,
     request: SendMessageRequest,
 ) -> Result<message::SendRequest, ExitError> {
-    let target = match request.target {
-        MessageTarget::Direct(peer) => peer.as_str().to_string(),
-        MessageTarget::Group(_) => {
-            return Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "group send is not routed through the Phase 1E IM Core adapter.",
-                "Use the legacy group send path until group message migration is in scope.",
-            ));
-        }
+    let (target, group) = match request.target {
+        MessageTarget::Direct(peer) => (peer.as_str().to_string(), String::new()),
+        MessageTarget::Group(group) => (String::new(), group.as_str().to_string()),
     };
     let (text, message_type) = match request.body {
         MessageBody::Text { text, kind } => (text, legacy_message_type(kind)),
@@ -119,10 +112,76 @@ pub fn legacy_direct_text_send_request(
     Ok(message::SendRequest {
         identity_name: identity_name.to_string(),
         target,
+        group,
         text,
         message_type,
         secure_mode,
         ..message::SendRequest::default()
+    })
+}
+
+pub fn send_auth_scope(request: &SendMessageRequest) -> AuthScope {
+    match request.target {
+        MessageTarget::Direct(_) => AuthScope::Messaging,
+        MessageTarget::Group(_) => AuthScope::GroupMessaging,
+    }
+}
+
+pub fn legacy_inbox_request(
+    identity_name: &str,
+    query: InboxQuery,
+) -> Result<message::InboxRequest, ExitError> {
+    if query.cursor.is_some() {
+        return Err(ExitError::new(
+            "unsupported_capability",
+            2,
+            "inbox cursor is not supported by the Phase 1G IM Core adapter bridge.",
+            "Use the existing legacy inbox path until cursor pagination is migrated.",
+        ));
+    }
+    Ok(message::InboxRequest {
+        identity_name: identity_name.to_string(),
+        scope: legacy_inbox_scope(query.scope),
+        limit: query.limit.0 as i64,
+        unread_only: query.unread_only,
+        mark_read: false,
+        ..message::InboxRequest::default()
+    })
+}
+
+pub fn legacy_history_request(
+    identity_name: &str,
+    thread: ThreadRef,
+    query: HistoryQuery,
+) -> Result<message::HistoryRequest, ExitError> {
+    let with = match thread {
+        ThreadRef::Direct(peer) => peer.as_str().to_string(),
+        ThreadRef::Group(_) => {
+            return Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "group history is not routed through the Phase 1G IM Core adapter.",
+                "Use the existing group messages command until group history is migrated.",
+            ));
+        }
+        ThreadRef::Thread(_) => {
+            return Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "thread history is not supported by the Phase 1G IM Core adapter.",
+                "Use direct history with --with in this phase.",
+            ));
+        }
+    };
+    Ok(message::HistoryRequest {
+        identity_name: identity_name.to_string(),
+        with,
+        limit: query.limit.0 as i64,
+        cursor: query
+            .cursor
+            .map(|cursor| cursor.as_str().to_string())
+            .unwrap_or_default(),
+        ..message::HistoryRequest::default()
     })
 }
 
@@ -214,7 +273,10 @@ fn legacy_message_type(kind: MessageKind) -> String {
     }
 }
 
-fn message_security(command: &ParsedCommand) -> Result<MessageSecurityMode, ExitError> {
+fn message_security(
+    command: &ParsedCommand,
+    target: &MessageTarget,
+) -> Result<MessageSecurityMode, ExitError> {
     match string_flag(command, "secure")
         .trim()
         .to_ascii_lowercase()
@@ -222,12 +284,20 @@ fn message_security(command: &ParsedCommand) -> Result<MessageSecurityMode, Exit
     {
         "" | "default" => Ok(MessageSecurityMode::DefaultPlain),
         "plain" | "off" | "false" => Ok(MessageSecurityMode::Plain),
-        "direct" | "secure-direct" | "on" | "true" => Err(ExitError::new(
-            "unsupported_capability",
-            2,
-            "secure direct messages are not supported by the Phase 1 IM Core adapter.",
-            "Use the existing legacy secure command path until secure migration starts.",
-        )),
+        "direct" | "secure-direct" | "on" | "true" => match target {
+            MessageTarget::Direct(_) => Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "secure direct messages are not supported by the Phase 1 IM Core adapter.",
+                "Use the existing legacy secure command path until secure migration starts.",
+            )),
+            MessageTarget::Group(_) => Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "group E2EE is not supported by the Phase 1 IM Core adapter.",
+                "Use the existing legacy group E2EE command path until secure migration starts.",
+            )),
+        },
         "group-e2ee" | "e2ee" => Err(ExitError::new(
             "unsupported_capability",
             2,
@@ -255,6 +325,15 @@ fn inbox_scope(raw: &str) -> Result<InboxScope, ExitError> {
             "Use --scope all, --scope direct, or --scope group.",
         )),
     }
+}
+
+fn legacy_inbox_scope(scope: InboxScope) -> String {
+    match scope {
+        InboxScope::All => "all",
+        InboxScope::DirectOnly => "direct",
+        InboxScope::GroupOnly => "group",
+    }
+    .to_string()
 }
 
 fn page_limit(command: &ParsedCommand, flag: &str, default: u32) -> Result<PageLimit, ExitError> {
