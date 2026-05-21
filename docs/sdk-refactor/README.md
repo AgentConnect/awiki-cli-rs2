@@ -52,7 +52,7 @@ provider 抽象
 1. [整体架构](architecture.md)：crate 边界、Phase 1 MVP、多身份模型、路径参数、blocking-first、public/internal 边界。
 2. [公共接口](public-api.md)：按阶段标注的 `ImCore`、`ImClient`、identity/auth/messages/groups/local_state/realtime/secure 接口草案。
 3. [CLI 边界](cli-boundary.md)：CLI 保留职责、P1 命令到 SDK API 的映射、handler 目标形态。
-4. [迁移计划](migration-plan.md)：P1A ~ P1E 的最小落地顺序，以及后续阶段。
+4. [实现执行手册](implementation-playbook.md)：阶段路线和实际 PR 执行手册，说明每个 PR/切片如何落地、验证和回滚。
 5. [合并决策](merge-decisions.md)：从 `sdk-refactor` 与 `sdk-refactor-2` 吸收/不吸收的设计点和原因。
 6. 模块设计：
    - [core](modules/01-core.md)
@@ -66,6 +66,8 @@ provider 抽象
    - [attachments](modules/09-attachments.md)
    - [secure](modules/10-secure.md)
    - [realtime](modules/11-realtime.md)
+
+`implementation-playbook.md` 是阶段路线和实际 PR 执行手册。若步骤粒度和模块接口文档不同，以 `implementation-playbook.md` 的执行粒度为准；若接口形态或 public/internal 边界不同，以 `public-api.md` 和模块接口文档为准。
 
 ## 4. 阶段范围总览
 

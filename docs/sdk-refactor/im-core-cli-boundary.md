@@ -4,7 +4,7 @@
 **日期**：2026-05-21  
 **适用仓库**：`awiki-cli-rs2`
 
-本文件保留为历史入口和快速索引。最终方案以本目录下的 `README.md`、`architecture.md`、`public-api.md`、`cli-boundary.md`、`migration-plan.md` 和 `modules/*` 为准。
+本文件保留为历史入口和快速索引。最终方案以本目录下的 `README.md`、`architecture.md`、`public-api.md`、`cli-boundary.md`、`implementation-playbook.md` 和 `modules/*` 为准。
 
 ## 当前结论
 
@@ -22,7 +22,7 @@
 2. [整体架构](architecture.md)
 3. [公共接口](public-api.md)
 4. [CLI 边界](cli-boundary.md)
-5. [迁移计划](migration-plan.md)
+5. [实现执行手册](implementation-playbook.md)
 6. [合并决策](merge-decisions.md)
 7. `modules/*`
 

@@ -97,7 +97,7 @@ owner_did 作为兼容和展示字段
 - 如果全部用 `owner_did` 隔离，本地消息、群状态、联系人缓存都需要复杂 rebind。
 - `owner_identity_id` 更适合作为多身份本地状态的稳定 owner key。
 
-Phase 1 可以先兼容现有 `owner_did`，但 schema、DTO 和迁移计划应预留 `owner_identity_id`。
+Phase 1 可以先兼容现有 `owner_did`，但 schema、DTO 和执行计划应预留 `owner_identity_id`。
 
 ## 7. 为什么 blocking-first
 
