@@ -18,11 +18,15 @@ Future HTTPS/WebSocket lanes should begin with Rustls-backed clients and verify
 the dependency tree stays free of OpenSSL/`native-tls`; bundled OpenSSL is not a
 preferred fallback.
 
-File-size constraint: Rust source files should target 1200 non-generated lines
-by default. The normal relaxed limit is 3000 lines when the Go source is large
-or traceable 1:1 translation would otherwise become less reviewable. Files above
-3000 lines are rare special exceptions only and must be documented with a reason
-in the parity matrix or file-size exception notes before they are accepted.
+File-size constraint: Rust source files should target 2500 non-generated lines
+by default. Rust test files should target 3000 non-generated lines by default,
+because focused contract fixtures and local mock servers can be more reviewable
+when kept with their scenario. Files above the applicable source/test limit are
+allowed only as documented exceptions and must be recorded with a reason in
+`docs/file-size-exceptions.md` before they are accepted. Historical parity rows
+may mention the older 1200-line review-size target or older 3000-line relaxed
+limit as verification evidence from that batch; the current active policy is
+2500 lines for source files and 3000 lines for test files.
 
 Parallel execution constraint: Native Agents may be used for independent
 module/file slices when that improves throughput. Any code-writing Native Agent
