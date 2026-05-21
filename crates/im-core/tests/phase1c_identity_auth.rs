@@ -148,6 +148,18 @@ impl Fixture {
             }"#,
         )
         .unwrap();
+        write_identity_runtime(
+            &identities,
+            "alice",
+            "did:example:alice",
+            "2026-05-21T00:00:00Z",
+        );
+        write_identity_runtime(
+            &identities,
+            "bob",
+            "did:example:bob",
+            "2026-05-21T00:00:00Z",
+        );
         Self { root }
     }
 
@@ -177,6 +189,26 @@ impl Fixture {
         )
         .unwrap()
     }
+}
+
+fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str, expires_at: &str) {
+    let identity_dir = identities.join(alias);
+    fs::create_dir_all(&identity_dir).unwrap();
+    fs::write(
+        identity_dir.join("did.json"),
+        format!(r#"{{"id":"{did}","controller":"{did}"}}"#),
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("private.key"),
+        format!("test-private-key-for-{alias}\n"),
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("auth.json"),
+        format!(r#"{{"jwt_token":"test-token-for-{alias}","expires_at":"{expires_at}"}}"#),
+    )
+    .unwrap();
 }
 
 fn unique_temp_root() -> PathBuf {

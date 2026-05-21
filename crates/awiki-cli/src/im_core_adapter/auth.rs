@@ -28,9 +28,6 @@ pub fn refresh_token_via_im_core(
         manager,
         super::cli_identity_selector(identity_name),
     )?;
-    client
-        .auth()
-        .refresh_session()
-        .map_err(|err| super::map_im_error(err, "id refresh-token"))?;
+    let _ = client.auth().refresh_session();
     identity::refresh_token(resolved, manager, identity_name).map_err(crate::app::identity_exit)
 }
