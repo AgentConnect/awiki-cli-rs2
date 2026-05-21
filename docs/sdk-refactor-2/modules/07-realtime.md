@@ -1,19 +1,12 @@
-# 模块设计：realtime（Phase 2）
+# 07-realtime：Phase 5 可嵌入实时运行循环
 
-## 1. 阶段定位
+## 1. 目标
 
-`realtime` 不进入第一阶段主体迁移。第一阶段只保留接口占位和边界定义。
+`realtime` 不进入 Phase 1。Phase 5 再把 WebSocket 连接、notification 分类、事件投影和可嵌入 runner 下沉到 `im-core`。
 
-Phase 2 再迁移：
+CLI 的 daemon/service 管理永远留在 CLI。
 
-- WebSocket connect。
-- heartbeat/reconnect。
-- notification classify。
-- pending request routing。
-- notification -> `ImEvent` 投影。
-- 可嵌入 runner。
-
-## 2. 对外接口预留
+## 2. Phase 5 public API
 
 ```rust
 pub struct RealtimeService<'a> {
@@ -22,7 +15,6 @@ pub struct RealtimeService<'a> {
 
 impl RealtimeService<'_> {
     pub fn status(&self) -> ImResult<RealtimeStatus>;
-
     pub fn connect(&self, options: RealtimeOptions) -> ImResult<RealtimeHandle>;
     pub fn run_until_shutdown(
         &self,
@@ -32,35 +24,38 @@ impl RealtimeService<'_> {
 }
 ```
 
-## 3. 领域事件
+## 3. SDK 负责
 
-```rust
-pub enum ImEvent {
-    ConnectionStateChanged(ConnectionState),
-    MessageReceived(MessageEvent),
-    MessageUpdated(MessageEvent),
-    GroupUpdated(GroupEvent),
-    ContactUpdated(ContactEvent),
-    RepairHint(RepairHint),
-}
+```text
+WebSocket connect
+heartbeat / reconnect decision
+notification classification
+ImEvent 投影
+message/group local projection trigger
 ```
 
-raw WebSocket frame 和 raw notification JSON 不作为默认事件暴露。
+## 4. CLI 负责
 
-## 4. CLI 边界
+```text
+runtime listener install/start/stop/restart/uninstall
+foreground/service-run
+systemd/launchd/Windows service
+pid/log/socket
+OpenClaw/Hermes host notification setup
+```
 
-CLI 永远保留：
+## 5. internal only
 
-- systemd/launchd/Windows service。
-- daemonize。
-- pid file。
-- daemon socket。
-- log file。
-- service install/start/stop/restart/uninstall。
-- OpenClaw/Hermes host notify 配置。
+不暴露：
 
-SDK 只提供可嵌入 runner。
+```text
+raw WebSocket frame
+request id pending dispatch queue
+send_rpc()
+listener daemon socket
+service manager
+```
 
-## 5. 第一阶段处理
+## 6. 完成判定
 
-第一阶段 CLI runtime 命令继续使用旧实现，不阻塞 `im-core` 基础能力拆分。
+Phase 5 完成时，同一套 `im-core::realtime` runner 能被 CLI 后台进程和 App task/thread 复用。

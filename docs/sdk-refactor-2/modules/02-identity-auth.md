@@ -1,16 +1,12 @@
-# 模块设计：identity-auth
+# 02-identity-auth：Phase 1 身份、鉴权与 Handle 注册
 
-## 1. 职责
+## 1. 目标
 
-`identity` 和 `auth` 是第一阶段基础能力，负责：
+Phase 1 的 identity/auth 目标是让 SDK 能绑定身份、完成 DID auth/session、注册 handle，并支撑私聊/群聊消息发送。
 
-- 多身份枚举、默认身份、selector 解析。
-- handle 注册和恢复。
-- profile 读取和更新。
-- DID auth / session 刷新 / logout。
-- 绑定身份后自动持有身份运行时。
+不在 Phase 1 中实现完整 profile、recover、replace DID、directory contacts。
 
-## 2. IdentitySelector
+## 2. 多身份模型
 
 ```rust
 pub enum IdentitySelector {
@@ -22,26 +18,9 @@ pub enum IdentitySelector {
 }
 ```
 
-不用 `Name(String)`，避免和用户 display name 混淆。CLI 的 `--identity alice` 转成 `LocalAlias("alice")`。
+`LocalAlias` 表达 CLI credential name / 本地账号别名。不要使用 `Name(String)`，避免和 display name 或 handle 混淆。
 
-## 3. IdentitySummary
-
-```rust
-pub struct IdentitySummary {
-    pub id: IdentityId,
-    pub did: Did,
-    pub handle: Option<Handle>,
-    pub display_name: Option<String>,
-    pub local_alias: Option<String>,
-    pub device_id: Option<String>,
-    pub is_default: bool,
-    pub readiness: IdentityReadiness,
-}
-```
-
-`IdentitySummary` 不含私钥、JWT、DID document path、auth path、secure path。
-
-## 4. Registry API
+## 3. Phase 1 IdentityRegistry
 
 ```rust
 impl IdentityRegistry<'_> {
@@ -49,47 +28,62 @@ impl IdentityRegistry<'_> {
     pub fn default_identity(&self) -> ImResult<Option<IdentitySummary>>;
     pub fn resolve(&self, selector: IdentitySelector) -> ImResult<IdentitySummary>;
     pub fn register_handle(&self, request: RegisterHandleRequest) -> ImResult<IdentityRegistration>;
-    pub fn recover_handle(&self, request: RecoverHandleRequest) -> ImResult<RecoveredIdentity>;
     pub fn plan_default_identity_change(&self, selector: IdentitySelector) -> ImResult<DefaultIdentityChange>;
 }
 ```
 
-`load(selector)` 可以存在，但必须是 `pub(crate)`，供 `ImCore::client(selector)` 内部使用。
+`IdentityRegistry::load()` 是内部方法，用于 `core.client(selector)` 组装 `ImClient`，不返回给 App/CLI。
 
-## 5. Auth API
+## 4. Phase 1 AuthService
 
 ```rust
 impl AuthService<'_> {
     pub fn login(&self) -> ImResult<SessionBundle>;
     pub fn ensure_session(&self, scope: AuthScope) -> ImResult<SessionBundle>;
     pub fn refresh_session(&self) -> ImResult<SessionUpdate>;
-    pub fn logout(&self) -> ImResult<SessionUpdate>;
     pub fn status(&self) -> ImResult<AuthStatus>;
 }
 ```
 
-auth path 和 token persistence 是 SDK 内部职责，但路径由 `ImCorePaths` 显式传入。
+Phase 1 重点是 `AuthScope::Messaging` / `GroupMessaging`。`UserProfile` scope 可以等 Phase 2 profile/directory 迁移时完善。
 
-## 6. CLI 边界
+## 5. CLI 边界
 
-CLI 负责：
+CLI 保留：
 
-- identity alias 来源。
-- identity root/default 文件路径。
-- 私钥文件权限。
-- OTP 输入和危险命令确认。
-- 默认身份文件的实际写入。
-- 输出。
+- `--identity` 解析并转换成 `IdentitySelector::LocalAlias` 或 `Default`。
+- OTP 输入。
+- identity alias 选择。
+- DID document / key / auth 文件路径。
+- 文件权限和备份。
+- default identity 文件写入。
+- 输出和错误 hint。
 
-SDK 负责：
+`im-core` 负责：
 
-- 注册/恢复业务流程。
-- session refresh。
-- profile API。
-- 身份 readiness 计算。
+- 身份摘要。
+- 身份 readiness。
+- 加载显式路径中的 DID document 和 signing key。
+- DID auth/login/refresh。
+- 按身份隔离 auth/session。
+- register handle 的业务请求和领域结果。
 
-## 7. 第一阶段不做
+## 6. 后续阶段
 
-- replace DID 可后移，或只做 façade 保持旧逻辑。
-- import legacy 可留 CLI。
-- credential vault/provider 不做。
+Phase 2 再迁移：
+
+```text
+bind phone/email
+recover handle
+profile get/update
+id resolve / directory resolve
+replace DID
+legacy import/rebind 相关高级能力
+```
+
+## 7. 完成判定
+
+- `id register` 走 `core.identities().register_handle()`。
+- `id refresh-token` 走 `client.auth().refresh_session()`。
+- `msg send` 可以通过 `client.auth().ensure_session(AuthScope::Messaging)` 自动保证 session。
+- public API 不暴露 private key、auth path、DID document path。

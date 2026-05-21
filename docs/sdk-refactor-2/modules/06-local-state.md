@@ -1,20 +1,12 @@
-# 模块设计：local-state
+# 06-local-state：本地状态与 owner 隔离
 
-## 1. 职责
+## 1. 目标
 
-`local_state` 是 SDK 内部持久化能力，不是 App/CLI 默认 public API。第一阶段继续使用内置 SQLite 实现。
+Phase 1 只要求本地状态支持 SDK 启动和消息主链路的最小需要。完整 message/contact/conversation projection、cache merge、mark-read 状态和 group cache 后移到 Phase 3。
 
-负责：
+## 2. Phase 1 public API
 
-- schema 初始化/迁移。
-- message/group/contact/conversation/outbox 基础表。
-- owner 隔离。
-- 远端结果与本地 cache 合并。
-- conversation/thread projection。
-
-## 2. 对外入口
-
-只通过 bootstrap 暴露生命周期：
+只通过 `core.bootstrap()` 暴露生命周期入口：
 
 ```rust
 impl CoreBootstrap<'_> {
@@ -24,44 +16,55 @@ impl CoreBootstrap<'_> {
 }
 ```
 
-业务读写通过：
-
-```rust
-client.messages()
-client.groups()
-client.directory()
-```
+业务 API 不直接传 `LocalStatePaths`。
 
 ## 3. owner 隔离
 
-建议引入：
+本地状态应从设计上支持多身份隔离：
 
 ```rust
 pub(crate) struct LocalOwnerContext {
-    pub owner_identity_id: IdentityId,
+    pub identity_id: IdentityId,
     pub current_did: Did,
-    pub local_alias: Option<String>,
 }
 ```
 
-第一阶段兼容已有 `owner_did`，但新逻辑优先使用 `owner_identity_id`，避免 replace DID/recover 后数据需要全量 rebind。
+建议长期优先使用 `owner_identity_id` 作为稳定主键，`owner_did` 作为兼容和展示字段。这样可以降低 replace DID、recover/rebind 之后的本地状态迁移成本。
 
-## 4. 不暴露内容
+## 4. internal only
+
+不暴露：
 
 ```rust
-SQLite connection
-store_message(owner, record)
-store_messages_batch
-query_inbox(owner, query)
-execute_sql
-ContactRecord / MessageRecord / GroupRecord as DB rows
+open_sqlite_connection()
+store_message(owner, paths, record)
+query_inbox(owner, paths, query)
+mark_read(owner, ids, paths)
+execute_sql()
 ```
 
-`debug.db.*` 是 CLI-only 能力。
+`debug.db.*` 留在 CLI。
 
-## 5. 第一阶段验收
+## 5. Phase 3 补全
 
-- local state 初始化/迁移可由 `core.bootstrap()` 完成。
-- `messages().conversations()` 可用。
-- alice/bob 两个身份共享 SQLite 时互不串数据。
-- CLI 普通业务 handler 不直接调用 `store::*`。
+Phase 3 再实现：
+
+```text
+message projection
+contact projection
+conversation/thread projection
+mark-read local state
+cache merge
+alice/bob owner isolation tests
+group cache
+```
+
+## 6. 完成判定
+
+P1 完成时：
+
+- SDK 可以用显式 SQLite/local state path 启动。
+- messages 主链路可以选择性写入最小本地状态。
+- CLI 业务 handler 不直接拼 owner/path/store helper。
+
+P3 完成时，App/CLI 可复用完整 conversation/thread projection。

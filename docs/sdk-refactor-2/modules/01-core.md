@@ -1,32 +1,16 @@
-# 模块设计：core
+# 01-core：Phase 1 SDK 核心入口
 
-## 1. 职责
+## 1. 目标
 
-`core` 是 `im-core` 的公共入口层，负责：
+`core` 是 `im-core` 的公共入口层。Phase 1 只要求它支撑 SDK 跑起来：配置、显式路径、多身份 registry、绑定身份、错误、bootstrap 和基础 DTO。
 
-- SDK 初始化。
-- 配置和路径总入口。
-- 多身份 registry 入口。
-- 绑定身份的 `ImClient` 构造。
-- bootstrap 生命周期。
-- 统一错误类型。
-- 基础分页、ID、cursor 类型。
-
-`core` 不直接实现业务 RPC，但其他模块都依赖它。
-
-## 2. 对外接口
+## 2. Phase 1 public API
 
 ```rust
 pub struct ImCore;
 pub struct ImClient;
-pub struct ImCoreConfig;
-pub struct ImCorePaths;
 pub struct CoreBootstrap<'a>;
-pub enum ImError;
-pub type ImResult<T> = Result<T, ImError>;
-```
 
-```rust
 impl ImCore {
     pub fn new(config: ImCoreConfig, paths: ImCorePaths) -> ImResult<Self>;
     pub fn identities(&self) -> IdentityRegistry<'_>;
@@ -36,43 +20,81 @@ impl ImCore {
 
 impl ImClient {
     pub fn current_identity(&self) -> &IdentitySummary;
+    pub fn did(&self) -> &Did;
+    pub fn handle(&self) -> Option<&Handle>;
     pub fn auth(&self) -> AuthService<'_>;
-    pub fn identity(&self) -> IdentityService<'_>;
-    pub fn directory(&self) -> DirectoryService<'_>;
     pub fn messages(&self) -> MessageService<'_>;
-    pub fn groups(&self) -> GroupService<'_>;
 }
 ```
 
-## 3. 内部类型
+Phase 2+ 再增加 `identity()`、`directory()`；Phase 3+ 增加 `groups()`；Phase 5+ 增加 `realtime()`；Phase 6+ 增加 `secure()`。
+
+## 3. ImCoreConfig
+
+```rust
+pub struct ImCoreConfig {
+    pub service_base_url: Url,
+    pub did_domain: String,
+    pub user_service_endpoint: Option<Url>,
+    pub message_service_endpoint: Option<Url>,
+    pub transport_policy: MessageTransportPolicy,
+}
+
+pub enum MessageTransportPolicy {
+    Auto,
+    HttpOnly,
+    RealtimePreferred, // Phase 5
+}
+```
+
+CLI 的 `runtime_mode` 不直接进入 SDK。CLI adapter 负责把本机配置转换成 `MessageTransportPolicy`。
+
+## 4. ImCorePaths
+
+```rust
+pub struct ImCorePaths {
+    pub identities: IdentityRegistryPaths,
+    pub local_state: Option<LocalStatePaths>,
+    pub runtime: Option<RuntimePaths>,
+}
+```
+
+Phase 1 可以只使用身份、auth 和必要 local state 路径。业务函数不接收 `*Paths`。
+
+## 5. 内部类型
 
 以下类型只能是 `pub(crate)`：
 
 ```rust
-ClientIdentityRuntime
 ActorContext
+ClientIdentityRuntime
 LoadedIdentity
 IdentityRuntimePaths
 AuthStatePaths
-LocalOwnerContext
+LocalStateConnection
 ```
 
-不提供 `client.actor()`、`client.paths()`、`client.auth_paths()` 这类逃逸口。
+`ImClient` 可以内部持有这些运行时对象，但不能让 App/CLI 拿到。
 
-## 4. 路径原则
-
-`ImCorePaths` 只在构造和 bootstrap 阶段作为路径入口。业务 API 不再接收 path 参数。
+## 6. Bootstrap
 
 ```rust
-client.messages().send(request)
+impl CoreBootstrap<'_> {
+    pub fn validate_paths(&self) -> ImResult<PathValidationReport>;
+    pub fn initialize_local_state(&self) -> ImResult<LocalStateStatus>;
+    pub fn migrate_local_state(&self) -> ImResult<MigrationReport>;
+}
 ```
 
-而不是：
+Phase 1 只要求 bootstrap 能验证显式路径并为消息主链路准备必要本地状态。完整 projection/cache merge 后移。
 
-```rust
-send(actor, auth_paths, local_state_paths, request)
-```
+## 7. 错误边界
 
-## 5. 第一阶段实现建议
+`ImError` 表达领域失败，不包含 CLI exit code。CLI 负责映射为 `ExitError`、hint 和输出格式。
 
-第一阶段可以把 `ImCore` 做成薄 façade，内部临时调用旧 CLI 模块，但 public API 必须先按目标形态稳定下来。等 handler 都切到 façade 后，再逐步把旧模块移动到 `crates/im-core`。
+## 8. 完成判定
+
+- `im-core` 可独立编译。
+- `ImCore::new(config, paths)` 不需要 CLI `Resolved`。
+- `core.client(selector)` 不需要 CLI `Manager`。
+- `im-core` 中不存在 CLI 类型引用。

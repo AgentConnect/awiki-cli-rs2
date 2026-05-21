@@ -11,11 +11,18 @@ SDK public API 只表达业务意图：
 SDK public API 不表达底层实现：
 
 - 不传 `ActorContext`。
-- 不传 `owner_did` 或 SQLite path 给业务函数。
+- 不传 `owner_did`、`owner_identity_id` 或 SQLite path 给业务函数。
 - 不传 RPC method name、wire params、raw JSON payload。
 - 不传 DID auth proof 参数。
 - 不传 secure session、prekey、MLS path。
 - 不返回 private key、auth file path、runtime path。
+
+本文按阶段标注接口：
+
+```text
+[P1] 第一阶段必须实现，目标是 SDK 能跑起来。
+[P2+] 后续阶段实现，可以先保留设计但不进入 P1 验收。
+```
 
 ## 2. 顶层入口
 
@@ -41,39 +48,50 @@ pub struct ImCoreConfig {
 pub enum MessageTransportPolicy {
     Auto,
     HttpOnly,
-    RealtimePreferred, // Phase 2
+    RealtimePreferred, // [P5]
 }
 
 pub struct ImCorePaths {
     pub identities: IdentityRegistryPaths,
-    pub local_state: LocalStatePaths,
-    pub runtime: RuntimePaths,
+    pub local_state: Option<LocalStatePaths>,
+    pub runtime: Option<RuntimePaths>,
 }
 
 impl ImCore {
+    // [P1]
     pub fn new(config: ImCoreConfig, paths: ImCorePaths) -> ImResult<Self>;
 
+    // [P1]
     pub fn identities(&self) -> IdentityRegistry<'_>;
+
+    // [P1]
     pub fn bootstrap(&self) -> CoreBootstrap<'_>;
 
+    // [P1]
     pub fn client(&self, selector: IdentitySelector) -> ImResult<ImClient>;
 }
 
 impl ImClient {
+    // [P1]
     pub fn current_identity(&self) -> &IdentitySummary;
     pub fn did(&self) -> &Did;
     pub fn handle(&self) -> Option<&Handle>;
 
+    // [P1]
     pub fn auth(&self) -> AuthService<'_>;
+    pub fn messages(&self) -> MessageService<'_>;
+
+    // [P2+]
     pub fn identity(&self) -> IdentityService<'_>;
     pub fn directory(&self) -> DirectoryService<'_>;
-    pub fn messages(&self) -> MessageService<'_>;
+
+    // [P3+]
     pub fn groups(&self) -> GroupService<'_>;
 
-    // Phase 2+
+    // [P5+]
     pub fn realtime(&self) -> RealtimeService<'_>;
 
-    // Phase 3+
+    // [P6+]
     pub fn secure(&self) -> SecureDiagnosticsService<'_>;
 }
 ```
@@ -96,7 +114,6 @@ pub enum ImError {
     PeerNotFound,
     GroupNotFound,
     MessageNotFound,
-    ContactNotFound,
     TransportUnavailable { detail: String },
     UnsupportedCapability { capability: String },
     LocalStateUnavailable { detail: String },
@@ -132,7 +149,7 @@ pub struct PageLimit(pub u32);
 
 建议不要把所有业务字段都用裸 `String` 暴露。第一阶段内部仍可转换成字符串，但 SDK DTO 应逐步领域化。
 
-## 5. identity
+## 5. identity registry
 
 ```rust
 pub enum IdentitySelector {
@@ -165,24 +182,28 @@ pub struct IdentityRegistry<'a> {
 }
 
 impl IdentityRegistry<'_> {
+    // [P1]
     pub fn list(&self) -> ImResult<Vec<IdentitySummary>>;
     pub fn default_identity(&self) -> ImResult<Option<IdentitySummary>>;
     pub fn resolve(&self, selector: IdentitySelector) -> ImResult<IdentitySummary>;
 
+    // [P1]
     pub fn register_handle(
         &self,
         request: RegisterHandleRequest,
     ) -> ImResult<IdentityRegistration>;
 
-    pub fn recover_handle(
-        &self,
-        request: RecoverHandleRequest,
-    ) -> ImResult<RecoveredIdentity>;
-
+    // [P1]
     pub fn plan_default_identity_change(
         &self,
         selector: IdentitySelector,
     ) -> ImResult<DefaultIdentityChange>;
+
+    // [P2+]
+    pub fn recover_handle(
+        &self,
+        request: RecoverHandleRequest,
+    ) -> ImResult<RecoveredIdentity>;
 }
 ```
 
@@ -196,66 +217,26 @@ pub struct AuthService<'a> {
 }
 
 pub enum AuthScope {
-    UserProfile,
-    Messaging,
-    GroupMessaging,
+    UserProfile,      // [P2+]
+    Messaging,        // [P1]
+    GroupMessaging,   // [P1]
 }
 
 impl AuthService<'_> {
+    // [P1]
     pub fn login(&self) -> ImResult<SessionBundle>;
     pub fn ensure_session(&self, scope: AuthScope) -> ImResult<SessionBundle>;
     pub fn refresh_session(&self) -> ImResult<SessionUpdate>;
-    pub fn logout(&self) -> ImResult<SessionUpdate>;
     pub fn status(&self) -> ImResult<AuthStatus>;
+
+    // [P2+]
+    pub fn logout(&self) -> ImResult<SessionUpdate>;
 }
 ```
 
-DID auth request、JWT 文件格式、session metadata path 都是内部实现。CLI/App 不应该直接保存或读取 bearer token，除非 Phase B 明确引入外部 credential/session store。
+DID auth request、JWT 文件格式、session metadata path 都是内部实现。CLI/App 不应该直接保存或读取 bearer token，除非 Phase 7 明确引入外部 credential/session store。
 
-## 7. identity service / profile
-
-```rust
-pub struct IdentityService<'a> {
-    client: &'a ImClient,
-}
-
-impl IdentityService<'_> {
-    pub fn profile(&self) -> ImResult<Profile>;
-    pub fn update_profile(&self, patch: ProfilePatch) -> ImResult<Profile>;
-    pub fn bind_contact(&self, request: BindContactRequest) -> ImResult<BindContactResult>;
-
-    // 危险命令，第一阶段可以先不迁入。
-    pub fn replace_did(&self, request: ReplaceDidRequest) -> ImResult<ReplaceDidResult>;
-}
-```
-
-`replace_did` 属于危险能力，可以晚于第一阶段普通 IM 能力迁移。若迁移，必须返回清晰风险信息和本地状态 rebind 计划。
-
-## 8. directory
-
-```rust
-pub struct DirectoryService<'a> {
-    client: &'a ImClient,
-}
-
-pub enum IdentitySubject {
-    Did(Did),
-    Handle(Handle),
-    Any(String),
-}
-
-impl DirectoryService<'_> {
-    pub fn resolve_peer(&self, subject: IdentitySubject) -> ImResult<PeerProfile>;
-    pub fn lookup_handle(&self, handle: Handle) -> ImResult<ResolvedIdentity>;
-    pub fn save_contact(&self, request: SaveContactRequest) -> ImResult<Contact>;
-    pub fn contacts(&self, query: ContactQuery) -> ImResult<Page<Contact>>;
-    pub fn relation_status(&self, peer: PeerRef) -> ImResult<RelationStatus>;
-}
-```
-
-`owner`、`LocalStatePaths`、contact store row 不出现在 public API 中。
-
-## 9. messages
+## 7. messages
 
 ```rust
 pub struct MessageService<'a> {
@@ -278,7 +259,7 @@ pub enum MessageTarget {
 pub enum ThreadRef {
     Direct(PeerRef),
     Group(GroupRef),
-    Thread(ThreadId),
+    Thread(ThreadId), // [P3+]
 }
 
 pub enum MessageBody {
@@ -287,7 +268,7 @@ pub enum MessageBody {
         kind: MessageKind,
     },
 
-    // Phase 2. 第一阶段可以保留 DTO，但不要求实现。
+    // [P4+]
     Attachment {
         input: AttachmentInput,
         caption: Option<String>,
@@ -298,14 +279,13 @@ pub enum MessageBody {
 pub enum MessageKind {
     Text,
     Markdown,
-    System,
 }
 
 pub enum MessageSecurityMode {
     DefaultPlain,
     Plain,
 
-    // Phase 3 reserved. 第一阶段返回 UnsupportedCapability。
+    // [P6+] P1 返回 UnsupportedCapability。
     SecureDirect,
     GroupE2ee,
 }
@@ -315,52 +295,78 @@ pub struct MessageDeliveryOptions {
     pub wait_for_final_acceptance: bool,
 }
 
-impl Default for MessageDeliveryOptions {
-    fn default() -> Self {
-        Self {
-            idempotency_key: None,
-            wait_for_final_acceptance: false,
-        }
-    }
-}
-
 impl MessageService<'_> {
+    // [P1]
     pub fn send(&self, request: SendMessageRequest) -> ImResult<SendMessageResult>;
     pub fn inbox(&self, query: InboxQuery) -> ImResult<Page<Message>>;
     pub fn history(&self, thread: ThreadRef, query: HistoryQuery) -> ImResult<Page<Message>>;
+
+    // [P3+]
     pub fn mark_read(&self, ids: Vec<MessageId>) -> ImResult<MarkReadResult>;
     pub fn conversations(&self, query: ConversationQuery) -> ImResult<Page<Conversation>>;
 }
 ```
 
+P1 `send` 只要求支持：
+
+```text
+MessageBody::Text
+MessageTarget::Direct / Group
+MessageSecurityMode::DefaultPlain / Plain
+```
+
 `msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityMode`。
 
-## 10. groups
+## 8. identity service / profile：Phase 2+
+
+```rust
+pub struct IdentityService<'a> {
+    client: &'a ImClient,
+}
+
+impl IdentityService<'_> {
+    pub fn profile(&self) -> ImResult<Profile>;
+    pub fn update_profile(&self, patch: ProfilePatch) -> ImResult<Profile>;
+    pub fn bind_contact(&self, request: BindContactRequest) -> ImResult<BindContactResult>;
+    pub fn replace_did(&self, request: ReplaceDidRequest) -> ImResult<ReplaceDidResult>;
+}
+```
+
+`replace_did` 属于危险能力，必须晚于 P1 普通 IM 能力迁移。若迁移，必须返回清晰风险信息和本地状态 rebind 计划。
+
+## 9. directory：Phase 2+
+
+```rust
+pub struct DirectoryService<'a> {
+    client: &'a ImClient,
+}
+
+pub enum IdentitySubject {
+    Did(Did),
+    Handle(Handle),
+    Any(String),
+}
+
+impl DirectoryService<'_> {
+    pub fn resolve_peer(&self, subject: IdentitySubject) -> ImResult<PeerProfile>;
+    pub fn lookup_handle(&self, handle: Handle) -> ImResult<ResolvedIdentity>;
+    pub fn save_contact(&self, request: SaveContactRequest) -> ImResult<Contact>;
+    pub fn contacts(&self, query: ContactQuery) -> ImResult<Page<Contact>>;
+    pub fn relation_status(&self, peer: PeerRef) -> ImResult<RelationStatus>;
+}
+```
+
+P1 的 `messages().send(Direct(PeerRef))` 可以在内部做最小 handle/DID resolve，但不要求把完整 directory public API 迁入 P1。
+
+## 10. groups：Phase 3+
+
+P1 群聊通过 `messages().send(MessageTarget::Group)` 和 `messages().history(ThreadRef::Group)` 完成，不要求 `GroupService`。
+
+Phase 3 再迁移完整群生命周期：
 
 ```rust
 pub struct GroupService<'a> {
     client: &'a ImClient,
-}
-
-pub struct CreateGroupRequest {
-    pub profile: GroupProfileDraft,
-    pub policy: GroupPolicyDraft,
-}
-
-pub struct GroupProfileDraft {
-    pub display_name: String,
-    pub description: Option<String>,
-    pub slug: Option<String>,
-    pub goal: Option<String>,
-    pub rules: Option<String>,
-    pub message_prompt: Option<String>,
-}
-
-pub struct GroupPolicyDraft {
-    pub discoverability: Option<GroupDiscoverability>,
-    pub admission: Option<GroupAdmissionMode>,
-    pub max_members: Option<u32>,
-    pub attachments_allowed: Option<bool>,
 }
 
 impl GroupService<'_> {
@@ -375,13 +381,8 @@ impl GroupService<'_> {
     pub fn update_policy(&self, group: GroupRef, patch: GroupPolicyPatch) -> ImResult<GroupSnapshot>;
     pub fn members(&self, group: GroupRef, query: MemberQuery) -> ImResult<Page<GroupMember>>;
     pub fn messages(&self, group: GroupRef, query: HistoryQuery) -> ImResult<Page<Message>>;
-
-    // Convenience。内部等价于 messages().send(MessageTarget::Group(...))。
-    pub fn send_text(&self, group: GroupRef, text: String) -> ImResult<SendMessageResult>;
 }
 ```
-
-普通群消息可以统一走 `client.messages().send(MessageTarget::Group)`。保留 `groups().send_text()` 是为了 App/CLI 便利，但不要重复实现业务逻辑。
 
 ## 11. local state / bootstrap
 
@@ -391,6 +392,7 @@ pub struct CoreBootstrap<'a> {
 }
 
 impl CoreBootstrap<'_> {
+    // [P1]
     pub fn validate_paths(&self) -> ImResult<PathValidationReport>;
     pub fn initialize_local_state(&self) -> ImResult<LocalStateStatus>;
     pub fn migrate_local_state(&self) -> ImResult<MigrationReport>;
@@ -408,7 +410,7 @@ execute_sql()
 
 Debug SQL 属于 CLI `debug.db.*`，不属于 SDK default API。
 
-## 12. attachments：Phase 2 预留
+## 12. attachments：Phase 4+
 
 ```rust
 pub enum AttachmentInput {
@@ -426,9 +428,9 @@ pub enum AttachmentDestination {
 }
 ```
 
-第一阶段可以只保留类型，不实现完整 upload/download。
+P1 不要求保留附件 DTO；如果保留，调用时必须返回 `UnsupportedCapability`。
 
-## 13. realtime：Phase 2 预留
+## 13. realtime：Phase 5+
 
 ```rust
 pub struct RealtimeService<'a> {
@@ -437,8 +439,6 @@ pub struct RealtimeService<'a> {
 
 impl RealtimeService<'_> {
     pub fn status(&self) -> ImResult<RealtimeStatus>;
-
-    // Phase 2
     pub fn connect(&self, options: RealtimeOptions) -> ImResult<RealtimeHandle>;
     pub fn run_until_shutdown(&self, options: RealtimeOptions, shutdown: ShutdownSignal) -> ImResult<RealtimeExit>;
 }
@@ -446,11 +446,11 @@ impl RealtimeService<'_> {
 
 CLI daemon/service 仍在 `awiki-cli`。SDK 只提供 runner，不安装服务、不写 pid、不管理 systemd/launchd/Windows service。
 
-## 14. secure：Phase 3 预留
+## 14. secure：Phase 6+
 
-第一阶段不实现 secure public flow。`MessageSecurityMode::SecureDirect` / `GroupE2ee` 返回 `UnsupportedCapability`。
+P1 不实现 secure public flow。`MessageSecurityMode::SecureDirect` / `GroupE2ee` 返回 `UnsupportedCapability`。
 
-Phase 3 再增加：
+Phase 6 再增加：
 
 ```rust
 client.secure().direct_status(peer)

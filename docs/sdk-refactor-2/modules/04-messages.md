@@ -1,32 +1,26 @@
-# 模块设计：messages
+# 04-messages：Phase 1 私聊与群聊文本 MVP
 
-## 1. 职责
+## 1. 目标
 
-`messages` 是第一阶段核心模块，负责普通私聊和群聊文本消息：
+`messages` 是 Phase 1 的核心业务模块。第一阶段只做普通文本消息主链路：私聊文本、群聊文本，以及验证消息闭环所需的 inbox/history。
 
-- direct text send。
-- group text send。
-- inbox。
-- direct/group history。
-- mark-read。
-- conversation/thread projection。
-- 远端结果与本地状态合并。
+不在 Phase 1 中做附件、mark-read、conversation projection、secure direct、group E2EE。
 
-第一阶段不处理 E2EE，不处理附件完整 upload/download。
-
-## 2. 对外接口
+## 2. Phase 1 public API
 
 ```rust
+pub struct MessageService<'a> {
+    client: &'a ImClient,
+}
+
 impl MessageService<'_> {
     pub fn send(&self, request: SendMessageRequest) -> ImResult<SendMessageResult>;
     pub fn inbox(&self, query: InboxQuery) -> ImResult<Page<Message>>;
     pub fn history(&self, thread: ThreadRef, query: HistoryQuery) -> ImResult<Page<Message>>;
-    pub fn mark_read(&self, ids: Vec<MessageId>) -> ImResult<MarkReadResult>;
-    pub fn conversations(&self, query: ConversationQuery) -> ImResult<Page<Conversation>>;
 }
 ```
 
-## 3. SendMessageRequest
+## 3. Phase 1 request DTO
 
 ```rust
 pub struct SendMessageRequest {
@@ -42,60 +36,67 @@ pub enum MessageTarget {
     Group(GroupRef),
 }
 
+pub enum ThreadRef {
+    Direct(PeerRef),
+    Group(GroupRef),
+}
+
 pub enum MessageBody {
     Text { text: String, kind: MessageKind },
-    Attachment { input: AttachmentInput, caption: Option<String>, mime_type: Option<String> }, // Phase 2
 }
 
 pub enum MessageSecurityMode {
     DefaultPlain,
     Plain,
-    SecureDirect, // Phase 3，第一阶段 UnsupportedCapability
-    GroupE2ee,    // Phase 3，第一阶段 UnsupportedCapability
 }
 ```
 
-## 4. 不暴露内容
+Phase 1 不要求公开 attachment body 或 secure mode。若为了未来兼容提前保留 enum variant，调用时必须返回 `UnsupportedCapability`。
 
-以下都必须是 internal：
+## 4. 内部编排
 
-```rust
-build_direct_send_rpc_params
-build_group_send_rpc_params
-build_inbox_rpc_params
-build_history_rpc_params
-send_direct_http
-send_direct_http_with_fallback_refresh
-persist_inbox_messages(owner, paths, raw)
-MessageRecord store row
-```
+`send()` 内部负责：
 
-## 5. conversation projection
+- 通过 `ImClient` 注入当前 identity/actor。
+- `auth().ensure_session(AuthScope::Messaging | GroupMessaging)`。
+- Direct target 的最小 handle/DID 解析。
+- Group target 使用已有 `GroupRef`。
+- 选择 HTTP/RPC transport。
+- 构造 wire params。
+- 处理 401 refresh retry。
+- 返回领域化 `SendMessageResult`。
+- 可选地写入最小本地 message record。
 
-第一阶段必须提供：
+CLI/App 不应该传 actor、auth path、owner DID、RPC params 或 raw payload。
 
-```rust
-client.messages().conversations(query)
-```
+## 5. 后续阶段
 
-原因：App 和 CLI 都需要 conversation/thread 列表。如果 SDK 不提供，App 会继续自己解析 inbox、计算 thread id、合并本地 cache，导致业务规则重复。
-
-## 6. CLI adapter
-
-CLI 负责转换：
+Phase 3 补全：
 
 ```text
---to       -> MessageTarget::Direct
---group    -> MessageTarget::Group
---text     -> MessageBody::Text
---text-file -> CLI 先读取文件再传 text
---secure on -> MessageSecurityMode::SecureDirect，但第一阶段返回 UnsupportedCapability
+mark_read
+conversations/thread projection
+local cache merge
+message status / retry
+更多 inbox/history query
 ```
 
-## 7. 第一阶段验收
+Phase 4 增加附件。Phase 6 增加 secure direct 和 group E2EE。
 
-- `msg send --to` 走 SDK。
-- `msg send --group` 走 SDK。
-- `msg inbox/history/mark-read` 走 SDK。
-- 普通消息本地落库和 conversation projection 正常。
-- secure mode 在第一阶段明确报 `UnsupportedCapability`，不静默降级。
+## 6. CLI 边界
+
+CLI 负责：
+
+- `--to`、`--group`、`--text`、`--text-file` 解析。
+- dry-run 展示。
+- 输出格式。
+- `--identity` 转成 `IdentitySelector`。
+
+CLI 不再直接调用 `message::send(&resolved, &manager, message::SendRequest { identity_name, ... })`。
+
+## 7. 完成判定
+
+- `msg send --to` 和 `msg send --group` 均走 `client.messages().send()`。
+- `msg inbox/history` 走 `client.messages()`。
+- `group messages` 可适配到 `client.messages().history(ThreadRef::Group)`。
+- `build_*_rpc_params` 不作为 SDK public API 导出。

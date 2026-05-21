@@ -1,14 +1,34 @@
-# 模块设计：groups
+# 05-groups：Phase 3 群生命周期与成员管理
 
-## 1. 职责
+## 1. 目标
 
-`groups` 负责群生命周期、成员、群 profile/policy 和群消息读取。
+Phase 1 的“群聊”只指群消息能力：面向已有 `GroupRef` 发送和读取普通群文本消息。完整群生命周期、成员管理和群 profile/policy 更新不进入 Phase 1。
 
-第一阶段只做普通群聊，不做 group E2EE。
+这样可以先跑通 SDK 主链路：身份、auth、私聊、群聊文本。群管理等更复杂能力后移到 Phase 3。
 
-## 2. 对外接口
+## 2. Phase 1 群消息入口
 
 ```rust
+client.messages().send(SendMessageRequest {
+    target: MessageTarget::Group(group_ref),
+    body: MessageBody::Text { text, kind: MessageKind::Text },
+    security: MessageSecurityMode::DefaultPlain,
+    client_message_id: None,
+    delivery: MessageDeliveryOptions::default(),
+})?;
+
+client.messages().history(ThreadRef::Group(group_ref), query)?;
+```
+
+P1 不要求 `client.groups()`。
+
+## 3. Phase 3 GroupService
+
+```rust
+pub struct GroupService<'a> {
+    client: &'a ImClient,
+}
+
 impl GroupService<'_> {
     pub fn create(&self, request: CreateGroupRequest) -> ImResult<GroupSnapshot>;
     pub fn get(&self, group: GroupRef) -> ImResult<GroupSnapshot>;
@@ -21,65 +41,31 @@ impl GroupService<'_> {
     pub fn update_policy(&self, group: GroupRef, patch: GroupPolicyPatch) -> ImResult<GroupSnapshot>;
     pub fn members(&self, group: GroupRef, query: MemberQuery) -> ImResult<Page<GroupMember>>;
     pub fn messages(&self, group: GroupRef, query: HistoryQuery) -> ImResult<Page<Message>>;
-    pub fn send_text(&self, group: GroupRef, text: String) -> ImResult<SendMessageResult>;
 }
 ```
 
-`send_text` 是 convenience，内部委托给 `messages().send(MessageTarget::Group)`。
+## 4. internal only
 
-## 3. DTO
+不暴露：
 
-```rust
-pub struct CreateGroupRequest {
-    pub profile: GroupProfileDraft,
-    pub policy: GroupPolicyDraft,
-}
-
-pub struct GroupProfileDraft {
-    pub display_name: String,
-    pub description: Option<String>,
-    pub slug: Option<String>,
-    pub goal: Option<String>,
-    pub rules: Option<String>,
-    pub message_prompt: Option<String>,
-}
-
-pub struct GroupPolicyDraft {
-    pub discoverability: Option<GroupDiscoverability>,
-    pub admission: Option<GroupAdmissionMode>,
-    pub max_members: Option<u32>,
-    pub attachments_allowed: Option<bool>,
-}
+```text
+build_group_*_rpc_params
+raw group wire DTO
+group E2EE add/remove params
+MLS KeyPackage / notice / provider path
 ```
 
-不要把 CLI flag 名称直接变成 SDK 字段。
+## 5. CLI 边界
 
-## 4. 不暴露内容
+Phase 1：
 
-```rust
-build_group_create_rpc_params
-build_group_get_rpc_params
-build_group_members_rpc_params
-build_group_e2ee_*_rpc_params
-raw group wire JSON
-```
+- `msg send --group` 适配到 `client.messages().send(MessageTarget::Group)`。
+- `group messages` 适配到 `client.messages().history(ThreadRef::Group)`。
 
-## 5. group E2EE 处理
+Phase 3：
 
-第一阶段：
+- `group create/get/list/join/leave/add/remove/update/members` 再迁入 `client.groups()`。
 
-- `group.e2ee.*` CLI 命令不进入 SDK default API。
-- 如果 CLI 仍需要这些命令，先继续调用旧模块或放在 CLI-only diagnostic 中。
-- SDK 中 `GroupPolicyDraft` 可以有普通 message security profile 字段，但不实现 MLS 编排。
+## 6. 完成判定
 
-Phase 3 再处理：
-
-- `MessageSecurityMode::GroupE2ee`。
-- `secure().group_status()`。
-- `secure().repair_group_state()`。
-
-## 6. 第一阶段验收
-
-- `group create/get/list/join/leave/add/remove/update/members/messages` 走 SDK。
-- `msg send --group` 走 `messages().send()`。
-- 群状态落库和 owner 隔离正确。
+P1 完成时不要求 group lifecycle 迁移。P3 完成时，普通群管理命令通过 `client.groups()`，group wire helper 不作为 SDK public API。

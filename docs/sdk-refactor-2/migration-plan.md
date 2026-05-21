@@ -3,12 +3,14 @@
 ## 1. 迁移原则
 
 - 先建立高层 SDK façade，再移动底层代码。
-- 第一阶段只迁移基础能力、私聊文本、群聊文本和群管理。
+- Phase 1 只迁移 core 框架、身份鉴权、Handle 注册、私聊文本、群聊文本和必要 inbox/history。
+- 完整 directory/profile、完整 group lifecycle、mark-read/conversations、本地状态收口后移。
 - 加密、附件、realtime daemon、provider 抽象后移。
 - 不改 CLI 命令行为，先改 handler 调用路径。
 - 不让 `im-core` 依赖 CLI 类型。
 - 不让 SDK public API 暴露 wire/store/crypto/path 细节。
 - 每个阶段都要保持 CLI 可编译、主要命令可运行。
+- Phase 1 先 blocking-first，避免同时引入 async runtime 复杂度。
 
 ## 2. Phase 0：文档与边界确认
 
@@ -16,16 +18,16 @@
 
 任务：
 
-- 新增 `docs/sdk-refactor-2/` 文档。
-- 明确第一阶段范围：foundation + identity/auth + directory + direct text + group text/lifecycle + local state。
-- 明确排除范围：attachments、realtime runner、direct E2EE、group E2EE、provider traits。
+- 更新 `docs/sdk-refactor-2/` 文档。
+- 明确 Phase 1 MVP：foundation + identity/auth + Handle register + direct text + group text + necessary inbox/history。
+- 明确排除范围：directory/profile 完整能力、完整 group lifecycle、mark-read/conversations、attachments、realtime runner、direct E2EE、group E2EE、provider traits。
 - 明确 public/internal deny list。
 
 完成判定：
 
 - 团队认可 `ImCore` / `ImClient` 的高层入口。
 - 团队认可 `IdentitySelector::LocalAlias` 替代 CLI `identity_name` 传入业务 request。
-- 团队认可 group E2EE 和 secure 命令不决定第一阶段 SDK public API。
+- 团队认可 group E2EE 和 secure 命令不决定 Phase 1 SDK public API。
 
 ## 3. Phase 1A：新增 `crates/im-core` 骨架
 
@@ -45,7 +47,7 @@
   - `IdentitySummary`
   - `ImError`
   - `ImResult<T>`
-  - messages/groups 基础 DTO
+  - messages 基础 DTO：`SendMessageRequest`、`MessageTarget`、`MessageBody`、`ThreadRef`
 - 增加 compile fence / grep test，禁止 `im-core` 引用：
   - `ParsedCommand`
   - `ExitError`
@@ -74,26 +76,27 @@
 - `ImCore::client(selector)` 能解析默认身份和 local alias。
 - `ImClient` 内部持有 identity summary 和旧模块调用所需 runtime context。
 - 第一批 handler 改为调用 SDK façade：
-  - `id list/current/status/use`
+  - `id list`
+  - `id current`
+  - `id status`
+  - `id use`
   - `id refresh-token`
 
 完成判定：
 
-- CLI identity 命令行为不变。
+- CLI identity 基础命令行为不变。
 - handler 中不再直接拼低层 identity path，统一通过 adapter。
 
-## 5. Phase 1C：identity/auth 基础能力迁移
+## 5. Phase 1C：identity/auth + Handle 注册
 
-目标：把多身份、session、profile 的核心流程下沉到 `im-core`。
+目标：把多身份、session 和 Handle 注册的最小闭环下沉到 `im-core`。
 
 任务：
 
 - 迁移或封装：
-  - list/default/resolve identity
+  - list/default/local alias resolve identity
   - register handle
-  - recover handle
-  - auth login/ensure/refresh/logout
-  - profile get/update
+  - auth login/ensure/refresh/status
 - CLI 保留：
   - OTP 输入
   - identity alias 选择
@@ -104,120 +107,133 @@
 
 完成判定：
 
-- `id register/recover/refresh-token/profile get/profile set` 最终走 `im-core`。
+- `id register` 走 `core.identities().register_handle()`。
+- `id refresh-token` 走 `client.auth().refresh_session()`。
 - public API 不返回 private key、auth path、DID document path。
+- `recover_handle`、profile、replace DID 不进入 P1 验收。
 
-## 6. Phase 1D：私聊文本迁移
+## 6. Phase 1D：私聊/群聊文本 MVP
 
-目标：普通 direct text message 进入 SDK。
+目标：普通 direct/group text message 进入 SDK。
 
 任务：
 
 - 实现：
   - `client.messages().send(SendMessageRequest { target: Direct, body: Text, security: Plain })`
-  - `client.messages().inbox()`
-  - `client.messages().history(ThreadRef::Direct)`
-  - `client.messages().mark_read()`
-  - `client.messages().conversations()`
+  - `client.messages().send(SendMessageRequest { target: Group, body: Text, security: Plain })`
+  - `client.messages().inbox()` 的必要子集
+  - `client.messages().history(ThreadRef::Direct)` 的必要子集
+  - `client.messages().history(ThreadRef::Group)` 的必要子集
 - 内部处理：
-  - handle/DID resolve
+  - direct peer handle/DID 最小解析
   - auth ensure + 401 refresh retry
   - HTTP/RPC params 构造
   - 远端结果转领域 DTO
-  - 本地 message/contact/conversation projection
-  - owner isolation
+  - 最小本地 owner 注入或 projection
 - CLI adapter 处理：
   - `--to`
+  - `--group`
   - `--text`
   - `--text-file`
   - `--limit`
-  - `--unread`
   - dry-run
 
 完成判定：
 
 - `msg send --to ... --text ...` 通过 `client.messages().send()`。
-- `msg inbox/history/mark-read` 通过 `client.messages()`。
-- handler 不再直接调用 `message::send/inbox/history/mark_read`。
+- `msg send --group ... --text ...` 通过 `client.messages().send()`。
+- `msg inbox/history` 通过 `client.messages()`。
+- `group messages` 可以适配到 `client.messages().history(ThreadRef::Group)`。
+- handler 不再直接调用 `message::send/inbox/history`。
 - wire params builder 不作为 SDK public API 导出。
+- `mark_read`、`conversations`、完整 group lifecycle 不进入 P1 验收。
 
-## 7. Phase 1E：群聊基础能力迁移
+## 7. Phase 1E：P1 测试与 App sandbox path fixture
 
-目标：普通 group lifecycle、member、group text message 进入 SDK。
-
-任务：
-
-- 实现：
-  - `client.groups().create()`
-  - `client.groups().get()`
-  - `client.groups().list()`
-  - `client.groups().join()`
-  - `client.groups().leave()`
-  - `client.groups().add_member()`
-  - `client.groups().remove_member()`
-  - `client.groups().update_profile()` / `update_policy()`
-  - `client.groups().members()`
-  - `client.groups().messages()`
-  - `client.messages().send(MessageTarget::Group)`
-- CLI adapter 处理：
-  - group profile flags
-  - group policy flags
-  - member/role/reason flags
-  - dry-run
-
-完成判定：
-
-- `group create/get/list/join/leave/add/remove/update/members/messages` 通过 `client.groups()`。
-- `msg send --group ...` 通过 `client.messages().send(MessageTarget::Group)`。
-- group wire helper 不作为 SDK public API。
-
-## 8. Phase 1F：本地状态与 conversation projection 收口
-
-目标：让 App/CLI 都能复用 conversation/thread projection，不重复聚合 inbox。
+目标：证明 `im-core` 不依赖 CLI，可以被 App 以显式路径方式接入，并且 P1 主链路可运行。
 
 任务：
 
-- `core.bootstrap().initialize_local_state()` 和 `migrate_local_state()` 可用。
-- `client.messages().conversations()` 返回 conversation page。
-- direct/group message projection 共用本地规则。
-- 本地状态查询内部自动注入 owner。
-- 优先引入 `owner_identity_id`，兼容已有 `owner_did`。
-
-完成判定：
-
-- App 可以通过 SDK 获得 conversation list，而不是自己解析 inbox raw JSON。
-- CLI 不直接调用 `store::*` 业务 helper，除 `debug.db.*` 外。
-
-## 9. Phase 1G：App sandbox 示例
-
-目标：证明 `im-core` 不依赖 CLI，可以被 App 以显式路径方式接入。
-
-任务：
-
-- 新增一个简单 example 或 test fixture：
+- 新增 tempdir/path fixture：
   - tempdir identity registry
-  - tempdir SQLite
+  - tempdir auth/session path
+  - tempdir SQLite 或可选 local state path
   - explicit config
   - fake/stub service 或 contract test
 - 验证：
   - `ImCore::new(config, paths)` 不需要 CLI `Resolved`
   - `core.client(selector)` 不需要 CLI `Manager`
   - 基础 DTO 不含 CLI flag 名称
+  - direct/group text send 可以通过 mocked transport 或 contract endpoint 验证
 
 完成判定：
 
-- `cargo test -p im-core app_sandbox_paths` 通过。
+- `cargo test -p im-core` 通过。
+- 至少有一个测试证明 P1 SDK 可用显式路径启动。
+- P1 CLI handler 基本变成 parse -> sdk call -> render。
 
-## 10. Phase 2：附件与 realtime runner
+## 8. Phase 2：补全 identity / directory / profile
 
-进入条件：Phase 1 普通私聊/群聊稳定。
+进入条件：Phase 1 身份、auth、私聊/群聊文本稳定。
+
+范围：
+
+- 绑定手机号/邮箱。
+- recover handle。
+- profile get/update。
+- id resolve / directory resolve peer。
+- contacts save/list。
+- relation status。
+- replace DID 作为 advanced/dangerous 能力，可以在 Phase 2 后半段或单独子阶段。
+
+不做：
+
+- 完整 group lifecycle。
+- attachments。
+- secure。
+- realtime。
+
+## 9. Phase 3：补全 message / group / local_state
+
+进入条件：Phase 1/2 API 稳定。
+
+范围：
+
+- `messages().mark_read()`。
+- `messages().conversations()`。
+- 本地 message/contact/conversation projection。
+- cache merge。
+- owner isolation 强化，优先 `owner_identity_id`，兼容 `owner_did`。
+- group create/get/list/join/leave/add/remove/update/members/messages。
+- 群消息发送仍优先走 `client.messages().send(MessageTarget::Group)`。
+
+不做：
+
+- attachments。
+- secure。
+- realtime。
+
+## 10. Phase 4：附件
+
+进入条件：普通 message/group/local state 稳定。
 
 范围：
 
 - `client.attachments().send()` / `download()`。
 - `AttachmentInput::LocalFile` + `Bytes`。
+- upload slot、digest、commit、manifest、download ticket。
+- CLI 继续负责 `--file`、`--output`、覆盖策略和权限。
+
+## 11. Phase 5：realtime runner
+
+进入条件：普通消息、群聊和本地投影稳定。
+
+范围：
+
 - `client.realtime().connect()` / `run_until_shutdown()`。
 - `ImEvent` 领域事件。
+- WebSocket notification 分类。
+- reconnect decision。
 - CLI listener service 仍留 CLI，只调用 SDK runner。
 
 不做：
@@ -226,9 +242,9 @@
 - group E2EE。
 - provider traits。
 
-## 11. Phase 3：secure direct 与 group E2EE
+## 12. Phase 6：secure direct 与 group E2EE
 
-进入条件：Phase 1/2 API 稳定，普通消息和 realtime 投影稳定。
+进入条件：Phase 1 ~ 5 API 稳定，普通消息和 realtime 投影稳定。
 
 范围：
 
@@ -245,7 +261,7 @@
 - 不把 KeyPackage、MLS provider binary、prekey path 暴露给普通调用方。
 - 诊断 API 可以 feature-gated。
 
-## 12. Phase 4：provider 抽象
+## 13. Phase 7：provider 抽象
 
 进入条件：App 接入确实需要接管存储、网络、密钥或 crypto。
 
@@ -271,25 +287,26 @@ IdGenerator
 - provider 是替换底层实现，不是替换业务 API。
 - 内置 SQLite/HTTP 实现继续保留。
 
-## 13. 风险与控制
+## 14. 风险与控制
 
 | 风险 | 控制 |
 | --- | --- |
-| 一次性搬太多导致 CLI 回归 | 先 façade，再逐步迁移；每阶段 CLI 命令可运行。 |
+| 一次性搬太多导致 CLI 回归 | P1 只做身份、auth、Handle 注册、direct/group text。 |
 | SDK API 低层化 | public/internal deny list + re-export 收紧。 |
 | 多身份隔离不彻底 | 所有 query 由 `ImClient` 注入 owner；测试 alice/bob 隔离。 |
 | DID replace 后本地数据漂移 | owner key 优先 identity_id，did 作为当前状态字段。 |
 | async 改造扩大范围 | Phase 1 blocking API，后续再评估 async feature。 |
-| App 仍重复做 conversation projection | Phase 1F 明确实现 `messages().conversations()`。 |
+| App 仍重复做 conversation projection | Phase 3 明确实现 `messages().conversations()`，但不阻塞 P1。 |
+| 群聊和群管理混淆 | P1 只做 group text send/history；group lifecycle Phase 3。 |
 
-## 14. 第一阶段完成判定
+## 15. Phase 1 完成判定
 
-第一阶段完成后应满足：
+Phase 1 完成后应满足：
 
 - `crates/im-core` 可独立编译和测试。
 - `crates/im-core` 不依赖 `crates/awiki-cli`。
-- CLI 的 identity、auth、私聊、群聊基础命令最终都通过 `im-core`。
+- CLI 的基础 identity/auth、Handle 注册、私聊文本、群聊文本命令通过 `im-core`。
 - CLI handler 基本变成 parse -> sdk call -> render。
 - `im-core` public API 不暴露 actor、paths、wire params、SQLite connection、crypto state。
-- `msg secure *`、`group e2ee *` 未进入默认 SDK API。
-- App 可以通过显式路径构造 `ImCore` 并完成基础 profile/message/group 调用。
+- `msg secure *`、`group e2ee *`、附件、realtime、完整群管理未进入 P1 默认 SDK API。
+- App 可以通过显式路径构造 `ImCore`，并完成 P1 主链路的测试或示例。

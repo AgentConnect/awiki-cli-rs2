@@ -1,12 +1,16 @@
-# 模块设计：directory
+# 03-directory：Phase 2 联系人、解析与资料能力
 
-## 1. 职责
+## 1. 目标
 
-`directory` 为 profile、联系人、handle/DID 解析和关系状态提供统一入口。它是 App 和 CLI 都需要的基础能力。
+`directory` 是后续 App 体验很重要的模块，但不进入 Phase 1 验收。Phase 1 的私聊发送可以在 `messages` 内部完成最小 handle/DID 解析，不要求公开完整 `DirectoryService`。
 
-## 2. 对外接口
+## 2. Phase 2 public API
 
 ```rust
+pub struct DirectoryService<'a> {
+    client: &'a ImClient,
+}
+
 pub enum IdentitySubject {
     Did(Did),
     Handle(Handle),
@@ -22,29 +26,28 @@ impl DirectoryService<'_> {
 }
 ```
 
-## 3. 内部实现
+## 3. Phase 1 允许的内部解析
 
-内部可以继续使用：
+`client.messages().send(MessageTarget::Direct(PeerRef))` 可以内部使用最小 resolver：
 
-- user-service RPC。
-- handle lookup RPC。
-- local contact cache。
-- profile projection。
+- 如果是 DID，直接使用。
+- 如果是 handle，调用 user-service 或已有 helper 解析成 DID。
+- 解析结果可以作为内部 target resolution，不要求写入完整 contact cache。
 
-但不暴露 raw RPC params 或 contact store row。
+这个 resolver 不作为 P1 public `directory` API 暴露。
 
-## 4. 与 messages/groups 的关系
+## 4. internal only
 
-- `messages.send(Direct)` 内部调用 directory 解析 peer。
-- `groups.add_member` 内部调用 directory 解析 member。
-- 本地 message projection 可以更新 contact cache。
-- App 不需要重复做 handle/DID resolve。
+不暴露：
 
-## 5. 第一阶段落地
+```text
+raw user-service RPC
+contact store row
+upsert_contact_record(owner, paths, record)
+LocalStatePaths
+owner DID 参数
+```
 
-先迁移/封装：
+## 5. 完成判定
 
-- `id resolve`。
-- profile get/set。
-- contact cache projection。
-- relation status 如果现有 CLI 还不完整，可以先提供接口占位或返回 `UnsupportedCapability`。
+Phase 2 完成后，App/CLI 不再自己重复实现 handle/DID/profile/relation 的业务解析；P1 不以此作为阻塞项。
