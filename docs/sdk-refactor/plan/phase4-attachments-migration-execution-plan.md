@@ -56,6 +56,16 @@ platform-specific app storage provider
 
 这些属于 Phase 6 secure 或 Phase 7 provider 抽象。
 
+推荐执行顺序可以调整为：
+
+```text
+Phase 5 core realtime runner
+  -> Phase 4 attachments
+  -> Phase 5' attachment enrichment follow-up
+```
+
+在这个顺序下，Phase 4 仍只负责附件 send/download 主能力；附件相关 realtime enrichment 不并入 Phase 4，而是在 Phase 4 完成后由独立的 Phase 5' 计划回补。
+
 ---
 
 ## 2. 与主方案的关系
@@ -102,6 +112,7 @@ select_for_download 是 attachments::selection internal helper 或 compat/diagno
 4. MessageTarget::Direct / Group 路由稳定。
 5. Attachment 调用仍有 legacy fallback。
 6. im-core boundary 测试确认不引用 CLI 类型。
+7. 如果 Phase 5 core 已先执行，Phase 5 core 必须保持 attachment-agnostic，遇到附件类 notification 只做 generic/unsupported projection，不依赖 AttachmentService。
 ```
 
 建议进入前检查：
@@ -595,7 +606,7 @@ crates/im-core/src/compat/attachments.rs
 
 ```text
 select attachment service from DID document
-fallback to ImCoreConfig attachment/message service endpoint
+fallback to ImCoreConfig message_service_endpoint / service_base_url
 capability requirement check
 invalid endpoint error mapping
 ```
@@ -606,6 +617,7 @@ invalid endpoint error mapping
 full DID document cache
 provider-based service discovery
 secure attachment service capability
+新增 attachment_service_endpoint public config 字段，除非同步更新 public-api / Interface / modules 文档
 ```
 
 ### 12.4 Required 验收
@@ -930,7 +942,8 @@ awiki-cli msg attachment download --message-id <id> --output <path>
 ```text
 InvalidInput(field=file)
 InvalidInput(field=destination)
-AttachmentNotFound
+InvalidInput(field=attachment_id)
+MessageNotFound
 UnsupportedCapability(attachments-secure)
 TransportUnavailable
 Service
@@ -942,8 +955,9 @@ Internal
 `awiki-cli` wrapper 映射：
 
 ```text
-AttachmentNotFound -> MessageError::AttachmentNotFound
-InvalidInput(field=output) -> MessageError::OutputPathRequired / invalid_argument
+MessageNotFound -> MessageError::MessageNotFound 或既有 message not found envelope
+InvalidInput(field=attachment_id) -> MessageError::AttachmentNotFound / invalid_argument
+InvalidInput(field=destination) -> MessageError::OutputPathRequired / invalid_argument
 UnsupportedCapability -> MessageError::AttachmentNotSupported 或 CLI unsupported hint
 PathUnavailable / Io -> ExitError path/permission hint
 ```
@@ -954,6 +968,7 @@ PathUnavailable / Io -> ExitError path/permission hint
 1. im-core 不知道 CLI flag 名。
 2. im-core 不生成 CLI help/hint 文案。
 3. CLI 不把 raw RPC response 作为 attachment public DTO。
+4. Phase 4 不新增默认 public ImError::AttachmentNotFound；若后续需要新增，必须同步更新 public-api.md 和 Interface/02-core-interface.md。
 ```
 
 ---
@@ -993,6 +1008,7 @@ Phase 4 不做：
 7. 不把 upload slot / commit / download ticket 暴露为 public SDK API。
 8. 不让 im-core 读取 CLI config 或发现 workspace。
 9. 不把 select_for_download 暴露为默认 public service method。
+10. 不回补 realtime attachment notification enrichment；该工作进入 Phase 5' follow-up。
 ```
 
 ---
@@ -1009,3 +1025,11 @@ Phase 4 的核心是：
 ```
 
 这样既能保留旧测试和旧 CLI 路径，又能把附件能力逐步收敛到 `im-core` 的高层 `AttachmentService`。
+
+如果执行顺序采用 `5 -> 4 -> 5'`：
+
+```text
+1. Phase 5 core 先迁 realtime runner，但不解释附件业务。
+2. Phase 4 再迁 AttachmentService send/download 和 canonical attachment DTO。
+3. Phase 5' 最后基于 Phase 4 的 canonical DTO 回补附件 notification enrichment。
+```
