@@ -30,6 +30,8 @@ impl App {
     fn run_msg_send_im_core_mvp(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let file_path = string_flag(command, "file");
         let mime_type = string_flag(command, "mime-type");
+        let group = string_flag(command, "group");
+        let secure_mode = string_flag(command, "secure");
         if file_path.trim().is_empty() && !mime_type.trim().is_empty() {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -38,11 +40,13 @@ impl App {
                 "Use --mime-type only together with --file.",
             ));
         }
+        if !group.trim().is_empty() && group_secure_mode_enabled(&secure_mode) {
+            return self.run_msg_send_legacy(command);
+        }
 
         let resolved = self.resolve_config_for_workspace()?;
         let request =
             crate::im_core_adapter::messages::send_message_request(command, &resolved.did_domain)?;
-        let auth_scope = crate::im_core_adapter::messages::send_auth_scope(&request);
         let legacy_request = crate::im_core_adapter::messages::legacy_text_send_request(
             &self.globals.identity,
             request.clone(),
@@ -69,13 +73,6 @@ impl App {
             &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        if !matches!(&request.target, MessageTarget::Direct(_)) {
-            client
-                .auth()
-                .ensure_session(auth_scope)
-                .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg send"))?;
-        }
-
         let result = match request.target {
             MessageTarget::Direct(_) => {
                 crate::im_core_adapter::messages::send_direct_text_via_im_core(
@@ -86,7 +83,15 @@ impl App {
                     request,
                 )
             }
-            MessageTarget::Group(_) => message::send(&resolved, &manager, legacy_request),
+            MessageTarget::Group(_) => {
+                crate::im_core_adapter::messages::send_group_text_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    &self.globals.identity,
+                    request,
+                )
+            }
         }
         .map_err(|err| {
             message_exit(
@@ -874,6 +879,13 @@ fn read_text_file(command: &ParsedCommand) -> Result<String, ExitError> {
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
+}
+
+fn group_secure_mode_enabled(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "direct" | "secure-direct" | "on" | "true" | "group-e2ee" | "e2ee"
+    )
 }
 
 fn default_string(value: &str, fallback: &str) -> String {

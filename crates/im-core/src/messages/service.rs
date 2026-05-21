@@ -13,17 +13,33 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::SendMessageResult> {
         validate_body(&request.body)?;
         validate_security(&request.security)?;
-        crate::internal::message_runtime::direct::DirectTextSender::new(
-            self.client,
-            crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
-        )
-        .send(crate::internal::message_runtime::direct::DirectTextSend {
-            request,
-            resolved_target_did: None,
-            credentials: None,
-        })
-        .map(|result| result.sdk_result)
+        match request.target {
+            super::MessageTarget::Direct(_) => {
+                crate::internal::message_runtime::direct::DirectTextSender::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::UnavailableTransport,
+                )
+                .send(crate::internal::message_runtime::direct::DirectTextSend {
+                    request,
+                    resolved_target_did: None,
+                    credentials: None,
+                })
+                .map(|result| result.sdk_result)
+            }
+            super::MessageTarget::Group(_) => {
+                crate::internal::message_runtime::group::GroupTextSender::new(
+                    self.client,
+                    crate::internal::auth::session::FileSessionProvider::new(self.client),
+                    crate::internal::transport::UnavailableTransport,
+                )
+                .send(crate::internal::message_runtime::group::GroupTextSend {
+                    request,
+                    credentials: None,
+                })
+                .map(|result| result.sdk_result)
+            }
+        }
     }
 
     pub fn inbox(

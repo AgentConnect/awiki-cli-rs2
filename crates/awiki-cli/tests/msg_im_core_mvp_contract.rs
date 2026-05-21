@@ -77,6 +77,79 @@ fn msg_send_im_core_mvp_direct_text_posts_im_core_rpc() {
     );
 }
 
+#[test]
+fn msg_send_im_core_mvp_group_text_posts_im_core_rpc() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice = register_generated_msg_identity(&manager, "alice-group-mvp", "alice", "jwt-alice");
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "accepted": true,
+        "final_acceptance": true,
+        "group_did": group_did,
+        "message_id": "server-message-id",
+        "operation_id": "server-operation-id",
+        "group_event_seq": "42",
+        "group_state_version": "v42",
+        "accepted_at": "2026-05-21T00:00:00Z"
+    })))]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-mvp",
+            "msg",
+            "send",
+            "--group",
+            group_did,
+            "--text",
+            "hello group through im-core",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    );
+
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Sent a group text message");
+    assert_eq!(envelope["data"]["target"]["kind"], "group");
+    assert_eq!(envelope["data"]["target"]["did"], group_did);
+    assert_eq!(envelope["data"]["message"]["secure"], false);
+    assert_eq!(envelope["data"]["message"]["type"], "text");
+    assert_eq!(envelope["data"]["message"]["id"], format!("{group_did}:42"));
+    assert_eq!(
+        envelope["data"]["delivery"]["operation_id"],
+        "server-operation-id"
+    );
+    assert_eq!(envelope["data"]["delivery"]["group_event_seq"], "42");
+    assert_eq!(envelope["data"]["source"], "remote_http");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(
+        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
+        "missing bearer auth:\n{}",
+        requests[0]
+    );
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
+    assert_eq!(body["method"], "group.send");
+    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
+    assert_eq!(
+        body["params"]["meta"]["target"],
+        json!({"kind": "group", "did": group_did})
+    );
+    assert_eq!(body["params"]["meta"]["content_type"], "text/plain");
+    assert_eq!(
+        body["params"]["body"],
+        json!({"text": "hello group through im-core"})
+    );
+    assert_eq!(
+        body["params"]["auth"]["scheme"],
+        "anp-rfc9421-origin-proof-v1"
+    );
+}
+
 fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command

@@ -158,7 +158,6 @@ pub fn send_direct_text_via_im_core(
             resolved,
             manager,
             record: record.clone(),
-            target: target.clone(),
         },
         im_core::compat::messages::DirectTextSendBridgeRequest {
             request,
@@ -180,6 +179,54 @@ pub fn send_direct_text_via_im_core(
         &bridge_result.text,
         &bridge_result.message_type,
         false,
+        &result,
+        bridge_result.sdk_result.warnings,
+    )
+}
+
+pub fn send_group_text_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    identity_name: &str,
+    request: SendMessageRequest,
+) -> Result<message::CommandResult, MessageError> {
+    let record = message::require_active_identity(resolved, manager, identity_name)?;
+    let group_did = match &request.target {
+        MessageTarget::Group(group) => group.as_str().to_string(),
+        MessageTarget::Direct(_) => return Err(MessageError::TargetRequired),
+    };
+    let bridge_result = im_core::compat::messages::send_group_text_with_bridge(
+        client,
+        GroupTextSessionProvider {
+            subject: client.did().clone(),
+            resolved,
+            manager,
+            record: record.clone(),
+        },
+        GroupTextLegacyTransport {
+            resolved,
+            manager,
+            record: record.clone(),
+        },
+        im_core::compat::messages::GroupTextSendBridgeRequest {
+            request,
+            credentials: im_core::compat::messages::GroupTextCredentials {
+                identity_name: record.identity_name.clone(),
+                did_document: record.did_document.clone(),
+                key1_private_pem: record.key1_private_pem.clone(),
+            },
+        },
+    )
+    .map_err(im_error_to_message_error)?;
+    let mut result = GroupSendResult::from_sdk_bridge(&bridge_result);
+    fill_group_send_result(&mut result, &bridge_result.raw, &group_did);
+    persist_group_send_result(
+        resolved,
+        &record,
+        &bridge_result.group_did,
+        &bridge_result.text,
+        &bridge_result.message_type,
         &result,
         bridge_result.sdk_result.warnings,
     )
@@ -414,11 +461,30 @@ impl im_core::compat::messages::BridgeSessionProvider for DirectTextSessionProvi
     }
 }
 
+struct GroupTextSessionProvider<'a> {
+    subject: im_core::prelude::Did,
+    resolved: &'a Resolved,
+    manager: &'a Manager,
+    record: crate::identity::types::StoredIdentity,
+}
+
+impl im_core::compat::messages::BridgeGroupSessionProvider for GroupTextSessionProvider<'_> {
+    fn ensure_group_messaging_session(&self) -> im_core::ImResult<SessionBundle> {
+        let session = auth_session(&self.resolved, &self.manager, &self.record)
+            .map_err(message_error_to_im_error)?;
+        Ok(SessionBundle {
+            subject: self.subject.clone(),
+            scope: AuthScope::GroupMessaging,
+            expires_at: None,
+            refreshed: session.current_jwt().trim() != self.record.jwt_token.trim(),
+        })
+    }
+}
+
 struct DirectTextLegacyTransport<'a> {
     resolved: &'a Resolved,
     manager: &'a Manager,
     record: crate::identity::types::StoredIdentity,
-    target: message::TargetResolution,
 }
 
 impl im_core::compat::messages::BridgeAuthenticatedRpcTransport for DirectTextLegacyTransport<'_> {
@@ -432,7 +498,31 @@ impl im_core::compat::messages::BridgeAuthenticatedRpcTransport for DirectTextLe
             self.resolved,
             self.manager,
             &self.record,
-            &self.target,
+            endpoint,
+            method,
+            params,
+        )
+        .map_err(message_error_to_im_error)
+    }
+}
+
+struct GroupTextLegacyTransport<'a> {
+    resolved: &'a Resolved,
+    manager: &'a Manager,
+    record: crate::identity::types::StoredIdentity,
+}
+
+impl im_core::compat::messages::BridgeAuthenticatedRpcTransport for GroupTextLegacyTransport<'_> {
+    fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> im_core::ImResult<Value> {
+        send_authenticated_direct_rpc_with_fallback(
+            self.resolved,
+            self.manager,
+            &self.record,
             endpoint,
             method,
             params,
@@ -445,7 +535,6 @@ fn send_authenticated_direct_rpc_with_fallback(
     resolved: &Resolved,
     manager: &Manager,
     record: &crate::identity::types::StoredIdentity,
-    target: &message::TargetResolution,
     endpoint: &str,
     method: &str,
     params: Value,
@@ -467,10 +556,7 @@ fn send_authenticated_direct_rpc_with_fallback(
                 Err(_) => Err(err),
             }
         }
-        Err(err) => {
-            let _ = target;
-            Err(err)
-        }
+        Err(err) => Err(err),
     }
 }
 
@@ -513,6 +599,26 @@ struct DirectSendResult {
     delivery_state: String,
 }
 
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+struct GroupSendResult {
+    #[serde(default)]
+    accepted: bool,
+    #[serde(default)]
+    final_acceptance: bool,
+    #[serde(default)]
+    group_did: String,
+    #[serde(default)]
+    message_id: String,
+    #[serde(default)]
+    operation_id: String,
+    #[serde(default)]
+    group_event_seq: String,
+    #[serde(default)]
+    group_state_version: String,
+    #[serde(default)]
+    accepted_at: String,
+}
+
 impl DirectSendResult {
     fn from_sdk_bridge(result: &im_core::compat::messages::DirectTextSendBridgeResult) -> Self {
         let mut value: Self = serde_json::from_value(result.raw.clone()).unwrap_or_default();
@@ -552,6 +658,55 @@ impl DirectSendResult {
     }
 }
 
+impl GroupSendResult {
+    fn from_sdk_bridge(result: &im_core::compat::messages::GroupTextSendBridgeResult) -> Self {
+        let mut value: Self = serde_json::from_value(result.raw.clone()).unwrap_or_default();
+        value.message_id =
+            default_string_value(&value.message_id, result.sdk_result.message.id.as_str());
+        value.operation_id = default_string_value(
+            &value.operation_id,
+            result
+                .sdk_result
+                .message
+                .metadata
+                .operation_id
+                .as_deref()
+                .unwrap_or_default(),
+        );
+        value.group_did = default_string_value(&value.group_did, &result.group_did);
+        value.accepted_at = default_string_value(
+            &value.accepted_at,
+            result
+                .sdk_result
+                .message
+                .sent_at
+                .as_deref()
+                .unwrap_or_default(),
+        );
+        if value.group_event_seq.trim().is_empty() {
+            value.group_event_seq = result
+                .sdk_result
+                .message
+                .metadata
+                .server_sequence
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+        }
+        if value.group_state_version.trim().is_empty() {
+            value.group_state_version = result
+                .sdk_result
+                .message
+                .metadata
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key == "group_state_version")
+                .map(|attribute| attribute.value.clone())
+                .unwrap_or_default();
+        }
+        value
+    }
+}
+
 fn fill_direct_send_result(result: &mut DirectSendResult, meta: &Value, target_did: &str) {
     if result.message_id.is_empty() {
         result.message_id = value_string(meta.get("message_id"));
@@ -561,6 +716,27 @@ fn fill_direct_send_result(result: &mut DirectSendResult, meta: &Value, target_d
     }
     if result.target_did.is_empty() {
         result.target_did = target_did.to_string();
+    }
+}
+
+fn fill_group_send_result(result: &mut GroupSendResult, raw: &Value, group_did: &str) {
+    if result.message_id.is_empty() {
+        result.message_id = value_string(raw.get("message_id"));
+    }
+    if result.operation_id.is_empty() {
+        result.operation_id = value_string(raw.get("operation_id"));
+    }
+    if result.group_did.is_empty() {
+        result.group_did = group_did.to_string();
+    }
+    if result.group_event_seq.is_empty() {
+        result.group_event_seq = value_string(raw.get("group_event_seq"));
+    }
+    if result.group_state_version.is_empty() {
+        result.group_state_version = value_string(raw.get("group_state_version"));
+    }
+    if result.accepted_at.is_empty() {
+        result.accepted_at = value_string(raw.get("accepted_at"));
     }
 }
 
@@ -624,6 +800,107 @@ fn persist_send_result(
         summary: format!("Sent a direct {message_type} message"),
         warnings: message::compact_warnings(warnings),
     })
+}
+
+fn persist_group_send_result(
+    resolved: &Resolved,
+    record: &crate::identity::types::StoredIdentity,
+    group_did: &str,
+    text: &str,
+    message_type: &str,
+    result: &GroupSendResult,
+    initial_warnings: Vec<String>,
+) -> Result<message::CommandResult, MessageError> {
+    let mut warnings = initial_warnings;
+    let group_key = group_storage_key(group_did);
+    if let Ok(connection) = store::open(&resolved.paths) {
+        if store::ensure_schema(&connection).is_ok() {
+            let message_id = group_send_message_id(group_did, result);
+            let stored = store::store_message(
+                &connection,
+                MessageRecord {
+                    msg_id: message_id,
+                    owner_did: record.did.clone(),
+                    thread_id: store::make_thread_id(&record.did, "", &group_key),
+                    direction: 1,
+                    sender_did: record.did.clone(),
+                    group_id: group_key.clone(),
+                    group_did: group_did.to_string(),
+                    content_type: content_type_for_message_type(message_type).to_string(),
+                    content: text.to_string(),
+                    sent_at: result.accepted_at.clone(),
+                    is_read: true,
+                    metadata: metadata_string(json!({
+                        "group_event_seq": result.group_event_seq,
+                        "group_state_version": result.group_state_version,
+                        "operation_id": result.operation_id,
+                    })),
+                    credential_name: record.identity_name.clone(),
+                    ..MessageRecord::default()
+                },
+            );
+            if let Err(err) = stored {
+                warnings.push(format!("Failed to persist local group message: {err}"));
+            }
+            let touched = store::touch_group_after_message(
+                &connection,
+                &record.did,
+                &group_key,
+                group_did,
+                &result.accepted_at,
+                i64_option_from_string(&result.group_event_seq),
+                &record.identity_name,
+                &metadata_string(json!({ "group_state_version": result.group_state_version })),
+            );
+            if let Err(err) = touched {
+                warnings.push(format!("Failed to update group cache: {err}"));
+            }
+        }
+    }
+    Ok(message::CommandResult {
+        data: json!({
+            "action": "send_message",
+            "target": {
+                "kind": "group",
+                "did": group_did,
+            },
+            "message": {
+                "id": group_send_message_id(group_did, result),
+                "type": message_type,
+                "secure": false,
+                "sent_at": result.accepted_at,
+            },
+            "delivery": result,
+            "source": "remote_http",
+        }),
+        summary: format!("Sent a group {message_type} message"),
+        warnings: message::compact_warnings(warnings),
+    })
+}
+
+fn group_send_message_id(group_did: &str, result: &GroupSendResult) -> String {
+    if !result.group_did.trim().is_empty() && !result.group_event_seq.trim().is_empty() {
+        return format!(
+            "{}:{}",
+            result.group_did.trim(),
+            result.group_event_seq.trim()
+        );
+    }
+    if !result.group_event_seq.trim().is_empty() {
+        return format!("{}:{}", group_did.trim(), result.group_event_seq.trim());
+    }
+    if !result.message_id.trim().is_empty() {
+        return result.message_id.clone();
+    }
+    format!("msg-{}", im_core::compat::wire::generate_operation_id())
+}
+
+fn group_storage_key(group_did: &str) -> String {
+    group_did.trim().to_string()
+}
+
+fn i64_option_from_string(value: &str) -> Option<i64> {
+    value.trim().parse().ok()
 }
 
 fn content_type_for_message_type(message_type: &str) -> &'static str {
