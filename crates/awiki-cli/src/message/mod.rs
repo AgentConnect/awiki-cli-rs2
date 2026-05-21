@@ -117,7 +117,10 @@ pub use secure_outbox_flush::{
     SecureOutboxFlushRowOutcome, SecureOutboxSendOutcome, SecureOutboxSendRequest,
     StoreMessageOutcome,
 };
-pub(crate) use service::{auth_session, maybe_publish_secure_prekeys};
+pub(crate) use service::{
+    auth_session, is_session_unauthorized, maybe_publish_secure_prekeys, refresh_jwt_fallback,
+    require_active_identity, resolve_target, TargetResolution,
+};
 pub use service::{
     send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,
     SecureDirectSendRequest,

@@ -3,12 +3,19 @@ use std::fs;
 use im_core::prelude::{
     AuthScope, Cursor, GroupRef, HistoryQuery, InboxQuery, InboxScope, MessageBody,
     MessageDeliveryOptions, MessageKind, MessageSecurityMode, MessageTarget, PageLimit, PeerRef,
-    SendMessageRequest, ThreadRef,
+    SendMessageRequest, SessionBundle, ThreadRef,
 };
+use serde_json::{json, Value};
 
+use crate::authsdk::Session;
 use crate::cli::ParsedCommand;
+use crate::config::Resolved;
+use crate::identity::Manager;
 use crate::message;
+use crate::message::MessageError;
 use crate::output::ExitError;
+use crate::store::{self, MessageRecord};
+use crate::transportcfg::Profile;
 
 pub fn send_message_request(
     command: &ParsedCommand,
@@ -125,6 +132,57 @@ pub fn send_auth_scope(request: &SendMessageRequest) -> AuthScope {
         MessageTarget::Direct(_) => AuthScope::Messaging,
         MessageTarget::Group(_) => AuthScope::GroupMessaging,
     }
+}
+
+pub fn send_direct_text_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    identity_name: &str,
+    request: SendMessageRequest,
+) -> Result<message::CommandResult, MessageError> {
+    let record = message::require_active_identity(resolved, manager, identity_name)?;
+    let target = match &request.target {
+        MessageTarget::Direct(peer) => message::resolve_target(resolved, peer.as_str())?,
+        MessageTarget::Group(_) => return Err(MessageError::GroupNotSupported),
+    };
+    let bridge_result = im_core::compat::messages::send_direct_text_with_bridge(
+        client,
+        DirectTextSessionProvider {
+            subject: client.did().clone(),
+            resolved,
+            manager,
+            record: record.clone(),
+        },
+        DirectTextLegacyTransport {
+            resolved,
+            manager,
+            record: record.clone(),
+            target: target.clone(),
+        },
+        im_core::compat::messages::DirectTextSendBridgeRequest {
+            request,
+            resolved_target_did: target.did.clone(),
+            credentials: im_core::compat::messages::DirectTextCredentials {
+                identity_name: record.identity_name.clone(),
+                did_document: record.did_document.clone(),
+                key1_private_pem: record.key1_private_pem.clone(),
+            },
+        },
+    )
+    .map_err(im_error_to_message_error)?;
+    let mut result = DirectSendResult::from_sdk_bridge(&bridge_result);
+    fill_direct_send_result(&mut result, &Value::Null, &target.did);
+    persist_send_result(
+        resolved,
+        &record,
+        &target,
+        &bridge_result.text,
+        &bridge_result.message_type,
+        false,
+        &result,
+        bridge_result.sdk_result.warnings,
+    )
 }
 
 pub fn legacy_inbox_request(
@@ -334,6 +392,331 @@ fn legacy_inbox_scope(scope: InboxScope) -> String {
         InboxScope::GroupOnly => "group",
     }
     .to_string()
+}
+
+struct DirectTextSessionProvider<'a> {
+    subject: im_core::prelude::Did,
+    resolved: &'a Resolved,
+    manager: &'a Manager,
+    record: crate::identity::types::StoredIdentity,
+}
+
+impl im_core::compat::messages::BridgeSessionProvider for DirectTextSessionProvider<'_> {
+    fn ensure_messaging_session(&self) -> im_core::ImResult<SessionBundle> {
+        let session = auth_session(&self.resolved, &self.manager, &self.record)
+            .map_err(message_error_to_im_error)?;
+        Ok(SessionBundle {
+            subject: self.subject.clone(),
+            scope: AuthScope::Messaging,
+            expires_at: None,
+            refreshed: session.current_jwt().trim() != self.record.jwt_token.trim(),
+        })
+    }
+}
+
+struct DirectTextLegacyTransport<'a> {
+    resolved: &'a Resolved,
+    manager: &'a Manager,
+    record: crate::identity::types::StoredIdentity,
+    target: message::TargetResolution,
+}
+
+impl im_core::compat::messages::BridgeAuthenticatedRpcTransport for DirectTextLegacyTransport<'_> {
+    fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> im_core::ImResult<Value> {
+        send_authenticated_direct_rpc_with_fallback(
+            self.resolved,
+            self.manager,
+            &self.record,
+            &self.target,
+            endpoint,
+            method,
+            params,
+        )
+        .map_err(message_error_to_im_error)
+    }
+}
+
+fn send_authenticated_direct_rpc_with_fallback(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &crate::identity::types::StoredIdentity,
+    target: &message::TargetResolution,
+    endpoint: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, MessageError> {
+    match send_authenticated_direct_rpc(resolved, manager, record, endpoint, method, params.clone())
+    {
+        Ok(result) => Ok(result),
+        Err(err) if message::is_session_unauthorized(&err) => {
+            let refreshed = message::refresh_jwt_fallback(resolved, manager, record).ok();
+            match send_authenticated_direct_rpc(
+                resolved,
+                manager,
+                refreshed.as_ref().unwrap_or(record),
+                endpoint,
+                method,
+                params,
+            ) {
+                Ok(result) => Ok(result),
+                Err(_) => Err(err),
+            }
+        }
+        Err(err) => {
+            let _ = target;
+            Err(err)
+        }
+    }
+}
+
+fn send_authenticated_direct_rpc(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &crate::identity::types::StoredIdentity,
+    endpoint: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, MessageError> {
+    let mut auth = auth_session(resolved, manager, record)?;
+    let client = message::Client::new(resolved)?;
+    client.authenticated_rpc_call_profile(Profile::RpcDefault, endpoint, method, params, &mut auth)
+}
+
+fn auth_session(
+    resolved: &Resolved,
+    manager: &Manager,
+    record: &crate::identity::types::StoredIdentity,
+) -> Result<Session, MessageError> {
+    message::auth_session(resolved, manager, record)
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+struct DirectSendResult {
+    #[serde(default)]
+    accepted: bool,
+    #[serde(default)]
+    message_id: String,
+    #[serde(default)]
+    operation_id: String,
+    #[serde(default)]
+    target_did: String,
+    #[serde(default)]
+    accepted_at: String,
+    #[serde(default)]
+    final_acceptance: bool,
+    #[serde(default)]
+    delivery_state: String,
+}
+
+impl DirectSendResult {
+    fn from_sdk_bridge(result: &im_core::compat::messages::DirectTextSendBridgeResult) -> Self {
+        let mut value: Self = serde_json::from_value(result.raw.clone()).unwrap_or_default();
+        value.message_id =
+            default_string_value(&value.message_id, result.sdk_result.message.id.as_str());
+        value.operation_id = default_string_value(
+            &value.operation_id,
+            result
+                .sdk_result
+                .message
+                .metadata
+                .operation_id
+                .as_deref()
+                .unwrap_or_default(),
+        );
+        value.target_did = default_string_value(&value.target_did, &result.target_did);
+        value.accepted_at = default_string_value(
+            &value.accepted_at,
+            result
+                .sdk_result
+                .message
+                .sent_at
+                .as_deref()
+                .unwrap_or_default(),
+        );
+        value.delivery_state = default_string_value(
+            &value.delivery_state,
+            result
+                .sdk_result
+                .message
+                .metadata
+                .delivery_state
+                .as_deref()
+                .unwrap_or_default(),
+        );
+        value
+    }
+}
+
+fn fill_direct_send_result(result: &mut DirectSendResult, meta: &Value, target_did: &str) {
+    if result.message_id.is_empty() {
+        result.message_id = value_string(meta.get("message_id"));
+    }
+    if result.operation_id.is_empty() {
+        result.operation_id = value_string(meta.get("operation_id"));
+    }
+    if result.target_did.is_empty() {
+        result.target_did = target_did.to_string();
+    }
+}
+
+fn persist_send_result(
+    resolved: &Resolved,
+    record: &crate::identity::types::StoredIdentity,
+    target: &message::TargetResolution,
+    text: &str,
+    message_type: &str,
+    secure: bool,
+    result: &DirectSendResult,
+    initial_warnings: Vec<String>,
+) -> Result<message::CommandResult, MessageError> {
+    let mut warnings = initial_warnings;
+    if let Ok(connection) = store::open(&resolved.paths) {
+        if store::ensure_schema(&connection).is_ok() {
+            let stored = store::store_message(
+                &connection,
+                MessageRecord {
+                    msg_id: result.message_id.clone(),
+                    owner_did: record.did.clone(),
+                    thread_id: store::make_thread_id(&record.did, &target.did, ""),
+                    direction: 1,
+                    sender_did: record.did.clone(),
+                    receiver_did: target.did.clone(),
+                    content_type: content_type_for_message_type(message_type).to_string(),
+                    content: text.to_string(),
+                    sent_at: result.accepted_at.clone(),
+                    is_read: true,
+                    is_e2ee: secure,
+                    metadata: metadata_string(json!({
+                        "delivery_state": result.delivery_state,
+                        "operation_id": result.operation_id,
+                        "target_handle": target.handle,
+                    })),
+                    credential_name: record.identity_name.clone(),
+                    ..MessageRecord::default()
+                },
+            );
+            if let Err(err) = stored {
+                warnings.push(format!("Failed to persist local message: {err}"));
+            }
+        }
+    }
+    Ok(message::CommandResult {
+        data: json!({
+            "action": "send_message",
+            "target": {
+                "did": target.did,
+                "handle": target.handle,
+                "kind": "direct",
+            },
+            "message": {
+                "id": result.message_id,
+                "type": message_type,
+                "secure": secure,
+                "sent_at": result.accepted_at,
+            },
+            "delivery": result,
+        }),
+        summary: format!("Sent a direct {message_type} message"),
+        warnings: message::compact_warnings(warnings),
+    })
+}
+
+fn content_type_for_message_type(message_type: &str) -> &'static str {
+    match message_type.trim().to_ascii_lowercase().as_str() {
+        "markdown" => "text/markdown",
+        _ => "text/plain",
+    }
+}
+
+fn metadata_string(value: Value) -> String {
+    serde_json::to_string(&value).unwrap_or_default()
+}
+
+fn default_string_value(value: &str, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn value_string(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn im_error_to_message_error(err: im_core::ImError) -> MessageError {
+    match err {
+        im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("text") => {
+            MessageError::TextRequired
+        }
+        im_core::ImError::PeerNotFound { .. } => MessageError::TargetRequired,
+        im_core::ImError::UnsupportedCapability { capability } if capability == "group-send" => {
+            MessageError::GroupNotSupported
+        }
+        im_core::ImError::UnsupportedCapability { capability } if capability == "attachments" => {
+            MessageError::AttachmentNotSupported
+        }
+        im_core::ImError::UnsupportedCapability { capability } if capability == "secure-direct" => {
+            MessageError::SecureNotSupported
+        }
+        im_core::ImError::AuthRequired | im_core::ImError::SessionExpired => {
+            MessageError::IdentityRequired("authentication is required".to_string())
+        }
+        im_core::ImError::IdentityNotReady { identity, missing } => MessageError::IdentityRequired(
+            format!("identity {identity} is not ready: {}", missing.join(", ")),
+        ),
+        im_core::ImError::Service {
+            status_code,
+            code,
+            message,
+        } => MessageError::Service(crate::identity::wire::ServiceError {
+            status_code: status_code.unwrap_or_default(),
+            rpc_code: code
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_default(),
+            message,
+            data: None,
+        }),
+        im_core::ImError::TransportUnavailable { detail } => {
+            MessageError::TransportUnavailable(detail)
+        }
+        err => MessageError::Internal(err.to_string()),
+    }
+}
+
+fn message_error_to_im_error(err: MessageError) -> im_core::ImError {
+    match err {
+        MessageError::Service(service_err) => im_core::ImError::Service {
+            status_code: (service_err.status_code != 0).then_some(service_err.status_code),
+            code: (service_err.rpc_code != 0).then(|| service_err.rpc_code.to_string()),
+            message: service_err.message,
+        },
+        MessageError::TransportUnavailable(detail) => {
+            im_core::ImError::TransportUnavailable { detail }
+        }
+        MessageError::TargetRequired => im_core::ImError::PeerNotFound {
+            peer: "direct target".to_string(),
+        },
+        MessageError::TextRequired => im_core::ImError::invalid_input(
+            Some("text".to_string()),
+            "text message must not be empty",
+        ),
+        MessageError::IdentityRequired(message) => im_core::ImError::IdentityNotReady {
+            identity: message,
+            missing: Vec::new(),
+        },
+        err => im_core::ImError::Internal {
+            message: err.to_string(),
+        },
+    }
 }
 
 fn page_limit(command: &ParsedCommand, flag: &str, default: u32) -> Result<PageLimit, ExitError> {

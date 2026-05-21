@@ -1,5 +1,6 @@
 pub(crate) mod auth;
 pub(crate) mod identity_runtime;
+pub(crate) mod message_runtime;
 pub(crate) mod proof;
 pub(crate) mod store;
 pub(crate) mod transport;

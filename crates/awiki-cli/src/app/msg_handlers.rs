@@ -4,6 +4,7 @@ use crate::config::Resolved;
 use crate::identity;
 use crate::message::{self, CommandResult, MessageError};
 use crate::output::ExitError;
+use im_core::prelude::MessageTarget;
 use serde_json::{json, Map, Value};
 use std::fs;
 
@@ -68,12 +69,26 @@ impl App {
             &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        client
-            .auth()
-            .ensure_session(auth_scope)
-            .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg send"))?;
+        if !matches!(&request.target, MessageTarget::Direct(_)) {
+            client
+                .auth()
+                .ensure_session(auth_scope)
+                .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg send"))?;
+        }
 
-        let result = message::send(&resolved, &manager, legacy_request).map_err(|err| {
+        let result = match request.target {
+            MessageTarget::Direct(_) => {
+                crate::im_core_adapter::messages::send_direct_text_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    &self.globals.identity,
+                    request,
+                )
+            }
+            MessageTarget::Group(_) => message::send(&resolved, &manager, legacy_request),
+        }
+        .map_err(|err| {
             message_exit(
                 err,
                 "Ensure the active identity is ready and the message service is reachable.",

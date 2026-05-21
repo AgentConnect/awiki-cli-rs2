@@ -13,18 +13,17 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::SendMessageResult> {
         validate_body(&request.body)?;
         validate_security(&request.security)?;
-        let runtime = self.client.runtime();
-        let _runtime_context = (
-            &runtime.did_document_path,
-            &runtime.private_key_path,
-            &runtime.auth_state_path,
-            &runtime.owner.identity_id,
-            &runtime.owner.current_did,
-        );
-        let _transport_policy = self.client.core_inner().sdk_config().transport_policy;
-        Err(crate::ImError::TransportUnavailable {
-            detail: "message transport is not wired in Phase 1A".to_string(),
+        crate::internal::message_runtime::direct::DirectTextSender::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .send(crate::internal::message_runtime::direct::DirectTextSend {
+            request,
+            resolved_target_did: None,
+            credentials: None,
         })
+        .map(|result| result.sdk_result)
     }
 
     pub fn inbox(
