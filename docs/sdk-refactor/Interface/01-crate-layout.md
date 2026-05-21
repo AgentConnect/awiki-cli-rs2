@@ -96,15 +96,19 @@ crates/im-core/src/
   internal/
     mod.rs
     identity_runtime.rs
-    legacy_identity.rs
-    legacy_auth.rs
-    legacy_messages.rs
     transport.rs
     wire.rs
     store.rs
+
+    # P1-beta 之后才允许出现；必须是已复制/迁移到 im-core 内部的代码。
+    legacy_identity.rs
+    legacy_auth.rs
+    legacy_messages.rs
 ```
 
-P1 可以先把 legacy adapter 放进 `internal/legacy_*`。这些 adapter 可以调用或复制现有 CLI 的底层逻辑，但不能通过 `lib.rs` 导出。
+P1-alpha 不要求在 `im-core/internal/legacy_*` 中实现业务。P1-alpha 的旧实现调用应发生在 `awiki-cli::im_core_adapter` 中，而不是发生在 `im-core` 中。
+
+P1-beta 如果需要 `internal/legacy_*`，这些模块只能调用已经复制或迁移到 `crates/im-core` 内部的代码，不能依赖 `crates/awiki-cli`。
 
 ## 4. `lib.rs` 导出规则
 
@@ -132,6 +136,17 @@ pub mod transport;
 pub mod legacy_messages;
 ```
 
+P1 默认 public API 不导出：
+
+```rust
+pub fn groups(&self) -> GroupService<'_>
+pub fn attachments(&self) -> AttachmentService<'_>
+pub fn realtime(&self) -> RealtimeService<'_>
+pub fn secure(&self) -> SecureDiagnosticsService<'_>
+```
+
+这些 service 可以在后续阶段按 feature 或阶段加入；如果为了前向兼容提前提供 placeholder，必须放在 non-default feature 或 experimental API 中，并返回 `UnsupportedCapability`。
+
 ## 5. `prelude.rs`
 
 ```rust
@@ -143,11 +158,13 @@ pub use crate::identity::{
     DefaultIdentityChange, HandleRegistrationResult, IdentityReadiness, IdentityRegistry,
     IdentitySelector, IdentitySummary, RegisterHandleRequest,
 };
-pub use crate::ids::{Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef};
+pub use crate::ids::{
+    Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef,
+};
 pub use crate::messages::{
-    HistoryQuery, InboxQuery, Message, MessageBody, MessageDeliveryOptions, MessageDirection,
-    MessageKind, MessageSecurityMode, MessageService, MessageTarget, SendMessageRequest,
-    SendMessageResult, ThreadRef,
+    HistoryQuery, InboxQuery, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
+    MessageDirection, MessageKind, MessageMetadata, MessageSecurityMode, MessageService,
+    MessageTarget, SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{ImCorePaths, IdentityRegistryPaths, LocalStatePaths, RuntimePaths};
 ```
@@ -178,6 +195,7 @@ IdentityRuntimePaths
 LocalStatePaths as business parameter
 build_*_rpc_params
 SQLite connection
+raw serde_json payload as Message public field
 ```
 
 ## 7. P1 编译目标

@@ -125,21 +125,22 @@ pub enum DeliveryState {
 }
 ```
 
-P1 对远端返回不稳定字段可以保留在 `raw`：
+P1 对远端返回的不稳定字段应 normalize 到 `MessageMetadata` 或 `warnings`，不要在默认 public API 中返回 raw `serde_json::Value`。
 
-```rust
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MessageRaw {
-    pub value: serde_json::Value,
-}
+如果测试、诊断或 CLI debug 确实需要 raw response，可以放到：
+
+```text
+internal-test-helpers feature
+diagnostics-only API
+debug adapter
 ```
 
-但 `SendMessageResult` 主字段必须是领域字段，不能只返回 `serde_json::Value`。
+不能作为默认 `Message` 字段。
 
 ## 4. Message DTO
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub id: crate::ids::MessageId,
     pub thread: ThreadRef,
@@ -150,7 +151,7 @@ pub struct Message {
     pub body: MessageBodyView,
     pub sent_at: Option<String>,
     pub received_at: Option<String>,
-    pub raw: Option<serde_json::Value>,
+    pub metadata: MessageMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,9 +166,24 @@ pub enum MessageBodyView {
     Text { text: String, kind: MessageKind },
     Unsupported { content_type: Option<String> },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MessageMetadata {
+    pub operation_id: Option<String>,
+    pub delivery_state: Option<String>,
+    pub server_sequence: Option<i64>,
+    pub content_type: Option<String>,
+    pub attributes: Vec<MessageMetadataAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageMetadataAttribute {
+    pub key: String,
+    pub value: String,
+}
 ```
 
-P1 允许 `raw` 用来兼容当前远端响应，但 CLI/App 不应依赖 raw 作为主业务字段。
+`MessageMetadata` 只承载业务可解释的补充字段。不要把完整 wire payload 塞进 `metadata`。
 
 ## 5. Inbox / History Query
 
@@ -236,31 +252,4 @@ P1 不把 `mark_read` 放进 `InboxQuery`。当前 CLI 若有 `--mark-read`，P1
 4. 拉取远端必要子集。
 5. normalize 成 Page<Message>。
 6. 不在 P1 强制做 conversation projection。
-```
-
-## 7. CLI Mapping
-
-| CLI 输入 | SDK DTO |
-| --- | --- |
-| `msg send --to bob --text hello` | `SendMessageRequest { target: Direct(PeerRef::parse("bob")), body: Text { ... } }` |
-| `msg send --group did:... --text hello` | `SendMessageRequest { target: Group(GroupRef::parse(...)), body: Text { ... } }` |
-| `--text-file path` | CLI 读取文件后传 `MessageBody::Text`。SDK 不接收 text file path。 |
-| `--secure` | P1 映射为 `SecureDirect` 后 SDK 返回 `UnsupportedCapability`，或 CLI 直接提示 unsupported。 |
-| `--file` | P1 不进入 `send()`；Phase 4 再支持。 |
-
-## 8. Forbidden Public API
-
-P1 `im-core::messages` 不允许公开：
-
-```rust
-build_direct_send_rpc_params
-build_group_send_rpc_params
-build_inbox_rpc_params
-build_history_rpc_params
-send_direct_http_with_fallback_refresh
-store_message
-owner_did
-LocalStatePaths
-ActorContext
-message::types::SendRequest
 ```

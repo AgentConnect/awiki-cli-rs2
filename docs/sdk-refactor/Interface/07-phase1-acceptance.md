@@ -27,7 +27,7 @@ crate::output
 awiki_cli
 ```
 
-也不能在 public API 中出现：
+也不能在默认 public API 中出现：
 
 ```text
 ActorContext
@@ -38,6 +38,7 @@ build_*_rpc_params
 SQLite connection
 owner_did as method parameter
 identity_name as request field
+raw serde_json::Value as Message public field
 ```
 
 ## 3. API Shape 验收
@@ -92,6 +93,17 @@ let result = client.messages().send(SendMessageRequest {
 });
 assert!(matches!(result, Err(ImError::UnsupportedCapability { .. })));
 ```
+
+P1 默认 public API 不应要求这些代码可编译：
+
+```rust
+client.groups()
+client.attachments()
+client.realtime()
+client.secure()
+```
+
+如果这些 placeholder service 被提前加入，必须在 non-default feature / experimental API 下，并返回 `UnsupportedCapability`。
 
 ## 4. CLI 行为验收
 
@@ -190,6 +202,7 @@ limit 归一化
 cursor 透传
 remote response normalize 成 Page<Message>
 不强制 conversation projection
+不返回默认 raw JSON payload
 ```
 
 ## 8. 第一阶段完成标准

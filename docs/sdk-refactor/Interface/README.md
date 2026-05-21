@@ -1,21 +1,21 @@
 # Phase 1 Interface：可实施接口方案
 
-**状态**：Draft for implementation  
+**状态**：Final draft for Phase 1 implementation  
 **目录**：`docs/sdk-refactor/Interface/`  
 **适用阶段**：Phase 1 MVP  
-**目标**：把现有 `sdk-refactor` 中的高层方案落成第一阶段可以直接编码的接口清单。
+**目标**：把 `docs/sdk-refactor/` 的高层方案落成第一阶段可以直接编码的接口清单。
 
 ## 1. 结论
 
-当前 `docs/sdk-refactor` 已经足够说明架构方向，但还不能直接作为开发接口逐文件实现。主要原因是：
+当前 `docs/sdk-refactor` 已经说明了架构方向，但真正执行 Phase 1 时还需要一个更具体的接口规格。本目录只做一件事：**给 Phase 1 提供可以照着创建 `crates/im-core`、CLI adapter 和 façade 的接口清单。**
 
-- `public-api.md` 是接口总览，不是 crate 文件级接口规格。
-- 部分类型仍是草案形态，例如 `Url`、`RuntimePaths`、`PeerRef(String)` 与后续领域类型混用。
-- P1 / P2+ 虽然有标注，但没有给出 P1 必须实现的最小方法集合、DTO 字段、错误映射和测试验收。
-- CLI adapter 的边界写清楚了，但没有落到具体 adapter 文件、函数签名和 handler 迁移顺序。
-- 没有明确哪些现有 CLI 类型只能作为 legacy adapter 内部输入，不能进入 `im-core` public API。
+本目录遵守主方案中的约束：
 
-所以本目录只做一件事：**给 Phase 1 提供可以照着建 `crates/im-core` 的接口规格。**
+```text
+awiki-cli -> im-core
+```
+
+`im-core` 不能依赖 `awiki-cli`，不能引用 `ParsedCommand`、`Resolved`、`Manager`、`ExitError` 等 CLI 类型。
 
 ## 2. 第一阶段只实现什么
 
@@ -69,17 +69,65 @@ async API
 2. 按 02-core-interface.md 定义核心类型，先不搬业务逻辑。
 3. 按 03-identity-auth-interface.md 封装 identity/auth façade。
 4. 按 04-message-interface.md 封装 direct/group text message façade。
-5. 按 05-cli-adapter-interface.md 改第一批 CLI handler。
+5. 按 05-cli-adapter-interface.md 增加 CLI adapter。
 6. 用 07-phase1-acceptance.md 做验收。
 ```
 
 ## 5. 兼容原则
 
-Phase 1 可以先在 `im-core` 内部通过 legacy adapter 调用 `awiki-cli` 当前底层实现，但 public API 必须是本目录定义的高层接口。也就是说：
+Phase 1 分成两个层次，避免破坏依赖方向。
+
+### 5.1 P1-alpha：CLI adapter 调旧模块
+
+P1-alpha 允许：
 
 ```text
-允许：im-core internal adapter -> old message/auth/identity implementation
-不允许：SDK public API 暴露 old SendRequest / InboxRequest / ActorContext / RPC params
+CLI handler
+  -> awiki-cli::im_core_adapter
+     -> current awiki-cli low-level identity/auth/message implementation
 ```
 
-当某个业务能力迁移完成后，应同步把对应旧模块的 re-export 从 `pub use` 收紧为 `pub(crate)` 或移动到 `internal`。
+此时：
+
+```text
+crates/im-core 只提供 public API / DTO / façade shape
+awiki-cli::im_core_adapter 负责把 SDK DTO 转成旧 request
+旧 identity/authsdk/message/store 测试继续保留
+```
+
+P1-alpha 不允许：
+
+```text
+im-core -> awiki-cli old modules
+im-core -> ParsedCommand / Resolved / Manager / ExitError
+```
+
+### 5.2 P1-beta：im-core 内部 legacy module 调已迁入代码
+
+P1-beta 允许：
+
+```text
+im-core public API
+  -> im-core internal legacy module
+     -> code copied/moved into crates/im-core/internal
+```
+
+这里的 legacy module 必须已经在 `crates/im-core` 内部，不能反向依赖 `crates/awiki-cli`。
+
+### 5.3 public API 规则
+
+不允许 SDK public API 暴露：
+
+```text
+old SendRequest / InboxRequest
+ActorContext
+IdentityRuntimePaths
+AuthStatePaths
+LocalStatePaths as business parameter
+RPC params
+wire payload
+raw serde_json payload
+SQLite connection
+```
+
+当某个业务能力迁移完成后，应逐步把对应旧模块的 re-export 从 `pub use` 收紧为 `pub(crate)` 或移动到 internal / diagnostics feature。

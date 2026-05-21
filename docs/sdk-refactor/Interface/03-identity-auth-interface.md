@@ -139,9 +139,12 @@ pub struct HandleRegistrationResult {
 pub struct DefaultIdentityChange {
     pub previous: Option<IdentitySummary>,
     pub next: IdentitySummary,
-    pub write_path: Option<String>,
+    pub requires_default_identity_write: bool,
+    pub warnings: Vec<String>,
 }
 ```
+
+`DefaultIdentityChange` 不返回本地路径。CLI 如果需要展示 default identity 文件路径，应在 `awiki-cli::im_core_adapter` 中根据 `ImCorePaths` / CLI resolved paths 渲染。这样可以保持 SDK public DTO 不泄漏本地路径细节。
 
 CLI 仍负责：
 
@@ -150,6 +153,7 @@ OTP 输入方式
 local_alias 命名规则
 身份文件权限
 default identity 文件是否实际写入
+default identity 文件路径展示
 输出提示
 ```
 

@@ -8,7 +8,7 @@ parse flags -> build ImCore/ImClient -> call SDK -> render output
 
 ## 1. Adapter 文件结构
 
-在 `crates/awiki-cli/src/im_adapter/` 增加：
+在 `crates/awiki-cli/src/im_core_adapter/` 增加：
 
 ```text
 mod.rs
@@ -20,14 +20,14 @@ error.rs
 render.rs
 ```
 
-这些文件属于 CLI，不属于 `im-core`。
+这些文件属于 CLI，不属于 `im-core`。目录名统一使用 `im_core_adapter`，不要使用 `im_adapter`，避免和其他 adapter 混淆。
 
 ## 2. Config Adapter
 
 ```rust
 pub fn build_im_core_config(
     resolved: &crate::config::Resolved,
-) -> Result<im_core::ImCoreConfig, crate::error::ExitError>;
+) -> Result<im_core::ImCoreConfig, crate::output::ExitError>;
 ```
 
 职责：
@@ -44,7 +44,7 @@ pub fn build_im_core_config(
 pub fn build_im_core_paths(
     resolved: &crate::config::Resolved,
     manager: &crate::identity::Manager,
-) -> Result<im_core::ImCorePaths, crate::error::ExitError>;
+) -> Result<im_core::ImCorePaths, crate::output::ExitError>;
 ```
 
 职责：
@@ -61,8 +61,8 @@ SDK 不直接读取 CLI workspace，不直接依赖 `Manager`。
 pub fn cli_identity_selector(identity_flag: &str) -> im_core::IdentitySelector;
 
 pub fn register_handle_request(
-    command: &crate::command::ParsedCommand,
-) -> Result<im_core::RegisterHandleRequest, crate::error::ExitError>;
+    command: &crate::cli::ParsedCommand,
+) -> Result<im_core::RegisterHandleRequest, crate::output::ExitError>;
 ```
 
 规则：
@@ -79,18 +79,18 @@ CLI 继续负责 OTP 输入、alias 文本校验和危险操作确认。
 
 ```rust
 pub fn send_message_request(
-    command: &crate::command::ParsedCommand,
+    command: &crate::cli::ParsedCommand,
     default_domain: &str,
-) -> Result<im_core::SendMessageRequest, crate::error::ExitError>;
+) -> Result<im_core::SendMessageRequest, crate::output::ExitError>;
 
 pub fn inbox_query(
-    command: &crate::command::ParsedCommand,
-) -> Result<im_core::InboxQuery, crate::error::ExitError>;
+    command: &crate::cli::ParsedCommand,
+) -> Result<im_core::InboxQuery, crate::output::ExitError>;
 
 pub fn history_request(
-    command: &crate::command::ParsedCommand,
+    command: &crate::cli::ParsedCommand,
     default_domain: &str,
-) -> Result<(im_core::ThreadRef, im_core::HistoryQuery), crate::error::ExitError>;
+) -> Result<(im_core::ThreadRef, im_core::HistoryQuery), crate::output::ExitError>;
 ```
 
 CLI 负责：
@@ -118,7 +118,7 @@ RPC/wire params
 pub fn map_im_error(
     err: im_core::ImError,
     context: &'static str,
-) -> crate::error::ExitError;
+) -> crate::output::ExitError;
 ```
 
 建议映射：
@@ -139,15 +139,15 @@ pub fn map_im_error(
 ## 7. Handler 示例：msg send
 
 ```rust
-pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+pub fn run_msg_send(&self, command: &crate::cli::ParsedCommand) -> Result<(), crate::output::ExitError> {
     let resolved = self.resolve_config_for_workspace()?;
-    let manager = self.identity_manager(&resolved)?;
+    let manager = self.identity_manager(&resolved);
     let core = self.build_im_core(&resolved, &manager)?;
     let client = core
-        .client(im_adapter::identity::cli_identity_selector(&self.globals.identity))
-        .map_err(|err| im_adapter::error::map_im_error(err, "msg send"))?;
+        .client(im_core_adapter::identity::cli_identity_selector(&self.globals.identity))
+        .map_err(|err| im_core_adapter::error::map_im_error(err, "msg send"))?;
 
-    let request = im_adapter::messages::send_message_request(
+    let request = im_core_adapter::messages::send_message_request(
         command,
         &resolved.did_domain,
     )?;
@@ -159,7 +159,7 @@ pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
     let result = client
         .messages()
         .send(request)
-        .map_err(|err| im_adapter::error::map_im_error(err, "msg send"))?;
+        .map_err(|err| im_core_adapter::error::map_im_error(err, "msg send"))?;
 
     self.render_im_result("awiki-cli msg send", &resolved, result)
 }
@@ -168,17 +168,19 @@ pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
 ## 8. Handler 示例：id refresh-token
 
 ```rust
-pub fn run_id_refresh_token(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+pub fn run_id_refresh_token(&self) -> Result<(), crate::output::ExitError> {
     let resolved = self.resolve_config_for_workspace()?;
-    let manager = self.identity_manager(&resolved)?;
+    let manager = self.identity_manager(&resolved);
     let core = self.build_im_core(&resolved, &manager)?;
-    let selector = im_adapter::identity::cli_identity_selector(&self.globals.identity);
-    let client = core.client(selector).map_err(|err| im_adapter::error::map_im_error(err, "id refresh-token"))?;
+    let selector = im_core_adapter::identity::cli_identity_selector(&self.globals.identity);
+    let client = core
+        .client(selector)
+        .map_err(|err| im_core_adapter::error::map_im_error(err, "id refresh-token"))?;
 
     let update = client
         .auth()
         .refresh_session()
-        .map_err(|err| im_adapter::error::map_im_error(err, "id refresh-token"))?;
+        .map_err(|err| im_core_adapter::error::map_im_error(err, "id refresh-token"))?;
 
     self.render_im_result("awiki-cli id refresh-token", &resolved, update)
 }
@@ -187,12 +189,12 @@ pub fn run_id_refresh_token(&self, command: &ParsedCommand) -> Result<(), ExitEr
 ## 9. Handler 示例：id register
 
 ```rust
-pub fn run_id_register(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+pub fn run_id_register(&self, command: &crate::cli::ParsedCommand) -> Result<(), crate::output::ExitError> {
     let resolved = self.resolve_config_for_workspace()?;
-    let manager = self.identity_manager(&resolved)?;
+    let manager = self.identity_manager(&resolved);
     let core = self.build_im_core(&resolved, &manager)?;
 
-    let request = im_adapter::identity::register_handle_request(command)?;
+    let request = im_core_adapter::identity::register_handle_request(command)?;
 
     if self.globals.dry_run {
         return self.render_id_register_plan(&resolved, &request);
@@ -201,7 +203,7 @@ pub fn run_id_register(&self, command: &ParsedCommand) -> Result<(), ExitError> 
     let result = core
         .identities()
         .register_handle(request)
-        .map_err(|err| im_adapter::error::map_im_error(err, "id register"))?;
+        .map_err(|err| im_core_adapter::error::map_im_error(err, "id register"))?;
 
     self.render_im_result("awiki-cli id register", &resolved, result)
 }
