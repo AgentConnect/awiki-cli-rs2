@@ -2,20 +2,19 @@ use std::fs;
 use std::path::PathBuf;
 
 use im_core::prelude::*;
+use serde_json::{json, Value};
 
 #[test]
-fn identity_service_exposes_profile_skeleton() {
+fn identity_service_profile_requires_runtime_transport_after_session() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
 
-    let profile = client.identity().profile().unwrap();
-    assert_eq!(profile.subject.as_str(), "did:example:alice");
-    assert_eq!(
-        profile.handle.as_ref().unwrap().as_str(),
-        "alice.awiki.test"
-    );
-    assert_eq!(profile.display_name.as_deref(), Some("Alice"));
-    assert!(profile.metadata.is_empty());
+    let profile = client.identity().profile();
+    assert!(matches!(
+        profile,
+        Err(ImError::TransportUnavailable { detail })
+            if detail.contains("get_me") && detail.contains("/user-service/did/profile/rpc")
+    ));
 
     let updated = client.identity().update_profile(ProfilePatch {
         display_name: Some("Alice Updated".to_string()),
@@ -28,6 +27,46 @@ fn identity_service_exposes_profile_skeleton() {
         Err(ImError::UnsupportedCapability { capability })
             if capability == "identity-profile-update"
     ));
+}
+
+#[test]
+fn identity_profile_bridge_maps_get_me_result_to_sdk_profile() {
+    let fixture = Fixture::new();
+    let client = fixture.client("alice");
+    let result = im_core::compat::profile::read_self_profile_with_bridge(
+        &client,
+        ProfileSession {
+            subject: client.did().clone(),
+        },
+        ProfileTransport::default(),
+    )
+    .unwrap();
+
+    assert_eq!(result.profile.subject.as_str(), "did:example:alice");
+    assert_eq!(
+        result.profile.handle.as_ref().unwrap().as_str(),
+        "alice.awiki.test"
+    );
+    assert_eq!(result.profile.display_name.as_deref(), Some("Alice Remote"));
+    assert_eq!(result.profile.bio.as_deref(), Some("Rust port"));
+    assert_eq!(result.profile.tags, vec!["rust", "cli"]);
+    assert_eq!(result.profile.markdown.as_deref(), Some("## Alice"));
+    assert_eq!(
+        result.profile.avatar_url.as_deref(),
+        Some("https://cdn.test/a.png")
+    );
+    assert_eq!(
+        result.profile.updated_at.as_deref(),
+        Some("2026-05-21T00:00:00Z")
+    );
+    assert_eq!(
+        result.profile.metadata,
+        vec![ProfileAttribute {
+            key: "source".to_string(),
+            value: "profile-service".to_string(),
+        }]
+    );
+    assert_eq!(result.raw["nick_name"], "Alice Remote");
 }
 
 #[test]
@@ -186,6 +225,54 @@ fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str) 
         format!(r#"{{"jwt_token":"test-token-for-{alias}"}}"#),
     )
     .unwrap();
+}
+
+struct ProfileSession {
+    subject: Did,
+}
+
+impl im_core::compat::profile::BridgeProfileSessionProvider for ProfileSession {
+    fn ensure_profile_session(&self) -> ImResult<SessionBundle> {
+        Ok(SessionBundle {
+            subject: self.subject.clone(),
+            scope: AuthScope::UserProfile,
+            expires_at: None,
+            refreshed: false,
+        })
+    }
+}
+
+#[derive(Default)]
+struct ProfileTransport {
+    requests: Vec<(String, String, Value)>,
+}
+
+impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for ProfileTransport {
+    fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> ImResult<Value> {
+        self.requests
+            .push((endpoint.to_string(), method.to_string(), params.clone()));
+        assert_eq!(endpoint, "/user-service/did/profile/rpc");
+        assert_eq!(method, "get_me");
+        assert_eq!(params, json!({}));
+        Ok(json!({
+            "did": "did:example:alice",
+            "handle": "alice.awiki.test",
+            "nick_name": "Alice Remote",
+            "bio": "Rust port",
+            "tags": ["rust", "cli"],
+            "profile_md": "## Alice",
+            "avatar_url": "https://cdn.test/a.png",
+            "updated_at": "2026-05-21T00:00:00Z",
+            "metadata": {
+                "source": "profile-service",
+            },
+        }))
+    }
 }
 
 fn unique_temp_root() -> PathBuf {

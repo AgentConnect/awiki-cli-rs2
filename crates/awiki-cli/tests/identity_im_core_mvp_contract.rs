@@ -1,7 +1,11 @@
 use serde_json::{json, Value};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
 fn identity_im_core_mvp_register_and_refresh_dry_run_keep_legacy_contract() {
@@ -93,6 +97,59 @@ fn identity_im_core_mvp_refresh_selects_identity_before_legacy_auth() {
     assert!(result["error"]["message"].as_str().unwrap().contains("bob"));
 }
 
+#[test]
+fn identity_im_core_mvp_profile_get_self_routes_get_me_through_bridge() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(
+            r###"{"jsonrpc":"2.0","result":{"nick_name":"Alice Remote","bio":"Rust port","tags":["rust","cli"],"profile_md":"## Alice"},"id":"req-1"}"###,
+        ),
+    ]);
+    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
+
+    let register = awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&register, 0);
+
+    let profile = success_json(&awiki_cmd_with_env(
+        &["--identity", "alice", "id", "profile", "get", "--self"],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(profile["summary"], "Fetched current identity profile");
+    assert_eq!(profile["data"]["subject"], "self");
+    assert_eq!(profile["data"]["profile"]["nick_name"], "Alice Remote");
+    assert_eq!(profile["data"]["profile"]["profile_md"], "## Alice");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "get_me",
+            "params": {},
+        })
+    );
+}
+
 fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
@@ -110,6 +167,21 @@ fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) ->
         command.env(key, value);
     }
     command.output().expect("run awiki-cli")
+}
+
+fn write_service_config(workspace: &Path, base_url: &str) {
+    std::fs::create_dir_all(workspace).unwrap();
+    std::fs::write(
+        workspace.join("config.yaml"),
+        format!(
+            "services:\n  service_base_url: {base_url}\n  anp_service_endpoint: https://awiki.ai/anp-im/rpc\n  anp_service_did: did:wba:awiki.ai\n"
+        ),
+    )
+    .unwrap();
+}
+
+fn register_alice_response() -> &'static str {
+    r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","message":"Registration successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#
 }
 
 fn identity_manager(workspace: &Path) -> awiki_cli::identity::Manager {
@@ -161,6 +233,149 @@ fn assert_code(output: &Output, expected: i32) {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn request_body(raw: &str) -> &str {
+    raw.split("\r\n\r\n").nth(1).unwrap_or_default()
+}
+
+fn assert_contains_text(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected request to contain {needle:?}, got:\n{haystack}"
+    );
+}
+
+#[derive(Clone)]
+struct TestResponse {
+    status: u16,
+    body: String,
+}
+
+impl TestResponse {
+    fn ok(body: &str) -> Self {
+        Self {
+            status: 200,
+            body: body.to_string(),
+        }
+    }
+}
+
+struct TestServer {
+    address: String,
+    requests: Arc<Mutex<Vec<String>>>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl TestServer {
+    fn new(responses: Vec<TestResponse>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        listener
+            .set_nonblocking(true)
+            .expect("set test server nonblocking");
+        let address = format!("http://{}", listener.local_addr().expect("local addr"));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let server_requests = Arc::clone(&requests);
+        let join = thread::spawn(move || {
+            for response in responses {
+                let stream = accept_with_timeout(&listener);
+                let Some(stream) = stream else {
+                    break;
+                };
+                handle_connection(stream, &server_requests, response);
+            }
+        });
+        Self {
+            address,
+            requests,
+            join: Some(join),
+        }
+    }
+
+    fn base_url(&self) -> String {
+        self.address.clone()
+    }
+
+    fn requests(&self) -> Vec<String> {
+        self.requests.lock().expect("requests mutex").clone()
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn accept_with_timeout(listener: &TcpListener) -> Option<TcpStream> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Some(stream),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn handle_connection(
+    mut stream: TcpStream,
+    requests: &Arc<Mutex<Vec<String>>>,
+    response: TestResponse,
+) {
+    let request = read_http_request(&mut stream);
+    requests.lock().expect("requests mutex").push(request);
+    let body = response.body.as_bytes();
+    let raw = format!(
+        "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        response.status,
+        body.len(),
+        response.body
+    );
+    stream.write_all(raw.as_bytes()).expect("write response");
+}
+
+fn read_http_request(stream: &mut TcpStream) -> String {
+    let mut raw = Vec::new();
+    let mut buf = [0_u8; 512];
+    loop {
+        let count = stream.read(&mut buf).expect("read request");
+        if count == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buf[..count]);
+        if let Some(header_end) = find_header_end(&raw) {
+            let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or_default();
+            let expected = header_end + content_length;
+            while raw.len() < expected {
+                let count = stream.read(&mut buf).expect("read request body");
+                if count == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..count]);
+            }
+            break;
+        }
+    }
+    String::from_utf8_lossy(&raw).into_owned()
+}
+
+fn find_header_end(raw: &[u8]) -> Option<usize> {
+    raw.windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
 }
 
 struct TempDir {

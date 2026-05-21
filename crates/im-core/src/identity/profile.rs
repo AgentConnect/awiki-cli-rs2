@@ -1,17 +1,3 @@
-pub(crate) fn profile_from_summary(summary: &super::IdentitySummary) -> super::Profile {
-    super::Profile {
-        subject: summary.did.clone(),
-        handle: summary.handle.clone(),
-        display_name: summary.display_name.clone(),
-        bio: None,
-        tags: Vec::new(),
-        markdown: None,
-        avatar_url: None,
-        updated_at: None,
-        metadata: Vec::new(),
-    }
-}
-
 pub(crate) fn validate_profile_patch(patch: &super::ProfilePatch) -> crate::ImResult<()> {
     if patch
         .display_name

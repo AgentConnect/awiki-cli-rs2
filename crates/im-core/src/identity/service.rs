@@ -8,9 +8,28 @@ impl<'a> IdentityService<'a> {
     }
 
     pub fn profile(&self) -> crate::ImResult<super::Profile> {
-        Ok(super::profile::profile_from_summary(
-            self.client.current_identity(),
-        ))
+        self.profile_with_runtime(
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .map(|result| result.profile)
+    }
+
+    pub(crate) fn profile_with_runtime<P, T>(
+        &self,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<crate::internal::profile_runtime::ProfileReadResult>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRpcTransport,
+    {
+        crate::internal::profile_runtime::ProfileReader::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .profile()
     }
 
     pub fn update_profile(&self, patch: super::ProfilePatch) -> crate::ImResult<super::Profile> {

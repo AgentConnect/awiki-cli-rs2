@@ -615,19 +615,28 @@ impl App {
 
     pub fn run_id_profile_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let result = identity::get_profile(
-            &resolved,
-            &self.identity_manager(&resolved),
-            identity::GetProfileParams {
-                self_profile: command
-                    .flags
-                    .get("self")
-                    .is_some_and(|value| value == "true"),
-                handle: string_flag(command, "handle"),
-                did: string_flag(command, "did"),
-            },
-        )
-        .map_err(identity_exit)?;
+        let manager = self.identity_manager(&resolved);
+        let request = crate::im_core_adapter::identity::get_profile_request(command);
+        let self_profile = request.self_profile
+            || (request.handle.trim().is_empty() && request.did.trim().is_empty());
+        let result = if crate::im_core_adapter::use_im_core_mvp() && self_profile {
+            crate::im_core_adapter::identity::get_self_profile_via_im_core(
+                &resolved,
+                &manager,
+                &self.globals.identity,
+            )?
+        } else {
+            identity::get_profile(
+                &resolved,
+                &manager,
+                identity::GetProfileParams {
+                    self_profile: request.self_profile,
+                    handle: request.handle,
+                    did: request.did,
+                },
+            )
+            .map_err(identity_exit)?
+        };
         self.render_identity_result("awiki-cli id profile get", &resolved, result)
     }
 

@@ -1,15 +1,25 @@
 use im_core::prelude::{
-    Did, Handle, IdentitySelector, InitialProfile, RegisterHandleRequest, VerificationInput,
+    AuthScope, Did, Handle, IdentitySelector, InitialProfile, RegisterHandleRequest, SessionBundle,
+    VerificationInput,
 };
+use serde_json::Value;
 
 use crate::cli::ParsedCommand;
 use crate::identity;
 use crate::output::ExitError;
+use crate::transportcfg::Profile;
 
 #[derive(Debug, Clone)]
 pub struct RegisterHandleBridgeRequest {
     pub sdk: RegisterHandleRequest,
     pub legacy: identity::RegisterParams,
+}
+
+#[derive(Debug, Clone)]
+pub struct GetProfileBridgeRequest {
+    pub self_profile: bool,
+    pub handle: String,
+    pub did: String,
 }
 
 pub fn cli_identity_selector(identity_flag: &str) -> IdentitySelector {
@@ -112,6 +122,170 @@ pub fn register_handle_via_im_core(
         .register_handle(bridge.sdk)
         .map_err(|err| super::map_im_error(err, "id register"))?;
     identity::register(resolved, manager, bridge.legacy).map_err(crate::app::identity_exit)
+}
+
+pub fn get_profile_request(command: &ParsedCommand) -> GetProfileBridgeRequest {
+    GetProfileBridgeRequest {
+        self_profile: command
+            .flags
+            .get("self")
+            .is_some_and(|value| value == "true"),
+        handle: string_flag(command, "handle"),
+        did: string_flag(command, "did"),
+    }
+}
+
+pub fn get_self_profile_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    identity_flag: &str,
+) -> Result<identity::CommandResult, ExitError> {
+    let selector = cli_identity_selector(identity_flag);
+    let client = super::build_im_client(resolved, manager, selector)?;
+    let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
+        .map_err(crate::app::identity_exit)?;
+    let result = im_core::compat::profile::read_self_profile_with_bridge(
+        &client,
+        ProfileSessionProvider {
+            subject: client.did().clone(),
+            resolved,
+            manager,
+            record: record.clone(),
+        },
+        ProfileLegacyTransport {
+            resolved,
+            manager,
+            record,
+        },
+    )
+    .map_err(|err| super::map_im_error(err, "id profile get"))?;
+    Ok(identity::wire::profile_self_result(result.raw))
+}
+
+struct ProfileSessionProvider<'a> {
+    subject: Did,
+    resolved: &'a crate::config::Resolved,
+    manager: &'a identity::Manager,
+    record: identity::types::StoredIdentity,
+}
+
+impl im_core::compat::profile::BridgeProfileSessionProvider for ProfileSessionProvider<'_> {
+    fn ensure_profile_session(&self) -> im_core::ImResult<SessionBundle> {
+        let session = identity::service::auth_session(self.resolved, self.manager, &self.record)
+            .map_err(identity_error_to_im_error)?;
+        Ok(SessionBundle {
+            subject: self.subject.clone(),
+            scope: AuthScope::UserProfile,
+            expires_at: None,
+            refreshed: session.current_jwt().trim() != self.record.jwt_token.trim(),
+        })
+    }
+}
+
+struct ProfileLegacyTransport<'a> {
+    resolved: &'a crate::config::Resolved,
+    manager: &'a identity::Manager,
+    record: identity::types::StoredIdentity,
+}
+
+impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport
+    for ProfileLegacyTransport<'_>
+{
+    fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> im_core::ImResult<Value> {
+        read_authenticated_profile_with_fallback(
+            self.resolved,
+            self.manager,
+            &self.record,
+            endpoint,
+            method,
+            params,
+        )
+        .map_err(identity_error_to_im_error)
+    }
+}
+
+fn read_authenticated_profile_with_fallback(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    record: &identity::types::StoredIdentity,
+    endpoint: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, identity::IdentityError> {
+    match read_authenticated_profile(resolved, manager, record, endpoint, method, params.clone()) {
+        Ok(result) => Ok(result),
+        Err(err) if identity_error_is_unauthorized(&err) => {
+            let refreshed = identity::refresh_token(resolved, manager, &record.identity_name).ok();
+            let record = refreshed
+                .as_ref()
+                .and_then(|_| manager.load(&record.identity_name).ok())
+                .unwrap_or_else(|| record.clone());
+            match read_authenticated_profile(resolved, manager, &record, endpoint, method, params) {
+                Ok(result) => Ok(result),
+                Err(_) => Err(err),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn read_authenticated_profile(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    record: &identity::types::StoredIdentity,
+    endpoint: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, identity::IdentityError> {
+    let mut auth = identity::service::auth_session(resolved, manager, record)?;
+    let client = identity::client::Client::new(resolved)?;
+    client.authenticated_rpc_call_profile(
+        Profile::RpcReadHeavy,
+        endpoint,
+        method,
+        params,
+        &mut auth,
+    )
+}
+
+fn identity_error_is_unauthorized(err: &identity::IdentityError) -> bool {
+    matches!(
+        err,
+        identity::IdentityError::Service(service)
+            if service.status_code == 401 || service.rpc_code == -32001
+    )
+}
+
+fn identity_error_to_im_error(err: identity::IdentityError) -> im_core::ImError {
+    match err {
+        identity::IdentityError::InvalidInput(message) => {
+            im_core::ImError::invalid_input(None, message)
+        }
+        identity::IdentityError::NotFound(message)
+        | identity::IdentityError::NoDefaultIdentity(message) => {
+            im_core::ImError::IdentityNotFound { selector: message }
+        }
+        identity::IdentityError::AuthRequired(_) => im_core::ImError::AuthRequired,
+        identity::IdentityError::Service(service) => im_core::ImError::Service {
+            status_code: (service.status_code != 0).then_some(service.status_code),
+            code: (service.rpc_code != 0).then(|| service.rpc_code.to_string()),
+            message: service.message,
+        },
+        identity::IdentityError::Io(err) => im_core::ImError::Io {
+            detail: err.to_string(),
+        },
+        identity::IdentityError::Json(err) => im_core::ImError::Serialization {
+            detail: err.to_string(),
+        },
+        err => im_core::ImError::Internal {
+            message: err.to_string(),
+        },
+    }
 }
 
 fn looks_like_handle(value: &str) -> bool {
