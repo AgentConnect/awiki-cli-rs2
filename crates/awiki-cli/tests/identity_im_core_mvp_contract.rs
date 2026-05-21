@@ -150,6 +150,87 @@ fn identity_im_core_mvp_profile_get_self_routes_get_me_through_bridge() {
     );
 }
 
+#[test]
+fn identity_im_core_mvp_profile_set_routes_update_me_through_bridge() {
+    let workspace = TempDir::new().expect("workspace");
+    let markdown_file = workspace.path().join("profile.md");
+    std::fs::write(&markdown_file, " \n# Alice\n\nProfile body\n ").expect("write markdown");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(
+            r###"{"jsonrpc":"2.0","result":{"nick_name":"Alice Updated","bio":"Rust port","tags":["rust","cli"],"profile_md":" \n# Alice\n\nProfile body\n "},"id":"req-1"}"###,
+        ),
+    ]);
+    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
+
+    let register = awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&register, 0);
+
+    let profile = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "profile",
+            "set",
+            "--display-name",
+            " Alice Updated ",
+            "--bio",
+            " Rust port ",
+            "--tags",
+            " rust, ,cli ",
+            "--markdown-file",
+            markdown_file.to_str().unwrap(),
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(profile["summary"], "Profile updated successfully");
+    assert_eq!(profile["data"]["action"], "update_profile");
+    assert_eq!(
+        profile["data"]["changed_fields"],
+        json!(["display_name", "bio", "tags", "profile_md"])
+    );
+    assert_eq!(profile["data"]["profile"]["nick_name"], "Alice Updated");
+    assert_eq!(
+        profile["data"]["profile"]["profile_md"],
+        " \n# Alice\n\nProfile body\n "
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/did/profile/rpc HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(
+        body,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "method": "update_me",
+            "params": {
+                "nick_name": "Alice Updated",
+                "bio": "Rust port",
+                "tags": ["rust", "cli"],
+                "profile_md": " \n# Alice\n\nProfile body\n ",
+            },
+        })
+    );
+}
+
 fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command

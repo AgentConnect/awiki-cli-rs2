@@ -8,6 +8,13 @@ pub struct ProfileReadBridgeResult {
     pub raw: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileUpdateBridgeResult {
+    pub profile: crate::identity::Profile,
+    pub raw: Value,
+    pub changed_fields: Vec<String>,
+}
+
 pub trait BridgeProfileSessionProvider {
     fn ensure_profile_session(&self) -> crate::ImResult<crate::auth::SessionBundle>;
 }
@@ -38,6 +45,29 @@ where
     Ok(ProfileReadBridgeResult {
         profile: result.profile,
         raw: result.raw,
+    })
+}
+
+#[doc(hidden)]
+pub fn update_profile_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    patch: crate::identity::ProfilePatch,
+    session_provider: P,
+    transport: T,
+) -> crate::ImResult<ProfileUpdateBridgeResult>
+where
+    P: BridgeProfileSessionProvider,
+    T: BridgeProfileAuthenticatedRpcTransport,
+{
+    let result = client.identity().update_profile_with_runtime(
+        patch,
+        CompatProfileSessionProvider(session_provider),
+        CompatProfileTransport(transport),
+    )?;
+    Ok(ProfileUpdateBridgeResult {
+        profile: result.profile,
+        raw: result.raw,
+        changed_fields: result.changed_fields,
     })
 }
 

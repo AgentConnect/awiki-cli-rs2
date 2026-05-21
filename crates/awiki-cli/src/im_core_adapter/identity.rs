@@ -1,6 +1,6 @@
 use im_core::prelude::{
-    AuthScope, Did, Handle, IdentitySelector, InitialProfile, RegisterHandleRequest, SessionBundle,
-    VerificationInput,
+    AuthScope, Did, Handle, IdentitySelector, InitialProfile, ProfilePatch, RegisterHandleRequest,
+    SessionBundle, VerificationInput,
 };
 use serde_json::Value;
 
@@ -20,6 +20,12 @@ pub struct GetProfileBridgeRequest {
     pub self_profile: bool,
     pub handle: String,
     pub did: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SetProfileBridgeRequest {
+    pub patch: ProfilePatch,
+    pub legacy: identity::SetProfileParams,
 }
 
 pub fn cli_identity_selector(identity_flag: &str) -> IdentitySelector {
@@ -162,6 +168,98 @@ pub fn get_self_profile_via_im_core(
     Ok(identity::wire::profile_self_result(result.raw))
 }
 
+pub fn set_profile_request(
+    display_name: String,
+    bio: String,
+    tags_csv: String,
+    markdown: String,
+    markdown_file: String,
+) -> Result<SetProfileBridgeRequest, ExitError> {
+    let legacy = identity::SetProfileParams {
+        display_name,
+        bio,
+        tags_csv,
+        markdown,
+        markdown_file,
+    };
+    let patch = profile_patch_from_legacy_params(&legacy)?;
+    Ok(SetProfileBridgeRequest { patch, legacy })
+}
+
+pub fn set_profile_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    identity_flag: &str,
+    request: SetProfileBridgeRequest,
+) -> Result<identity::CommandResult, ExitError> {
+    let selector = cli_identity_selector(identity_flag);
+    let client = super::build_im_client(resolved, manager, selector)?;
+    let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
+        .map_err(crate::app::identity_exit)?;
+    let identity = identity::store::identity_summary_from_record(&record);
+    let result = im_core::compat::profile::update_profile_with_bridge(
+        &client,
+        request.patch,
+        ProfileSessionProvider {
+            subject: client.did().clone(),
+            resolved,
+            manager,
+            record: record.clone(),
+        },
+        ProfileLegacyTransport {
+            resolved,
+            manager,
+            record: record.clone(),
+        },
+    )
+    .map_err(|err| super::map_im_error(err, "id profile set"))?;
+    let display_name = request.legacy.display_name.trim();
+    if !display_name.is_empty() {
+        let _ = manager.update_display_name(&record.identity_name, display_name);
+    }
+    Ok(identity::wire::profile_update_result(
+        &identity,
+        result.changed_fields,
+        result.raw,
+    ))
+}
+
+fn profile_patch_from_legacy_params(
+    params: &identity::SetProfileParams,
+) -> Result<ProfilePatch, ExitError> {
+    let markdown_file = params.markdown_file.trim();
+    let markdown = if markdown_file.is_empty() {
+        trimmed_optional(&params.markdown)
+    } else {
+        let raw = std::fs::read(&params.markdown_file).map_err(|err| {
+            ExitError::new(
+                "invalid_argument",
+                2,
+                format!("read markdown file {markdown_file:?}: {err}"),
+                "Check the --markdown-file path and permissions.",
+            )
+        })?;
+        let markdown = String::from_utf8_lossy(&raw).into_owned();
+        (!markdown.trim().is_empty()).then_some(markdown)
+    };
+    Ok(ProfilePatch {
+        display_name: trimmed_optional(&params.display_name),
+        bio: trimmed_optional(&params.bio),
+        tags: tags_patch(&params.tags_csv),
+        markdown,
+    })
+}
+
+fn tags_patch(tags_csv: &str) -> Option<Vec<String>> {
+    let tags = tags_csv
+        .split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    (!tags.is_empty()).then_some(tags)
+}
+
 struct ProfileSessionProvider<'a> {
     subject: Did,
     resolved: &'a crate::config::Resolved,
@@ -244,13 +342,11 @@ fn read_authenticated_profile(
 ) -> Result<Value, identity::IdentityError> {
     let mut auth = identity::service::auth_session(resolved, manager, record)?;
     let client = identity::client::Client::new(resolved)?;
-    client.authenticated_rpc_call_profile(
-        Profile::RpcReadHeavy,
-        endpoint,
-        method,
-        params,
-        &mut auth,
-    )
+    let profile = match method {
+        "get_me" => Profile::RpcReadHeavy,
+        _ => Profile::RpcDefault,
+    };
+    client.authenticated_rpc_call_profile(profile, endpoint, method, params, &mut auth)
 }
 
 fn identity_error_is_unauthorized(err: &identity::IdentityError) -> bool {

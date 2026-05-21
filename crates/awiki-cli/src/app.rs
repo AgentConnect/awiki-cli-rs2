@@ -598,18 +598,35 @@ impl App {
                 },
             );
         }
-        let result = identity::set_profile(
-            &resolved,
-            &self.identity_manager(&resolved),
-            identity::SetProfileParams {
+        let manager = self.identity_manager(&resolved);
+        let result = if crate::im_core_adapter::use_im_core_mvp() {
+            let request = crate::im_core_adapter::identity::set_profile_request(
                 display_name,
                 bio,
-                tags_csv: tags,
+                tags,
                 markdown,
                 markdown_file,
-            },
-        )
-        .map_err(identity_exit)?;
+            )?;
+            crate::im_core_adapter::identity::set_profile_via_im_core(
+                &resolved,
+                &manager,
+                &self.globals.identity,
+                request,
+            )?
+        } else {
+            identity::set_profile(
+                &resolved,
+                &manager,
+                identity::SetProfileParams {
+                    display_name,
+                    bio,
+                    tags_csv: tags,
+                    markdown,
+                    markdown_file,
+                },
+            )
+            .map_err(identity_exit)?
+        };
         self.render_identity_result("awiki-cli id profile set", &resolved, result)
     }
 

@@ -24,8 +24,8 @@ fn identity_service_profile_requires_runtime_transport_after_session() {
     });
     assert!(matches!(
         updated,
-        Err(ImError::UnsupportedCapability { capability })
-            if capability == "identity-profile-update"
+        Err(ImError::TransportUnavailable { detail })
+            if detail.contains("update_me") && detail.contains("/user-service/did/profile/rpc")
     ));
 }
 
@@ -67,6 +67,64 @@ fn identity_profile_bridge_maps_get_me_result_to_sdk_profile() {
         }]
     );
     assert_eq!(result.raw["nick_name"], "Alice Remote");
+}
+
+#[test]
+fn identity_profile_bridge_updates_current_profile() {
+    let fixture = Fixture::new();
+    let client = fixture.client("alice");
+    let result = im_core::compat::profile::update_profile_with_bridge(
+        &client,
+        ProfilePatch {
+            display_name: Some(" Alice Updated ".to_string()),
+            bio: Some(" Rust port ".to_string()),
+            tags: Some(vec!["rust".to_string(), "cli".to_string()]),
+            markdown: Some("## Alice".to_string()),
+        },
+        ProfileSession {
+            subject: client.did().clone(),
+        },
+        ProfileUpdateTransport::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        result.changed_fields,
+        vec![
+            "display_name".to_string(),
+            "bio".to_string(),
+            "tags".to_string(),
+            "profile_md".to_string(),
+        ]
+    );
+    assert_eq!(
+        result.profile.display_name.as_deref(),
+        Some("Alice Updated")
+    );
+    assert_eq!(result.profile.bio.as_deref(), Some("Rust port"));
+    assert_eq!(result.profile.tags, vec!["rust", "cli"]);
+    assert_eq!(result.profile.markdown.as_deref(), Some("## Alice"));
+    assert_eq!(result.raw["nick_name"], "Alice Updated");
+}
+
+#[test]
+fn identity_profile_update_empty_patch_does_not_call_transport() {
+    let fixture = Fixture::new();
+    let client = fixture.client("alice");
+    let updated = im_core::compat::profile::update_profile_with_bridge(
+        &client,
+        ProfilePatch::default(),
+        ProfileSession {
+            subject: client.did().clone(),
+        },
+        ProfileUpdateTransport::default(),
+    );
+
+    assert!(matches!(
+        updated,
+        Err(ImError::InvalidInput { message, .. })
+            if message.contains("no profile fields were provided")
+    ));
 }
 
 #[test]
@@ -271,6 +329,38 @@ impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for Profil
             "metadata": {
                 "source": "profile-service",
             },
+        }))
+    }
+}
+
+#[derive(Default)]
+struct ProfileUpdateTransport;
+
+impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for ProfileUpdateTransport {
+    fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> ImResult<Value> {
+        assert_eq!(endpoint, "/user-service/did/profile/rpc");
+        assert_eq!(method, "update_me");
+        assert_eq!(
+            params,
+            json!({
+                "nick_name": "Alice Updated",
+                "bio": "Rust port",
+                "tags": ["rust", "cli"],
+                "profile_md": "## Alice",
+            })
+        );
+        Ok(json!({
+            "did": "did:example:alice",
+            "handle": "alice.awiki.test",
+            "nick_name": "Alice Updated",
+            "bio": "Rust port",
+            "tags": ["rust", "cli"],
+            "profile_md": "## Alice",
         }))
     }
 }

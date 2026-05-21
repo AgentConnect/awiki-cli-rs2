@@ -34,7 +34,31 @@ impl<'a> IdentityService<'a> {
 
     pub fn update_profile(&self, patch: super::ProfilePatch) -> crate::ImResult<super::Profile> {
         super::profile::validate_profile_patch(&patch)?;
-        Err(crate::ImError::unsupported("identity-profile-update"))
+        self.update_profile_with_runtime(
+            patch,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .map(|result| result.profile)
+    }
+
+    pub(crate) fn update_profile_with_runtime<P, T>(
+        &self,
+        patch: super::ProfilePatch,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<crate::internal::profile_runtime::ProfileUpdateResult>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRpcTransport,
+    {
+        super::profile::validate_profile_patch(&patch)?;
+        crate::internal::profile_runtime::ProfileReader::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .update_profile(patch)
     }
 
     pub fn bind_contact(

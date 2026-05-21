@@ -15,6 +15,13 @@ pub(crate) struct ProfileReadResult {
     pub(crate) raw: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ProfileUpdateResult {
+    pub(crate) profile: crate::identity::Profile,
+    pub(crate) raw: Value,
+    pub(crate) changed_fields: Vec<String>,
+}
+
 impl<'a, P, T> ProfileReader<'a, P, T>
 where
     P: SessionProvider,
@@ -41,6 +48,40 @@ where
             .authenticated_rpc(call.endpoint, call.method, call.params)?;
         let profile = profile_from_value(self.client, &raw)?;
         Ok(ProfileReadResult { profile, raw })
+    }
+
+    pub(crate) fn update_profile(
+        mut self,
+        patch: crate::identity::ProfilePatch,
+    ) -> crate::ImResult<ProfileUpdateResult> {
+        let params = update_profile_params_from_patch(patch);
+        let update_call =
+            crate::internal::identity_wire::profile::build_update_me_profile_rpc_call(params)?;
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::UserProfile)?;
+        let raw = self.transport.authenticated_rpc(
+            update_call.call.endpoint,
+            update_call.call.method,
+            update_call.call.params,
+        )?;
+        let profile = profile_from_value(self.client, &raw)?;
+        Ok(ProfileUpdateResult {
+            profile,
+            raw,
+            changed_fields: update_call.changed_fields,
+        })
+    }
+}
+
+pub(crate) fn update_profile_params_from_patch(
+    patch: crate::identity::ProfilePatch,
+) -> crate::internal::identity_wire::UpdateProfileParams {
+    crate::internal::identity_wire::UpdateProfileParams {
+        display_name: patch.display_name.unwrap_or_default(),
+        bio: patch.bio.unwrap_or_default(),
+        tags_csv: patch.tags.map(|tags| tags.join(",")).unwrap_or_default(),
+        markdown: patch.markdown.unwrap_or_default(),
+        preserve_markdown: true,
     }
 }
 
