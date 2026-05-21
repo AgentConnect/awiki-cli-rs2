@@ -1,5 +1,32 @@
 //! Migration-only wire helpers for `awiki-cli` wrappers.
 
+pub use crate::internal::wire::direct::DirectPayload;
+
+use serde_json::Value;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireIdentity {
+    pub did: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxWireRequest {
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryWireRequest {
+    pub peer_did: String,
+    pub limit: i64,
+    pub cursor: Option<String>,
+    pub skip: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkReadWireRequest {
+    pub message_ids: Vec<String>,
+}
+
 #[doc(hidden)]
 pub fn now_rfc3339() -> String {
     crate::internal::wire::common::now_rfc3339()
@@ -16,4 +43,86 @@ pub fn content_type_for_message_kind(
     message_type: Option<&str>,
 ) -> &'static str {
     crate::internal::wire::common::content_type_for_message_kind(kind, message_type)
+}
+
+#[doc(hidden)]
+pub fn build_direct_text_payload(
+    sender_did: &str,
+    target_did: &str,
+    text: &str,
+    content_type: &str,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::direct::build_direct_text_payload(
+        sender_did,
+        target_did,
+        text,
+        content_type,
+    )
+}
+
+#[doc(hidden)]
+pub fn build_inbox_rpc_params(identity: &WireIdentity, request: InboxWireRequest) -> Value {
+    crate::internal::wire::inbox::build_inbox_rpc_params(
+        &to_internal_identity(identity),
+        crate::internal::wire::inbox::InboxWireRequest {
+            limit: request.limit,
+        },
+    )
+}
+
+#[doc(hidden)]
+pub fn build_history_rpc_params(
+    identity: &WireIdentity,
+    request: HistoryWireRequest,
+) -> crate::ImResult<Value> {
+    crate::internal::wire::history::build_history_rpc_params(
+        &to_internal_identity(identity),
+        crate::internal::wire::history::HistoryWireRequest {
+            peer_did: request.peer_did,
+            limit: request.limit,
+            cursor: request.cursor,
+            skip: request.skip,
+        },
+    )
+}
+
+#[doc(hidden)]
+pub fn build_mark_read_rpc_params(
+    identity: &WireIdentity,
+    request: MarkReadWireRequest,
+) -> crate::ImResult<Value> {
+    crate::internal::wire::inbox::build_mark_read_rpc_params(
+        &to_internal_identity(identity),
+        crate::internal::wire::inbox::MarkReadWireRequest {
+            message_ids: request.message_ids,
+        },
+    )
+}
+
+#[doc(hidden)]
+pub fn message_meta(sender_did: &str, service_did: &str, profile: &str) -> Value {
+    crate::internal::wire::common::message_meta(sender_did, service_did, profile)
+}
+
+#[doc(hidden)]
+pub fn signed_message_meta(
+    sender_did: &str,
+    target_kind: &str,
+    target_did: &str,
+    profile: &str,
+    content_type: &str,
+) -> Value {
+    crate::internal::wire::common::signed_message_meta(
+        sender_did,
+        target_kind,
+        target_did,
+        profile,
+        content_type,
+    )
+}
+
+fn to_internal_identity(identity: &WireIdentity) -> crate::internal::wire::common::WireIdentity {
+    crate::internal::wire::common::WireIdentity {
+        did: identity.did.clone(),
+    }
 }

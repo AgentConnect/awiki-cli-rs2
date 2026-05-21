@@ -2,6 +2,11 @@ use time::OffsetDateTime;
 
 const ATTACHMENT_MANIFEST_CONTENT_TYPE: &str = "application/anp-attachment-manifest+json";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WireIdentity {
+    pub did: String,
+}
+
 pub(crate) fn now_rfc3339() -> String {
     let now = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
@@ -55,6 +60,59 @@ pub(crate) fn content_type_for_message_kind(
             crate::messages::MessageKind::Markdown => "text/markdown",
         },
     }
+}
+
+pub(crate) fn local_meta(sender_did: &str, profile: &str) -> serde_json::Value {
+    serde_json::json!({
+        "anp_version": "1.0",
+        "profile": profile,
+        "security_profile": "transport-protected",
+        "sender_did": sender_did,
+        "operation_id": format!("op-{}", generate_operation_id()),
+        "created_at": now_rfc3339(),
+    })
+}
+
+pub(crate) fn message_meta(
+    sender_did: &str,
+    service_did: &str,
+    profile: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "anp_version": "1.0",
+        "profile": profile,
+        "security_profile": "transport-protected",
+        "sender_did": sender_did,
+        "target": {
+            "kind": "service",
+            "did": service_did,
+        },
+        "operation_id": format!("op-{}", generate_operation_id()),
+        "created_at": now_rfc3339(),
+    })
+}
+
+pub(crate) fn signed_message_meta(
+    sender_did: &str,
+    target_kind: &str,
+    target_did: &str,
+    profile: &str,
+    content_type: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "anp_version": "1.0",
+        "profile": profile,
+        "security_profile": "transport-protected",
+        "sender_did": sender_did,
+        "target": {
+            "kind": target_kind,
+            "did": target_did,
+        },
+        "operation_id": format!("op-{}", generate_operation_id()),
+        "message_id": format!("msg-{}", generate_operation_id()),
+        "created_at": now_rfc3339(),
+        "content_type": content_type,
+    })
 }
 
 fn next_counter() -> u64 {

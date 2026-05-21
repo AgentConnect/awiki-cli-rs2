@@ -1,5 +1,6 @@
 use im_core::compat;
 use im_core::prelude::*;
+use serde_json::json;
 
 #[test]
 fn wire_content_type_for_message_kind_matches_p1_contract() {
@@ -50,4 +51,95 @@ fn wire_now_rfc3339_uses_second_precision_utc_shape() {
         .enumerate()
         .filter(|(index, _)| !matches!(index, 4 | 7 | 10 | 13 | 16 | 19))
         .all(|(_, byte)| byte.is_ascii_digit()));
+}
+
+#[test]
+fn wire_direct_text_payload_matches_go_contract() {
+    let payload = compat::wire::build_direct_text_payload(
+        "did:wba:awiki.ai:user:alice:e1",
+        "did:wba:awiki.ai:user:bob:e1",
+        "hello",
+        "text/plain",
+    )
+    .expect("direct payload");
+
+    assert_eq!(payload.method, "direct.send");
+    assert_eq!(payload.meta["profile"], "anp.direct.base.v1");
+    assert_eq!(payload.meta["security_profile"], "transport-protected");
+    assert_eq!(
+        payload.meta["target"],
+        json!({
+            "kind": "agent",
+            "did": "did:wba:awiki.ai:user:bob:e1",
+        })
+    );
+    assert_eq!(payload.body, json!({ "text": "hello" }));
+    assert_has_generated_meta(&payload.meta);
+    assert!(payload.meta["message_id"]
+        .as_str()
+        .expect("message id")
+        .starts_with("msg-"));
+}
+
+#[test]
+fn wire_inbox_history_and_mark_read_params_match_go_contracts() {
+    let identity = compat::wire::WireIdentity {
+        did: "did:wba:awiki.ai:user:alice:e1_alice".to_string(),
+    };
+
+    let inbox = compat::wire::build_inbox_rpc_params(
+        &identity,
+        compat::wire::InboxWireRequest { limit: 0 },
+    );
+    assert_eq!(inbox["meta"]["profile"], "anp.inbox.local.v1");
+    assert_eq!(inbox["meta"]["security_profile"], "transport-protected");
+    assert_eq!(inbox["meta"]["sender_did"], identity.did);
+    assert_has_generated_meta(&inbox["meta"]);
+    assert_eq!(inbox["body"]["user_did"], identity.did);
+    assert_eq!(inbox["body"]["limit"], 20);
+
+    let history = compat::wire::build_history_rpc_params(
+        &identity,
+        compat::wire::HistoryWireRequest {
+            peer_did: "did:wba:awiki.ai:user:bob:e1_bob".to_string(),
+            limit: 0,
+            cursor: Some("42".to_string()),
+            skip: 3,
+        },
+    )
+    .expect("history params");
+    assert_eq!(history["meta"]["profile"], "anp.direct.local.v1");
+    assert_eq!(
+        history["body"]["peer_did"],
+        "did:wba:awiki.ai:user:bob:e1_bob"
+    );
+    assert_eq!(history["body"]["limit"], 50);
+    assert_eq!(history["body"]["since_seq"], "42");
+    assert_eq!(history["body"]["skip"], 3);
+
+    assert!(compat::wire::build_mark_read_rpc_params(
+        &identity,
+        compat::wire::MarkReadWireRequest {
+            message_ids: Vec::new(),
+        }
+    )
+    .is_err());
+    let mark_read = compat::wire::build_mark_read_rpc_params(
+        &identity,
+        compat::wire::MarkReadWireRequest {
+            message_ids: vec!["msg-1".to_string(), "msg-2".to_string()],
+        },
+    )
+    .expect("mark-read params");
+    assert_eq!(mark_read["meta"]["profile"], "anp.inbox.local.v1");
+    assert_eq!(mark_read["body"]["message_ids"], json!(["msg-1", "msg-2"]));
+}
+
+fn assert_has_generated_meta(meta: &serde_json::Value) {
+    assert_eq!(meta["anp_version"], "1.0");
+    assert!(meta["operation_id"]
+        .as_str()
+        .expect("operation id")
+        .starts_with("op-"));
+    assert_eq!(meta["created_at"].as_str().expect("created at").len(), 20);
 }
