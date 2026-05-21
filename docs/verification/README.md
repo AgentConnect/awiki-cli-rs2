@@ -19,10 +19,10 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   write/test lanes when useful, keep mail selectors deferred unless the batch is
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
-- File-size policy: Rust source files should target 1200 non-generated lines by
-  default. The normal relaxed limit is 3000 lines when the Go source is large or
-  traceable 1:1 translation would otherwise become less reviewable. Files above
-  3000 lines are rare special exceptions only and require a documented reason.
+- File-size policy: Rust source files should target 2500 non-generated lines by
+  default. Rust test files should target 3000 non-generated lines by default.
+  Files above the applicable source/test limit are allowed when documented in
+  `docs/file-size-exceptions.md` with a reason.
 
 ## 2026-05-19 tests_v2 Remote System-Test Audit
 
