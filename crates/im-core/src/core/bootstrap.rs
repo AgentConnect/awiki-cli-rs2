@@ -70,30 +70,11 @@ impl<'a> CoreBootstrap<'a> {
         if let Some(parent) = sqlite_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        #[cfg(feature = "sqlite")]
-        {
-            let connection = rusqlite::Connection::open(sqlite_path).map_err(|err| {
-                crate::ImError::LocalStateUnavailable {
-                    detail: err.to_string(),
-                }
-            })?;
-            connection
-                .execute_batch(
-                    "CREATE TABLE IF NOT EXISTS im_core_meta (
-                        key TEXT PRIMARY KEY NOT NULL,
-                        value TEXT NOT NULL
-                    );
-                    INSERT OR REPLACE INTO im_core_meta (key, value)
-                    VALUES ('schema_version', '1');",
-                )
-                .map_err(|err| crate::ImError::LocalStateUnavailable {
-                    detail: err.to_string(),
-                })?;
-        }
+        let schema_version = initialize_local_state_schema(sqlite_path)?;
         Ok(LocalStateStatus {
             sqlite_path: sqlite_path.display().to_string(),
             initialized: true,
-            schema_version: Some(1),
+            schema_version,
         })
     }
 
@@ -102,7 +83,7 @@ impl<'a> CoreBootstrap<'a> {
         Ok(MigrationReport {
             sqlite_path: status.sqlite_path,
             from_version: status.schema_version,
-            to_version: 1,
+            to_version: status.schema_version.unwrap_or_default(),
             applied: Vec::new(),
         })
     }
@@ -131,4 +112,16 @@ fn check_path(kind: &str, path: &Path, writable: Option<bool>) -> PathCheck {
         readable,
         writable,
     }
+}
+
+#[cfg(feature = "sqlite")]
+fn initialize_local_state_schema(sqlite_path: &Path) -> crate::ImResult<Option<u32>> {
+    let connection = crate::internal::local_state::open_writable(sqlite_path)?;
+    let schema_version = crate::internal::local_state::schema::current_schema_version(&connection)?;
+    Ok(Some(schema_version as u32))
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn initialize_local_state_schema(_sqlite_path: &Path) -> crate::ImResult<Option<u32>> {
+    Ok(None)
 }

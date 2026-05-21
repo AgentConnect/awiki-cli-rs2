@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::fmt;
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = im_core::compat::local_state::SCHEMA_VERSION;
 
 pub type StoreResult<T> = Result<T, StoreError>;
 

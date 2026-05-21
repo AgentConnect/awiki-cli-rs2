@@ -1,0 +1,22 @@
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct MessageRecord {
+    pub(crate) msg_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) thread_id: String,
+    pub(crate) direction: i64,
+    pub(crate) sender_did: String,
+    pub(crate) receiver_did: String,
+    pub(crate) group_id: String,
+    pub(crate) group_did: String,
+    pub(crate) content_type: String,
+    pub(crate) content: String,
+    pub(crate) title: String,
+    pub(crate) server_seq: Option<i64>,
+    pub(crate) sent_at: String,
+    pub(crate) stored_at: String,
+    pub(crate) is_e2ee: bool,
+    pub(crate) is_read: bool,
+    pub(crate) sender_name: String,
+    pub(crate) metadata: String,
+    pub(crate) credential_name: String,
+}

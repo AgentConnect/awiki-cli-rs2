@@ -7,6 +7,7 @@ pub(crate) mod identity_replace_did_execution;
 pub(crate) mod identity_replace_did_plan;
 pub(crate) mod identity_runtime;
 pub(crate) mod identity_wire;
+pub(crate) mod local_state;
 pub(crate) mod message_runtime;
 pub(crate) mod profile_runtime;
 pub(crate) mod proof;

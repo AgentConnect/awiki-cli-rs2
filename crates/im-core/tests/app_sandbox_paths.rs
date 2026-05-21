@@ -31,7 +31,7 @@ mod app_sandbox_paths {
             fixture.sqlite_path().display().to_string()
         );
         assert!(status.initialized);
-        assert_eq!(status.schema_version, Some(1));
+        assert_eq!(status.schema_version, Some(12));
         assert!(fixture.sqlite_path().exists());
 
         let identities = core.identities().list().unwrap();
