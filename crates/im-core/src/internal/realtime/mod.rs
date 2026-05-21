@@ -2,6 +2,7 @@ pub(crate) mod dispatch;
 pub(crate) mod frame;
 pub(crate) mod heartbeat;
 pub(crate) mod notification;
+pub(crate) mod projection;
 pub(crate) mod reconnect;
 pub(crate) mod session_loop;
 pub(crate) mod shutdown;

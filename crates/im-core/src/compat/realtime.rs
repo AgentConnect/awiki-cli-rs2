@@ -18,6 +18,10 @@ pub use crate::internal::realtime::heartbeat::{
 #[doc(hidden)]
 pub use crate::internal::realtime::notification::LISTENER_WS_NOTIFICATION_QUEUE_CAPACITY;
 #[doc(hidden)]
+pub use crate::internal::realtime::projection::{
+    project_notification, NotificationProjection, NotificationProjectionRoute,
+};
+#[doc(hidden)]
 pub use crate::internal::realtime::reconnect::{
     ConsumeFinishedDecision, ContextSleep, SessionLoopBackoff, SessionLoopRetryDecision,
     SessionLoopRetryPhase, SESSION_RECONNECT_BASE_DELAY, SESSION_RECONNECT_MAX_DELAY,
