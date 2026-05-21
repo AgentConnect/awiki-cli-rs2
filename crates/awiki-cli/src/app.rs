@@ -410,6 +410,25 @@ impl App {
 
     pub fn run_id_register(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
+        let manager = self.identity_manager(&resolved);
+        if crate::im_core_adapter::use_im_core_mvp() {
+            let result = if self.globals.dry_run {
+                crate::im_core_adapter::identity::register_handle_plan_via_im_core(
+                    &manager,
+                    &resolved.did_domain,
+                    command,
+                    &self.globals.identity,
+                )?
+            } else {
+                crate::im_core_adapter::identity::register_handle_via_im_core(
+                    &resolved,
+                    &manager,
+                    command,
+                    &self.globals.identity,
+                )?
+            };
+            return self.render_identity_result("awiki-cli id register", &resolved, result);
+        }
         let params = identity::RegisterParams {
             identity_name: self.globals.identity.clone(),
             handle: string_flag(command, "handle"),
@@ -424,7 +443,6 @@ impl App {
             verification_timeout: 300,
             poll_interval_seconds: 5.0,
         };
-        let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             identity::register_plan(&manager, &resolved.did_domain, &params)
                 .map_err(identity_exit)?
@@ -530,6 +548,12 @@ impl App {
         let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             identity::refresh_token_plan(&manager, &self.globals.identity)
+        } else if crate::im_core_adapter::use_im_core_mvp() {
+            crate::im_core_adapter::auth::refresh_token_via_im_core(
+                &resolved,
+                &manager,
+                &self.globals.identity,
+            )?
         } else {
             identity::refresh_token(&resolved, &manager, &self.globals.identity)
                 .map_err(identity_exit)?
@@ -848,7 +872,7 @@ fn not_implemented_side_effect(command: &str) -> ExitError {
     )
 }
 
-fn identity_exit(err: IdentityError) -> ExitError {
+pub(crate) fn identity_exit(err: IdentityError) -> ExitError {
     match err {
         IdentityError::InvalidInput(message) => ExitError::new(
             "invalid_argument",

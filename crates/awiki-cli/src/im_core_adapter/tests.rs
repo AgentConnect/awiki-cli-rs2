@@ -55,11 +55,24 @@ fn register_handle_request_builds_sdk_dto() {
 }
 
 #[test]
-fn register_handle_request_rejects_legacy_registration_flows() {
-    let command = command_with_flags([("handle", "alice"), ("phone", "+15551234567")]);
-    let err = identity::register_handle_request(&command).unwrap_err();
-    assert_eq!(err.detail.code, "unsupported_capability");
-    assert!(err.detail.message.contains("Phase 1"));
+fn register_handle_bridge_preserves_legacy_registration_inputs() {
+    let command = command_with_flags([
+        ("handle", "alice"),
+        ("phone", "+15551234567"),
+        ("otp", "123456"),
+        ("invite-code", "invite-1"),
+        ("wait", "true"),
+    ]);
+
+    let bridge = identity::register_handle_bridge_request(&command, "alice-local").unwrap();
+
+    assert_eq!(bridge.sdk.local_alias.as_deref(), Some("alice-local"));
+    assert_eq!(bridge.sdk.requested_handle.as_str(), "alice");
+    assert_eq!(bridge.legacy.identity_name, "alice-local");
+    assert_eq!(bridge.legacy.phone, "+15551234567");
+    assert_eq!(bridge.legacy.otp, "123456");
+    assert_eq!(bridge.legacy.invite_code, "invite-1");
+    assert!(bridge.legacy.wait);
 }
 
 #[test]
