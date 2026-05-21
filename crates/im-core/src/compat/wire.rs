@@ -76,6 +76,30 @@ pub fn build_group_send_payload(
 }
 
 #[doc(hidden)]
+pub fn build_group_create_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupCreateRequest,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_create_payload(sender_did, request)
+}
+
+#[doc(hidden)]
+pub fn build_group_join_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupJoinRequest,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_join_payload(sender_did, request)
+}
+
+#[doc(hidden)]
+pub fn build_group_leave_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupLeaveRequest,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_leave_payload(sender_did, request)
+}
+
+#[doc(hidden)]
 pub fn build_group_get_rpc_params(sender_did: &str, group_did: &str) -> crate::ImResult<Value> {
     crate::internal::wire::group::build_group_get_rpc_params(sender_did, group_did)
 }

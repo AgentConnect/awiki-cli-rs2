@@ -18,32 +18,43 @@ impl App {
             ));
         }
         if !self.globals.dry_run {
-            let result = message::create_group(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::GroupCreateRequest {
-                    identity_name: self.globals.identity.clone(),
-                    name,
-                    description: string_flag(command, "description"),
-                    discoverability: string_flag_or(command, "discoverability", "private"),
-                    admission_mode: string_flag_or(command, "admission-mode", "open-join"),
-                    message_security_profile: string_flag_or(
-                        command,
-                        "message-security-profile",
-                        "transport-protected",
-                    ),
-                    e2ee: bool_flag(command, "e2ee")?.unwrap_or(false),
-                    slug: string_flag(command, "slug"),
-                    goal: string_flag(command, "goal"),
-                    rules: string_flag(command, "rules"),
-                    message_prompt: string_flag(command, "message-prompt"),
-                    doc_url: string_flag(command, "doc-url"),
-                    attachments_allowed: optional_bool(command, "attachments-allowed")?,
-                    max_members: string_flag(command, "max-members"),
-                    member_max_messages: optional_i64(command, "member-max-messages")?,
-                    member_max_total_chars: optional_i64(command, "member-max-total-chars")?,
-                },
-            )
+            let manager = self.identity_manager(&resolved);
+            let request = message::GroupCreateRequest {
+                identity_name: self.globals.identity.clone(),
+                name,
+                description: string_flag(command, "description"),
+                discoverability: string_flag_or(command, "discoverability", "private"),
+                admission_mode: string_flag_or(command, "admission-mode", "open-join"),
+                message_security_profile: string_flag_or(
+                    command,
+                    "message-security-profile",
+                    "transport-protected",
+                ),
+                e2ee: bool_flag(command, "e2ee")?.unwrap_or(false),
+                slug: string_flag(command, "slug"),
+                goal: string_flag(command, "goal"),
+                rules: string_flag(command, "rules"),
+                message_prompt: string_flag(command, "message-prompt"),
+                doc_url: string_flag(command, "doc-url"),
+                attachments_allowed: optional_bool(command, "attachments-allowed")?,
+                max_members: string_flag(command, "max-members"),
+                member_max_messages: optional_i64(command, "member-max-messages")?,
+                member_max_total_chars: optional_i64(command, "member-max-total-chars")?,
+            };
+            let create_uses_e2ee = request.e2ee
+                || request.message_security_profile.trim() == message::GROUP_E2EE_SECURITY_PROFILE;
+            let result = if crate::im_core_adapter::use_im_core_mvp() && !create_uses_e2ee {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                crate::im_core_adapter::groups::create_group_via_im_core(
+                    &resolved, &manager, &client, request,
+                )
+            } else {
+                message::create_group(&resolved, &manager, request)
+            }
             .map_err(group_exit)?;
             return self.render_group_result("awiki-cli group create", &resolved, result);
         }
@@ -141,15 +152,24 @@ impl App {
             "Usage: awiki-cli group join --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            let result = message::join_group(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::GroupJoinRequest {
-                    identity_name: self.globals.identity.clone(),
-                    group,
-                    reason_text: string_flag(command, "reason"),
-                },
-            )
+            let manager = self.identity_manager(&resolved);
+            let request = message::GroupJoinRequest {
+                identity_name: self.globals.identity.clone(),
+                group,
+                reason_text: string_flag(command, "reason"),
+            };
+            let result = if crate::im_core_adapter::use_im_core_mvp() {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                crate::im_core_adapter::groups::join_group_via_im_core(
+                    &resolved, &manager, &client, request,
+                )
+            } else {
+                message::join_group(&resolved, &manager, request)
+            }
             .map_err(group_exit)?;
             return self.render_group_result("awiki-cli group join", &resolved, result);
         }
@@ -274,16 +294,33 @@ impl App {
             "Usage: awiki-cli group leave --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            let result = message::leave_group(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::GroupLeaveRequest {
-                    identity_name: self.globals.identity.clone(),
-                    group,
-                    reason_text: string_flag(command, "reason"),
-                    e2ee: bool_flag(command, "e2ee")?.unwrap_or(false),
-                },
-            )
+            let manager = self.identity_manager(&resolved);
+            let request = message::GroupLeaveRequest {
+                identity_name: self.globals.identity.clone(),
+                group,
+                reason_text: string_flag(command, "reason"),
+                e2ee: bool_flag(command, "e2ee")?.unwrap_or(false),
+            };
+            let result = if crate::im_core_adapter::use_im_core_mvp() && !request.e2ee {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                match crate::im_core_adapter::groups::leave_group_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    request.clone(),
+                ) {
+                    Err(message::MessageError::GroupNotSupported) => {
+                        message::leave_group(&resolved, &manager, request)
+                    }
+                    result => result,
+                }
+            } else {
+                message::leave_group(&resolved, &manager, request)
+            }
             .map_err(group_exit)?;
             return self.render_group_result("awiki-cli group leave", &resolved, result);
         }

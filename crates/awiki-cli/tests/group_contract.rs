@@ -1,5 +1,6 @@
 use awiki_cli::config::Paths;
 use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
+use awiki_cli::store::{self, GroupRecord};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -492,6 +493,270 @@ fn group_reads_im_core_mvp_route_through_group_service_bridge() {
 }
 
 #[test]
+fn group_lifecycle_im_core_mvp_routes_plain_create_join_and_leave() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice =
+        register_generated_group_identity(&manager, "alice-group-life-mvp", "alice", "jwt-alice");
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group_lifecycle";
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {
+                "display_name": "Lifecycle Group"
+            },
+            "member_role": "owner",
+            "member_status": "active",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "members": [{
+                "member_did": alice.did,
+                "role": "owner",
+                "status": "active"
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {
+                "display_name": "Lifecycle Group"
+            },
+            "member_role": "member",
+            "member_status": "active",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "members": [{
+                "member_did": alice.did,
+                "role": "member",
+                "status": "active"
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "left": true,
+            "source": "remote_http"
+        }))),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let create = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-life-mvp",
+            "group",
+            "create",
+            "--name",
+            "Lifecycle Group",
+            "--description",
+            "Plain group",
+            "--discoverability",
+            "public",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(create["summary"], format!("Created group {group_did}"));
+    assert_eq!(create["data"]["group"]["group_did"], group_did);
+    assert_eq!(create["data"]["members"][0]["member_did"], alice.did);
+
+    let join = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-life-mvp",
+            "group",
+            "join",
+            "--group",
+            group_did,
+            "--reason",
+            "  join me  ",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(join["summary"], format!("Joined group {group_did}"));
+    assert_eq!(join["data"]["group"]["member_role"], "member");
+
+    let leave = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-life-mvp",
+            "group",
+            "leave",
+            "--group",
+            group_did,
+            "--reason",
+            "ignored by plain leave",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(leave["summary"], format!("Left group {group_did}"));
+    assert_eq!(leave["data"]["group"], group_did);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 7);
+    let bodies = requests
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .collect::<Vec<_>>();
+    let methods = bodies
+        .iter()
+        .map(|body| body["method"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        vec![
+            "group.create",
+            "group.get",
+            "group.list_members",
+            "group.join",
+            "group.get",
+            "group.list_members",
+            "group.leave",
+        ]
+    );
+    assert_eq!(bodies[0]["params"]["meta"]["profile"], "anp.group.base.v1");
+    assert_eq!(
+        bodies[0]["params"]["meta"]["target"],
+        json!({"kind":"service","did":"did:wba:127.0.0.1"})
+    );
+    assert_eq!(
+        bodies[0]["params"]["body"]["group_profile"]["display_name"],
+        "Lifecycle Group"
+    );
+    assert_eq!(
+        bodies[0]["params"]["body"]["group_policy"]["message_security_profile"],
+        "transport-protected"
+    );
+    assert_eq!(
+        bodies[0]["params"]["auth"]["scheme"],
+        "anp-rfc9421-origin-proof-v1"
+    );
+    assert_eq!(bodies[3]["params"]["body"]["reason_text"], "join me");
+    assert_eq!(
+        bodies[3]["params"]["meta"]["target"],
+        json!({"kind":"group","did":group_did})
+    );
+    assert_eq!(bodies[6]["params"]["body"], json!({}));
+    assert_eq!(
+        bodies[6]["params"]["auth"]["scheme"],
+        "anp-rfc9421-origin-proof-v1"
+    );
+
+    let db = store::open(&test_paths(workspace.path())).expect("open group store");
+    let snapshot = store::get_group_snapshot(&db, &alice.did, group_did)
+        .expect("cached group snapshot after leave");
+    assert_eq!(snapshot["membership_status"], "left");
+}
+
+#[test]
+fn group_lifecycle_im_core_mvp_keeps_e2ee_create_on_legacy_path() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    register_generated_group_identity(&manager, "alice-group-e2ee-legacy", "alice", "jwt-alice");
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group_e2ee";
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_policy": {
+                "message_security_profile": "group-e2ee"
+            },
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "members": [],
+            "total": 0,
+            "source": "remote_http"
+        }))),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let create = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-e2ee-legacy",
+            "group",
+            "create",
+            "--name",
+            "Secure Group",
+            "--e2ee",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(create["summary"], format!("Created group {group_did}"));
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    let bodies = requests
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(bodies[0]["method"], "group.create");
+    assert_eq!(
+        bodies[0]["params"]["body"]["group_policy"]["message_security_profile"],
+        "group-e2ee"
+    );
+    assert_eq!(
+        bodies[0]["params"]["auth"]["scheme"],
+        "anp-rfc9421-origin-proof-v1"
+    );
+    assert_eq!(bodies[1]["method"], "group.get");
+    assert_eq!(bodies[2]["method"], "group.list_members");
+}
+
+#[test]
+fn group_lifecycle_im_core_mvp_preserves_owner_cannot_leave_guard() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice =
+        register_generated_group_identity(&manager, "alice-owner-guard-mvp", "alice", "jwt-alice");
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_owner_guard";
+    write_group_config(workspace.path(), "http://127.0.0.1:9");
+    seed_group_snapshot(
+        workspace.path(),
+        &alice.did,
+        &alice.identity_name,
+        group_did,
+        "owner",
+    );
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-owner-guard-mvp",
+            "group",
+            "leave",
+            "--group",
+            group_did,
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    );
+
+    assert_code(&output, 2);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(&envelope["error"]["message"], "group owner cannot leave");
+}
+
+#[test]
 fn group_e2ee_leave_loads_identity_before_live_leave_request_flow() {
     let workspace = TempDir::new().expect("workspace");
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
@@ -918,6 +1183,33 @@ fn write_group_config(workspace: &Path, base_url: &str) {
         format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
     )
     .unwrap();
+}
+
+fn seed_group_snapshot(
+    workspace: &Path,
+    owner_did: &str,
+    credential_name: &str,
+    group_did: &str,
+    role: &str,
+) {
+    let paths = test_paths(workspace);
+    let db = store::open(&paths).expect("open group store");
+    store::ensure_schema(&db).expect("ensure group schema");
+    store::upsert_group(
+        &db,
+        GroupRecord {
+            owner_did: owner_did.to_string(),
+            group_id: group_did.to_string(),
+            group_did: group_did.to_string(),
+            name: "Guard Group".to_string(),
+            group_owner_did: owner_did.to_string(),
+            my_role: role.to_string(),
+            membership_status: "active".to_string(),
+            credential_name: credential_name.to_string(),
+            ..GroupRecord::default()
+        },
+    )
+    .expect("seed group snapshot");
 }
 
 fn path_string(path: &Path) -> String {

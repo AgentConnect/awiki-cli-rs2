@@ -723,7 +723,7 @@ pub(crate) fn persist_group_send_result(
     result
 }
 
-fn mark_cached_group_left(
+pub(crate) fn mark_cached_group_left(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
@@ -1108,7 +1108,7 @@ fn insert_trimmed_string(patch: &mut Map<String, Value>, key: &str, value: &str)
     }
 }
 
-fn is_active_group_owner(snapshot: &Value) -> bool {
+pub(crate) fn is_active_group_owner(snapshot: &Value) -> bool {
     let role = default_string(
         &string_value(snapshot.get("my_role")),
         &string_value(snapshot.get("member_role")),

@@ -9,8 +9,9 @@ pub use crate::directory::{
 };
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::{
-    GroupListRequest, GroupMember, GroupMembersRequest, GroupMessagesRequest, GroupReadResult,
-    GroupService, GroupSnapshot, GroupSummary,
+    GroupCreateRequest, GroupJoinRequest, GroupLeaveRequest, GroupListRequest, GroupMember,
+    GroupMembersRequest, GroupMessagesRequest, GroupReadResult, GroupService, GroupSnapshot,
+    GroupSummary,
 };
 pub use crate::identity::{
     ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,

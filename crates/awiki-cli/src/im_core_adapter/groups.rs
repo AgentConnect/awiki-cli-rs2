@@ -1,15 +1,158 @@
 use im_core::prelude::{
-    AuthScope, Cursor, GroupListRequest, GroupMembersRequest, GroupMessagesRequest, GroupRef,
-    PageLimit, SessionBundle,
+    AuthScope, Cursor, Did, GroupCreateRequest, GroupJoinRequest, GroupLeaveRequest,
+    GroupListRequest, GroupMembersRequest, GroupMessagesRequest, GroupRef, PageLimit,
+    SessionBundle,
 };
 use serde_json::{json, Value};
 
 use crate::authsdk::Session;
 use crate::config::Resolved;
-use crate::identity::Manager;
+use crate::identity::{types::StoredIdentity, Manager};
 use crate::message::{self, MessageError, WSProxyTransport};
 use crate::runtime;
 use crate::transportcfg::Profile;
+
+pub fn create_group_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    request: message::GroupCreateRequest,
+) -> Result<message::CommandResult, MessageError> {
+    if request.name.trim().is_empty() {
+        return Err(MessageError::GroupRequired);
+    }
+    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let bridge_result = im_core::compat::groups::create_group_with_bridge(
+        client,
+        group_session_provider(resolved, manager, client, &record),
+        group_transport(resolved, manager, &record, Profile::RpcDefault),
+        im_core::compat::groups::GroupCreateBridgeRequest {
+            request: group_create_request(request, &resolved.anp_service_did)?,
+            credentials: group_lifecycle_credentials(&record),
+        },
+    )
+    .map_err(im_error_to_message_error)?;
+    let raw = bridge_result.raw;
+    let group_did = message::group_did_from_result(&raw);
+    let mut warnings = group_control_warnings(resolved, bridge_result.warnings);
+    warnings.extend(message::sync_group_state(
+        resolved, manager, &record, &group_did, true,
+    ));
+    let snapshot = message::cached_group_snapshot(resolved, &record, &group_did)
+        .or_else(|| message::normalize_group_snapshot(&raw))
+        .unwrap_or(Value::Null);
+    let members =
+        message::cached_group_members(resolved, &record, &group_did, 100).unwrap_or_default();
+    Ok(message::CommandResult {
+        data: json!({
+            "group": snapshot,
+            "members": members,
+            "delivery": raw,
+            "source": message::group_control_source(&raw),
+        }),
+        summary: format!("Created group {group_did}"),
+        warnings: message::compact_warnings(warnings),
+    })
+}
+
+pub fn join_group_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    request: message::GroupJoinRequest,
+) -> Result<message::CommandResult, MessageError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageError::GroupRequired);
+    }
+    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let requested_group = request.group.clone();
+    let bridge_result = im_core::compat::groups::join_group_with_bridge(
+        client,
+        group_session_provider(resolved, manager, client, &record),
+        group_transport(resolved, manager, &record, Profile::RpcDefault),
+        im_core::compat::groups::GroupJoinBridgeRequest {
+            request: GroupJoinRequest {
+                group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+                reason_text: optional_string(&request.reason_text),
+            },
+            credentials: group_lifecycle_credentials(&record),
+        },
+    )
+    .map_err(im_error_to_message_error)?;
+    let raw = bridge_result.raw;
+    let group_did = default_string(&message::group_did_from_result(&raw), &requested_group);
+    let mut warnings = group_control_warnings(resolved, bridge_result.warnings);
+    warnings.extend(message::sync_group_state(
+        resolved, manager, &record, &group_did, true,
+    ));
+    let snapshot = message::cached_group_snapshot(resolved, &record, &group_did)
+        .or_else(|| message::normalize_group_snapshot(&raw))
+        .unwrap_or_else(|| json!({ "group_did": group_did }));
+    Ok(message::CommandResult {
+        data: json!({
+            "group": snapshot,
+            "delivery": raw,
+            "source": message::group_control_source(&raw),
+        }),
+        summary: format!("Joined group {group_did}"),
+        warnings: message::compact_warnings(warnings),
+    })
+}
+
+pub fn leave_group_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    request: message::GroupLeaveRequest,
+) -> Result<message::CommandResult, MessageError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageError::GroupRequired);
+    }
+    if request.e2ee {
+        return Err(MessageError::GroupNotSupported);
+    }
+    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let cached_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
+    if cached_snapshot
+        .as_ref()
+        .is_some_and(message::is_active_group_owner)
+    {
+        return Err(MessageError::GroupOwnerCannotLeave);
+    }
+    if cached_snapshot
+        .as_ref()
+        .is_some_and(group_snapshot_uses_e2ee)
+    {
+        return Err(MessageError::GroupNotSupported);
+    }
+    let bridge_result = im_core::compat::groups::leave_group_with_bridge(
+        client,
+        group_session_provider(resolved, manager, client, &record),
+        group_transport(resolved, manager, &record, Profile::RpcDefault),
+        im_core::compat::groups::GroupLeaveBridgeRequest {
+            request: GroupLeaveRequest {
+                group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            },
+            credentials: group_lifecycle_credentials(&record),
+        },
+    )
+    .map_err(im_error_to_message_error)?;
+    let raw = bridge_result.raw;
+    let mut warnings = group_control_warnings(resolved, bridge_result.warnings);
+    warnings.extend(message::mark_cached_group_left(
+        resolved,
+        &record,
+        &request.group,
+    ));
+    Ok(message::CommandResult {
+        data: json!({
+            "delivery": raw,
+            "group": request.group,
+        }),
+        summary: format!("Left group {}", request.group),
+        warnings: message::compact_warnings(warnings),
+    })
+}
 
 pub fn get_group_via_im_core(
     resolved: &Resolved,
@@ -22,17 +165,8 @@ pub fn get_group_via_im_core(
     let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let bridge_result = im_core::compat::groups::get_group_with_bridge(
         client,
-        GroupReadSessionProvider {
-            subject: client.did().clone(),
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-        GroupReadLegacyTransport {
-            resolved,
-            manager,
-            record: record.clone(),
-        },
+        group_session_provider(resolved, manager, client, &record),
+        group_transport(resolved, manager, &record, Profile::RpcReadHeavy),
         im_core::compat::groups::GroupGetBridgeRequest { group: group_ref },
     )
     .map_err(im_error_to_message_error)?;
@@ -65,17 +199,8 @@ pub fn list_groups_via_im_core(
     };
     let bridge_result = im_core::compat::groups::list_groups_with_bridge(
         client,
-        GroupReadSessionProvider {
-            subject: client.did().clone(),
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-        GroupReadLegacyTransport {
-            resolved,
-            manager,
-            record,
-        },
+        group_session_provider(resolved, manager, client, &record),
+        group_transport(resolved, manager, &record, Profile::RpcReadHeavy),
         im_core::compat::groups::GroupListBridgeRequest { request },
     )
     .map_err(im_error_to_message_error)?;
@@ -108,17 +233,8 @@ pub fn group_members_via_im_core(
     };
     let bridge_result = im_core::compat::groups::list_group_members_with_bridge(
         client,
-        GroupReadSessionProvider {
-            subject: client.did().clone(),
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-        GroupReadLegacyTransport {
-            resolved,
-            manager,
-            record: record.clone(),
-        },
+        group_session_provider(resolved, manager, client, &record),
+        group_transport(resolved, manager, &record, Profile::RpcReadHeavy),
         im_core::compat::groups::GroupMembersBridgeRequest { request },
     )
     .map_err(im_error_to_message_error)?;
@@ -212,7 +328,7 @@ fn group_messages_websocket(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    record: &crate::identity::types::StoredIdentity,
+    record: &StoredIdentity,
     request: GroupMessagesRequest,
 ) -> Result<GroupMessagesOutcome, MessageError> {
     let legacy_request = message::GroupMessagesRequest {
@@ -269,25 +385,82 @@ fn list_group_messages_http(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    record: &crate::identity::types::StoredIdentity,
+    record: &StoredIdentity,
     request: GroupMessagesRequest,
 ) -> Result<im_core::groups::GroupReadResult, MessageError> {
     im_core::compat::groups::list_group_messages_with_bridge(
         client,
-        GroupReadSessionProvider {
-            subject: client.did().clone(),
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-        GroupReadLegacyTransport {
-            resolved,
-            manager,
-            record: record.clone(),
-        },
+        group_session_provider(resolved, manager, client, record),
+        group_transport(resolved, manager, record, Profile::RpcReadHeavy),
         im_core::compat::groups::GroupMessagesBridgeRequest { request },
     )
     .map_err(im_error_to_message_error)
+}
+
+fn group_session_provider<'a>(
+    resolved: &'a Resolved,
+    manager: &'a Manager,
+    client: &im_core::ImClient,
+    record: &StoredIdentity,
+) -> GroupReadSessionProvider<'a> {
+    GroupReadSessionProvider {
+        subject: client.did().clone(),
+        resolved,
+        manager,
+        record: record.clone(),
+    }
+}
+
+fn group_transport<'a>(
+    resolved: &'a Resolved,
+    manager: &'a Manager,
+    record: &StoredIdentity,
+    profile: Profile,
+) -> GroupReadLegacyTransport<'a> {
+    GroupReadLegacyTransport {
+        resolved,
+        manager,
+        record: record.clone(),
+        profile,
+    }
+}
+
+fn group_lifecycle_credentials(
+    record: &StoredIdentity,
+) -> im_core::compat::groups::GroupLifecycleCredentials {
+    im_core::compat::groups::GroupLifecycleCredentials {
+        identity_name: record.identity_name.clone(),
+        did_document: record.did_document.clone(),
+        key1_private_pem: record.key1_private_pem.clone(),
+    }
+}
+
+fn group_create_request(
+    request: message::GroupCreateRequest,
+    service_did: &str,
+) -> Result<GroupCreateRequest, MessageError> {
+    let service_did = service_did.trim();
+    if service_did.is_empty() {
+        return Err(MessageError::MissingMessageServiceDid);
+    }
+    Ok(GroupCreateRequest {
+        name: request.name,
+        description: optional_string(&request.description),
+        discoverability: optional_string(&request.discoverability),
+        admission_mode: optional_string(&request.admission_mode),
+        message_security_profile: optional_string(&request.message_security_profile),
+        e2ee: request.e2ee,
+        slug: optional_string(&request.slug),
+        goal: optional_string(&request.goal),
+        rules: optional_string(&request.rules),
+        message_prompt: optional_string(&request.message_prompt),
+        doc_url: optional_string(&request.doc_url),
+        attachments_allowed: request.attachments_allowed,
+        max_members: optional_string(&request.max_members),
+        member_max_messages: request.member_max_messages,
+        member_max_total_chars: request.member_max_total_chars,
+        service_did: Did::parse(service_did).map_err(im_error_to_message_error)?,
+    })
 }
 
 fn group_messages_local_cache_result(
@@ -312,7 +485,7 @@ struct GroupReadSessionProvider<'a> {
     subject: im_core::prelude::Did,
     resolved: &'a Resolved,
     manager: &'a Manager,
-    record: crate::identity::types::StoredIdentity,
+    record: StoredIdentity,
 }
 
 impl im_core::compat::groups::BridgeGroupSessionProvider for GroupReadSessionProvider<'_> {
@@ -331,7 +504,8 @@ impl im_core::compat::groups::BridgeGroupSessionProvider for GroupReadSessionPro
 struct GroupReadLegacyTransport<'a> {
     resolved: &'a Resolved,
     manager: &'a Manager,
-    record: crate::identity::types::StoredIdentity,
+    record: StoredIdentity,
+    profile: Profile,
 }
 
 impl im_core::compat::groups::BridgeAuthenticatedRpcTransport for GroupReadLegacyTransport<'_> {
@@ -345,6 +519,7 @@ impl im_core::compat::groups::BridgeAuthenticatedRpcTransport for GroupReadLegac
             self.resolved,
             self.manager,
             &self.record,
+            self.profile,
             endpoint,
             method,
             params,
@@ -356,7 +531,8 @@ impl im_core::compat::groups::BridgeAuthenticatedRpcTransport for GroupReadLegac
 fn send_authenticated_group_read_rpc_with_fallback(
     resolved: &Resolved,
     manager: &Manager,
-    record: &crate::identity::types::StoredIdentity,
+    record: &StoredIdentity,
+    profile: Profile,
     endpoint: &str,
     method: &str,
     params: Value,
@@ -365,6 +541,7 @@ fn send_authenticated_group_read_rpc_with_fallback(
         resolved,
         manager,
         record,
+        profile,
         endpoint,
         method,
         params.clone(),
@@ -376,6 +553,7 @@ fn send_authenticated_group_read_rpc_with_fallback(
                 resolved,
                 manager,
                 refreshed.as_ref().unwrap_or(record),
+                profile,
                 endpoint,
                 method,
                 params,
@@ -391,26 +569,21 @@ fn send_authenticated_group_read_rpc_with_fallback(
 fn send_authenticated_group_read_rpc(
     resolved: &Resolved,
     manager: &Manager,
-    record: &crate::identity::types::StoredIdentity,
+    record: &StoredIdentity,
+    profile: Profile,
     endpoint: &str,
     method: &str,
     params: Value,
 ) -> Result<Value, MessageError> {
     let mut auth = auth_session(resolved, manager, record)?;
     let client = message::Client::new(resolved)?;
-    client.authenticated_rpc_call_profile(
-        Profile::RpcReadHeavy,
-        endpoint,
-        method,
-        params,
-        &mut auth,
-    )
+    client.authenticated_rpc_call_profile(profile, endpoint, method, params, &mut auth)
 }
 
 fn auth_session(
     resolved: &Resolved,
     manager: &Manager,
-    record: &crate::identity::types::StoredIdentity,
+    record: &StoredIdentity,
 ) -> Result<Session, MessageError> {
     message::auth_session(resolved, manager, record)
 }
@@ -448,6 +621,61 @@ fn optional_cursor(value: &str) -> Result<Option<Cursor>, MessageError> {
     Cursor::parse(value)
         .map(Some)
         .map_err(im_error_to_message_error)
+}
+
+fn optional_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn default_string(value: &str, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn group_snapshot_uses_e2ee(snapshot: &Value) -> bool {
+    if snapshot.is_null() {
+        return false;
+    }
+    if value_string(snapshot.get("message_security_profile"))
+        == message::GROUP_E2EE_SECURITY_PROFILE
+    {
+        return true;
+    }
+    if snapshot
+        .get("group_policy")
+        .and_then(Value::as_object)
+        .map(|policy| value_string(policy.get("message_security_profile")))
+        .is_some_and(|profile| profile == message::GROUP_E2EE_SECURITY_PROFILE)
+    {
+        return true;
+    }
+    decoded_metadata(snapshot)
+        .as_ref()
+        .map(|metadata| value_string(metadata.get("message_security_profile")))
+        .is_some_and(|profile| profile == message::GROUP_E2EE_SECURITY_PROFILE)
+}
+
+fn decoded_metadata(snapshot: &Value) -> Option<Value> {
+    snapshot
+        .get("metadata")
+        .and_then(Value::as_str)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+}
+
+fn value_string(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 fn im_error_to_message_error(err: im_core::ImError) -> MessageError {

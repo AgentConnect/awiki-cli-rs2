@@ -29,6 +29,88 @@ pub(crate) fn build_group_send_payload(
     })
 }
 
+pub(crate) fn build_group_create_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupCreateRequest,
+) -> crate::ImResult<DirectPayload> {
+    let mut profile = Map::new();
+    insert_required_trimmed_string(&mut profile, "display_name", &request.name, "name")?;
+    insert_optional_trimmed_string(&mut profile, "description", request.description.as_deref());
+    insert_optional_trimmed_string(
+        &mut profile,
+        "discoverability",
+        request.discoverability.as_deref(),
+    );
+    insert_optional_trimmed_string(&mut profile, "slug", request.slug.as_deref());
+    insert_optional_trimmed_string(&mut profile, "goal", request.goal.as_deref());
+    insert_optional_trimmed_string(&mut profile, "rules", request.rules.as_deref());
+    insert_optional_trimmed_string(
+        &mut profile,
+        "message_prompt",
+        request.message_prompt.as_deref(),
+    );
+    insert_optional_trimmed_string(&mut profile, "doc_url", request.doc_url.as_deref());
+
+    let mut policy = group_policy_patch(
+        request.admission_mode.as_deref(),
+        request.attachments_allowed,
+        request.max_members.as_deref(),
+        request.member_max_messages,
+        request.member_max_total_chars,
+    );
+    if policy.is_empty() {
+        policy = group_policy_patch(Some("open-join"), Some(true), Some("500"), None, None);
+    }
+    if let Some(security_profile) =
+        normalized_security_profile(request.e2ee, request.message_security_profile.as_deref())
+    {
+        policy.insert(
+            "message_security_profile".to_string(),
+            Value::String(security_profile.clone()),
+        );
+        policy.insert(
+            "bootstrap_security_profile".to_string(),
+            Value::String(security_profile),
+        );
+    }
+
+    Ok(DirectPayload {
+        method: "group.create".to_string(),
+        meta: signed_group_meta(
+            sender_did,
+            "service",
+            request.service_did.as_str(),
+            "application/json",
+            false,
+        ),
+        body: json!({
+            "group_profile": profile,
+            "group_policy": policy,
+        }),
+    })
+}
+
+pub(crate) fn build_group_join_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupJoinRequest,
+) -> crate::ImResult<DirectPayload> {
+    let mut body = Map::new();
+    insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
+    build_group_lifecycle_payload(
+        sender_did,
+        request.group.as_str(),
+        "group.join",
+        Value::Object(body),
+    )
+}
+
+pub(crate) fn build_group_leave_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupLeaveRequest,
+) -> crate::ImResult<DirectPayload> {
+    build_group_lifecycle_payload(sender_did, request.group.as_str(), "group.leave", json!({}))
+}
+
 pub(crate) fn build_group_get_rpc_params(
     sender_did: &str,
     group_did: &str,
@@ -106,6 +188,20 @@ fn require_group(group_did: &str) -> crate::ImResult<&str> {
     Ok(group_did)
 }
 
+fn build_group_lifecycle_payload(
+    sender_did: &str,
+    group_did: &str,
+    method: &str,
+    body: Value,
+) -> crate::ImResult<DirectPayload> {
+    let group_did = require_group(group_did)?;
+    Ok(DirectPayload {
+        method: method.to_string(),
+        meta: signed_group_meta(sender_did, "group", group_did, "application/json", false),
+        body,
+    })
+}
+
 fn signed_group_meta(
     sender_did: &str,
     target_kind: &str,
@@ -136,6 +232,86 @@ fn signed_group_meta(
         Value::String(content_type.to_string()),
     );
     Value::Object(meta)
+}
+
+fn group_policy_patch(
+    admission_mode: Option<&str>,
+    attachments_allowed: Option<bool>,
+    max_members: Option<&str>,
+    member_max_messages: Option<i64>,
+    member_max_total_chars: Option<i64>,
+) -> Map<String, Value> {
+    let mut patch = Map::new();
+    insert_optional_trimmed_string(&mut patch, "admission_mode", admission_mode);
+    if let Some(value) = attachments_allowed {
+        patch.insert("attachments_allowed".to_string(), Value::Bool(value));
+    }
+    insert_optional_trimmed_string(&mut patch, "max_members", max_members);
+    if let Some(value) = member_max_messages {
+        patch.insert("member_max_messages".to_string(), json!(value));
+    }
+    if let Some(value) = member_max_total_chars {
+        patch.insert("member_max_total_chars".to_string(), json!(value));
+    }
+    if patch.is_empty() {
+        return patch;
+    }
+    patch.insert(
+        "message_security_profile".to_string(),
+        Value::String("transport-protected".to_string()),
+    );
+    patch.insert(
+        "bootstrap_security_profile".to_string(),
+        Value::String("transport-protected".to_string()),
+    );
+    patch.insert(
+        "permissions".to_string(),
+        json!({
+            "send": "member",
+            "add": "admin",
+            "remove": "admin",
+            "update_profile": "admin",
+            "update_policy": "owner",
+        }),
+    );
+    patch
+}
+
+fn normalized_security_profile(
+    e2ee: bool,
+    message_security_profile: Option<&str>,
+) -> Option<String> {
+    if e2ee {
+        return Some("group-e2ee".to_string());
+    }
+    match message_security_profile.map(str::trim).unwrap_or_default() {
+        "" | "transport-protected" => None,
+        value => Some(value.to_string()),
+    }
+}
+
+fn insert_required_trimmed_string(
+    patch: &mut Map<String, Value>,
+    key: &str,
+    value: &str,
+    field: &'static str,
+) -> crate::ImResult<()> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some(field.to_string()),
+            format!("{field} must not be empty"),
+        ));
+    }
+    patch.insert(key.to_string(), Value::String(value.to_string()));
+    Ok(())
+}
+
+fn insert_optional_trimmed_string(patch: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+    let value = value.map(str::trim).unwrap_or_default();
+    if !value.is_empty() {
+        patch.insert(key.to_string(), Value::String(value.to_string()));
+    }
 }
 
 fn group_base_meta(sender_did: &str, target: Option<(&str, &str)>) -> Value {

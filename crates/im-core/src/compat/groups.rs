@@ -22,6 +22,31 @@ pub struct GroupMessagesBridgeRequest {
     pub request: crate::groups::GroupMessagesRequest,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupCreateBridgeRequest {
+    pub request: crate::groups::GroupCreateRequest,
+    pub credentials: GroupLifecycleCredentials,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupJoinBridgeRequest {
+    pub request: crate::groups::GroupJoinRequest,
+    pub credentials: GroupLifecycleCredentials,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupLeaveBridgeRequest {
+    pub request: crate::groups::GroupLeaveRequest,
+    pub credentials: GroupLifecycleCredentials,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupLifecycleCredentials {
+    pub identity_name: String,
+    pub did_document: Option<Value>,
+    pub key1_private_pem: String,
+}
+
 pub trait BridgeGroupSessionProvider {
     fn ensure_group_messaging_session(&self) -> crate::ImResult<crate::auth::SessionBundle>;
 }
@@ -33,6 +58,63 @@ pub trait BridgeAuthenticatedRpcTransport {
         method: &str,
         params: Value,
     ) -> crate::ImResult<Value>;
+}
+
+#[doc(hidden)]
+pub fn create_group_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: GroupCreateBridgeRequest,
+) -> crate::ImResult<crate::groups::GroupReadResult>
+where
+    P: BridgeGroupSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        client,
+        CompatGroupSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .create(request.request, Some(request.credentials.into_internal()))
+}
+
+#[doc(hidden)]
+pub fn join_group_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: GroupJoinBridgeRequest,
+) -> crate::ImResult<crate::groups::GroupReadResult>
+where
+    P: BridgeGroupSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        client,
+        CompatGroupSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .join(request.request, Some(request.credentials.into_internal()))
+}
+
+#[doc(hidden)]
+pub fn leave_group_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: GroupLeaveBridgeRequest,
+) -> crate::ImResult<crate::groups::GroupReadResult>
+where
+    P: BridgeGroupSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        client,
+        CompatGroupSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .leave(request.request, Some(request.credentials.into_internal()))
 }
 
 #[doc(hidden)]
@@ -153,5 +235,15 @@ where
         params: Value,
     ) -> crate::ImResult<Value> {
         self.0.authenticated_rpc(endpoint, method, params)
+    }
+}
+
+impl GroupLifecycleCredentials {
+    fn into_internal(self) -> crate::internal::group_runtime::lifecycle::GroupLifecycleCredentials {
+        crate::internal::group_runtime::lifecycle::GroupLifecycleCredentials {
+            identity_name: self.identity_name,
+            did_document: self.did_document,
+            key1_private_pem: self.key1_private_pem,
+        }
     }
 }

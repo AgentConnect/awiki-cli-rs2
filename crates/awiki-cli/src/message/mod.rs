@@ -75,8 +75,9 @@ pub use group_service::{
 };
 pub(crate) use group_service::{
     cached_group_members, cached_group_messages, cached_group_snapshot, group_control_source,
-    group_control_warnings, normalize_group_snapshot, persist_group_members,
-    persist_group_messages, persist_group_snapshot, values_from_array,
+    group_control_warnings, group_did_from_result, is_active_group_owner, mark_cached_group_left,
+    normalize_group_snapshot, persist_group_members, persist_group_messages,
+    persist_group_snapshot, sync_group_state, values_from_array,
 };
 pub use group_wire::{
     build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_info_rpc_params,

@@ -8,6 +8,37 @@ pub struct GroupReadResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupCreateRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub discoverability: Option<String>,
+    pub admission_mode: Option<String>,
+    pub message_security_profile: Option<String>,
+    pub e2ee: bool,
+    pub slug: Option<String>,
+    pub goal: Option<String>,
+    pub rules: Option<String>,
+    pub message_prompt: Option<String>,
+    pub doc_url: Option<String>,
+    pub attachments_allowed: Option<bool>,
+    pub max_members: Option<String>,
+    pub member_max_messages: Option<i64>,
+    pub member_max_total_chars: Option<i64>,
+    pub service_did: crate::ids::Did,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupJoinRequest {
+    pub group: crate::ids::GroupRef,
+    pub reason_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupLeaveRequest {
+    pub group: crate::ids::GroupRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupListRequest {
     pub limit: crate::ids::PageLimit,
 }

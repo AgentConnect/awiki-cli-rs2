@@ -7,6 +7,42 @@ impl<'a> GroupService<'a> {
         Self { client }
     }
 
+    pub fn create(
+        &self,
+        request: super::GroupCreateRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .create(request, None)
+    }
+
+    pub fn join(
+        &self,
+        request: super::GroupJoinRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .join(request, None)
+    }
+
+    pub fn leave(
+        &self,
+        request: super::GroupLeaveRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .leave(request, None)
+    }
+
     pub fn get(&self, group: crate::ids::GroupRef) -> crate::ImResult<super::GroupReadResult> {
         crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
