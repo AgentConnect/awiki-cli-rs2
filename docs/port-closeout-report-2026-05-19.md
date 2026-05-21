@@ -249,10 +249,10 @@ or platform-service dependency was introduced by the final site selector batch.
 
 The active guideline evolved during the task. The current repository policy is:
 
-- Rust source files should target 2500 non-generated lines by default.
-- Rust test files should target 3000 non-generated lines by default.
-- Files above the applicable source/test limit may be allowed, but must be
-  documented in `docs/file-size-exceptions.md` with a reason.
+- Rust source files should target at most 2500 non-generated lines by default.
+- Rust test files should target at most 3000 non-generated lines by default.
+- Files above the applicable source/test limit are allowed as exceptions when
+  documented in `docs/file-size-exceptions.md` with a concrete reason.
 - During late system-test-fix work, file-size cleanup was intentionally
   deprioritized so system-test blockers could be closed first.
 

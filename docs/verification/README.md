@@ -19,10 +19,13 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   write/test lanes when useful, keep mail selectors deferred unless the batch is
   explicitly mail-focused, run layered validation, and batch documentation
   updates at the end of the module batch.
-- File-size policy: Rust source files should target 2500 non-generated lines by
-  default. Rust test files should target 3000 non-generated lines by default.
-  Files above the applicable source/test limit are allowed when documented in
-  `docs/file-size-exceptions.md` with a reason.
+- File-size policy: Rust source files should target at most 2500
+  non-generated lines by default. Rust test files should target at most 3000
+  non-generated lines by default. Files above the applicable source/test limit
+  are allowed as documented exceptions when recorded in
+  `docs/file-size-exceptions.md` with a concrete reason. Older verification
+  entries may still mention the previous 1200-line review target as historical
+  evidence; those entries do not change the active source/test policy.
 
 ## 2026-05-19 tests_v2 Remote System-Test Audit
 
@@ -1034,9 +1037,10 @@ Observed results:
 - `cargo fmt --check`, `cargo check`, structure check, and whitespace check
   passed.
 - `group_e2ee_send.rs` is 348 lines and
-  `group_e2ee_send_contract.rs` is 743 lines. Both stay below the active
-  3000-line ordinary file target and below the current 1200-line structure
-  visibility threshold, so no file-size exception is needed.
+  `group_e2ee_send_contract.rs` is 743 lines. Both stay below the current
+  active source/test policy limits, so no file-size exception is needed. They
+  also remained below the older 1200-line structure visibility target recorded
+  for that batch.
 
 Boundary note: this batch records the Go-compatible HTTP-only group E2EE
 transport boundary under WebSocket runtime mode. It does not add or claim a
@@ -1092,10 +1096,10 @@ Observed results:
 - `cargo fmt --check`, `cargo check`, structure check, whitespace check, and
   focused Go reference tests passed.
 - `group_service.rs` is 1188 lines, `group_create.rs` is 69 lines, and
-  `group_live_contract.rs` is 707 lines. They remain below the active 3000-line
-  ordinary file target and below the current 1200-line structure checker
-  visibility threshold for source files, so no new file-size exception is
-  needed.
+  `group_live_contract.rs` is 707 lines. They remain below the current active
+  source/test policy limits, so no new file-size exception is needed. They also
+  remained below the older 1200-line structure visibility target recorded for
+  that batch.
 
 Boundary note: this batch only restores Go-visible warning parity for group
 control commands that intentionally remain HTTP-only under WebSocket runtime
