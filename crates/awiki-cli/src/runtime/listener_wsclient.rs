@@ -1,13 +1,16 @@
-use std::collections::{BTreeMap, VecDeque};
-
 use crate::config::{self, Resolved};
 use crate::identity::wire::DID_AUTH_RPC_ENDPOINT;
 use crate::message::MESSAGE_WS_ENDPOINT;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{Map, Value};
 
+pub use im_core::compat::realtime::{
+    build_ws_rpc_request, classify_incoming_message, int64_from_value, next_ws_rpc_request_id,
+    pending_failure_response, request_id_from_value, IncomingWsMessage, ListenerWsDispatchOutcome,
+    ListenerWsPendingDispatch, LISTENER_WS_NOTIFICATION_QUEUE_CAPACITY,
+};
+
 pub const DIAL_ERROR_BODY_LIMIT: usize = 4096;
-pub const LISTENER_WS_NOTIFICATION_QUEUE_CAPACITY: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListenerWsClientEndpoints {
@@ -177,209 +180,8 @@ pub fn simulate_listener_ws_connect(
     }
 }
 
-pub fn request_id_from_value(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Number(number) => {
-            if let Some(value) = number.as_i64() {
-                value.to_string()
-            } else if let Some(value) = number.as_u64() {
-                value.to_string()
-            } else if let Some(value) = number.as_f64() {
-                format!("{value:.0}")
-            } else {
-                String::new()
-            }
-        }
-        _ => String::new(),
-    }
-}
-
-pub fn int64_from_value(value: &Value) -> i64 {
-    match value {
-        Value::Number(number) => number
-            .as_i64()
-            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
-            .or_else(|| number.as_f64().map(|value| value as i64))
-            .unwrap_or_default(),
-        _ => 0,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IncomingWsMessage {
-    Response { request_id: String },
-    Notification,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ListenerWsDispatchOutcome {
-    RoutedResponse { request_id: String },
-    DroppedResponse { request_id: String },
-    QueuedNotification,
-    DroppedNotification,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ListenerWsPendingDispatch {
-    pending: BTreeMap<String, VecDeque<Map<String, Value>>>,
-    notifications: VecDeque<Map<String, Value>>,
-    notification_capacity: usize,
-}
-
-impl Default for ListenerWsPendingDispatch {
-    fn default() -> Self {
-        Self::with_notification_capacity(LISTENER_WS_NOTIFICATION_QUEUE_CAPACITY)
-    }
-}
-
-impl ListenerWsPendingDispatch {
-    pub fn with_notification_capacity(notification_capacity: usize) -> Self {
-        Self {
-            pending: BTreeMap::new(),
-            notifications: VecDeque::new(),
-            notification_capacity,
-        }
-    }
-
-    pub fn prepare_ws_rpc_request(
-        &mut self,
-        next_id: &mut i64,
-        method: &str,
-        params: Option<Map<String, Value>>,
-    ) -> Map<String, Value> {
-        let request_id = next_ws_rpc_request_id(next_id);
-        self.register_pending(request_id.clone());
-        build_ws_rpc_request(&request_id, method, params)
-    }
-
-    pub fn register_pending(&mut self, request_id: impl Into<String>) -> bool {
-        self.pending
-            .insert(request_id.into(), VecDeque::new())
-            .is_none()
-    }
-
-    pub fn remove_pending(&mut self, request_id: &str) -> Option<Vec<Map<String, Value>>> {
-        self.pending
-            .remove(request_id)
-            .map(|responses| responses.into_iter().collect())
-    }
-
-    pub fn has_pending(&self, request_id: &str) -> bool {
-        self.pending.contains_key(request_id)
-    }
-
-    pub fn pending_len(&self) -> usize {
-        self.pending.len()
-    }
-
-    pub fn take_pending_response(&mut self, request_id: &str) -> Option<Map<String, Value>> {
-        self.pending
-            .get_mut(request_id)
-            .and_then(VecDeque::pop_front)
-    }
-
-    pub fn route_incoming_message(
-        &mut self,
-        message: Map<String, Value>,
-    ) -> ListenerWsDispatchOutcome {
-        match classify_incoming_message(&message) {
-            IncomingWsMessage::Response { request_id } => {
-                if let Some(responses) = self.pending.get_mut(&request_id) {
-                    responses.push_back(message);
-                    ListenerWsDispatchOutcome::RoutedResponse { request_id }
-                } else {
-                    ListenerWsDispatchOutcome::DroppedResponse { request_id }
-                }
-            }
-            IncomingWsMessage::Notification => self.queue_notification(message),
-        }
-    }
-
-    pub fn fail_pending_requests(&mut self, error: &str) -> Vec<String> {
-        let request_ids = self.pending.keys().cloned().collect::<Vec<_>>();
-        for request_id in &request_ids {
-            if let Some(responses) = self.pending.get_mut(request_id) {
-                responses.push_back(pending_failure_response(request_id, error));
-            }
-        }
-        request_ids
-    }
-
-    pub fn queue_notification(
-        &mut self,
-        notification: Map<String, Value>,
-    ) -> ListenerWsDispatchOutcome {
-        if self.notifications.len() >= self.notification_capacity {
-            return ListenerWsDispatchOutcome::DroppedNotification;
-        }
-        self.notifications.push_back(notification);
-        ListenerWsDispatchOutcome::QueuedNotification
-    }
-
-    pub fn pop_notification(&mut self) -> Option<Map<String, Value>> {
-        self.notifications.pop_front()
-    }
-
-    pub fn notification_len(&self) -> usize {
-        self.notifications.len()
-    }
-}
-
-pub fn next_ws_rpc_request_id(next_id: &mut i64) -> String {
-    *next_id = next_id.wrapping_add(1);
-    format!("req-{}", *next_id)
-}
-
-pub fn build_ws_rpc_request(
-    request_id: &str,
-    method: &str,
-    params: Option<Map<String, Value>>,
-) -> Map<String, Value> {
-    let mut request = Map::new();
-    request.insert("jsonrpc".to_string(), Value::String("2.0".to_string()));
-    request.insert("id".to_string(), Value::String(request_id.to_string()));
-    request.insert("method".to_string(), Value::String(method.to_string()));
-    if let Some(params) = params {
-        request.insert("params".to_string(), Value::Object(params));
-    }
-    request
-}
-
 pub fn decode_ws_rpc_result(response: &Map<String, Value>) -> anyhow::Result<Map<String, Value>> {
-    if let Some(Value::Object(error)) = response.get("error") {
-        anyhow::bail!(
-            "json-rpc error {}: {}",
-            go_fmt_value(error.get("code")),
-            go_fmt_value(error.get("message"))
-        );
-    }
-    match response.get("result") {
-        Some(Value::Object(result)) => Ok(result.clone()),
-        _ => Ok(Map::new()),
-    }
-}
-
-pub fn pending_failure_response(request_id: &str, error: &str) -> Map<String, Value> {
-    Map::from_iter([
-        (
-            "error".to_string(),
-            Value::Object(Map::from_iter([(
-                "message".to_string(),
-                Value::String(error.to_string()),
-            )])),
-        ),
-        ("id".to_string(), Value::String(request_id.to_string())),
-    ])
-}
-
-pub fn classify_incoming_message(message: &Map<String, Value>) -> IncomingWsMessage {
-    match message.get("id") {
-        Some(id) => IncomingWsMessage::Response {
-            request_id: request_id_from_value(id),
-        },
-        None => IncomingWsMessage::Notification,
-    }
+    im_core::compat::realtime::decode_ws_rpc_result(response).map_err(anyhow::Error::msg)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,17 +257,6 @@ pub fn host_for_url(raw: &str) -> String {
     match parse_authority_host(authority) {
         Ok(host) => host,
         Err(_) => raw.to_string(),
-    }
-}
-
-fn go_fmt_value(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::Null) | None => "<nil>".to_string(),
-        Some(Value::String(value)) => value.clone(),
-        Some(Value::Number(value)) => value.to_string(),
-        Some(Value::Bool(value)) => value.to_string(),
-        Some(Value::Array(value)) => format!("{value:?}"),
-        Some(Value::Object(value)) => format!("{value:?}"),
     }
 }
 

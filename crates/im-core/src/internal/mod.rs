@@ -14,6 +14,7 @@ pub(crate) mod local_state;
 pub(crate) mod message_runtime;
 pub(crate) mod profile_runtime;
 pub(crate) mod proof;
+pub(crate) mod realtime;
 pub(crate) mod store;
 pub(crate) mod transport;
 pub(crate) mod wire;
