@@ -8,6 +8,9 @@ pub mod messages;
 pub mod paths;
 pub mod prelude;
 
+#[doc(hidden)]
+pub mod compat;
+
 mod internal;
 
 pub use self::config::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
