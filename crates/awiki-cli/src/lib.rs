@@ -10,6 +10,7 @@ pub mod docs;
 pub mod doctor;
 pub mod durablefs;
 pub mod identity;
+pub mod im_core_adapter;
 pub mod mail;
 pub mod message;
 pub mod output;
