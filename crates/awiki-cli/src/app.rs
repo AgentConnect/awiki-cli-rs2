@@ -642,6 +642,13 @@ impl App {
                 &manager,
                 &self.globals.identity,
             )?
+        } else if crate::im_core_adapter::use_im_core_mvp() {
+            crate::im_core_adapter::identity::get_public_profile_via_im_core(
+                &resolved,
+                &manager,
+                &self.globals.identity,
+                request,
+            )?
         } else {
             identity::get_profile(
                 &resolved,
@@ -659,14 +666,23 @@ impl App {
 
     pub fn run_id_resolve(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let result = identity::resolve_identity(
-            &resolved,
-            identity::ResolveParams {
-                handle: string_flag(command, "handle"),
-                did: string_flag(command, "did"),
-            },
-        )
-        .map_err(identity_exit)?;
+        let result = if crate::im_core_adapter::use_im_core_mvp() {
+            crate::im_core_adapter::identity::resolve_identity_via_im_core(
+                &resolved,
+                &self.identity_manager(&resolved),
+                &self.globals.identity,
+                crate::im_core_adapter::identity::resolve_request(command),
+            )?
+        } else {
+            identity::resolve_identity(
+                &resolved,
+                identity::ResolveParams {
+                    handle: string_flag(command, "handle"),
+                    did: string_flag(command, "did"),
+                },
+            )
+            .map_err(identity_exit)?
+        };
         self.render_identity_result("awiki-cli id resolve", &resolved, result)
     }
 

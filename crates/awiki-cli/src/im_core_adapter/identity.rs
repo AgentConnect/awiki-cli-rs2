@@ -1,6 +1,6 @@
 use im_core::prelude::{
-    AuthScope, Did, Handle, IdentitySelector, InitialProfile, ProfilePatch, RegisterHandleRequest,
-    SessionBundle, VerificationInput,
+    AuthScope, Did, Handle, IdentitySelector, InitialProfile, PeerRef, ProfilePatch,
+    RegisterHandleRequest, SessionBundle, VerificationInput,
 };
 use serde_json::Value;
 
@@ -18,6 +18,12 @@ pub struct RegisterHandleBridgeRequest {
 #[derive(Debug, Clone)]
 pub struct GetProfileBridgeRequest {
     pub self_profile: bool,
+    pub handle: String,
+    pub did: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolveBridgeRequest {
     pub handle: String,
     pub did: String,
 }
@@ -168,6 +174,140 @@ pub fn get_self_profile_via_im_core(
     Ok(identity::wire::profile_self_result(result.raw))
 }
 
+pub fn get_public_profile_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    identity_flag: &str,
+    request: GetProfileBridgeRequest,
+) -> Result<identity::CommandResult, ExitError> {
+    let Some(client) =
+        build_optional_directory_client(resolved, manager, identity_flag, "id profile get")?
+    else {
+        return identity::get_profile(
+            resolved,
+            manager,
+            identity::GetProfileParams {
+                self_profile: request.self_profile,
+                handle: request.handle,
+                did: request.did,
+            },
+        )
+        .map_err(crate::app::identity_exit);
+    };
+    let mut subject = serde_json::Map::new();
+    let profile_did = request.did.trim().to_string();
+    if !request.handle.trim().is_empty() {
+        let target = identity::normalize_handle_input(&request.handle, &resolved.did_domain)
+            .map_err(crate::app::identity_exit)?;
+        let peer = PeerRef::parse(&target.full_handle, "")
+            .map_err(|err| super::map_im_error(err, "id profile get"))?;
+        let result = im_core::compat::directory::resolve_peer_with_bridge(
+            &client,
+            peer,
+            DirectoryLegacyTransport { resolved },
+        )
+        .map_err(|err| super::map_im_error(err, "id profile get"))?;
+        let did = result.resolution.did.as_str().to_string();
+        subject.insert("handle".to_string(), Value::String(target.local_part));
+        subject.insert("full_handle".to_string(), Value::String(target.full_handle));
+        subject.insert("domain".to_string(), Value::String(target.effective_domain));
+        subject.insert("did".to_string(), Value::String(did));
+        let profile = result.public_profile.unwrap_or(Value::Null);
+        return Ok(identity::wire::profile_public_result(
+            Value::Object(subject),
+            profile,
+        ));
+    }
+    if !profile_did.trim().is_empty() {
+        subject.insert("did".to_string(), Value::String(profile_did.clone()));
+    }
+    let peer = PeerRef::parse(&profile_did, "")
+        .map_err(|err| super::map_im_error(err, "id profile get"))?;
+    let result = im_core::compat::directory::resolve_peer_with_bridge(
+        &client,
+        peer,
+        DirectoryLegacyTransport { resolved },
+    )
+    .map_err(|err| super::map_im_error(err, "id profile get"))?;
+    Ok(identity::wire::profile_public_result(
+        Value::Object(subject),
+        result.public_profile.unwrap_or(Value::Null),
+    ))
+}
+
+pub fn resolve_request(command: &ParsedCommand) -> ResolveBridgeRequest {
+    ResolveBridgeRequest {
+        handle: string_flag(command, "handle"),
+        did: string_flag(command, "did"),
+    }
+}
+
+pub fn resolve_identity_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    identity_flag: &str,
+    request: ResolveBridgeRequest,
+) -> Result<identity::CommandResult, ExitError> {
+    let handle = request.handle.trim();
+    let did = request.did.trim();
+    if (handle.is_empty() && did.is_empty()) || (!handle.is_empty() && !did.is_empty()) {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "invalid input: exactly one of handle or did is required",
+            "Pass either --handle <handle> or --did <did>.",
+        ));
+    }
+    let Some(client) =
+        build_optional_directory_client(resolved, manager, identity_flag, "id resolve")?
+    else {
+        return identity::resolve_identity(
+            resolved,
+            identity::ResolveParams {
+                handle: request.handle,
+                did: request.did,
+            },
+        )
+        .map_err(crate::app::identity_exit);
+    };
+    let peer = if !handle.is_empty() {
+        let target = identity::normalize_handle_input(handle, &resolved.did_domain)
+            .map_err(crate::app::identity_exit)?;
+        PeerRef::parse(&target.full_handle, "")
+            .map_err(|err| super::map_im_error(err, "id resolve"))?
+    } else {
+        PeerRef::parse(did, "").map_err(|err| super::map_im_error(err, "id resolve"))?
+    };
+    let result = im_core::compat::directory::resolve_peer_with_bridge(
+        &client,
+        peer,
+        DirectoryLegacyTransport { resolved },
+    )
+    .map_err(|err| super::map_im_error(err, "id resolve"))?;
+    Ok(identity::wire::resolve_result(
+        result.resolve,
+        result.lookup,
+        result.public_profile,
+        result.resolution.warnings,
+    ))
+}
+
+fn build_optional_directory_client(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    identity_flag: &str,
+    context: &'static str,
+) -> Result<Option<im_core::ImClient>, ExitError> {
+    let core = super::build_im_core(resolved, manager)?;
+    match core.client(cli_identity_selector(identity_flag)) {
+        Ok(client) => Ok(Some(client)),
+        Err(im_core::ImError::DefaultIdentityMissing)
+        | Err(im_core::ImError::IdentityRequired)
+        | Err(im_core::ImError::IdentityNotFound { .. }) => Ok(None),
+        Err(err) => Err(super::map_im_error(err, context)),
+    }
+}
+
 pub fn set_profile_request(
     display_name: String,
     bio: String,
@@ -284,6 +424,24 @@ struct ProfileLegacyTransport<'a> {
     resolved: &'a crate::config::Resolved,
     manager: &'a identity::Manager,
     record: identity::types::StoredIdentity,
+}
+
+struct DirectoryLegacyTransport<'a> {
+    resolved: &'a crate::config::Resolved,
+}
+
+impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacyTransport<'_> {
+    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> im_core::ImResult<Value> {
+        let client =
+            identity::client::Client::new(self.resolved).map_err(identity_error_to_im_error)?;
+        let profile = match method {
+            "get_public_profile" => Profile::RpcReadHeavy,
+            _ => Profile::RpcDefault,
+        };
+        client
+            .rpc_call_profile(profile, endpoint, method, params)
+            .map_err(identity_error_to_im_error)
+    }
 }
 
 impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport

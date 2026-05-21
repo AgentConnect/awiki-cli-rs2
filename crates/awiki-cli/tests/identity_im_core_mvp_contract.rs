@@ -231,6 +231,123 @@ fn identity_im_core_mvp_profile_set_routes_update_me_through_bridge() {
     );
 }
 
+#[test]
+fn identity_im_core_mvp_resolve_handle_routes_directory_sequence() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","handle":"alice","full_handle":"alice.awiki.ai"},"id":"req-1"}"#,
+        ),
+        TestResponse::ok(r#"{"jsonrpc":"2.0","result":{"nick_name":"Alice Public"},"id":"req-1"}"#),
+        TestResponse::ok(
+            r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","service_endpoint":"https://service.example"},"id":"req-1"}"#,
+        ),
+    ]);
+    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
+
+    let register = awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&register, 0);
+
+    let resolve = success_json(&awiki_cmd_with_env(
+        &["id", "resolve", "--handle", "Alice"],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(resolve["summary"], "Identity resolved successfully");
+    assert_eq!(
+        resolve["data"]["lookup"]["did"],
+        "did:wba:awiki.ai:alice:e1_remote"
+    );
+    assert_eq!(
+        resolve["data"]["public_profile"]["nick_name"],
+        "Alice Public"
+    );
+    assert_eq!(
+        resolve["data"]["resolve"]["did"],
+        "did:wba:awiki.ai:alice:e1_remote"
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let lookup_body: Value = serde_json::from_str(request_body(&requests[1])).unwrap();
+    let profile_body: Value = serde_json::from_str(request_body(&requests[2])).unwrap();
+    let resolve_body: Value = serde_json::from_str(request_body(&requests[3])).unwrap();
+    assert_eq!(lookup_body["method"], "lookup");
+    assert_eq!(lookup_body["params"], json!({ "handle": "alice.awiki.ai" }));
+    assert_eq!(profile_body["method"], "get_public_profile");
+    assert_eq!(
+        profile_body["params"],
+        json!({ "did": "did:wba:awiki.ai:alice:e1_remote" })
+    );
+    assert_eq!(resolve_body["method"], "resolve");
+    assert_eq!(
+        resolve_body["params"],
+        json!({ "did": "did:wba:awiki.ai:alice:e1_remote" })
+    );
+}
+
+#[test]
+fn identity_im_core_mvp_resolve_did_keeps_nonfatal_directory_warnings() {
+    let workspace = TempDir::new().expect("workspace");
+    let did = "did:wba:awiki.ai:alice:e1_remote";
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(&format!(
+            r#"{{"jsonrpc":"2.0","result":{{"did":"{did}","service_endpoint":"https://service.example"}},"id":"req-1"}}"#
+        )),
+        TestResponse::status(502, "lookup unavailable"),
+        TestResponse::status(502, "profile unavailable"),
+    ]);
+    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
+
+    let register = awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&register, 0);
+
+    let resolve = success_json(&awiki_cmd_with_env(
+        &["id", "resolve", "--did", did],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(resolve["summary"], "Identity resolved successfully");
+    assert_eq!(resolve["data"]["resolve"]["did"], did);
+    assert!(resolve["data"].get("lookup").is_none());
+    assert!(resolve["data"].get("public_profile").is_none());
+    assert_eq!(
+        resolve["warnings"],
+        json!([
+            "Handle lookup failed: service error 502: lookup unavailable",
+            "Public profile lookup failed: service error 502: profile unavailable",
+        ])
+    );
+}
+
 fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
@@ -337,6 +454,13 @@ impl TestResponse {
     fn ok(body: &str) -> Self {
         Self {
             status: 200,
+            body: body.to_string(),
+        }
+    }
+
+    fn status(status: u16, body: &str) -> Self {
+        Self {
+            status,
             body: body.to_string(),
         }
     }

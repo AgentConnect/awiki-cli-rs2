@@ -17,7 +17,20 @@ impl<'a> DirectoryService<'a> {
                 "peer must not be empty",
             ));
         }
-        Err(crate::ImError::unsupported("directory-resolve-peer"))
+        self.resolve_peer_with_runtime(peer, crate::internal::transport::UnavailableTransport)
+            .map(|result| result.resolution)
+    }
+
+    pub(crate) fn resolve_peer_with_runtime<T>(
+        &self,
+        peer: crate::ids::PeerRef,
+        transport: T,
+    ) -> crate::ImResult<crate::internal::directory_runtime::DirectoryResolveResult>
+    where
+        T: crate::internal::transport::RpcTransport,
+    {
+        crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
+            .resolve_peer(peer)
     }
 
     pub fn lookup_handle(
@@ -30,7 +43,19 @@ impl<'a> DirectoryService<'a> {
                 "handle must not be empty",
             ));
         }
-        Err(crate::ImError::unsupported("directory-lookup-handle"))
+        self.lookup_handle_with_runtime(handle, crate::internal::transport::UnavailableTransport)
+    }
+
+    pub(crate) fn lookup_handle_with_runtime<T>(
+        &self,
+        handle: crate::ids::Handle,
+        transport: T,
+    ) -> crate::ImResult<super::HandleLookupResult>
+    where
+        T: crate::internal::transport::RpcTransport,
+    {
+        crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
+            .lookup_handle(handle)
     }
 
     pub fn save_contact(

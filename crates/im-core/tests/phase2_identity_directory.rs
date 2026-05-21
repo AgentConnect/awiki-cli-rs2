@@ -152,8 +152,8 @@ fn directory_service_exposes_contact_and_resolution_skeleton() {
     let resolved = client.directory().resolve_peer(peer.clone());
     assert!(matches!(
         resolved,
-        Err(ImError::UnsupportedCapability { capability })
-            if capability == "directory-resolve-peer"
+        Err(ImError::TransportUnavailable { detail })
+            if detail.contains("lookup") && detail.contains("/user-service/handle/rpc")
     ));
 
     let saved = client.directory().save_contact(SaveContactRequest {
@@ -184,6 +184,79 @@ fn directory_service_exposes_contact_and_resolution_skeleton() {
         Err(ImError::UnsupportedCapability { capability })
             if capability == "directory-relation-status"
     ));
+}
+
+#[test]
+fn directory_bridge_resolves_handle_with_public_profile_projection() {
+    let fixture = Fixture::new();
+    let client = fixture.client("alice");
+    let result = im_core::compat::directory::resolve_peer_with_bridge(
+        &client,
+        PeerRef::parse("bob.awiki.test", "").unwrap(),
+        DirectoryTransport::handle_success(),
+    )
+    .unwrap();
+
+    assert_eq!(result.resolution.did.as_str(), "did:example:bob");
+    assert_eq!(
+        result.resolution.handle.as_ref().unwrap().as_str(),
+        "bob.awiki.test"
+    );
+    assert_eq!(
+        result
+            .resolution
+            .profile
+            .as_ref()
+            .unwrap()
+            .display_name
+            .as_deref(),
+        Some("Bob")
+    );
+    assert!(result.resolution.warnings.is_empty());
+    assert_eq!(result.lookup.as_ref().unwrap()["did"], "did:example:bob");
+    assert_eq!(result.public_profile.as_ref().unwrap()["nick_name"], "Bob");
+    assert_eq!(result.resolve.as_ref().unwrap()["did"], "did:example:bob");
+}
+
+#[test]
+fn directory_bridge_resolves_did_and_keeps_nonfatal_profile_warnings() {
+    let fixture = Fixture::new();
+    let client = fixture.client("alice");
+    let result = im_core::compat::directory::resolve_peer_with_bridge(
+        &client,
+        PeerRef::parse("did:example:bob", "").unwrap(),
+        DirectoryTransport::did_profile_warning(),
+    )
+    .unwrap();
+
+    assert_eq!(result.resolution.did.as_str(), "did:example:bob");
+    assert_eq!(
+        result.resolution.handle.as_ref().unwrap().as_str(),
+        "bob.awiki.test"
+    );
+    assert!(result.resolution.profile.is_none());
+    assert!(result
+        .resolution
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("Public profile lookup failed")));
+    assert!(result.public_profile.is_none());
+}
+
+#[test]
+fn directory_bridge_lookup_handle_maps_result() {
+    let fixture = Fixture::new();
+    let client = fixture.client("alice");
+    let result = im_core::compat::directory::lookup_handle_with_bridge(
+        &client,
+        Handle::parse("bob.awiki.test", "").unwrap(),
+        DirectoryTransport::handle_success(),
+    )
+    .unwrap();
+
+    assert_eq!(result.did.as_str(), "did:example:bob");
+    assert_eq!(result.handle.as_str(), "bob.awiki.test");
+    assert_eq!(result.domain.as_deref(), Some("awiki.test"));
 }
 
 #[test]
@@ -363,6 +436,94 @@ impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport for Profil
             "profile_md": "## Alice",
         }))
     }
+}
+
+struct DirectoryTransport {
+    mode: DirectoryTransportMode,
+    calls: Vec<(String, String, Value)>,
+}
+
+enum DirectoryTransportMode {
+    HandleSuccess,
+    DidProfileWarning,
+}
+
+impl DirectoryTransport {
+    fn handle_success() -> Self {
+        Self {
+            mode: DirectoryTransportMode::HandleSuccess,
+            calls: Vec::new(),
+        }
+    }
+
+    fn did_profile_warning() -> Self {
+        Self {
+            mode: DirectoryTransportMode::DidProfileWarning,
+            calls: Vec::new(),
+        }
+    }
+}
+
+impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryTransport {
+    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> ImResult<Value> {
+        self.calls
+            .push((endpoint.to_string(), method.to_string(), params.clone()));
+        match (&self.mode, method) {
+            (DirectoryTransportMode::HandleSuccess, "lookup") => {
+                assert_eq!(endpoint, "/user-service/handle/rpc");
+                assert_eq!(params, json!({ "handle": "bob.awiki.test" }));
+                Ok(handle_lookup_value())
+            }
+            (DirectoryTransportMode::HandleSuccess, "get_public_profile") => {
+                assert_eq!(endpoint, "/user-service/did/profile/rpc");
+                assert_eq!(params, json!({ "did": "did:example:bob" }));
+                Ok(public_profile_value())
+            }
+            (DirectoryTransportMode::HandleSuccess, "resolve") => {
+                assert_eq!(endpoint, "/user-service/did/profile/rpc");
+                assert_eq!(params, json!({ "did": "did:example:bob" }));
+                Ok(json!({ "did": "did:example:bob", "status": "active" }))
+            }
+            (DirectoryTransportMode::DidProfileWarning, "resolve") => {
+                assert_eq!(params, json!({ "did": "did:example:bob" }));
+                Ok(json!({ "did": "did:example:bob", "status": "active" }))
+            }
+            (DirectoryTransportMode::DidProfileWarning, "lookup") => {
+                assert_eq!(params, json!({ "did": "did:example:bob" }));
+                Ok(handle_lookup_value())
+            }
+            (DirectoryTransportMode::DidProfileWarning, "get_public_profile") => {
+                Err(ImError::Service {
+                    status_code: None,
+                    code: Some("-32002".to_string()),
+                    message: "profile missing".to_string(),
+                })
+            }
+            (_, method) => Err(ImError::Internal {
+                message: format!("unexpected directory method {method}"),
+            }),
+        }
+    }
+}
+
+fn handle_lookup_value() -> Value {
+    json!({
+        "handle": "bob",
+        "full_handle": "bob.awiki.test",
+        "did": "did:example:bob",
+        "domain": "awiki.test",
+        "status": "active",
+    })
+}
+
+fn public_profile_value() -> Value {
+    json!({
+        "did": "did:example:bob",
+        "handle": "bob.awiki.test",
+        "nick_name": "Bob",
+        "bio": "Directory profile",
+        "tags": ["directory"],
+    })
 }
 
 fn unique_temp_root() -> PathBuf {
