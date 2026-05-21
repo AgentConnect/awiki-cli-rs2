@@ -3,11 +3,16 @@ pub use crate::core::{
     CoreBootstrap, ImClient, ImCore, LocalStateStatus, MigrationReport, PathCheck,
     PathValidationReport,
 };
+pub use crate::directory::{
+    Contact, ContactListQuery, DirectoryResolution, DirectoryService, HandleLookupResult,
+    RelationStatus, SaveContactRequest,
+};
 pub use crate::error::{ImError, ImResult};
 pub use crate::identity::{
-    DefaultIdentityChange, HandleRegistrationResult, IdentityMissingItem, IdentityReadiness,
-    IdentityRegistry, IdentitySelector, IdentitySummary, InitialProfile, RegisterHandleRequest,
-    VerificationInput,
+    ContactBindingRequest, ContactBindingResult, DefaultIdentityChange, HandleRegistrationResult,
+    IdentityMissingItem, IdentityReadiness, IdentityRegistry, IdentitySelector, IdentityService,
+    IdentitySummary, InitialProfile, Profile, ProfileAttribute, ProfilePatch,
+    RegisterHandleRequest, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,

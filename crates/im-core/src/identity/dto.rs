@@ -73,3 +73,43 @@ pub struct DefaultIdentityChange {
     pub requires_default_identity_write: bool,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Profile {
+    pub subject: crate::ids::Did,
+    pub handle: Option<crate::ids::Handle>,
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub tags: Vec<String>,
+    pub markdown: Option<String>,
+    pub avatar_url: Option<String>,
+    pub updated_at: Option<String>,
+    pub metadata: Vec<ProfileAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileAttribute {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProfilePatch {
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub markdown: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactBindingRequest {
+    pub peer: crate::ids::PeerRef,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactBindingResult {
+    pub peer: crate::ids::PeerRef,
+    pub did: Option<crate::ids::Did>,
+    pub warnings: Vec<String>,
+}

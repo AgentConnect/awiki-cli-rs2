@@ -35,6 +35,14 @@ impl ImClient {
         crate::auth::AuthService::new(self)
     }
 
+    pub fn identity(&self) -> crate::identity::IdentityService<'_> {
+        crate::identity::IdentityService::new(self)
+    }
+
+    pub fn directory(&self) -> crate::directory::DirectoryService<'_> {
+        crate::directory::DirectoryService::new(self)
+    }
+
     pub fn messages(&self) -> crate::messages::MessageService<'_> {
         crate::messages::MessageService::new(self)
     }
