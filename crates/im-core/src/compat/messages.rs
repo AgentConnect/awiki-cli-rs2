@@ -65,6 +65,15 @@ pub struct ReadBridgeResult {
     pub raw: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkReadBridgeResult {
+    pub sdk_result: crate::messages::MarkReadResult,
+    pub raw: Option<Value>,
+    pub direct_ids: Vec<String>,
+    pub group_ids: Vec<String>,
+    pub local_only_ids: Vec<String>,
+}
+
 pub trait BridgeSessionProvider {
     fn ensure_messaging_session(&self) -> crate::ImResult<crate::auth::SessionBundle>;
 }
@@ -202,6 +211,32 @@ where
         message_type: result.message_type.to_string(),
         text: result.text,
         raw: result.raw,
+    })
+}
+
+#[doc(hidden)]
+pub fn mark_read_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    message_ids: Vec<crate::ids::MessageId>,
+    session_provider: P,
+    transport: T,
+) -> crate::ImResult<MarkReadBridgeResult>
+where
+    P: BridgeSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    let result = crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+        client,
+        CompatSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .mark_read(crate::internal::message_runtime::mark_read::MarkReadInput { message_ids })?;
+    Ok(MarkReadBridgeResult {
+        sdk_result: result.sdk_result,
+        raw: result.raw,
+        direct_ids: result.direct_ids,
+        group_ids: result.group_ids,
+        local_only_ids: result.local_only_ids,
     })
 }
 

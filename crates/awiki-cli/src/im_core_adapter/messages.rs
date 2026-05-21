@@ -19,7 +19,7 @@ use crate::output::ExitError;
 use crate::store::{self, MessageRecord};
 use crate::transportcfg::Profile;
 
-pub use read_bridge::{read_history_via_im_core, read_inbox_via_im_core};
+pub use read_bridge::{mark_read_via_im_core, read_history_via_im_core, read_inbox_via_im_core};
 
 pub fn send_message_request(
     command: &ParsedCommand,

@@ -23,9 +23,9 @@ pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
 };
 pub use crate::messages::{
-    AttachmentInput, DeliveryState, HistoryQuery, InboxQuery, InboxScope, Message, MessageBody,
-    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind, MessageMetadata,
-    MessageMetadataAttribute, MessageSecurityMode, MessageService, MessageTarget,
+    AttachmentInput, DeliveryState, HistoryQuery, InboxQuery, InboxScope, MarkReadResult, Message,
+    MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageKind,
+    MessageMetadata, MessageMetadataAttribute, MessageSecurityMode, MessageService, MessageTarget,
     SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};

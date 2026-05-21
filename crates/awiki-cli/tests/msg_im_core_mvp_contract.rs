@@ -272,6 +272,107 @@ fn msg_history_im_core_mvp_direct_posts_im_core_rpc() {
     assert_eq!(body["params"]["body"]["since_seq"], "8");
 }
 
+#[test]
+fn msg_mark_read_im_core_mvp_posts_im_core_rpc_and_updates_local_cache() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice = register_generated_read_identity(&manager, "alice-mark-mvp", "alice", "jwt-alice");
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "updated_count": 4
+    })))]);
+    write_msg_config(workspace.path(), &server.base_url());
+    seed_message(
+        workspace.path(),
+        &alice.did,
+        "direct-mark-mvp",
+        "",
+        "text/plain",
+        "",
+    );
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-mark-mvp",
+            "msg",
+            "mark-read",
+            "direct-mark-mvp",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    );
+
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Marked 4 messages as read");
+    assert_eq!(envelope["data"]["action"], "mark_read");
+    assert_eq!(envelope["data"]["updated_count"], 4);
+    assert_eq!(envelope["data"]["message_ids"], json!(["direct-mark-mvp"]));
+    assert_eq!(is_read(workspace.path(), &alice.did, "direct-mark-mvp"), 1);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(
+        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
+        "missing bearer auth:\n{}",
+        requests[0]
+    );
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
+    assert_eq!(body["method"], "inbox.mark_read");
+    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
+    assert_eq!(body["params"]["body"]["user_did"], alice.did);
+    assert_eq!(
+        body["params"]["body"]["message_ids"],
+        json!(["direct-mark-mvp"])
+    );
+}
+
+#[test]
+fn msg_mark_read_im_core_mvp_keeps_group_and_mail_local_only() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice =
+        register_generated_read_identity(&manager, "alice-local-mark-mvp", "alice", "jwt-alice");
+    let server = TestServer::new(Vec::new());
+    write_msg_config(workspace.path(), &server.base_url());
+    seed_message(
+        workspace.path(),
+        &alice.did,
+        "group-mark-mvp",
+        "did:wba:awiki.ai:groups:demo:e1_group",
+        "text/plain",
+        "",
+    );
+    seed_message(
+        workspace.path(),
+        &alice.did,
+        "mail-mark-mvp",
+        "",
+        "mail.notification",
+        r#"{"source_kind":"mail"}"#,
+    );
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-local-mark-mvp",
+            "msg",
+            "mark-read",
+            "group-mark-mvp",
+            "mail-mark-mvp",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    );
+
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Marked 2 messages as read");
+    assert_eq!(envelope["data"]["updated_count"], 2);
+    assert_eq!(server.requests().len(), 0);
+    assert_eq!(is_read(workspace.path(), &alice.did, "group-mark-mvp"), 1);
+    assert_eq!(is_read(workspace.path(), &alice.did, "mail-mark-mvp"), 1);
+}
+
 fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
@@ -382,6 +483,49 @@ fn write_msg_config(workspace: &Path, base_url: &str) {
         format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
     )
     .unwrap();
+}
+
+fn seed_message(
+    workspace: &Path,
+    owner_did: &str,
+    message_id: &str,
+    group_did: &str,
+    content_type: &str,
+    metadata: &str,
+) {
+    let connection =
+        rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db")).unwrap();
+    awiki_cli::store::ensure_schema(&connection).unwrap();
+    connection
+        .execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+     content_type, content, stored_at, metadata, is_read)
+VALUES (?1, ?2, ?3, 0, 'did:wba:awiki.ai:bob:e1_bob', ?2, ?4, ?4, ?5, 'hello',
+        '2026-05-21T00:00:00Z', ?6, 0)"#,
+            (
+                message_id,
+                owner_did,
+                format!("thread:{message_id}"),
+                group_did,
+                content_type,
+                metadata,
+            ),
+        )
+        .unwrap();
+}
+
+fn is_read(workspace: &Path, owner_did: &str, message_id: &str) -> i64 {
+    let connection =
+        rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db")).unwrap();
+    connection
+        .query_row(
+            "SELECT is_read FROM messages WHERE owner_did = ?1 AND msg_id = ?2",
+            (owner_did, message_id),
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 
 fn success_json(output: &Output) -> Value {

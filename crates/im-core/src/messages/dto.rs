@@ -151,3 +151,10 @@ pub struct HistoryQuery {
     pub limit: crate::ids::PageLimit,
     pub cursor: Option<crate::ids::Cursor>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkReadResult {
+    pub updated_count: u32,
+    pub message_ids: Vec<crate::ids::MessageId>,
+    pub warnings: Vec<String>,
+}

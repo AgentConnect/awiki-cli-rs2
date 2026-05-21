@@ -557,14 +557,30 @@ impl App {
         }
         let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
-            let result = message::mark_read(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::MarkReadRequest {
-                    identity_name: self.globals.identity.clone(),
-                    message_ids: command.args.clone(),
-                },
-            )
+            let manager = self.identity_manager(&resolved);
+            let result = if crate::im_core_adapter::use_im_core_mvp() {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                crate::im_core_adapter::messages::mark_read_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    &self.globals.identity,
+                    command.args.clone(),
+                )
+            } else {
+                message::mark_read(
+                    &resolved,
+                    &manager,
+                    message::MarkReadRequest {
+                        identity_name: self.globals.identity.clone(),
+                        message_ids: command.args.clone(),
+                    },
+                )
+            }
             .map_err(|err| {
                 message_exit(
                     err,

@@ -72,6 +72,19 @@ impl<'a> MessageService<'a> {
         })
         .map(|result| result.page)
     }
+
+    pub fn mark_read(
+        &self,
+        ids: Vec<crate::ids::MessageId>,
+    ) -> crate::ImResult<super::MarkReadResult> {
+        crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .mark_read(crate::internal::message_runtime::mark_read::MarkReadInput { message_ids: ids })
+        .map(|result| result.sdk_result)
+    }
 }
 
 fn validate_body(body: &super::MessageBody) -> crate::ImResult<()> {
