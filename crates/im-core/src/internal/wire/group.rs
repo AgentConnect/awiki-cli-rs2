@@ -111,6 +111,103 @@ pub(crate) fn build_group_leave_payload(
     build_group_lifecycle_payload(sender_did, request.group.as_str(), "group.leave", json!({}))
 }
 
+pub(crate) fn build_group_add_member_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupMemberMutationRequest,
+) -> crate::ImResult<DirectPayload> {
+    let mut body = Map::new();
+    body.insert(
+        "member_did".to_string(),
+        Value::String(request.member.as_str().to_string()),
+    );
+    insert_optional_trimmed_string(&mut body, "role", request.role.as_deref());
+    insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
+    build_group_lifecycle_payload(
+        sender_did,
+        request.group.as_str(),
+        "group.add",
+        Value::Object(body),
+    )
+}
+
+pub(crate) fn build_group_remove_member_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupMemberMutationRequest,
+) -> crate::ImResult<DirectPayload> {
+    let mut body = Map::new();
+    body.insert(
+        "member_did".to_string(),
+        Value::String(request.member.as_str().to_string()),
+    );
+    insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
+    build_group_lifecycle_payload(
+        sender_did,
+        request.group.as_str(),
+        "group.remove",
+        Value::Object(body),
+    )
+}
+
+pub(crate) fn build_group_update_profile_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupUpdateProfileRequest,
+) -> crate::ImResult<DirectPayload> {
+    let patch = group_profile_patch(&request.patch);
+    build_group_update_profile_patch_payload(sender_did, request.group.as_str(), patch)
+}
+
+pub(crate) fn build_group_update_profile_patch_payload(
+    sender_did: &str,
+    group_did: &str,
+    patch: Map<String, Value>,
+) -> crate::ImResult<DirectPayload> {
+    if patch.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("profile_patch".to_string()),
+            "group profile patch is required",
+        ));
+    }
+    build_group_lifecycle_payload(
+        sender_did,
+        group_did,
+        "group.update_profile",
+        json!({ "group_profile_patch": patch }),
+    )
+}
+
+pub(crate) fn build_group_update_policy_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupUpdatePolicyRequest,
+) -> crate::ImResult<DirectPayload> {
+    let patch = group_policy_patch(
+        request.patch.admission_mode.as_deref(),
+        request.patch.attachments_allowed,
+        request.patch.max_members.as_deref(),
+        request.patch.member_max_messages,
+        request.patch.member_max_total_chars,
+    );
+    build_group_update_policy_patch_payload(sender_did, request.group.as_str(), patch)
+}
+
+pub(crate) fn build_group_update_policy_patch_payload(
+    sender_did: &str,
+    group_did: &str,
+    patch: Map<String, Value>,
+) -> crate::ImResult<DirectPayload> {
+    if patch.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("policy_patch".to_string()),
+            "group policy patch is required",
+        ));
+    }
+    build_group_lifecycle_payload(
+        sender_did,
+        group_did,
+        "group.update_policy",
+        json!({ "group_policy_patch": patch }),
+    )
+}
+
 pub(crate) fn build_group_get_rpc_params(
     sender_did: &str,
     group_did: &str,
@@ -200,6 +297,27 @@ fn build_group_lifecycle_payload(
         meta: signed_group_meta(sender_did, "group", group_did, "application/json", false),
         body,
     })
+}
+
+fn group_profile_patch(request: &crate::groups::GroupProfilePatch) -> Map<String, Value> {
+    let mut patch = Map::new();
+    insert_optional_trimmed_string(&mut patch, "display_name", request.name.as_deref());
+    insert_optional_trimmed_string(&mut patch, "description", request.description.as_deref());
+    insert_optional_trimmed_string(
+        &mut patch,
+        "discoverability",
+        request.discoverability.as_deref(),
+    );
+    insert_optional_trimmed_string(&mut patch, "slug", request.slug.as_deref());
+    insert_optional_trimmed_string(&mut patch, "goal", request.goal.as_deref());
+    insert_optional_trimmed_string(&mut patch, "rules", request.rules.as_deref());
+    insert_optional_trimmed_string(
+        &mut patch,
+        "message_prompt",
+        request.message_prompt.as_deref(),
+    );
+    insert_optional_trimmed_string(&mut patch, "doc_url", request.doc_url.as_deref());
+    patch
 }
 
 fn signed_group_meta(

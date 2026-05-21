@@ -39,6 +39,47 @@ pub struct GroupLeaveRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupMemberMutationRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: crate::ids::Did,
+    pub role: Option<String>,
+    pub reason_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GroupProfilePatch {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub discoverability: Option<String>,
+    pub slug: Option<String>,
+    pub goal: Option<String>,
+    pub rules: Option<String>,
+    pub message_prompt: Option<String>,
+    pub doc_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GroupPolicyPatch {
+    pub admission_mode: Option<String>,
+    pub attachments_allowed: Option<bool>,
+    pub max_members: Option<String>,
+    pub member_max_messages: Option<i64>,
+    pub member_max_total_chars: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupUpdateProfileRequest {
+    pub group: crate::ids::GroupRef,
+    pub patch: GroupProfilePatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupUpdatePolicyRequest {
+    pub group: crate::ids::GroupRef,
+    pub patch: GroupPolicyPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupListRequest {
     pub limit: crate::ids::PageLimit,
 }

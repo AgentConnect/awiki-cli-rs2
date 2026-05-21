@@ -757,6 +757,350 @@ fn group_lifecycle_im_core_mvp_preserves_owner_cannot_leave_guard() {
 }
 
 #[test]
+fn group_mutation_im_core_mvp_keeps_cached_e2ee_group_add_on_legacy_path() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice = register_generated_group_identity(
+        &manager,
+        "alice-group-e2ee-mutation-legacy",
+        "alice",
+        "jwt-alice",
+    );
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group_e2ee_cached";
+    let bob_did = "did:wba:awiki.ai:user:bob:e1_bob";
+    write_group_config(workspace.path(), "http://127.0.0.1:9");
+    seed_e2ee_group_snapshot(
+        workspace.path(),
+        &alice.did,
+        &alice.identity_name,
+        group_did,
+        "owner",
+    );
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "group_did": group_did,
+            "member_did": bob_did,
+            "operation_id": "op-add-e2ee-cached",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_policy": {
+                "message_security_profile": "group-e2ee"
+            },
+            "member_role": "owner",
+            "member_status": "active",
+            "member_count": 2,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "members": [{
+                "member_did": bob_did,
+                "member_handle": "bob.awiki.ai",
+                "role": "member",
+                "status": "active"
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(
+            &json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32004,
+                    "message": "no key package"
+                },
+                "id": "req-1"
+            })
+            .to_string(),
+        ),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let add = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-e2ee-mutation-legacy",
+            "group",
+            "add",
+            "--group",
+            group_did,
+            "--member",
+            bob_did,
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(add["summary"], "Added member to group");
+    assert_eq!(
+        add["data"]["delivery"]["operation_id"],
+        "op-add-e2ee-cached"
+    );
+    assert_contains(
+        &add["warnings"][0],
+        "Group E2EE member KeyPackage lookup failed",
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    let bodies = requests
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .collect::<Vec<_>>();
+    let methods = bodies
+        .iter()
+        .map(|body| body["method"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        vec![
+            "group.add",
+            "group.get",
+            "group.list_members",
+            "group.e2ee.get_key_package",
+        ]
+    );
+    assert_eq!(bodies[0]["params"]["body"]["member_did"], bob_did);
+    assert_eq!(bodies[3]["params"]["meta"]["profile"], "anp.group.e2ee.v1");
+    assert_eq!(bodies[3]["params"]["body"]["target_did"], bob_did);
+}
+
+#[test]
+fn group_mutation_im_core_mvp_routes_plain_member_and_update_paths() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice = register_generated_group_identity(
+        &manager,
+        "alice-group-mutation-mvp",
+        "alice",
+        "jwt-alice",
+    );
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group_mutation";
+    let bob_did = "did:wba:awiki.ai:user:bob:e1_bob";
+    let server = TestServer::new(vec![
+        TestResponse::ok(&json_rpc_result(json!({
+            "did": bob_did,
+            "full_handle": "bob.awiki.ai",
+            "domain": "awiki.ai",
+            "status": "active"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "operation_id": "op-add",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {
+                "display_name": "Mutation Group"
+            },
+            "member_role": "owner",
+            "member_status": "active",
+            "member_count": 2,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "members": [{
+                "member_did": bob_did,
+                "member_handle": "bob.awiki.ai",
+                "role": "admin",
+                "status": "active"
+            }],
+            "total": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "operation_id": "op-remove",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {
+                "display_name": "Mutation Group"
+            },
+            "member_role": "owner",
+            "member_status": "active",
+            "member_count": 1,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "members": [],
+            "total": 0,
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "operation_id": "op-update-profile",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "accepted": true,
+            "operation_id": "op-update-policy",
+            "source": "remote_http"
+        }))),
+        TestResponse::ok(&json_rpc_result(json!({
+            "group_did": group_did,
+            "group_profile": {
+                "display_name": "Renamed Mutation Group",
+                "description": "Updated through im-core"
+            },
+            "group_policy": {
+                "admission_mode": "invite-only",
+                "attachments_allowed": false
+            },
+            "member_role": "owner",
+            "member_status": "active",
+            "member_count": 1,
+            "source": "remote_http"
+        }))),
+    ]);
+    write_group_config(workspace.path(), &server.base_url());
+
+    let add = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-mutation-mvp",
+            "group",
+            "add",
+            "--group",
+            group_did,
+            "--member",
+            "bob",
+            "--role",
+            " admin ",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(add["summary"], "Added member to group");
+    assert_eq!(add["data"]["group"]["group_did"], group_did);
+    assert_eq!(add["data"]["member"]["did"], bob_did);
+    assert_eq!(add["data"]["member"]["handle"], "bob");
+    assert_eq!(add["data"]["members"][0]["member_handle"], "bob");
+
+    let remove = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-mutation-mvp",
+            "group",
+            "remove",
+            "--group",
+            group_did,
+            "--member",
+            bob_did,
+            "--reason",
+            " cleanup ",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(remove["summary"], "Removed member from group");
+    assert_eq!(remove["data"]["member"]["did"], bob_did);
+    assert_eq!(remove["data"]["members"].as_array().unwrap().len(), 0);
+
+    let update = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-group-mutation-mvp",
+            "group",
+            "update",
+            "--group",
+            group_did,
+            "--name",
+            " Renamed Mutation Group ",
+            "--description",
+            " Updated through im-core ",
+            "--admission-mode",
+            " invite-only ",
+            "--attachments-allowed=false",
+            "--max-members",
+            " 25 ",
+            "--member-max-messages",
+            "5",
+            "--member-max-total-chars",
+            "4096",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(update["summary"], format!("Updated group {group_did}"));
+    assert_eq!(update["data"]["group"]["name"], "Renamed Mutation Group");
+    assert_eq!(update["data"]["delivery"].as_array().unwrap().len(), 2);
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 10);
+    let bodies = requests
+        .iter()
+        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
+        .collect::<Vec<_>>();
+    let methods = bodies
+        .iter()
+        .map(|body| body["method"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        methods,
+        vec![
+            "lookup",
+            "group.add",
+            "group.get",
+            "group.list_members",
+            "group.remove",
+            "group.get",
+            "group.list_members",
+            "group.update_profile",
+            "group.update_policy",
+            "group.get",
+        ]
+    );
+    assert_eq!(bodies[0]["params"]["handle"], "bob.awiki.ai");
+    assert_eq!(bodies[1]["params"]["body"]["member_did"], bob_did);
+    assert_eq!(bodies[1]["params"]["body"]["role"], "admin");
+    assert!(bodies[1]["params"]["body"].get("reason_text").is_none());
+    assert_eq!(
+        bodies[1]["params"]["auth"]["scheme"],
+        "anp-rfc9421-origin-proof-v1"
+    );
+    assert_eq!(bodies[4]["params"]["body"]["member_did"], bob_did);
+    assert_eq!(bodies[4]["params"]["body"]["reason_text"], "cleanup");
+    assert!(bodies[4]["params"]["body"].get("role").is_none());
+    assert_eq!(
+        bodies[7]["params"]["body"]["group_profile_patch"],
+        json!({
+            "display_name": "Renamed Mutation Group",
+            "description": "Updated through im-core",
+        })
+    );
+    let policy = &bodies[8]["params"]["body"]["group_policy_patch"];
+    assert_eq!(policy["admission_mode"], "invite-only");
+    assert_eq!(policy["attachments_allowed"], false);
+    assert_eq!(policy["max_members"], "25");
+    assert_eq!(policy["member_max_messages"], 5);
+    assert_eq!(policy["member_max_total_chars"], 4096);
+    assert_eq!(policy["message_security_profile"], "transport-protected");
+    assert_eq!(policy["permissions"]["update_policy"], "owner");
+    for index in [1_usize, 4, 7, 8] {
+        assert_eq!(
+            bodies[index]["params"]["meta"]["target"],
+            json!({"kind":"group","did":group_did})
+        );
+        assert_eq!(
+            bodies[index]["params"]["meta"]["profile"],
+            "anp.group.base.v1"
+        );
+    }
+    let db = store::open(&test_paths(workspace.path())).expect("open group store");
+    let snapshot = store::get_group_snapshot(&db, &alice.did, group_did)
+        .expect("cached group snapshot after mutation");
+    assert_eq!(snapshot["name"], "Renamed Mutation Group");
+    assert_eq!(snapshot["member_count"], 1);
+    let members = store::list_cached_group_members(&db, &alice.did, group_did, 100)
+        .expect("cached group members after remove");
+    assert!(members.is_empty());
+}
+
+#[test]
 fn group_e2ee_leave_loads_identity_before_live_leave_request_flow() {
     let workspace = TempDir::new().expect("workspace");
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
@@ -1210,6 +1554,34 @@ fn seed_group_snapshot(
         },
     )
     .expect("seed group snapshot");
+}
+
+fn seed_e2ee_group_snapshot(
+    workspace: &Path,
+    owner_did: &str,
+    credential_name: &str,
+    group_did: &str,
+    role: &str,
+) {
+    let paths = test_paths(workspace);
+    let db = store::open(&paths).expect("open group store");
+    store::ensure_schema(&db).expect("ensure group schema");
+    store::upsert_group(
+        &db,
+        GroupRecord {
+            owner_did: owner_did.to_string(),
+            group_id: group_did.to_string(),
+            group_did: group_did.to_string(),
+            name: "Cached E2EE Group".to_string(),
+            group_owner_did: owner_did.to_string(),
+            my_role: role.to_string(),
+            membership_status: "active".to_string(),
+            metadata: json!({ "message_security_profile": "group-e2ee" }).to_string(),
+            credential_name: credential_name.to_string(),
+            ..GroupRecord::default()
+        },
+    )
+    .expect("seed E2EE group snapshot");
 }
 
 fn path_string(path: &Path) -> String {

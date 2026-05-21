@@ -43,6 +43,54 @@ impl<'a> GroupService<'a> {
         .leave(request, None)
     }
 
+    pub fn add_member(
+        &self,
+        request: super::GroupMemberMutationRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .add_member(request, None)
+    }
+
+    pub fn remove_member(
+        &self,
+        request: super::GroupMemberMutationRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .remove_member(request, None)
+    }
+
+    pub fn update_profile(
+        &self,
+        request: super::GroupUpdateProfileRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .update_profile(request, None)
+    }
+
+    pub fn update_policy(
+        &self,
+        request: super::GroupUpdatePolicyRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .update_policy(request, None)
+    }
+
     pub fn get(&self, group: crate::ids::GroupRef) -> crate::ImResult<super::GroupReadResult> {
         crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,

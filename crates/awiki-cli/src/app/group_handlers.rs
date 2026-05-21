@@ -223,6 +223,7 @@ impl App {
             &format!("Usage: awiki-cli {command_name} --group <GROUP_DID> --member <MEMBER>"),
         )?;
         if !self.globals.dry_run {
+            let manager = self.identity_manager(&resolved);
             let request = message::GroupMemberRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
@@ -236,10 +237,41 @@ impl App {
                 e2ee: bool_flag(command, "e2ee")?.unwrap_or(false),
                 leave_request_id: String::new(),
             };
-            let mut result = if public_action == "add" {
-                message::add_group_member(&resolved, &self.identity_manager(&resolved), request)
+            let mut result = if crate::im_core_adapter::use_im_core_mvp() && !request.e2ee {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                let via_core = if public_action == "add" {
+                    crate::im_core_adapter::groups::add_group_member_via_im_core(
+                        &resolved,
+                        &manager,
+                        &client,
+                        request.clone(),
+                    )
+                } else {
+                    crate::im_core_adapter::groups::remove_group_member_via_im_core(
+                        &resolved,
+                        &manager,
+                        &client,
+                        request.clone(),
+                    )
+                };
+                match via_core {
+                    Err(message::MessageError::GroupNotSupported) => {
+                        if public_action == "add" {
+                            message::add_group_member(&resolved, &manager, request)
+                        } else {
+                            message::remove_group_member(&resolved, &manager, request)
+                        }
+                    }
+                    result => result,
+                }
+            } else if public_action == "add" {
+                message::add_group_member(&resolved, &manager, request)
             } else {
-                message::remove_group_member(&resolved, &self.identity_manager(&resolved), request)
+                message::remove_group_member(&resolved, &manager, request)
             }
             .map_err(group_membership_exit)?;
             result.summary = if public_action == "add" {
@@ -354,27 +386,44 @@ impl App {
             "Usage: awiki-cli group update --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            let result = message::update_group(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::GroupUpdateRequest {
-                    identity_name: self.globals.identity.clone(),
-                    group,
-                    name: string_flag(command, "name"),
-                    description: string_flag(command, "description"),
-                    discoverability: string_flag(command, "discoverability"),
-                    admission_mode: string_flag(command, "admission-mode"),
-                    slug: string_flag(command, "slug"),
-                    goal: string_flag(command, "goal"),
-                    rules: string_flag(command, "rules"),
-                    message_prompt: string_flag(command, "message-prompt"),
-                    doc_url: string_flag(command, "doc-url"),
-                    attachments_allowed: optional_bool(command, "attachments-allowed")?,
-                    max_members: string_flag(command, "max-members"),
-                    member_max_messages: optional_i64(command, "member-max-messages")?,
-                    member_max_total_chars: optional_i64(command, "member-max-total-chars")?,
-                },
-            )
+            let manager = self.identity_manager(&resolved);
+            let request = message::GroupUpdateRequest {
+                identity_name: self.globals.identity.clone(),
+                group,
+                name: string_flag(command, "name"),
+                description: string_flag(command, "description"),
+                discoverability: string_flag(command, "discoverability"),
+                admission_mode: string_flag(command, "admission-mode"),
+                slug: string_flag(command, "slug"),
+                goal: string_flag(command, "goal"),
+                rules: string_flag(command, "rules"),
+                message_prompt: string_flag(command, "message-prompt"),
+                doc_url: string_flag(command, "doc-url"),
+                attachments_allowed: optional_bool(command, "attachments-allowed")?,
+                max_members: string_flag(command, "max-members"),
+                member_max_messages: optional_i64(command, "member-max-messages")?,
+                member_max_total_chars: optional_i64(command, "member-max-total-chars")?,
+            };
+            let result = if crate::im_core_adapter::use_im_core_mvp() {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                match crate::im_core_adapter::groups::update_group_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    request.clone(),
+                ) {
+                    Err(message::MessageError::GroupNotSupported) => {
+                        message::update_group(&resolved, &manager, request)
+                    }
+                    result => result,
+                }
+            } else {
+                message::update_group(&resolved, &manager, request)
+            }
             .map_err(group_exit)?;
             return self.render_group_result("awiki-cli group update", &resolved, result);
         }

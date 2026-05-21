@@ -118,54 +118,38 @@ pub fn build_group_add_rpc_params(
     record: &StoredIdentity,
     request: GroupMemberRequest,
 ) -> Result<Value, MessageError> {
-    let member_did = request.member.trim();
-    if member_did.is_empty() {
-        return Err(MessageError::MemberRequired);
-    }
-
-    let mut body = Map::new();
-    body.insert(
-        "member_did".to_string(),
-        Value::String(member_did.to_string()),
-    );
-    let role = request.role.trim();
-    if !role.is_empty() {
-        body.insert("role".to_string(), Value::String(role.to_string()));
-    }
-    let reason_text = request.reason_text.trim();
-    if !reason_text.is_empty() {
-        body.insert(
-            "reason_text".to_string(),
-            Value::String(reason_text.to_string()),
-        );
-    }
-
-    build_group_mutation_rpc_params(record, &request.group, "group.add", Value::Object(body))
+    let payload = im_core::compat::wire::build_group_add_member_payload(
+        &record.did,
+        &group_member_mutation_request(request)?,
+    )
+    .map_err(group_mutation_wire_error)?;
+    signed_params(
+        record,
+        DirectPayload {
+            method: payload.method,
+            meta: payload.meta,
+            body: payload.body,
+        },
+    )
 }
 
 pub fn build_group_remove_rpc_params(
     record: &StoredIdentity,
     request: GroupMemberRequest,
 ) -> Result<Value, MessageError> {
-    let member_did = request.member.trim();
-    if member_did.is_empty() {
-        return Err(MessageError::MemberRequired);
-    }
-
-    let mut body = Map::new();
-    body.insert(
-        "member_did".to_string(),
-        Value::String(member_did.to_string()),
-    );
-    let reason_text = request.reason_text.trim();
-    if !reason_text.is_empty() {
-        body.insert(
-            "reason_text".to_string(),
-            Value::String(reason_text.to_string()),
-        );
-    }
-
-    build_group_mutation_rpc_params(record, &request.group, "group.remove", Value::Object(body))
+    let payload = im_core::compat::wire::build_group_remove_member_payload(
+        &record.did,
+        &group_member_mutation_request(request)?,
+    )
+    .map_err(group_mutation_wire_error)?;
+    signed_params(
+        record,
+        DirectPayload {
+            method: payload.method,
+            meta: payload.meta,
+            body: payload.body,
+        },
+    )
 }
 
 pub fn build_group_leave_rpc_params(
@@ -180,16 +164,19 @@ pub fn build_group_update_profile_rpc_params(
     group_did: &str,
     patch: Map<String, Value>,
 ) -> Result<Value, MessageError> {
-    if patch.is_empty() {
-        return Err(MessageError::Json(
-            "group profile patch is required".to_string(),
-        ));
-    }
-    build_group_mutation_rpc_params(
-        record,
+    let payload = im_core::compat::wire::build_group_update_profile_patch_payload(
+        &record.did,
         group_did,
-        "group.update_profile",
-        json!({ "group_profile_patch": patch }),
+        patch,
+    )
+    .map_err(group_mutation_wire_error)?;
+    signed_params(
+        record,
+        DirectPayload {
+            method: payload.method,
+            meta: payload.meta,
+            body: payload.body,
+        },
     )
 }
 
@@ -198,16 +185,19 @@ pub fn build_group_update_policy_rpc_params(
     group_did: &str,
     patch: Map<String, Value>,
 ) -> Result<Value, MessageError> {
-    if patch.is_empty() {
-        return Err(MessageError::Json(
-            "group policy patch is required".to_string(),
-        ));
-    }
-    build_group_mutation_rpc_params(
-        record,
+    let payload = im_core::compat::wire::build_group_update_policy_patch_payload(
+        &record.did,
         group_did,
-        "group.update_policy",
-        json!({ "group_policy_patch": patch }),
+        patch,
+    )
+    .map_err(group_mutation_wire_error)?;
+    signed_params(
+        record,
+        DirectPayload {
+            method: payload.method,
+            meta: payload.meta,
+            body: payload.body,
+        },
     )
 }
 
@@ -336,6 +326,27 @@ fn build_group_mutation_rpc_params(
     signed_params(record, payload)
 }
 
+fn group_member_mutation_request(
+    request: GroupMemberRequest,
+) -> Result<im_core::groups::GroupMemberMutationRequest, MessageError> {
+    let member = im_core::ids::Did::parse(&request.member).map_err(group_mutation_wire_error)?;
+    Ok(im_core::groups::GroupMemberMutationRequest {
+        group: im_core::ids::GroupRef::parse(&request.group).map_err(group_mutation_wire_error)?,
+        member,
+        role: optional_trimmed(request.role),
+        reason_text: optional_trimmed(request.reason_text),
+    })
+}
+
+fn optional_trimmed(value: String) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
 fn signed_params(record: &StoredIdentity, payload: DirectPayload) -> Result<Value, MessageError> {
     let origin_proof = build_origin_proof(record, &payload)?;
     Ok(json!({
@@ -356,6 +367,35 @@ fn group_send_wire_error(err: im_core::ImError) -> MessageError {
             if field.as_deref() == Some("text") && message == "message text is required" =>
         {
             MessageError::TextRequired
+        }
+        im_core::ImError::InvalidInput { message, .. } => MessageError::Json(message),
+        err => MessageError::Json(err.to_string()),
+    }
+}
+
+fn group_mutation_wire_error(err: im_core::ImError) -> MessageError {
+    match err {
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("group") && message == "group must not be empty" =>
+        {
+            MessageError::GroupRequired
+        }
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("did") && message == "did must not be empty" =>
+        {
+            MessageError::MemberRequired
+        }
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("profile_patch")
+                && message == "group profile patch is required" =>
+        {
+            MessageError::Json(message)
+        }
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("policy_patch")
+                && message == "group policy patch is required" =>
+        {
+            MessageError::Json(message)
         }
         im_core::ImError::InvalidInput { message, .. } => MessageError::Json(message),
         err => MessageError::Json(err.to_string()),

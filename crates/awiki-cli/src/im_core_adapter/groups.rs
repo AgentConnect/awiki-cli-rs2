@@ -1,7 +1,8 @@
 use im_core::prelude::{
     AuthScope, Cursor, Did, GroupCreateRequest, GroupJoinRequest, GroupLeaveRequest,
-    GroupListRequest, GroupMembersRequest, GroupMessagesRequest, GroupRef, PageLimit,
-    SessionBundle,
+    GroupListRequest, GroupMemberMutationRequest, GroupMembersRequest, GroupMessagesRequest,
+    GroupPolicyPatch, GroupProfilePatch, GroupRef, GroupUpdatePolicyRequest,
+    GroupUpdateProfileRequest, Handle, PageLimit, SessionBundle,
 };
 use serde_json::{json, Value};
 
@@ -150,6 +151,186 @@ pub fn leave_group_via_im_core(
             "group": request.group,
         }),
         summary: format!("Left group {}", request.group),
+        warnings: message::compact_warnings(warnings),
+    })
+}
+
+pub fn add_group_member_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    request: message::GroupMemberRequest,
+) -> Result<message::CommandResult, MessageError> {
+    mutate_group_member_via_im_core(resolved, manager, client, request, "add")
+}
+
+pub fn remove_group_member_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    request: message::GroupMemberRequest,
+) -> Result<message::CommandResult, MessageError> {
+    mutate_group_member_via_im_core(resolved, manager, client, request, "remove")
+}
+
+fn mutate_group_member_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    request: message::GroupMemberRequest,
+    action: &str,
+) -> Result<message::CommandResult, MessageError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageError::MemberRequired);
+    }
+    if request.e2ee {
+        return Err(MessageError::GroupNotSupported);
+    }
+    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let pre_mutation_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
+    if pre_mutation_snapshot
+        .as_ref()
+        .is_some_and(group_snapshot_uses_e2ee)
+    {
+        return Err(MessageError::GroupNotSupported);
+    }
+    let member = resolve_group_member_via_directory(resolved, client, &request.member)?;
+    let sdk_request = GroupMemberMutationRequest {
+        group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+        member: Did::parse(&member.did).map_err(im_error_to_message_error)?,
+        role: optional_string(&request.role),
+        reason_text: optional_string(&request.reason_text),
+    };
+    let bridge_request = im_core::compat::groups::GroupMemberMutationBridgeRequest {
+        request: sdk_request,
+        credentials: group_lifecycle_credentials(&record),
+    };
+    let bridge_result = if action == "add" {
+        im_core::compat::groups::add_group_member_with_bridge(
+            client,
+            group_session_provider(resolved, manager, client, &record),
+            group_transport(resolved, manager, &record, Profile::RpcDefault),
+            bridge_request,
+        )
+    } else {
+        im_core::compat::groups::remove_group_member_with_bridge(
+            client,
+            group_session_provider(resolved, manager, client, &record),
+            group_transport(resolved, manager, &record, Profile::RpcDefault),
+            bridge_request,
+        )
+    }
+    .map_err(im_error_to_message_error)?;
+    let raw = bridge_result.raw;
+    let mut warnings = group_control_warnings(resolved, bridge_result.warnings);
+    warnings.extend(message::sync_group_state(
+        resolved,
+        manager,
+        &record,
+        &request.group,
+        true,
+    ));
+    let snapshot = message::cached_group_snapshot(resolved, &record, &request.group)
+        .or_else(|| message::normalize_group_snapshot(&raw))
+        .unwrap_or_else(|| json!({ "group_did": request.group }));
+    let members =
+        message::cached_group_members(resolved, &record, &request.group, 100).unwrap_or_default();
+    Ok(message::CommandResult {
+        data: json!({
+            "group": snapshot,
+            "members": members,
+            "delivery": raw,
+            "member": {
+                "did": member.did,
+                "handle": member.handle,
+            },
+        }),
+        summary: format!("Updated group membership via {action}"),
+        warnings: message::compact_warnings(warnings),
+    })
+}
+
+pub fn update_group_via_im_core(
+    resolved: &Resolved,
+    manager: &Manager,
+    client: &im_core::ImClient,
+    request: message::GroupUpdateRequest,
+) -> Result<message::CommandResult, MessageError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageError::GroupRequired);
+    }
+    let profile_patch = group_profile_patch(&request);
+    let policy_patch = group_policy_patch(&request);
+    if profile_patch == GroupProfilePatch::default() && policy_patch == GroupPolicyPatch::default()
+    {
+        return Err(MessageError::Internal(
+            "group update requires at least one mutable field".to_string(),
+        ));
+    }
+    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let cached_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
+    if cached_snapshot
+        .as_ref()
+        .is_some_and(group_snapshot_uses_e2ee)
+    {
+        return Err(MessageError::GroupNotSupported);
+    }
+    let group = GroupRef::parse(&request.group).map_err(im_error_to_message_error)?;
+    let mut responses = Vec::new();
+    let mut warnings = Vec::new();
+    if profile_patch != GroupProfilePatch::default() {
+        let bridge_result = im_core::compat::groups::update_group_profile_with_bridge(
+            client,
+            group_session_provider(resolved, manager, client, &record),
+            group_transport(resolved, manager, &record, Profile::RpcDefault),
+            im_core::compat::groups::GroupUpdateProfileBridgeRequest {
+                request: GroupUpdateProfileRequest {
+                    group: group.clone(),
+                    patch: profile_patch,
+                },
+                credentials: group_lifecycle_credentials(&record),
+            },
+        )
+        .map_err(im_error_to_message_error)?;
+        warnings.extend(bridge_result.warnings);
+        responses.push(bridge_result.raw);
+    }
+    if policy_patch != GroupPolicyPatch::default() {
+        let bridge_result = im_core::compat::groups::update_group_policy_with_bridge(
+            client,
+            group_session_provider(resolved, manager, client, &record),
+            group_transport(resolved, manager, &record, Profile::RpcDefault),
+            im_core::compat::groups::GroupUpdatePolicyBridgeRequest {
+                request: GroupUpdatePolicyRequest {
+                    group,
+                    patch: policy_patch,
+                },
+                credentials: group_lifecycle_credentials(&record),
+            },
+        )
+        .map_err(im_error_to_message_error)?;
+        warnings.extend(bridge_result.warnings);
+        responses.push(bridge_result.raw);
+    }
+    let mut warnings = group_control_warnings(resolved, warnings);
+    warnings.extend(message::sync_group_state(
+        resolved,
+        manager,
+        &record,
+        &request.group,
+        false,
+    ));
+    let snapshot = message::cached_group_snapshot(resolved, &record, &request.group)
+        .unwrap_or_else(|| json!({ "group_did": request.group }));
+    Ok(message::CommandResult {
+        data: json!({
+            "group": snapshot,
+            "delivery": responses,
+        }),
+        summary: format!("Updated group {}", request.group),
         warnings: message::compact_warnings(warnings),
     })
 }
@@ -463,6 +644,57 @@ fn group_create_request(
     })
 }
 
+fn resolve_group_member_via_directory(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    member: &str,
+) -> Result<message::TargetResolution, MessageError> {
+    let member = member.trim();
+    if member.is_empty() {
+        return Err(MessageError::MemberRequired);
+    }
+    if member.starts_with("did:") {
+        return Ok(message::TargetResolution {
+            did: member.to_string(),
+            handle: String::new(),
+        });
+    }
+    let handle = Handle::parse(member, &resolved.did_domain).map_err(im_error_to_message_error)?;
+    let lookup = im_core::compat::directory::lookup_handle_with_bridge(
+        client,
+        handle.clone(),
+        DirectoryLegacyTransport { resolved },
+    )
+    .map_err(im_error_to_message_error)?;
+    Ok(message::TargetResolution {
+        did: lookup.did.as_str().to_string(),
+        handle: normalize_handle_value(lookup.handle.as_str()),
+    })
+}
+
+fn group_profile_patch(request: &message::GroupUpdateRequest) -> GroupProfilePatch {
+    GroupProfilePatch {
+        name: optional_string(&request.name),
+        description: optional_string(&request.description),
+        discoverability: optional_string(&request.discoverability),
+        slug: optional_string(&request.slug),
+        goal: optional_string(&request.goal),
+        rules: optional_string(&request.rules),
+        message_prompt: optional_string(&request.message_prompt),
+        doc_url: optional_string(&request.doc_url),
+    }
+}
+
+fn group_policy_patch(request: &message::GroupUpdateRequest) -> GroupPolicyPatch {
+    GroupPolicyPatch {
+        admission_mode: optional_string(&request.admission_mode),
+        attachments_allowed: request.attachments_allowed,
+        max_members: optional_string(&request.max_members),
+        member_max_messages: request.member_max_messages,
+        member_max_total_chars: request.member_max_total_chars,
+    }
+}
+
 fn group_messages_local_cache_result(
     request: &message::GroupMessagesRequest,
     messages: Vec<Value>,
@@ -508,6 +740,10 @@ struct GroupReadLegacyTransport<'a> {
     profile: Profile,
 }
 
+struct DirectoryLegacyTransport<'a> {
+    resolved: &'a Resolved,
+}
+
 impl im_core::compat::groups::BridgeAuthenticatedRpcTransport for GroupReadLegacyTransport<'_> {
     fn authenticated_rpc(
         &mut self,
@@ -525,6 +761,20 @@ impl im_core::compat::groups::BridgeAuthenticatedRpcTransport for GroupReadLegac
             params,
         )
         .map_err(message_error_to_im_error)
+    }
+}
+
+impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacyTransport<'_> {
+    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> im_core::ImResult<Value> {
+        let client = crate::identity::client::Client::new(self.resolved)
+            .map_err(identity_error_to_im_error)?;
+        let profile = match method {
+            "get_public_profile" => Profile::RpcReadHeavy,
+            _ => Profile::RpcDefault,
+        };
+        client
+            .rpc_call_profile(profile, endpoint, method, params)
+            .map_err(identity_error_to_im_error)
     }
 }
 
@@ -678,6 +928,18 @@ fn value_string(value: Option<&Value>) -> String {
         .to_string()
 }
 
+fn normalize_handle_value(value: &str) -> String {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return String::new();
+    }
+    let value = value.trim_start_matches("wba://");
+    match value.find('.') {
+        Some(index) if index > 0 => value[..index].to_string(),
+        _ => value.to_string(),
+    }
+}
+
 fn im_error_to_message_error(err: im_core::ImError) -> MessageError {
     match err {
         im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("group") => {
@@ -725,6 +987,33 @@ fn message_error_to_im_error(err: MessageError) -> im_core::ImError {
         MessageError::IdentityRequired(message) => im_core::ImError::IdentityNotReady {
             identity: message,
             missing: Vec::new(),
+        },
+        err => im_core::ImError::Internal {
+            message: err.to_string(),
+        },
+    }
+}
+
+fn identity_error_to_im_error(err: crate::identity::IdentityError) -> im_core::ImError {
+    match err {
+        crate::identity::IdentityError::InvalidInput(message) => {
+            im_core::ImError::invalid_input(None, message)
+        }
+        crate::identity::IdentityError::NotFound(message)
+        | crate::identity::IdentityError::NoDefaultIdentity(message) => {
+            im_core::ImError::IdentityNotFound { selector: message }
+        }
+        crate::identity::IdentityError::AuthRequired(_) => im_core::ImError::AuthRequired,
+        crate::identity::IdentityError::Service(service) => im_core::ImError::Service {
+            status_code: (service.status_code != 0).then_some(service.status_code),
+            code: (service.rpc_code != 0).then(|| service.rpc_code.to_string()),
+            message: service.message,
+        },
+        crate::identity::IdentityError::Io(err) => im_core::ImError::Io {
+            detail: err.to_string(),
+        },
+        crate::identity::IdentityError::Json(err) => im_core::ImError::Serialization {
+            detail: err.to_string(),
         },
         err => im_core::ImError::Internal {
             message: err.to_string(),

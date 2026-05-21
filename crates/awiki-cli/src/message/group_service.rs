@@ -573,10 +573,10 @@ pub(crate) fn persist_group_members(
     group_did: &str,
     raw: &Value,
 ) -> Vec<String> {
-    let members = values_from_array(raw.get("members"));
-    if members.is_empty() {
+    if raw.get("members").is_none() {
         return Vec::new();
     }
+    let members = values_from_array(raw.get("members"));
     let mut phase = crate::traceutil::local_db_phase("persist_group_members");
     let result = (|| {
         let Ok(mut connection) = store::open(&resolved.paths) else {

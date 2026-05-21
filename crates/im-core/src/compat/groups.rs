@@ -41,6 +41,24 @@ pub struct GroupLeaveBridgeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct GroupMemberMutationBridgeRequest {
+    pub request: crate::groups::GroupMemberMutationRequest,
+    pub credentials: GroupLifecycleCredentials,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupUpdateProfileBridgeRequest {
+    pub request: crate::groups::GroupUpdateProfileRequest,
+    pub credentials: GroupLifecycleCredentials,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupUpdatePolicyBridgeRequest {
+    pub request: crate::groups::GroupUpdatePolicyRequest,
+    pub credentials: GroupLifecycleCredentials,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct GroupLifecycleCredentials {
     pub identity_name: String,
     pub did_document: Option<Value>,
@@ -115,6 +133,82 @@ where
         CompatTransport(transport),
     )
     .leave(request.request, Some(request.credentials.into_internal()))
+}
+
+#[doc(hidden)]
+pub fn add_group_member_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: GroupMemberMutationBridgeRequest,
+) -> crate::ImResult<crate::groups::GroupReadResult>
+where
+    P: BridgeGroupSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        client,
+        CompatGroupSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .add_member(request.request, Some(request.credentials.into_internal()))
+}
+
+#[doc(hidden)]
+pub fn remove_group_member_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: GroupMemberMutationBridgeRequest,
+) -> crate::ImResult<crate::groups::GroupReadResult>
+where
+    P: BridgeGroupSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        client,
+        CompatGroupSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .remove_member(request.request, Some(request.credentials.into_internal()))
+}
+
+#[doc(hidden)]
+pub fn update_group_profile_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: GroupUpdateProfileBridgeRequest,
+) -> crate::ImResult<crate::groups::GroupReadResult>
+where
+    P: BridgeGroupSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        client,
+        CompatGroupSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .update_profile(request.request, Some(request.credentials.into_internal()))
+}
+
+#[doc(hidden)]
+pub fn update_group_policy_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: GroupUpdatePolicyBridgeRequest,
+) -> crate::ImResult<crate::groups::GroupReadResult>
+where
+    P: BridgeGroupSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        client,
+        CompatGroupSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .update_policy(request.request, Some(request.credentials.into_internal()))
 }
 
 #[doc(hidden)]

@@ -100,6 +100,60 @@ pub fn build_group_leave_payload(
 }
 
 #[doc(hidden)]
+pub fn build_group_add_member_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupMemberMutationRequest,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_add_member_payload(sender_did, request)
+}
+
+#[doc(hidden)]
+pub fn build_group_remove_member_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupMemberMutationRequest,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_remove_member_payload(sender_did, request)
+}
+
+#[doc(hidden)]
+pub fn build_group_update_profile_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupUpdateProfileRequest,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_update_profile_payload(sender_did, request)
+}
+
+#[doc(hidden)]
+pub fn build_group_update_profile_patch_payload(
+    sender_did: &str,
+    group_did: &str,
+    patch: serde_json::Map<String, Value>,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_update_profile_patch_payload(
+        sender_did, group_did, patch,
+    )
+}
+
+#[doc(hidden)]
+pub fn build_group_update_policy_payload(
+    sender_did: &str,
+    request: &crate::groups::GroupUpdatePolicyRequest,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_update_policy_payload(sender_did, request)
+}
+
+#[doc(hidden)]
+pub fn build_group_update_policy_patch_payload(
+    sender_did: &str,
+    group_did: &str,
+    patch: serde_json::Map<String, Value>,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_update_policy_patch_payload(
+        sender_did, group_did, patch,
+    )
+}
+
+#[doc(hidden)]
 pub fn build_group_get_rpc_params(sender_did: &str, group_did: &str) -> crate::ImResult<Value> {
     crate::internal::wire::group::build_group_get_rpc_params(sender_did, group_did)
 }

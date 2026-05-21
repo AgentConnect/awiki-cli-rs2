@@ -74,6 +74,58 @@ where
         self.signed_group_rpc(payload, credentials)
     }
 
+    pub(crate) fn add_member(
+        mut self,
+        request: crate::groups::GroupMemberMutationRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session()?;
+        let payload = crate::internal::wire::group::build_group_add_member_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc(payload, credentials)
+    }
+
+    pub(crate) fn remove_member(
+        mut self,
+        request: crate::groups::GroupMemberMutationRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session()?;
+        let payload = crate::internal::wire::group::build_group_remove_member_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc(payload, credentials)
+    }
+
+    pub(crate) fn update_profile(
+        mut self,
+        request: crate::groups::GroupUpdateProfileRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session()?;
+        let payload = crate::internal::wire::group::build_group_update_profile_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc(payload, credentials)
+    }
+
+    pub(crate) fn update_policy(
+        mut self,
+        request: crate::groups::GroupUpdatePolicyRequest,
+        credentials: Option<GroupLifecycleCredentials>,
+    ) -> crate::ImResult<crate::groups::GroupReadResult> {
+        self.ensure_group_session()?;
+        let payload = crate::internal::wire::group::build_group_update_policy_payload(
+            self.client.did().as_str(),
+            &request,
+        )?;
+        self.signed_group_rpc(payload, credentials)
+    }
+
     fn ensure_group_session(&self) -> crate::ImResult<crate::auth::SessionBundle> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)
@@ -307,6 +359,132 @@ mod tests {
         assert_eq!(policy["max_members"], "500");
         assert_eq!(policy["message_security_profile"], "group-e2ee");
         assert_eq!(policy["bootstrap_security_profile"], "group-e2ee");
+    }
+
+    #[test]
+    fn group_mutation_runtime_builds_add_remove_and_update_rpc() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let credentials = fixture.credentials();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group = crate::ids::GroupRef::parse("did:example:group").unwrap();
+        let member = crate::ids::Did::parse("did:example:bob").unwrap();
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"accepted":true}),
+            },
+        )
+        .add_member(
+            crate::groups::GroupMemberMutationRequest {
+                group: group.clone(),
+                member: member.clone(),
+                role: Some(" admin ".to_string()),
+                reason_text: Some(" invite ".to_string()),
+            },
+            Some(credentials.clone()),
+        )
+        .unwrap();
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"accepted":true}),
+            },
+        )
+        .remove_member(
+            crate::groups::GroupMemberMutationRequest {
+                group: group.clone(),
+                member,
+                role: Some("ignored".to_string()),
+                reason_text: Some(" cleanup ".to_string()),
+            },
+            Some(credentials.clone()),
+        )
+        .unwrap();
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"accepted":true}),
+            },
+        )
+        .update_profile(
+            crate::groups::GroupUpdateProfileRequest {
+                group: group.clone(),
+                patch: crate::groups::GroupProfilePatch {
+                    name: Some(" Renamed ".to_string()),
+                    description: Some(" updated ".to_string()),
+                    ..crate::groups::GroupProfilePatch::default()
+                },
+            },
+            Some(credentials.clone()),
+        )
+        .unwrap();
+
+        GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"accepted":true}),
+            },
+        )
+        .update_policy(
+            crate::groups::GroupUpdatePolicyRequest {
+                group,
+                patch: crate::groups::GroupPolicyPatch {
+                    admission_mode: Some(" invite-only ".to_string()),
+                    attachments_allowed: Some(false),
+                    max_members: Some(" 25 ".to_string()),
+                    member_max_messages: Some(5),
+                    member_max_total_chars: Some(4096),
+                },
+            },
+            Some(credentials),
+        )
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[0].method, "group.add");
+        assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
+        assert_eq!(
+            calls[0].params["meta"]["target"],
+            json!({"kind":"group","did":"did:example:group"})
+        );
+        assert_eq!(calls[0].params["body"]["member_did"], "did:example:bob");
+        assert_eq!(calls[0].params["body"]["role"], "admin");
+        assert_eq!(calls[0].params["body"]["reason_text"], "invite");
+        assert_eq!(
+            calls[0].params["auth"]["scheme"],
+            crate::internal::proof::origin::ORIGIN_PROOF_SCHEME
+        );
+        assert_eq!(calls[1].method, "group.remove");
+        assert_eq!(calls[1].params["body"]["member_did"], "did:example:bob");
+        assert_eq!(calls[1].params["body"]["reason_text"], "cleanup");
+        assert!(calls[1].params["body"].get("role").is_none());
+        assert_eq!(calls[2].method, "group.update_profile");
+        assert_eq!(
+            calls[2].params["body"]["group_profile_patch"],
+            json!({"display_name":"Renamed","description":"updated"})
+        );
+        assert_eq!(calls[3].method, "group.update_policy");
+        let policy = &calls[3].params["body"]["group_policy_patch"];
+        assert_eq!(policy["admission_mode"], "invite-only");
+        assert_eq!(policy["attachments_allowed"], false);
+        assert_eq!(policy["max_members"], "25");
+        assert_eq!(policy["member_max_messages"], 5);
+        assert_eq!(policy["member_max_total_chars"], 4096);
+        assert_eq!(policy["message_security_profile"], "transport-protected");
+        assert_eq!(policy["permissions"]["update_policy"], "owner");
     }
 
     #[derive(Clone)]
