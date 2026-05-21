@@ -7,8 +7,83 @@ use crate::output::ExitError;
 use serde_json::{json, Map, Value};
 use std::fs;
 
+struct MsgSendPlan<'a> {
+    identity: &'a str,
+    to: &'a str,
+    group: &'a str,
+    text: &'a str,
+    message_type: &'a str,
+    file_path: &'a str,
+    mime_type: &'a str,
+    has_attachment: bool,
+}
+
 impl App {
     pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if crate::im_core_adapter::use_im_core_mvp()
+            && string_flag(command, "group").trim().is_empty()
+        {
+            return self.run_msg_send_im_core_mvp(command);
+        }
+        self.run_msg_send_legacy(command)
+    }
+
+    fn run_msg_send_im_core_mvp(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let file_path = string_flag(command, "file");
+        let mime_type = string_flag(command, "mime-type");
+        if file_path.trim().is_empty() && !mime_type.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "mime_type requires an attachment file",
+                "Use --mime-type only together with --file.",
+            ));
+        }
+
+        let resolved = self.resolve_config_for_workspace()?;
+        let request =
+            crate::im_core_adapter::messages::send_message_request(command, &resolved.did_domain)?;
+        if self.globals.dry_run {
+            return self.render_msg_send_plan(
+                &resolved,
+                MsgSendPlan {
+                    identity: &self.globals.identity,
+                    to: &string_flag(command, "to"),
+                    group: "",
+                    text: &string_flag(command, "text"),
+                    message_type: &string_flag(command, "type"),
+                    file_path: "",
+                    mime_type: "",
+                    has_attachment: false,
+                },
+            );
+        }
+
+        let manager = self.identity_manager(&resolved);
+        let client = crate::im_core_adapter::build_im_client(
+            &resolved,
+            &manager,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+        )?;
+        client
+            .auth()
+            .ensure_session(im_core::prelude::AuthScope::Messaging)
+            .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg send"))?;
+
+        let legacy_request = crate::im_core_adapter::messages::legacy_direct_text_send_request(
+            &self.globals.identity,
+            request,
+        )?;
+        let result = message::send(&resolved, &manager, legacy_request).map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and the message service is reachable.",
+            )
+        })?;
+        self.render_message_result("awiki-cli msg send", &resolved, result)
+    }
+
+    fn run_msg_send_legacy(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let mut text = string_flag(command, "text");
         let to = string_flag(command, "to");
         let group = string_flag(command, "group");
@@ -83,13 +158,33 @@ impl App {
             return self.render_message_result("awiki-cli msg send", &resolved, result);
         }
 
+        self.render_msg_send_plan(
+            &resolved,
+            MsgSendPlan {
+                identity: &self.globals.identity,
+                to: &to,
+                group: &group,
+                text: &text,
+                message_type: &message_type,
+                file_path: &file_path,
+                mime_type: &mime_type,
+                has_attachment,
+            },
+        )
+    }
+
+    fn render_msg_send_plan(
+        &self,
+        resolved: &Resolved,
+        input: MsgSendPlan<'_>,
+    ) -> Result<(), ExitError> {
         let mut plan = Map::new();
         plan.insert(
             "action".to_string(),
             Value::String(
-                if has_attachment {
+                if input.has_attachment {
                     "attachment.send"
-                } else if group.trim().is_empty() {
+                } else if input.group.trim().is_empty() {
                     "direct.send"
                 } else {
                     "group.send"
@@ -99,15 +194,18 @@ impl App {
         );
         plan.insert(
             "identity".to_string(),
-            Value::String(self.globals.identity.clone()),
+            Value::String(input.identity.to_string()),
         );
-        plan.insert("target".to_string(), target_value(&to, &group, &resolved));
+        plan.insert(
+            "target".to_string(),
+            target_value(input.to, input.group, resolved),
+        );
         plan.insert(
             "message_type".to_string(),
-            Value::String(if has_attachment {
+            Value::String(if input.has_attachment {
                 "attachment_manifest".to_string()
             } else {
-                default_string(&message_type, "text")
+                default_string(input.message_type, "text")
             }),
         );
         plan.insert(
@@ -116,20 +214,20 @@ impl App {
         );
         plan.insert(
             "transport".to_string(),
-            Value::String(if has_attachment {
+            Value::String(if input.has_attachment {
                 "http".to_string()
             } else {
                 resolved.runtime_mode.clone()
             }),
         );
         plan.insert("local_writes".to_string(), json!(["messages"]));
-        if has_attachment {
+        if input.has_attachment {
             plan.insert(
                 "attachment".to_string(),
                 json!({
-                    "path": file_path,
-                    "mime_type": mime_type,
-                    "caption": text,
+                    "path": input.file_path,
+                    "mime_type": input.mime_type,
+                    "caption": input.text,
                 }),
             );
         }

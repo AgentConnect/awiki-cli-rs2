@@ -275,6 +275,124 @@ fn msg_dry_run_plans_match_go_contracts() {
 }
 
 #[test]
+fn msg_send_im_core_mvp_dry_run_routes_direct_text_and_keeps_group_legacy() {
+    let workspace = TempDir::new().expect("workspace");
+    let direct = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--text",
+            "hello",
+            "--secure",
+            "plain",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(direct["summary"], "Dry run: message send planned");
+    assert_eq!(direct["data"]["plan"]["action"], "direct.send");
+    assert_eq!(direct["data"]["plan"]["identity"], "alice");
+    assert_eq!(
+        direct["data"]["plan"]["target"],
+        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+    );
+
+    let text_path = workspace.path().join("body.txt");
+    std::fs::write(&text_path, "hello from file").expect("write text file");
+    let text_file = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--text-file",
+            text_path.to_str().unwrap(),
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(text_file["data"]["plan"]["action"], "direct.send");
+
+    let group = success_json(&awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--group",
+            "did:wba:awiki.ai:groups:demo:e1_group",
+            "--text",
+            "hello group",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(group["data"]["plan"]["action"], "group.send");
+    assert_eq!(
+        group["data"]["plan"]["target"],
+        json!({ "did": "did:wba:awiki.ai:groups:demo:e1_group", "kind": "group" })
+    );
+}
+
+#[test]
+fn msg_send_im_core_mvp_rejects_attachment_and_secure_direct() {
+    let workspace = TempDir::new().expect("workspace");
+
+    let attachment = awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--text",
+            "caption",
+            "--file",
+            "/tmp/demo.txt",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    );
+    assert_code(&attachment, 2);
+    let attachment = error_json(&attachment);
+    assert_eq!(attachment["error"]["code"], "unsupported_capability");
+    assert_contains(&attachment["error"]["message"], "attachments");
+
+    let secure = awiki_cmd_with_env(
+        &[
+            "--dry-run",
+            "--identity",
+            "alice",
+            "msg",
+            "send",
+            "--to",
+            "bob",
+            "--text",
+            "secret",
+            "--secure",
+            "on",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    );
+    assert_code(&secure, 2);
+    let secure = error_json(&secure);
+    assert_eq!(secure["error"]["code"], "unsupported_capability");
+    assert_contains(&secure["error"]["message"], "secure direct");
+}
+
+#[test]
 fn msg_secure_dry_run_plans_match_go_contracts() {
     let workspace = TempDir::new().expect("workspace");
 
@@ -587,6 +705,10 @@ fn msg_required_flag_errors_match_go_cobra_boundary() {
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
+    awiki_cmd_with_env(args, workspace, &[])
+}
+
+fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -598,6 +720,9 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT");
+    for (key, value) in envs {
+        command.env(key, value);
+    }
     command.output().expect("run awiki-cli")
 }
 

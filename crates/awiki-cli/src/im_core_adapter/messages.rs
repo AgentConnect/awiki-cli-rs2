@@ -7,6 +7,7 @@ use im_core::prelude::{
 };
 
 use crate::cli::ParsedCommand;
+use crate::message;
 use crate::output::ExitError;
 
 pub fn send_message_request(
@@ -67,6 +68,62 @@ pub fn history_request(
             cursor: optional_cursor(command)?,
         },
     ))
+}
+
+pub fn legacy_direct_text_send_request(
+    identity_name: &str,
+    request: SendMessageRequest,
+) -> Result<message::SendRequest, ExitError> {
+    let target = match request.target {
+        MessageTarget::Direct(peer) => peer.as_str().to_string(),
+        MessageTarget::Group(_) => {
+            return Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "group send is not routed through the Phase 1E IM Core adapter.",
+                "Use the legacy group send path until group message migration is in scope.",
+            ));
+        }
+    };
+    let (text, message_type) = match request.body {
+        MessageBody::Text { text, kind } => (text, legacy_message_type(kind)),
+        MessageBody::Attachment { .. } => {
+            return Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "attachments are not supported by the Phase 1 IM Core adapter.",
+                "Use the existing legacy attachment command path until attachment migration starts.",
+            ));
+        }
+    };
+    let secure_mode = match request.security {
+        MessageSecurityMode::DefaultPlain => String::new(),
+        MessageSecurityMode::Plain => "off".to_string(),
+        MessageSecurityMode::SecureDirect => {
+            return Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "secure direct messages are not supported by the Phase 1 IM Core adapter.",
+                "Use the existing legacy secure command path until secure migration starts.",
+            ));
+        }
+        MessageSecurityMode::GroupE2ee => {
+            return Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "group E2EE is not supported by the Phase 1 IM Core adapter.",
+                "Use the existing legacy group E2EE command path until secure migration starts.",
+            ));
+        }
+    };
+    Ok(message::SendRequest {
+        identity_name: identity_name.to_string(),
+        target,
+        text,
+        message_type,
+        secure_mode,
+        ..message::SendRequest::default()
+    })
 }
 
 fn message_target(
@@ -147,6 +204,13 @@ fn message_kind(raw: &str) -> Result<MessageKind, ExitError> {
             format!("message type {value:?} is not supported by the Phase 1 IM Core adapter."),
             "Use --type text or --type markdown.",
         )),
+    }
+}
+
+fn legacy_message_type(kind: MessageKind) -> String {
+    match kind {
+        MessageKind::Text => "text".to_string(),
+        MessageKind::Markdown => "markdown".to_string(),
     }
 }
 

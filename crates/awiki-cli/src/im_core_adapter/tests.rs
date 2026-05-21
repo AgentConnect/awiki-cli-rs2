@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use im_core::prelude::{
-    AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody, MessageSecurityMode,
-    MessageTarget, ThreadRef, VerificationInput,
+    AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody,
+    MessageDeliveryOptions, MessageKind, MessageSecurityMode, MessageTarget, SendMessageRequest,
+    ThreadRef, VerificationInput,
 };
 
 use crate::cli::ParsedCommand;
@@ -199,6 +200,42 @@ fn send_message_request_builds_direct_text_dto() {
         MessageBody::Text { text, .. } if text == "hello"
     ));
     assert_eq!(request.security, MessageSecurityMode::DefaultPlain);
+}
+
+#[test]
+fn legacy_direct_text_send_request_maps_sdk_dto_to_legacy_request() {
+    let command = command_with_flags([
+        ("to", "bob"),
+        ("text", "hello"),
+        ("type", "markdown"),
+        ("secure", "plain"),
+    ]);
+    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let legacy = messages::legacy_direct_text_send_request("alice", request).unwrap();
+
+    assert_eq!(legacy.identity_name, "alice");
+    assert_eq!(legacy.target, "bob.awiki.test");
+    assert_eq!(legacy.text, "hello");
+    assert_eq!(legacy.message_type, "markdown");
+    assert_eq!(legacy.secure_mode, "off");
+    assert_eq!(legacy.group, "");
+}
+
+#[test]
+fn legacy_direct_text_send_request_rejects_group_dto() {
+    let request = SendMessageRequest {
+        target: MessageTarget::Group(GroupRef::parse("did:example:group").unwrap()),
+        body: MessageBody::Text {
+            text: "hello group".to_string(),
+            kind: MessageKind::Text,
+        },
+        security: MessageSecurityMode::Plain,
+        client_message_id: None,
+        delivery: MessageDeliveryOptions::default(),
+    };
+    let err = messages::legacy_direct_text_send_request("alice", request).unwrap_err();
+    assert_eq!(err.detail.code, "unsupported_capability");
+    assert!(err.detail.message.contains("group send"));
 }
 
 #[test]
