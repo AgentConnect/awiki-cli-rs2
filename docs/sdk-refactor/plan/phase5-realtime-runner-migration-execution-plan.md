@@ -54,7 +54,7 @@ Phase 5 执行计划把这个目标拆成 PR：
 ```text
 PR 5A：Realtime DTO / service skeleton
 PR 5B：WebSocket frame classifier / pending dispatch / notification queue
-PR 5C：reconnect / heartbeat / session-loop decisions
+PR 5C：reconnect / heartbeat / session loop decisions
 PR 5D：notification -> ImEvent projection
 PR 5E：Realtime transport boundary and connect handshake
 PR 5F：RealtimeHandle / runner / run_until_shutdown
@@ -201,6 +201,8 @@ pub enum RealtimeExitReason {
 }
 ```
 
+`HostNotificationEvent` 可以作为 SDK 领域事件存在；真正 delivery sink 仍在 CLI。
+
 不进入 public API：
 
 ```text
@@ -284,23 +286,23 @@ compat-only
 
 ```text
 cargo test -p im-core realtime
-cargo test -p awiki-cli --test <relevant_runtime_contract>
 rg import fence
 ```
 
-如果当前没有 precise runtime contract，可以用：
+若 PR 涉及当前已有 runtime listener integration tests，使用明确的 test target：
 
 ```text
-cargo test -p awiki-cli listener_wsclient
-cargo test -p awiki-cli listener_session_loop
+cargo test -p awiki-cli --test runtime_listener_wsclient_contract
+cargo test -p awiki-cli --test runtime_listener_session_loop_contract
 ```
+
+如果某个 target 在当前仓库不存在，文档或 PR prompt 必须标注为“待新增”，不要当作当前已有测试执行。
 
 ### 8.2 Optional integration：合并前或本地补跑
 
 ```text
 cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
 cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
-cargo test -p awiki-cli --test runtime_listener_session_loop_contract
 cargo test -p awiki-cli --test msg_contract
 cargo test -p awiki-cli --test group_contract
 ```
@@ -422,7 +424,7 @@ host notification delivery
 
 ```bash
 cargo test -p im-core realtime_frame
-cargo test -p awiki-cli listener_wsclient
+cargo test -p awiki-cli --test runtime_listener_wsclient_contract
 ```
 
 ### 10.5 Optional integration
@@ -493,8 +495,10 @@ log file rotation
 
 ```bash
 cargo test -p im-core realtime_loop
-cargo test -p awiki-cli listener_session_loop
+cargo test -p awiki-cli --test runtime_listener_session_loop_contract
 ```
+
+如果 `runtime_listener_session_loop_contract` 尚不存在，先新增明确 target，或只跑对应 im-core unit tests，不使用模糊 Cargo filter。
 
 ### 11.5 Optional integration
 
@@ -638,13 +642,12 @@ runtime mode config write
 
 ```bash
 cargo test -p im-core realtime_connect
-cargo test -p awiki-cli listener_wsclient
+cargo test -p awiki-cli --test runtime_listener_wsclient_contract
 ```
 
 ### 13.5 Manual / live / system
 
 ```bash
-# 仅专门实时连接验证时运行
 awiki-cli runtime listener run
 ```
 

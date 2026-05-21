@@ -28,7 +28,7 @@ AttachmentInput::LocalFile
 AttachmentInput::Bytes
 AttachmentDestination::LocalFile
 AttachmentDestination::Memory
-manifest / digest / slot / upload / commit / ticket / temp file / atomic write
+manifest / digest / slot / upload / commit / ticket / temp file / controlled atomic write
 ```
 
 CLI 仍然保留：
@@ -39,7 +39,7 @@ CLI 仍然保留：
 --output
 overwrite policy
 path validation
-file permission
+file permission strategy
 stdout/stderr / pretty/json/table output
 dry-run plan rendering
 ```
@@ -69,6 +69,14 @@ select_for_download(messages, message_id, attachment_id)
 ```
 
 Phase 4 执行计划只把这些职责拆成可落地的 PR 切片。
+
+重要边界：
+
+```text
+AttachmentService 默认 public API 只暴露 send() 和 download()。
+select_for_download 是 attachments::selection internal helper 或 compat/diagnostics-only helper。
+除非同步更新 public-api.md、modules/09-attachments.md 和 architecture.md，否则不要把 select_for_download 作为默认 public API。
+```
 
 执行原则沿用 P1-beta：
 
@@ -105,11 +113,39 @@ cargo test -p awiki-cli --test message_contract
 rg "ParsedCommand|ExitError|GlobalOptions|config::Resolved|identity::Manager|awiki_cli" crates/im-core/src crates/im-core/tests
 ```
 
-如果本地没有 attachment 相关专用 contract test，应在 Phase 4A 或 4B 增加 `im-core` attachment unit/contract tests，并保留现有 `awiki-cli` message tests。
+如果本地没有 attachment-specific contract test，应在 Phase 4A 或 4B 增加 `im-core` attachment unit/contract tests，并保留现有 `awiki-cli` message tests。
 
 ---
 
-## 4. Phase 4 目标目录和 API 形态
+## 4. Phase 4 canonical AttachmentInput
+
+P1 的 `MessageBody::Attachment` 只是 reserved shape。若 P1 中存在 reserved `AttachmentInput`，它不是稳定 canonical DTO。
+
+Phase 4 正式引入 canonical 类型：
+
+```rust
+pub enum AttachmentInput {
+    LocalFile(PathBuf),
+    Bytes {
+        filename: Option<String>,
+        mime_type: Option<String>,
+        bytes: Vec<u8>,
+    },
+}
+```
+
+Phase 4 后必须满足：
+
+```text
+1. MessageBody::Attachment 复用 attachments::AttachmentInput。
+2. 不再维护独立的 messages::AttachmentInput。
+3. P1 reserved LocalFile(String) / Bytes { bytes_len } 若存在，需通过 type alias / re-export / migration adapter 收敛。
+4. canonical AttachmentInput 不携带 CLI flag 名，不携带 workspace 发现逻辑。
+```
+
+---
+
+## 5. 目标目录和 API 形态
 
 建议新增：
 
@@ -166,12 +202,15 @@ impl AttachmentService<'_> {
         &self,
         request: DownloadAttachmentRequest,
     ) -> ImResult<DownloadedAttachment>;
-
-    pub fn select_for_download(
-        &self,
-        source: AttachmentSelectionSource,
-    ) -> ImResult<AttachmentSelection>;
 }
+```
+
+`select_for_download` 不进入默认 public service。它可以存在于：
+
+```text
+attachments::selection internal helper
+compat/diagnostics-only helper
+AttachmentService::download() 内部步骤
 ```
 
 建议 DTO：
@@ -233,11 +272,43 @@ upload chunk/request internals
 raw response JSON
 temporary file path internals
 SQLite connection
+select_for_download as default service method
 ```
 
 ---
 
-## 5. 通用边界规则
+## 6. 文件写入职责合同
+
+Phase 4 的 `AttachmentDestination::LocalFile(PathBuf)` 允许 SDK 执行受控写入，但写入策略由 CLI/App 决定。
+
+CLI / App 决定：
+
+```text
+output path 来自哪里
+是否允许 overwrite
+权限策略
+目标路径是否允许写
+用户确认和错误提示
+是否展示 path
+```
+
+im-core 负责：
+
+```text
+只对显式传入的 AttachmentDestination::LocalFile 写入
+使用 CLI/App/ImCorePaths 明确提供的 temp 策略
+下载失败时清理 temp
+atomic rename 到目标文件
+不自行发现 workspace
+不自行改变权限策略
+不绕过 overwrite=false
+```
+
+因此不要把“路径合法性、权限策略、overwrite UX”迁到 SDK；也不要让 SDK 通过 CLI config 推导输出路径。
+
+---
+
+## 7. 通用边界规则
 
 `im-core` 不能直接使用：
 
@@ -269,7 +340,7 @@ CLI 负责：
 --file / --text-file / --output 参数解析
 本地输入路径存在性检查
 输出路径 overwrite policy
-输出文件权限
+输出文件权限策略
 dry-run 文案
 pretty/json/table 渲染
 ```
@@ -284,13 +355,13 @@ upload
 commit object
 download ticket
 download bytes
-destination write / memory return
+destination controlled write / memory return
 SendMessageResult / DownloadedAttachment normalize
 ```
 
 ---
 
-## 6. Compat 与 internal trait 规则
+## 8. Compat 与 internal trait 规则
 
 Phase 4 可能需要 internal trait：
 
@@ -323,9 +394,9 @@ compat-only
 
 ---
 
-## 7. 测试分层规则
+## 9. 测试分层规则
 
-### 7.1 Required：Codex Goal / 单 PR 必跑
+### 9.1 Required：Codex Goal / 单 PR 必跑
 
 ```text
 cargo test -p im-core attachments
@@ -333,16 +404,16 @@ cargo test -p awiki-cli --test msg_contract
 rg import fence
 ```
 
-如果已有 attachment-specific contract test，优先使用：
+待新增 attachment contract tests：
 
 ```text
-cargo test -p awiki-cli --test msg_attachment_contract
 cargo test -p awiki-cli --test attachment_contract
+cargo test -p awiki-cli --test msg_attachment_contract
 ```
 
-若这些测试不存在，Phase 4A/4B 应新增 `im-core` attachment contract tests。
+如果这些 test target 尚不存在，不要在 Codex Goal 中把它们当作当前已存在测试执行。
 
-### 7.2 Optional integration：合并前或本地补跑
+### 9.2 Optional integration：合并前或本地补跑
 
 ```text
 cargo test -p awiki-cli --test message_contract
@@ -350,11 +421,19 @@ cargo test -p awiki-cli --test group_contract
 cargo test -p awiki-cli --test store_messages_contract
 ```
 
-### 7.3 Manual / live / system：不由默认 Codex Goal 执行
+### 9.3 Manual / live / system：不由默认 Codex Goal 执行
+
+当前仓库已有 live/system target：
 
 ```text
-真实 awiki-cli msg send --file
-真实 awiki-cli msg attachment download
+cargo test -p awiki-cli --test attachment_live_contract
+```
+
+真实 CLI 验证：
+
+```text
+awiki-cli msg send --file ...
+awiki-cli msg attachment download ...
 真实网络上传/下载
 真实大文件写入
 真实 workspace 操作
@@ -364,13 +443,13 @@ cargo test -p awiki-cli --test store_messages_contract
 
 ---
 
-## 8. PR 4A：Attachment DTO / Service skeleton
+## 10. PR 4A：Attachment DTO / Service skeleton
 
-### 8.1 目标
+### 10.1 目标
 
 建立 Phase 4 public API 形态，不迁真实上传/下载。
 
-### 8.2 改动范围
+### 10.2 改动范围
 
 ```text
 crates/im-core/src/attachments/mod.rs
@@ -382,42 +461,44 @@ crates/im-core/src/prelude.rs
 crates/im-core/tests/attachment_api.rs
 ```
 
-### 8.3 执行步骤
+### 10.3 执行步骤
 
 ```text
 1. 新增 AttachmentService。
 2. 在 ImClient 上新增 attachments()。
-3. 新增 AttachmentSendRequest / DownloadAttachmentRequest / DownloadedAttachment DTO。
-4. send/download 先返回 UnsupportedCapability 或明确 stub。
-5. 不改 awiki-cli handler。
-6. 增加 DTO 构造、UnsupportedCapability、public API boundary 测试。
+3. 新增 canonical AttachmentInput / AttachmentSendRequest / DownloadAttachmentRequest / DownloadedAttachment DTO。
+4. MessageBody::Attachment 复用 canonical AttachmentInput。
+5. send/download 先返回 UnsupportedCapability 或明确 stub。
+6. 不改 awiki-cli handler。
+7. 增加 DTO 构造、UnsupportedCapability、public API boundary 测试。
 ```
 
-### 8.4 Required 验收
+### 10.4 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 rg "ParsedCommand|ExitError|config::Resolved|identity::Manager|awiki_cli" crates/im-core/src crates/im-core/tests
 ```
 
-### 8.5 完成标准
+### 10.5 完成标准
 
 ```text
 1. AttachmentService public API 可编译。
 2. P1/P3 message API 不受影响。
 3. 没有真实上传/下载行为。
 4. 未暴露 CLI 类型或 raw wire payload。
+5. select_for_download 未进入 default public service。
 ```
 
 ---
 
-## 9. PR 4B：manifest / digest / selection 纯逻辑迁移
+## 11. PR 4B：manifest / digest / selection 纯逻辑迁移
 
-### 9.1 目标
+### 11.1 目标
 
 把附件 manifest、digest、选择逻辑迁入 `im-core`，不接远端上传/下载。
 
-### 9.2 源和目标
+### 11.2 源和目标
 
 源：
 
@@ -434,7 +515,7 @@ crates/im-core/src/internal/attachment_runtime/digest.rs
 crates/im-core/src/compat/attachments.rs
 ```
 
-### 9.3 迁移范围
+### 11.3 迁移范围
 
 可迁移：
 
@@ -459,7 +540,7 @@ MessageError 构造
 CLI warning / summary 文案
 ```
 
-### 9.4 执行方式
+### 11.4 执行方式
 
 ```text
 1. im-core 内定义 Manifest / AttachmentDescriptor / AttachmentSelection DTO。
@@ -469,30 +550,31 @@ CLI warning / summary 文案
 5. 复制 manifest/selection 相关测试到 im-core。
 ```
 
-### 9.5 Required 验收
+### 11.5 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 9.6 完成标准
+### 11.6 完成标准
 
 ```text
 1. manifest/digest/selection 逻辑由 im-core 覆盖测试。
 2. awiki-cli 旧函数仍兼容。
-3. 不触发远端上传/下载。
+3. select_for_download 只作为 internal/compat helper。
+4. 不触发远端上传/下载。
 ```
 
 ---
 
-## 10. PR 4C：attachment service discovery / endpoint selection
+## 12. PR 4C：attachment service discovery / endpoint selection
 
-### 10.1 目标
+### 12.1 目标
 
 把 attachment service endpoint discovery 和选择规则迁入 `im-core`。
 
-### 10.2 源和目标
+### 12.2 源和目标
 
 源：
 
@@ -507,7 +589,7 @@ crates/im-core/src/internal/discovery/attachment.rs
 crates/im-core/src/compat/attachments.rs
 ```
 
-### 10.3 范围
+### 12.3 范围
 
 支持：
 
@@ -526,14 +608,14 @@ provider-based service discovery
 secure attachment service capability
 ```
 
-### 10.4 Required 验收
+### 12.4 Required 验收
 
 ```bash
 cargo test -p im-core attachment_discovery
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 10.5 完成标准
+### 12.5 完成标准
 
 ```text
 1. attachment endpoint selection 可由 im-core 完成。
@@ -543,13 +625,13 @@ cargo test -p awiki-cli --test msg_contract
 
 ---
 
-## 11. PR 4D：upload slot / commit / attachment send wire builder
+## 13. PR 4D：upload slot / commit / attachment send wire builder
 
-### 11.1 目标
+### 13.1 目标
 
 迁移附件上传相关 wire builder，但不接真实文件读取和远端上传。
 
-### 11.2 源和目标
+### 13.2 源和目标
 
 源：
 
@@ -564,7 +646,7 @@ crates/im-core/src/internal/wire/attachment.rs
 crates/im-core/src/compat/attachments.rs
 ```
 
-### 11.3 迁移范围
+### 13.3 迁移范围
 
 可迁移：
 
@@ -588,14 +670,14 @@ direct/group text send general flow
 secure attachment
 ```
 
-### 11.4 Required 验收
+### 13.4 Required 验收
 
 ```bash
 cargo test -p im-core attachment_wire
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 11.5 完成标准
+### 13.5 完成标准
 
 ```text
 1. slot/commit/ticket/send wire shape 由 im-core 覆盖测试。
@@ -605,13 +687,13 @@ cargo test -p awiki-cli --test msg_contract
 
 ---
 
-## 12. PR 4E：Attachment upload runtime
+## 14. PR 4E：Attachment upload runtime
 
-### 12.1 目标
+### 14.1 目标
 
 实现 `AttachmentService::send()` 的上传主链路，但先保留 legacy fallback。
 
-### 12.2 调用链
+### 14.2 调用链
 
 ```text
 AttachmentService::send
@@ -630,7 +712,7 @@ AttachmentService::send
   -> best-effort local persist
 ```
 
-### 12.3 目标文件
+### 14.3 目标文件
 
 ```text
 crates/im-core/src/attachments/service.rs
@@ -641,7 +723,7 @@ crates/im-core/src/compat/attachments.rs
 crates/awiki-cli/src/im_core_adapter/messages.rs
 ```
 
-### 12.4 风险控制
+### 14.4 风险控制
 
 ```text
 1. LocalFile path 已由 CLI adapter 校验。
@@ -652,23 +734,22 @@ crates/awiki-cli/src/im_core_adapter/messages.rs
 6. attachment secure mode 返回 UnsupportedCapability。
 ```
 
-### 12.5 Required 验收
+### 14.5 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 12.6 Manual / live / system
+### 14.6 Manual / live / system
 
 ```bash
-# 仅在手动验证或专门 live CI 中执行
-cargo test -p awiki-cli --test msg_attachment_live_contract
+cargo test -p awiki-cli --test attachment_live_contract
 awiki-cli msg send --to <peer> --file <path> --text "caption"
 awiki-cli msg send --group <group> --file <path> --text "caption"
 ```
 
-### 12.7 完成标准
+### 14.7 完成标准
 
 ```text
 1. AttachmentInput::Bytes 可完整跑 upload unit/contract test。
@@ -679,13 +760,13 @@ awiki-cli msg send --group <group> --file <path> --text "caption"
 
 ---
 
-## 13. PR 4F：Attachment download selection / ticket / memory destination
+## 15. PR 4F：Attachment download selection / ticket / memory destination
 
-### 13.1 目标
+### 15.1 目标
 
 实现附件下载定位、ticket 获取和 memory destination，不先接 CLI 文件写入。
 
-### 13.2 调用链
+### 15.2 调用链
 
 ```text
 AttachmentService::download
@@ -697,7 +778,7 @@ AttachmentService::download
   -> if Memory: return Vec<u8>
 ```
 
-### 13.3 目标文件
+### 15.3 目标文件
 
 ```text
 crates/im-core/src/attachments/service.rs
@@ -706,41 +787,65 @@ crates/im-core/src/internal/attachment_runtime/download.rs
 crates/im-core/src/internal/blob/sink.rs
 ```
 
-### 13.4 Required 验收
+### 15.4 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 13.5 完成标准
+### 15.5 完成标准
 
 ```text
 1. AttachmentDestination::Memory 可通过 unit test 验证。
 2. ticket wire shape 与 legacy 一致。
 3. multiple attachments 选择规则与 legacy 一致。
-4. 未做 LocalFile atomic write 时不改 CLI download handler 默认路径。
+4. select_for_download 仍不是 public service method。
+5. 未做 LocalFile atomic write 时不改 CLI download handler 默认路径。
 ```
 
 ---
 
-## 14. PR 4G：LocalFile destination / temp file / atomic write
+## 16. PR 4G：LocalFile destination / temp file / controlled atomic write
 
-### 14.1 目标
+### 16.1 目标
 
 实现 `AttachmentDestination::LocalFile`，支持 temp file 和 atomic rename。
 
-### 14.2 范围
+### 16.2 职责合同
+
+CLI 决定：
+
+```text
+output path
+overwrite policy
+permission strategy
+用户确认
+错误提示
+```
+
+SDK 执行：
+
+```text
+explicit LocalFile destination write
+temp file creation according to explicit strategy
+download bytes -> temp
+atomic rename temp -> destination
+failure cleanup
+overwrite=false enforcement
+```
+
+### 16.3 范围
 
 支持：
 
 ```text
 explicit output path
-overwrite policy
+overwrite policy passed by CLI/App
 temp file in RuntimePaths.temp_dir 或 output sibling temp
 atomic rename
 partial download cleanup
-file permission handoff
+file permission handoff according to caller strategy
 ```
 
 CLI 保留：
@@ -749,38 +854,40 @@ CLI 保留：
 --output 参数解析
 overwrite confirmation / policy
 human-readable path errors
+permission UX
 ```
 
-### 14.3 Required 验收
+### 16.4 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 14.4 Manual / live / system
+### 16.5 Manual / live / system
 
 ```bash
 awiki-cli msg attachment download --message-id <id> --output <path>
 ```
 
-### 14.5 完成标准
+### 16.6 完成标准
 
 ```text
-1. LocalFile write 使用 atomic strategy。
+1. LocalFile write 使用 controlled atomic strategy。
 2. download 失败不留下破损目标文件。
 3. output overwrite 行为和 CLI policy 一致。
+4. im-core 不自行发现 workspace，不自行改变权限策略。
 ```
 
 ---
 
-## 15. PR 4H：CLI attachment handler 切换与 compat 清理
+## 17. PR 4H：CLI attachment handler 切换与 compat 清理
 
-### 15.1 目标
+### 17.1 目标
 
 让 `msg send --file` 和 `msg attachment download` 可以通过 `im-core` 路径执行，同时保留 fallback。
 
-### 15.2 范围
+### 17.2 范围
 
 ```text
 msg send --to --file
@@ -790,21 +897,22 @@ dry-run plan 仍由 CLI 渲染
 legacy fallback 保留一个阶段
 ```
 
-### 15.3 Required 验收
+### 17.3 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 15.4 Manual / live / system
+### 17.4 Manual / live / system
 
 ```bash
+cargo test -p awiki-cli --test attachment_live_contract
 awiki-cli msg send --to <peer> --file <path>
 awiki-cli msg attachment download --message-id <id> --output <path>
 ```
 
-### 15.5 完成标准
+### 17.5 完成标准
 
 ```text
 1. CLI handler 不再直接拼 attachment wire params。
@@ -815,7 +923,7 @@ awiki-cli msg attachment download --message-id <id> --output <path>
 
 ---
 
-## 16. 错误映射规则
+## 18. 错误映射规则
 
 `im-core` 返回：
 
@@ -850,7 +958,7 @@ PathUnavailable / Io -> ExitError path/permission hint
 
 ---
 
-## 17. 回滚策略
+## 19. 回滚策略
 
 ```text
 1. im-core 新实现先落地。
@@ -871,7 +979,7 @@ PathUnavailable / Io -> ExitError path/permission hint
 
 ---
 
-## 18. 明确不做事项
+## 20. 明确不做事项
 
 Phase 4 不做：
 
@@ -884,11 +992,12 @@ Phase 4 不做：
 6. 不整体迁移 message/attachment_service.rs。
 7. 不把 upload slot / commit / download ticket 暴露为 public SDK API。
 8. 不让 im-core 读取 CLI config 或发现 workspace。
+9. 不把 select_for_download 暴露为默认 public service method。
 ```
 
 ---
 
-## 19. 方案核心
+## 21. 方案核心
 
 Phase 4 的核心是：
 
