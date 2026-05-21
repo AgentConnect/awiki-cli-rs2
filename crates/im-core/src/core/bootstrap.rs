@@ -80,11 +80,48 @@ impl<'a> CoreBootstrap<'a> {
 
     pub fn migrate_local_state(&self) -> crate::ImResult<MigrationReport> {
         let status = self.initialize_local_state()?;
+        #[cfg(feature = "sqlite")]
+        let applied = {
+            let identities = self
+                .core
+                .identities()
+                .list()?
+                .into_iter()
+                .map(|identity| {
+                    let mut credential_names = Vec::new();
+                    credential_names.push(identity.id.as_str().to_string());
+                    if let Some(alias) = identity.local_alias.as_deref() {
+                        if !credential_names.iter().any(|known| known == alias) {
+                            credential_names.push(alias.to_string());
+                        }
+                    }
+                    crate::internal::local_state::schema::OwnerIdentityBackfill {
+                        identity_id: identity.id.as_str().to_string(),
+                        owner_did: identity.did.as_str().to_string(),
+                        credential_names,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let connection = crate::internal::local_state::open_writable(
+                &self.core.inner().sdk_paths().local_state.sqlite_path,
+            )?;
+            let updated = crate::internal::local_state::schema::backfill_owner_identity_ids(
+                &connection,
+                &identities,
+            )?;
+            if updated == 0 {
+                Vec::new()
+            } else {
+                vec![format!("owner_identity_id_backfill:{updated}")]
+            }
+        };
+        #[cfg(not(feature = "sqlite"))]
+        let applied = Vec::new();
         Ok(MigrationReport {
             sqlite_path: status.sqlite_path,
             from_version: status.schema_version,
             to_version: status.schema_version.unwrap_or_default(),
-            applied: Vec::new(),
+            applied,
         })
     }
 }

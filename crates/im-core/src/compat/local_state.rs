@@ -7,6 +7,7 @@ pub const SCHEMA_VERSION: i64 = crate::internal::local_state::schema::SCHEMA_VER
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MessageRecord {
     pub msg_id: String,
+    pub owner_identity_id: String,
     pub owner_did: String,
     pub thread_id: String,
     pub direction: i64,
@@ -30,6 +31,7 @@ pub struct MessageRecord {
 #[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ContactRecord {
+    pub owner_identity_id: String,
     pub owner_did: String,
     pub did: String,
     pub name: String,
@@ -56,6 +58,7 @@ pub struct ContactRecord {
 #[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupRecord {
+    pub owner_identity_id: String,
     pub owner_did: String,
     pub group_id: String,
     pub group_did: String,
@@ -88,6 +91,7 @@ pub struct GroupRecord {
 #[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupMemberRecord {
+    pub owner_identity_id: String,
     pub owner_did: String,
     pub group_id: String,
     pub user_id: String,
@@ -131,6 +135,7 @@ impl From<MessageRecord> for crate::internal::local_state::messages::MessageReco
     fn from(record: MessageRecord) -> Self {
         Self {
             msg_id: record.msg_id,
+            owner_identity_id: record.owner_identity_id,
             owner_did: record.owner_did,
             thread_id: record.thread_id,
             direction: record.direction,
@@ -158,6 +163,7 @@ impl From<ContactRecord> for crate::internal::local_state::contacts::ContactReco
     fn from(record: ContactRecord) -> Self {
         Self {
             owner_did: record.owner_did,
+            owner_identity_id: record.owner_identity_id,
             did: record.did,
             name: record.name,
             handle: record.handle,
@@ -187,6 +193,7 @@ impl From<GroupRecord> for crate::internal::local_state::groups::GroupRecord {
     fn from(record: GroupRecord) -> Self {
         Self {
             owner_did: record.owner_did,
+            owner_identity_id: record.owner_identity_id,
             group_id: record.group_id,
             group_did: record.group_did,
             name: record.name,
@@ -222,6 +229,7 @@ impl From<GroupMemberRecord> for crate::internal::local_state::groups::GroupMemb
     fn from(record: GroupMemberRecord) -> Self {
         Self {
             owner_did: record.owner_did,
+            owner_identity_id: record.owner_identity_id,
             group_id: record.group_id,
             user_id: record.user_id,
             member_did: record.member_did,

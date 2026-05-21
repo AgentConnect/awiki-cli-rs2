@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MessageRecord {
     pub(crate) msg_id: String,
+    pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) thread_id: String,
     pub(crate) direction: i64,
@@ -45,7 +46,27 @@ pub(crate) fn classify_mark_read_ids(
     owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<MarkReadClassification> {
-    let rows = list_message_classification_rows(connection, owner_did, message_ids)?;
+    let rows = list_message_classification_rows(connection, "", owner_did, message_ids)?;
+    classify_mark_read_ids_from_rows(message_ids, rows)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn classify_mark_read_ids_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    message_ids: &[String],
+) -> crate::ImResult<MarkReadClassification> {
+    let rows =
+        list_message_classification_rows(connection, owner_identity_id, owner_did, message_ids)?;
+    classify_mark_read_ids_from_rows(message_ids, rows)
+}
+
+#[cfg(feature = "sqlite")]
+fn classify_mark_read_ids_from_rows(
+    message_ids: &[String],
+    rows: Vec<MessageClassificationRow>,
+) -> crate::ImResult<MarkReadClassification> {
     let mut result = MarkReadClassification::default();
     for id in message_ids {
         let Some(row) = rows.iter().find(|row| row.msg_id == id.trim()) else {
@@ -69,6 +90,26 @@ pub(crate) fn mark_messages_read(
     owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<i64> {
+    mark_messages_read_for_owner(connection, "", owner_did, message_ids)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn mark_messages_read_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    message_ids: &[String],
+) -> crate::ImResult<i64> {
+    mark_messages_read_for_owner(connection, owner_identity_id, owner_did, message_ids)
+}
+
+#[cfg(feature = "sqlite")]
+fn mark_messages_read_for_owner(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    message_ids: &[String],
+) -> crate::ImResult<i64> {
     let ids = message_ids
         .iter()
         .map(|value| value.trim())
@@ -79,10 +120,13 @@ pub(crate) fn mark_messages_read(
     }
     let placeholders = vec!["?"; ids.len()].join(",");
     let statement = format!(
-        "UPDATE messages SET is_read = 1 WHERE owner_did = ? AND msg_id IN ({placeholders})"
+        "UPDATE messages SET is_read = 1 WHERE {} AND msg_id IN ({placeholders})",
+        owner_predicate()
     );
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
     let owner = normalize_owner_did(owner_did);
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 2);
+    params.push(&owner_identity_id);
     params.push(&owner);
     for id in &ids {
         params.push(id);
@@ -96,6 +140,7 @@ pub(crate) fn mark_messages_read(
 #[cfg(feature = "sqlite")]
 fn list_message_classification_rows(
     connection: &rusqlite::Connection,
+    owner_identity_id: &str,
     owner_did: &str,
     message_ids: &[String],
 ) -> crate::ImResult<Vec<MessageClassificationRow>> {
@@ -112,10 +157,13 @@ fn list_message_classification_rows(
         r#"
 SELECT msg_id, group_id, group_did, content_type, metadata
 FROM messages
-WHERE owner_did = ? AND msg_id IN ({placeholders})"#
+WHERE {} AND msg_id IN ({placeholders})"#,
+        owner_predicate()
     );
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
     let owner = normalize_owner_did(owner_did);
-    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 2);
+    params.push(&owner_identity_id);
     params.push(&owner);
     for id in &ids {
         params.push(id);
@@ -188,6 +236,16 @@ fn parse_metadata(value: &str) -> serde_json::Map<String, serde_json::Value> {
 #[cfg(feature = "sqlite")]
 fn normalize_owner_did(value: &str) -> String {
     value.trim().to_string()
+}
+
+#[cfg(feature = "sqlite")]
+fn normalize_owner_identity_id(value: &str) -> String {
+    value.trim().to_string()
+}
+
+#[cfg(feature = "sqlite")]
+fn owner_predicate() -> &'static str {
+    "(owner_identity_id = ? OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?))"
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -278,10 +336,66 @@ VALUES (?1, ?2, 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 0)"#
         assert_eq!(is_read(&db, "did:owner-2"), 0);
     }
 
+    #[test]
+    fn local_state_owner_mark_read_prefers_identity_and_falls_back_to_legacy_did() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, content_type, content, stored_at, is_read)
+VALUES ('stable', 'alice-id', 'did:alice-old', 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 0)"#,
+            [],
+        )
+        .unwrap();
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, content_type, content, stored_at, is_read)
+VALUES ('legacy', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 0)"#,
+            [],
+        )
+        .unwrap();
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, content_type, content, stored_at, is_read)
+VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', '2026-05-21T00:00:00Z', 0)"#,
+            [],
+        )
+        .unwrap();
+
+        let updated = mark_messages_read_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:alice-new",
+            &[
+                "stable".to_string(),
+                "legacy".to_string(),
+                "other".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(updated, 2);
+        assert_eq!(read_by_msg_id(&db, "stable"), 1);
+        assert_eq!(read_by_msg_id(&db, "legacy"), 1);
+        assert_eq!(read_by_msg_id(&db, "other"), 0);
+    }
+
     fn is_read(db: &Connection, owner: &str) -> i64 {
         db.query_row(
             "SELECT is_read FROM messages WHERE owner_did = ?1 AND msg_id = 'shared'",
             [owner],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn read_by_msg_id(db: &Connection, msg_id: &str) -> i64 {
+        db.query_row(
+            "SELECT is_read FROM messages WHERE msg_id = ?1",
+            [msg_id],
             |row| row.get(0),
         )
         .unwrap()

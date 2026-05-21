@@ -473,15 +473,17 @@ fn store_message(target: &Connection, record: MessageImport) -> StoreResult<()> 
         return Err(StoreError::Invalid("thread_id is required".to_string()));
     }
     let now = now_utc();
+    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
     target.execute(
         r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
      content_type, content, title, server_seq, sent_at, stored_at, is_e2ee, is_read,
      sender_name, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
 ON CONFLICT(msg_id, owner_did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, messages.owner_identity_id),
     thread_id = excluded.thread_id,
     direction = excluded.direction,
     sender_did = excluded.sender_did,
@@ -515,6 +517,7 @@ DO UPDATE SET
     credential_name = COALESCE(excluded.credential_name, messages.credential_name)"#,
         params![
             record.msg_id,
+            owner_identity_id,
             normalize_owner_did(&record.owner_did),
             record.thread_id,
             record.direction,
@@ -626,6 +629,7 @@ fn upsert_contact(target: &mut Connection, record: ContactImport) -> StoreResult
         return Err(StoreError::Invalid("contact did is required".to_string()));
     }
     let owner_did = normalize_owner_did(&record.owner_did);
+    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
     let handle = record.handle.trim().to_string();
     let tx = target.transaction()?;
     let now = now_utc();
@@ -663,8 +667,10 @@ SET name = COALESCE(?1, name),
     note = COALESCE(?15, note),
     first_seen_at = COALESCE(?16, first_seen_at),
     last_seen_at = ?17,
-    metadata = COALESCE(?18, metadata)
-WHERE owner_did = ?19 AND did = ?20"#,
+    metadata = COALESCE(?18, metadata),
+    owner_identity_id = COALESCE(?19, owner_identity_id),
+    credential_name = COALESCE(?20, credential_name)
+WHERE owner_did = ?21 AND did = ?22"#,
             params![
                 normalize_optional_string(&record.name),
                 normalize_optional_string(&handle),
@@ -684,6 +690,8 @@ WHERE owner_did = ?19 AND did = ?20"#,
                 normalize_optional_string(&record.first_seen_at),
                 now,
                 normalize_metadata(&record.metadata),
+                owner_identity_id.clone(),
+                normalize_credential_name(&record.credential_name),
                 owner_did,
                 record.did,
             ],
@@ -692,10 +700,11 @@ WHERE owner_did = ?19 AND did = ?20"#,
         tx.execute(
             r#"
 INSERT INTO contacts
-    (owner_did, did, name, handle, nick_name, bio, profile_md, tags, relationship, source_type, source_name,
-     source_group_id, connected_at, recommended_reason, followed, messaged, note, first_seen_at, last_seen_at, metadata)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"#,
+    (owner_identity_id, owner_did, did, name, handle, nick_name, bio, profile_md, tags, relationship, source_type, source_name,
+     source_group_id, connected_at, recommended_reason, followed, messaged, note, first_seen_at, last_seen_at, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)"#,
             params![
+                owner_identity_id.clone(),
                 owner_did,
                 record.did,
                 normalize_optional_string(&record.name),
@@ -716,6 +725,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
                 default_string(record.first_seen_at.clone(), &now),
                 default_string(record.last_seen_at.clone(), &now),
                 normalize_metadata(&record.metadata),
+                normalize_credential_name(&record.credential_name),
             ],
         )?;
     }
@@ -724,6 +734,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
             &tx,
             ContactHandleBindingImport {
                 owner_did,
+                owner_identity_id,
                 handle,
                 did: record.did,
                 is_current: true,
@@ -777,6 +788,7 @@ fn query_contacts_by_handle(
 #[derive(Debug)]
 struct ContactHandleBindingImport {
     owner_did: String,
+    owner_identity_id: Option<String>,
     handle: String,
     did: String,
     is_current: bool,
@@ -798,6 +810,9 @@ fn upsert_contact_handle_binding(
         return Ok(());
     }
     let owner_did = normalize_owner_did(&record.owner_did);
+    let owner_identity_id = record
+        .owner_identity_id
+        .or_else(|| owner_identity_id_from_credential(&record.credential_name));
     let first_seen_at = default_string(record.first_seen_at, &now_utc());
     let last_seen_at = default_string(record.last_seen_at, &first_seen_at);
     if record.is_current {
@@ -816,10 +831,11 @@ WHERE owner_did = ?2 AND handle = ?3 AND did <> ?4"#,
     tx.execute(
         r#"
 INSERT INTO contact_handle_bindings
-    (owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+    (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
 ON CONFLICT(owner_did, handle, did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, contact_handle_bindings.owner_identity_id),
     is_current = excluded.is_current,
     first_seen_at = COALESCE(contact_handle_bindings.first_seen_at, excluded.first_seen_at),
     last_seen_at = excluded.last_seen_at,
@@ -828,6 +844,7 @@ DO UPDATE SET
     metadata = COALESCE(excluded.metadata, contact_handle_bindings.metadata),
     credential_name = COALESCE(excluded.credential_name, contact_handle_bindings.credential_name)"#,
         params![
+            owner_identity_id,
             owner_did,
             handle,
             did,
@@ -882,15 +899,17 @@ fn upsert_group(target: &Connection, record: GroupImport) -> StoreResult<()> {
         ));
     }
     let now = now_utc();
+    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
     target.execute(
         r#"
 INSERT OR REPLACE INTO groups
-    (owner_did, group_id, group_did, name, group_mode, slug, description, goal, rules, message_prompt,
+    (owner_identity_id, owner_did, group_id, group_did, name, group_mode, slug, description, goal, rules, message_prompt,
      doc_url, group_owner_did, group_owner_handle, my_role, membership_status, join_enabled, join_code,
      join_code_expires_at, member_count, last_synced_seq, last_read_seq, last_message_at, remote_created_at,
      remote_updated_at, stored_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)"#,
         params![
+            owner_identity_id,
             owner_did,
             record.group_id,
             normalize_optional_string(&record.group_did),
@@ -941,13 +960,15 @@ struct GroupMemberImport {
 }
 
 fn upsert_group_member(target: &Connection, record: GroupMemberImport) -> StoreResult<()> {
+    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
     target.execute(
         r#"
 INSERT OR REPLACE INTO group_members
-    (owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
+    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
      joined_at, sent_message_count, last_synced_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
         params![
+            owner_identity_id,
             normalize_owner_did(&record.owner_did),
             record.group_id,
             record.user_id,
@@ -991,14 +1012,16 @@ fn append_relationship_event(
 ) -> StoreResult<String> {
     let event_id = default_string(record.event_id, &generate_id());
     let now = now_utc();
+    let owner_identity_id = owner_identity_id_from_credential(&record.credential_name);
     target.execute(
         r#"
 INSERT INTO relationship_events
-    (event_id, owner_did, target_did, target_handle, event_type, source_type, source_name, source_group_id,
+    (event_id, owner_identity_id, owner_did, target_did, target_handle, event_type, source_type, source_name, source_group_id,
      reason, score, status, created_at, updated_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
         params![
             event_id,
+            owner_identity_id,
             normalize_owner_did(&record.owner_did),
             record.target_did,
             normalize_optional_string(&record.target_handle),
@@ -1097,6 +1120,10 @@ fn metadata_from_row(row: &Value, key: &str) -> String {
         Some(Value::Null) | None => String::new(),
         Some(value) => serde_json::to_string(value).unwrap_or_default(),
     }
+}
+
+fn owner_identity_id_from_credential(credential_name: &str) -> Option<String> {
+    normalize_optional_string(&normalize_credential_name(credential_name))
 }
 
 fn parse_i64_go_style(raw: &str) -> Option<i64> {

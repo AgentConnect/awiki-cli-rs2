@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ConversationRecord {
+    pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) thread_id: String,
     pub(crate) message_count: i64,
@@ -15,10 +16,21 @@ pub(crate) fn list_conversations(
     owner_did: &str,
     query: &crate::messages::ConversationQuery,
 ) -> crate::ImResult<Vec<ConversationRecord>> {
+    list_conversations_for_owner_identity(connection, "", owner_did, query)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn list_conversations_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    query: &crate::messages::ConversationQuery,
+) -> crate::ImResult<Vec<ConversationRecord>> {
     let limit = page_limit(query.limit, 50) + 1;
     let mut statement = String::from(
         r#"
 SELECT
+    t.owner_identity_id,
     t.owner_did,
     t.thread_id,
     t.message_count,
@@ -44,19 +56,21 @@ SELECT
     m.credential_name
 FROM threads t
 LEFT JOIN messages m
-  ON m.owner_did = t.owner_did
+  ON COALESCE(m.owner_identity_id, '') = COALESCE(t.owner_identity_id, '')
+ AND m.owner_did = t.owner_did
  AND m.thread_id = t.thread_id
  AND COALESCE(m.sent_at, m.stored_at) = t.last_message_at
  AND m.msg_id = (
      SELECT m2.msg_id
      FROM messages m2
-     WHERE m2.owner_did = t.owner_did
+     WHERE COALESCE(m2.owner_identity_id, '') = COALESCE(t.owner_identity_id, '')
+       AND m2.owner_did = t.owner_did
        AND m2.thread_id = t.thread_id
        AND COALESCE(m2.sent_at, m2.stored_at) = t.last_message_at
      ORDER BY m2.msg_id DESC
      LIMIT 1
  )
-WHERE t.owner_did = ?1"#,
+WHERE (t.owner_identity_id = ?1 OR ((t.owner_identity_id IS NULL OR TRIM(t.owner_identity_id) = '') AND t.owner_did = ?2))"#,
     );
     if query.unread_only {
         statement.push_str(" AND t.unread_count > 0");
@@ -70,20 +84,24 @@ WHERE t.owner_did = ?1"#,
     statement.push_str(
         r#"
 ORDER BY t.last_message_at DESC, t.thread_id ASC
-LIMIT ?2"#,
+LIMIT ?3"#,
     );
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
     let owner = normalize_owner_did(owner_did);
     let mut statement = connection
         .prepare(&statement)
         .map_err(super::local_state_unavailable)?;
     let rows = statement
-        .query_map((&owner, limit), |row| {
+        .query_map((&owner_identity_id, &owner, limit), |row| {
             let msg_id = row.get::<_, Option<String>>("msg_id")?.unwrap_or_default();
             let last_message = if msg_id.trim().is_empty() {
                 None
             } else {
                 Some(super::messages::MessageRecord {
                     msg_id,
+                    owner_identity_id: row
+                        .get::<_, Option<String>>("owner_identity_id")?
+                        .unwrap_or_default(),
                     owner_did: row
                         .get::<_, Option<String>>("owner_did")?
                         .unwrap_or_default(),
@@ -127,6 +145,9 @@ LIMIT ?2"#,
                 })
             };
             Ok(ConversationRecord {
+                owner_identity_id: row
+                    .get::<_, Option<String>>("owner_identity_id")?
+                    .unwrap_or_default(),
                 owner_did: row
                     .get::<_, Option<String>>("owner_did")?
                     .unwrap_or_default(),
@@ -167,6 +188,11 @@ fn page_limit(limit: crate::ids::PageLimit, fallback: i64) -> i64 {
 
 #[cfg(feature = "sqlite")]
 fn normalize_owner_did(value: &str) -> String {
+    value.trim().to_string()
+}
+
+#[cfg(feature = "sqlite")]
+fn normalize_owner_identity_id(value: &str) -> String {
     value.trim().to_string()
 }
 
@@ -314,6 +340,91 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
                 content,
                 sent_at,
                 is_read,
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn local_state_owner_conversations_match_identity_and_legacy_fallback() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        seed_identity_message(
+            &db,
+            "alice-id",
+            "did:alice-old",
+            "stable",
+            "dm:alice:bob",
+            "stable",
+            "2026-05-21T00:00:02Z",
+        );
+        seed_identity_message(
+            &db,
+            "",
+            "did:alice-new",
+            "legacy",
+            "dm:alice:carol",
+            "legacy",
+            "2026-05-21T00:00:03Z",
+        );
+        seed_identity_message(
+            &db,
+            "bob-id",
+            "did:alice-new",
+            "other",
+            "dm:alice:mallory",
+            "other",
+            "2026-05-21T00:00:04Z",
+        );
+
+        let records = list_conversations_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:alice-new",
+            &crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.thread_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dm:alice:carol", "dm:alice:bob"]
+        );
+    }
+
+    fn seed_identity_message(
+        db: &Connection,
+        owner_identity_id: &str,
+        owner_did: &str,
+        msg_id: &str,
+        thread_id: &str,
+        content: &str,
+        sent_at: &str,
+    ) {
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did,
+     content_type, content, sent_at, stored_at, is_read)
+VALUES (?1, ?2, ?3, ?4, 0, 'did:example:bob', ?3, 'text/plain', ?5, ?6, ?6, 0)"#,
+            (
+                msg_id,
+                if owner_identity_id.is_empty() {
+                    None
+                } else {
+                    Some(owner_identity_id)
+                },
+                owner_did,
+                thread_id,
+                content,
+                sent_at,
             ),
         )
         .unwrap();

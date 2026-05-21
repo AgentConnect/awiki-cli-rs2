@@ -127,6 +127,141 @@ fn group_cache_helpers_store_query_touch_and_leave_projection() -> StoreResult<(
 }
 
 #[test]
+fn group_owner_identity_write_and_legacy_fallback_match_phase3d() -> StoreResult<()> {
+    let db = Connection::open_in_memory().expect("open sqlite memory db");
+    store::ensure_schema(&db)?;
+    let owner_did = "did:owner-current";
+    let legacy_did = "did:owner-legacy";
+    let group_id = "group-phase3d";
+
+    store::upsert_group(
+        &db,
+        GroupRecord {
+            owner_did: owner_did.to_string(),
+            group_id: group_id.to_string(),
+            group_did: group_id.to_string(),
+            name: "Identity Group".to_string(),
+            credential_name: "default".to_string(),
+            ..GroupRecord::default()
+        },
+    )?;
+    store::upsert_group_member(
+        &db,
+        GroupMemberRecord {
+            owner_did: owner_did.to_string(),
+            group_id: group_id.to_string(),
+            user_id: "member-identity".to_string(),
+            member_did: "did:member-identity".to_string(),
+            credential_name: "default".to_string(),
+            ..GroupMemberRecord::default()
+        },
+    )?;
+    store::store_message(
+        &db,
+        group_message(
+            owner_did,
+            group_id,
+            "identity-group-msg",
+            1,
+            "2026-01-01T00:00:01Z",
+        ),
+    )?;
+
+    store::upsert_group(
+        &db,
+        GroupRecord {
+            owner_did: legacy_did.to_string(),
+            group_id: group_id.to_string(),
+            group_did: group_id.to_string(),
+            name: "Legacy Group".to_string(),
+            credential_name: "legacy".to_string(),
+            ..GroupRecord::default()
+        },
+    )?;
+    store::upsert_group_member(
+        &db,
+        GroupMemberRecord {
+            owner_did: legacy_did.to_string(),
+            group_id: group_id.to_string(),
+            user_id: "member-legacy".to_string(),
+            member_did: "did:member-legacy".to_string(),
+            credential_name: "legacy".to_string(),
+            ..GroupMemberRecord::default()
+        },
+    )?;
+    store::store_message(
+        &db,
+        group_message(
+            legacy_did,
+            group_id,
+            "legacy-group-msg",
+            2,
+            "2026-01-01T00:00:02Z",
+        ),
+    )?;
+    db.execute(
+        "UPDATE groups SET owner_identity_id = NULL WHERE owner_did = ?1",
+        [legacy_did],
+    )?;
+    db.execute(
+        "UPDATE group_members SET owner_identity_id = NULL WHERE owner_did = ?1",
+        [legacy_did],
+    )?;
+    db.execute(
+        "UPDATE messages SET owner_identity_id = NULL WHERE owner_did = ?1",
+        [legacy_did],
+    )?;
+
+    store::upsert_group(
+        &db,
+        GroupRecord {
+            owner_identity_id: "other".to_string(),
+            owner_did: legacy_did.to_string(),
+            group_id: "other-group".to_string(),
+            name: "Other Group".to_string(),
+            credential_name: "other".to_string(),
+            ..GroupRecord::default()
+        },
+    )?;
+
+    let identity_value: String = db.query_row(
+        "SELECT owner_identity_id FROM groups WHERE owner_did = ?1 AND group_id = ?2",
+        (owner_did, group_id),
+        |row| row.get(0),
+    )?;
+    assert_eq!(identity_value, "default");
+
+    let snapshot =
+        store::get_group_snapshot_for_owner_identity(&db, "default", legacy_did, group_id)?;
+    assert_eq!(string_field(&snapshot, "name"), "Identity Group");
+
+    let members = store::list_cached_group_members_for_owner_identity(
+        &db, "default", legacy_did, group_id, 0,
+    )?;
+    assert_eq!(members.len(), 2);
+    assert_eq!(string_field(&members[0], "user_id"), "member-identity");
+    assert_eq!(string_field(&members[1], "user_id"), "member-legacy");
+
+    let messages = store::list_group_messages_for_owner_identity(
+        &db, "default", legacy_did, group_id, 0, None,
+    )?;
+    assert_eq!(
+        messages
+            .iter()
+            .map(|row| string_field(row, "msg_id"))
+            .collect::<Vec<_>>(),
+        vec!["legacy-group-msg", "identity-group-msg"]
+    );
+
+    assert!(matches!(
+        store::get_group_snapshot_for_owner_identity(&db, "default", legacy_did, "other-group"),
+        Err(StoreError::NotFound(_))
+    ));
+
+    Ok(())
+}
+
+#[test]
 fn group_cache_helpers_validate_required_keys() {
     let mut db = Connection::open_in_memory().expect("open sqlite memory db");
     store::ensure_schema(&db).expect("schema");

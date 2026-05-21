@@ -39,6 +39,7 @@ pub trait BridgeDirectoryRpcTransport {
 #[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ContactRecord {
+    pub owner_identity_id: String,
     pub owner_did: String,
     pub did: String,
     pub name: String,
@@ -119,6 +120,22 @@ pub fn get_contact_by_did(
 
 #[cfg(feature = "sqlite")]
 #[doc(hidden)]
+pub fn get_contact_by_did_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    did: &str,
+) -> crate::ImResult<Value> {
+    crate::internal::contact_store::records::get_contact_by_did_json_for_owner_identity(
+        connection,
+        owner_identity_id,
+        owner_did,
+        did,
+    )
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
 pub fn get_current_contact_by_handle(
     connection: &rusqlite::Connection,
     owner_did: &str,
@@ -126,6 +143,22 @@ pub fn get_current_contact_by_handle(
 ) -> crate::ImResult<Value> {
     crate::internal::contact_store::records::get_current_contact_by_handle_json(
         connection, owner_did, handle,
+    )
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn get_current_contact_by_handle_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    handle: &str,
+) -> crate::ImResult<Value> {
+    crate::internal::contact_store::records::get_current_contact_by_handle_json_for_owner_identity(
+        connection,
+        owner_identity_id,
+        owner_did,
+        handle,
     )
 }
 
@@ -143,12 +176,44 @@ pub fn resolve_contact_handle_by_did(
 
 #[cfg(feature = "sqlite")]
 #[doc(hidden)]
+pub fn resolve_contact_handle_by_did_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    did: &str,
+) -> crate::ImResult<String> {
+    crate::internal::contact_store::records::resolve_contact_handle_by_did_for_owner_identity(
+        connection,
+        owner_identity_id,
+        owner_did,
+        did,
+    )
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
 pub fn list_dids_by_handle(
     connection: &rusqlite::Connection,
     owner_did: &str,
     handle: &str,
 ) -> crate::ImResult<Vec<String>> {
     crate::internal::contact_store::records::list_dids_by_handle(connection, owner_did, handle)
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn list_dids_by_handle_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    handle: &str,
+) -> crate::ImResult<Vec<String>> {
+    crate::internal::contact_store::records::list_dids_by_handle_for_owner_identity(
+        connection,
+        owner_identity_id,
+        owner_did,
+        handle,
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -173,6 +238,7 @@ pub fn upsert_contact(
 impl From<ContactRecord> for crate::internal::contact_store::records::ContactRecord {
     fn from(record: ContactRecord) -> Self {
         Self {
+            owner_identity_id: record.owner_identity_id,
             owner_did: record.owner_did,
             did: record.did,
             name: record.name,

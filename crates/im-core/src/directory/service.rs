@@ -82,6 +82,7 @@ impl<'a> DirectoryService<'a> {
             crate::internal::contact_store::records::upsert_contact(&mut connection, record)?;
             let record = crate::internal::contact_store::records::get_contact_by_did(
                 &connection,
+                self.owner_identity_id(),
                 self.owner_did().as_str(),
                 request
                     .did
@@ -113,6 +114,7 @@ impl<'a> DirectoryService<'a> {
             let limit = query.limit.map(|limit| i64::from(limit.0)).unwrap_or(100);
             let contacts = crate::internal::contact_store::records::list_contacts(
                 &connection,
+                self.owner_identity_id(),
                 self.owner_did().as_str(),
                 limit,
             )?;
@@ -149,6 +151,7 @@ impl<'a> DirectoryService<'a> {
             let record = if peer.as_str().trim().starts_with("did:") {
                 crate::internal::contact_store::records::get_contact_by_did(
                     &connection,
+                    self.owner_identity_id(),
                     self.owner_did().as_str(),
                     peer.as_str(),
                 )
@@ -156,6 +159,7 @@ impl<'a> DirectoryService<'a> {
             } else {
                 crate::internal::contact_store::records::get_current_contact_by_handle(
                     &connection,
+                    self.owner_identity_id(),
                     self.owner_did().as_str(),
                     peer.as_str(),
                 )
@@ -174,6 +178,10 @@ impl<'a> DirectoryService<'a> {
 
     pub fn owner_did(&self) -> &crate::ids::Did {
         self.client.did()
+    }
+
+    fn owner_identity_id(&self) -> &str {
+        self.client.current_identity().id.as_str()
     }
 }
 

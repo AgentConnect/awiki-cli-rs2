@@ -9,6 +9,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Default)]
 pub struct MessageRecord {
     pub msg_id: String,
+    pub owner_identity_id: String,
     pub owner_did: String,
     pub thread_id: String,
     pub direction: i64,
@@ -236,6 +237,36 @@ pub fn list_messages_by_ids(
     query_rows_with_params(connection, &statement, &params)
 }
 
+pub fn list_messages_by_ids_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    message_ids: &[String],
+) -> StoreResult<Vec<Value>> {
+    let ids = message_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let statement = format!(
+        "SELECT * FROM messages WHERE {} AND msg_id IN ({placeholders})",
+        owner_identity_predicate()
+    );
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner = normalize_owner_did(owner_did);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 2);
+    params.push(&owner_identity_id);
+    params.push(&owner);
+    for id in &ids {
+        params.push(id);
+    }
+    query_rows_with_params(connection, &statement, &params)
+}
+
 pub fn mark_messages_read(
     connection: &Connection,
     owner_did: &str,
@@ -255,6 +286,37 @@ pub fn mark_messages_read(
     );
     let owner = normalize_owner_did(owner_did);
     let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 1);
+    params.push(&owner);
+    for id in &ids {
+        params.push(id);
+    }
+    let rows = connection.execute(&statement, params.as_slice())?;
+    Ok(i64::try_from(rows).unwrap_or(i64::MAX))
+}
+
+pub fn mark_messages_read_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    message_ids: &[String],
+) -> StoreResult<i64> {
+    let ids = message_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let statement = format!(
+        "UPDATE messages SET is_read = 1 WHERE {} AND msg_id IN ({placeholders})",
+        owner_identity_predicate()
+    );
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner = normalize_owner_did(owner_did);
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(ids.len() + 2);
+    params.push(&owner_identity_id);
     params.push(&owner);
     for id in &ids {
         params.push(id);
@@ -308,6 +370,10 @@ fn execute_store_message(
     now: &str,
 ) -> StoreResult<usize> {
     let owner_did = normalize_owner_did(&record.owner_did);
+    let owner_identity_id = normalize_owner_identity_id(&default_string(
+        record.owner_identity_id.clone(),
+        &record.credential_name,
+    ));
     let sender_did = normalize_optional_string(&record.sender_did);
     let receiver_did = normalize_optional_string(&record.receiver_did);
     let group_id = normalize_optional_string(&record.group_id);
@@ -322,6 +388,7 @@ fn execute_store_message(
     let credential_name = normalize_credential_name(&record.credential_name);
     Ok(statement.execute(params![
         record.msg_id.as_str(),
+        normalize_optional_string(&owner_identity_id),
         owner_did,
         record.thread_id.as_str(),
         record.direction,
@@ -346,12 +413,13 @@ fn execute_store_message(
 fn store_message_sql() -> &'static str {
     r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
      content_type, content, title, server_seq, sent_at, stored_at, is_e2ee, is_read,
      sender_name, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
 ON CONFLICT(msg_id, owner_did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, messages.owner_identity_id),
     thread_id = excluded.thread_id,
     direction = excluded.direction,
     sender_did = excluded.sender_did,
@@ -387,4 +455,12 @@ DO UPDATE SET
 
 fn local_mail_notification_predicate() -> &'static str {
     r#"COALESCE(content_type, '') = 'mail.notification' OR COALESCE(metadata, '') LIKE '%"source_kind":"mail"%'"#
+}
+
+fn normalize_owner_identity_id(value: &str) -> String {
+    value.trim().to_string()
+}
+
+fn owner_identity_predicate() -> &'static str {
+    "(owner_identity_id = ? OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?))"
 }

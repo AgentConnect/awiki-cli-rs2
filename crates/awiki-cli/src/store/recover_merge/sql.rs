@@ -39,12 +39,13 @@ pub(super) fn upsert_recovered_message(
     transaction.execute(
         r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
      content_type, content, title, server_seq, sent_at, stored_at, is_e2ee, is_read,
      sender_name, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
 ON CONFLICT(msg_id, owner_did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, messages.owner_identity_id),
     thread_id = excluded.thread_id,
     direction = excluded.direction,
     sender_did = excluded.sender_did,
@@ -64,6 +65,7 @@ DO UPDATE SET
     credential_name = excluded.credential_name"#,
         params![
             record.msg_id,
+            normalize_optional_string(&record.owner_identity_id),
             normalize_owner_did(&record.owner_did),
             record.thread_id,
             record.direction,
@@ -94,11 +96,12 @@ pub(super) fn upsert_recovered_contact(
     transaction.execute(
         r#"
 INSERT INTO contacts
-    (owner_did, did, name, handle, nick_name, bio, profile_md, tags, relationship, source_type, source_name,
-     source_group_id, connected_at, recommended_reason, followed, messaged, note, first_seen_at, last_seen_at, metadata)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+    (owner_identity_id, owner_did, did, name, handle, nick_name, bio, profile_md, tags, relationship, source_type, source_name,
+     source_group_id, connected_at, recommended_reason, followed, messaged, note, first_seen_at, last_seen_at, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
 ON CONFLICT(owner_did, did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, contacts.owner_identity_id),
     name = excluded.name,
     handle = excluded.handle,
     nick_name = excluded.nick_name,
@@ -116,8 +119,10 @@ DO UPDATE SET
     note = excluded.note,
     first_seen_at = excluded.first_seen_at,
     last_seen_at = excluded.last_seen_at,
-    metadata = excluded.metadata"#,
+    metadata = excluded.metadata,
+    credential_name = excluded.credential_name"#,
         params![
+            normalize_optional_string(&record.owner_identity_id),
             normalize_owner_did(&record.owner_did),
             record.did,
             normalize_optional_string(&record.name),
@@ -138,6 +143,7 @@ DO UPDATE SET
             normalize_optional_string(&record.first_seen_at),
             normalize_optional_string(&record.last_seen_at),
             normalize_metadata(&record.metadata),
+            normalize_credential_name(&record.credential_name),
         ],
     )?;
     Ok(())
@@ -150,10 +156,11 @@ pub(super) fn upsert_recovered_contact_handle_binding(
     transaction.execute(
         r#"
 INSERT INTO contact_handle_bindings
-    (owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+    (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
 ON CONFLICT(owner_did, handle, did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, contact_handle_bindings.owner_identity_id),
     is_current = excluded.is_current,
     first_seen_at = excluded.first_seen_at,
     last_seen_at = excluded.last_seen_at,
@@ -162,6 +169,7 @@ DO UPDATE SET
     metadata = excluded.metadata,
     credential_name = excluded.credential_name"#,
         params![
+            normalize_optional_string(&record.owner_identity_id),
             normalize_owner_did(&record.owner_did),
             record.handle,
             record.did,
@@ -184,11 +192,12 @@ pub(super) fn upsert_recovered_relationship_event(
     transaction.execute(
         r#"
 INSERT INTO relationship_events
-    (event_id, owner_did, target_did, target_handle, event_type, source_type, source_name, source_group_id,
+    (event_id, owner_identity_id, owner_did, target_did, target_handle, event_type, source_type, source_name, source_group_id,
      reason, score, status, created_at, updated_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
 ON CONFLICT(event_id)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, relationship_events.owner_identity_id),
     owner_did = excluded.owner_did,
     target_did = excluded.target_did,
     target_handle = excluded.target_handle,
@@ -205,6 +214,7 @@ DO UPDATE SET
     credential_name = excluded.credential_name"#,
         params![
             record.event_id,
+            normalize_optional_string(&record.owner_identity_id),
             normalize_owner_did(&record.owner_did),
             record.target_did,
             normalize_optional_string(&record.target_handle),
@@ -232,13 +242,14 @@ pub(super) fn upsert_recovered_group(
     transaction.execute(
         r#"
 INSERT INTO groups
-    (owner_did, group_id, group_did, name, group_mode, slug, description, goal, rules, message_prompt,
+    (owner_identity_id, owner_did, group_id, group_did, name, group_mode, slug, description, goal, rules, message_prompt,
      doc_url, group_owner_did, group_owner_handle, my_role, membership_status, join_enabled, join_code,
      join_code_expires_at, member_count, last_synced_seq, last_read_seq, last_message_at,
      remote_created_at, remote_updated_at, stored_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
 ON CONFLICT(owner_did, group_id)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, groups.owner_identity_id),
     group_did = excluded.group_did,
     name = excluded.name,
     group_mode = excluded.group_mode,
@@ -265,6 +276,7 @@ DO UPDATE SET
     metadata = excluded.metadata,
     credential_name = excluded.credential_name"#,
         params![
+            normalize_optional_string(&record.owner_identity_id),
             normalize_owner_did(&record.owner_did),
             record.group_id,
             normalize_optional_string(&record.group_did),
@@ -305,11 +317,12 @@ pub(super) fn upsert_recovered_group_member(
     transaction.execute(
         r#"
 INSERT INTO group_members
-    (owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
+    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
      joined_at, sent_message_count, last_synced_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
 ON CONFLICT(owner_did, group_id, user_id)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, group_members.owner_identity_id),
     member_did = excluded.member_did,
     member_handle = excluded.member_handle,
     profile_url = excluded.profile_url,
@@ -321,6 +334,7 @@ DO UPDATE SET
     metadata = excluded.metadata,
     credential_name = excluded.credential_name"#,
         params![
+            normalize_optional_string(&record.owner_identity_id),
             normalize_owner_did(&record.owner_did),
             record.group_id,
             record.user_id,

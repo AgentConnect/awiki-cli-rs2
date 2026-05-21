@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ContactRecord {
+    pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) did: String,
     pub(crate) name: String,

@@ -124,8 +124,9 @@ fn classify_mark_read_ids(
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::messages::classify_mark_read_ids(
+    crate::internal::local_state::messages::classify_mark_read_ids_for_owner_identity(
         &connection,
+        client.current_identity().id.as_str(),
         client.did().as_str(),
         ids,
     )
@@ -159,8 +160,9 @@ fn mark_local_messages_read(
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::messages::mark_messages_read(
+    crate::internal::local_state::messages::mark_messages_read_for_owner_identity(
         &connection,
+        client.current_identity().id.as_str(),
         client.did().as_str(),
         &local_ids,
     )

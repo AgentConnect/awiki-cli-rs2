@@ -8,6 +8,7 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Default)]
 pub struct GroupRecord {
+    pub owner_identity_id: String,
     pub owner_did: String,
     pub group_id: String,
     pub group_did: String,
@@ -39,6 +40,7 @@ pub struct GroupRecord {
 
 #[derive(Debug, Clone, Default)]
 pub struct GroupMemberRecord {
+    pub owner_identity_id: String,
     pub owner_did: String,
     pub group_id: String,
     pub user_id: String,
@@ -56,6 +58,10 @@ pub struct GroupMemberRecord {
 
 pub fn upsert_group(connection: &Connection, record: GroupRecord) -> StoreResult<()> {
     let owner_did = normalize_owner_did(&record.owner_did);
+    let owner_identity_id = normalize_owner_identity_id(&default_string(
+        record.owner_identity_id.clone(),
+        &record.credential_name,
+    ));
     let group_id = record.group_id.trim().to_string();
     if owner_did.is_empty() || group_id.is_empty() {
         return Err(StoreError::Invalid(
@@ -64,12 +70,23 @@ pub fn upsert_group(connection: &Connection, record: GroupRecord) -> StoreResult
     }
     let stored_at = default_string(record.stored_at.clone(), &now_utc());
     let mut statement = connection.prepare(upsert_group_sql())?;
-    execute_upsert_group(&mut statement, &record, &owner_did, &group_id, &stored_at)?;
+    execute_upsert_group(
+        &mut statement,
+        &record,
+        &owner_identity_id,
+        &owner_did,
+        &group_id,
+        &stored_at,
+    )?;
     Ok(())
 }
 
 pub fn upsert_group_member(connection: &Connection, record: GroupMemberRecord) -> StoreResult<()> {
     let owner_did = normalize_owner_did(&record.owner_did);
+    let owner_identity_id = normalize_owner_identity_id(&default_string(
+        record.owner_identity_id.clone(),
+        &record.credential_name,
+    ));
     let group_id = record.group_id.trim().to_string();
     let user_id = record.user_id.trim().to_string();
     validate_member_key(&owner_did, &group_id, &user_id)?;
@@ -78,6 +95,7 @@ pub fn upsert_group_member(connection: &Connection, record: GroupMemberRecord) -
     execute_upsert_group_member(
         &mut statement,
         &record,
+        &owner_identity_id,
         &owner_did,
         &group_id,
         &user_id,
@@ -95,6 +113,7 @@ pub fn replace_group_members(
     credential_name: &str,
 ) -> StoreResult<()> {
     let owner_did = normalize_owner_did(owner_did);
+    let owner_identity_id = normalize_owner_identity_id(credential_name);
     let group_id = group_id.trim().to_string();
     if owner_did.is_empty() || group_id.is_empty() {
         return Err(StoreError::Invalid(
@@ -118,6 +137,7 @@ pub fn replace_group_members(
             execute_insert_group_member(
                 &mut statement,
                 member,
+                &owner_identity_id,
                 &owner_did,
                 &group_id,
                 &user_id,
@@ -152,6 +172,35 @@ LIMIT 1"#,
     Err(StoreError::NotFound(format!("group not found: {group_id}")))
 }
 
+pub fn get_group_snapshot_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    group_id: &str,
+) -> StoreResult<Value> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner_did = normalize_owner_did(owner_did);
+    let group_id = group_id.trim().to_string();
+    let mut statement = connection.prepare(&format!(
+        r#"
+SELECT *
+FROM groups
+WHERE {} AND (group_id = ?3 OR group_did = ?3)
+LIMIT 1"#,
+        owner_identity_predicate("groups")
+    ))?;
+    let names = column_names(&statement);
+    let mut rows = statement.query(params![
+        owner_identity_id.as_str(),
+        owner_did.as_str(),
+        group_id.as_str()
+    ])?;
+    if let Some(row) = rows.next()? {
+        return row_to_json(row, &names);
+    }
+    Err(StoreError::NotFound(format!("group not found: {group_id}")))
+}
+
 pub fn list_cached_group_members(
     connection: &Connection,
     owner_did: &str,
@@ -180,6 +229,40 @@ WHERE owner_did = ?1
 ORDER BY role ASC, member_handle ASC, member_did ASC
 LIMIT ?3"#,
         &[&owner_did, &group_id, &limit],
+    )
+}
+
+pub fn list_cached_group_members_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    group_id: &str,
+    limit: i64,
+) -> StoreResult<Vec<Value>> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner_did = normalize_owner_did(owner_did);
+    let group_id = group_id.trim().to_string();
+    if group_id.is_empty() {
+        return Err(StoreError::Invalid("group_id is required".to_string()));
+    }
+    let limit = if limit <= 0 { 100 } else { limit };
+    query_rows_with_params(
+        connection,
+        r#"
+SELECT *
+FROM group_members
+WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
+  AND group_id IN (
+        SELECT ?3
+        UNION
+        SELECT group_id
+        FROM groups
+        WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
+          AND (group_id = ?3 OR group_did = ?3)
+  )
+ORDER BY role ASC, member_handle ASC, member_did ASC
+LIMIT ?4"#,
+        &[&owner_identity_id, &owner_did, &group_id, &limit],
     )
 }
 
@@ -220,6 +303,54 @@ WHERE owner_did = ?1
 ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
 LIMIT ?3"#,
         &[&owner_did, &group_id, &limit],
+    )
+}
+
+pub fn list_group_messages_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    group_id: &str,
+    limit: i64,
+    since_seq: Option<i64>,
+) -> StoreResult<Vec<Value>> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner_did = normalize_owner_did(owner_did);
+    let group_id = group_id.trim().to_string();
+    if group_id.is_empty() {
+        return Err(StoreError::Invalid("group_id is required".to_string()));
+    }
+    let limit = if limit <= 0 { 50 } else { limit };
+    if let Some(since_seq) = since_seq {
+        return query_rows_with_params(
+            connection,
+            r#"
+SELECT *
+FROM messages
+WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
+  AND (group_did = ?3 OR group_id = ?3)
+  AND COALESCE(server_seq, 0) > ?4
+ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
+LIMIT ?5"#,
+            &[
+                &owner_identity_id,
+                &owner_did,
+                &group_id,
+                &since_seq,
+                &limit,
+            ],
+        );
+    }
+    query_rows_with_params(
+        connection,
+        r#"
+SELECT *
+FROM messages
+WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
+  AND (group_did = ?3 OR group_id = ?3)
+ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
+LIMIT ?4"#,
+        &[&owner_identity_id, &owner_did, &group_id, &limit],
     )
 }
 
@@ -270,21 +401,24 @@ pub fn mark_group_left(
     let now = now_utc();
     let group_did = normalize_optional_string(group_did);
     let credential_name = normalize_credential_name(credential_name);
+    let owner_identity_id = normalize_owner_identity_id(&credential_name);
     let transaction = connection.transaction()?;
     transaction.execute(
         r#"
 INSERT INTO groups
-    (owner_did, group_id, group_did, group_mode, my_role, membership_status, stored_at,
+    (owner_identity_id, owner_did, group_id, group_did, group_mode, my_role, membership_status, stored_at,
      credential_name)
-VALUES (?1, ?2, ?3, 'general', NULL, 'left', ?4, ?5)
+VALUES (?1, ?2, ?3, ?4, 'general', NULL, 'left', ?5, ?6)
 ON CONFLICT(owner_did, group_id)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, groups.owner_identity_id),
     group_did = COALESCE(excluded.group_did, groups.group_did),
     my_role = NULL,
     membership_status = 'left',
     stored_at = excluded.stored_at,
     credential_name = COALESCE(excluded.credential_name, groups.credential_name)"#,
         params![
+            normalize_optional_string(&owner_identity_id),
             owner_did.as_str(),
             group_id.as_str(),
             group_did,
@@ -318,14 +452,17 @@ pub fn touch_group_after_message(
         ));
     }
     let now = now_utc();
+    let credential_name = normalize_credential_name(credential_name);
+    let owner_identity_id = normalize_owner_identity_id(&credential_name);
     connection.execute(
         r#"
 INSERT INTO groups
-    (owner_did, group_id, group_did, group_mode, membership_status, last_synced_seq,
+    (owner_identity_id, owner_did, group_id, group_did, group_mode, membership_status, last_synced_seq,
      last_message_at, stored_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, 'general', 'active', ?4, ?5, ?6, ?7, ?8)
+VALUES (?1, ?2, ?3, ?4, 'general', 'active', ?5, ?6, ?7, ?8, ?9)
 ON CONFLICT(owner_did, group_id)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, groups.owner_identity_id),
     group_did = COALESCE(excluded.group_did, groups.group_did),
     last_synced_seq = CASE
         WHEN excluded.last_synced_seq IS NULL THEN groups.last_synced_seq
@@ -338,6 +475,7 @@ DO UPDATE SET
     metadata = COALESCE(excluded.metadata, groups.metadata),
     credential_name = COALESCE(excluded.credential_name, groups.credential_name)"#,
         params![
+            normalize_optional_string(&owner_identity_id),
             owner_did.as_str(),
             group_id.as_str(),
             normalize_optional_string(group_did),
@@ -345,7 +483,7 @@ DO UPDATE SET
             normalize_optional_string(last_message_at),
             now.as_str(),
             normalize_metadata(metadata),
-            normalize_credential_name(credential_name),
+            credential_name,
         ],
     )?;
     Ok(())
@@ -354,11 +492,13 @@ DO UPDATE SET
 fn execute_upsert_group(
     statement: &mut Statement<'_>,
     record: &GroupRecord,
+    owner_identity_id: &str,
     owner_did: &str,
     group_id: &str,
     stored_at: &str,
 ) -> StoreResult<usize> {
     Ok(statement.execute(params![
+        normalize_optional_string(owner_identity_id),
         owner_did,
         group_id,
         normalize_optional_string(&record.group_did),
@@ -392,6 +532,7 @@ fn execute_upsert_group(
 fn execute_upsert_group_member(
     statement: &mut Statement<'_>,
     record: &GroupMemberRecord,
+    owner_identity_id: &str,
     owner_did: &str,
     group_id: &str,
     user_id: &str,
@@ -399,6 +540,7 @@ fn execute_upsert_group_member(
     credential_name: &str,
 ) -> StoreResult<usize> {
     Ok(statement.execute(params![
+        normalize_optional_string(owner_identity_id),
         owner_did,
         group_id,
         user_id,
@@ -421,6 +563,7 @@ fn execute_upsert_group_member(
 fn execute_insert_group_member(
     statement: &mut Statement<'_>,
     record: &GroupMemberRecord,
+    owner_identity_id: &str,
     owner_did: &str,
     group_id: &str,
     user_id: &str,
@@ -428,6 +571,7 @@ fn execute_insert_group_member(
     credential_name: &str,
 ) -> StoreResult<usize> {
     Ok(statement.execute(params![
+        normalize_optional_string(owner_identity_id),
         owner_did,
         group_id,
         user_id,
@@ -503,16 +647,27 @@ fn value_ref_to_json(value: rusqlite::types::ValueRef<'_>) -> Value {
     }
 }
 
+fn normalize_owner_identity_id(value: &str) -> String {
+    value.trim().to_string()
+}
+
+fn owner_identity_predicate(alias: &str) -> String {
+    format!(
+        "({alias}.owner_identity_id = ?1 OR (({alias}.owner_identity_id IS NULL OR TRIM({alias}.owner_identity_id) = '') AND {alias}.owner_did = ?2))"
+    )
+}
+
 fn upsert_group_sql() -> &'static str {
     r#"
 INSERT INTO groups
-    (owner_did, group_id, group_did, name, group_mode, slug, description, goal, rules, message_prompt,
+    (owner_identity_id, owner_did, group_id, group_did, name, group_mode, slug, description, goal, rules, message_prompt,
      doc_url, group_owner_did, group_owner_handle, my_role, membership_status, join_enabled, join_code,
      join_code_expires_at, member_count, last_synced_seq, last_read_seq, last_message_at,
      remote_created_at, remote_updated_at, stored_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
 ON CONFLICT(owner_did, group_id)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, groups.owner_identity_id),
     group_did = excluded.group_did,
     name = excluded.name,
     group_mode = excluded.group_mode,
@@ -543,19 +698,20 @@ DO UPDATE SET
 fn insert_group_member_sql() -> &'static str {
     r#"
 INSERT INTO group_members
-    (owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
+    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
      joined_at, sent_message_count, last_synced_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#
 }
 
 fn upsert_group_member_sql() -> &'static str {
     r#"
 INSERT INTO group_members
-    (owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
+    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
      joined_at, sent_message_count, last_synced_at, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
 ON CONFLICT(owner_did, group_id, user_id)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, group_members.owner_identity_id),
     member_did = excluded.member_did,
     member_handle = excluded.member_handle,
     profile_url = excluded.profile_url,

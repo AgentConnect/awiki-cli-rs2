@@ -1,10 +1,11 @@
 use rusqlite::Connection;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 12;
+pub(crate) const SCHEMA_VERSION: i64 = 13;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
+    owner_identity_id TEXT,
     owner_did       TEXT NOT NULL DEFAULT '',
     did             TEXT NOT NULL,
     name            TEXT,
@@ -25,11 +26,13 @@ CREATE TABLE IF NOT EXISTS contacts (
     first_seen_at   TEXT,
     last_seen_at    TEXT,
     metadata        TEXT,
+    credential_name TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (owner_did, did)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
     msg_id          TEXT NOT NULL,
+    owner_identity_id TEXT,
     owner_did       TEXT NOT NULL DEFAULT '',
     thread_id       TEXT NOT NULL,
     direction       INTEGER NOT NULL DEFAULT 0,
@@ -76,6 +79,7 @@ CREATE TABLE IF NOT EXISTS e2ee_outbox (
 
 const V7_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS groups (
+    owner_identity_id TEXT,
     owner_did          TEXT NOT NULL DEFAULT '',
     group_id           TEXT NOT NULL,
     group_did          TEXT,
@@ -107,6 +111,7 @@ CREATE TABLE IF NOT EXISTS groups (
 );
 
 CREATE TABLE IF NOT EXISTS group_members (
+    owner_identity_id TEXT,
     owner_did         TEXT NOT NULL DEFAULT '',
     group_id          TEXT NOT NULL,
     user_id           TEXT NOT NULL,
@@ -127,6 +132,7 @@ CREATE TABLE IF NOT EXISTS group_members (
 const V8_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS relationship_events (
     event_id         TEXT PRIMARY KEY,
+    owner_identity_id TEXT,
     owner_did        TEXT NOT NULL DEFAULT '',
     target_did       TEXT NOT NULL,
     target_handle    TEXT,
@@ -167,6 +173,7 @@ CREATE TABLE IF NOT EXISTS e2ee_sessions (
 
 const V12_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contact_handle_bindings (
+    owner_identity_id TEXT,
     owner_did        TEXT NOT NULL DEFAULT '',
     handle           TEXT NOT NULL,
     did              TEXT NOT NULL,
@@ -182,10 +189,19 @@ CREATE TABLE IF NOT EXISTS contact_handle_bindings (
 "#;
 
 const INDEX_STATEMENTS: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity ON contacts(owner_identity_id, last_seen_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_did, last_seen_at DESC)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_handle_current_unique ON contact_handle_bindings(owner_identity_id, handle) WHERE owner_identity_id IS NOT NULL AND is_current = 1",
+    "CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_did ON contact_handle_bindings(owner_identity_id, did, last_seen_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_handle ON contact_handle_bindings(owner_identity_id, handle, last_seen_at DESC)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_handle_current_unique ON contact_handle_bindings(owner_did, handle) WHERE is_current = 1",
     "CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_did ON contact_handle_bindings(owner_did, did, last_seen_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_handle ON contact_handle_bindings(owner_did, handle, last_seen_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_thread ON messages(owner_identity_id, thread_id, sent_at)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_thread_seq ON messages(owner_identity_id, thread_id, server_seq)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_direction ON messages(owner_identity_id, direction)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity_sender ON messages(owner_identity_id, sender_did)",
+    "CREATE INDEX IF NOT EXISTS idx_messages_owner_identity ON messages(owner_identity_id)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_thread ON messages(owner_did, thread_id, sent_at)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_thread_seq ON messages(owner_did, thread_id, server_seq)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_direction ON messages(owner_did, direction)",
@@ -196,12 +212,21 @@ const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_sent_msg ON e2ee_outbox(owner_did, sent_msg_id)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_sent_seq ON e2ee_outbox(owner_did, peer_did, sent_server_seq)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_credential ON e2ee_outbox(credential_name)",
+    "CREATE INDEX IF NOT EXISTS idx_groups_owner_identity_status_last_message ON groups(owner_identity_id, membership_status, last_message_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_groups_owner_identity_slug ON groups(owner_identity_id, slug)",
+    "CREATE INDEX IF NOT EXISTS idx_groups_owner_identity_updated ON groups(owner_identity_id, remote_updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_groups_owner_status_last_message ON groups(owner_did, membership_status, last_message_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_groups_owner_slug ON groups(owner_did, slug)",
     "CREATE INDEX IF NOT EXISTS idx_groups_owner_updated ON groups(owner_did, remote_updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_group_members_owner_identity_group_role ON group_members(owner_identity_id, group_id, role)",
+    "CREATE INDEX IF NOT EXISTS idx_group_members_owner_identity_group_status ON group_members(owner_identity_id, group_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_group_members_owner_group_role ON group_members(owner_did, group_id, role)",
     "CREATE INDEX IF NOT EXISTS idx_group_members_owner_group_status ON group_members(owner_did, group_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity_source_group ON contacts(owner_identity_id, source_group_id)",
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner_source_group ON contacts(owner_did, source_group_id)",
+    "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_identity_target_time ON relationship_events(owner_identity_id, target_did, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_identity_status_time ON relationship_events(owner_identity_id, status, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_identity_group ON relationship_events(owner_identity_id, source_group_id)",
     "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_target_time ON relationship_events(owner_did, target_did, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_status_time ON relationship_events(owner_did, status, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_group ON relationship_events(owner_did, source_group_id)",
@@ -212,18 +237,20 @@ const INDEX_STATEMENTS: &[&str] = &[
 const VIEW_STATEMENTS: &[&str] = &[
     r#"CREATE VIEW IF NOT EXISTS threads AS
 SELECT
+    owner_identity_id,
     owner_did,
     thread_id,
     COUNT(*) AS message_count,
     SUM(CASE WHEN is_read = 0 AND direction = 0 THEN 1 ELSE 0 END) AS unread_count,
     MAX(COALESCE(sent_at, stored_at)) AS last_message_at,
     (SELECT m2.content FROM messages m2
-     WHERE m2.owner_did = m.owner_did
+     WHERE COALESCE(m2.owner_identity_id, '') = COALESCE(m.owner_identity_id, '')
+       AND m2.owner_did = m.owner_did
        AND m2.thread_id = m.thread_id
      ORDER BY COALESCE(m2.sent_at, m2.stored_at) DESC
      LIMIT 1) AS last_content
 FROM messages m
-GROUP BY owner_did, thread_id"#,
+GROUP BY owner_identity_id, owner_did, thread_id"#,
     r#"CREATE VIEW IF NOT EXISTS inbox AS
 SELECT * FROM messages WHERE direction = 0
 ORDER BY owner_did, COALESCE(sent_at, stored_at) DESC"#,
@@ -272,6 +299,7 @@ fn create_schema(connection: &Connection) -> crate::ImResult<()> {
             .execute_batch(script)
             .map_err(super::local_state_unavailable)?;
     }
+    ensure_owner_identity_columns(connection)?;
     backfill_contact_handle_bindings(connection)?;
     for statement in INDEX_STATEMENTS {
         connection
@@ -291,14 +319,134 @@ fn create_schema(connection: &Connection) -> crate::ImResult<()> {
     Ok(())
 }
 
+fn ensure_owner_identity_columns(connection: &Connection) -> crate::ImResult<()> {
+    for table in [
+        "contacts",
+        "contact_handle_bindings",
+        "messages",
+        "groups",
+        "group_members",
+        "relationship_events",
+    ] {
+        ensure_column(connection, table, "owner_identity_id", "TEXT")?;
+    }
+    ensure_column(
+        connection,
+        "contacts",
+        "credential_name",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OwnerIdentityBackfill {
+    pub(crate) identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) credential_names: Vec<String>,
+}
+
+pub(crate) fn backfill_owner_identity_ids(
+    connection: &Connection,
+    identities: &[OwnerIdentityBackfill],
+) -> crate::ImResult<usize> {
+    let mut updated = 0;
+    for table in [
+        "contacts",
+        "contact_handle_bindings",
+        "messages",
+        "groups",
+        "group_members",
+        "relationship_events",
+    ] {
+        for identity in identities {
+            let identity_id = identity.identity_id.trim();
+            if identity_id.is_empty() {
+                continue;
+            }
+            for credential_name in identity.credential_names.iter().map(|value| value.trim()) {
+                if credential_name.is_empty() {
+                    continue;
+                }
+                updated += connection
+                    .execute(
+                        &format!(
+                            r#"
+UPDATE {table}
+SET owner_identity_id = ?1
+WHERE (owner_identity_id IS NULL OR TRIM(owner_identity_id) = '')
+  AND TRIM(COALESCE(credential_name, '')) = ?2"#
+                        ),
+                        rusqlite::params![identity_id, credential_name],
+                    )
+                    .map_err(super::local_state_unavailable)?;
+            }
+        }
+        for identity in identities {
+            let identity_id = identity.identity_id.trim();
+            let owner_did = identity.owner_did.trim();
+            if identity_id.is_empty() || owner_did.is_empty() {
+                continue;
+            }
+            updated += connection
+                .execute(
+                    &format!(
+                        r#"
+UPDATE {table}
+SET owner_identity_id = ?1
+WHERE (owner_identity_id IS NULL OR TRIM(owner_identity_id) = '')
+  AND owner_did = ?2"#
+                    ),
+                    rusqlite::params![identity_id, owner_did],
+                )
+                .map_err(super::local_state_unavailable)?;
+        }
+    }
+    Ok(updated)
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> crate::ImResult<()> {
+    if has_column(connection, table, column)? {
+        return Ok(());
+    }
+    connection
+        .execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> crate::ImResult<bool> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(super::local_state_unavailable)?;
+    for row in rows {
+        if row.map_err(super::local_state_unavailable)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn backfill_contact_handle_bindings(connection: &Connection) -> crate::ImResult<()> {
     let now = now_utc_like();
     connection
         .execute(
             r#"
 INSERT INTO contact_handle_bindings
-    (owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
-SELECT owner_did,
+    (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
+SELECT owner_identity_id,
+       owner_did,
        handle,
        did,
        0,
@@ -307,11 +455,12 @@ SELECT owner_did,
        source_type,
        source_group_id,
        metadata,
-       ''
+       credential_name
 FROM contacts
 WHERE TRIM(COALESCE(handle, '')) <> ''
 ON CONFLICT(owner_did, handle, did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, contact_handle_bindings.owner_identity_id),
     last_seen_at = excluded.last_seen_at,
     source_type = COALESCE(excluded.source_type, contact_handle_bindings.source_type),
     source_group_id = COALESCE(excluded.source_group_id, contact_handle_bindings.source_group_id),
@@ -404,7 +553,22 @@ mod tests {
             "idx_contact_handle_bindings_owner_handle_current_unique",
         );
         assert_index_exists(&db, "idx_messages_owner_thread");
+        assert_index_exists(&db, "idx_messages_owner_identity_thread");
         assert_index_exists(&db, "idx_groups_owner_status_last_message");
+        assert_index_exists(&db, "idx_groups_owner_identity_status_last_message");
+        for table in [
+            "contacts",
+            "contact_handle_bindings",
+            "messages",
+            "groups",
+            "group_members",
+            "relationship_events",
+        ] {
+            assert_column_exists(&db, table, "owner_identity_id");
+        }
+        for table in ["e2ee_outbox", "e2ee_sessions"] {
+            assert_column_missing(&db, table, "owner_identity_id");
+        }
     }
 
     #[test]
@@ -462,6 +626,63 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
         assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     }
 
+    #[test]
+    fn local_state_owner_backfills_identity_ids_from_credentials_then_owner_did() {
+        let db = Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        db.execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, stored_at, credential_name)
+VALUES ('by-credential', 'did:old', 'dm:old:bob', 0, '2026-05-21T00:00:00Z', 'alice')"#,
+            [],
+        )
+        .unwrap();
+        db.execute(
+            r#"
+INSERT INTO groups
+    (owner_did, group_id, group_mode, membership_status, stored_at, credential_name)
+VALUES ('did:alice', 'group-1', 'general', 'active', '2026-05-21T00:00:00Z', '')"#,
+            [],
+        )
+        .unwrap();
+        db.execute(
+            r#"
+INSERT INTO e2ee_outbox
+    (outbox_id, owner_did, peer_did, plaintext, created_at, updated_at)
+VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2026-05-21T00:00:00Z')"#,
+            [],
+        )
+        .unwrap();
+
+        let updated = backfill_owner_identity_ids(
+            &db,
+            &[OwnerIdentityBackfill {
+                identity_id: "alice-id".to_string(),
+                owner_did: "did:alice".to_string(),
+                credential_names: vec!["alice".to_string()],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(updated, 2);
+        assert_eq!(
+            string_cell(
+                &db,
+                "SELECT owner_identity_id FROM messages WHERE msg_id = 'by-credential'"
+            ),
+            "alice-id"
+        );
+        assert_eq!(
+            string_cell(
+                &db,
+                "SELECT owner_identity_id FROM groups WHERE group_id = 'group-1'"
+            ),
+            "alice-id"
+        );
+        assert_column_missing(&db, "e2ee_outbox", "owner_identity_id");
+    }
+
     fn assert_schema_object_exists(db: &Connection, object_type: &str, name: &str) {
         let count = db
             .query_row(
@@ -475,5 +696,31 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
 
     fn assert_index_exists(db: &Connection, name: &str) {
         assert_schema_object_exists(db, "index", name);
+    }
+
+    fn assert_column_exists(db: &Connection, table: &str, column: &str) {
+        assert!(column_exists(db, table, column), "missing {table}.{column}");
+    }
+
+    fn assert_column_missing(db: &Connection, table: &str, column: &str) {
+        assert!(
+            !column_exists(db, table, column),
+            "unexpected {table}.{column}"
+        );
+    }
+
+    fn column_exists(db: &Connection, table: &str, column: &str) -> bool {
+        let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap();
+        let exists = rows.map(Result::unwrap).any(|name| name == column);
+        exists
+    }
+
+    fn string_cell(db: &Connection, sql: &str) -> String {
+        db.query_row(sql, [], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .unwrap_or_default()
     }
 }

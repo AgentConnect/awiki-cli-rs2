@@ -35,8 +35,9 @@ fn list_conversation_records(
     let connection = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
-    crate::internal::local_state::conversations::list_conversations(
+    crate::internal::local_state::conversations::list_conversations_for_owner_identity(
         &connection,
+        client.current_identity().id.as_str(),
         client.did().as_str(),
         query,
     )

@@ -20,15 +20,17 @@ pub use e2ee_outbox::{
     queue_e2ee_outbox, set_e2ee_outbox_failure_by_id, update_e2ee_outbox_status, E2EEOutboxRecord,
 };
 pub use groups::{
-    get_group_snapshot, list_cached_group_members, list_group_inbox_messages, list_group_messages,
-    mark_group_left, replace_group_members, touch_group_after_message, upsert_group,
-    upsert_group_member, GroupMemberRecord, GroupRecord,
+    get_group_snapshot, get_group_snapshot_for_owner_identity, list_cached_group_members,
+    list_cached_group_members_for_owner_identity, list_group_inbox_messages, list_group_messages,
+    list_group_messages_for_owner_identity, mark_group_left, replace_group_members,
+    touch_group_after_message, upsert_group, upsert_group_member, GroupMemberRecord, GroupRecord,
 };
 pub use helpers::{make_thread_id, now_utc};
 pub use import::{import_legacy_database, scan_legacy_database, LegacyOwnerLookup};
 pub use messages::{
     list_direct_messages_by_peer_dids, list_inbox_messages, list_messages_by_ids,
-    list_notification_inbox_messages, list_thread_messages, mark_messages_read, store_message,
+    list_messages_by_ids_for_owner_identity, list_notification_inbox_messages,
+    list_thread_messages, mark_messages_read, mark_messages_read_for_owner_identity, store_message,
     store_messages_batch, MessageRecord,
 };
 pub use open::{open, open_read_only};

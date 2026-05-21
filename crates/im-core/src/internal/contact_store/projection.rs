@@ -8,6 +8,7 @@ pub(crate) fn record_from_save_request(
     did: crate::ids::Did,
 ) -> ContactRecord {
     ContactRecord {
+        owner_identity_id: client.current_identity().id.as_str().to_string(),
         owner_did: client.did().as_str().to_string(),
         did: did.as_str().to_string(),
         name: request.display_name.clone().unwrap_or_default(),
@@ -36,6 +37,7 @@ pub(crate) fn record_from_profile(
     source_type: &str,
 ) -> ContactRecord {
     ContactRecord {
+        owner_identity_id: client.current_identity().id.as_str().to_string(),
         owner_did: client.did().as_str().to_string(),
         did: profile.subject.as_str().to_string(),
         name: profile.display_name.clone().unwrap_or_default(),
@@ -68,6 +70,7 @@ pub(crate) fn project_directory_resolution(
         .as_ref()
         .map(|profile| record_from_profile(client, profile, "directory.profile_projection"))
         .unwrap_or_else(|| ContactRecord {
+            owner_identity_id: client.current_identity().id.as_str().to_string(),
             owner_did: client.did().as_str().to_string(),
             did: resolution.did.as_str().to_string(),
             handle: resolution

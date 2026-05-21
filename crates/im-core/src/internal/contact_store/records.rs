@@ -4,6 +4,7 @@ use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ContactRecord {
+    pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) did: String,
     pub(crate) name: String,
@@ -29,6 +30,7 @@ pub(crate) struct ContactRecord {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ContactHandleBindingRecord {
+    pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) handle: String,
     pub(crate) did: String,
@@ -46,6 +48,7 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
         .execute_batch(
             r#"
 CREATE TABLE IF NOT EXISTS contacts (
+    owner_identity_id TEXT,
     owner_did       TEXT NOT NULL DEFAULT '',
     did             TEXT NOT NULL,
     name            TEXT,
@@ -66,10 +69,12 @@ CREATE TABLE IF NOT EXISTS contacts (
     first_seen_at   TEXT,
     last_seen_at    TEXT,
     metadata        TEXT,
+    credential_name TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (owner_did, did)
 );
 
 CREATE TABLE IF NOT EXISTS contact_handle_bindings (
+    owner_identity_id TEXT,
     owner_did        TEXT NOT NULL DEFAULT '',
     handle           TEXT NOT NULL,
     did              TEXT NOT NULL,
@@ -85,30 +90,61 @@ CREATE TABLE IF NOT EXISTS contact_handle_bindings (
 
 CREATE INDEX IF NOT EXISTS idx_contacts_owner
     ON contacts(owner_did, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity
+    ON contacts(owner_identity_id, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_contacts_owner_source_group
     ON contacts(owner_did, source_group_id);
+CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity_source_group
+    ON contacts(owner_identity_id, source_group_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_handle_current_unique
     ON contact_handle_bindings(owner_did, handle) WHERE is_current = 1;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_handle_current_unique
+    ON contact_handle_bindings(owner_identity_id, handle) WHERE owner_identity_id IS NOT NULL AND is_current = 1;
 CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_did
     ON contact_handle_bindings(owner_did, did, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_did
+    ON contact_handle_bindings(owner_identity_id, did, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_handle
     ON contact_handle_bindings(owner_did, handle, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_handle
+    ON contact_handle_bindings(owner_identity_id, handle, last_seen_at DESC);
 "#,
         )
         .map_err(super::local_state_unavailable)?;
+    ensure_column(connection, "contacts", "owner_identity_id", "TEXT")?;
+    ensure_column(
+        connection,
+        "contacts",
+        "credential_name",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        connection,
+        "contact_handle_bindings",
+        "owner_identity_id",
+        "TEXT",
+    )?;
     backfill_contact_handle_bindings(connection)?;
     Ok(())
 }
 
 pub(crate) fn get_contact_by_did(
     connection: &Connection,
+    owner_identity_id: &str,
     owner_did: &str,
     did: &str,
 ) -> crate::ImResult<ContactRecord> {
     query_one_contact(
         connection,
-        "SELECT * FROM contacts WHERE owner_did = ?1 AND did = ?2",
-        &[&normalize_owner_did(owner_did), &did.trim().to_string()],
+        &format!(
+            "SELECT * FROM contacts WHERE {} AND did = ?3",
+            owner_predicate(1, 2)
+        ),
+        &[
+            &normalize_owner_identity_id(owner_identity_id),
+            &normalize_owner_did(owner_did),
+            &did.trim().to_string(),
+        ],
     )
 }
 
@@ -124,7 +160,79 @@ pub(crate) fn get_contact_by_did_json(
     )
 }
 
+pub(crate) fn get_contact_by_did_json_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    did: &str,
+) -> crate::ImResult<Value> {
+    query_one_json(
+        connection,
+        &format!(
+            "SELECT * FROM contacts WHERE {} AND did = ?3",
+            owner_predicate(1, 2)
+        ),
+        &[
+            &normalize_owner_identity_id(owner_identity_id),
+            &normalize_owner_did(owner_did),
+            &did.trim().to_string(),
+        ],
+    )
+}
+
 pub(crate) fn get_current_contact_by_handle(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    handle: &str,
+) -> crate::ImResult<ContactRecord> {
+    get_current_contact_by_handle_for_owner(connection, owner_identity_id, owner_did, handle)
+}
+
+fn get_current_contact_by_handle_for_owner(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    handle: &str,
+) -> crate::ImResult<ContactRecord> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner_did = normalize_owner_did(owner_did);
+    let handle = handle.trim().to_string();
+    if handle.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("handle".to_string()),
+            "handle must not be empty",
+        ));
+    }
+    let from_contact = query_one_contact(
+        connection,
+        &format!(
+            "SELECT * FROM contacts WHERE {} AND handle = ?3",
+            owner_predicate(1, 2)
+        ),
+        &[&owner_identity_id, &owner_did, &handle],
+    );
+    if from_contact.is_ok() {
+        return from_contact;
+    }
+    query_one_contact(
+        connection,
+        r#"
+SELECT contacts.*
+FROM contacts
+JOIN contact_handle_bindings
+  ON contact_handle_bindings.owner_did = contacts.owner_did
+ AND contact_handle_bindings.did = contacts.did
+WHERE (contact_handle_bindings.owner_identity_id = ?1 OR ((contact_handle_bindings.owner_identity_id IS NULL OR TRIM(contact_handle_bindings.owner_identity_id) = '') AND contact_handle_bindings.owner_did = ?2))
+  AND contact_handle_bindings.handle = ?3
+  AND contact_handle_bindings.is_current = 1
+ORDER BY contact_handle_bindings.last_seen_at DESC
+LIMIT 1"#,
+        &[&owner_identity_id, &owner_did, &handle],
+    )
+}
+
+fn get_current_contact_by_handle_for_owner_did(
     connection: &Connection,
     owner_did: &str,
     handle: &str,
@@ -167,7 +275,18 @@ pub(crate) fn get_current_contact_by_handle_json(
     owner_did: &str,
     handle: &str,
 ) -> crate::ImResult<Value> {
-    let record = get_current_contact_by_handle(connection, owner_did, handle)?;
+    let record = get_current_contact_by_handle_for_owner_did(connection, owner_did, handle)?;
+    contact_record_json(&record)
+}
+
+pub(crate) fn get_current_contact_by_handle_json_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    handle: &str,
+) -> crate::ImResult<Value> {
+    let record =
+        get_current_contact_by_handle_for_owner(connection, owner_identity_id, owner_did, handle)?;
     contact_record_json(&record)
 }
 
@@ -200,6 +319,50 @@ WHERE owner_did = ?1 AND did = ?2
 ORDER BY is_current DESC, last_seen_at DESC
 LIMIT 1"#,
             params![owner_did.as_str(), did.as_str()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .flatten()
+        .unwrap_or_default();
+    Ok(binding_handle)
+}
+
+pub(crate) fn resolve_contact_handle_by_did_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    did: &str,
+) -> crate::ImResult<String> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner_did = normalize_owner_did(owner_did);
+    let did = did.trim().to_string();
+    let contact_handle = connection
+        .query_row(
+            &format!(
+                "SELECT handle FROM contacts WHERE {} AND did = ?3 AND TRIM(COALESCE(handle, '')) <> ''",
+                owner_predicate(1, 2)
+            ),
+            params![owner_identity_id.as_str(), owner_did.as_str(), did.as_str()],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .flatten()
+        .unwrap_or_default();
+    if !contact_handle.is_empty() {
+        return Ok(contact_handle);
+    }
+    let binding_handle = connection
+        .query_row(
+            r#"
+SELECT handle
+FROM contact_handle_bindings
+WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
+  AND did = ?3
+ORDER BY is_current DESC, last_seen_at DESC
+LIMIT 1"#,
+            params![owner_identity_id.as_str(), owner_did.as_str(), did.as_str()],
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
@@ -259,6 +422,70 @@ ORDER BY is_current DESC, last_seen_at DESC"#,
     }
 }
 
+pub(crate) fn list_dids_by_handle_for_owner_identity(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    handle: &str,
+) -> crate::ImResult<Vec<String>> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner_did = normalize_owner_did(owner_did);
+    let handle = handle.trim().to_string();
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT did
+FROM contact_handle_bindings
+WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
+  AND handle = ?3
+ORDER BY is_current DESC, last_seen_at DESC"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let mut rows = statement
+        .query(params![
+            owner_identity_id.as_str(),
+            owner_did.as_str(),
+            handle.as_str()
+        ])
+        .map_err(super::local_state_unavailable)?;
+    let mut result = Vec::new();
+    while let Some(row) = rows.next().map_err(super::local_state_unavailable)? {
+        let did = row
+            .get::<_, Option<String>>(0)
+            .map_err(super::local_state_unavailable)?
+            .unwrap_or_default();
+        if did.is_empty() || result.iter().any(|known| known == &did) {
+            continue;
+        }
+        result.push(did);
+    }
+    if !result.is_empty() {
+        return Ok(result);
+    }
+    let did = connection
+        .query_row(
+            &format!(
+                "SELECT did FROM contacts WHERE {} AND handle = ?3",
+                owner_predicate(1, 2)
+            ),
+            params![
+                owner_identity_id.as_str(),
+                owner_did.as_str(),
+                handle.as_str()
+            ],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(super::local_state_unavailable)?
+        .flatten()
+        .unwrap_or_default();
+    if did.is_empty() {
+        Ok(Vec::new())
+    } else {
+        Ok(vec![did])
+    }
+}
+
 pub(crate) fn list_contact_handle_history(
     connection: &Connection,
     handle: &str,
@@ -286,9 +513,11 @@ ORDER BY owner_did ASC, is_current DESC, last_seen_at DESC"#,
 
 pub(crate) fn list_contacts(
     connection: &Connection,
+    owner_identity_id: &str,
     owner_did: &str,
     limit: i64,
 ) -> crate::ImResult<Vec<ContactRecord>> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
     let owner_did = normalize_owner_did(owner_did);
     let limit = if limit <= 0 { 100 } else { limit };
     let mut statement = connection
@@ -296,13 +525,16 @@ pub(crate) fn list_contacts(
             r#"
 SELECT *
 FROM contacts
-WHERE owner_did = ?1
+WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
 ORDER BY COALESCE(last_seen_at, first_seen_at, connected_at) DESC, did ASC
-LIMIT ?2"#,
+LIMIT ?3"#,
         )
         .map_err(super::local_state_unavailable)?;
     let rows = statement
-        .query_map(params![owner_did.as_str(), limit], contact_from_row)
+        .query_map(
+            params![owner_identity_id.as_str(), owner_did.as_str(), limit],
+            contact_from_row,
+        )
         .map_err(super::local_state_unavailable)?;
     let mut result = Vec::new();
     for row in rows {
@@ -322,6 +554,10 @@ pub(crate) fn upsert_contact(
         ));
     }
     ensure_schema(connection)?;
+    let owner_identity_id = normalize_owner_identity_id(&default_string(
+        record.owner_identity_id.clone(),
+        &record.credential_name,
+    ));
     let owner_did = normalize_owner_did(&record.owner_did);
     let did = record.did.trim().to_string();
     let handle = record.handle.trim().to_string();
@@ -331,7 +567,11 @@ pub(crate) fn upsert_contact(
     let now = now_utc();
     let existing_by_did = query_contact_did_handle(
         &transaction,
-        "SELECT did, handle FROM contacts WHERE owner_did = ?1 AND did = ?2",
+        &format!(
+            "SELECT did, handle FROM contacts WHERE {} AND did = ?3",
+            owner_predicate(1, 2)
+        ),
+        &owner_identity_id,
         &owner_did,
         &did,
     )?;
@@ -340,7 +580,11 @@ pub(crate) fn upsert_contact(
     } else {
         query_contact_did_handle(
             &transaction,
-            "SELECT did, handle FROM contacts WHERE owner_did = ?1 AND handle = ?2",
+            &format!(
+                "SELECT did, handle FROM contacts WHERE {} AND handle = ?3",
+                owner_predicate(1, 2)
+            ),
+            &owner_identity_id,
             &owner_did,
             &handle,
         )?
@@ -349,20 +593,44 @@ pub(crate) fn upsert_contact(
     {
         transaction
             .execute(
-                "UPDATE contacts SET handle = NULL, last_seen_at = ?1 WHERE owner_did = ?2 AND did = ?3",
-                params![now.as_str(), owner_did.as_str(), existing_by_handle[0].0.as_str()],
+                &format!(
+                    "UPDATE contacts SET handle = NULL, last_seen_at = ?1 WHERE {} AND did = ?4",
+                    owner_predicate(2, 3)
+                ),
+                params![
+                    now.as_str(),
+                    owner_identity_id.as_str(),
+                    owner_did.as_str(),
+                    existing_by_handle[0].0.as_str()
+                ],
             )
             .map_err(super::local_state_unavailable)?;
     }
     if existing_by_did.is_empty() {
-        insert_contact(&transaction, &record, &owner_did, &did, &now)?;
+        insert_contact(
+            &transaction,
+            &record,
+            &owner_identity_id,
+            &owner_did,
+            &did,
+            &now,
+        )?;
     } else {
-        update_contact(&transaction, &record, &owner_did, &did, &handle, &now)?;
+        update_contact(
+            &transaction,
+            &record,
+            &owner_identity_id,
+            &owner_did,
+            &did,
+            &handle,
+            &now,
+        )?;
     }
     if !handle.is_empty() {
         upsert_contact_handle_binding(
             &transaction,
             ContactHandleBindingRecord {
+                owner_identity_id: owner_identity_id.clone(),
                 owner_did: owner_did.clone(),
                 handle,
                 did,
@@ -429,6 +697,7 @@ pub(crate) fn relation_status_from_record(
 fn insert_contact(
     connection: &Connection,
     record: &ContactRecord,
+    owner_identity_id: &str,
     owner_did: &str,
     did: &str,
     now: &str,
@@ -437,11 +706,12 @@ fn insert_contact(
         .execute(
             r#"
 INSERT INTO contacts
-    (owner_did, did, name, handle, nick_name, bio, profile_md, tags, relationship, source_type,
+    (owner_identity_id, owner_did, did, name, handle, nick_name, bio, profile_md, tags, relationship, source_type,
      source_name, source_group_id, connected_at, recommended_reason, followed, messaged, note,
-     first_seen_at, last_seen_at, metadata)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"#,
+     first_seen_at, last_seen_at, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)"#,
             params![
+                normalize_optional_string(owner_identity_id),
                 owner_did,
                 did,
                 normalize_optional_string(&record.name),
@@ -462,6 +732,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
                 default_string(record.first_seen_at.clone(), now),
                 default_string(record.last_seen_at.clone(), now),
                 normalize_metadata(&record.metadata),
+                normalize_credential_name(&record.credential_name),
             ],
         )
         .map_err(super::local_state_unavailable)?;
@@ -471,6 +742,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?
 fn update_contact(
     connection: &Connection,
     record: &ContactRecord,
+    owner_identity_id: &str,
     owner_did: &str,
     did: &str,
     handle: &str,
@@ -497,8 +769,10 @@ SET name = COALESCE(?1, name),
     note = COALESCE(?15, note),
     first_seen_at = COALESCE(?16, first_seen_at),
     last_seen_at = ?17,
-    metadata = COALESCE(?18, metadata)
-WHERE owner_did = ?19 AND did = ?20"#,
+    metadata = COALESCE(?18, metadata),
+    owner_identity_id = COALESCE(?19, owner_identity_id),
+    credential_name = COALESCE(?20, credential_name)
+WHERE owner_did = ?21 AND did = ?22"#,
             params![
                 normalize_optional_string(&record.name),
                 normalize_optional_string(handle),
@@ -518,6 +792,8 @@ WHERE owner_did = ?19 AND did = ?20"#,
                 normalize_optional_string(&record.first_seen_at),
                 now,
                 normalize_metadata(&record.metadata),
+                normalize_optional_string(owner_identity_id),
+                normalize_optional_string(&record.credential_name),
                 owner_did,
                 did,
             ],
@@ -535,23 +811,31 @@ fn upsert_contact_handle_binding(
     if handle.is_empty() || did.is_empty() {
         return Ok(());
     }
+    let owner_identity_id = normalize_owner_identity_id(&default_string(
+        record.owner_identity_id.clone(),
+        &record.credential_name,
+    ));
     let owner_did = normalize_owner_did(&record.owner_did);
     let first_seen_at = default_string(record.first_seen_at.clone(), &now_utc());
     let last_seen_at = default_string(record.last_seen_at.clone(), &first_seen_at);
     if record.is_current {
         connection
             .execute(
-                r#"
+                &format!(
+                    r#"
 UPDATE contact_handle_bindings
 SET is_current = 0,
     last_seen_at = CASE
         WHEN last_seen_at IS NULL OR last_seen_at < ?1 THEN ?2
         ELSE last_seen_at
     END
-WHERE owner_did = ?3 AND handle = ?4 AND did <> ?5"#,
+WHERE {} AND handle = ?5 AND did <> ?6"#,
+                    owner_predicate(3, 4)
+                ),
                 params![
                     last_seen_at.as_str(),
                     last_seen_at.as_str(),
+                    owner_identity_id.as_str(),
                     owner_did.as_str(),
                     handle.as_str(),
                     did.as_str(),
@@ -563,11 +847,12 @@ WHERE owner_did = ?3 AND handle = ?4 AND did <> ?5"#,
         .execute(
             r#"
 INSERT INTO contact_handle_bindings
-    (owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type,
+    (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type,
      source_group_id, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
 ON CONFLICT(owner_did, handle, did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, contact_handle_bindings.owner_identity_id),
     is_current = excluded.is_current,
     first_seen_at = COALESCE(contact_handle_bindings.first_seen_at, excluded.first_seen_at),
     last_seen_at = excluded.last_seen_at,
@@ -576,6 +861,7 @@ DO UPDATE SET
     metadata = COALESCE(excluded.metadata, contact_handle_bindings.metadata),
     credential_name = COALESCE(excluded.credential_name, contact_handle_bindings.credential_name)"#,
             params![
+                normalize_optional_string(&owner_identity_id),
                 owner_did.as_str(),
                 handle.as_str(),
                 did.as_str(),
@@ -598,8 +884,9 @@ fn backfill_contact_handle_bindings(connection: &Connection) -> crate::ImResult<
         .execute(
             r#"
 INSERT INTO contact_handle_bindings
-    (owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
-SELECT owner_did,
+    (owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, source_type, source_group_id, metadata, credential_name)
+SELECT owner_identity_id,
+       owner_did,
        handle,
        did,
        0,
@@ -608,11 +895,12 @@ SELECT owner_did,
        source_type,
        source_group_id,
        metadata,
-       ''
+       credential_name
 FROM contacts
 WHERE TRIM(COALESCE(handle, '')) <> ''
 ON CONFLICT(owner_did, handle, did)
 DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, contact_handle_bindings.owner_identity_id),
     last_seen_at = excluded.last_seen_at,
     source_type = COALESCE(excluded.source_type, contact_handle_bindings.source_type),
     source_group_id = COALESCE(excluded.source_group_id, contact_handle_bindings.source_group_id),
@@ -663,6 +951,7 @@ WHERE EXISTS (
 fn query_contact_did_handle(
     connection: &Connection,
     statement: &str,
+    owner_identity_id: &str,
     owner_did: &str,
     value: &str,
 ) -> crate::ImResult<Vec<(String, String)>> {
@@ -670,7 +959,7 @@ fn query_contact_did_handle(
         .prepare(statement)
         .map_err(super::local_state_unavailable)?;
     let rows = statement
-        .query_map(params![owner_did, value], |row| {
+        .query_map(params![owner_identity_id, owner_did, value], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?.unwrap_or_default(),
                 row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -725,6 +1014,7 @@ fn query_one_json(
 
 fn contact_record_json(record: &ContactRecord) -> crate::ImResult<Value> {
     Ok(serde_json::json!({
+        "owner_identity_id": optional_json_string(&record.owner_identity_id),
         "owner_did": record.owner_did,
         "did": record.did,
         "name": optional_json_string(&record.name),
@@ -750,6 +1040,9 @@ fn contact_record_json(record: &ContactRecord) -> crate::ImResult<Value> {
 
 fn contact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContactRecord> {
     Ok(ContactRecord {
+        owner_identity_id: row
+            .get::<_, Option<String>>("owner_identity_id")?
+            .unwrap_or_default(),
         owner_did: row
             .get::<_, Option<String>>("owner_did")?
             .unwrap_or_default(),
@@ -798,7 +1091,9 @@ fn contact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContactRecord> 
         metadata: row
             .get::<_, Option<String>>("metadata")?
             .unwrap_or_default(),
-        credential_name: String::new(),
+        credential_name: row
+            .get::<_, Option<String>>("credential_name")?
+            .unwrap_or_default(),
     })
 }
 
@@ -854,8 +1149,51 @@ fn normalize_owner_did(value: &str) -> String {
     value.trim().to_string()
 }
 
+fn normalize_owner_identity_id(value: &str) -> String {
+    value.trim().to_string()
+}
+
 fn normalize_credential_name(value: &str) -> String {
     value.trim().to_string()
+}
+
+fn owner_predicate(identity_param: usize, did_param: usize) -> String {
+    format!(
+        "(owner_identity_id = ?{identity_param} OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?{did_param}))"
+    )
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> crate::ImResult<()> {
+    if has_column(connection, table, column)? {
+        return Ok(());
+    }
+    connection
+        .execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> crate::ImResult<bool> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(super::local_state_unavailable)?;
+    for row in rows {
+        if row.map_err(super::local_state_unavailable)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn normalize_optional_string(value: &str) -> Option<String> {
@@ -939,7 +1277,7 @@ mod tests {
         )
         .unwrap();
 
-        let current = get_current_contact_by_handle(&db, "did:owner", "alice").unwrap();
+        let current = get_current_contact_by_handle(&db, "default", "did:owner", "alice").unwrap();
         assert_eq!(current.did, "did:peer-new");
         let old_contact = get_contact_by_did_json(&db, "did:owner", "did:peer-old").unwrap();
         assert!(old_contact["handle"].is_null());

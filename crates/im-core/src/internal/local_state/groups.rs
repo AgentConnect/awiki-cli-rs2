@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct GroupRecord {
+    pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) group_id: String,
     pub(crate) group_did: String,
@@ -31,6 +32,7 @@ pub(crate) struct GroupRecord {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct GroupMemberRecord {
+    pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
     pub(crate) group_id: String,
     pub(crate) user_id: String,

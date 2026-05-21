@@ -187,6 +187,95 @@ fn message_lookup_and_mark_read_respect_owner_like_go() -> StoreResult<()> {
 }
 
 #[test]
+fn message_owner_identity_write_and_legacy_fallback_match_phase3d() -> StoreResult<()> {
+    let db = Connection::open_in_memory().expect("open sqlite memory db");
+    store::ensure_schema(&db)?;
+
+    store::store_message(
+        &db,
+        direct_message(
+            "did:owner-stable",
+            "did:peer",
+            "identity-row",
+            0,
+            false,
+            "identity content",
+            "2026-01-01T00:00:01Z",
+        ),
+    )?;
+    store::store_message(
+        &db,
+        direct_message(
+            "did:owner-legacy",
+            "did:peer",
+            "legacy-row",
+            0,
+            false,
+            "legacy content",
+            "2026-01-01T00:00:02Z",
+        ),
+    )?;
+    db.execute(
+        "UPDATE messages SET owner_identity_id = NULL WHERE msg_id = 'legacy-row'",
+        [],
+    )?;
+    store::store_message(
+        &db,
+        MessageRecord {
+            msg_id: "other-identity-row".to_string(),
+            owner_identity_id: "other".to_string(),
+            owner_did: "did:owner-legacy".to_string(),
+            thread_id: store::make_thread_id("did:owner-legacy", "did:peer", ""),
+            direction: 0,
+            sender_did: "did:peer".to_string(),
+            receiver_did: "did:owner-legacy".to_string(),
+            content: "other identity".to_string(),
+            credential_name: "other".to_string(),
+            ..MessageRecord::default()
+        },
+    )?;
+
+    let identity_value: String = db.query_row(
+        "SELECT owner_identity_id FROM messages WHERE msg_id = 'identity-row'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(identity_value, "default");
+
+    let rows = store::list_messages_by_ids_for_owner_identity(
+        &db,
+        "default",
+        "did:owner-legacy",
+        &[
+            "identity-row".to_string(),
+            "legacy-row".to_string(),
+            "other-identity-row".to_string(),
+        ],
+    )?;
+    assert_eq!(message_ids(&rows), vec!["identity-row", "legacy-row"]);
+
+    let affected = store::mark_messages_read_for_owner_identity(
+        &db,
+        "default",
+        "did:owner-legacy",
+        &[
+            "identity-row".to_string(),
+            "legacy-row".to_string(),
+            "other-identity-row".to_string(),
+        ],
+    )?;
+    assert_eq!(affected, 2);
+    let other_read: i64 = db.query_row(
+        "SELECT is_read FROM messages WHERE msg_id = 'other-identity-row'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(other_read, 0);
+
+    Ok(())
+}
+
+#[test]
 fn inbox_notification_filters_match_go() -> StoreResult<()> {
     let db = Connection::open_in_memory().expect("open sqlite memory db");
     store::ensure_schema(&db)?;

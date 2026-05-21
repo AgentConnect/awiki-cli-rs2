@@ -10,6 +10,7 @@ use time::OffsetDateTime;
 #[derive(Debug, Clone)]
 pub(super) struct MessageRecord {
     pub(super) msg_id: String,
+    pub(super) owner_identity_id: String,
     pub(super) owner_did: String,
     pub(super) thread_id: String,
     pub(super) direction: i64,
@@ -32,6 +33,7 @@ pub(super) struct MessageRecord {
 
 #[derive(Debug, Clone)]
 pub(super) struct ContactRecord {
+    pub(super) owner_identity_id: String,
     pub(super) owner_did: String,
     pub(super) did: String,
     pub(super) name: String,
@@ -52,10 +54,12 @@ pub(super) struct ContactRecord {
     pub(super) first_seen_at: String,
     pub(super) last_seen_at: String,
     pub(super) metadata: String,
+    pub(super) credential_name: String,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct ContactHandleBindingRecord {
+    pub(super) owner_identity_id: String,
     pub(super) owner_did: String,
     pub(super) handle: String,
     pub(super) did: String,
@@ -71,6 +75,7 @@ pub(super) struct ContactHandleBindingRecord {
 #[derive(Debug, Clone)]
 pub(super) struct RelationshipEventRecord {
     pub(super) event_id: String,
+    pub(super) owner_identity_id: String,
     pub(super) owner_did: String,
     pub(super) target_did: String,
     pub(super) target_handle: String,
@@ -89,6 +94,7 @@ pub(super) struct RelationshipEventRecord {
 
 #[derive(Debug, Clone)]
 pub(super) struct GroupRecord {
+    pub(super) owner_identity_id: String,
     pub(super) owner_did: String,
     pub(super) group_id: String,
     pub(super) group_did: String,
@@ -120,6 +126,7 @@ pub(super) struct GroupRecord {
 
 #[derive(Debug, Clone)]
 pub(super) struct GroupMemberRecord {
+    pub(super) owner_identity_id: String,
     pub(super) owner_did: String,
     pub(super) group_id: String,
     pub(super) user_id: String,
@@ -162,6 +169,7 @@ pub(super) fn normalize_recovered_message_row(
         };
     MessageRecord {
         msg_id: string_from_row(row, "msg_id"),
+        owner_identity_id: final_credential_name.to_string(),
         owner_did: new_owner_did.to_string(),
         thread_id,
         direction: int_from_row(row, "direction"),
@@ -186,9 +194,10 @@ pub(super) fn normalize_recovered_message_row(
 pub(super) fn normalize_recovered_contact_row(
     row: &RowMap,
     new_owner_did: &str,
-    _final_credential_name: &str,
+    final_credential_name: &str,
 ) -> ContactRecord {
     ContactRecord {
+        owner_identity_id: final_credential_name.to_string(),
         owner_did: new_owner_did.to_string(),
         did: string_from_row(row, "did"),
         name: string_from_row(row, "name"),
@@ -209,6 +218,7 @@ pub(super) fn normalize_recovered_contact_row(
         first_seen_at: string_from_row(row, "first_seen_at"),
         last_seen_at: string_from_row(row, "last_seen_at"),
         metadata: string_from_row(row, "metadata"),
+        credential_name: final_credential_name.to_string(),
     }
 }
 
@@ -218,6 +228,7 @@ pub(super) fn normalize_recovered_contact_handle_binding_row(
     final_credential_name: &str,
 ) -> ContactHandleBindingRecord {
     ContactHandleBindingRecord {
+        owner_identity_id: final_credential_name.to_string(),
         owner_did: new_owner_did.to_string(),
         handle: string_from_row(row, "handle"),
         did: string_from_row(row, "did"),
@@ -238,6 +249,7 @@ pub(super) fn normalize_recovered_relationship_event_row(
 ) -> RelationshipEventRecord {
     RelationshipEventRecord {
         event_id: string_from_row(row, "event_id"),
+        owner_identity_id: final_credential_name.to_string(),
         owner_did: new_owner_did.to_string(),
         target_did: string_from_row(row, "target_did"),
         target_handle: string_from_row(row, "target_handle"),
@@ -262,6 +274,7 @@ pub(super) fn normalize_recovered_group_row(
     final_credential_name: &str,
 ) -> GroupRecord {
     GroupRecord {
+        owner_identity_id: final_credential_name.to_string(),
         owner_did: new_owner_did.to_string(),
         group_id: string_from_row(row, "group_id"),
         group_did: string_from_row(row, "group_did"),
@@ -303,6 +316,7 @@ pub(super) fn normalize_recovered_group_member_row(
     final_credential_name: &str,
 ) -> GroupMemberRecord {
     GroupMemberRecord {
+        owner_identity_id: final_credential_name.to_string(),
         owner_did: new_owner_did.to_string(),
         group_id: string_from_row(row, "group_id"),
         user_id: string_from_row(row, "user_id"),
@@ -377,6 +391,10 @@ pub(super) fn merge_recovered_message(existing: &RowMap, incoming: MessageRecord
             &string_from_row(existing, "metadata"),
             incoming.metadata.clone(),
         ),
+        owner_identity_id: choose_later_non_empty(
+            &string_from_row(existing, "owner_identity_id"),
+            incoming.owner_identity_id.clone(),
+        ),
         credential_name: choose_later_non_empty(
             &string_from_row(existing, "credential_name"),
             incoming.credential_name.clone(),
@@ -441,6 +459,14 @@ pub(super) fn merge_recovered_contact(existing: &RowMap, incoming: ContactRecord
             &string_from_row(existing, "metadata"),
             incoming.metadata.clone(),
         ),
+        owner_identity_id: choose_later_non_empty(
+            &string_from_row(existing, "owner_identity_id"),
+            incoming.owner_identity_id.clone(),
+        ),
+        credential_name: choose_later_non_empty(
+            &string_from_row(existing, "credential_name"),
+            incoming.credential_name.clone(),
+        ),
         ..incoming
     }
 }
@@ -470,6 +496,10 @@ pub(super) fn merge_recovered_contact_handle_binding(
         metadata: choose_later_non_empty(
             &string_from_row(existing, "metadata"),
             incoming.metadata.clone(),
+        ),
+        owner_identity_id: choose_later_non_empty(
+            &string_from_row(existing, "owner_identity_id"),
+            incoming.owner_identity_id.clone(),
         ),
         credential_name: choose_later_non_empty(
             &string_from_row(existing, "credential_name"),
@@ -533,6 +563,10 @@ pub(super) fn merge_recovered_relationship_event(
         metadata: choose_later_non_empty(
             &string_from_row(existing, "metadata"),
             incoming.metadata.clone(),
+        ),
+        owner_identity_id: choose_later_non_empty(
+            &string_from_row(existing, "owner_identity_id"),
+            incoming.owner_identity_id.clone(),
         ),
         credential_name: choose_later_non_empty(
             &string_from_row(existing, "credential_name"),
@@ -627,6 +661,10 @@ pub(super) fn merge_recovered_group(existing: &RowMap, incoming: GroupRecord) ->
             &string_from_row(existing, "metadata"),
             incoming.metadata.clone(),
         ),
+        owner_identity_id: choose_later_non_empty(
+            &string_from_row(existing, "owner_identity_id"),
+            incoming.owner_identity_id.clone(),
+        ),
         credential_name: choose_later_non_empty(
             &string_from_row(existing, "credential_name"),
             incoming.credential_name.clone(),
@@ -672,6 +710,10 @@ pub(super) fn merge_recovered_group_member(
         metadata: choose_later_non_empty(
             &string_from_row(existing, "metadata"),
             incoming.metadata.clone(),
+        ),
+        owner_identity_id: choose_later_non_empty(
+            &string_from_row(existing, "owner_identity_id"),
+            incoming.owner_identity_id.clone(),
         ),
         credential_name: choose_later_non_empty(
             &string_from_row(existing, "credential_name"),
