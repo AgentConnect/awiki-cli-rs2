@@ -10,14 +10,13 @@ docs/sdk-refactor/implementation-playbook.md
   17. Phase 3：message / group / local_state 补全
 ```
 
-**参考文档**：`docs/sdk-refactor/p1-beta-migration-execution-plan.md`
+**参考文档**：`docs/sdk-refactor/plan/phase1-beta-migration-execution-plan.md`
 
-**目标**：在 P1 direct/group text、inbox/history MVP 稳定后，继续以文件级 / 小子模块级迁移为主，把 identity/profile/directory/contact、message projection、group lifecycle、local_state 隔离能力逐步迁入 `crates/im-core`，同时保持 `awiki-cli` 行为兼容和 legacy fallback。
+**目标**：在 P1 direct/group text、inbox/history MVP 稳定后，继续以 leaf-file / 小子模块级迁移为主，把 identity/profile/directory/contact、message projection、group lifecycle、local_state 隔离能力逐步迁入 `crates/im-core`，同时保持 `awiki-cli` 行为兼容和 legacy fallback。
 
 ---
 
 ## 0. 约束
-
   请先阅读并遵守这些文档：
   - docs/sdk-refactor/implementation-playbook.md 的 “Phase 1H：App sandbox path fixture”
   - docs/sdk-refactor/README.md
@@ -39,17 +38,19 @@ docs/sdk-refactor/implementation-playbook.md
   - docs/sdk-refactor/modules/08-groups.md
 
   不用进行系统测试，只用进行单元测试即可，系统测试统一做
-
+  
 ## 1. 总体结论
 
 Phase 2 和 Phase 3 继续沿用 P1-beta 的迁移原则：
 
 ```text
-主策略：文件级迁移
-辅策略：小子模块级迁移，通常 2-5 个强相关文件
+主策略：leaf-file / 小子模块级迁移
+辅策略：2-5 个强相关文件组成一个垂直业务切片
 例外：函数级抽取只用于拆掉少量 CLI 依赖，不作为长期迁移单位
 禁止：一次性整体迁移 identity、message、store、runtime、app handlers
 ```
+
+“文件级迁移”仍然不是 `mv` 原文件。混合职责文件只能抽取本切片相关逻辑，原 `awiki-cli` 文件路径和原函数签名先保留，变成 wrapper 或继续承载未迁移能力。
 
 两个阶段的边界：
 
@@ -66,10 +67,11 @@ PR 2B：迁移 identity profile / directory wire builder
 PR 2C：profile get 真迁移
 PR 2D：profile update 真迁移
 PR 2E：directory resolve / handle lookup 真迁移
-PR 2F：contacts save/list + relation status + profile projection
+PR 2F：directory contacts save/list + relation status + profile projection
 PR 2G：bind phone/email 迁移到 identity service
 PR 2H：recover handle 迁移
-PR 2I：replace DID plan + execution 迁移，危险能力后置
+PR 2I：replace DID plan，危险能力后置
+PR 2J：replace DID execution + local rebind，单独 PR
 ```
 
 Phase 3 推荐 PR 顺序：
@@ -78,7 +80,7 @@ Phase 3 推荐 PR 顺序：
 PR 3A：local_state 边界和 schema adapter scaffold
 PR 3B：mark_read 真迁移
 PR 3C：conversation projection
-PR 3D：owner_identity_id 兼容迁移
+PR 3D：owner_identity_id 兼容迁移，暂不迁 E2EE 表写路径
 PR 3E：message send state / retry / cache merge
 PR 3F：group get/list/members/messages 读路径迁移
 PR 3G：group create/join/leave 迁移
@@ -99,14 +101,16 @@ client.identity().profile()
 client.identity().update_profile()
 client.identity().bind_contact()
 core.identities().recover_handle()
-client.identity().replace_did()
+client.identity().replace_did()   # late / split plan + execution
 client.directory().resolve_peer()
 client.directory().lookup_handle()
-client.contacts().save()
-client.contacts().list()
-client.contacts().relation_status()
+client.directory().save_contact()
+client.directory().contacts()
+client.directory().relation_status()
 profile projection
 ```
+
+注意：Phase 2 默认不新增 `client.contacts()` public service。联系人能力先放在 `DirectoryService` 中，与当前 `public-api.md` 保持一致。内部可以有 `contact_store`，但 public API 不单独暴露 `ContactService`。如果后续确实要独立 `ContactService`，必须先更新 `public-api.md`、`modules/06-directory.md` 和 Interface 文档。
 
 Phase 2 可以迁移：
 
@@ -172,6 +176,7 @@ group E2EE / MLS
 systemd / launchd / Windows service
 OpenClaw / Hermes host notify
 完整 attachment projection
+E2EE table write-path owner_identity_id 迁移
 ```
 
 ---
@@ -204,7 +209,7 @@ rg "ParsedCommand|ExitError|GlobalOptions|config::Resolved|identity::Manager|awi
 1. P1 message MVP 稳定。
 2. Phase 2 profile/directory/contact 稳定。
 3. im-core 能解析当前 identity owner context。
-4. contacts projection 已有 SDK 边界。
+4. directory/contact projection 已有 SDK 边界。
 5. group.send 普通文本路径可走 im-core 或有稳定 adapter。
 6. local_state 写入可 best-effort，不阻断主链路。
 ```
@@ -240,11 +245,6 @@ crates/im-core/src/directory/
   dto.rs
   service.rs
 
-crates/im-core/src/contacts/
-  mod.rs
-  dto.rs
-  service.rs
-
 crates/im-core/src/internal/identity_wire/
   mod.rs
   profile.rs
@@ -265,7 +265,6 @@ crates/im-core/src/internal/contact_store/
 crates/im-core/src/compat/
   identity.rs
   directory.rs
-  contacts.rs
 ```
 
 建议新增 public service：
@@ -274,11 +273,22 @@ crates/im-core/src/compat/
 impl ImClient {
     pub fn identity(&self) -> crate::identity::IdentityService<'_>;
     pub fn directory(&self) -> crate::directory::DirectoryService<'_>;
-    pub fn contacts(&self) -> crate::contacts::ContactService<'_>;
 }
 ```
 
-`core.identities()` 继续保留本地 identity registry / register / recover 这类 core-level 能力。
+不建议在 Phase 2 默认新增：
+
+```rust
+pub fn contacts(&self) -> crate::contacts::ContactService<'_>;
+```
+
+联系人能力先放在：
+
+```rust
+client.directory().save_contact(...)
+client.directory().contacts(...)
+client.directory().relation_status(...)
+```
 
 ### 4.2 Phase 3 目标目录
 
@@ -328,10 +338,12 @@ impl ImClient {
 
 ```rust
 impl MessageService<'_> {
-    pub fn mark_read(&self, request: MarkReadRequest) -> ImResult<MarkReadResult>;
+    pub fn mark_read(&self, ids: Vec<MessageId>) -> ImResult<MarkReadResult>;
     pub fn conversations(&self, query: ConversationQuery) -> ImResult<Page<Conversation>>;
 }
 ```
+
+保持与 `public-api.md` 中 P3+ 的签名一致。不要在 Phase 3 文档中另起 `mark_read(request: MarkReadRequest)`，除非先同步更新 `public-api.md`。
 
 ---
 
@@ -374,7 +386,71 @@ im-core 不知道 CLI flag 名。
 
 ---
 
-## 6. Phase 2 关键 DTO
+## 6. Compat 与 internal trait 规则
+
+Phase 2/3 可能继续使用 `im_core::compat` 和 internal trait。规则同 P1-beta：
+
+```text
+1. compat API 不进入 prelude。
+2. compat API 使用 #[doc(hidden)]。
+3. compat API 不承诺 semver。
+4. 发布独立 crate 前应放到 non-default feature 或清理。
+5. internal store/runtime trait 不是 Phase 7 provider trait。
+```
+
+例如 `LocalStateStore`：
+
+```text
+Phase 3A 可以定义 internal::local_state::LocalStateStore。
+它是 internal store boundary，不是 public provider trait。
+不进入 prelude。
+不允许 App 在 Phase 3 接管它。
+Phase 7 再决定是否演进成外部 provider。
+```
+
+---
+
+## 7. 测试分层规则
+
+每个 PR 的测试分三层。
+
+### 7.1 Required：Codex Goal / 单 PR 必跑
+
+```text
+cargo test -p im-core <focused>
+cargo test -p awiki-cli --test <relevant_contract>
+rg import fence
+```
+
+### 7.2 Optional integration：合并前或本地补跑
+
+```text
+identity_contract
+msg_contract
+group_contract
+store_messages_contract
+store_groups_contract
+store_contact_contract
+```
+
+### 7.3 Manual / live / system：不由默认 Codex Goal 执行
+
+```text
+identity_live_contract
+msg_live_contract
+group_live_contract
+msg_ws_*_live_contract
+runtime_listener_*_contract
+真实 awiki-cli 命令
+真实网络请求
+真实 workspace 操作
+```
+
+只有当某个 PR 明确声明进入系统验证时，才运行 Manual / live / system 测试。
+
+---
+
+## 8. Phase 2 关键 DTO
 
 Phase 2 建议先补齐这些 SDK DTO。
 
@@ -444,13 +520,13 @@ CLI 的 `--markdown-file` 读取结果转换成 `UpdateProfileRequest.markdown`�
 
 ---
 
-## 7. PR 2A：Phase 2 SDK DTO / service skeleton
+## 9. PR 2A：Phase 2 SDK DTO / service skeleton
 
-### 7.1 目标
+### 9.1 目标
 
 先建立 Phase 2 public API 形态，不迁真实远端执行。
 
-### 7.2 改动范围
+### 9.2 改动范围
 
 ```text
 crates/im-core/src/identity/dto.rs
@@ -459,32 +535,30 @@ crates/im-core/src/identity/profile.rs
 crates/im-core/src/directory/mod.rs
 crates/im-core/src/directory/dto.rs
 crates/im-core/src/directory/service.rs
-crates/im-core/src/contacts/mod.rs
-crates/im-core/src/contacts/dto.rs
-crates/im-core/src/contacts/service.rs
 crates/im-core/src/core/client.rs
 crates/im-core/src/lib.rs
 crates/im-core/src/prelude.rs
 ```
 
-### 7.3 执行步骤
+### 9.3 执行步骤
 
 ```text
-1. 新增 IdentityService、DirectoryService、ContactService。
-2. 在 ImClient 上增加 identity() / directory() / contacts()。
+1. 新增 IdentityService、DirectoryService。
+2. 在 ImClient 上增加 identity() / directory()。
 3. 新增 DTO，但先只做输入校验和 unsupported/stub 返回。
 4. 添加 boundary 测试，确认 public API 不泄漏 CLI 类型。
 5. 不改 awiki-cli 默认行为。
 ```
 
-### 7.4 验收
+### 9.4 Required 验收
 
 ```bash
-cargo test -p im-core
+cargo test -p im-core identity
+cargo test -p im-core directory
 rg "ParsedCommand|ExitError|config::Resolved|identity::Manager|awiki_cli" crates/im-core/src crates/im-core/tests
 ```
 
-### 7.5 完成标准
+### 9.5 完成标准
 
 ```text
 1. Phase 2 API 形态存在。
@@ -494,13 +568,13 @@ rg "ParsedCommand|ExitError|config::Resolved|identity::Manager|awiki_cli" crates
 
 ---
 
-## 8. PR 2B：迁移 identity profile / directory wire builder
+## 10. PR 2B：迁移 identity profile / directory wire builder
 
-### 8.1 目标
+### 10.1 目标
 
 把 identity/profile/directory 的纯 wire builder 迁入 `im-core`。
 
-### 8.2 源和目标
+### 10.2 源和目标
 
 源：
 
@@ -520,7 +594,7 @@ crates/im-core/src/compat/identity.rs
 crates/im-core/src/compat/directory.rs
 ```
 
-### 8.3 迁移范围
+### 10.3 迁移范围
 
 优先迁移：
 
@@ -550,7 +624,7 @@ Manager 持久化
 replace DID 备份文件操作
 ```
 
-### 8.4 执行方式
+### 10.4 执行方式
 
 ```text
 1. im-core 内定义自己的 RpcCall / RestCall / TransportProfile。
@@ -559,14 +633,14 @@ replace DID 备份文件操作
 4. 复制 identity_wire_contract.rs 中纯 wire 断言到 im-core tests。
 ```
 
-### 8.5 验收
+### 10.5 Required 验收
 
 ```bash
 cargo test -p im-core identity_wire
 cargo test -p awiki-cli --test identity_wire_contract
 ```
 
-### 8.6 完成标准
+### 10.6 完成标准
 
 ```text
 1. profile/directory/bind/recover/replace DID wire shape 由 im-core 覆盖测试。
@@ -576,13 +650,13 @@ cargo test -p awiki-cli --test identity_wire_contract
 
 ---
 
-## 9. PR 2C：profile get 真迁移
+## 11. PR 2C：profile get 真迁移
 
-### 9.1 目标
+### 11.1 目标
 
 让 `client.identity().profile()` 支持读取当前身份资料和公开资料。
 
-### 9.2 范围
+### 11.2 范围
 
 支持：
 
@@ -600,7 +674,7 @@ profile update
 本地 profile cache 强一致
 ```
 
-### 9.3 调用链
+### 11.3 调用链
 
 ```text
 IdentityService::profile(query)
@@ -611,7 +685,7 @@ IdentityService::profile(query)
   -> return ProfileResult
 ```
 
-### 9.4 awiki-cli 接入
+### 11.4 awiki-cli 接入
 
 ```text
 crates/awiki-cli/src/im_core_adapter/identity.rs
@@ -627,15 +701,20 @@ summary/warnings 文案
 legacy fallback
 ```
 
-### 9.5 验收
+### 11.5 Required 验收
 
 ```bash
 cargo test -p im-core profile
-cargo test -p awiki-cli --test identity_live_contract identity_profile_get
 cargo test -p awiki-cli --test identity_contract
 ```
 
-### 9.6 完成标准
+### 11.6 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test identity_live_contract identity_profile_get
+```
+
+### 11.7 完成标准
 
 ```text
 1. self/public profile 可走 im-core。
@@ -645,13 +724,13 @@ cargo test -p awiki-cli --test identity_contract
 
 ---
 
-## 10. PR 2D：profile update 真迁移
+## 12. PR 2D：profile update 真迁移
 
-### 10.1 目标
+### 12.1 目标
 
 让 `client.identity().update_profile()` 支持更新当前身份资料。
 
-### 10.2 范围
+### 12.2 范围
 
 支持：
 
@@ -674,7 +753,7 @@ inline markdown 与 markdown-file 冲突检查
 输出渲染
 ```
 
-### 10.3 调用链
+### 12.3 调用链
 
 ```text
 IdentityService::update_profile(request)
@@ -687,15 +766,21 @@ IdentityService::update_profile(request)
   -> return UpdateProfileResult
 ```
 
-### 10.4 验收
+### 12.4 Required 验收
 
 ```bash
 cargo test -p im-core profile
+cargo test -p awiki-cli --test identity_contract
+```
+
+### 12.5 Manual / live / system
+
+```bash
 cargo test -p awiki-cli --test identity_live_contract identity_profile_set
 cargo test -p awiki-cli --test identity_profile_set_upgrade_contract
 ```
 
-### 10.5 完成标准
+### 12.6 完成标准
 
 ```text
 1. profile update 可走 im-core。
@@ -706,13 +791,13 @@ cargo test -p awiki-cli --test identity_profile_set_upgrade_contract
 
 ---
 
-## 11. PR 2E：directory resolve / handle lookup 真迁移
+## 13. PR 2E：directory resolve / handle lookup 真迁移
 
-### 11.1 目标
+### 13.1 目标
 
 让 `client.directory().resolve_peer()` 和 `lookup_handle()` 支持 handle/DID 解析。
 
-### 11.2 范围
+### 13.2 范围
 
 支持：
 
@@ -733,7 +818,7 @@ public profile lookup
 复杂缓存策略
 ```
 
-### 11.3 调用链
+### 13.3 调用链
 
 ```text
 DirectoryService::resolve_peer(peer)
@@ -744,15 +829,20 @@ DirectoryService::resolve_peer(peer)
   -> best-effort contact projection save
 ```
 
-### 11.4 验收
+### 13.4 Required 验收
 
 ```bash
 cargo test -p im-core directory
-cargo test -p awiki-cli --test identity_live_contract identity_resolve
 cargo test -p awiki-cli --test identity_contract
 ```
 
-### 11.5 完成标准
+### 13.5 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test identity_live_contract identity_resolve
+```
+
+### 13.6 完成标准
 
 ```text
 1. resolve by handle 和 resolve by DID 可走 im-core。
@@ -762,13 +852,13 @@ cargo test -p awiki-cli --test identity_contract
 
 ---
 
-## 12. PR 2F：contacts save/list + relation status + profile projection
+## 14. PR 2F：directory contacts save/list + relation status + profile projection
 
-### 12.1 目标
+### 14.1 目标
 
-把 contacts 本地存取和 profile projection 建立在 `im-core` 边界内。
+把 contacts 本地存取和 profile projection 建立在 `im-core` 边界内，但 public API 仍在 `DirectoryService` 下。
 
-### 12.2 源和目标
+### 14.2 源和目标
 
 源：
 
@@ -779,13 +869,13 @@ crates/awiki-cli/src/store/contacts.rs
 目标：
 
 ```text
-crates/im-core/src/contacts/service.rs
+crates/im-core/src/directory/service.rs
 crates/im-core/src/internal/contact_store/records.rs
 crates/im-core/src/internal/contact_store/projection.rs
-crates/im-core/src/compat/contacts.rs
+crates/im-core/src/compat/directory.rs
 ```
 
-### 12.3 范围
+### 14.3 范围
 
 支持：
 
@@ -808,7 +898,7 @@ group member -> contact 自动同步深度逻辑
 owner_identity_id schema 切换
 ```
 
-### 12.4 执行方式
+### 14.4 执行方式
 
 ```text
 1. im-core 定义 ContactRecord，不直接使用 store::ContactRecord。
@@ -818,32 +908,44 @@ owner_identity_id schema 切换
 5. directory/profile 成功后 best-effort 写 contact projection。
 ```
 
-### 12.5 验收
+### 14.5 Required 验收
 
 ```bash
 cargo test -p im-core contacts
 cargo test -p awiki-cli --test store_contact_contract
+```
+
+### 14.6 Optional integration
+
+```bash
+cargo test -p awiki-cli --test msg_contract
+```
+
+### 14.7 Manual / live / system
+
+```bash
 cargo test -p awiki-cli --test msg_live_contract
 cargo test -p awiki-cli --test msg_ws_inbox_live_contract
 ```
 
-### 12.6 完成标准
+### 14.8 完成标准
 
 ```text
 1. contacts save/list 能通过 im-core local store。
 2. legacy contact tests 继续通过。
 3. relation status 不依赖 CLI output 类型。
+4. public API 没有新增 client.contacts()，除非同步更新 public-api.md。
 ```
 
 ---
 
-## 13. PR 2G：bind phone/email 迁移到 identity service
+## 15. PR 2G：bind phone/email 迁移到 identity service
 
-### 13.1 目标
+### 15.1 目标
 
 把当前身份的 phone/email bind 流程迁入 `client.identity()`。
 
-### 13.2 范围
+### 15.2 范围
 
 支持：
 
@@ -863,7 +965,7 @@ poll interval / timeout 的 CLI 默认值和提示
 输出渲染
 ```
 
-### 13.3 调用链
+### 15.3 调用链
 
 ```text
 IdentityService::bind_contact(request)
@@ -874,15 +976,20 @@ IdentityService::bind_contact(request)
   -> best-effort identity/contact projection update
 ```
 
-### 13.4 验收
+### 15.4 Required 验收
 
 ```bash
 cargo test -p im-core identity_bind
-cargo test -p awiki-cli --test identity_live_contract identity_bind
 cargo test -p awiki-cli --test identity_contract
 ```
 
-### 13.5 完成标准
+### 15.5 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test identity_live_contract identity_bind
+```
+
+### 15.6 完成标准
 
 ```text
 1. bind phone/email 可走 im-core。
@@ -892,13 +999,13 @@ cargo test -p awiki-cli --test identity_contract
 
 ---
 
-## 14. PR 2H：recover handle 迁移
+## 16. PR 2H：recover handle 迁移
 
-### 14.1 目标
+### 16.1 目标
 
 把 handle recovery 的计划、远端调用和本地 merge 边界迁入 `im-core`。
 
-### 14.2 范围
+### 16.2 范围
 
 支持：
 
@@ -919,25 +1026,30 @@ OTP 参数解析
 输出渲染
 ```
 
-### 14.3 执行方式
+### 16.3 执行方式
 
 ```text
 1. 先迁 recovery wire builder 和 result DTO。
 2. im-core 暴露 RecoverHandleRequest / RecoverHandleResult。
-3. 本地 merge 初期可通过 compat 调 awiki-cli legacy recover_merge。
+3. 本地 merge 初期可通过 compat 调 legacy recover_merge wrapper。
 4. 后续将 recover_merge 的纯 record/sql helper 文件级迁入 im-core。
 ```
 
-### 14.4 验收
+### 16.4 Required 验收
 
 ```bash
 cargo test -p im-core identity_recovery
-cargo test -p awiki-cli --test identity_recover_live_contract
 cargo test -p awiki-cli --test store_recover_merge_contract
 cargo test -p awiki-cli --test identity_contract
 ```
 
-### 14.5 完成标准
+### 16.5 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test identity_recover_live_contract
+```
+
+### 16.6 完成标准
 
 ```text
 1. recover handle 可走 im-core。
@@ -947,13 +1059,15 @@ cargo test -p awiki-cli --test identity_contract
 
 ---
 
-## 15. PR 2I：replace DID plan + execution 迁移
+## 17. PR 2I：replace DID plan
 
-### 15.1 目标
+### 17.1 目标
 
-迁移 `replace DID`，但必须后置，并且先实现风险计划，再实现执行。
+只实现 `replace DID` 的计划能力，不执行远端 replace，不做本地 rebind。
 
-### 15.2 必须返回的 SDK 信息
+这是 Phase 2-late / Phase 2.5 能力，不应与普通 profile/directory PR 混做。
+
+### 17.2 必须返回的 SDK 信息
 
 ```text
 risk summary
@@ -964,16 +1078,16 @@ remote replace DID call preview
 rollback notes
 ```
 
-### 15.3 范围
+### 17.3 范围
 
 支持：
 
 ```text
 replace DID plan
-remote did-auth.replace_did call
-local identity record update
-local store owner rebind 调用边界
-backup manifest DTO
+affected table counts
+backup manifest preview DTO
+remote replace DID call preview
+local rebind dry-run
 ```
 
 CLI 保留：
@@ -985,45 +1099,79 @@ dry-run 输出渲染
 用户可读 warning 文案
 ```
 
-### 15.4 执行方式
-
-```text
-1. PR 内先实现 ReplaceDidPlan，不接执行。
-2. 确认 plan 包含 affected table counts。
-3. 再接 remote replace DID。
-4. 最后接 local rebind。
-5. 出错时确保 backup manifest 可用于人工恢复。
-```
-
-### 15.5 验收
+### 17.4 Required 验收
 
 ```bash
-cargo test -p im-core replace_did
-cargo test -p awiki-cli --test identity_replace_did_live_contract
-cargo test -p awiki-cli --test identity_replace_did_upgrade_contract
+cargo test -p im-core replace_did_plan
 cargo test -p awiki-cli --test store_rebind_contract
 ```
 
-### 15.6 完成标准
+### 17.5 完成标准
 
 ```text
 1. replace DID plan 信息完整。
 2. 执行前必须有 backup plan。
-3. 远端成功、本地失败、备份失败三类错误有明确边界。
-4. CLI 危险确认仍留在 awiki-cli。
+3. 不触发远端 replace。
+4. 不触发本地 destructive rebind。
 ```
 
 ---
 
-## 16. Phase 3 关键 DTO
+## 18. PR 2J：replace DID execution + local rebind
+
+### 18.1 目标
+
+在 `ReplaceDidPlan` 稳定后，单独迁移执行能力。
+
+### 18.2 范围
+
+支持：
+
+```text
+remote did-auth.replace_did call
+local identity record update
+local store owner rebind 调用边界
+backup manifest 写入
+```
+
+### 18.3 执行方式
+
+```text
+1. 执行前必须校验 backup plan。
+2. 备份失败不得继续远端 replace。
+3. 远端成功、本地失败时返回可人工恢复信息。
+4. 本地 rebind 必须可 dry-run。
+```
+
+### 18.4 Required 验收
+
+```bash
+cargo test -p im-core replace_did_execution
+cargo test -p awiki-cli --test store_rebind_contract
+```
+
+### 18.5 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test identity_replace_did_live_contract
+cargo test -p awiki-cli --test identity_replace_did_upgrade_contract
+```
+
+### 18.6 完成标准
+
+```text
+1. 远端成功、本地失败、备份失败三类错误有明确边界。
+2. CLI 危险确认仍留在 awiki-cli。
+3. backup manifest 可用于人工恢复。
+```
+
+---
+
+## 19. Phase 3 关键 DTO
 
 Phase 3 建议补齐这些 SDK DTO：
 
 ```rust
-pub struct MarkReadRequest {
-    pub message_ids: Vec<crate::ids::MessageId>,
-}
-
 pub struct MarkReadResult {
     pub updated_count: u32,
     pub message_ids: Vec<crate::ids::MessageId>,
@@ -1073,15 +1221,23 @@ pub struct GroupMutationResult {
 }
 ```
 
+`mark_read` public API 与 `public-api.md` 保持一致：
+
+```rust
+pub fn mark_read(&self, ids: Vec<MessageId>) -> ImResult<MarkReadResult>;
+```
+
+如果后续要引入 `MarkReadRequest`，必须先同步更新 `public-api.md`。
+
 ---
 
-## 17. PR 3A：local_state 边界和 schema adapter scaffold
+## 20. PR 3A：local_state 边界和 schema adapter scaffold
 
-### 17.1 目标
+### 20.1 目标
 
 在 `im-core` 建立 local_state 访问边界，但不立即重写全部 store SQL。
 
-### 17.2 改动范围
+### 20.2 改动范围
 
 ```text
 crates/im-core/src/internal/local_state/mod.rs
@@ -1093,10 +1249,10 @@ crates/im-core/src/internal/local_state/conversations.rs
 crates/im-core/src/compat/local_state.rs
 ```
 
-### 17.3 执行步骤
+### 20.3 执行步骤
 
 ```text
-1. 定义 LocalStateStore trait。
+1. 定义 internal LocalStateStore trait。
 2. 定义 MessageRecord / ContactRecord / GroupRecord / GroupMemberRecord 的 im-core 版本。
 3. 先接 rusqlite optional feature。
 4. awiki-cli store 模块保留 wrapper。
@@ -1104,7 +1260,9 @@ crates/im-core/src/compat/local_state.rs
 6. 添加 schema boundary tests。
 ```
 
-### 17.4 验收
+`LocalStateStore` 是 internal store boundary，不是 public provider trait，不进入 prelude，不允许 App 在 Phase 3 接管它。Phase 7 再决定是否演进成外部 provider。
+
+### 20.4 Required 验收
 
 ```bash
 cargo test -p im-core local_state
@@ -1113,7 +1271,7 @@ cargo test -p awiki-cli --test store_groups_contract
 cargo test -p awiki-cli --test store_contact_contract
 ```
 
-### 17.5 完成标准
+### 20.5 完成标准
 
 ```text
 1. im-core 有 local_state 内部边界。
@@ -1123,13 +1281,13 @@ cargo test -p awiki-cli --test store_contact_contract
 
 ---
 
-## 18. PR 3B：mark_read 真迁移
+## 21. PR 3B：mark_read 真迁移
 
-### 18.1 目标
+### 21.1 目标
 
 把 `client.messages().mark_read()` 接到真实远端调用和本地状态更新。
 
-### 18.2 源和目标
+### 21.2 源和目标
 
 源：
 
@@ -1147,7 +1305,7 @@ crates/im-core/src/internal/wire/inbox.rs
 crates/im-core/src/internal/local_state/messages.rs
 ```
 
-### 18.3 范围
+### 21.3 范围
 
 支持：
 
@@ -1167,16 +1325,21 @@ secure incoming decrypt
 runtime listener bridge service internals
 ```
 
-### 18.4 验收
+### 21.4 Required 验收
 
 ```bash
 cargo test -p im-core mark_read
-cargo test -p awiki-cli --test msg_live_contract mark_read
+cargo test -p awiki-cli --test msg_contract
+```
+
+### 21.5 Optional integration
+
+```bash
 cargo test -p awiki-cli --test msg_ws_mark_read_live_contract
 cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
 ```
 
-### 18.5 完成标准
+### 21.6 完成标准
 
 ```text
 1. mark_read 可走 im-core。
@@ -1186,13 +1349,13 @@ cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
 
 ---
 
-## 19. PR 3C：conversation projection
+## 22. PR 3C：conversation projection
 
-### 19.1 目标
+### 22.1 目标
 
 实现 `client.messages().conversations()`。
 
-### 19.2 范围
+### 22.2 范围
 
 支持：
 
@@ -1216,7 +1379,7 @@ attachment preview
 secure message preview 解密
 ```
 
-### 19.3 执行方式
+### 22.3 执行方式
 
 ```text
 1. 复用 messages 表和 threads view 的语义。
@@ -1225,15 +1388,20 @@ secure message preview 解密
 4. awiki-cli 如已有 debug 或 inbox 相关展示，保留原输出。
 ```
 
-### 19.4 验收
+### 22.4 Required 验收
 
 ```bash
 cargo test -p im-core conversations
 cargo test -p awiki-cli --test store_messages_contract
-cargo test -p awiki-cli --test msg_all_inbox_live_contract
 ```
 
-### 19.5 完成标准
+### 22.5 Optional integration
+
+```bash
+cargo test -p awiki-cli --test msg_contract
+```
+
+### 22.6 完成标准
 
 ```text
 1. conversation projection 不暴露 SQLite row。
@@ -1243,13 +1411,13 @@ cargo test -p awiki-cli --test msg_all_inbox_live_contract
 
 ---
 
-## 20. PR 3D：owner_identity_id 兼容迁移
+## 23. PR 3D：owner_identity_id 兼容迁移
 
-### 20.1 目标
+### 23.1 目标
 
 在不破坏现有 `owner_did` schema 的前提下，增加 `owner_identity_id` 作为本地隔离键。
 
-### 20.2 迁移原则
+### 23.2 迁移原则
 
 ```text
 1. 新增 owner_identity_id nullable column。
@@ -1258,9 +1426,9 @@ cargo test -p awiki-cli --test msg_all_inbox_live_contract
 4. 后续 schema version 再考虑强约束和主键重建。
 ```
 
-### 20.3 涉及表
+### 23.3 涉及表
 
-Phase 3D 优先覆盖：
+Phase 3D 覆盖：
 
 ```text
 contacts
@@ -1269,19 +1437,20 @@ messages
 groups
 group_members
 relationship_events
-e2ee_outbox
-e2ee_sessions
 ```
 
-暂不覆盖：
+Phase 3D 不覆盖写路径迁移：
 
 ```text
-attachment 专用表，如果后续 Phase 4 新增
-runtime listener 专用状态，如果后续 Phase 5 新增
-MLS/group E2EE 专用状态，如果后续 Phase 6 新增
+e2ee_outbox
+e2ee_sessions
+secure direct state
+MLS/group E2EE state
 ```
 
-### 20.4 查询规则
+E2EE 相关表可只做兼容读取评估，真正 owner_identity_id 迁移放 Phase 6 secure。
+
+### 23.4 查询规则
 
 兼容期查询：
 
@@ -1307,34 +1476,40 @@ credential_name = legacy identity alias, if available
 4. 无法匹配的行保持 owner_identity_id NULL。
 ```
 
-### 20.5 验收
+### 23.5 Required 验收
 
 ```bash
 cargo test -p im-core local_state_owner
 cargo test -p awiki-cli --test store_messages_contract
 cargo test -p awiki-cli --test store_groups_contract
 cargo test -p awiki-cli --test store_contact_contract
+```
+
+### 23.6 Optional integration
+
+```bash
 cargo test -p awiki-cli --test identity_replace_did_live_contract
 ```
 
-### 20.6 完成标准
+### 23.7 完成标准
 
 ```text
 1. 新旧数据都可读。
 2. 新写入数据双写 owner_identity_id + owner_did。
 3. replace DID 后本地隔离不再只依赖旧 DID。
 4. 不重建主键，不做破坏性 schema 改造。
+5. E2EE 表未被提前迁移。
 ```
 
 ---
 
-## 21. PR 3E：message send state / retry / cache merge
+## 24. PR 3E：message send state / retry / cache merge
 
-### 21.1 目标
+### 24.1 目标
 
 补齐普通 message 的发送状态、失败状态和基础重试边界。
 
-### 21.2 范围
+### 24.2 范围
 
 支持：
 
@@ -1356,7 +1531,7 @@ group E2EE retry
 后台 realtime 自动重试
 ```
 
-### 21.3 执行方式
+### 24.3 执行方式
 
 ```text
 1. 扩展 MessageMetadata / MessageSendState DTO。
@@ -1366,16 +1541,22 @@ group E2EE retry
 5. retry 只生成 plan，不启动 background runner。
 ```
 
-### 21.4 验收
+### 24.4 Required 验收
 
 ```bash
 cargo test -p im-core message_state
-cargo test -p awiki-cli --test msg_live_contract
-cargo test -p awiki-cli --test group_live_contract
 cargo test -p awiki-cli --test store_messages_contract
+cargo test -p awiki-cli --test msg_contract
 ```
 
-### 21.5 完成标准
+### 24.5 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test msg_live_contract
+cargo test -p awiki-cli --test group_live_contract
+```
+
+### 24.6 完成标准
 
 ```text
 1. send state 可从 SDK Message metadata 中读取。
@@ -1385,13 +1566,13 @@ cargo test -p awiki-cli --test store_messages_contract
 
 ---
 
-## 22. PR 3F：group get/list/members/messages 读路径迁移
+## 25. PR 3F：group get/list/members/messages 读路径迁移
 
-### 22.1 目标
+### 25.1 目标
 
 把 group 读路径迁入 `client.groups()`。
 
-### 22.2 范围
+### 25.2 范围
 
 支持：
 
@@ -1415,7 +1596,7 @@ group E2EE
 MLS state
 ```
 
-### 22.3 源和目标
+### 25.3 源和目标
 
 源：
 
@@ -1434,17 +1615,27 @@ crates/im-core/src/internal/wire/group.rs
 crates/im-core/src/internal/local_state/groups.rs
 ```
 
-### 22.4 验收
+### 25.4 Required 验收
 
 ```bash
 cargo test -p im-core groups
 cargo test -p awiki-cli --test group_contract
-cargo test -p awiki-cli --test group_live_contract
 cargo test -p awiki-cli --test store_groups_contract
+```
+
+### 25.5 Optional integration
+
+```bash
 cargo test -p awiki-cli --test msg_ws_group_live_contract
 ```
 
-### 22.5 完成标准
+### 25.6 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test group_live_contract
+```
+
+### 25.7 完成标准
 
 ```text
 1. group read APIs 可走 im-core。
@@ -1454,13 +1645,13 @@ cargo test -p awiki-cli --test msg_ws_group_live_contract
 
 ---
 
-## 23. PR 3G：group create/join/leave 迁移
+## 26. PR 3G：group create/join/leave 迁移
 
-### 23.1 目标
+### 26.1 目标
 
 把 group create/join/leave 普通路径迁入 `client.groups()`。
 
-### 23.2 范围
+### 26.2 范围
 
 支持：
 
@@ -1481,7 +1672,7 @@ group E2EE create/join/leave
 MLS welcome/commit
 ```
 
-### 23.3 执行方式
+### 26.3 执行方式
 
 ```text
 1. 迁移 group lifecycle wire builder 的普通路径。
@@ -1491,17 +1682,27 @@ MLS welcome/commit
 5. 普通路径成功后 best-effort persist group snapshot。
 ```
 
-### 23.4 验收
+### 26.4 Required 验收
 
 ```bash
 cargo test -p im-core group_lifecycle
 cargo test -p awiki-cli --test group_contract
-cargo test -p awiki-cli --test group_live_contract
+```
+
+### 26.5 Optional integration
+
+```bash
 cargo test -p awiki-cli --test group_e2ee_create_contract
 cargo test -p awiki-cli --test group_e2ee_remove_leave_contract
 ```
 
-### 23.5 完成标准
+### 26.6 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test group_live_contract
+```
+
+### 26.7 完成标准
 
 ```text
 1. 普通 group create/join/leave 可走 im-core。
@@ -1511,13 +1712,13 @@ cargo test -p awiki-cli --test group_e2ee_remove_leave_contract
 
 ---
 
-## 24. PR 3H：group add/remove/update/members 写路径迁移
+## 27. PR 3H：group add/remove/update/members 写路径迁移
 
-### 24.1 目标
+### 27.1 目标
 
 迁移 group 成员和 profile/policy mutation 普通路径。
 
-### 24.2 范围
+### 27.2 范围
 
 支持：
 
@@ -1538,7 +1739,7 @@ MLS key update
 hidden group.e2ee.* RPC
 ```
 
-### 24.3 执行方式
+### 27.3 执行方式
 
 ```text
 1. 普通 group mutation wire builder 迁到 im-core。
@@ -1547,17 +1748,28 @@ hidden group.e2ee.* RPC
 4. 如果 group snapshot 显示 E2EE，返回 UnsupportedCapability 或交给 legacy fallback。
 ```
 
-### 24.4 验收
+### 27.4 Required 验收
 
 ```bash
 cargo test -p im-core group_mutation
-cargo test -p awiki-cli --test group_live_contract
+cargo test -p awiki-cli --test group_contract
 cargo test -p awiki-cli --test message_group_wire_contract
+```
+
+### 27.5 Optional integration
+
+```bash
 cargo test -p awiki-cli --test group_e2ee_add_contract
 cargo test -p awiki-cli --test group_e2ee_remove_leave_contract
 ```
 
-### 24.5 完成标准
+### 27.6 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test group_live_contract
+```
+
+### 27.7 完成标准
 
 ```text
 1. 普通 group add/remove/update/members 可走 im-core。
@@ -1567,13 +1779,13 @@ cargo test -p awiki-cli --test group_e2ee_remove_leave_contract
 
 ---
 
-## 25. PR 3I：Phase 3 legacy wrapper 收敛和 compat 清理
+## 28. PR 3I：Phase 3 legacy wrapper 收敛和 compat 清理
 
-### 25.1 目标
+### 28.1 目标
 
 在 Phase 3 能力稳定后，收敛 P1/P2/P3 中已经不再需要的 wrapper。
 
-### 25.2 清理范围
+### 28.2 清理范围
 
 可清理：
 
@@ -1594,7 +1806,7 @@ group E2EE path
 CLI 输出和参数解析
 ```
 
-### 25.3 验收
+### 28.3 Required 验收
 
 ```bash
 cargo test -p im-core
@@ -1603,7 +1815,7 @@ rg "im_core::compat" crates/awiki-cli/src
 rg "ParsedCommand|ExitError|config::Resolved|identity::Manager|awiki_cli" crates/im-core/src crates/im-core/tests
 ```
 
-### 25.4 完成标准
+### 28.4 完成标准
 
 ```text
 1. 已稳定能力优先通过 im-core public API 调用。
@@ -1613,81 +1825,7 @@ rg "ParsedCommand|ExitError|config::Resolved|identity::Manager|awiki_cli" crates
 
 ---
 
-## 26. 测试迁移规则
-
-每个切片都执行双测试：
-
-```text
-1. im-core 新增对应 contract/unit test。
-2. awiki-cli 原测试保留。
-3. awiki-cli 原测试验证 wrapper 和 CLI 行为兼容。
-4. im-core 测试验证新实现的 SDK 边界。
-```
-
-Phase 2 最小测试矩阵：
-
-```bash
-cargo test -p im-core
-cargo test -p awiki-cli --test identity_wire_contract
-cargo test -p awiki-cli --test identity_contract
-cargo test -p awiki-cli --test identity_live_contract
-cargo test -p awiki-cli --test store_contact_contract
-```
-
-Phase 3 最小测试矩阵：
-
-```bash
-cargo test -p im-core
-cargo test -p awiki-cli --test message_contract
-cargo test -p awiki-cli --test msg_contract
-cargo test -p awiki-cli --test msg_live_contract
-cargo test -p awiki-cli --test group_contract
-cargo test -p awiki-cli --test group_live_contract
-cargo test -p awiki-cli --test store_messages_contract
-cargo test -p awiki-cli --test store_groups_contract
-```
-
-涉及 websocket / fallback / trace 时再加：
-
-```bash
-cargo test -p awiki-cli --test msg_ws_inbox_live_contract
-cargo test -p awiki-cli --test msg_ws_history_live_contract
-cargo test -p awiki-cli --test msg_ws_group_live_contract
-cargo test -p awiki-cli --test msg_jwt_fallback_trace_contract
-cargo test -p awiki-cli --test traceutil_contract
-```
-
-涉及危险 identity 操作时再加：
-
-```bash
-cargo test -p awiki-cli --test identity_recover_live_contract
-cargo test -p awiki-cli --test identity_replace_did_live_contract
-cargo test -p awiki-cli --test identity_replace_did_upgrade_contract
-cargo test -p awiki-cli --test store_rebind_contract
-```
-
----
-
-## 27. 每个 PR 的完成标准
-
-每个 Phase 2 / Phase 3 PR 都必须满足：
-
-```text
-[ ] im-core 不依赖 awiki-cli。
-[ ] awiki-cli public/CLI 行为不变，除非该 PR 明确声明切换路径。
-[ ] legacy fallback 仍可用，直到该能力已稳定两个阶段。
-[ ] 没有整体搬迁 identity/message/store/runtime/app handlers。
-[ ] 没有把 ParsedCommand、ExitError、Resolved、Manager、StoredIdentity 暴露到 im-core。
-[ ] 新 im-core 测试覆盖被迁移逻辑。
-[ ] 旧 awiki-cli 测试仍覆盖 wrapper 兼容。
-[ ] Cargo.toml 新依赖有明确必要性，优先复用 workspace 既有依赖。
-[ ] 涉及 local_state 时，旧数据兼容路径已测试。
-[ ] 涉及危险操作时，plan 和 execution 分开验证。
-```
-
----
-
-## 28. 回滚策略
+## 29. 回滚策略
 
 每个切片都按这个顺序设计：
 
@@ -1721,7 +1859,7 @@ cargo test -p awiki-cli --test store_rebind_contract
 
 ---
 
-## 29. 明确不做事项
+## 30. 明确不做事项
 
 Phase 2 不做：
 
@@ -1732,6 +1870,7 @@ Phase 2 不做：
 4. 不迁 message conversation projection。
 5. 不迁 group lifecycle。
 6. 不迁 owner_identity_id schema 迁移。
+7. 不新增默认 public client.contacts()，除非同步更新 public-api。
 ```
 
 Phase 3 不做：
@@ -1744,11 +1883,12 @@ Phase 3 不做：
 5. 不迁 platform service 管理。
 6. 不迁 OpenClaw / Hermes host notify。
 7. 不做破坏性 SQLite schema 重建。
+8. 不迁 e2ee_outbox / e2ee_sessions 写路径。
 ```
 
 ---
 
-## 30. 方案核心
+## 31. 方案核心
 
 Phase 2 的核心：
 

@@ -1,9 +1,7 @@
 # P1-beta 垂直切片迁入 im-core 执行方案
 
-**适用仓库**：`AgentConnect/awiki-cli-rs2`
-
-**适用阶段**：`docs/sdk-refactor/implementation-playbook.md` 中的 `15. P1-beta：开始垂直切片迁入 im-core`
-
+**适用仓库**：`AgentConnect/awiki-cli-rs2`  
+**适用阶段**：`docs/sdk-refactor/implementation-playbook.md` 中的 `15. P1-beta：开始垂直切片迁入 im-core`  
 **目标**：在不大面积重写、不整体搬迁顶层模块的前提下，让 `crates/im-core` 开始承载真实实现，并让 `awiki-cli` 通过 wrapper / adapter 平滑切换到 `im-core`。
 
 ---
@@ -30,36 +28,49 @@
   - docs/sdk-refactor/modules/08-groups.md
 
   不用进行系统测试，只用进行单元测试即可，系统测试统一做
-
+  
 ## 1. 总体结论
 
-P1-beta 不采用长期函数级迁移，也不采用顶层模块整体迁移。
+P1-beta 的目标不是把 `message`、`identity`、`store`、`runtime` 整体搬进 `im-core`，而是把 P1-alpha 已经跑通的 SDK façade 后面，逐步替换成 `im-core` 自己的真实实现。
 
 推荐迁移粒度：
 
 ```text
-主策略：文件级迁移
-辅策略：小子模块级迁移，通常 2-5 个强相关文件
+主策略：leaf-file / 小子模块级迁移
+辅策略：2-5 个强相关文件组成一个垂直业务切片
 例外：函数级抽取只用于拆掉少量 CLI 依赖，不作为长期迁移单位
 禁止：一次性整体迁移 message、identity、store、runtime、app handlers
 ```
 
-原因：
+这里的“文件级迁移”不是指直接 `mv` 原文件，也不是把一个混合职责文件完整搬走。
+
+正确含义是：
 
 ```text
-1. 函数级迁移成本太高，会制造大量 wrapper、visibility、错误映射和测试重复成本。
-2. 顶层模块级迁移风险太大，会触发 auth、store、runtime、CLI output 的连锁重写。
-3. 文件级 / 小子模块级迁移能保持迁移单元足够清晰，同时避免大面积重写。
+如果源文件职责单一：
+  可以复制/迁移整个 leaf file 到 im-core，然后 awiki-cli 原位置改成 wrapper。
+
+如果源文件职责混合：
+  只抽取本切片相关函数到 im-core 新文件，awiki-cli 原文件继续保留其他 legacy 能力。
 ```
 
-P1-beta 的推荐 PR 顺序：
+例如：
+
+```text
+可以：把 direct.send wire builder 抽到 im-core/src/internal/wire/direct.rs
+可以：把 group.send 相关 builder 抽到 im-core/src/internal/wire/group.rs
+不可以：把 awiki-cli/src/message/group_wire.rs 整文件搬走
+不可以：把 awiki-cli/src/message 整个目录搬走
+```
+
+P1-beta 推荐 PR 顺序：
 
 ```text
 PR 15A：建立 im-core internal/wire + compat 边界
-PR 15B：迁移 direct/inbox/history/mark_read wire builder
+PR 15B：迁移 direct/inbox/history wire builder，mark_read wire 仅可作为 internal helper 可选迁移
 PR 15C：迁移 origin proof 小子模块
 PR 15D：迁移普通 group.send wire builder，不动 group lifecycle
-PR 15E：auth ensure/refresh 真实 provider 边界
+PR 15E：auth ensure/refresh internal provider 边界
 PR 15F：direct text send 真迁移
 PR 15G：group text send 真迁移
 PR 15H：inbox/history P1 子集真迁移
@@ -68,8 +79,6 @@ PR 15H：inbox/history P1 子集真迁移
 ---
 
 ## 2. P1-beta 目标
-
-P1-beta 的目标不是把 `message`、`identity`、`store`、`authsdk` 整体搬进 `im-core`，而是把已经被 P1-alpha 验证过的 SDK facade 后面，逐步替换成 `im-core` 自己的真实实现。
 
 迁移完成后应达到：
 
@@ -95,6 +104,15 @@ crates/im-core/src/auth/service.rs
 crates/im-core/src/internal/mod.rs
 ```
 
+P1-beta 不应改变这些范围：
+
+```text
+app handlers 不整体重写
+identity/store/runtime 不整体搬迁
+attachment/secure/group E2EE/realtime 不迁移
+provider traits 不进入 public API
+```
+
 ---
 
 ## 3. 进入条件
@@ -106,7 +124,7 @@ crates/im-core/src/internal/mod.rs
 2. awiki-cli 已依赖 im-core，但 im-core 不依赖 awiki-cli。
 3. P1-alpha adapter 路径已存在，CLI 能通过 SDK DTO 构造请求。
 4. cargo test -p im-core 通过。
-5. cargo test -p awiki-cli 通过，或至少当前主线约定的 selector 通过。
+5. cargo test -p awiki-cli 通过，或至少当前主线约定的 focused selector 通过。
 6. im-core boundary 测试确认不引用 CLI 类型。
 7. 未迁移能力仍有 legacy 路径可回退。
 ```
@@ -119,7 +137,7 @@ cargo test -p awiki-cli
 rg "ParsedCommand|ExitError|GlobalOptions|config::Resolved|identity::Manager|awiki_cli" crates/im-core/src crates/im-core/tests
 ```
 
-如果 `cargo test -p awiki-cli` 在当前仓库成本过高，可以使用当前项目约定的 focused selector，但必须记录 selector 和未覆盖风险。
+如果 `cargo test -p awiki-cli` 成本过高，可以使用当前项目约定的 focused selector，但必须记录 selector 和未覆盖风险。
 
 ---
 
@@ -162,16 +180,49 @@ crates/im-core/src/compat/
 
 ```text
 1. internal/* 是 im-core 真正实现，默认 pub(crate)。
-2. compat/* 是 awiki-cli 迁移期专用公开口，使用 #[doc(hidden)]。
+2. compat/* 是 awiki-cli 迁移期专用公开口，不进入 prelude。
 3. awiki-cli 不直接访问 im_core::internal。
-4. P2 或 P3 稳定后集中删除 compat。
+4. im-core 不反向依赖 awiki-cli。
+5. P2 或 P3 稳定后集中删除 compat。
 ```
-
-这样可以避免跨 crate 使用 `pub(crate)` 的 visibility 问题，也避免把 `internal` 直接变成隐形 public API。
 
 ---
 
-## 5. 关键内部类型
+## 5. Compat API 规则
+
+因为跨 crate 不能让 `awiki-cli` 访问 `pub(crate)` internal 模块，P1-beta 可以有 `im_core::compat`。但它必须是临时迁移接口。
+
+规则：
+
+```text
+1. compat API 不进入 prelude。
+2. compat API 不作为 SDK semver 稳定 API。
+3. compat API 使用 #[doc(hidden)]。
+4. compat API 文件必须注明“migration-only”。
+5. 如果未来 im-core 独立发布，compat 应放入 non-default feature，例如 legacy-compat。
+6. compat API 稳定两个阶段后必须清理或收紧。
+```
+
+示例：
+
+```rust
+#[doc(hidden)]
+pub mod compat {
+    pub mod wire;
+    pub mod proof;
+}
+```
+
+禁止：
+
+```rust
+pub use compat::*;
+pub use compat::wire::*;
+```
+
+---
+
+## 6. 关键内部类型
 
 `im-core` 内部不要直接使用 `awiki-cli` 的这些类型：
 
@@ -222,19 +273,87 @@ pub(crate) struct HistoryWireRequest {
 StoredIdentity -> WireIdentity
 message::InboxRequest -> im-core compat request
 message::HistoryRequest -> im-core compat request
-message::MarkReadRequest -> im-core compat request
 ImError -> MessageError / ExitError
 ```
 
 ---
 
-## 6. PR 15A：建立 compat 边界和 wire 内部结构
+## 7. Internal traits 规则
 
-### 6.1 目标
+P1-beta 中可以出现一些 internal trait，例如：
+
+```text
+internal::auth::SessionProvider
+internal::transport::AuthenticatedRpcTransport
+internal::local_state::MessageWriter
+```
+
+但它们必须明确是：
+
+```text
+internal runtime trait
+compat-only boundary
+不是 Phase 7 provider trait
+不进入 prelude
+不承诺 semver
+```
+
+不要在 P1-beta 做这些事情：
+
+```text
+pub trait CredentialVault
+pub trait MessageStore
+pub trait Transport
+pub trait CryptoProvider
+```
+
+这些属于 Phase 7 provider 抽象，不是 P1-beta 范围。
+
+---
+
+## 8. 测试分层规则
+
+每个 PR 的测试分三层。
+
+### 8.1 Required：Codex Goal / 单 PR 必跑
+
+```text
+cargo test -p im-core <focused>
+cargo test -p awiki-cli --test <relevant_contract>
+rg import fence
+```
+
+### 8.2 Optional integration：合并前或本地补跑
+
+```text
+cargo test -p awiki-cli --test msg_contract
+cargo test -p awiki-cli --test group_contract
+cargo test -p awiki-cli --test identity_im_core_mvp_contract
+```
+
+### 8.3 Manual / live / system：不由默认 Codex Goal 执行
+
+```text
+msg_live_contract
+group_live_contract
+msg_ws_*_live_contract
+runtime_listener_*_contract
+真实 awiki-cli 命令
+真实网络请求
+真实 workspace 操作
+```
+
+只有当某个 PR 明确声明进入系统验证时，才运行 Manual / live / system 测试。
+
+---
+
+## 9. PR 15A：建立 compat 边界和 wire 内部结构
+
+### 9.1 目标
 
 建立 `im-core` 迁移承载结构，但不改变 `awiki-cli` 行为。
 
-### 6.2 改动范围
+### 9.2 改动范围
 
 ```text
 crates/im-core/src/lib.rs
@@ -246,25 +365,30 @@ crates/im-core/src/compat/wire.rs
 crates/im-core/tests/wire_contract.rs
 ```
 
-### 6.3 执行步骤
+### 9.3 执行步骤
 
 ```text
 1. 新增 internal::wire 和 compat::wire 模块。
-2. 把 now_rfc3339 / generate_operation_id / content_type_for_message_kind 这类基础 helper 放入 internal::wire::common。
+2. 把 now_rfc3339 / generate_operation_id / content_type_for_message_kind 等基础 helper 放入 internal::wire::common。
 3. compat::wire 只暴露迁移期需要的函数，不暴露整个 internal 模块。
 4. 暂不改 awiki-cli 调用点。
 5. 添加 im-core 测试覆盖 content type、operation_id 格式、created_at 格式。
 ```
 
-### 6.4 验收
+### 9.4 Required 验收
 
 ```bash
 cargo test -p im-core wire
-cargo test -p awiki-cli
 rg "awiki_cli|ParsedCommand|ExitError|config::Resolved|identity::Manager" crates/im-core/src
 ```
 
-### 6.5 完成标准
+### 9.5 Optional integration
+
+```bash
+cargo test -p awiki-cli --test message_contract
+```
+
+### 9.6 完成标准
 
 ```text
 1. im-core 有 wire 目录和 compat 入口。
@@ -274,13 +398,15 @@ rg "awiki_cli|ParsedCommand|ExitError|config::Resolved|identity::Manager" crates
 
 ---
 
-## 7. PR 15B：迁移 direct/inbox/history/mark_read wire builder
+## 10. PR 15B：迁移 direct/inbox/history wire builder
 
-### 7.1 目标
+### 10.1 目标
 
-把 direct.send、inbox、history、mark_read 的 wire builder 迁到 `im-core`。
+把 direct.send、inbox、history 的 wire builder 迁到 `im-core`。
 
-### 7.2 源和目标
+`mark_read` wire builder 不作为本 PR 必做项。若它和 inbox builder 强耦合，可以只作为 `internal` helper 可选迁移；不得接入 `MessageService::mark_read`，不得改 CLI `mark-read` 行为。完整 mark-read 业务迁移放 Phase 3 PR 3B。
+
+### 10.2 源和目标
 
 源：
 
@@ -297,7 +423,7 @@ crates/im-core/src/internal/wire/history.rs
 crates/im-core/src/compat/wire.rs
 ```
 
-### 7.3 执行方式
+### 10.3 执行方式
 
 ```text
 1. 不直接搬 StoredIdentity 版本函数。
@@ -305,7 +431,7 @@ crates/im-core/src/compat/wire.rs
 3. awiki-cli 原 message/wire.rs 保留文件路径和函数签名。
 4. awiki-cli 原函数内部改为调用 im_core::compat::wire。
 5. MessageError 映射仍在 awiki-cli wrapper 中完成。
-6. 复制 message_contract.rs 中 direct/inbox/history/mark_read 相关断言到 im-core tests。
+6. 复制 message_contract.rs 中 direct/inbox/history 相关断言到 im-core tests。
 7. awiki-cli 原 message_contract.rs 继续保留，验证 wrapper 兼容。
 ```
 
@@ -326,33 +452,40 @@ secure direct
 group E2EE
 runtime listener bridge
 local store persist
+mark_read business
 ```
 
-### 7.4 验收
+### 10.4 Required 验收
 
 ```bash
 cargo test -p im-core wire
 cargo test -p awiki-cli --test message_contract
+```
+
+### 10.5 Optional integration
+
+```bash
 cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
 ```
 
-### 7.5 完成标准
+### 10.6 完成标准
 
 ```text
-1. direct/inbox/history/mark_read wire shape 与旧测试一致。
+1. direct/inbox/history wire shape 与旧测试一致。
 2. awiki-cli/src/message/wire.rs 变成薄 wrapper。
 3. 所有旧调用点无需大面积改动。
+4. mark_read public API 没有被提前接入。
 ```
 
 ---
 
-## 8. PR 15C：迁移 origin proof 小子模块
+## 11. PR 15C：迁移 origin proof 小子模块
 
-### 8.1 目标
+### 11.1 目标
 
 把 RFC9421 origin proof 生成迁到 `im-core`，`awiki-cli` 继续通过 wrapper 使用。
 
-### 8.2 源和目标
+### 11.2 源和目标
 
 源：
 
@@ -367,37 +500,43 @@ crates/im-core/src/internal/proof/origin.rs
 crates/im-core/src/compat/proof.rs
 ```
 
-### 8.3 前置条件
+### 11.3 前置条件
 
 `im-core/Cargo.toml` 需要引入当前 `awiki-cli` 已使用的 `anp` workspace dependency。
 
-### 8.4 执行方式
+### 11.4 执行方式
 
 ```text
-1. 将 PrivateKeyMaterial 加载、verification_method_id_from_document、origin_auth_value 迁入 im-core。
-2. build_origin_proof 改为接收 WireIdentity + DirectPayload。
-3. awiki-cli/src/message/proof.rs 保留旧签名，转换 StoredIdentity 后调用 im_core::compat::proof。
-4. 保留 ORIGIN_PROOF_SCHEME 值不变。
-5. 复制 message_contract.rs 中 origin proof 相关测试到 im-core。
+1. 将 verification_method_id_from_document、origin_auth_value、build_origin_proof 的纯逻辑迁入 im-core。
+2. PrivateKeyMaterial 仅作为 internal 类型，不进入 public API。
+3. build_origin_proof 改为接收 WireIdentity + DirectPayload。
+4. awiki-cli/src/message/proof.rs 保留旧签名，转换 StoredIdentity 后调用 im_core::compat::proof。
+5. 保留 ORIGIN_PROOF_SCHEME 值不变。
+6. 复制 message_contract.rs 中 origin proof 相关测试到 im-core。
 ```
 
-### 8.5 风险控制
+### 11.5 风险控制
 
 ```text
 1. 不迁移 identity::Manager。
-2. 不在 im-core 读取 identity 文件。
+2. 不在 im-core 读取 identity 文件，除非通过显式 runtime path。
 3. 不在 im-core public API 暴露 PrivateKeyMaterial。
 ```
 
-### 8.6 验收
+### 11.6 Required 验收
 
 ```bash
 cargo test -p im-core proof
 cargo test -p awiki-cli --test message_contract
+```
+
+### 11.7 Optional integration
+
+```bash
 cargo test -p awiki-cli --test message_group_e2ee_wire_contract
 ```
 
-### 8.7 完成标准
+### 11.8 完成标准
 
 ```text
 1. origin proof 可在 im-core 内生成。
@@ -406,15 +545,15 @@ cargo test -p awiki-cli --test message_group_e2ee_wire_contract
 
 ---
 
-## 9. PR 15D：迁移普通 group.send wire builder
+## 12. PR 15D：迁移普通 group.send wire builder
 
-### 9.1 目标
+### 12.1 目标
 
 只迁 group text send 所需 wire builder，不迁 group create/join/leave/add/remove/list/get。
 
 `crates/awiki-cli/src/message/group_wire.rs` 混有 group lifecycle，所以不能整文件无脑搬。这个 PR 采用小子模块级迁移。
 
-### 9.2 迁移范围
+### 12.2 迁移范围
 
 ```text
 build_group_send_rpc_params
@@ -439,14 +578,14 @@ group profile/policy patch builder
 group lifecycle validation
 ```
 
-### 9.3 目标文件
+### 12.3 目标文件
 
 ```text
 crates/im-core/src/internal/wire/group.rs
 crates/im-core/src/compat/wire.rs
 ```
 
-### 9.4 执行方式
+### 12.4 执行方式
 
 ```text
 1. im-core 内只实现 group.send wire。
@@ -456,15 +595,20 @@ crates/im-core/src/compat/wire.rs
 5. awiki-cli 原 group wire contract 继续全量跑。
 ```
 
-### 9.5 验收
+### 12.5 Required 验收
 
 ```bash
 cargo test -p im-core group_wire
 cargo test -p awiki-cli --test message_group_wire_contract
+```
+
+### 12.6 Optional integration
+
+```bash
 cargo test -p awiki-cli --test msg_ws_group_live_contract
 ```
 
-### 9.6 完成标准
+### 12.7 完成标准
 
 ```text
 1. 普通 group.send 的 wire builder 已由 im-core 提供。
@@ -474,27 +618,36 @@ cargo test -p awiki-cli --test msg_ws_group_live_contract
 
 ---
 
-## 10. PR 15E：auth ensure/refresh 真实 provider 边界
+## 13. PR 15E：auth ensure/refresh internal provider 边界
 
-### 10.1 目标
+### 13.1 目标
 
 让 `im-core` 拥有 session ensure/refresh 的真实执行口，但 CLI 仍可保留 legacy fallback。
 
 当前 `im-core` 的 `AuthService` 仍接近 stub；legacy 的真实逻辑在 `message::auth_session` 和 `refresh_jwt_fallback`。
 
-### 10.2 推荐做法
+### 13.2 推荐做法
 
 先做接口收敛，不一次性搬完整 `authsdk`：
 
 ```text
 1. 在 im-core 定义 internal::auth::SessionProvider trait。
-2. 默认实现先使用 im-core 自己的 identity runtime paths。
+2. 默认实现使用 im-core 自己的 identity runtime paths。
 3. awiki-cli adapter 可以提供 legacy-backed provider。
 4. AuthService::ensure_session/refresh_session 从 stub 改为调用 provider。
 5. direct send 真迁移前，只验证 auth 状态和刷新路径，不改 message send。
 ```
 
-### 10.3 目标文件
+`SessionProvider` 规则：
+
+```text
+1. internal-only。
+2. 不进入 prelude。
+3. 不作为 Phase 7 provider trait。
+4. 不承诺 semver。
+```
+
+### 13.3 目标文件
 
 ```text
 crates/im-core/src/internal/auth/mod.rs
@@ -503,15 +656,20 @@ crates/im-core/src/auth/service.rs
 crates/awiki-cli/src/im_core_adapter/auth.rs
 ```
 
-### 10.4 验收
+### 13.4 Required 验收
 
 ```bash
 cargo test -p im-core auth
 cargo test -p awiki-cli --test identity_im_core_mvp_contract
+```
+
+### 13.5 Optional integration
+
+```bash
 cargo test -p awiki-cli --test authsdk_contract
 ```
 
-### 10.5 完成标准
+### 13.6 完成标准
 
 ```text
 1. client.auth().ensure_session(AuthScope::Messaging) 不再只是无条件返回假 session。
@@ -521,22 +679,22 @@ cargo test -p awiki-cli --test authsdk_contract
 
 ---
 
-## 11. PR 15F：direct text send 真迁移
+## 14. PR 15F：direct text send 真迁移
 
-### 11.1 目标
+### 14.1 目标
 
 `msg send --to` 的普通文本路径可以由 `im-core` 真正执行。
 
-### 11.2 前置条件
+### 14.2 前置条件
 
 ```text
 1. direct wire 已在 im-core。
 2. proof 已在 im-core。
-3. auth ensure/refresh 有真实 provider。
+3. auth ensure/refresh 有 internal provider。
 4. transport 可先复用 legacy adapter，不强制一次性迁 HTTP client。
 ```
 
-### 11.3 im-core 内部调用链
+### 14.3 im-core 内部调用链
 
 ```text
 MessageService::send
@@ -552,12 +710,12 @@ MessageService::send
 为了避免大面积重写，第一版建议：
 
 ```text
-1. target resolve：先由 awiki-cli adapter 注入已解析 DID，im-core 不直接依赖 identity service。
+1. target resolve：先由 awiki-cli adapter 注入已解析 DID，im-core 不直接依赖完整 directory service。
 2. authenticated RPC：通过 internal transport trait 调用，awiki-cli 提供 legacy-backed transport。
 3. local store write：先做 minimal write，可失败转 warning，不阻断发送。
 ```
 
-### 11.4 需要新增的抽象
+### 14.4 需要新增的抽象
 
 ```text
 crates/im-core/src/internal/transport.rs
@@ -570,25 +728,34 @@ crates/im-core/src/messages/service.rs
   send direct plain path
 ```
 
-`awiki-cli` 侧主要改动：
+`AuthenticatedRpcTransport` 规则：
 
 ```text
-crates/awiki-cli/src/im_core_adapter/messages.rs
-crates/awiki-cli/src/app/msg_handlers.rs
+internal-only
+compat-only
+不是 Phase 7 public Transport provider
 ```
 
-实际接入点以当前 P1-alpha adapter 调用路径为准。
-
-### 11.5 验收
+### 14.5 Required 验收
 
 ```bash
 cargo test -p im-core messages
 cargo test -p awiki-cli --test msg_contract
-cargo test -p awiki-cli --test msg_live_contract
+```
+
+### 14.6 Optional integration
+
+```bash
 cargo test -p awiki-cli --test msg_jwt_fallback_trace_contract
 ```
 
-### 11.6 完成标准
+### 14.7 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test msg_live_contract
+```
+
+### 14.8 完成标准
 
 ```text
 1. 普通 direct text send 可走 im-core。
@@ -600,13 +767,13 @@ cargo test -p awiki-cli --test msg_jwt_fallback_trace_contract
 
 ---
 
-## 12. PR 15G：group text send 真迁移
+## 15. PR 15G：group text send 真迁移
 
-### 12.1 目标
+### 15.1 目标
 
 `msg send --group` 的普通文本路径可以由 `im-core` 真正执行。
 
-### 12.2 范围
+### 15.2 范围
 
 支持：
 
@@ -622,7 +789,7 @@ group E2EE
 attachment
 ```
 
-### 12.3 调用链
+### 15.3 调用链
 
 ```text
 MessageService::send
@@ -634,16 +801,26 @@ MessageService::send
   -> minimal local group message store write
 ```
 
-### 12.4 验收
+### 15.4 Required 验收
 
 ```bash
 cargo test -p im-core messages
 cargo test -p awiki-cli --test group_contract
-cargo test -p awiki-cli --test group_live_contract
+```
+
+### 15.5 Optional integration
+
+```bash
 cargo test -p awiki-cli --test msg_ws_group_live_contract
 ```
 
-### 12.5 完成标准
+### 15.6 Manual / live / system
+
+```bash
+cargo test -p awiki-cli --test group_live_contract
+```
+
+### 15.7 完成标准
 
 ```text
 1. 普通 group text send 可走 im-core。
@@ -653,13 +830,13 @@ cargo test -p awiki-cli --test msg_ws_group_live_contract
 
 ---
 
-## 13. PR 15H：inbox/history P1 子集真迁移
+## 16. PR 15H：inbox/history P1 子集真迁移
 
-### 13.1 目标
+### 16.1 目标
 
 `msg inbox` 和 `msg history` 的 P1 子集可以由 `im-core` 执行。
 
-### 13.2 范围
+### 16.2 范围
 
 支持：
 
@@ -682,7 +859,7 @@ contact sync 深度逻辑
 conversation projection
 ```
 
-### 13.3 调用链
+### 16.3 调用链
 
 ```text
 MessageService::inbox/history
@@ -694,17 +871,22 @@ MessageService::inbox/history
   -> return Page<Message>
 ```
 
-### 13.4 验收
+### 16.4 Required 验收
 
 ```bash
 cargo test -p im-core messages
 cargo test -p awiki-cli --test msg_contract
+```
+
+### 16.5 Optional integration
+
+```bash
 cargo test -p awiki-cli --test msg_all_inbox_live_contract
 cargo test -p awiki-cli --test msg_ws_inbox_live_contract
 cargo test -p awiki-cli --test msg_ws_history_live_contract
 ```
 
-### 13.5 完成标准
+### 16.6 完成标准
 
 ```text
 1. P1 inbox/history 可走 im-core。
@@ -714,7 +896,7 @@ cargo test -p awiki-cli --test msg_ws_history_live_contract
 
 ---
 
-## 14. 错误映射规则
+## 17. 错误映射规则
 
 `im-core` 内部统一返回 `ImError`：
 
@@ -748,38 +930,7 @@ ImError::UnsupportedCapability(secure-direct) -> MessageError::SecureNotSupporte
 
 ---
 
-## 15. 测试迁移规则
-
-每个切片都执行双测试：
-
-```text
-1. im-core 新增对应 contract/unit test。
-2. awiki-cli 原测试保留。
-3. awiki-cli 原测试验证 wrapper 和 CLI 行为兼容。
-4. im-core 测试验证新实现的稳定边界。
-```
-
-最小测试矩阵：
-
-```bash
-cargo test -p im-core
-cargo test -p awiki-cli --test message_contract
-cargo test -p awiki-cli --test message_group_wire_contract
-cargo test -p awiki-cli --test msg_contract
-cargo test -p awiki-cli --test identity_im_core_mvp_contract
-```
-
-涉及实际发送路径时再加：
-
-```bash
-cargo test -p awiki-cli --test msg_live_contract
-cargo test -p awiki-cli --test group_live_contract
-cargo test -p awiki-cli --test msg_jwt_fallback_trace_contract
-```
-
----
-
-## 16. 每个 PR 的完成标准
+## 18. 每个 PR 的完成标准
 
 每个 P1-beta PR 都必须满足：
 
@@ -792,11 +943,13 @@ cargo test -p awiki-cli --test msg_jwt_fallback_trace_contract
 [ ] 新 im-core 测试覆盖被迁移逻辑。
 [ ] 旧 awiki-cli 测试仍覆盖 wrapper 兼容。
 [ ] Cargo.toml 新依赖有明确必要性，优先复用 workspace 既有依赖。
+[ ] compat API 不进入 prelude。
+[ ] internal trait 不作为 public provider trait 暴露。
 ```
 
 ---
 
-## 17. 回滚策略
+## 19. 回滚策略
 
 每个切片都按这个顺序设计，保证能快速回滚：
 
@@ -810,7 +963,7 @@ cargo test -p awiki-cli --test msg_jwt_fallback_trace_contract
 
 ---
 
-## 18. 不做事项
+## 20. 不做事项
 
 P1-beta 明确不做：
 
@@ -824,17 +977,18 @@ P1-beta 明确不做：
 7. 不迁移完整 group lifecycle。
 8. 不迁移复杂 local cache merge / conversation projection。
 9. 不引入 async runtime 作为 P1-beta 的前置要求。
+10. 不把 compat API 当成稳定 SDK public API。
 ```
 
 ---
 
-## 19. 方案核心
+## 21. 方案核心
 
 这套 P1-beta 方案的核心是：
 
 ```text
-先把低耦合 wire/proof 文件级能力搬到 im-core，
-再用 provider / transport / compat 把真实 vertical path 接起来。
+先把低耦合 wire/proof leaf-file 能力搬到 im-core，
+再用 internal provider / transport / compat 把真实 vertical path 接起来。
 ```
 
 这样可以避免函数级碎片迁移的高成本，也避免顶层模块整体迁移带来的大面积重写。
