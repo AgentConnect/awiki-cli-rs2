@@ -15,7 +15,7 @@ const REPLACE_DID_LOCAL_WRITES: &[&str] = &[
 pub(crate) fn plan_replace_did(
     request: crate::identity::ReplaceDidPlanRequest,
 ) -> crate::ImResult<crate::identity::ReplaceDidPlan> {
-    validate_request(&request)?;
+    validate_plan_request(&request)?;
     let call = crate::internal::identity_wire::replace_did::build_replace_did_rpc_call(
         crate::internal::identity_wire::ReplaceDidRpcParams {
             new_did_document: serde_json::json!("generated_e1_document"),
@@ -74,7 +74,9 @@ pub(crate) fn plan_replace_did(
     })
 }
 
-fn validate_request(request: &crate::identity::ReplaceDidPlanRequest) -> crate::ImResult<()> {
+pub(crate) fn validate_plan_request(
+    request: &crate::identity::ReplaceDidPlanRequest,
+) -> crate::ImResult<()> {
     if request.identity.did.as_str().trim().is_empty() {
         return Err(crate::ImError::invalid_input(
             Some("identity.did".to_string()),
@@ -91,6 +93,36 @@ fn validate_request(request: &crate::identity::ReplaceDidPlanRequest) -> crate::
         return Err(crate::ImError::invalid_input(
             Some("backup_path_preview".to_string()),
             "backup path preview is required",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_request_shape(
+    plan: &crate::identity::ReplaceDidPlan,
+) -> crate::ImResult<()> {
+    if plan.action != "replace_did" {
+        return Err(crate::ImError::invalid_input(
+            Some("plan.action".to_string()),
+            "replace DID execution requires a replace_did plan",
+        ));
+    }
+    if !plan.dangerous {
+        return Err(crate::ImError::invalid_input(
+            Some("plan.dangerous".to_string()),
+            "replace DID execution requires a dangerous plan",
+        ));
+    }
+    if plan.backup_plan.backup_path_preview.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("plan.backup_plan.backup_path_preview".to_string()),
+            "backup path preview is required",
+        ));
+    }
+    if plan.identity.did == plan.local_rebind_plan.new_owner_did {
+        return Err(crate::ImError::invalid_input(
+            Some("plan.local_rebind_plan.new_owner_did".to_string()),
+            "replacement DID must differ from the current DID",
         ));
     }
     Ok(())

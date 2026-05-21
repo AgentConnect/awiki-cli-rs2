@@ -39,6 +39,19 @@ impl App {
         }
 
         let manager = self.identity_manager(&resolved);
+        if crate::im_core_adapter::use_im_core_mvp() {
+            let result = crate::im_core_adapter::identity::replace_did_via_im_core(
+                &resolved,
+                &manager,
+                &self.globals.identity,
+                is_public,
+                is_agent,
+                role,
+                endpoint_url,
+            )?;
+            return self.render_identity_result("awiki-cli id replace-did", &resolved, result);
+        }
+
         let mut result = identity::replace_did(
             &resolved,
             &manager,

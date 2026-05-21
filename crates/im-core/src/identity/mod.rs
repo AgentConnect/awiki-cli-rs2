@@ -10,6 +10,7 @@ pub use self::dto::{
     ProfileAttribute, ProfilePatch, RecoverGeneratedIdentity, RecoverHandleRequest,
     RecoverHandleResult, RecoverHandleState, RecoveredIdentity, RegisterHandleRequest,
     ReplaceDidAffectedLocalState, ReplaceDidBackupManifestPreview, ReplaceDidBackupPlan,
+    ReplaceDidExecutionRequest, ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity,
     ReplaceDidLocalRebindPlan, ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview,
     VerificationInput,
 };

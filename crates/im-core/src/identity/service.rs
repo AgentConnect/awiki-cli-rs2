@@ -116,4 +116,19 @@ impl<'a> IdentityService<'a> {
     ) -> crate::ImResult<super::ReplaceDidPlan> {
         crate::internal::identity_replace_did_plan::plan_replace_did(request)
     }
+
+    pub(crate) fn replace_did_with_runtime<B>(
+        &self,
+        request: super::ReplaceDidExecutionRequest,
+        bridge: B,
+    ) -> crate::ImResult<super::ReplaceDidExecutionResult>
+    where
+        B: crate::internal::identity_replace_did_execution::ReplaceDidExecutionBridge,
+    {
+        crate::internal::identity_replace_did_execution::ReplaceDidExecutionRuntime::new(
+            self.client,
+            bridge,
+        )
+        .execute(request)
+    }
 }

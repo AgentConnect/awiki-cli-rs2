@@ -242,3 +242,33 @@ pub struct ReplaceDidRemoteCallPreview {
     pub method: String,
     pub params: serde_json::Value,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplaceDidGeneratedIdentity {
+    pub did: crate::ids::Did,
+    pub unique_id: String,
+    pub did_document: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplaceDidExecutionRequest {
+    pub plan: ReplaceDidPlan,
+    pub generated_identity: ReplaceDidGeneratedIdentity,
+    pub is_public: Option<bool>,
+    pub is_agent: Option<bool>,
+    pub role: Option<String>,
+    pub endpoint_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplaceDidExecutionResult {
+    pub identity: IdentitySummary,
+    pub old_did: crate::ids::Did,
+    pub new_did: crate::ids::Did,
+    pub backup_path: String,
+    pub backup_manifest: ReplaceDidBackupManifestPreview,
+    pub affected_local_state: ReplaceDidAffectedLocalState,
+    pub remote_result: serde_json::Value,
+    pub warnings: Vec<String>,
+    pub recovery_notes: Vec<String>,
+}

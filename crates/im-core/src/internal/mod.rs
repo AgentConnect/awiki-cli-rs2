@@ -3,6 +3,7 @@ pub(crate) mod contact_store;
 pub(crate) mod directory_runtime;
 pub(crate) mod identity_bind_runtime;
 pub(crate) mod identity_recovery_runtime;
+pub(crate) mod identity_replace_did_execution;
 pub(crate) mod identity_replace_did_plan;
 pub(crate) mod identity_runtime;
 pub(crate) mod identity_wire;

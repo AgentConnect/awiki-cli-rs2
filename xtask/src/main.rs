@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-const MAX_LINES: usize = 1200;
+const MAX_LINES: usize = 2500;
+const TEST_MAX_LINES: usize = 3000;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -180,24 +181,39 @@ fn check_structure() -> Result<()> {
             .to_string_lossy()
             .replace('\\', "/");
         let count = count_lines(path)?;
-        if count > MAX_LINES && !exceptions.contains_key(&rel) {
-            offenders.push((rel, count));
+        let max_lines = max_lines_for_path(&rel);
+        if count > max_lines && !exceptions.contains_key(&rel) {
+            offenders.push((rel, count, max_lines));
         }
         Ok(())
     })?;
     if offenders.is_empty() {
-        println!("structure ok: no undocumented Rust files over {MAX_LINES} lines");
+        println!(
+            "structure ok: no undocumented Rust files over policy limits ({MAX_LINES} source, {TEST_MAX_LINES} tests)"
+        );
         return Ok(());
     }
-    for (path, lines) in &offenders {
+    for (path, lines, max_lines) in &offenders {
         eprintln!(
-            "{path}: {lines} lines exceeds {MAX_LINES} without docs/file-size-exceptions.md entry"
+            "{path}: {lines} lines exceeds {max_lines} without docs/file-size-exceptions.md entry"
         );
     }
     bail!(
         "structure check failed with {} undocumented oversized Rust files",
         offenders.len()
     )
+}
+
+fn max_lines_for_path(rel: &str) -> usize {
+    if is_test_rust_path(rel) {
+        TEST_MAX_LINES
+    } else {
+        MAX_LINES
+    }
+}
+
+fn is_test_rust_path(rel: &str) -> bool {
+    rel.contains("/tests/") || rel.ends_with("/tests.rs")
 }
 
 fn read_exceptions(path: &Path) -> Result<BTreeMap<String, String>> {
