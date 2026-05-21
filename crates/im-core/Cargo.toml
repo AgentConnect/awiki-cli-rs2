@@ -21,6 +21,7 @@ group-e2ee = []
 provider-traits = []
 
 [dependencies]
+anp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time.workspace = true

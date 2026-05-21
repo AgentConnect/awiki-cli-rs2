@@ -511,6 +511,7 @@ dependencies = [
 name = "im-core"
 version = "0.1.0"
 dependencies = [
+ "anp",
  "rusqlite",
  "serde",
  "serde_json",
