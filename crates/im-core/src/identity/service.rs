@@ -65,12 +65,48 @@ impl<'a> IdentityService<'a> {
         &self,
         request: super::ContactBindingRequest,
     ) -> crate::ImResult<super::ContactBindingResult> {
-        if request.peer.as_str().trim().is_empty() {
-            return Err(crate::ImError::invalid_input(
-                Some("peer".to_string()),
-                "peer must not be empty",
-            ));
-        }
-        Err(crate::ImError::unsupported("identity-bind-contact"))
+        crate::internal::identity_bind_runtime::validate_request(&request)?;
+        self.bind_contact_with_runtime(
+            request,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .map(|result| result.sdk_result)
+    }
+
+    pub(crate) fn bind_contact_with_runtime<P, T>(
+        &self,
+        request: super::ContactBindingRequest,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<crate::internal::identity_bind_runtime::ContactBindingRuntimeResult>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRestTransport,
+    {
+        crate::internal::identity_bind_runtime::ContactBindingRuntime::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .bind_contact(request)
+    }
+
+    pub(crate) fn bind_email_status_with_runtime<P, T>(
+        &self,
+        email: String,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<crate::internal::identity_bind_runtime::ContactBindingRuntimeResult>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRestTransport,
+    {
+        crate::internal::identity_bind_runtime::ContactBindingRuntime::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .email_status(email)
     }
 }

@@ -232,6 +232,150 @@ fn identity_im_core_mvp_profile_set_routes_update_me_through_bridge() {
 }
 
 #[test]
+fn identity_im_core_mvp_bind_phone_routes_authenticated_rest_through_bridge() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(r#"{"sent":true}"#),
+    ]);
+    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
+
+    let register = awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&register, 0);
+
+    let bind = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "bind",
+            "--phone",
+            "13800138001",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(bind["summary"], "Phone binding OTP sent");
+    assert_eq!(bind["data"]["action"], "send_bind_phone_otp");
+    assert_eq!(bind["data"]["phone"], "+8613800138001");
+    assert_eq!(bind["data"]["verification_state"], "otp_sent");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("POST /user-service/auth/phone-bind-send HTTP/1.1"));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[1])).expect("request body");
+    assert_eq!(body, json!({ "phone": "+8613800138001" }));
+}
+
+#[test]
+fn identity_im_core_mvp_bind_email_maps_sent_and_wait_completed_states() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::status(404, "not found"),
+        TestResponse::ok(r#"{"sent":true}"#),
+    ]);
+    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
+
+    let register = awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&register, 0);
+
+    let sent = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "bind",
+            "--email",
+            " Alice@Example.COM ",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(sent["summary"], "Binding email sent");
+    assert_eq!(sent["data"]["action"], "send_bind_email");
+    assert_eq!(sent["data"]["email"], "alice@example.com");
+    assert_eq!(sent["data"]["verification_state"], "email_sent");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1]
+        .starts_with("GET /user-service/auth/email-status?email=alice%40example.com HTTP/1.1"));
+    assert!(requests[2].starts_with("POST /user-service/auth/email-send HTTP/1.1"));
+    let send_body: Value = serde_json::from_str(request_body(&requests[2])).expect("send body");
+    assert_eq!(send_body, json!({ "email": "alice@example.com" }));
+    assert_contains_text(&requests[1], "Authorization: Bearer jwt-register\r\n");
+    assert_contains_text(&requests[2], "Authorization: Bearer jwt-register\r\n");
+
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![
+        TestResponse::ok(register_alice_response()),
+        TestResponse::ok(r#"{"verified":true,"verified_at":"2026-05-21T00:00:00Z"}"#),
+    ]);
+    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
+
+    let register = awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&register, 0);
+
+    let completed = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "bind",
+            "--email",
+            "Alice@Example.COM",
+            "--wait",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    assert_eq!(completed["summary"], "Email binding verified successfully");
+    assert_eq!(completed["data"]["action"], "bind_email");
+    assert_eq!(completed["data"]["verification_state"], "completed");
+}
+
+#[test]
 fn identity_im_core_mvp_resolve_handle_routes_directory_sequence() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![

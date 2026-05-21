@@ -1,6 +1,7 @@
 pub(crate) mod auth;
 pub(crate) mod contact_store;
 pub(crate) mod directory_runtime;
+pub(crate) mod identity_bind_runtime;
 pub(crate) mod identity_runtime;
 pub(crate) mod identity_wire;
 pub(crate) mod message_runtime;

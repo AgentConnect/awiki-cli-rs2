@@ -4,9 +4,10 @@ mod registry;
 mod service;
 
 pub use self::dto::{
-    ContactBindingRequest, ContactBindingResult, DefaultIdentityChange, HandleRegistrationResult,
-    IdentityMissingItem, IdentityReadiness, IdentitySelector, IdentitySummary, InitialProfile,
-    Profile, ProfileAttribute, ProfilePatch, RegisterHandleRequest, VerificationInput,
+    ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
+    ContactBindingState, DefaultIdentityChange, HandleRegistrationResult, IdentityMissingItem,
+    IdentityReadiness, IdentitySelector, IdentitySummary, InitialProfile, Profile,
+    ProfileAttribute, ProfilePatch, RegisterHandleRequest, VerificationInput,
 };
 pub use self::registry::IdentityRegistry;
 pub use self::service::IdentityService;

@@ -103,13 +103,35 @@ pub struct ProfilePatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactBindingRequest {
-    pub peer: crate::ids::PeerRef,
-    pub note: Option<String>,
+    pub method: ContactBindingMethod,
+    pub wait_for_email_verification: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContactBindingMethod {
+    Phone { phone: String, otp: Option<String> },
+    Email { email: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContactBindingResult {
-    pub peer: crate::ids::PeerRef,
-    pub did: Option<crate::ids::Did>,
+    pub method: ContactBindingMethodKind,
+    pub target: String,
+    pub state: ContactBindingState,
+    pub raw: Option<serde_json::Value>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContactBindingMethodKind {
+    Phone,
+    Email,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContactBindingState {
+    OtpSent,
+    EmailSent,
+    Pending,
+    Completed,
 }

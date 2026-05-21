@@ -83,3 +83,130 @@ pub fn split_csv(raw: &str) -> Vec<String> {
 pub fn normalize_email(email: &str) -> String {
     crate::internal::identity_wire::normalize_email(email)
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContactBindingBridgeResult {
+    pub result: crate::identity::ContactBindingResult,
+    pub raw_status: Option<serde_json::Value>,
+    pub raw_send: Option<serde_json::Value>,
+}
+
+pub trait BridgeIdentitySessionProvider {
+    fn ensure_identity_session(&self) -> crate::ImResult<crate::auth::SessionBundle>;
+}
+
+pub trait BridgeIdentityAuthenticatedRestTransport {
+    fn authenticated_rest_post(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        body: serde_json::Value,
+    ) -> crate::ImResult<serde_json::Value>;
+
+    fn authenticated_rest_get(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        query: &std::collections::BTreeMap<String, String>,
+    ) -> crate::ImResult<serde_json::Value>;
+}
+
+#[doc(hidden)]
+pub fn bind_contact_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    request: crate::identity::ContactBindingRequest,
+    session_provider: P,
+    transport: T,
+) -> crate::ImResult<ContactBindingBridgeResult>
+where
+    P: BridgeIdentitySessionProvider,
+    T: BridgeIdentityAuthenticatedRestTransport,
+{
+    let result = client.identity().bind_contact_with_runtime(
+        request,
+        CompatIdentitySessionProvider(session_provider),
+        CompatIdentityRestTransport(transport),
+    )?;
+    Ok(ContactBindingBridgeResult {
+        result: result.sdk_result,
+        raw_status: result.raw_status,
+        raw_send: result.raw_send,
+    })
+}
+
+#[doc(hidden)]
+pub fn bind_email_status_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    email: String,
+    session_provider: P,
+    transport: T,
+) -> crate::ImResult<ContactBindingBridgeResult>
+where
+    P: BridgeIdentitySessionProvider,
+    T: BridgeIdentityAuthenticatedRestTransport,
+{
+    let result = client.identity().bind_email_status_with_runtime(
+        email,
+        CompatIdentitySessionProvider(session_provider),
+        CompatIdentityRestTransport(transport),
+    )?;
+    Ok(ContactBindingBridgeResult {
+        result: result.sdk_result,
+        raw_status: result.raw_status,
+        raw_send: result.raw_send,
+    })
+}
+
+struct CompatIdentitySessionProvider<P>(P);
+
+impl<P> crate::internal::auth::session::SessionProvider for CompatIdentitySessionProvider<P>
+where
+    P: BridgeIdentitySessionProvider,
+{
+    fn ensure_session(
+        &self,
+        scope: crate::auth::AuthScope,
+    ) -> crate::ImResult<crate::auth::SessionBundle> {
+        if scope != crate::auth::AuthScope::UserProfile {
+            return Err(crate::ImError::unsupported("auth-scope"));
+        }
+        self.0.ensure_identity_session()
+    }
+
+    fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+        Err(crate::ImError::TransportUnavailable {
+            detail: "refresh is owned by the bridge transport in Phase 2".to_string(),
+        })
+    }
+
+    fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+        Err(crate::ImError::TransportUnavailable {
+            detail: "status is owned by the bridge transport in Phase 2".to_string(),
+        })
+    }
+}
+
+struct CompatIdentityRestTransport<T>(T);
+
+impl<T> crate::internal::transport::AuthenticatedRestTransport for CompatIdentityRestTransport<T>
+where
+    T: BridgeIdentityAuthenticatedRestTransport,
+{
+    fn authenticated_rest_post(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        body: serde_json::Value,
+    ) -> crate::ImResult<serde_json::Value> {
+        self.0.authenticated_rest_post(endpoint, method, body)
+    }
+
+    fn authenticated_rest_get(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        query: &std::collections::BTreeMap<String, String>,
+    ) -> crate::ImResult<serde_json::Value> {
+        self.0.authenticated_rest_get(endpoint, method, query)
+    }
+}

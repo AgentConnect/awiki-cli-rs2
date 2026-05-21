@@ -523,6 +523,20 @@ impl App {
 
     pub fn run_id_bind(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
+        let manager = self.identity_manager(&resolved);
+        if crate::im_core_adapter::use_im_core_mvp() {
+            let result = if self.globals.dry_run {
+                crate::im_core_adapter::identity::bind_contact_plan_via_im_core(command)?
+            } else {
+                crate::im_core_adapter::identity::bind_contact_via_im_core(
+                    &resolved,
+                    &manager,
+                    &self.globals.identity,
+                    command,
+                )?
+            };
+            return self.render_identity_result("awiki-cli id bind", &resolved, result);
+        }
         let params = identity::BindParams {
             phone: string_flag(command, "phone"),
             email: string_flag(command, "email"),
@@ -534,7 +548,6 @@ impl App {
             verification_timeout: 300,
             poll_interval_seconds: 5.0,
         };
-        let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             identity::bind_plan(&params)
         } else {
