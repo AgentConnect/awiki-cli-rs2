@@ -247,27 +247,31 @@ or platform-service dependency was introduced by the final site selector batch.
 
 ## File-Size And Structure Notes
 
-The active guideline evolved during the task:
+The active guideline evolved during the task. The current repository policy is:
 
-- Default target: keep single Rust source files around 1200 lines when practical.
-- Normal relaxed limit: 3000 lines for large Go sources or traceable 1:1
-  translation pressure.
-- Special exceptions may exceed that, but should be documented with a reason.
+- Rust source files should target 2500 non-generated lines by default.
+- Rust test files should target 3000 non-generated lines by default.
+- Files above the applicable source/test limit may be allowed, but must be
+  documented in `docs/file-size-exceptions.md` with a reason.
 - During late system-test-fix work, file-size cleanup was intentionally
   deprioritized so system-test blockers could be closed first.
 
 Known notes:
 
-- `msg_live_contract.rs` reached the 1200-line default and should be split
-  before substantial additions.
+- `msg_live_contract.rs` reached 1200 lines under the older default. Under the
+  current 3000-line test-file target, it does not require an exception, but
+  substantial additions should still consider focused helper extraction when
+  reviewability suffers.
 - `message_secure_client_contract.rs` and
-  `message_secure_commands_contract.rs` are near the default limit.
+  `message_secure_commands_contract.rs` were near the older default limit; under
+  the current 3000-line test-file target, neither requires an exception.
 - `tests_v2/runtime/test_runtime_cli.py` is a pre-existing aggregation file
   above the ordinary limit; the runtime-small batch documented it as a
   system-test aggregation exception.
 - `listener_supervisor_run.rs` was reduced by extracting
-  `listener_session_rpc.rs`, but it remains a large documented exception under
-  the relaxed limit.
+  `listener_session_rpc.rs`. It is below the current 2500-line source target,
+  but remains close enough to the limit that future listener work should keep
+  extracting focused helpers instead of growing the foreground owner.
 
 ## Development Pipeline Used
 
