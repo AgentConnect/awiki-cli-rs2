@@ -85,6 +85,7 @@ dependencies = [
  "anp",
  "anyhow",
  "base64",
+ "im-core",
  "rand",
  "rusqlite",
  "rustls",
@@ -489,6 +490,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "im-core"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "time",
 ]
 
 [[package]]
