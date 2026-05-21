@@ -111,11 +111,55 @@ pub enum MessageBodyView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MessageMetadata {
+    #[serde(default)]
     pub operation_id: Option<String>,
+    #[serde(default)]
     pub delivery_state: Option<String>,
+    #[serde(default)]
+    pub send_state: Option<MessageSendState>,
+    #[serde(default)]
+    pub retry_plan: Option<MessageRetryPlan>,
+    #[serde(default)]
     pub server_sequence: Option<i64>,
+    #[serde(default)]
     pub content_type: Option<String>,
+    #[serde(default)]
     pub attributes: Vec<MessageMetadataAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageSendState {
+    pub state: MessageSendStateKind,
+    pub operation_id: Option<String>,
+    pub message_id: Option<crate::ids::MessageId>,
+    pub reason: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageSendStateKind {
+    Accepted,
+    Sent,
+    StoredLocally,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageRetryPlan {
+    pub retryable: bool,
+    pub action: MessageRetryAction,
+    pub operation_id: Option<String>,
+    pub message_id: Option<crate::ids::MessageId>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageRetryAction {
+    None,
+    RetryDirectText,
+    RetryGroupText,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -3,7 +3,7 @@ use super::helpers::{
     normalize_optional_int64, normalize_optional_string, normalize_owner_did, now_utc,
 };
 use super::{StoreError, StoreResult};
-use rusqlite::{params, Connection, Statement};
+use rusqlite::{params, Connection, OptionalExtension, Statement};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Default)]
@@ -37,6 +37,7 @@ pub fn store_message(connection: &Connection, record: MessageRecord) -> StoreRes
     if record.thread_id.trim().is_empty() {
         return Err(StoreError::Invalid("thread_id is required".to_string()));
     }
+    let record = prepare_message_record_for_store(connection, record)?;
     let now = now_utc();
     let mut statement = connection.prepare(store_message_sql())?;
     execute_store_message(&mut statement, &record, &now)?;
@@ -53,7 +54,6 @@ pub fn store_messages_batch(
     let transaction = connection.transaction()?;
     let now = now_utc();
     {
-        let mut statement = transaction.prepare(store_message_sql())?;
         for record in records {
             if record.msg_id.trim().is_empty() {
                 return Err(StoreError::Invalid("msg_id is required".to_string()));
@@ -61,7 +61,9 @@ pub fn store_messages_batch(
             if record.thread_id.trim().is_empty() {
                 return Err(StoreError::Invalid("thread_id is required".to_string()));
             }
-            execute_store_message(&mut statement, record, &now)?;
+            let record = prepare_message_record_for_store(&transaction, record.clone())?;
+            let mut statement = transaction.prepare(store_message_sql())?;
+            execute_store_message(&mut statement, &record, &now)?;
         }
     }
     transaction.commit()?;
@@ -463,4 +465,159 @@ fn normalize_owner_identity_id(value: &str) -> String {
 
 fn owner_identity_predicate() -> &'static str {
     "(owner_identity_id = ? OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?))"
+}
+
+fn prepare_message_record_for_store(
+    connection: &Connection,
+    mut record: MessageRecord,
+) -> StoreResult<MessageRecord> {
+    let existing_metadata = connection
+        .query_row(
+            "SELECT metadata FROM messages WHERE msg_id = ?1 AND owner_did = ?2",
+            params![
+                record.msg_id.as_str(),
+                normalize_owner_did(&record.owner_did)
+            ],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .unwrap_or_default();
+    if let Some(metadata) = merged_message_metadata(&existing_metadata, &record) {
+        record.metadata = metadata;
+    }
+    Ok(record)
+}
+
+fn merged_message_metadata(existing: &str, record: &MessageRecord) -> Option<String> {
+    let incoming = metadata_object(&record.metadata)?;
+    let mut merged = metadata_object(existing).unwrap_or_default();
+    for (key, value) in incoming {
+        if !value.is_null() {
+            merged.insert(key, value);
+        }
+    }
+    normalize_send_state_metadata(&mut merged, record);
+    Some(Value::Object(merged).to_string())
+}
+
+fn normalize_send_state_metadata(
+    metadata: &mut serde_json::Map<String, Value>,
+    record: &MessageRecord,
+) {
+    let Some(state) = metadata_string_field(metadata, "delivery_state") else {
+        return;
+    };
+    let state = state.trim().to_ascii_lowercase().replace('-', "_");
+    if !matches!(
+        state.as_str(),
+        "accepted" | "sent" | "stored_locally" | "failed"
+    ) {
+        return;
+    }
+    metadata
+        .entry("message_id".to_string())
+        .or_insert_with(|| Value::String(record.msg_id.clone()));
+    let operation_id = metadata_string_field(metadata, "operation_id");
+    let failure_reason = metadata_string_field(metadata, "failure_reason");
+    metadata.insert(
+        "send_state".to_string(),
+        send_state_value(
+            &state,
+            operation_id.as_deref(),
+            &record.msg_id,
+            failure_reason.as_deref(),
+        ),
+    );
+    if state == "failed" {
+        metadata.insert(
+            "retry_plan".to_string(),
+            retry_plan_value(
+                retry_action_for_message(record),
+                operation_id.as_deref(),
+                &record.msg_id,
+                failure_reason.as_deref(),
+            ),
+        );
+    } else {
+        metadata.remove("retry_plan");
+    }
+}
+
+fn send_state_value(
+    state: &str,
+    operation_id: Option<&str>,
+    message_id: &str,
+    reason: Option<&str>,
+) -> Value {
+    let mut send_state = serde_json::Map::new();
+    send_state.insert("state".to_string(), Value::String(state.to_string()));
+    if let Some(operation_id) = operation_id {
+        send_state.insert(
+            "operation_id".to_string(),
+            Value::String(operation_id.to_string()),
+        );
+    }
+    send_state.insert(
+        "message_id".to_string(),
+        Value::String(message_id.to_string()),
+    );
+    if let Some(reason) = reason {
+        send_state.insert("reason".to_string(), Value::String(reason.to_string()));
+    }
+    Value::Object(send_state)
+}
+
+fn retry_plan_value(
+    action: &str,
+    operation_id: Option<&str>,
+    message_id: &str,
+    reason: Option<&str>,
+) -> Value {
+    let mut retry_plan = serde_json::Map::new();
+    retry_plan.insert("retryable".to_string(), Value::Bool(true));
+    retry_plan.insert("action".to_string(), Value::String(action.to_string()));
+    if let Some(operation_id) = operation_id {
+        retry_plan.insert(
+            "operation_id".to_string(),
+            Value::String(operation_id.to_string()),
+        );
+    }
+    retry_plan.insert(
+        "message_id".to_string(),
+        Value::String(message_id.to_string()),
+    );
+    if let Some(reason) = reason {
+        retry_plan.insert("reason".to_string(), Value::String(reason.to_string()));
+    }
+    Value::Object(retry_plan)
+}
+
+fn retry_action_for_message(record: &MessageRecord) -> &'static str {
+    if !record.group_did.trim().is_empty()
+        || !record.group_id.trim().is_empty()
+        || record.thread_id.trim().starts_with("group:")
+    {
+        "retry_group_text"
+    } else {
+        "retry_direct_text"
+    }
+}
+
+fn metadata_object(metadata: &str) -> Option<serde_json::Map<String, Value>> {
+    if metadata.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str::<Value>(metadata)
+        .ok()?
+        .as_object()
+        .cloned()
+}
+
+fn metadata_string_field(metadata: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    match metadata.get(key)? {
+        Value::Null => None,
+        Value::String(value) => normalize_optional_string(value),
+        value => Some(value.to_string()),
+    }
 }

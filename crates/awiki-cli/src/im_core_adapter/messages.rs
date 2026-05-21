@@ -621,6 +621,8 @@ struct GroupSendResult {
     group_state_version: String,
     #[serde(default)]
     accepted_at: String,
+    #[serde(default)]
+    delivery_state: String,
 }
 
 impl DirectSendResult {
@@ -707,6 +709,16 @@ impl GroupSendResult {
                 .map(|attribute| attribute.value.clone())
                 .unwrap_or_default();
         }
+        value.delivery_state = default_string_value(
+            &value.delivery_state,
+            result
+                .sdk_result
+                .message
+                .metadata
+                .delivery_state
+                .as_deref()
+                .unwrap_or_default(),
+        );
         value
     }
 }
@@ -741,6 +753,9 @@ fn fill_group_send_result(result: &mut GroupSendResult, raw: &Value, group_did: 
     }
     if result.accepted_at.is_empty() {
         result.accepted_at = value_string(raw.get("accepted_at"));
+    }
+    if result.delivery_state.is_empty() {
+        result.delivery_state = value_string(raw.get("delivery_state"));
     }
 }
 
@@ -835,6 +850,7 @@ fn persist_group_send_result(
                     sent_at: result.accepted_at.clone(),
                     is_read: true,
                     metadata: metadata_string(json!({
+                        "delivery_state": result.delivery_state,
                         "group_event_seq": result.group_event_seq,
                         "group_state_version": result.group_state_version,
                         "operation_id": result.operation_id,

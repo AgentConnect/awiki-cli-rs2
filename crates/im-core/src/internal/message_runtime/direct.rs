@@ -213,6 +213,20 @@ fn sdk_result_from_direct_result(
     kind: crate::messages::MessageKind,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
     let message_id = crate::ids::MessageId::parse(&result.message_id)?;
+    let delivery = delivery_state(result);
+    let (send_state, retry_plan) =
+        crate::internal::message_runtime::state::send_state_from_delivery(
+            &delivery,
+            Some(result.operation_id.clone()).filter(|value| !value.trim().is_empty()),
+            Some(message_id.clone()),
+            Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
+            Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText),
+        );
+    let delivery_state = Some(result.delivery_state.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            crate::internal::message_runtime::state::send_state_label(&send_state.state).to_string()
+        });
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -230,14 +244,15 @@ fn sdk_result_from_direct_result(
             metadata: crate::messages::MessageMetadata {
                 operation_id: Some(result.operation_id.clone())
                     .filter(|value| !value.trim().is_empty()),
-                delivery_state: Some(result.delivery_state.clone())
-                    .filter(|value| !value.trim().is_empty()),
+                delivery_state: Some(delivery_state),
+                send_state: Some(send_state),
+                retry_plan,
                 server_sequence: None,
                 content_type: Some(content_type_for_message_type(message_type(&kind)).to_string()),
                 attributes: Vec::new(),
             },
         },
-        delivery: delivery_state(result),
+        delivery,
         warnings: Vec::new(),
     })
 }
@@ -365,6 +380,18 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("op-"));
+        let send_state = result.sdk_result.message.metadata.send_state.unwrap();
+        assert_eq!(
+            send_state.state,
+            crate::messages::MessageSendStateKind::Accepted
+        );
+        assert!(send_state
+            .operation_id
+            .as_deref()
+            .unwrap()
+            .starts_with("op-"));
+        assert!(send_state.message_id.unwrap().as_str().starts_with("msg-"));
+        assert!(result.sdk_result.message.metadata.retry_plan.is_none());
 
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
@@ -380,6 +407,57 @@ mod tests {
             calls[0].params["auth"]["scheme"],
             crate::internal::proof::origin::ORIGIN_PROOF_SCHEME
         );
+    }
+
+    #[test]
+    fn message_state_direct_failed_result_has_retry_plan() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "accepted": false,
+                    "message_id": "msg-failed",
+                    "operation_id": "op-failed",
+                    "target_did": "did:example:bob",
+                    "delivery_state": "failed"
+                }),
+            },
+        );
+
+        let result = sender
+            .send(DirectTextSend {
+                request: direct_text_request(
+                    "did:example:bob",
+                    "hello direct",
+                    crate::messages::MessageKind::Text,
+                ),
+                resolved_target_did: None,
+                credentials: Some(fixture.credentials()),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            result.sdk_result.delivery,
+            crate::messages::DeliveryState::Failed { .. }
+        ));
+        let send_state = result.sdk_result.message.metadata.send_state.unwrap();
+        assert_eq!(
+            send_state.state,
+            crate::messages::MessageSendStateKind::Failed
+        );
+        assert_eq!(send_state.operation_id.as_deref(), Some("op-failed"));
+        assert_eq!(send_state.message_id.unwrap().as_str(), "msg-failed");
+        let retry_plan = result.sdk_result.message.metadata.retry_plan.unwrap();
+        assert!(retry_plan.retryable);
+        assert_eq!(
+            retry_plan.action,
+            crate::messages::MessageRetryAction::RetryDirectText
+        );
+        assert_eq!(retry_plan.operation_id.as_deref(), Some("op-failed"));
     }
 
     #[test]

@@ -165,6 +165,12 @@ fn message_from_value(value: &Value) -> crate::ImResult<Option<crate::messages::
     let sender_did = string_value(object.get("sender_did"));
     let receiver_did = string_value(object.get("receiver_did"));
     let group_did = string_value(object.get("group_did"));
+    let retry_target = if group_did.trim().is_empty() {
+        Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText)
+    } else {
+        Some(crate::internal::message_runtime::state::MessageRetryTarget::GroupText)
+    };
+    let metadata = message_metadata_from_object(object, &id, retry_target);
     let thread = if !group_did.trim().is_empty() {
         crate::messages::ThreadRef::Group(crate::ids::GroupRef::parse(&group_did)?)
     } else {
@@ -190,19 +196,61 @@ fn message_from_value(value: &Value) -> crate::ImResult<Option<crate::messages::
         sent_at: Some(string_value(object.get("sent_at"))).filter(|value| !value.trim().is_empty()),
         received_at: Some(string_value(object.get("received_at")))
             .filter(|value| !value.trim().is_empty()),
-        metadata: crate::messages::MessageMetadata {
-            operation_id: Some(string_value(object.get("operation_id")))
-                .filter(|value| !value.trim().is_empty()),
-            delivery_state: Some(string_value(object.get("delivery_state")))
-                .filter(|value| !value.trim().is_empty()),
-            server_sequence: i64_value(object.get("server_seq"))
-                .or_else(|| i64_value(object.get("sequence")))
-                .or_else(|| i64_value(object.get("group_event_seq"))),
-            content_type: Some(string_value(object.get("content_type")))
-                .filter(|value| !value.trim().is_empty()),
-            attributes: Vec::new(),
-        },
+        metadata,
     }))
+}
+
+fn message_metadata_from_object(
+    object: &serde_json::Map<String, Value>,
+    message_id: &str,
+    retry_target: Option<crate::internal::message_runtime::state::MessageRetryTarget>,
+) -> crate::messages::MessageMetadata {
+    let metadata_json = metadata_projection_json(object, message_id);
+    let send_state = crate::internal::message_runtime::state::send_state_from_metadata(
+        &metadata_json,
+        message_id,
+    );
+    let retry_plan = crate::internal::message_runtime::state::retry_plan_from_metadata(
+        &metadata_json,
+        send_state.as_ref(),
+        retry_target,
+    );
+    crate::messages::MessageMetadata {
+        operation_id: Some(string_value(object.get("operation_id")))
+            .filter(|value| !value.trim().is_empty()),
+        delivery_state: Some(string_value(object.get("delivery_state")))
+            .filter(|value| !value.trim().is_empty()),
+        send_state,
+        retry_plan,
+        server_sequence: i64_value(object.get("server_seq"))
+            .or_else(|| i64_value(object.get("sequence")))
+            .or_else(|| i64_value(object.get("group_event_seq"))),
+        content_type: Some(string_value(object.get("content_type")))
+            .filter(|value| !value.trim().is_empty()),
+        attributes: Vec::new(),
+    }
+}
+
+fn metadata_projection_json(object: &serde_json::Map<String, Value>, message_id: &str) -> String {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        "message_id".to_string(),
+        Value::String(message_id.to_string()),
+    );
+    for key in [
+        "operation_id",
+        "delivery_state",
+        "failure_reason",
+        "send_state_updated_at",
+        "accepted_at",
+        "send_state",
+        "retry_plan",
+    ] {
+        if let Some(value) = object.get(key) {
+            metadata.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(metadata).to_string()
 }
 
 fn message_identity(message: &Value) -> String {
@@ -337,6 +385,59 @@ mod tests {
         assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["user_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["limit"], 20);
+    }
+
+    #[test]
+    fn message_state_read_projection_maps_failed_retry_plan() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [{
+                        "id": "msg-read-failed",
+                        "sender_did": "did:example:alice",
+                        "receiver_did": "did:example:bob",
+                        "content": "hello bob",
+                        "content_type": "text/plain",
+                        "operation_id": "op-read-failed",
+                        "delivery_state": "failed",
+                        "failure_reason": "timeout"
+                    }]
+                }),
+            },
+        );
+
+        let result = runtime
+            .history(HistoryRead {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                query: crate::messages::HistoryQuery {
+                    limit: crate::ids::PageLimit(5),
+                    cursor: None,
+                },
+                resolved_peer_did: None,
+            })
+            .unwrap();
+
+        let metadata = &result.page.items[0].metadata;
+        let send_state = metadata.send_state.as_ref().unwrap();
+        assert_eq!(
+            send_state.state,
+            crate::messages::MessageSendStateKind::Failed
+        );
+        assert_eq!(send_state.reason.as_deref(), Some("timeout"));
+        let retry_plan = metadata.retry_plan.as_ref().unwrap();
+        assert!(retry_plan.retryable);
+        assert_eq!(
+            retry_plan.action,
+            crate::messages::MessageRetryAction::RetryDirectText
+        );
+        assert_eq!(retry_plan.operation_id.as_deref(), Some("op-read-failed"));
     }
 
     #[test]

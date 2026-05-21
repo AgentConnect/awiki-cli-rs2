@@ -378,6 +378,107 @@ fn inbox_notification_filters_match_go() -> StoreResult<()> {
     Ok(())
 }
 
+#[test]
+fn message_state_remote_result_merges_with_local_cache_without_duplicates() -> StoreResult<()> {
+    let db = Connection::open_in_memory().expect("open sqlite memory db");
+    store::ensure_schema(&db)?;
+    let owner = "did:owner";
+    let peer = "did:peer";
+    let thread_id = store::make_thread_id(owner, peer, "");
+
+    store::store_message(
+        &db,
+        MessageRecord {
+            msg_id: "msg-state-1".to_string(),
+            owner_did: owner.to_string(),
+            thread_id: thread_id.clone(),
+            direction: 1,
+            sender_did: owner.to_string(),
+            receiver_did: peer.to_string(),
+            content_type: "text/plain".to_string(),
+            content: "pending".to_string(),
+            metadata: r#"{"delivery_state":"stored_locally","operation_id":"op-local"}"#
+                .to_string(),
+            credential_name: "alice".to_string(),
+            ..MessageRecord::default()
+        },
+    )?;
+    store::store_message(
+        &db,
+        MessageRecord {
+            msg_id: "msg-state-1".to_string(),
+            owner_did: owner.to_string(),
+            thread_id,
+            direction: 1,
+            sender_did: owner.to_string(),
+            receiver_did: peer.to_string(),
+            content_type: "text/plain".to_string(),
+            content: "remote accepted".to_string(),
+            sent_at: "2026-05-21T00:00:00Z".to_string(),
+            metadata: r#"{"delivery_state":"sent","operation_id":"op-remote"}"#.to_string(),
+            credential_name: "alice".to_string(),
+            ..MessageRecord::default()
+        },
+    )?;
+
+    let rows = store::list_messages_by_ids(&db, owner, &["msg-state-1".to_string()])?;
+    assert_eq!(rows.len(), 1);
+    let message = &rows[0];
+    assert_eq!(string_field(message, "content"), "remote accepted");
+    let metadata = json_field(message, "metadata");
+    assert_eq!(metadata["delivery_state"], "sent");
+    assert_eq!(metadata["operation_id"], "op-remote");
+    assert_eq!(metadata["send_state"]["state"], "sent");
+    assert_eq!(metadata["send_state"]["operation_id"], "op-remote");
+    assert_eq!(metadata["send_state"]["message_id"], "msg-state-1");
+    assert!(metadata.get("retry_plan").is_none());
+
+    Ok(())
+}
+
+#[test]
+fn message_state_failed_metadata_keeps_legacy_inbox_shape() -> StoreResult<()> {
+    let db = Connection::open_in_memory().expect("open sqlite memory db");
+    store::ensure_schema(&db)?;
+    let owner = "did:owner";
+    let peer = "did:peer";
+
+    store::store_message(
+        &db,
+        MessageRecord {
+            msg_id: "msg-failed-1".to_string(),
+            owner_did: owner.to_string(),
+            thread_id: store::make_thread_id(owner, peer, ""),
+            direction: 1,
+            sender_did: owner.to_string(),
+            receiver_did: peer.to_string(),
+            content_type: "text/plain".to_string(),
+            content: "failed outgoing".to_string(),
+            sent_at: "2026-05-21T00:00:00Z".to_string(),
+            metadata: r#"{"delivery_state":"failed","operation_id":"op-failed","failure_reason":"timeout"}"#.to_string(),
+            credential_name: "alice".to_string(),
+            ..MessageRecord::default()
+        },
+    )?;
+
+    let message = single_message(&db, owner, "msg-failed-1")?;
+    let metadata = json_field(&message, "metadata");
+    assert_eq!(metadata["send_state"]["state"], "failed");
+    assert_eq!(metadata["send_state"]["reason"], "timeout");
+    assert_eq!(metadata["retry_plan"]["retryable"], true);
+    assert_eq!(metadata["retry_plan"]["action"], "retry_direct_text");
+
+    let inbox = store::list_inbox_messages(&db, owner, 0, "", false, true)?;
+    assert!(inbox.is_empty());
+    let history =
+        store::list_thread_messages(&db, owner, &store::make_thread_id(owner, peer, ""), 0)?;
+    assert_eq!(history.len(), 1);
+    assert_eq!(string_field(&history[0], "msg_id"), "msg-failed-1");
+    assert_eq!(string_field(&history[0], "content"), "failed outgoing");
+
+    Ok(())
+}
+
 fn single_message(db: &Connection, owner_did: &str, msg_id: &str) -> StoreResult<Value> {
     let rows = store::list_messages_by_ids(db, owner_did, &[msg_id.to_string()])?;
     rows.into_iter()
@@ -467,6 +568,11 @@ fn string_field<'a>(value: &'a Value, field: &str) -> &'a str {
         .get(field)
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("missing string field {field}: {value:?}"))
+}
+
+fn json_field(value: &Value, field: &str) -> Value {
+    let raw = string_field(value, field);
+    serde_json::from_str(raw).unwrap_or_else(|err| panic!("invalid json field {field}: {err}"))
 }
 
 fn i64_field(value: &Value, field: &str) -> i64 {

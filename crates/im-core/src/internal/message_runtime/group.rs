@@ -210,6 +210,15 @@ fn sdk_result_from_group_result(
     kind: crate::messages::MessageKind,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
     let message_id = message_id_from_group_result(group.as_str(), result)?;
+    let delivery = delivery_state(result);
+    let (send_state, retry_plan) =
+        crate::internal::message_runtime::state::send_state_from_delivery(
+            &delivery,
+            Some(result.operation_id.clone()).filter(|value| !value.trim().is_empty()),
+            Some(message_id.clone()),
+            Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
+            Some(crate::internal::message_runtime::state::MessageRetryTarget::GroupText),
+        );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -227,13 +236,18 @@ fn sdk_result_from_group_result(
             metadata: crate::messages::MessageMetadata {
                 operation_id: Some(result.operation_id.clone())
                     .filter(|value| !value.trim().is_empty()),
-                delivery_state: None,
+                delivery_state: Some(
+                    crate::internal::message_runtime::state::send_state_label(&send_state.state)
+                        .to_string(),
+                ),
+                send_state: Some(send_state),
+                retry_plan,
                 server_sequence: result.group_event_seq.trim().parse().ok(),
                 content_type: Some(content_type_for_message_type(message_type(&kind)).to_string()),
                 attributes: metadata_attributes(result),
             },
         },
-        delivery: delivery_state(result),
+        delivery,
         warnings: Vec::new(),
     })
 }
@@ -399,6 +413,24 @@ mod tests {
             result.sdk_result.message.metadata.operation_id.as_deref(),
             Some("server-operation-id")
         );
+        assert_eq!(
+            result.sdk_result.message.metadata.delivery_state.as_deref(),
+            Some("accepted")
+        );
+        let send_state = result.sdk_result.message.metadata.send_state.unwrap();
+        assert_eq!(
+            send_state.state,
+            crate::messages::MessageSendStateKind::Accepted
+        );
+        assert_eq!(
+            send_state.operation_id.as_deref(),
+            Some("server-operation-id")
+        );
+        assert_eq!(
+            send_state.message_id.unwrap().as_str(),
+            result.sdk_result.message.id.as_str()
+        );
+        assert!(result.sdk_result.message.metadata.retry_plan.is_none());
         assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(42));
         assert!(matches!(
             result.sdk_result.delivery,

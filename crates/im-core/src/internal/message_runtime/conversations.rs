@@ -200,6 +200,16 @@ fn message_from_record(
     record: &crate::internal::local_state::messages::MessageRecord,
 ) -> crate::ImResult<crate::messages::Message> {
     let thread = message_thread(record)?;
+    let retry_target = retry_target_from_record(record);
+    let send_state = crate::internal::message_runtime::state::send_state_from_metadata(
+        &record.metadata,
+        &record.msg_id,
+    );
+    let retry_plan = crate::internal::message_runtime::state::retry_plan_from_metadata(
+        &record.metadata,
+        send_state.as_ref(),
+        retry_target,
+    );
     Ok(crate::messages::Message {
         id: crate::ids::MessageId::parse(&record.msg_id)?,
         thread,
@@ -218,11 +228,28 @@ fn message_from_record(
         metadata: crate::messages::MessageMetadata {
             operation_id: metadata_string(&record.metadata, "operation_id"),
             delivery_state: metadata_string(&record.metadata, "delivery_state"),
+            send_state,
+            retry_plan,
             server_sequence: record.server_seq,
             content_type: non_empty_string(&record.content_type),
             attributes: Vec::new(),
         },
     })
+}
+
+fn retry_target_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> Option<crate::internal::message_runtime::state::MessageRetryTarget> {
+    if record.direction != 1 {
+        return None;
+    }
+    if !record.group_did.trim().is_empty()
+        || !record.group_id.trim().is_empty()
+        || record.thread_id.trim().starts_with("group:")
+    {
+        return Some(crate::internal::message_runtime::state::MessageRetryTarget::GroupText);
+    }
+    Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText)
 }
 
 fn message_thread(
@@ -457,6 +484,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn message_state_conversation_projection_reads_local_metadata_retry_plan() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message_with_metadata(
+            &client,
+            "direct-failed",
+            1,
+            "failed outgoing",
+            "2026-05-21T00:00:05Z",
+            r#"{"delivery_state":"failed","operation_id":"op-failed","failure_reason":"timeout"}"#,
+        );
+
+        let page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: false,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+
+        let message = page.items[0].last_message.as_ref().unwrap();
+        let send_state = message.metadata.send_state.as_ref().unwrap();
+        assert_eq!(
+            send_state.state,
+            crate::messages::MessageSendStateKind::Failed
+        );
+        assert_eq!(send_state.operation_id.as_deref(), Some("op-failed"));
+        assert_eq!(send_state.reason.as_deref(), Some("timeout"));
+        let retry_plan = message.metadata.retry_plan.as_ref().unwrap();
+        assert!(retry_plan.retryable);
+        assert_eq!(
+            retry_plan.action,
+            crate::messages::MessageRetryAction::RetryDirectText
+        );
+    }
+
     struct Fixture {
         root: PathBuf,
     }
@@ -559,6 +624,46 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
                         content,
                         sent_at,
                         is_read,
+                    ),
+                )
+                .unwrap();
+        }
+
+        fn seed_message_with_metadata(
+            &self,
+            client: &crate::core::ImClient,
+            message_id: &str,
+            direction: i64,
+            content: &str,
+            sent_at: &str,
+            metadata: &str,
+        ) {
+            let connection = crate::internal::local_state::open_writable(
+                &client.core_inner().sdk_paths().local_state.sqlite_path,
+            )
+            .unwrap();
+            let (sender_did, receiver_did) = if direction == 0 {
+                ("did:example:bob", client.did().as_str())
+            } else {
+                (client.did().as_str(), "did:example:bob")
+            };
+            connection
+                .execute(
+                    r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+     content_type, content, sent_at, stored_at, is_read, metadata)
+VALUES (?1, ?2, 'dm:did:example:alice:did:example:bob', ?3, ?4, ?5,
+        'text/plain', ?6, ?7, ?7, 1, ?8)"#,
+                    (
+                        message_id,
+                        client.did().as_str(),
+                        direction,
+                        sender_did,
+                        receiver_did,
+                        content,
+                        sent_at,
+                        metadata,
                     ),
                 )
                 .unwrap();

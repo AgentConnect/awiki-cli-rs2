@@ -25,8 +25,9 @@ pub use crate::ids::{
 pub use crate::messages::{
     AttachmentInput, Conversation, ConversationQuery, DeliveryState, HistoryQuery, InboxQuery,
     InboxScope, MarkReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
-    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageSecurityMode,
-    MessageService, MessageTarget, SendMessageRequest, SendMessageResult, ThreadRef,
+    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageRetryAction,
+    MessageRetryPlan, MessageSecurityMode, MessageSendState, MessageSendStateKind, MessageService,
+    MessageTarget, SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
