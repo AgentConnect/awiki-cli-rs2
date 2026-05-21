@@ -47,6 +47,7 @@ pub(crate) use attachment::{find_attachment_selection_with_paging, load_attachme
 pub use attachment_service::download_attachment;
 pub use client::Client;
 pub use group_create::create_group;
+pub(crate) use group_e2ee_decrypt::maybe_decrypt_group_messages;
 pub use group_e2ee_provider::{default_mls_data_dir, ANP_MLS_BINARY_ENV};
 pub use group_e2ee_publish::{publish_group_e2ee_key_package, GroupE2eePublishKeyPackageRequest};
 pub use group_e2ee_recover::recover_group_e2ee_member;
@@ -71,6 +72,11 @@ pub use group_e2ee_wire::{
 pub use group_service::{
     add_group_member, get_group, group_members, group_messages, join_group, leave_group,
     list_groups, remove_group_member, update_group,
+};
+pub(crate) use group_service::{
+    cached_group_members, cached_group_messages, cached_group_snapshot, group_control_source,
+    group_control_warnings, normalize_group_snapshot, persist_group_members,
+    persist_group_messages, persist_group_snapshot, values_from_array,
 };
 pub use group_wire::{
     build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_info_rpc_params,
@@ -118,10 +124,10 @@ pub use secure_outbox_flush::{
     StoreMessageOutcome,
 };
 pub(crate) use service::{
-    apply_inbox_filters, auth_session, is_session_unauthorized, maybe_publish_secure_prekeys,
-    merge_handle_history_messages, peer_handle_or_did, persist_history_messages,
-    persist_inbox_messages, refresh_jwt_fallback, require_active_identity, resolve_target,
-    resolved_dids_value, runtime_mode, TargetResolution,
+    apply_inbox_filters, auth_session, bool_value, int_value, is_session_unauthorized,
+    maybe_publish_secure_prekeys, merge_handle_history_messages, peer_handle_or_did,
+    persist_history_messages, persist_inbox_messages, refresh_jwt_fallback,
+    require_active_identity, resolve_target, resolved_dids_value, runtime_mode, TargetResolution,
 };
 pub use service::{
     send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,

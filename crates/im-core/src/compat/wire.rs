@@ -76,6 +76,38 @@ pub fn build_group_send_payload(
 }
 
 #[doc(hidden)]
+pub fn build_group_get_rpc_params(sender_did: &str, group_did: &str) -> crate::ImResult<Value> {
+    crate::internal::wire::group::build_group_get_rpc_params(sender_did, group_did)
+}
+
+#[doc(hidden)]
+pub fn build_group_list_rpc_params(sender_did: &str, limit: i64) -> Value {
+    crate::internal::wire::group::build_group_list_rpc_params(sender_did, limit)
+}
+
+#[doc(hidden)]
+pub fn build_group_members_rpc_params(
+    sender_did: &str,
+    group_did: &str,
+    limit: i64,
+) -> crate::ImResult<Value> {
+    crate::internal::wire::group::build_group_members_rpc_params(sender_did, group_did, limit)
+}
+
+#[doc(hidden)]
+pub fn build_group_messages_rpc_params(
+    sender_did: &str,
+    group_did: &str,
+    limit: i64,
+    cursor: Option<&str>,
+    skip: i64,
+) -> crate::ImResult<Value> {
+    crate::internal::wire::group::build_group_messages_rpc_params(
+        sender_did, group_did, limit, cursor, skip,
+    )
+}
+
+#[doc(hidden)]
 pub fn build_inbox_rpc_params(identity: &WireIdentity, request: InboxWireRequest) -> Value {
     crate::internal::wire::inbox::build_inbox_rpc_params(
         &to_internal_identity(identity),

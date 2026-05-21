@@ -8,6 +8,10 @@ pub use crate::directory::{
     RelationStatus, SaveContactRequest,
 };
 pub use crate::error::{ImError, ImResult};
+pub use crate::groups::{
+    GroupListRequest, GroupMember, GroupMembersRequest, GroupMessagesRequest, GroupReadResult,
+    GroupService, GroupSnapshot, GroupSummary,
+};
 pub use crate::identity::{
     ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
     ContactBindingState, DefaultIdentityChange, HandleRegistrationResult, IdentityMissingItem,

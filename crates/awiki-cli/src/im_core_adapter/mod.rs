@@ -3,6 +3,7 @@ pub mod config;
 pub mod core;
 pub mod error;
 pub mod feature_flag;
+pub mod groups;
 pub mod identity;
 pub mod identity_replace_did_plan;
 pub mod messages;

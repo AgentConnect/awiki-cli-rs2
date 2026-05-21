@@ -1,4 +1,5 @@
 pub mod directory;
+pub mod groups;
 pub mod identity;
 pub mod local_state;
 pub mod messages;

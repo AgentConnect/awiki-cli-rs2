@@ -89,14 +89,30 @@ impl App {
             "Usage: awiki-cli group get --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            let result = message::get_group(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::GroupGetRequest {
-                    identity_name: self.globals.identity.clone(),
+            let manager = self.identity_manager(&resolved);
+            let result = if crate::im_core_adapter::use_im_core_mvp() {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                crate::im_core_adapter::groups::get_group_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    &self.globals.identity,
                     group,
-                },
-            )
+                )
+            } else {
+                message::get_group(
+                    &resolved,
+                    &manager,
+                    message::GroupGetRequest {
+                        identity_name: self.globals.identity.clone(),
+                        group,
+                    },
+                )
+            }
             .map_err(group_exit)?;
             return self.render_group_result("awiki-cli group get", &resolved, result);
         }
@@ -361,14 +377,30 @@ impl App {
         let resolved = self.resolve_config()?;
         let limit = int_flag(command, "limit", 50)?;
         if !self.globals.dry_run {
-            let result = message::list_groups(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::GroupListRequest {
-                    identity_name: self.globals.identity.clone(),
+            let manager = self.identity_manager(&resolved);
+            let result = if crate::im_core_adapter::use_im_core_mvp() {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                crate::im_core_adapter::groups::list_groups_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    &self.globals.identity,
                     limit,
-                },
-            )
+                )
+            } else {
+                message::list_groups(
+                    &resolved,
+                    &manager,
+                    message::GroupListRequest {
+                        identity_name: self.globals.identity.clone(),
+                        limit,
+                    },
+                )
+            }
             .map_err(group_exit)?;
             return self.render_group_result("awiki-cli group list", &resolved, result);
         }
@@ -401,15 +433,32 @@ impl App {
         )?;
         let limit = int_flag(command, "limit", 100)?;
         if !self.globals.dry_run {
-            let result = message::group_members(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::GroupMembersRequest {
-                    identity_name: self.globals.identity.clone(),
+            let manager = self.identity_manager(&resolved);
+            let result = if crate::im_core_adapter::use_im_core_mvp() {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                crate::im_core_adapter::groups::group_members_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    &self.globals.identity,
                     group,
                     limit,
-                },
-            )
+                )
+            } else {
+                message::group_members(
+                    &resolved,
+                    &manager,
+                    message::GroupMembersRequest {
+                        identity_name: self.globals.identity.clone(),
+                        group,
+                        limit,
+                    },
+                )
+            }
             .map_err(group_exit)?;
             return self.render_group_result("awiki-cli group members", &resolved, result);
         }
@@ -443,17 +492,36 @@ impl App {
         )?;
         let limit = int_flag(command, "limit", 50)?;
         if !self.globals.dry_run {
-            let result = message::group_messages(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::GroupMessagesRequest {
-                    identity_name: self.globals.identity.clone(),
+            let manager = self.identity_manager(&resolved);
+            let cursor = string_flag(command, "cursor");
+            let result = if crate::im_core_adapter::use_im_core_mvp() {
+                let client = crate::im_core_adapter::build_im_client(
+                    &resolved,
+                    &manager,
+                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+                )?;
+                crate::im_core_adapter::groups::group_messages_via_im_core(
+                    &resolved,
+                    &manager,
+                    &client,
+                    &self.globals.identity,
                     group,
                     limit,
-                    cursor: string_flag(command, "cursor"),
-                    skip: 0,
-                },
-            )
+                    cursor,
+                )
+            } else {
+                message::group_messages(
+                    &resolved,
+                    &manager,
+                    message::GroupMessagesRequest {
+                        identity_name: self.globals.identity.clone(),
+                        group,
+                        limit,
+                        cursor,
+                        skip: 0,
+                    },
+                )
+            }
             .map_err(group_exit)?;
             return self.render_group_result("awiki-cli group messages", &resolved, result);
         }

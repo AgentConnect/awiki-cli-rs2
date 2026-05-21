@@ -507,7 +507,7 @@ pub(crate) fn group_control_warnings(resolved: &Resolved) -> Vec<String> {
     }
 }
 
-fn persist_group_snapshot(
+pub(crate) fn persist_group_snapshot(
     resolved: &Resolved,
     record: &StoredIdentity,
     raw: &Value,
@@ -567,7 +567,7 @@ fn persist_group_snapshot(
     result
 }
 
-fn persist_group_members(
+pub(crate) fn persist_group_members(
     resolved: &Resolved,
     record: &StoredIdentity,
     group_did: &str,
@@ -1120,7 +1120,7 @@ fn is_active_group_owner(snapshot: &Value) -> bool {
     role == "owner" && status == "active"
 }
 
-fn infer_group_message_content_type(message: &Value) -> String {
+pub(crate) fn infer_group_message_content_type(message: &Value) -> String {
     let subject_method = message
         .get("system_event")
         .and_then(|event| event.get("subject_method"))

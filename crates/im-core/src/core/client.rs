@@ -47,6 +47,10 @@ impl ImClient {
         crate::messages::MessageService::new(self)
     }
 
+    pub fn groups(&self) -> crate::groups::GroupService<'_> {
+        crate::groups::GroupService::new(self)
+    }
+
     pub(crate) fn runtime(&self) -> &crate::internal::identity_runtime::ClientIdentityRuntime {
         &self.runtime
     }
