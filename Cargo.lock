@@ -513,10 +513,12 @@ version = "0.1.0"
 dependencies = [
  "anp",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
  "time",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

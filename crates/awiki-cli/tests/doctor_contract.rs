@@ -101,8 +101,14 @@ fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
         false
     );
     let sqlite = check_by_name(&envelope, "sqlite");
-    assert_eq!(sqlite["details"]["schema_version"], 12);
-    assert_eq!(sqlite["details"]["target_schema_version"], 12);
+    assert_eq!(
+        sqlite["details"]["schema_version"],
+        awiki_cli::store::SCHEMA_VERSION
+    );
+    assert_eq!(
+        sqlite["details"]["target_schema_version"],
+        awiki_cli::store::SCHEMA_VERSION
+    );
     assert_eq!(sqlite["details"]["contact_handle_bindings_exists"], true);
     assert_eq!(sqlite["details"]["contact_handle_bindings_count"], 1);
 }

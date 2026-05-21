@@ -14,7 +14,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .create(request, None)
     }
@@ -26,7 +26,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .join(request, None)
     }
@@ -38,7 +38,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .leave(request, None)
     }
@@ -50,7 +50,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .add_member(request, None)
     }
@@ -62,7 +62,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .remove_member(request, None)
     }
@@ -74,7 +74,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .update_profile(request, None)
     }
@@ -86,7 +86,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .update_policy(request, None)
     }
@@ -95,7 +95,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .get(group)
     }
@@ -107,7 +107,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .list(request)
     }
@@ -119,7 +119,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .members(request)
     }
@@ -131,7 +131,7 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .messages(request)
     }

@@ -18,7 +18,7 @@ impl<'a> MessageService<'a> {
                 crate::internal::message_runtime::direct::DirectTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
-                    crate::internal::transport::UnavailableTransport,
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
                 )
                 .send(crate::internal::message_runtime::direct::DirectTextSend {
                     request,
@@ -31,7 +31,7 @@ impl<'a> MessageService<'a> {
                 crate::internal::message_runtime::group::GroupTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
-                    crate::internal::transport::UnavailableTransport,
+                    crate::internal::transport::CoreHttpTransport::new(self.client),
                 )
                 .send(crate::internal::message_runtime::group::GroupTextSend {
                     request,
@@ -49,7 +49,7 @@ impl<'a> MessageService<'a> {
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .inbox(crate::internal::message_runtime::read::InboxRead { query })
         .map(|result| result.page)
@@ -63,7 +63,7 @@ impl<'a> MessageService<'a> {
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .history(crate::internal::message_runtime::read::HistoryRead {
             thread,
@@ -80,7 +80,7 @@ impl<'a> MessageService<'a> {
         crate::internal::message_runtime::mark_read::MessageMarkReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .mark_read(crate::internal::message_runtime::mark_read::MarkReadInput { message_ids: ids })
         .map(|result| result.sdk_result)

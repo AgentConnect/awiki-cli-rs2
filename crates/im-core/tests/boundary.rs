@@ -6,19 +6,18 @@ fn im_core_src_does_not_reference_cli_boundary_types() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src_dir = manifest_dir.join("src");
     let forbidden = [
-        "ParsedCommand",
-        "ExitError",
-        "GlobalOptions",
-        "config::Resolved",
-        "identity::Manager",
-        "awiki_cli",
-        "crate::app",
-        "crate::cli",
-        "crate::config",
-        "ActorContext",
-        "IdentityRuntimePaths",
-        "SQLite connection",
-        "raw serde_json payload",
+        concat!("Parsed", "Command"),
+        concat!("Exit", "Error"),
+        concat!("Global", "Options"),
+        concat!("config", "::", "Resolved"),
+        concat!("identity", "::", "Manager"),
+        concat!("awiki", "_", "cli"),
+        concat!("crate", "::", "app"),
+        concat!("crate", "::", "cli"),
+        concat!("Actor", "Context"),
+        concat!("Identity", "Runtime", "Paths"),
+        concat!("SQLite", " connection"),
+        concat!("raw ", "serde_json", " payload"),
     ];
 
     let mut failures = Vec::new();

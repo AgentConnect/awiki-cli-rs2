@@ -1,32 +1,75 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[test]
-fn identity_service_profile_requires_runtime_transport_after_session() {
+fn identity_service_profile_uses_public_http_transport() {
     let fixture = Fixture::new();
-    let client = fixture.client("alice");
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_me",
+            json!({}),
+            json!({
+                "did": "did:example:alice",
+                "handle": "alice.awiki.test",
+                "nick_name": "Alice Remote",
+                "bio": "Rust public API",
+                "tags": ["sdk", "http"],
+                "profile_md": "## Alice",
+            }),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "update_me",
+            json!({
+                "nick_name": "Alice Updated",
+                "bio": "sdk profile skeleton",
+                "tags": ["sdk"],
+                "profile_md": "# Alice",
+            }),
+            json!({
+                "did": "did:example:alice",
+                "handle": "alice.awiki.test",
+                "nick_name": "Alice Updated",
+                "bio": "sdk profile skeleton",
+                "tags": ["sdk"],
+                "profile_md": "# Alice",
+            }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
 
-    let profile = client.identity().profile();
-    assert!(matches!(
-        profile,
-        Err(ImError::TransportUnavailable { detail })
-            if detail.contains("get_me") && detail.contains("/user-service/did/profile/rpc")
-    ));
+    let profile = client.identity().profile().unwrap();
+    assert_eq!(profile.subject.as_str(), "did:example:alice");
+    assert_eq!(profile.display_name.as_deref(), Some("Alice Remote"));
+    assert_eq!(profile.bio.as_deref(), Some("Rust public API"));
+    assert_eq!(profile.tags, vec!["sdk", "http"]);
 
-    let updated = client.identity().update_profile(ProfilePatch {
-        display_name: Some("Alice Updated".to_string()),
-        bio: Some("sdk profile skeleton".to_string()),
-        tags: Some(vec!["sdk".to_string()]),
-        markdown: Some("# Alice".to_string()),
-    });
-    assert!(matches!(
-        updated,
-        Err(ImError::TransportUnavailable { detail })
-            if detail.contains("update_me") && detail.contains("/user-service/did/profile/rpc")
-    ));
+    let updated = client
+        .identity()
+        .update_profile(ProfilePatch {
+            display_name: Some("Alice Updated".to_string()),
+            bio: Some("sdk profile skeleton".to_string()),
+            tags: Some(vec!["sdk".to_string()]),
+            markdown: Some("# Alice".to_string()),
+        })
+        .unwrap();
+    assert_eq!(updated.subject.as_str(), "did:example:alice");
+    assert_eq!(updated.display_name.as_deref(), Some("Alice Updated"));
+    assert_eq!(updated.markdown.as_deref(), Some("# Alice"));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert!(requests
+        .iter()
+        .all(|request| request.authorization.as_deref() == Some("Bearer test-token-for-alice")));
 }
 
 #[test]
@@ -145,16 +188,43 @@ fn identity_service_validates_profile_patch_before_stub() {
 #[test]
 fn directory_service_exposes_contact_store_and_resolution_api() {
     let fixture = Fixture::new();
-    let client = fixture.client("alice");
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_public_profile",
+            json!({ "did": "did:example:bob" }),
+            public_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
     assert_eq!(client.directory().owner_did().as_str(), "did:example:alice");
 
     let peer = PeerRef::parse("bob.awiki.test", "").unwrap();
-    let resolved = client.directory().resolve_peer(peer.clone());
-    assert!(matches!(
-        resolved,
-        Err(ImError::TransportUnavailable { detail })
-            if detail.contains("lookup") && detail.contains("/user-service/handle/rpc")
-    ));
+    let resolved = client.directory().resolve_peer(peer.clone()).unwrap();
+    assert_eq!(resolved.did.as_str(), "did:example:bob");
+    assert_eq!(resolved.handle.as_ref().unwrap().as_str(), "bob.awiki.test");
+    assert_eq!(
+        resolved.profile.as_ref().unwrap().display_name.as_deref(),
+        Some("Bob")
+    );
+    assert!(resolved.warnings.is_empty());
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    assert!(requests
+        .iter()
+        .all(|request| request.authorization.as_deref() == Some("Bearer test-token-for-alice")));
 
     let saved = client
         .directory()
@@ -325,10 +395,20 @@ impl Fixture {
             .unwrap()
     }
 
+    fn client_with_base_url(&self, alias: &str, base_url: &str) -> ImClient {
+        self.core_with_base_url(base_url)
+            .client(IdentitySelector::LocalAlias(alias.to_string()))
+            .unwrap()
+    }
+
     fn core(&self) -> ImCore {
+        self.core_with_base_url("https://example.test")
+    }
+
+    fn core_with_base_url(&self, base_url: &str) -> ImCore {
         ImCore::new(
             ImCoreConfig {
-                service_base_url: ServiceEndpoint::parse("https://example.test").unwrap(),
+                service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
                 user_service_endpoint: None,
                 message_service_endpoint: None,
@@ -353,17 +433,27 @@ impl Fixture {
     }
 }
 
-fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str) {
+fn write_identity_runtime(identities: &std::path::Path, alias: &str, _did: &str) {
     let identity_dir = identities.join(alias);
     fs::create_dir_all(&identity_dir).unwrap();
+    let bundle = anp::authentication::create_did_wba_document(
+        "awiki.test",
+        anp::authentication::DidDocumentOptions {
+            path_segments: vec!["user".to_string()],
+            domain: Some("awiki.test".to_string()),
+            challenge: Some(format!("phase2-directory-{alias}")),
+            ..anp::authentication::DidDocumentOptions::default()
+        },
+    )
+    .unwrap();
     fs::write(
         identity_dir.join("did.json"),
-        format!(r#"{{"id":"{did}","controller":"{did}"}}"#),
+        serde_json::to_vec_pretty(&bundle.did_document).unwrap(),
     )
     .unwrap();
     fs::write(
         identity_dir.join("private.key"),
-        format!("test-private-key-for-{alias}\n"),
+        bundle.private_key_pem("key-1").unwrap(),
     )
     .unwrap();
     fs::write(
@@ -547,4 +637,146 @@ fn unique_temp_root() -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("im-core-phase2-{}-{nanos}", std::process::id()))
+}
+
+struct RpcTestServer {
+    base_url: String,
+    handle: thread::JoinHandle<Vec<CapturedRpc>>,
+}
+
+impl RpcTestServer {
+    fn spawn(expected: Vec<ExpectedRpc>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut captured = Vec::new();
+            for expected in expected {
+                let mut stream = accept_before_deadline(&listener, deadline);
+                let request = read_rpc_request(&mut stream);
+                assert_eq!(request.path, expected.path);
+                assert_eq!(request.rpc_method, expected.rpc_method);
+                assert_eq!(request.params, expected.params);
+                write_rpc_response(&mut stream, request.id.clone(), expected.result);
+                captured.push(request);
+            }
+            captured
+        });
+        Self { base_url, handle }
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn join(self) -> Vec<CapturedRpc> {
+        self.handle.join().unwrap()
+    }
+}
+
+struct ExpectedRpc {
+    path: String,
+    rpc_method: String,
+    params: Value,
+    result: Value,
+}
+
+impl ExpectedRpc {
+    fn new(path: &str, rpc_method: &str, params: Value, result: Value) -> Self {
+        Self {
+            path: path.to_string(),
+            rpc_method: rpc_method.to_string(),
+            params,
+            result,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CapturedRpc {
+    path: String,
+    rpc_method: String,
+    params: Value,
+    id: Value,
+    authorization: Option<String>,
+}
+
+fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for RPC request"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("accept RPC request: {err}"),
+        }
+    }
+}
+
+fn read_rpc_request(stream: &mut TcpStream) -> CapturedRpc {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let count = stream.read(&mut buffer).unwrap();
+        assert!(count > 0, "RPC request closed before headers");
+        raw.extend_from_slice(&buffer[..count]);
+        if let Some(index) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index;
+        }
+    };
+    let headers_text = std::str::from_utf8(&raw[..header_end]).unwrap();
+    let mut lines = headers_text.lines();
+    let request_line = lines.next().unwrap();
+    let mut request_parts = request_line.split_whitespace();
+    assert_eq!(request_parts.next(), Some("POST"));
+    let path = request_parts.next().unwrap().to_string();
+    let headers = lines
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    while raw.len() < body_start + content_length {
+        let count = stream.read(&mut buffer).unwrap();
+        assert!(count > 0, "RPC request closed before body");
+        raw.extend_from_slice(&buffer[..count]);
+    }
+    let body = &raw[body_start..body_start + content_length];
+    let payload: Value = serde_json::from_slice(body).unwrap();
+    CapturedRpc {
+        path,
+        rpc_method: payload["method"].as_str().unwrap().to_string(),
+        params: payload["params"].clone(),
+        id: payload["id"].clone(),
+        authorization: headers.get("authorization").cloned(),
+    }
+}
+
+fn write_rpc_response(stream: &mut TcpStream, id: Value, result: Value) {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    })
+    .to_string();
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .unwrap();
 }

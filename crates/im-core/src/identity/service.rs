@@ -10,7 +10,7 @@ impl<'a> IdentityService<'a> {
     pub fn profile(&self) -> crate::ImResult<super::Profile> {
         self.profile_with_runtime(
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .map(|result| result.profile)
     }
@@ -37,7 +37,7 @@ impl<'a> IdentityService<'a> {
         self.update_profile_with_runtime(
             patch,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .map(|result| result.profile)
     }
@@ -69,7 +69,7 @@ impl<'a> IdentityService<'a> {
         self.bind_contact_with_runtime(
             request,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .map(|result| result.sdk_result)
     }

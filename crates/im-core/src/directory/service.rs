@@ -17,8 +17,11 @@ impl<'a> DirectoryService<'a> {
                 "peer must not be empty",
             ));
         }
-        self.resolve_peer_with_runtime(peer, crate::internal::transport::UnavailableTransport)
-            .map(|result| result.resolution)
+        self.resolve_peer_with_runtime(
+            peer,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .map(|result| result.resolution)
     }
 
     pub(crate) fn resolve_peer_with_runtime<T>(
@@ -50,7 +53,10 @@ impl<'a> DirectoryService<'a> {
                 "handle must not be empty",
             ));
         }
-        self.lookup_handle_with_runtime(handle, crate::internal::transport::UnavailableTransport)
+        self.lookup_handle_with_runtime(
+            handle,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
     }
 
     pub(crate) fn lookup_handle_with_runtime<T>(

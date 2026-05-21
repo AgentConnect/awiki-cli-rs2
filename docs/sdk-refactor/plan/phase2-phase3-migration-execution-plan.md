@@ -467,17 +467,11 @@ pub struct Profile {
     pub metadata: Vec<ProfileAttribute>,
 }
 
-pub struct UpdateProfileRequest {
+pub struct ProfilePatch {
     pub display_name: Option<String>,
     pub bio: Option<String>,
     pub tags: Option<Vec<String>>,
     pub markdown: Option<String>,
-}
-
-pub struct UpdateProfileResult {
-    pub profile: Profile,
-    pub changed_fields: Vec<String>,
-    pub warnings: Vec<String>,
 }
 
 pub struct DirectoryResolution {
@@ -516,7 +510,7 @@ pub struct RelationStatus {
 }
 ```
 
-CLI 的 `--markdown-file` 读取结果转换成 `UpdateProfileRequest.markdown`，文件路径不进入 `im-core` public API。
+CLI 的 `--markdown-file` 读取结果转换成 `ProfilePatch.markdown`，文件路径不进入 `im-core` public API。CLI 如需保留 legacy `changed_fields` 输出，应在 adapter 中从 `ProfilePatch` 推导，不要求 `IdentityService::update_profile` 默认返回 raw wire 字段。
 
 ---
 
@@ -654,7 +648,7 @@ cargo test -p awiki-cli --test identity_wire_contract
 
 ### 11.1 目标
 
-让 `client.identity().profile()` 支持读取当前身份资料和公开资料。
+让 `client.identity().profile()` 支持读取当前身份资料。公开资料、handle/DID resolve 和 public profile lookup 归 `client.directory()`，不放进 `IdentityService::profile()`。
 
 ### 11.2 范围
 
@@ -662,13 +656,13 @@ cargo test -p awiki-cli --test identity_wire_contract
 
 ```text
 self profile：authenticated did.profile.get_me
-public profile by DID：did.profile.get_public_profile
-public profile by handle：handle lookup -> public profile
 ```
 
 暂不支持：
 
 ```text
+public profile by DID
+public profile by handle
 profile markdown-file
 profile update
 本地 profile cache 强一致
@@ -677,12 +671,12 @@ profile update
 ### 11.3 调用链
 
 ```text
-IdentityService::profile(query)
-  -> if self: ensure_session(AuthScope::UserProfile)
-  -> build get_me / public_profile call
+IdentityService::profile()
+  -> ensure_session(AuthScope::UserProfile)
+  -> build get_me call
   -> transport RPC
   -> map raw profile to Profile DTO
-  -> return ProfileResult
+  -> return Profile
 ```
 
 ### 11.4 awiki-cli 接入
@@ -697,7 +691,8 @@ CLI 仍保留：
 ```text
 输出 JSON envelope
 summary/warnings 文案
---self / --handle / --did 参数解析
+--self 参数解析
+--handle / --did 参数转交 DirectoryService
 legacy fallback
 ```
 
@@ -717,9 +712,9 @@ cargo test -p awiki-cli --test identity_live_contract identity_profile_get
 ### 11.7 完成标准
 
 ```text
-1. self/public profile 可走 im-core。
-2. handle -> did -> public profile 顺序与 legacy 行为一致。
-3. public profile lookup 的非致命 warning 行为不回退。
+1. self profile 可通过 IdentityService 走 im-core。
+2. self profile 通过 IdentityService::profile()。
+3. public profile 通过 DirectoryService resolve/lookup 路径。
 ```
 
 ---
@@ -739,7 +734,7 @@ display_name
 bio
 tags
 markdown
-changed_fields
+changed_fields adapter projection
 远端 update_me
 本地 display_name / profile projection best-effort 更新
 ```
@@ -761,9 +756,9 @@ IdentityService::update_profile(request)
   -> ensure_session(AuthScope::UserProfile)
   -> build update_me payload
   -> authenticated RPC
-  -> map changed_fields
+  -> map Profile DTO
   -> best-effort local identity/contact projection update
-  -> return UpdateProfileResult
+  -> return Profile
 ```
 
 ### 12.4 Required 验收
@@ -1195,7 +1190,7 @@ pub struct ConversationQuery {
     pub unread_only: bool,
 }
 
-pub struct Group {
+pub struct GroupSnapshot {
     pub id: Option<String>,
     pub did: crate::ids::GroupRef,
     pub name: Option<String>,
@@ -1214,8 +1209,17 @@ pub struct GroupMember {
     pub joined_at: Option<String>,
 }
 
-pub struct GroupMutationResult {
-    pub group: Group,
+pub struct GroupSummary {
+    pub id: Option<String>,
+    pub did: crate::ids::GroupRef,
+    pub name: Option<String>,
+    pub membership_status: Option<String>,
+    pub member_count: Option<u32>,
+    pub last_message_at: Option<String>,
+}
+
+pub struct GroupMembershipChange {
+    pub group: GroupSnapshot,
     pub delivery_state: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -1813,6 +1817,60 @@ cargo test -p im-core
 cargo test -p awiki-cli
 rg "im_core::compat" crates/awiki-cli/src
 rg "ParsedCommand|ExitError|config::Resolved|identity::Manager|awiki_cli" crates/im-core/src crates/im-core/tests
+```
+
+### 28.3.1 PR 3I compat retention audit
+
+PR 3I 先让 `im-core` public services 使用 `im-core` 自有 blocking HTTP
+transport，不再以 `UnavailableTransport` 作为稳定 public API 的默认实现。
+这使 App 侧可以直接调用 `client.identity()`、`client.directory()`、
+`client.messages()` 和 `client.groups()` 执行真实 JSON-RPC / REST 请求。
+
+`awiki-cli` 中的 `im_core::compat` 引用按以下边界处理：
+
+```text
+local_state / store schema compat：
+  保留到 Phase 4/5/6 之后。awiki-cli store/schema/contacts 仍需要复用
+  legacy SQLite schema、owner_did fallback 和 contact projection，不能在 PR 3I
+  中改成新的 App-owned provider。
+
+identity/wire helper compat：
+  暂保留。awiki-cli 的 identity wire tests 仍验证 legacy RPC/REST builder 名称、
+  transport profile 和 Go-shaped payload。删除前需要先把这些测试迁入 im-core
+  或改成只测 public service 行为。
+
+profile / directory adapter bridge compat：
+  暂保留 CLI adapter 调用。public `IdentityService::profile/update_profile`
+  和 `DirectoryService::resolve_peer/lookup_handle` 已能通过 CoreHttpTransport
+  发请求，但 awiki-cli 输出仍依赖 raw wire response、public_profile/lookup/resolve
+  三段 raw 组合、legacy fallback 和现有 JSON envelope。后续切换前需要给
+  public API 暴露等价的 raw/trace 或在 adapter 中重新构造完全兼容输出。
+
+message send/read/mark_read bridge compat：
+  暂保留。direct send adapter 仍负责 handle -> DID 解析、注入 resolved target DID、
+  旧消息表持久化和 Go-shaped delivery 输出；read/mark_read adapter 仍负责
+  websocket local bridge fallback、本地 cache fallback、secure prekey warning 和
+  local read mutation。public MessageService 当前只返回 SDK DTO/Page，不携带
+  CLI 需要的 raw source/fallback/cache 语义。
+
+group bridge compat：
+  暂保留。public GroupService 已能执行 HTTP RPC 并返回 raw GroupReadResult，
+  但 awiki-cli group adapter 仍承担 group cache refresh、owner cannot leave、
+  E2EE snapshot guard、websocket group messages fallback、group E2EE 排除边界
+  和 CLI summary/source 输出。
+
+proof / wire helper compat：
+  暂保留到 message/group CLI wire tests 完成迁移。它们是 Phase 1-3 的 builder
+  compatibility surface，不代表 im-core 依赖 awiki-cli。
+```
+
+因此 PR 3I 的收敛点不是删除所有 `im_core::compat` 字符串，而是：
+
+```text
+1. stable public services 默认走 im-core-owned CoreHttpTransport。
+2. im-core boundary 测试继续证明不引用 CLI 类型。
+3. rg "im_core::compat" crates/awiki-cli/src 的剩余项都有上面的保留原因。
+4. attachment / realtime / secure direct / group E2EE / CLI parsing-output 不在本 PR 清理。
 ```
 
 ### 28.4 完成标准
