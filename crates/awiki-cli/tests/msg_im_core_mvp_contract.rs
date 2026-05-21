@@ -150,6 +150,128 @@ fn msg_send_im_core_mvp_group_text_posts_im_core_rpc() {
     );
 }
 
+#[test]
+fn msg_inbox_im_core_mvp_direct_posts_im_core_rpc() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice = register_generated_read_identity(&manager, "alice-inbox-mvp", "alice", "jwt-alice");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "messages": [{
+            "id": "msg-inbox-mvp-1",
+            "sender_did": bob_did,
+            "receiver_did": alice.did,
+            "content": "hello inbox",
+            "content_type": "text/plain",
+            "sent_at": "2026-05-21T00:00:00Z",
+            "server_seq": 7,
+            "is_read": false
+        }],
+        "total": 1,
+        "source": "remote_http"
+    })))]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-inbox-mvp",
+            "msg",
+            "inbox",
+            "--scope",
+            "direct",
+            "--limit",
+            "3",
+            "--unread",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    );
+
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 inbox messages");
+    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-inbox-mvp-1");
+    assert_eq!(envelope["data"]["source"], "remote_http");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(
+        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
+        "missing bearer auth:\n{}",
+        requests[0]
+    );
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
+    assert_eq!(body["method"], "inbox.get");
+    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
+    assert_eq!(body["params"]["body"]["user_did"], alice.did);
+    assert_eq!(body["params"]["body"]["limit"], 3);
+    assert_eq!(body["params"]["body"].get("peer_did"), None);
+}
+
+#[test]
+fn msg_history_im_core_mvp_direct_posts_im_core_rpc() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice =
+        register_generated_read_identity(&manager, "alice-history-mvp", "alice", "jwt-alice");
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "messages": [{
+            "id": "msg-history-mvp-1",
+            "sender_did": alice.did,
+            "receiver_did": bob_did,
+            "content": "hello history",
+            "content_type": "text/plain",
+            "sent_at": "2026-05-21T00:00:00Z",
+            "server_seq": 9
+        }],
+        "total": 1,
+        "source": "remote_http",
+        "resolved_dids": [bob_did]
+    })))]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice-history-mvp",
+            "msg",
+            "history",
+            "--with",
+            bob_did,
+            "--limit",
+            "4",
+            "--cursor",
+            "8",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    );
+
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 direct history messages");
+    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-history-mvp-1");
+    assert_eq!(envelope["data"]["with"], bob_did);
+    assert_eq!(envelope["data"]["source"], "remote_http");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(
+        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
+        "missing bearer auth:\n{}",
+        requests[0]
+    );
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
+    assert_eq!(body["method"], "direct.get_history");
+    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
+    assert_eq!(body["params"]["body"]["user_did"], alice.did);
+    assert_eq!(body["params"]["body"]["peer_did"], bob_did);
+    assert_eq!(body["params"]["body"]["limit"], 4);
+    assert_eq!(body["params"]["body"]["since_seq"], "8");
+}
+
 fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
@@ -198,6 +320,36 @@ fn register_generated_msg_identity(
             ..SaveInput::default()
         })
         .expect("save generated message identity")
+}
+
+fn register_generated_read_identity(
+    manager: &Manager,
+    identity_name: &str,
+    handle: &str,
+    jwt_token: &str,
+) -> awiki_cli::identity::types::StoredIdentity {
+    let generated = generate_identity(
+        "awiki.ai",
+        "https://awiki.ai/anp-im/rpc",
+        "did:wba:awiki.ai",
+    )
+    .expect("generate identity");
+    manager
+        .save(SaveInput {
+            identity_name: identity_name.to_string(),
+            did: generated.did,
+            unique_id: generated.unique_id,
+            user_id: format!("user-{handle}"),
+            display_name: identity_name.to_string(),
+            handle: handle.to_string(),
+            full_handle: format!("{handle}.awiki.ai"),
+            jwt_token: jwt_token.to_string(),
+            did_document: Some(generated.did_document),
+            key1_private_pem: generated.key1_private_pem,
+            key1_public_pem: generated.key1_public_pem,
+            ..SaveInput::default()
+        })
+        .expect("save generated read identity")
 }
 
 fn identity_manager(workspace: &Path) -> Manager {

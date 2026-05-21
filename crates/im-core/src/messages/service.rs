@@ -44,21 +44,33 @@ impl<'a> MessageService<'a> {
 
     pub fn inbox(
         &self,
-        _query: super::InboxQuery,
+        query: super::InboxQuery,
     ) -> crate::ImResult<crate::ids::Page<super::Message>> {
-        Err(crate::ImError::TransportUnavailable {
-            detail: "message inbox transport is not wired in Phase 1A".to_string(),
-        })
+        crate::internal::message_runtime::read::MessageReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .inbox(crate::internal::message_runtime::read::InboxRead { query })
+        .map(|result| result.page)
     }
 
     pub fn history(
         &self,
-        _thread: super::ThreadRef,
-        _query: super::HistoryQuery,
+        thread: super::ThreadRef,
+        query: super::HistoryQuery,
     ) -> crate::ImResult<crate::ids::Page<super::Message>> {
-        Err(crate::ImError::TransportUnavailable {
-            detail: "message history transport is not wired in Phase 1A".to_string(),
+        crate::internal::message_runtime::read::MessageReadRuntime::new(
+            self.client,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::UnavailableTransport,
+        )
+        .history(crate::internal::message_runtime::read::HistoryRead {
+            thread,
+            query,
+            resolved_peer_did: None,
         })
+        .map(|result| result.page)
     }
 }
 

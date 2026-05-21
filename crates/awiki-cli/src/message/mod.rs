@@ -118,8 +118,10 @@ pub use secure_outbox_flush::{
     StoreMessageOutcome,
 };
 pub(crate) use service::{
-    auth_session, is_session_unauthorized, maybe_publish_secure_prekeys, refresh_jwt_fallback,
-    require_active_identity, resolve_target, TargetResolution,
+    apply_inbox_filters, auth_session, is_session_unauthorized, maybe_publish_secure_prekeys,
+    merge_handle_history_messages, peer_handle_or_did, persist_history_messages,
+    persist_inbox_messages, refresh_jwt_fallback, require_active_identity, resolve_target,
+    resolved_dids_value, runtime_mode, TargetResolution,
 };
 pub use service::{
     send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,

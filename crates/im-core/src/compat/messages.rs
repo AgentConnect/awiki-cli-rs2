@@ -47,6 +47,24 @@ pub struct GroupTextCredentials {
     pub key1_private_pem: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct InboxReadBridgeRequest {
+    pub query: crate::messages::InboxQuery,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryReadBridgeRequest {
+    pub thread: crate::messages::ThreadRef,
+    pub query: crate::messages::HistoryQuery,
+    pub resolved_peer_did: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadBridgeResult {
+    pub page: crate::ids::Page<crate::messages::Message>,
+    pub raw: Value,
+}
+
 pub trait BridgeSessionProvider {
     fn ensure_messaging_session(&self) -> crate::ImResult<crate::auth::SessionBundle>;
 }
@@ -96,6 +114,58 @@ where
         target_did: result.target_did,
         message_type: result.message_type.to_string(),
         text: result.text,
+        raw: result.raw,
+    })
+}
+
+#[doc(hidden)]
+pub fn read_inbox_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: InboxReadBridgeRequest,
+) -> crate::ImResult<ReadBridgeResult>
+where
+    P: BridgeSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    let result = crate::internal::message_runtime::read::MessageReadRuntime::new(
+        client,
+        CompatSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .inbox(crate::internal::message_runtime::read::InboxRead {
+        query: request.query,
+    })?;
+    Ok(ReadBridgeResult {
+        page: result.page,
+        raw: result.raw,
+    })
+}
+
+#[doc(hidden)]
+pub fn read_history_with_bridge<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: P,
+    transport: T,
+    request: HistoryReadBridgeRequest,
+) -> crate::ImResult<ReadBridgeResult>
+where
+    P: BridgeSessionProvider,
+    T: BridgeAuthenticatedRpcTransport,
+{
+    let result = crate::internal::message_runtime::read::MessageReadRuntime::new(
+        client,
+        CompatSessionProvider(session_provider),
+        CompatTransport(transport),
+    )
+    .history(crate::internal::message_runtime::read::HistoryRead {
+        thread: request.thread,
+        query: request.query,
+        resolved_peer_did: request.resolved_peer_did,
+    })?;
+    Ok(ReadBridgeResult {
+        page: result.page,
         raw: result.raw,
     })
 }

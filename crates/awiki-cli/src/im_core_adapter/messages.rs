@@ -1,3 +1,5 @@
+mod read_bridge;
+
 use std::fs;
 
 use im_core::prelude::{
@@ -16,6 +18,8 @@ use crate::message::MessageError;
 use crate::output::ExitError;
 use crate::store::{self, MessageRecord};
 use crate::transportcfg::Profile;
+
+pub use read_bridge::{read_history_via_im_core, read_inbox_via_im_core};
 
 pub fn send_message_request(
     command: &ParsedCommand,

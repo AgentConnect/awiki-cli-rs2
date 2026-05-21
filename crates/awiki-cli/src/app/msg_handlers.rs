@@ -345,6 +345,7 @@ impl App {
             && string_flag(command, "with").trim().is_empty()
             && string_flag(command, "group").trim().is_empty()
             && !bool_flag(command, "mark-read")
+            && (self.globals.dry_run || inbox_scope_is_direct(command))
         {
             return self.run_msg_inbox_im_core_mvp(command);
         }
@@ -354,8 +355,6 @@ impl App {
     fn run_msg_inbox_im_core_mvp(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::im_core_adapter::messages::inbox_query(command)?;
-        let legacy_request =
-            crate::im_core_adapter::messages::legacy_inbox_request(&self.globals.identity, query)?;
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
@@ -363,11 +362,14 @@ impl App {
                 &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            client
-                .auth()
-                .ensure_session(im_core::prelude::AuthScope::Messaging)
-                .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg inbox"))?;
-            let result = message::inbox(&resolved, &manager, legacy_request).map_err(|err| {
+            let result = crate::im_core_adapter::messages::read_inbox_via_im_core(
+                &resolved,
+                &manager,
+                &client,
+                &self.globals.identity,
+                query,
+            )
+            .map_err(|err| {
                 message_exit(
                     err,
                     "Ensure the active identity is ready and the message service is reachable.",
@@ -457,11 +459,6 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let (thread, query) =
             crate::im_core_adapter::messages::history_request(command, &resolved.did_domain)?;
-        let legacy_request = crate::im_core_adapter::messages::legacy_history_request(
-            &self.globals.identity,
-            thread,
-            query,
-        )?;
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
@@ -469,11 +466,15 @@ impl App {
                 &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            client
-                .auth()
-                .ensure_session(im_core::prelude::AuthScope::Messaging)
-                .map_err(|err| crate::im_core_adapter::map_im_error(err, "msg history"))?;
-            let result = message::history(&resolved, &manager, legacy_request).map_err(|err| {
+            let result = crate::im_core_adapter::messages::read_history_via_im_core(
+                &resolved,
+                &manager,
+                &client,
+                &self.globals.identity,
+                thread,
+                query,
+            )
+            .map_err(|err| {
                 message_exit(
                     err,
                     "Ensure the peer is valid and the message service is reachable.",
@@ -885,6 +886,16 @@ fn group_secure_mode_enabled(raw: &str) -> bool {
     matches!(
         raw.trim().to_ascii_lowercase().as_str(),
         "direct" | "secure-direct" | "on" | "true" | "group-e2ee" | "e2ee"
+    )
+}
+
+fn inbox_scope_is_direct(command: &ParsedCommand) -> bool {
+    matches!(
+        default_string(&string_flag(command, "scope"), "all")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "direct" | "direct-only"
     )
 }
 
