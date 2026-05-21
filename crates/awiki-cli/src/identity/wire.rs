@@ -146,156 +146,72 @@ pub struct ProfileUpdateCall {
 }
 
 pub fn build_handle_lookup_by_did_rpc_call(did: &str) -> Result<RpcCall, IdentityError> {
-    let did = required_trimmed(did, "did is required")?;
-    Ok(rpc_call(
-        HANDLE_RPC_ENDPOINT,
-        "lookup",
-        Profile::RpcDefault,
-        json!({ "did": did }),
-    ))
+    im_core::compat::directory::build_handle_lookup_by_did_rpc_call(did)
+        .map(legacy_rpc_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_handle_lookup_by_handle_rpc_call(handle: &str) -> Result<RpcCall, IdentityError> {
-    let handle = required_trimmed(handle, "handle is required")?;
-    Ok(rpc_call(
-        HANDLE_RPC_ENDPOINT,
-        "lookup",
-        Profile::RpcDefault,
-        json!({ "handle": handle }),
-    ))
+    im_core::compat::directory::build_handle_lookup_by_handle_rpc_call(handle)
+        .map(legacy_rpc_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_profile_resolve_rpc_call(did: &str) -> Result<RpcCall, IdentityError> {
-    let did = required_trimmed(did, "did is required")?;
-    Ok(rpc_call(
-        DID_PROFILE_RPC_ENDPOINT,
-        "resolve",
-        Profile::RpcDefault,
-        json!({ "did": did }),
-    ))
+    im_core::compat::directory::build_profile_resolve_rpc_call(did)
+        .map(legacy_rpc_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_public_profile_rpc_call(did: &str) -> Result<RpcCall, IdentityError> {
-    let did = required_trimmed(did, "did is required")?;
-    Ok(rpc_call(
-        DID_PROFILE_RPC_ENDPOINT,
-        "get_public_profile",
-        Profile::RpcReadHeavy,
-        json!({ "did": did }),
-    ))
+    im_core::compat::directory::build_public_profile_rpc_call(did)
+        .map(legacy_rpc_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_get_me_profile_rpc_call() -> RpcCall {
-    rpc_call(
-        DID_PROFILE_RPC_ENDPOINT,
-        "get_me",
-        Profile::RpcReadHeavy,
-        json!({}),
-    )
+    legacy_rpc_call(im_core::compat::identity::build_get_me_profile_rpc_call())
 }
 
 pub fn build_refresh_token_rpc_call() -> RpcCall {
-    rpc_call(
-        DID_AUTH_RPC_ENDPOINT,
-        "get_me",
-        Profile::AuthRefresh,
-        json!({}),
-    )
+    legacy_rpc_call(im_core::compat::identity::build_refresh_token_rpc_call())
 }
 
 pub fn build_update_me_profile_rpc_call(
     params: UpdateProfileParams,
 ) -> Result<ProfileUpdateCall, IdentityError> {
-    let (payload, changed_fields) = build_update_profile_payload(params)?;
-    Ok(ProfileUpdateCall {
-        call: rpc_call(
-            DID_PROFILE_RPC_ENDPOINT,
-            "update_me",
-            Profile::RpcDefault,
-            payload,
-        ),
-        changed_fields,
-    })
+    im_core::compat::identity::build_update_me_profile_rpc_call(sdk_update_profile_params(params))
+        .map(|call| ProfileUpdateCall {
+            call: legacy_rpc_call(call.call),
+            changed_fields: call.changed_fields,
+        })
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_register_rpc_call(params: RegisterRpcParams) -> Result<RpcCall, IdentityError> {
-    let handle = required_trimmed(&params.handle, "handle is required")?;
-    let mut payload = Map::new();
-    payload.insert("did_document".to_string(), params.did_document);
-    payload.insert("handle".to_string(), Value::String(handle));
-    if let Some(phone) = params.phone {
-        if !phone.trim().is_empty() {
-            payload.insert("phone".to_string(), Value::String(normalize_phone(&phone)?));
-            payload.insert(
-                "otp_code".to_string(),
-                Value::String(sanitize_otp(params.otp_code.as_deref().unwrap_or_default())),
-            );
-        }
-    }
-    if let Some(email) = params.email {
-        let email = normalize_email(&email);
-        if !email.is_empty() {
-            payload.insert("email".to_string(), Value::String(email));
-        }
-    }
-    if !params.invite_code.is_empty() {
-        payload.insert("invite_code".to_string(), Value::String(params.invite_code));
-    }
-    Ok(rpc_call(
-        DID_AUTH_RPC_ENDPOINT,
-        "register",
-        Profile::RpcDefault,
-        Value::Object(payload),
-    ))
+    im_core::compat::identity::build_register_rpc_call(sdk_register_params(params))
+        .map(legacy_rpc_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_recover_handle_rpc_call(
     params: RecoverHandleRpcParams,
 ) -> Result<RpcCall, IdentityError> {
-    let handle = required_trimmed(&params.handle, "handle is required")?;
-    Ok(rpc_call(
-        DID_AUTH_RPC_ENDPOINT,
-        "recover_handle",
-        Profile::RpcDefault,
-        json!({
-            "did_document": params.did_document,
-            "handle": handle,
-            "phone": normalize_phone(&params.phone)?,
-            "otp_code": sanitize_otp(&params.otp_code),
-        }),
-    ))
+    im_core::compat::identity::build_recover_handle_rpc_call(sdk_recover_params(params))
+        .map(legacy_rpc_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_replace_did_rpc_call(params: ReplaceDidRpcParams) -> RpcCall {
-    let mut payload = Map::new();
-    payload.insert("new_did_document".to_string(), params.new_did_document);
-    if let Some(value) = params.is_public {
-        payload.insert("is_public".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = params.is_agent {
-        payload.insert("is_agent".to_string(), Value::Bool(value));
-    }
-    if let Some(value) = params.role {
-        payload.insert("role".to_string(), nullable_trimmed(value));
-    }
-    if let Some(value) = params.endpoint_url {
-        payload.insert("endpoint_url".to_string(), nullable_trimmed(value));
-    }
-    rpc_call(
-        DID_AUTH_RPC_ENDPOINT,
-        "replace_did",
-        Profile::RpcDefault,
-        Value::Object(payload),
-    )
+    legacy_rpc_call(im_core::compat::identity::build_replace_did_rpc_call(
+        sdk_replace_did_params(params),
+    ))
 }
 
 pub fn build_send_otp_rpc_call(phone: &str) -> Result<RpcCall, IdentityError> {
-    Ok(rpc_call(
-        HANDLE_RPC_ENDPOINT,
-        "send_otp",
-        Profile::RpcDefault,
-        json!({ "phone": normalize_phone(phone)? }),
-    ))
+    im_core::compat::directory::build_send_otp_rpc_call(phone)
+        .map(legacy_rpc_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_email_send_rest_call(
@@ -303,19 +219,9 @@ pub fn build_email_send_rest_call(
     handle: Option<&str>,
     authenticated: bool,
 ) -> Result<RestCall, IdentityError> {
-    let email = required_normalized_email(email)?;
-    let mut body = Map::new();
-    body.insert("email".to_string(), Value::String(email));
-    if let Some(handle) = handle.map(str::trim).filter(|handle| !handle.is_empty()) {
-        body.insert("handle".to_string(), Value::String(handle.to_string()));
-    }
-    Ok(rest_call(
-        EMAIL_SEND_ENDPOINT,
-        "POST",
-        Value::Object(body),
-        BTreeMap::new(),
-        authenticated,
-    ))
+    im_core::compat::identity::build_email_send_rest_call(email, handle, authenticated)
+        .map(legacy_rest_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_email_status_rest_call(
@@ -323,107 +229,47 @@ pub fn build_email_status_rest_call(
     handle: Option<&str>,
     authenticated: bool,
 ) -> Result<RestCall, IdentityError> {
-    let mut query = BTreeMap::new();
-    query.insert("email".to_string(), required_normalized_email(email)?);
-    if let Some(handle) = handle.map(str::trim).filter(|handle| !handle.is_empty()) {
-        query.insert("handle".to_string(), handle.to_string());
-    }
-    Ok(rest_call(
-        EMAIL_STATUS_ENDPOINT,
-        "GET",
-        Value::Null,
-        query,
-        authenticated,
-    ))
+    im_core::compat::identity::build_email_status_rest_call(email, handle, authenticated)
+        .map(legacy_rest_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_phone_bind_send_rest_call(phone: &str) -> Result<RestCall, IdentityError> {
-    Ok(rest_call(
-        PHONE_BIND_SEND_ENDPOINT,
-        "POST",
-        json!({ "phone": normalize_phone(phone)? }),
-        BTreeMap::new(),
-        true,
-    ))
+    im_core::compat::identity::build_phone_bind_send_rest_call(phone)
+        .map(legacy_rest_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_phone_bind_verify_rest_call(
     phone: &str,
     code: &str,
 ) -> Result<RestCall, IdentityError> {
-    Ok(rest_call(
-        PHONE_BIND_VERIFY_ENDPOINT,
-        "POST",
-        json!({ "phone": normalize_phone(phone)?, "code": sanitize_otp(code) }),
-        BTreeMap::new(),
-        true,
-    ))
+    im_core::compat::identity::build_phone_bind_verify_rest_call(phone, code)
+        .map(legacy_rest_call)
+        .map_err(identity_error_from_im)
 }
 
 pub fn build_update_profile_payload(
     params: UpdateProfileParams,
 ) -> Result<(Value, Vec<String>), IdentityError> {
-    let mut payload = Map::new();
-    let mut changed_fields = Vec::new();
-    if !params.display_name.trim().is_empty() {
-        payload.insert(
-            "nick_name".to_string(),
-            Value::String(params.display_name.trim().to_string()),
-        );
-        changed_fields.push("display_name".to_string());
-    }
-    if !params.bio.trim().is_empty() {
-        payload.insert(
-            "bio".to_string(),
-            Value::String(params.bio.trim().to_string()),
-        );
-        changed_fields.push("bio".to_string());
-    }
-    if !params.tags_csv.trim().is_empty() {
-        payload.insert("tags".to_string(), json!(split_csv(&params.tags_csv)));
-        changed_fields.push("tags".to_string());
-    }
-    let markdown = if params.preserve_markdown {
-        params.markdown.clone()
-    } else {
-        params.markdown.trim().to_string()
-    };
-    if !markdown.trim().is_empty() {
-        payload.insert("profile_md".to_string(), Value::String(markdown));
-        changed_fields.push("profile_md".to_string());
-    }
-    if payload.is_empty() {
-        return Err(invalid_input("no profile fields were provided"));
-    }
-    Ok((Value::Object(payload), changed_fields))
+    im_core::compat::identity::build_update_profile_payload(sdk_update_profile_params(params))
+        .map_err(identity_error_from_im)
 }
 
 pub fn normalize_phone(phone: &str) -> Result<String, IdentityError> {
-    let phone = phone.trim();
-    if is_international_phone(phone) {
-        return Ok(phone.to_string());
-    }
-    if is_china_local_phone(phone) {
-        return Ok(format!("+86{phone}"));
-    }
-    Err(invalid_input(format!("invalid phone number {phone:?}")))
+    im_core::compat::identity::normalize_phone(phone).map_err(identity_error_from_im)
 }
 
 pub fn sanitize_otp(code: &str) -> String {
-    code.split_whitespace().collect()
+    im_core::compat::identity::sanitize_otp(code)
 }
 
 pub fn split_csv(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .filter_map(|item| {
-            let item = item.trim();
-            (!item.is_empty()).then(|| item.to_string())
-        })
-        .collect()
+    im_core::compat::identity::split_csv(raw)
 }
 
 pub fn normalize_email(email: &str) -> String {
-    email.trim().to_lowercase()
+    im_core::compat::identity::normalize_email(email)
 }
 
 pub fn handle_lookup_error_is_not_found(error: &ServiceError) -> bool {
@@ -733,82 +579,91 @@ pub fn replace_did_result(
     }
 }
 
-fn rpc_call(
-    endpoint: &'static str,
-    method: &'static str,
-    profile: Profile,
-    params: Value,
-) -> RpcCall {
-    RpcCall {
-        endpoint,
-        method,
-        profile,
-        params,
-    }
-}
-
-fn rest_call(
-    endpoint: &'static str,
-    method: &'static str,
-    body: Value,
-    query: BTreeMap<String, String>,
-    authenticated: bool,
-) -> RestCall {
-    RestCall {
-        endpoint,
-        method,
-        profile: Profile::RpcDefault,
-        query,
-        body,
-        authenticated,
-    }
-}
-
-fn required_trimmed(value: &str, message: &str) -> Result<String, IdentityError> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(invalid_input(message));
-    }
-    Ok(value.to_string())
-}
-
-fn required_normalized_email(email: &str) -> Result<String, IdentityError> {
-    let email = normalize_email(email);
-    if email.is_empty() {
-        return Err(invalid_input("email is required"));
-    }
-    Ok(email)
-}
-
-fn invalid_input(message: impl Into<String>) -> IdentityError {
-    IdentityError::InvalidInput(format!("invalid input: {}", message.into()))
-}
-
-fn nullable_trimmed(value: String) -> Value {
-    let value = value.trim();
-    if value.is_empty() {
-        Value::Null
-    } else {
-        Value::String(value.to_string())
-    }
-}
-
-fn is_international_phone(phone: &str) -> bool {
-    let Some(rest) = phone.strip_prefix('+') else {
-        return false;
-    };
-    let len = rest.len();
-    (7..=17).contains(&len) && rest.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-fn is_china_local_phone(phone: &str) -> bool {
-    let bytes = phone.as_bytes();
-    bytes.len() == 11
-        && bytes[0] == b'1'
-        && (b'3'..=b'9').contains(&bytes[1])
-        && bytes.iter().all(u8::is_ascii_digit)
-}
-
 fn identity_value(identity: &IdentitySummary) -> Value {
     serde_json::to_value(identity).unwrap_or(Value::Null)
+}
+
+fn legacy_rpc_call(call: im_core::compat::identity::RpcCall) -> RpcCall {
+    RpcCall {
+        endpoint: call.endpoint,
+        method: call.method,
+        profile: legacy_transport_profile(call.profile),
+        params: call.params,
+    }
+}
+
+fn legacy_rest_call(call: im_core::compat::identity::RestCall) -> RestCall {
+    RestCall {
+        endpoint: call.endpoint,
+        method: call.method,
+        profile: legacy_transport_profile(call.profile),
+        query: call.query,
+        body: call.body,
+        authenticated: call.authenticated,
+    }
+}
+
+fn legacy_transport_profile(profile: im_core::compat::identity::TransportProfile) -> Profile {
+    match profile {
+        im_core::compat::identity::TransportProfile::BridgeFastPath => Profile::BridgeFastPath,
+        im_core::compat::identity::TransportProfile::HealthProbe => Profile::HealthProbe,
+        im_core::compat::identity::TransportProfile::AuthRefresh => Profile::AuthRefresh,
+        im_core::compat::identity::TransportProfile::RpcDefault => Profile::RpcDefault,
+        im_core::compat::identity::TransportProfile::RpcReadHeavy => Profile::RpcReadHeavy,
+    }
+}
+
+fn sdk_register_params(params: RegisterRpcParams) -> im_core::compat::identity::RegisterRpcParams {
+    im_core::compat::identity::RegisterRpcParams {
+        did_document: params.did_document,
+        handle: params.handle,
+        phone: params.phone,
+        otp_code: params.otp_code,
+        email: params.email,
+        invite_code: params.invite_code,
+    }
+}
+
+fn sdk_recover_params(
+    params: RecoverHandleRpcParams,
+) -> im_core::compat::identity::RecoverHandleRpcParams {
+    im_core::compat::identity::RecoverHandleRpcParams {
+        did_document: params.did_document,
+        handle: params.handle,
+        phone: params.phone,
+        otp_code: params.otp_code,
+    }
+}
+
+fn sdk_replace_did_params(
+    params: ReplaceDidRpcParams,
+) -> im_core::compat::identity::ReplaceDidRpcParams {
+    im_core::compat::identity::ReplaceDidRpcParams {
+        new_did_document: params.new_did_document,
+        is_public: params.is_public,
+        is_agent: params.is_agent,
+        role: params.role,
+        endpoint_url: params.endpoint_url,
+    }
+}
+
+fn sdk_update_profile_params(
+    params: UpdateProfileParams,
+) -> im_core::compat::identity::UpdateProfileParams {
+    im_core::compat::identity::UpdateProfileParams {
+        display_name: params.display_name,
+        bio: params.bio,
+        tags_csv: params.tags_csv,
+        markdown: params.markdown,
+        preserve_markdown: params.preserve_markdown,
+    }
+}
+
+fn identity_error_from_im(err: im_core::ImError) -> IdentityError {
+    match err {
+        im_core::ImError::InvalidInput { message, .. } => {
+            IdentityError::InvalidInput(format!("invalid input: {message}"))
+        }
+        err => IdentityError::Internal(err.to_string()),
+    }
 }
