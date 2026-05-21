@@ -61,6 +61,21 @@ pub fn build_direct_text_payload(
 }
 
 #[doc(hidden)]
+pub fn build_group_send_payload(
+    sender_did: &str,
+    group_did: &str,
+    text: &str,
+    content_type: &str,
+) -> crate::ImResult<DirectPayload> {
+    crate::internal::wire::group::build_group_send_payload(
+        sender_did,
+        group_did,
+        text,
+        content_type,
+    )
+}
+
+#[doc(hidden)]
 pub fn build_inbox_rpc_params(identity: &WireIdentity, request: InboxWireRequest) -> Value {
     crate::internal::wire::inbox::build_inbox_rpc_params(
         &to_internal_identity(identity),

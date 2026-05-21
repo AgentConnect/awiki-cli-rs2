@@ -217,26 +217,21 @@ pub fn build_group_send_rpc_params(
     text: &str,
     message_type: &str,
 ) -> Result<Value, MessageError> {
-    if group_did.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
-    }
-    if text.trim().is_empty() {
-        return Err(MessageError::TextRequired);
-    }
-
-    let body = json!({ "text": text });
-    let payload = DirectPayload {
-        method: "group.send".to_string(),
-        meta: signed_group_meta(
-            &record.did,
-            "group",
-            group_did,
-            content_type_for_message_type(message_type),
-            true,
-        ),
-        body,
-    };
-    signed_params(record, payload)
+    let payload = im_core::compat::wire::build_group_send_payload(
+        &record.did,
+        group_did,
+        text,
+        content_type_for_message_type(message_type),
+    )
+    .map_err(group_send_wire_error)?;
+    signed_params(
+        record,
+        DirectPayload {
+            method: payload.method,
+            meta: payload.meta,
+            body: payload.body,
+        },
+    )
 }
 
 pub fn build_group_get_rpc_params(
@@ -348,6 +343,23 @@ fn signed_params(record: &StoredIdentity, payload: DirectPayload) -> Result<Valu
         "auth": origin_auth_value(&origin_proof),
         "body": payload.body,
     }))
+}
+
+fn group_send_wire_error(err: im_core::ImError) -> MessageError {
+    match err {
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("group_did") && message == "group target is required" =>
+        {
+            MessageError::GroupRequired
+        }
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("text") && message == "message text is required" =>
+        {
+            MessageError::TextRequired
+        }
+        im_core::ImError::InvalidInput { message, .. } => MessageError::Json(message),
+        err => MessageError::Json(err.to_string()),
+    }
 }
 
 fn signed_group_meta(
