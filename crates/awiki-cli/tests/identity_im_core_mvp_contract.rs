@@ -622,6 +622,102 @@ fn identity_im_core_mvp_recover_with_otp_routes_recover_handle_and_finalizes() {
     assert!(body["params"]["did_document"].is_object());
 }
 
+#[test]
+fn identity_im_core_mvp_replace_did_dry_run_returns_sdk_plan_without_remote_replace() {
+    let workspace = TempDir::new().expect("workspace");
+    let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
+    write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
+
+    let register = awiki_cmd_with_env(
+        &[
+            "id",
+            "register",
+            "--handle",
+            "alice",
+            "--phone",
+            "13800138000",
+            "--otp",
+            "123456",
+        ],
+        workspace.path(),
+        &[],
+    );
+    assert_code(&register, 0);
+
+    let replace = success_json(&awiki_cmd_with_env(
+        &[
+            "--identity",
+            "alice",
+            "id",
+            "replace-did",
+            "--dry-run",
+            "--is-public=false",
+            "--role",
+            "",
+            "--endpoint-url",
+            "https://example.com/agent",
+        ],
+        workspace.path(),
+        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+    ));
+    let plan = &replace["data"]["plan"];
+    assert_eq!(replace["summary"], "Dry run: DID replacement planned");
+    assert_eq!(plan["action"], "replace_did");
+    assert_eq!(plan["dangerous"], true);
+    assert_eq!(plan["identity"]["local_alias"], "alice");
+    assert_eq!(plan["identity"]["did"], "did:wba:awiki.ai:alice:e1_remote");
+    assert_eq!(plan["backup_plan"]["required"], true);
+    assert!(plan["backup_plan"]["backup_path_preview"]
+        .as_str()
+        .unwrap()
+        .contains(".legacy-backup/replace-did/<timestamp>-alice-"));
+    assert_eq!(
+        plan["backup_plan"]["manifest_preview"]["old_did"],
+        "did:wba:awiki.ai:alice:e1_remote"
+    );
+    assert_eq!(
+        plan["local_rebind_plan"]["old_owner_did"],
+        "did:wba:awiki.ai:alice:e1_remote"
+    );
+    assert_eq!(plan["local_rebind_plan"]["dry_run_only"], true);
+    assert_eq!(
+        plan["remote_replace_did_call_preview"]["method"],
+        "replace_did"
+    );
+    assert_eq!(
+        plan["remote_replace_did_call_preview"]["params"]["is_public"],
+        false
+    );
+    assert_eq!(
+        plan["remote_replace_did_call_preview"]["params"]["role"],
+        Value::Null
+    );
+    assert_eq!(
+        plan["remote_replace_did_call_preview"]["params"]["endpoint_url"],
+        "https://example.com/agent"
+    );
+    assert_eq!(
+        plan["affected_local_state"]["store_rebind_counts"]["messages"],
+        0
+    );
+    assert!(plan["rollback_notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("backup manifest")));
+    assert!(replace["warnings"][0]
+        .as_str()
+        .unwrap()
+        .contains("Dangerous command"));
+
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "replace-did dry-run must not call remote replace_did"
+    );
+}
+
 fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command

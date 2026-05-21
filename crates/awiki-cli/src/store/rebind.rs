@@ -33,6 +33,39 @@ pub fn rebind_local_identity_state(
         .map_err(|err| err.error)
 }
 
+pub fn plan_rebind_local_identity_state(
+    paths: &Paths,
+    old_owner_did: &str,
+    new_owner_did: &str,
+) -> StoreResult<(BTreeMap<String, i64>, BTreeMap<String, i64>)> {
+    let mut store_rebind = zero_counts(REBIND_TABLES);
+    let mut e2ee_cleanup = zero_counts(E2EE_TABLES);
+    if !store_file_exists(&paths.database_file) {
+        return Ok((store_rebind, e2ee_cleanup));
+    }
+
+    let old_owner_did = normalize_owner_did(old_owner_did);
+    let new_owner_did = normalize_owner_did(new_owner_did);
+    if old_owner_did.is_empty() || new_owner_did.is_empty() || old_owner_did == new_owner_did {
+        return Ok((store_rebind, e2ee_cleanup));
+    }
+
+    let connection = super::open_read_only(&paths.database_file)?;
+    for table in REBIND_TABLES {
+        store_rebind.insert(
+            (*table).to_string(),
+            count_owner_rows(&connection, table, &old_owner_did)?,
+        );
+    }
+    for table in E2EE_TABLES {
+        e2ee_cleanup.insert(
+            (*table).to_string(),
+            count_owner_rows(&connection, table, &old_owner_did)?,
+        );
+    }
+    Ok((store_rebind, e2ee_cleanup))
+}
+
 pub fn rebind_local_identity_state_with_partial(
     paths: &Paths,
     old_owner_did: &str,
@@ -138,6 +171,16 @@ pub fn clear_owner_e2ee_data(
         )?;
     }
     Ok(result)
+}
+
+fn count_owner_rows(connection: &Connection, table: &str, owner_did: &str) -> StoreResult<i64> {
+    connection
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE owner_did = ?1"),
+            params![owner_did],
+            |row| row.get(0),
+        )
+        .map_err(StoreError::from)
 }
 
 fn zero_counts(tables: &[&str]) -> BTreeMap<String, i64> {

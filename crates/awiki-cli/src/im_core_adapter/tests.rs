@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use im_core::prelude::{
     AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody,
@@ -92,6 +94,177 @@ fn recover_handle_bridge_builds_sdk_request_and_preserves_legacy_inputs() {
     assert!(bridge.sdk.generated_identity.is_none());
     assert_eq!(bridge.legacy.identity_name, "ignored");
     assert_eq!(bridge.legacy.otp, " 12 34 56 ");
+}
+
+#[test]
+fn replace_did_plan_bridge_builds_sdk_plan_request() {
+    let workspace = TempDir::new("replace-did-plan-bridge").expect("workspace");
+    let paths = crate::config::Paths {
+        workspace_home_dir: workspace.path().to_string_lossy().into_owned(),
+        root_dir: workspace.path().to_string_lossy().into_owned(),
+        config_dir: workspace
+            .path()
+            .join("config")
+            .to_string_lossy()
+            .into_owned(),
+        data_dir: workspace.path().join("data").to_string_lossy().into_owned(),
+        state_dir: workspace
+            .path()
+            .join("state")
+            .to_string_lossy()
+            .into_owned(),
+        cache_dir: workspace
+            .path()
+            .join("cache")
+            .to_string_lossy()
+            .into_owned(),
+        logs_dir: workspace.path().join("logs").to_string_lossy().into_owned(),
+        config_file: workspace
+            .path()
+            .join("config.yaml")
+            .to_string_lossy()
+            .into_owned(),
+        identity_dir: workspace
+            .path()
+            .join("identities")
+            .to_string_lossy()
+            .into_owned(),
+        database_file: workspace
+            .path()
+            .join("data")
+            .join("awiki.db")
+            .to_string_lossy()
+            .into_owned(),
+        legacy_credentials_dir: workspace
+            .path()
+            .join("legacy")
+            .to_string_lossy()
+            .into_owned(),
+        legacy_data_dir: workspace
+            .path()
+            .join("legacy-data")
+            .to_string_lossy()
+            .into_owned(),
+    };
+    let resolved = crate::config::Resolved {
+        paths: paths.clone(),
+        config_schema_version: crate::config::CONFIG_SCHEMA_VERSION,
+        active_identity: "alice".to_string(),
+        runtime_mode: "http".to_string(),
+        runtime_socket_path: String::new(),
+        runtime_listener_enabled: false,
+        runtime_listener_auto_install: false,
+        runtime_listener_auto_start: false,
+        host_notify_enabled: false,
+        host_notify_sink: "log".to_string(),
+        host_notify_file_path: String::new(),
+        host_notify_openclaw_hook_url: String::new(),
+        host_notify_openclaw_agent_id: String::new(),
+        host_notify_openclaw_hook_name: String::new(),
+        host_notify_hermes_notify_url: String::new(),
+        host_notify_hermes_deliver: String::new(),
+        output_format: "json".to_string(),
+        no_color: false,
+        service_base_url: "https://example.test".to_string(),
+        did_domain: "awiki.test".to_string(),
+        anp_service_endpoint: "https://example.test/anp-im/rpc".to_string(),
+        anp_service_did: "did:wba:example.test".to_string(),
+        mail_service_url: "https://example.test".to_string(),
+        ca_bundle: String::new(),
+        update_disable_strict_version: false,
+        update_metadata_cache_ttl_seconds: 0,
+        config_exists: false,
+        config_error: String::new(),
+        env_hits: Vec::new(),
+        sources: BTreeMap::new(),
+    };
+    let manager = crate::identity::Manager::new(paths);
+    let generated = crate::identity::generate_identity_with_path_segments(
+        "awiki.test",
+        ["alice", "e1_old"],
+        "https://example.test/anp-im/rpc",
+        "did:wba:example.test",
+    )
+    .expect("generate identity");
+    let generated_did = generated.did.clone();
+    manager
+        .save(crate::identity::types::SaveInput {
+            identity_name: "alice".to_string(),
+            did: generated.did,
+            unique_id: generated.unique_id,
+            display_name: "Alice".to_string(),
+            handle: "alice".to_string(),
+            full_handle: "alice.awiki.test".to_string(),
+            did_document: Some(generated.did_document),
+            key1_private_pem: generated.key1_private_pem,
+            key1_public_pem: generated.key1_public_pem,
+            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+            ..Default::default()
+        })
+        .expect("save identity");
+
+    let bridge = identity::replace_did_plan_bridge_request(
+        &resolved,
+        &manager,
+        "alice",
+        Some(false),
+        Some(true),
+        Some(""),
+        Some("https://example.test/agent"),
+    )
+    .unwrap();
+
+    assert_eq!(bridge.identity_name, "alice");
+    assert_eq!(bridge.sdk.identity.local_alias.as_deref(), Some("alice"));
+    assert_eq!(bridge.sdk.identity.did.as_str(), generated_did.as_str());
+    let expected_replacement_prefix = format!(
+        "{}:e1_replacement_",
+        generated_did
+            .rsplit_once(':')
+            .map(|(base, _)| base)
+            .unwrap()
+    );
+    assert!(bridge
+        .sdk
+        .planned_new_did
+        .as_str()
+        .starts_with(&expected_replacement_prefix));
+    assert!(bridge
+        .sdk
+        .backup_path_preview
+        .contains(".legacy-backup/replace-did/<timestamp>"));
+    assert!(bridge.sdk.backup_path_preview.contains("-alice-"));
+    assert_eq!(bridge.sdk.is_public, Some(false));
+    assert_eq!(bridge.sdk.is_agent, Some(true));
+    assert_eq!(bridge.sdk.role.as_deref(), Some(""));
+}
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(prefix: &str) -> std::io::Result<Self> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("awiki-cli-{prefix}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 #[test]

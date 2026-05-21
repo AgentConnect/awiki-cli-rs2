@@ -9,6 +9,8 @@ pub use self::dto::{
     IdentityReadiness, IdentitySelector, IdentitySummary, InitialProfile, Profile,
     ProfileAttribute, ProfilePatch, RecoverGeneratedIdentity, RecoverHandleRequest,
     RecoverHandleResult, RecoverHandleState, RecoveredIdentity, RegisterHandleRequest,
+    ReplaceDidAffectedLocalState, ReplaceDidBackupManifestPreview, ReplaceDidBackupPlan,
+    ReplaceDidLocalRebindPlan, ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview,
     VerificationInput,
 };
 pub use self::registry::IdentityRegistry;

@@ -13,6 +13,10 @@ use crate::output::ExitError;
 use crate::store;
 use crate::transportcfg::Profile;
 
+pub use super::identity_replace_did_plan::{
+    replace_did_plan_bridge_request, replace_did_plan_via_im_core, ReplaceDidPlanBridgeRequest,
+};
+
 #[derive(Debug, Clone)]
 pub struct RegisterHandleBridgeRequest {
     pub sdk: RegisterHandleRequest,

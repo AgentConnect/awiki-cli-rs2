@@ -222,6 +222,14 @@ where
     store.merge_recovered_handle_local_state(request)
 }
 
+#[doc(hidden)]
+pub fn replace_did_plan_with_bridge(
+    client: &crate::core::ImClient,
+    request: crate::identity::ReplaceDidPlanRequest,
+) -> crate::ImResult<crate::identity::ReplaceDidPlan> {
+    client.identity().replace_did_plan(request)
+}
+
 fn validate_recover_local_state_merge_request(
     request: &RecoverLocalStateMergeRequest,
 ) -> crate::ImResult<()> {

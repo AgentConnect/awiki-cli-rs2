@@ -109,4 +109,11 @@ impl<'a> IdentityService<'a> {
         )
         .email_status(email)
     }
+
+    pub fn replace_did_plan(
+        &self,
+        request: super::ReplaceDidPlanRequest,
+    ) -> crate::ImResult<super::ReplaceDidPlan> {
+        crate::internal::identity_replace_did_plan::plan_replace_did(request)
+    }
 }

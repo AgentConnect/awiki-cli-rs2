@@ -71,6 +71,39 @@ fn rebind_local_identity_state_rebinds_database_and_cleans_e2ee_data() {
 }
 
 #[test]
+fn plan_rebind_local_identity_state_counts_without_writing() {
+    let temp = TempDir::new("store-rebind-plan").expect("temp dir");
+    let paths = test_paths(temp.path());
+    let connection = store::open(&paths).expect("open database");
+    store::ensure_schema(&connection).expect("schema");
+    seed_rebind_rows(&connection).expect("seed rows");
+    drop(connection);
+
+    let (store_rebind, e2ee_cleanup) =
+        store::plan_rebind_local_identity_state(&paths, " did:old ", " did:new ")
+            .expect("plan rebind identity state");
+
+    assert_eq!(store_rebind["messages"], 1);
+    assert_eq!(store_rebind["contacts"], 1);
+    assert_eq!(store_rebind["contact_handle_bindings"], 1);
+    assert_eq!(store_rebind["relationship_events"], 1);
+    assert_eq!(store_rebind["groups"], 1);
+    assert_eq!(store_rebind["group_members"], 1);
+    assert_eq!(e2ee_cleanup["e2ee_outbox"], 1);
+    assert_eq!(e2ee_cleanup["e2ee_sessions"], 1);
+
+    let verify = store::open_read_only(&paths.database_file).expect("open read-only database");
+    assert_owner_count(&verify, "messages", "did:old", 1);
+    assert_owner_count(&verify, "contacts", "did:old", 1);
+    assert_owner_count(&verify, "contact_handle_bindings", "did:old", 1);
+    assert_owner_count(&verify, "relationship_events", "did:old", 1);
+    assert_owner_count(&verify, "groups", "did:old", 1);
+    assert_owner_count(&verify, "group_members", "did:old", 1);
+    assert_owner_count(&verify, "e2ee_outbox", "did:old", 1);
+    assert_owner_count(&verify, "e2ee_sessions", "did:old", 1);
+}
+
+#[test]
 fn rebind_owner_did_counts_old_rows_before_update_or_ignore_conflicts() {
     let temp = TempDir::new("store-rebind-conflict").expect("temp dir");
     let paths = test_paths(temp.path());

@@ -16,13 +16,25 @@ impl App {
         let role = changed_string_flag(command, "role");
         let endpoint_url = changed_string_flag(command, "endpoint-url");
         if self.globals.dry_run {
-            let result = identity::replace_did_plan(
-                &self.globals.identity,
-                is_public,
-                is_agent,
-                role.as_deref(),
-                endpoint_url.as_deref(),
-            );
+            let result = if crate::im_core_adapter::use_im_core_mvp() {
+                crate::im_core_adapter::identity::replace_did_plan_via_im_core(
+                    &resolved,
+                    &self.identity_manager(&resolved),
+                    &self.globals.identity,
+                    is_public,
+                    is_agent,
+                    role.as_deref(),
+                    endpoint_url.as_deref(),
+                )?
+            } else {
+                identity::replace_did_plan(
+                    &self.globals.identity,
+                    is_public,
+                    is_agent,
+                    role.as_deref(),
+                    endpoint_url.as_deref(),
+                )
+            };
             return self.render_identity_result("awiki-cli id replace-did", &resolved, result);
         }
 

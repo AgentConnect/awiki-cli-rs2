@@ -14,7 +14,9 @@ pub use crate::identity::{
     IdentityReadiness, IdentityRegistry, IdentitySelector, IdentityService, IdentitySummary,
     InitialProfile, Profile, ProfileAttribute, ProfilePatch, RecoverGeneratedIdentity,
     RecoverHandleRequest, RecoverHandleResult, RecoverHandleState, RecoveredIdentity,
-    RegisterHandleRequest, VerificationInput,
+    RegisterHandleRequest, ReplaceDidAffectedLocalState, ReplaceDidBackupManifestPreview,
+    ReplaceDidBackupPlan, ReplaceDidLocalRebindPlan, ReplaceDidPlan, ReplaceDidPlanRequest,
+    ReplaceDidRemoteCallPreview, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
