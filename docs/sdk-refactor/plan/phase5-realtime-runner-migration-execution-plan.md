@@ -43,6 +43,18 @@ host notification sink delivery
 禁止：把 raw WebSocket frame 暴露给 SDK public API
 ```
 
+Phase 5 core 可以先于 Phase 4 执行，但必须保持 attachment-agnostic：
+
+```text
+允许执行顺序：Phase 5 core -> Phase 4 attachments -> Phase 5' attachment enrichment follow-up
+
+Phase 5 core 不调用 client.attachments()。
+Phase 5 core 不依赖 attachments::AttachmentInput / AttachmentDestination / DownloadedAttachment。
+Phase 5 core 不实现 attachment-specific notification enrichment。
+遇到附件类 notification 时，只做 MessageReceived / Unsupported body / metadata content_type / UnknownNotification 级别投影。
+Phase 4 完成后，再由独立 Phase 5' 计划回补附件 notification enrichment。
+```
+
 ---
 
 ## 2. 与主方案的关系
@@ -62,6 +74,8 @@ PR 5G：CLI listener service-run 接入 SDK runner
 PR 5H：local projection / host notification event bridge / compat cleanup
 ```
 
+如果 Phase 5 在 Phase 4 前执行，PR 5D / 5H 必须使用附件无关投影规则；不要提前引入 AttachmentService 或附件 DTO 依赖。
+
 ---
 
 ## 3. 进入条件
@@ -75,6 +89,7 @@ PR 5H：local projection / host notification event bridge / compat cleanup
 4. CLI listener legacy path 仍可 fallback。
 5. im-core 不依赖 awiki-cli。
 6. runtime listener 相关 contract tests 当前基线清楚。
+7. Phase 4 attachments 不是 Phase 5 core 的进入条件；Phase 5 core 先执行时必须保持 attachment-agnostic。
 ```
 
 建议进入前检查：
@@ -154,7 +169,56 @@ pub struct RealtimeHandle {
 
 ---
 
-## 5. Public DTO 建议
+## 5. 进程 / 线程运行模型
+
+Phase 5 的运行模型必须显式区分“进程宿主”和“runner 执行线程”：
+
+```text
+1. im-core 不创建 OS daemon 进程，不 fork，不 daemonize。
+2. CLI / App 决定在哪个进程里构造 ImCore / ImClient 并调用 realtime runner。
+3. awiki-cli runtime listener run 在当前 foreground CLI 进程中运行 runner。
+4. awiki-cli runtime listener service-run 在 service manager 启动的 service-run 进程中运行 runner。
+5. awiki-cli runtime listener install/start/stop/restart/uninstall 只管理服务进程，不运行 runner。
+```
+
+`run_until_shutdown` 的 public contract：
+
+```text
+调用方在哪个线程调用 run_until_shutdown，runner 主循环就在哪个线程阻塞运行。
+shutdown signal 触发后退出主循环并返回 RealtimeExit。
+CLI foreground / service-run 默认使用这个模型。
+```
+
+`connect` 的 Phase 5 contract：
+
+```text
+connect 建立可控制的 RealtimeHandle，但不要求 im-core 创建独立 OS 进程。
+Phase 5 默认不把 worker thread / async runtime 暴露为 public API。
+若实现需要内部 worker thread，只能作为 RealtimeHandle 的 internal implementation detail。
+调用方只依赖 events receiver 和 control handle，不依赖具体线程模型。
+```
+
+CLI 推荐落地：
+
+```text
+runtime listener run
+  -> 当前 CLI 进程
+  -> 当前主线程调用 run_until_shutdown
+  -> Ctrl-C / shutdown signal 转成 SDK ShutdownSignal
+
+runtime listener service-run
+  -> service manager 启动的 service-run 进程
+  -> service-run 主线程调用 run_until_shutdown
+  -> SIGTERM / service stop 转成 SDK ShutdownSignal
+
+runtime listener start/stop/install/uninstall
+  -> 只管理 service-run 进程
+  -> 不构造 realtime runner，不消费 ImEvent
+```
+
+---
+
+## 6. Public DTO 建议
 
 ```rust
 pub struct RealtimeOptions {
@@ -218,7 +282,7 @@ OpenClaw/Hermes route config
 
 ---
 
-## 6. 通用边界规则
+## 7. 通用边界规则
 
 `im-core` 不能直接使用：
 
@@ -246,7 +310,7 @@ CLI output envelope
 
 ---
 
-## 7. Compat 与 internal trait 规则
+## 8. Compat 与 internal trait 规则
 
 Phase 5 可能需要 internal trait：
 
@@ -280,9 +344,9 @@ compat-only
 
 ---
 
-## 8. 测试分层规则
+## 9. 测试分层规则
 
-### 8.1 Required：Codex Goal / 单 PR 必跑
+### 9.1 Required：Codex Goal / 单 PR 必跑
 
 ```text
 cargo test -p im-core realtime
@@ -298,7 +362,7 @@ cargo test -p awiki-cli --test runtime_listener_session_loop_contract
 
 如果某个 target 在当前仓库不存在，文档或 PR prompt 必须标注为“待新增”，不要当作当前已有测试执行。
 
-### 8.2 Optional integration：合并前或本地补跑
+### 9.2 Optional integration：合并前或本地补跑
 
 ```text
 cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
@@ -307,7 +371,7 @@ cargo test -p awiki-cli --test msg_contract
 cargo test -p awiki-cli --test group_contract
 ```
 
-### 8.3 Manual / live / system：不由默认 Codex Goal 执行
+### 9.3 Manual / live / system：不由默认 Codex Goal 执行
 
 ```text
 runtime listener install/start/stop/restart/uninstall
@@ -322,13 +386,13 @@ real host notification sink
 
 ---
 
-## 9. PR 5A：Realtime DTO / service skeleton
+## 10. PR 5A：Realtime DTO / service skeleton
 
-### 9.1 目标
+### 10.1 目标
 
 建立 realtime public API 形态，不连接真实 WebSocket。
 
-### 9.2 改动范围
+### 10.2 改动范围
 
 ```text
 crates/im-core/src/realtime/mod.rs
@@ -342,7 +406,7 @@ crates/im-core/src/prelude.rs
 crates/im-core/tests/realtime_api.rs
 ```
 
-### 9.3 执行步骤
+### 10.3 执行步骤
 
 ```text
 1. 新增 RealtimeService。
@@ -353,14 +417,14 @@ crates/im-core/tests/realtime_api.rs
 6. 增加 public API shape 和 boundary tests。
 ```
 
-### 9.4 Required 验收
+### 10.4 Required 验收
 
 ```bash
 cargo test -p im-core realtime
-rg "ParsedCommand|ExitError|config::Resolved|runtime::|awiki_cli" crates/im-core/src crates/im-core/tests
+rg "ParsedCommand|ExitError|config::Resolved|runtime::ListenerConfig|awiki_cli" crates/im-core/src crates/im-core/tests
 ```
 
-### 9.5 完成标准
+### 10.5 完成标准
 
 ```text
 1. RealtimeService API 可编译。
@@ -371,13 +435,13 @@ rg "ParsedCommand|ExitError|config::Resolved|runtime::|awiki_cli" crates/im-core
 
 ---
 
-## 10. PR 5B：WebSocket frame classifier / pending dispatch / notification queue
+## 11. PR 5B：WebSocket frame classifier / pending dispatch / notification queue
 
-### 10.1 目标
+### 11.1 目标
 
 迁移 raw frame 分类、request_id 提取、pending response 路由和 notification queue 纯逻辑。
 
-### 10.2 源和目标
+### 11.2 源和目标
 
 源：
 
@@ -395,7 +459,7 @@ crates/im-core/src/internal/realtime/notification.rs
 crates/im-core/src/compat/realtime.rs
 ```
 
-### 10.3 迁移范围
+### 11.3 迁移范围
 
 可迁移：
 
@@ -420,20 +484,20 @@ service supervisor
 host notification delivery
 ```
 
-### 10.4 Required 验收
+### 11.4 Required 验收
 
 ```bash
 cargo test -p im-core realtime_frame
 cargo test -p awiki-cli --test runtime_listener_wsclient_contract
 ```
 
-### 10.5 Optional integration
+### 11.5 Optional integration
 
 ```bash
 cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
 ```
 
-### 10.6 完成标准
+### 11.6 完成标准
 
 ```text
 1. frame classification 和 dispatch 逻辑由 im-core 覆盖测试。
@@ -443,13 +507,13 @@ cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
 
 ---
 
-## 11. PR 5C：reconnect / heartbeat / session loop decisions
+## 12. PR 5C：reconnect / heartbeat / session loop decisions
 
-### 11.1 目标
+### 12.1 目标
 
 迁移 session loop、backoff、heartbeat 这类纯 decision 逻辑。
 
-### 11.2 源和目标
+### 12.2 源和目标
 
 源：
 
@@ -468,7 +532,7 @@ crates/im-core/src/internal/realtime/session_loop.rs
 crates/im-core/src/internal/realtime/shutdown.rs
 ```
 
-### 11.3 迁移范围
+### 12.3 迁移范围
 
 可迁移：
 
@@ -491,7 +555,7 @@ platform-specific service manager
 log file rotation
 ```
 
-### 11.4 Required 验收
+### 12.4 Required 验收
 
 ```bash
 cargo test -p im-core realtime_loop
@@ -500,13 +564,13 @@ cargo test -p awiki-cli --test runtime_listener_session_loop_contract
 
 如果 `runtime_listener_session_loop_contract` 尚不存在，先新增明确 target，或只跑对应 im-core unit tests，不使用模糊 Cargo filter。
 
-### 11.5 Optional integration
+### 12.5 Optional integration
 
 ```bash
 cargo test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract
 ```
 
-### 11.6 完成标准
+### 12.6 完成标准
 
 ```text
 1. reconnect/backoff 行为与 legacy 测试一致。
@@ -516,13 +580,13 @@ cargo test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract
 
 ---
 
-## 12. PR 5D：notification -> ImEvent projection
+## 13. PR 5D：notification -> ImEvent projection
 
-### 12.1 目标
+### 13.1 目标
 
 把 message/group notification 标准化成 SDK `ImEvent`，但不做 secure decrypt，不投递 host sink。
 
-### 12.2 源和目标
+### 13.2 源和目标
 
 源：
 
@@ -542,7 +606,7 @@ crates/im-core/src/realtime/events.rs
 crates/im-core/src/compat/realtime.rs
 ```
 
-### 12.3 范围
+### 13.3 范围
 
 支持：
 
@@ -553,6 +617,7 @@ group state notification -> GroupUpdated
 local notification normalized event
 host notification domain event
 unknown notification -> UnknownNotification
+attachment-like notification -> generic MessageReceived / Unsupported body / metadata content_type / UnknownNotification
 ```
 
 暂不支持：
@@ -562,9 +627,10 @@ secure direct decrypt
 group E2EE MLS event processing
 host notification delivery to OpenClaw/Hermes
 platform notification permissions
+attachment-specific realtime enrichment
 ```
 
-### 12.4 Required 验收
+### 13.4 Required 验收
 
 ```bash
 cargo test -p im-core realtime_projection
@@ -572,31 +638,32 @@ cargo test -p awiki-cli --test msg_contract
 cargo test -p awiki-cli --test group_contract
 ```
 
-### 12.5 Optional integration
+### 13.5 Optional integration
 
 ```bash
 cargo test -p awiki-cli --test runtime_listener_notification_consume_contract
 cargo test -p awiki-cli --test runtime_host_notify_contract
 ```
 
-### 12.6 完成标准
+### 13.6 完成标准
 
 ```text
 1. notification 可 normalize 成 ImEvent。
 2. ImEvent 不暴露 raw payload 作为主业务字段。
 3. OpenClaw/Hermes 仍由 CLI 投递。
 4. secure notification 未被误处理。
+5. Phase 5 core 不依赖 attachments module。
 ```
 
 ---
 
-## 13. PR 5E：Realtime transport boundary and connect handshake
+## 14. PR 5E：Realtime transport boundary and connect handshake
 
-### 13.1 目标
+### 14.1 目标
 
 建立 realtime connect 的 internal transport 边界，支持 bearer token refresh / connect handshake，但不接 CLI service-run。
 
-### 13.2 源和目标
+### 14.2 源和目标
 
 源：
 
@@ -611,11 +678,11 @@ crates/awiki-cli/src/runtime/listener_session_bootstrap.rs
 
 ```text
 crates/im-core/src/internal/realtime/transport.rs
-crates/im-core/src/internal/realtime/runner.rs
+crates/im-core/src/internal/realtime/session_loop.rs
 crates/im-core/src/realtime/service.rs
 ```
 
-### 13.3 范围
+### 14.3 范围
 
 支持：
 
@@ -638,20 +705,20 @@ host notification delivery
 runtime mode config write
 ```
 
-### 13.4 Required 验收
+### 14.4 Required 验收
 
 ```bash
 cargo test -p im-core realtime_connect
 cargo test -p awiki-cli --test runtime_listener_wsclient_contract
 ```
 
-### 13.5 Manual / live / system
+### 14.5 Manual / live / system
 
 ```bash
 awiki-cli runtime listener run
 ```
 
-### 13.6 完成标准
+### 14.6 完成标准
 
 ```text
 1. RealtimeService::connect 能通过 fake transport 单元测试。
@@ -661,13 +728,13 @@ awiki-cli runtime listener run
 
 ---
 
-## 14. PR 5F：RealtimeHandle / runner / run_until_shutdown
+## 15. PR 5F：RealtimeHandle / runner / run_until_shutdown
 
-### 14.1 目标
+### 15.1 目标
 
 实现可嵌入 runner，返回 event stream / control handle，并支持 shutdown。
 
-### 14.2 范围
+### 15.2 范围
 
 支持：
 
@@ -691,7 +758,7 @@ OpenClaw/Hermes delivery
 secure event processing
 ```
 
-### 14.3 目标文件
+### 15.3 目标文件
 
 ```text
 crates/im-core/src/realtime/handle.rs
@@ -700,19 +767,19 @@ crates/im-core/src/realtime/control.rs
 crates/im-core/src/internal/realtime/session_loop.rs
 ```
 
-### 14.4 Required 验收
+### 15.4 Required 验收
 
 ```bash
 cargo test -p im-core realtime_runner
 ```
 
-### 14.5 Optional integration
+### 15.5 Optional integration
 
 ```bash
 cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
 ```
 
-### 14.6 完成标准
+### 15.6 完成标准
 
 ```text
 1. runner 可用 fake transport 跑 connect -> notification -> event -> shutdown。
@@ -723,13 +790,13 @@ cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
 
 ---
 
-## 15. PR 5G：CLI listener service-run 接入 SDK runner
+## 16. PR 5G：CLI listener service-run 接入 SDK runner
 
-### 15.1 目标
+### 16.1 目标
 
 让 CLI listener 的 service-run / foreground run 可以调用 `im-core::realtime` runner，同时 service install/start/stop 仍留在 CLI。
 
-### 15.2 范围
+### 16.2 范围
 
 支持：
 
@@ -751,7 +818,7 @@ pid/log file management
 OpenClaw/Hermes setup
 ```
 
-### 15.3 awiki-cli 侧改动
+### 16.3 awiki-cli 侧改动
 
 ```text
 crates/awiki-cli/src/runtime/listener_foreground.rs
@@ -761,7 +828,7 @@ crates/awiki-cli/src/runtime/listener_session_loop.rs
 crates/awiki-cli/src/im_core_adapter/realtime.rs
 ```
 
-### 15.4 Required 验收
+### 16.4 Required 验收
 
 ```bash
 cargo test -p im-core realtime_runner
@@ -769,14 +836,14 @@ cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
 cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
 ```
 
-### 15.5 Manual / live / system
+### 16.5 Manual / live / system
 
 ```bash
 awiki-cli runtime listener run
 awiki-cli runtime listener service-run
 ```
 
-### 15.6 完成标准
+### 16.6 完成标准
 
 ```text
 1. CLI listener host process 调 SDK runner。
@@ -786,13 +853,13 @@ awiki-cli runtime listener service-run
 
 ---
 
-## 16. PR 5H：local projection / host notification event bridge / compat cleanup
+## 17. PR 5H：local projection / host notification event bridge / compat cleanup
 
-### 16.1 目标
+### 17.1 目标
 
 把 SDK `ImEvent` 接回 local projection 和 CLI host notification delivery，清理已稳定 compat。
 
-### 16.2 范围
+### 17.2 范围
 
 支持：
 
@@ -811,9 +878,10 @@ OpenClaw/Hermes 配置迁移
 platform notification permissions
 secure event decrypt
 attachment-specific realtime handling
+attachment notification enrichment
 ```
 
-### 16.3 Required 验收
+### 17.3 Required 验收
 
 ```bash
 cargo test -p im-core realtime_projection
@@ -822,23 +890,24 @@ cargo test -p awiki-cli --test store_messages_contract
 cargo test -p awiki-cli --test store_groups_contract
 ```
 
-### 16.4 Optional integration
+### 17.4 Optional integration
 
 ```bash
 cargo test -p awiki-cli --test runtime_host_notify_contract
 ```
 
-### 16.5 完成标准
+### 17.5 完成标准
 
 ```text
 1. ImEvent 可被 CLI adapter 投递到现有 host notification sink。
 2. local projection 不重复写入消息。
 3. compat API 中不再需要的 wrapper 已清理或标注待清理。
+4. 附件类事件只做 generic projection，不做 attachment-specific enrichment。
 ```
 
 ---
 
-## 17. 错误映射规则
+## 18. 错误映射规则
 
 `im-core` 返回：
 
@@ -871,7 +940,7 @@ Service -> existing listener error envelope
 
 ---
 
-## 18. 回滚策略
+## 19. 回滚策略
 
 ```text
 1. im-core realtime new implementation 先落地。
@@ -892,7 +961,7 @@ Service -> existing listener error envelope
 
 ---
 
-## 19. 明确不做事项
+## 20. 明确不做事项
 
 Phase 5 不做：
 
@@ -907,11 +976,12 @@ Phase 5 不做：
 8. 不迁 group E2EE/MLS event processing。
 9. 不把 raw WebSocket frame 暴露为 public API。
 10. 不强制引入 async runtime 作为 public API。
+11. 不迁 attachment-specific realtime enrichment；该工作进入 Phase 5' follow-up。
 ```
 
 ---
 
-## 20. 方案核心
+## 21. 方案核心
 
 Phase 5 的核心是：
 
@@ -923,3 +993,5 @@ Phase 5 的核心是：
 ```
 
 这样可以把 IM realtime 状态机收敛到 `im-core`，同时保留 CLI 对系统服务、进程、日志、daemon socket 和 host integration 的控制。
+
+如果执行顺序采用 `5 -> 4 -> 5'`，Phase 5 只交付 attachment-agnostic realtime runner；Phase 4 完成附件 canonical DTO 和 send/download 后，再由 `phase5-attachment-enrichment-follow-up-plan.md` 回补附件通知 enrichment。

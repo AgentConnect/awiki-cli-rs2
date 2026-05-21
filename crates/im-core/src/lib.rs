@@ -9,6 +9,7 @@ pub mod ids;
 pub mod messages;
 pub mod paths;
 pub mod prelude;
+pub mod realtime;
 
 #[doc(hidden)]
 pub mod compat;
@@ -22,3 +23,4 @@ pub use crate::error::{ImError, ImResult};
 pub use crate::groups::GroupService;
 pub use crate::identity::{IdentitySelector, IdentitySummary};
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
+pub use crate::realtime::RealtimeService;

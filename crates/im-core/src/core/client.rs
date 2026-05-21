@@ -51,6 +51,10 @@ impl ImClient {
         crate::groups::GroupService::new(self)
     }
 
+    pub fn realtime(&self) -> crate::realtime::RealtimeService<'_> {
+        crate::realtime::RealtimeService::new(self)
+    }
+
     pub(crate) fn runtime(&self) -> &crate::internal::identity_runtime::ClientIdentityRuntime {
         &self.runtime
     }
