@@ -143,7 +143,7 @@ fn identity_service_validates_profile_patch_before_stub() {
 }
 
 #[test]
-fn directory_service_exposes_contact_and_resolution_skeleton() {
+fn directory_service_exposes_contact_store_and_resolution_api() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
     assert_eq!(client.directory().owner_did().as_str(), "did:example:alice");
@@ -156,34 +156,39 @@ fn directory_service_exposes_contact_and_resolution_skeleton() {
             if detail.contains("lookup") && detail.contains("/user-service/handle/rpc")
     ));
 
-    let saved = client.directory().save_contact(SaveContactRequest {
-        peer: peer.clone(),
-        did: Some(Did::parse("did:example:bob").unwrap()),
-        handle: Some(Handle::parse("bob.awiki.test", "").unwrap()),
-        display_name: Some("Bob".to_string()),
-        relationship: Some("friend".to_string()),
-        note: Some("Phase 2 skeleton".to_string()),
-    });
-    assert!(matches!(
-        saved,
-        Err(ImError::UnsupportedCapability { capability })
-            if capability == "directory-save-contact"
-    ));
+    let saved = client
+        .directory()
+        .save_contact(SaveContactRequest {
+            peer: peer.clone(),
+            did: Some(Did::parse("did:example:bob").unwrap()),
+            handle: Some(Handle::parse("bob.awiki.test", "").unwrap()),
+            display_name: Some("Bob".to_string()),
+            relationship: Some("friend".to_string()),
+            note: Some("Phase 2 contact".to_string()),
+        })
+        .unwrap();
+    assert_eq!(saved.did.as_str(), "did:example:bob");
+    assert_eq!(saved.handle.as_ref().unwrap().as_str(), "bob.awiki.test");
+    assert_eq!(saved.display_name.as_deref(), Some("Bob"));
+    assert_eq!(saved.relationship.as_deref(), Some("friend"));
+    assert_eq!(saved.note.as_deref(), Some("Phase 2 contact"));
 
-    let contacts = client.directory().contacts(ContactListQuery {
-        limit: Some(PageLimit(10)),
-    });
-    assert!(matches!(
-        contacts,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "directory-contacts"
-    ));
+    let contacts = client
+        .directory()
+        .contacts(ContactListQuery {
+            limit: Some(PageLimit(10)),
+        })
+        .unwrap();
+    assert_eq!(contacts.items.len(), 1);
+    assert_eq!(contacts.items[0].did.as_str(), "did:example:bob");
+    assert!(!contacts.has_more);
 
-    let relation = client.directory().relation_status(peer);
-    assert!(matches!(
-        relation,
-        Err(ImError::UnsupportedCapability { capability })
-            if capability == "directory-relation-status"
-    ));
+    let relation = client.directory().relation_status(peer).unwrap();
+    assert_eq!(relation.did.as_ref().unwrap().as_str(), "did:example:bob");
+    assert!(relation.is_contact);
+    assert_eq!(relation.relationship.as_deref(), Some("friend"));
+    assert!(!relation.followed);
+    assert!(!relation.messaged);
 }
 
 #[test]
@@ -216,6 +221,16 @@ fn directory_bridge_resolves_handle_with_public_profile_projection() {
     assert_eq!(result.lookup.as_ref().unwrap()["did"], "did:example:bob");
     assert_eq!(result.public_profile.as_ref().unwrap()["nick_name"], "Bob");
     assert_eq!(result.resolve.as_ref().unwrap()["did"], "did:example:bob");
+
+    let contacts = client
+        .directory()
+        .contacts(ContactListQuery {
+            limit: Some(PageLimit(10)),
+        })
+        .unwrap();
+    assert_eq!(contacts.items.len(), 1);
+    assert_eq!(contacts.items[0].did.as_str(), "did:example:bob");
+    assert_eq!(contacts.items[0].display_name.as_deref(), Some("Bob"));
 }
 
 #[test]

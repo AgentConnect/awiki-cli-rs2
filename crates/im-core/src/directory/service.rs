@@ -29,8 +29,15 @@ impl<'a> DirectoryService<'a> {
     where
         T: crate::internal::transport::RpcTransport,
     {
-        crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
-            .resolve_peer(peer)
+        let result =
+            crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
+                .resolve_peer(peer)?;
+        #[cfg(feature = "sqlite")]
+        crate::internal::contact_store::projection::project_directory_resolution(
+            self.client,
+            &result.resolution,
+        );
+        Ok(result)
     }
 
     pub fn lookup_handle(
@@ -63,7 +70,31 @@ impl<'a> DirectoryService<'a> {
         request: super::SaveContactRequest,
     ) -> crate::ImResult<super::Contact> {
         validate_save_contact(&request)?;
-        Err(crate::ImError::unsupported("directory-save-contact"))
+        let did = contact_did_from_request(&request)?;
+        #[cfg(feature = "sqlite")]
+        {
+            let mut connection = crate::internal::contact_store::open_writable(self.client)?;
+            let record = crate::internal::contact_store::projection::record_from_save_request(
+                self.client,
+                &request,
+                did,
+            );
+            crate::internal::contact_store::records::upsert_contact(&mut connection, record)?;
+            let record = crate::internal::contact_store::records::get_contact_by_did(
+                &connection,
+                self.owner_did().as_str(),
+                request
+                    .did
+                    .as_ref()
+                    .map_or_else(|| request.peer.as_str(), crate::ids::Did::as_str),
+            )?;
+            return crate::internal::contact_store::records::contact_to_dto(&record);
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = did;
+            Err(crate::ImError::unsupported("directory-save-contact"))
+        }
     }
 
     pub fn contacts(
@@ -76,7 +107,30 @@ impl<'a> DirectoryService<'a> {
                 "limit must be greater than zero",
             ));
         }
-        Err(crate::ImError::unsupported("directory-contacts"))
+        #[cfg(feature = "sqlite")]
+        {
+            let connection = crate::internal::contact_store::open_writable(self.client)?;
+            let limit = query.limit.map(|limit| i64::from(limit.0)).unwrap_or(100);
+            let contacts = crate::internal::contact_store::records::list_contacts(
+                &connection,
+                self.owner_did().as_str(),
+                limit,
+            )?;
+            let items = contacts
+                .iter()
+                .map(crate::internal::contact_store::records::contact_to_dto)
+                .collect::<crate::ImResult<Vec<_>>>()?;
+            return Ok(crate::ids::Page {
+                items,
+                next_cursor: None,
+                has_more: false,
+            });
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = query;
+            Err(crate::ImError::unsupported("directory-contacts"))
+        }
     }
 
     pub fn relation_status(
@@ -89,7 +143,33 @@ impl<'a> DirectoryService<'a> {
                 "peer must not be empty",
             ));
         }
-        Err(crate::ImError::unsupported("directory-relation-status"))
+        #[cfg(feature = "sqlite")]
+        {
+            let connection = crate::internal::contact_store::open_writable(self.client)?;
+            let record = if peer.as_str().trim().starts_with("did:") {
+                crate::internal::contact_store::records::get_contact_by_did(
+                    &connection,
+                    self.owner_did().as_str(),
+                    peer.as_str(),
+                )
+                .ok()
+            } else {
+                crate::internal::contact_store::records::get_current_contact_by_handle(
+                    &connection,
+                    self.owner_did().as_str(),
+                    peer.as_str(),
+                )
+                .ok()
+            };
+            return crate::internal::contact_store::records::relation_status_from_record(
+                peer, record,
+            );
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = peer;
+            Err(crate::ImError::unsupported("directory-relation-status"))
+        }
     }
 
     pub fn owner_did(&self) -> &crate::ids::Did {
@@ -115,4 +195,19 @@ fn validate_save_contact(request: &super::SaveContactRequest) -> crate::ImResult
         ));
     }
     Ok(())
+}
+
+fn contact_did_from_request(
+    request: &super::SaveContactRequest,
+) -> crate::ImResult<crate::ids::Did> {
+    if let Some(did) = &request.did {
+        return Ok(did.clone());
+    }
+    if request.peer.as_str().starts_with("did:") {
+        return crate::ids::Did::parse(request.peer.as_str());
+    }
+    Err(crate::ImError::invalid_input(
+        Some("did".to_string()),
+        "contact DID is required when peer is a handle",
+    ))
 }
