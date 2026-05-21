@@ -1,149 +1,325 @@
-# im-core 拆分迁移计划
-
-**状态**：Draft
-**日期**：2026-05-21
-**适用仓库**：`awiki-cli-rs2`
+# SDK Refactor：迁移计划
 
 ## 1. 迁移原则
 
-- 先做 Phase A 路径参数版，不先引入 provider 边界。
-- `cli` 继续拥有配置解析、workspace 解析、identity 文件布局、权限设置和目录创建。
-- `im-core` 接收显式路径，长期承载身份、登录、消息、群组、附件、secure、realtime 等业务流程；第一阶段只落地 core 框架、身份鉴权、Handle 注册、私聊/群聊消息。
-- SQLite、HTTP、WebSocket 等当前底层实现依赖继续保留在 `im-core`，不要求替换。
-- App 接入先通过 sandbox/tempdir 路径集合验证，不依赖 CLI。
-- 当前仓库基线中 `crates/awiki-cli` 已经没有外部 `awiki-im-core` 依赖；迁移来源是 `awiki-cli` 内部模块，不是 sibling crate。
+- 先建立高层 SDK façade，再移动底层代码。
+- Phase 1 只迁移 core 框架、身份鉴权、Handle 注册、私聊文本、群聊文本和必要 inbox/history。
+- 完整 directory/profile、完整 group lifecycle、本地 conversation projection、附件、realtime、secure、provider 抽象后移。
+- 不改 CLI 命令行为，先改 handler 调用路径。
+- 不让 `im-core` 依赖 CLI 类型。
+- 不让 SDK public API 暴露 wire/store/crypto/path 细节。
+- 每个阶段都要保持 CLI 可编译、主要命令可运行。
+- Phase 1 采用 blocking-first，避免第一阶段同时引入 async runtime 复杂度。
 
-## 2. 迁移顺序
+## 2. Phase 0：最终方案确认
 
-### Phase 1：core 框架 + 最小 IM 能力
+目标：确认本目录作为最终主方案，`docs/sdk-refactor-2` 只作为已吸收的实施草案参考。
+
+任务：
+
+- 更新 `docs/sdk-refactor/` 文档。
+- 明确 Phase 1 MVP 范围。
+- 增加 `public-api.md`、`cli-boundary.md`、`merge-decisions.md`。
+- 明确 public/internal deny list。
+- 明确 `IdentitySelector::LocalAlias`、`owner_identity_id`、blocking-first、feature flags。
+
+完成判定：
+
+- 团队认可 `ImCore` / `ImClient` 的高层入口。
+- 团队认可 Phase 1 只做 SDK 主链路，不完整迁移 group lifecycle/directory/profile/secure/realtime。
+- 团队认可 `sdk-refactor` 是唯一主实施方案。
+
+## 3. Phase 1A：新增 `crates/im-core` 骨架
+
+目标：新 crate 可独立编译，但暂不大规模搬业务逻辑。
+
+任务：
 
 - 新增 `crates/im-core`。
-- 把 `crates/im-core` 加入 workspace，并让 `crates/awiki-cli` 后续通过 path dependency 依赖它。
-- 确认 `crates/awiki-cli` 不重新引入 `../../../awiki-im-core/...` 这类仓库外失败版本依赖。
-- 增加 compile fence：`im-core` 不能引用 CLI 类型。
-- 定义 `ImCoreConfig`、`ImCorePaths`、`IdentityRegistryPaths`、`IdentitySummary` 和内部 `IdentityPaths` / `AuthStatePaths` / `LocalStatePaths` / `SecureStatePaths`。
-- 建立高层入口形态：`core.client(selector)` 绑定身份，`client.auth()` / `client.messages()` 承载第一阶段业务调用，`core.identities()` 承载 Handle 注册，`core.bootstrap()` 承载初始化/迁移生命周期调用。
-- 增加最小 tempdir/path bundle 测试，证明 core 可以在显式路径上工作。
-- 搭起 `core` 基础类型：`ImCore`、`ImClient`、`IdentityRegistry`、`CoreBootstrap`、`OperationContext`、`ImError`、`ImResult<T>`、分页/cursor/id 基础 DTO。
-- 实现身份鉴权的最小闭环：加载指定身份、读取 DID document 和签名私钥、DID auth/login、refresh/ensure session、按身份隔离 auth/session 路径。
-- 实现 Handle 注册：`core.identities().register_handle()`，CLI 负责 OTP 输入、输出路径、文件权限和渲染，`im-core` 负责业务请求和领域结果。
-- 实现消息私聊和群聊的最小闭环：`client.messages().send(SendMessageRequest { target: MessageTarget::Direct | MessageTarget::Group, ... })`，以及第一阶段必要的 `inbox/history` 读取能力。
-- CLI 第一阶段只改造覆盖这些命令所需的 handler，让它们走 `im-core` 高层 API；其他命令继续留在 CLI 旧实现，等待后续迁移。
+- workspace 增加成员。
+- `crates/awiki-cli/Cargo.toml` 增加 path dependency。
+- 在 `im-core` 中定义：
+  - `ImCore`
+  - `ImClient`
+  - `ImCoreConfig`
+  - `ImCorePaths`
+  - `IdentitySelector`
+  - `IdentitySummary`
+  - `ImError`
+  - `ImResult<T>`
+  - P1 messages 基础 DTO
+- 增加 compile fence / grep test，禁止 `im-core` 引用：
+  - `ParsedCommand`
+  - `ExitError`
+  - `GlobalOptions`
+  - `config::Resolved`
+  - `identity::Manager`
+  - `awiki_cli::*`
 
-第一阶段不包含：
+完成判定：
 
-- 手机号/邮箱绑定、账号恢复、replace DID、profile 完整编辑。
-- 完整联系人/directory 能力。
-- 完整 group lifecycle 和成员管理；群聊消息只要求能面向已有 `GroupRef` 发送/读取。
-- 附件上传/下载。
-- secure direct、group E2EE、secure outbox。
-- realtime listener、WebSocket runner、host notification。
-- provider/trait 外部能力抽象。
+- `cargo test -p im-core` 通过。
+- `cargo test -p awiki-cli` 通过。
+- `im-core` 没有 CLI 类型引用。
 
-### Phase 2：补全 identity / directory 业务
+## 4. Phase 1B：CLI adapter + SDK façade
 
-- 绑定手机号/邮箱、恢复 handle、默认身份切换、profile get/set、replace DID、resolve identity 等进入 `im-core`。
-- `directory` 的 handle lookup、联系人保存/查询、关系状态和 profile 投影逐步下沉。
-- CLI 继续负责 identity 目录、私钥路径、DID document 路径和 auth/session 路径解析，以及危险命令 UX。
-- `im-core` 使用显式路径读取/写入必要材料，并返回领域结果；公开接口仍保持 `IdentitySummary` / `ImClient` 高层形态。
+目标：先让 CLI handler 调 SDK façade，但 façade 内部可暂时调用旧模块。
 
-### Phase 3：补全 message / group 业务
+任务：
 
-- 扩展第一阶段消息能力：mark-read、本地投影、缓存合并、消息状态、失败重试、更多查询形态。
-- group create/get/list/join/leave/add/remove/update/members/messages 等完整生命周期下沉。
-- 群消息读取可以继续通过 `client.groups().messages()`，发送仍优先通过 `client.messages().send(MessageTarget::Group)`。
-- CLI 保留参数解析、dry-run 呈现和输出格式。
+- 在 CLI 中新增集中 adapter：
+  - `build_im_core_config(resolved)`
+  - `build_im_core_paths(resolved, manager)`
+  - `cli_identity_selector(identity_flag)`
+  - `map_im_error(err, context)`
+- `ImCore::client(selector)` 能解析默认身份和 local alias。
+- `ImClient` 内部持有 identity summary 和旧模块调用所需 runtime context。
+- 第一批 handler 改为调用 SDK façade：
+  - `id list`
+  - `id current`
+  - `id status`
+  - `id use`
+  - `id refresh-token`
 
-### Phase 4：移动 attachment 业务流程
+完成判定：
 
-- attachment send/download、manifest、slot、download ticket、digest、临时文件和原子写入流程下沉。
-- CLI 保留 `--file`、`--text-file`、`--output` 等路径解析、覆盖策略和权限处理。
+- CLI identity 命令行为不变。
+- handler 中不再直接拼低层 identity path，统一通过 adapter。
+- CLI handler 形态开始变成 parse -> sdk call -> render。
 
-### Phase 5：移动 secure 和 realtime 业务编排
+## 5. Phase 1C：identity/auth + Handle 注册
 
-- direct E2EE 状态机和 outbox 编排下沉。
-- group E2EE 编排下沉。
-- WebSocket 分类、notification 投影、reconnect decision 和可嵌入 realtime runner 下沉。
-- listener service 管理继续留在 CLI。
-- 增加 CLI 后台进程和 App 线程/task 两个启动样例，证明两者使用同一套 `im-core::realtime` 运行循环。
+目标：让身份鉴权和 Handle 注册从 `im-core` 跑通。
 
-### Phase 6：CLI 瘦身和 App 路径接入样例
+任务：
 
-- CLI handler 只剩 parse -> core call -> render。
-- 增加一个 App/fake app 用例，通过 sandbox/tempdir 路径集合调用 `im-core`，证明 `im-core` 不依赖 CLI。
-- 明确 public API 文档和 semver 规则。
+- 实现或封装：
+  - list/default/resolve local identity
+  - load identity runtime
+  - DID document 与 key1 private key 读取
+  - DID auth login
+  - ensure session
+  - refresh session
+  - Handle 注册：`core.identities().register_handle()`
+- CLI 保留：
+  - OTP 输入
+  - identity alias 选择
+  - 本地路径布局
+  - 文件权限
+  - 输出渲染
+- `IdentityRegistry::load()` 保持 `pub(crate)`，不返回 runtime paths。
 
-### Phase 7：外部能力接口演进
+完成判定：
 
-- 在 Phase A API 稳定后，如果 App 接入确实需要，再逐步增加外部 credential/store/blob/crypto/transport 能力。
-- 该阶段是可选扩展，不要求替换当前 SQLite、HTTP、WebSocket 等底层实现依赖。
-- 该阶段必须保持前面沉淀下来的业务 DTO 和 handler 调用形态稳定，避免再次改动 CLI 命令层。
+- `id register` 通过 `core.identities().register_handle()`。
+- `id refresh-token` 通过 `client.auth().refresh_session()`。
+- public API 不返回 private key、auth path、DID document path。
+- P1 可用 tempdir/path fixture 测试身份加载和 session path 隔离。
 
-## 3. 当前代码迁移来源
+## 6. Phase 1D：私聊/群聊文本 MVP
 
-当前 `crates/awiki-cli` 已经包含 IM 相关业务模块。迁移应从这些模块拆分能力，而不是参考或依赖仓库外 `awiki-im-core`。
+目标：普通 direct text 和 group text message 进入 SDK。
 
-| 现有代码位置 | 目标模块 | 说明 |
-| --- | --- | --- |
-| `src/identity/*` | `im-core::identity` | identity layout 细节留在 CLI adapter；注册、恢复、DID/profile 业务下沉 |
-| `src/authsdk/*` | `im-core::auth` | DID auth、session/JWT wire helper 和刷新流程下沉 |
-| `src/message/service.rs`、`src/message/wire.rs`、`src/message/client.rs` | `im-core::messages` | direct send、inbox、history、mark-read、message DTO 下沉 |
-| `src/message/group_*` | `im-core::groups`、`im-core::secure` | 群生命周期和 group E2EE 分别归 groups/secure |
-| `src/message/attachment*` | `im-core::attachments` | 附件 manifest、slot、download ticket、send/download 下沉 |
-| `src/message/secure_*` | `im-core::secure` | direct E2EE、secure outbox、incoming processing 下沉 |
-| `src/message/service_discovery.rs` | `im-core::discovery` | DID document service selection 和 capability 选择下沉 |
-| `src/runtime/listener_*` | `im-core::realtime` + CLI runtime shell | WebSocket 分类、notification 投影、runner 下沉；service install/daemon/socket 留在 CLI |
-| `src/store/*` | `im-core::local_state` | SQLite schema、message/group/contact/outbox state 下沉；workspace 路径解析留在 CLI |
-| `src/app/*_handlers.rs` | CLI adapter | handler 保留 parse -> core call -> render |
+任务：
 
-## 4. 当前命令到目标边界的映射
+- 实现：
+  - `client.messages().send(SendMessageRequest { target: Direct, body: Text, security: DefaultPlain | Plain })`
+  - `client.messages().send(SendMessageRequest { target: Group, body: Text, security: DefaultPlain | Plain })`
+  - `client.messages().inbox()` 的必要子集
+  - `client.messages().history(ThreadRef::Direct | ThreadRef::Group)` 的必要子集
+- 内部处理：
+  - DID/handle 的最小 target resolve
+  - auth ensure + 401 refresh retry
+  - HTTP/RPC params 构造
+  - 远端结果转领域 DTO
+  - 必要本地状态写入或兼容旧存储
+- CLI adapter 处理：
+  - `--to`
+  - `--group`
+  - `--text`
+  - `--text-file`
+  - `--limit`
+  - dry-run
 
-所有业务命令都先把 `--identity` 转换为 `IdentitySelector`，通过 `core.client(selector)` 获得绑定身份的 `ImClient`，再调用对应服务。注册、恢复、默认身份选择属于 `core.identities()`；数据库初始化/迁移属于 `core.bootstrap()`。CLI 不应直接调用 actor/path/RPC/store helper。
+完成判定：
 
-第一阶段只要求落地标记为 `P1` 的命令映射。后续阶段映射是目标边界，用于避免继续扩大第一阶段范围。
+- `msg send --to ... --text ...` 通过 `client.messages().send()`。
+- `msg send --group ... --text ...` 通过 `client.messages().send()`。
+- `msg inbox/history` 的 P1 子集通过 `client.messages()`。
+- handler 不再直接调用 `message::send/inbox/history`。
+- wire params builder 不作为 SDK public API 导出。
+- `MessageSecurityMode::SecureDirect` / `GroupE2ee` 返回 `UnsupportedCapability`。
+- `MessageBody::Attachment` 返回 `UnsupportedCapability`。
 
-| 阶段 | 当前 CLI 命令 | 目标 im-core API | CLI 保留内容 |
-| --- | --- | --- | --- |
-| P1 | `id status` | `core.identities().default_identity()` / `core.identities().list()` / `client.current_identity()` | 渲染、默认 identity 选择 |
-| P1 | `id register` | `core.identities().register_handle()` | 参数解析、OTP 输入、输出路径、文件权限 |
-| P1 | `id refresh-token` / login 所需路径 | `client.auth().refresh_session()` / `client.auth().ensure_session()` | 读取当前 identity、保存 token、输出 |
-| P1 | `msg send` direct/group | `client.messages().send()` | `--text-file` 读取、dry-run 呈现、输出 |
-| P1 | `msg inbox` | `client.messages().inbox()` | table/pretty 输出 |
-| P1 | `msg history` direct/group | `client.messages().history()` | 参数解析 |
-| P2 | `id bind` | `client.identity().bind_contact()` | 参数解析、等待策略展示 |
-| P2 | `id resolve` | `core.identities().resolve()` / `client.directory().resolve_peer()` | 输出格式 |
-| P2 | `id recover` | `core.identities().recover_handle()` | 本地路径、密钥保存、旧状态合并 |
-| P2 | `id replace-did` | `client.identity().replace_did()` | 危险命令 UX、备份路径、私钥保存 |
-| P2 | `id profile get/set` | `client.identity().profile()` / `client.identity().update_profile()` | 参数解析、markdown-file 读取 |
-| P3 | `msg mark-read` | `client.messages().mark_read()` | 参数解析 |
-| P3 | `group create` | `client.groups().create()` | 参数解析 |
-| P3 | `group get/list/members/messages` | `client.groups().get/list/members/messages()` | 输出格式 |
-| P3 | `group join/add/remove/leave/update` | `client.groups().*()` | 参数解析、dry-run 呈现 |
-| P4 | `msg attachment download` | `client.attachments().download()` | 输出路径和文件权限 |
-| P5 | `msg secure *` | `client.secure().direct_*()` | outbox id 参数解析、诊断输出 |
-| P5 | `group e2ee *` | `client.secure().group_*()` | MLS/session 路径初始化和命令 UX |
-| P5 | `runtime mode/status` | `client.realtime().status()` 可提供领域状态 | config 文件读写仍在 CLI |
-| P5 | `runtime listener *` | `client.realtime().run_until_shutdown()` / `client.realtime().connect()` | service install/start/stop、daemon socket、进程生命周期在 CLI |
-| P5 | `runtime host-notify *` | `client.realtime().normalize_host_event()` | OpenClaw/Hermes 配置和投递在 CLI |
+## 7. Phase 1E：P1 测试与 App sandbox path fixture
 
-## 5. 完成判定
+目标：证明 `im-core` 不依赖 CLI，可以被 App 以显式路径方式接入。
 
-第一阶段完成后，应满足：
+任务：
 
-- `crates/im-core` 存在并可独立编译/测试，不依赖 `crates/awiki-cli`。
-- `core` 框架入口稳定：`ImCore`、`ImClient`、`IdentityRegistry`、`CoreBootstrap`、`ImError`、`ImResult<T>`。
-- 身份鉴权、Handle 注册、消息私聊和群聊的 P1 命令已经通过 `im-core` 高层 API 执行。
-- P1 CLI handler 不再直接调用 actor/path/RPC/store helper。
-- P1 能用 tempdir/path fixtures 验证，不需要 CLI 类型。
-- 附件、secure、realtime、完整 group lifecycle、完整 identity/directory 可继续留在 CLI 旧实现，等待后续阶段。
+- 新增一个简单 example 或 test fixture：
+  - tempdir identity registry
+  - tempdir SQLite
+  - explicit config
+  - fake/stub service 或 contract test
+- 覆盖：
+  - `ImCore::new(config, paths)` 不需要 CLI `Resolved`
+  - `core.client(selector)` 不需要 CLI `Manager`
+  - 基础 DTO 不含 CLI flag 名称
+  - alice/bob 多身份 auth path 隔离
+  - direct/group text request 构造和 UnsupportedCapability 行为
 
-全部边界设计落地后，应满足：
+完成判定：
 
-- `crates/im-core` 可以在不编译 `crates/awiki-cli` 的情况下测试。
-- App 可以只依赖 `im-core`，不依赖 CLI。
-- CLI 所有 IM 业务命令最终都通过 `im-core`。
-- `im-core` 中不存在 `ParsedCommand`、`ExitError`、`GlobalOptions`、CLI config resolver、CLI workspace paths。
-- `cli` 中不再重复实现身份、登录、消息、群组、附件、secure、realtime 的业务规则，只做适配和渲染。
-- 数据库初始化、私钥路径、文件权限、service manager、OpenClaw/Hermes UX 仍在 CLI。
-- Phase A 中，core 流程可用 tempdir/path fixtures 测试，不需要 CLI 类型。
-- Phase B 中，外部能力接口可再用 fake 实现覆盖。
+- `cargo test -p im-core app_sandbox_paths` 通过。
+- `cargo test -p awiki-cli` 通过。
+- CLI P1 命令可运行。
+
+## 8. Phase 2：identity / directory / profile 补全
+
+进入条件：Phase 1 主链路稳定。
+
+范围：
+
+- `client.identity().profile()` / `update_profile()`。
+- `client.identity().bind_contact()`。
+- `core.identities().recover_handle()`。
+- `client.identity().replace_did()`，危险能力，必须返回风险信息和 rebind plan。
+- `client.directory().resolve_peer()` / `lookup_handle()`。
+- contact save/list。
+- relation status / profile projection。
+
+CLI 继续保留：
+
+- profile markdown file 读取。
+- 危险命令确认。
+- 本地路径选择、备份、权限。
+- 输出渲染。
+
+## 9. Phase 3：message / group / local_state 补全
+
+进入条件：Phase 1 消息 MVP 和 Phase 2 identity/directory 稳定。
+
+范围：
+
+- `client.messages().mark_read()`。
+- `client.messages().conversations()`。
+- 本地 message/contact/conversation projection。
+- 缓存合并、消息状态、失败重试。
+- 完整 group lifecycle：
+  - create/get/list/join/leave
+  - add/remove member
+  - update profile/policy
+  - members/messages
+- 本地状态完整 owner isolation：
+  - 优先 `owner_identity_id`
+  - 兼容 `owner_did`
+
+完成判定：
+
+- App 可以通过 SDK 获得 conversation list，而不是自己解析 inbox raw JSON。
+- CLI 业务 handler 不直接调用 `store::*` 业务 helper，除 `debug.db.*` 外。
+- `group create/get/list/join/leave/add/remove/update/members/messages` 通过 `client.groups()`。
+
+## 10. Phase 4：附件
+
+进入条件：普通消息和本地 projection 稳定。
+
+范围：
+
+- `client.attachments().send()` / `download()`。
+- `AttachmentInput::LocalFile` + `Bytes`。
+- manifest、slot、commit object、download ticket、digest、临时文件和原子写入流程下沉。
+- CLI 保留 `--file`、`--text-file`、`--output` 路径解析、覆盖策略和权限处理。
+
+## 11. Phase 5：realtime runner
+
+进入条件：消息、群组、本地 projection 稳定。
+
+范围：
+
+- `client.realtime().connect()`。
+- `client.realtime().run_until_shutdown()`。
+- `ImEvent` 领域事件。
+- WebSocket response / notification 分类。
+- pending request 路由。
+- notification 投影。
+- reconnect / heartbeat。
+
+不做：
+
+- systemd/launchd/Windows service。
+- pid/log/socket/service install/start/stop。
+- OpenClaw/Hermes setup UX。
+
+这些继续留在 CLI。
+
+## 12. Phase 6：secure direct 与 group E2EE
+
+进入条件：普通消息和 realtime 投影稳定。
+
+范围：
+
+- `MessageSecurityMode::SecureDirect`。
+- direct session status/repair。
+- secure outbox failed/retry/drop。
+- group E2EE status/repair。
+- group message 解密和 incoming secure processing 作为 messages/realtime 内部步骤。
+
+原则：
+
+- 普通发送仍走 `client.messages().send()`。
+- 不暴露 ciphertext API。
+- 不把 KeyPackage、MLS provider binary、prekey path 暴露给普通调用方。
+- 诊断 API 可以 feature-gated。
+
+## 13. Phase 7：provider 抽象
+
+进入条件：App 接入确实需要接管存储、网络、密钥或 crypto。
+
+可选 trait：
+
+```rust
+CredentialVault
+SessionStore
+MessageStore
+GroupStore
+ContactStore
+BlobStore
+Transport
+CryptoProvider
+MlsProvider
+Clock
+IdGenerator
+```
+
+原则：
+
+- 不破坏 Phase 1 沉淀下来的 `ImCore` / `ImClient` / service DTO。
+- provider 是替换底层实现，不是替换业务 API。
+- 内置 SQLite/HTTP 实现继续保留。
+
+## 14. 风险与控制
+
+| 风险 | 控制 |
+| --- | --- |
+| 一次性搬太多导致 CLI 回归 | Phase 1 只做 SDK 主链路；其余命令继续旧实现。 |
+| SDK API 低层化 | public/internal deny list + re-export 收紧。 |
+| 多身份隔离不彻底 | 所有 query 由 `ImClient` 注入 owner；测试 alice/bob 隔离。 |
+| DID replace 后本地数据漂移 | owner key 优先 identity_id，did 作为当前状态字段。 |
+| async 改造扩大范围 | Phase 1 blocking API，后续再评估 async feature。 |
+| App 仍重复做 conversation projection | Phase 3 明确实现 `messages().conversations()`。 |
+| group lifecycle 过早扩大 P1 | P1 群聊只做面向已有 `GroupRef` 的文本消息。 |
+
+## 15. Phase 1 完成判定
+
+Phase 1 完成后应满足：
+
+- `crates/im-core` 可独立编译和测试。
+- `crates/im-core` 不依赖 `crates/awiki-cli`。
+- CLI 的 P1 identity/auth/私聊/群聊基础命令通过 `im-core`。
+- CLI handler 基本变成 parse -> sdk call -> render。
+- `im-core` public API 不暴露 actor、paths、wire params、SQLite connection、crypto state。
+- `msg secure *`、`group e2ee *` 未进入默认 SDK API。
+- App 可以通过显式路径构造 `ImCore` 并完成基础 identity/auth/message 调用。

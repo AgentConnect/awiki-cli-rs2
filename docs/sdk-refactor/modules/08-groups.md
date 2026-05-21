@@ -1,19 +1,34 @@
 # groups 模块接口设计
 
-**阅读顺序**：08 / 11  
 **所属 crate**：`crates/im-core`  
-**模块职责**：群组生命周期、成员和群消息。
+**阶段**：P3；P1 只通过 `messages().send(MessageTarget::Group)` 支持面向已有群的文本消息。  
+**职责**：群组生命周期、成员和群消息。
 
 ## 1. 目标
 
 `groups` 负责群生命周期、成员管理、群 profile/policy、群消息读取以及群状态变更 notification 投影。
 
-## 2. 主要职责
+## 2. P1 边界
+
+P1 不公开或不要求实现完整 `GroupService`。群聊 MVP 通过 messages 模块完成：
+
+```rust
+client.messages().send(SendMessageRequest {
+    target: MessageTarget::Group(group_ref),
+    body: MessageBody::Text { ... },
+    security: MessageSecurityMode::DefaultPlain,
+    ..
+})?;
+```
+
+P1 可以支持 `client.messages().history(ThreadRef::Group(group_ref), query)` 的必要子集。
+
+## 3. P3 职责
 
 - `create(CreateGroupRequest) -> GroupSnapshot`。
 - `get(group)`。
 - `list(query)`。
-- `join(group, reason)`。
+- `join(group, request)`。
 - `leave(group, request)`。
 - `add_member(group, member, options)`。
 - `remove_member(group, member, options)`。
@@ -23,13 +38,13 @@
 - `messages(group, query)`。
 - 群状态变更 notification 投影。
 
-## 3. 群组和消息边界
+## 4. 群组和消息边界
 
 - 群生命周期和成员管理归 `groups`。
-- 向群发送一条普通消息可以由 `messages.send(MessageTarget::Group)` 统一处理。
-- 读取群消息可以在 `groups.messages` 暴露，也可以委托到 `messages.history(ThreadRef::Group)`；第一版建议保留 `groups.messages`，因为当前 CLI 已经是 `group messages`。
+- 向群发送普通消息由 `messages.send(MessageTarget::Group)` 统一处理。
+- 读取群消息可以在 `groups.messages` 暴露，也可以委托到 `messages.history(ThreadRef::Group)`；P3 可以同时保留 `groups.messages` 作为 convenience API。
 
-## 4. 接口草案
+## 5. 接口草案
 
 ```rust
 pub struct GroupService<'a> {
@@ -37,74 +52,25 @@ pub struct GroupService<'a> {
 }
 
 impl GroupService<'_> {
-    pub async fn create(
-        &self,
-        request: CreateGroupRequest,
-    ) -> ImResult<GroupSnapshot>;
+    pub fn create(&self, request: CreateGroupRequest) -> ImResult<GroupSnapshot>;
+    pub fn get(&self, group: GroupRef) -> ImResult<GroupSnapshot>;
+    pub fn list(&self, query: GroupQuery) -> ImResult<Page<GroupSummary>>;
+    pub fn join(&self, group: GroupRef, request: JoinGroupRequest) -> ImResult<GroupMembershipChange>;
+    pub fn leave(&self, group: GroupRef, request: LeaveGroupRequest) -> ImResult<GroupMembershipChange>;
+    pub fn add_member(&self, group: GroupRef, member: PeerRef, options: AddMemberOptions) -> ImResult<GroupMembershipChange>;
+    pub fn remove_member(&self, group: GroupRef, member: PeerRef, options: RemoveMemberOptions) -> ImResult<GroupMembershipChange>;
+    pub fn update_profile(&self, group: GroupRef, patch: GroupProfilePatch) -> ImResult<GroupSnapshot>;
+    pub fn update_policy(&self, group: GroupRef, patch: GroupPolicyPatch) -> ImResult<GroupSnapshot>;
+    pub fn members(&self, group: GroupRef, query: MemberQuery) -> ImResult<Page<GroupMember>>;
+    pub fn messages(&self, group: GroupRef, query: HistoryQuery) -> ImResult<Page<Message>>;
 
-    pub async fn get(
-        &self,
-        group: GroupRef,
-    ) -> ImResult<GroupSnapshot>;
-
-    pub async fn list(
-        &self,
-        query: GroupQuery,
-    ) -> ImResult<GroupPage>;
-
-    pub async fn join(
-        &self,
-        group: GroupRef,
-        reason: Option<String>,
-    ) -> ImResult<GroupMembershipChange>;
-
-    pub async fn leave(
-        &self,
-        group: GroupRef,
-        request: LeaveGroupRequest,
-    ) -> ImResult<GroupMembershipChange>;
-
-    pub async fn add_member(
-        &self,
-        group: GroupRef,
-        member: PeerRef,
-        options: AddMemberOptions,
-    ) -> ImResult<GroupMembershipChange>;
-
-    pub async fn remove_member(
-        &self,
-        group: GroupRef,
-        member: PeerRef,
-        options: RemoveMemberOptions,
-    ) -> ImResult<GroupMembershipChange>;
-
-    pub async fn update_profile(
-        &self,
-        group: GroupRef,
-        patch: GroupProfilePatch,
-    ) -> ImResult<GroupSnapshot>;
-
-    pub async fn update_policy(
-        &self,
-        group: GroupRef,
-        patch: GroupPolicyPatch,
-    ) -> ImResult<GroupSnapshot>;
-
-    pub async fn members(
-        &self,
-        group: GroupRef,
-        query: MemberQuery,
-    ) -> ImResult<GroupMemberPage>;
-
-    pub async fn messages(
-        &self,
-        group: GroupRef,
-        query: HistoryQuery,
-    ) -> ImResult<MessagePage>;
+    pub fn send_text(&self, group: GroupRef, text: String) -> ImResult<SendMessageResult>;
 }
 ```
 
-## 5. CLI 边界
+`send_text` 内部等价于 `client.messages().send(MessageTarget::Group)`，不要重复实现业务逻辑。
+
+## 6. CLI 边界
 
 CLI 负责参数解析、dry-run 呈现、输出格式和命令 UX。群状态、成员规则、远端调用和本地投影归 `groups`。
 
