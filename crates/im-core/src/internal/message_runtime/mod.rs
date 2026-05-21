@@ -1,3 +1,4 @@
+pub(crate) mod conversations;
 pub(crate) mod direct;
 pub(crate) mod group;
 pub(crate) mod mark_read;

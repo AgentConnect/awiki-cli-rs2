@@ -158,3 +158,22 @@ pub struct MarkReadResult {
     pub message_ids: Vec<crate::ids::MessageId>,
     pub warnings: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conversation {
+    pub thread: ThreadRef,
+    pub title: Option<String>,
+    pub participants: Vec<crate::ids::PeerRef>,
+    pub last_message: Option<Message>,
+    pub unread_count: u32,
+    pub message_count: u32,
+    pub last_message_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationQuery {
+    pub limit: crate::ids::PageLimit,
+    pub include_groups: bool,
+    pub include_direct: bool,
+    pub unread_only: bool,
+}

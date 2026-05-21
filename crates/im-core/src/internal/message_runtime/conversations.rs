@@ -1,0 +1,577 @@
+pub(crate) struct MessageConversationRuntime<'a> {
+    client: &'a crate::core::ImClient,
+}
+
+impl<'a> MessageConversationRuntime<'a> {
+    pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
+        Self { client }
+    }
+
+    pub(crate) fn conversations(
+        self,
+        query: crate::messages::ConversationQuery,
+    ) -> crate::ImResult<crate::ids::Page<crate::messages::Conversation>> {
+        let requested_limit = page_limit(query.limit, 50);
+        let mut records = list_conversation_records(self.client, &query)?;
+        let has_more = records.len() > requested_limit;
+        records.truncate(requested_limit);
+        let items = records
+            .into_iter()
+            .map(|record| conversation_from_record(self.client.did().as_str(), record))
+            .collect::<crate::ImResult<Vec<_>>>()?;
+        Ok(crate::ids::Page {
+            items,
+            next_cursor: None,
+            has_more,
+        })
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn list_conversation_records(
+    client: &crate::core::ImClient,
+    query: &crate::messages::ConversationQuery,
+) -> crate::ImResult<Vec<crate::internal::local_state::conversations::ConversationRecord>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    crate::internal::local_state::conversations::list_conversations(
+        &connection,
+        client.did().as_str(),
+        query,
+    )
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn list_conversation_records(
+    _client: &crate::core::ImClient,
+    _query: &crate::messages::ConversationQuery,
+) -> crate::ImResult<Vec<NoSqliteConversationRecord>> {
+    Err(crate::ImError::unsupported("message-conversations"))
+}
+
+fn conversation_from_record(
+    owner_did: &str,
+    record: ConversationRecordLike,
+) -> crate::ImResult<crate::messages::Conversation> {
+    let last_message = record.last_message().map(message_from_record).transpose()?;
+    let thread = conversation_thread(owner_did, &record, last_message.as_ref())?;
+    let participants = conversation_participants(owner_did, &thread, last_message.as_ref())?;
+    Ok(crate::messages::Conversation {
+        thread,
+        title: None,
+        participants,
+        last_message,
+        unread_count: u32_count(record.unread_count()),
+        message_count: u32_count(record.message_count()),
+        last_message_at: non_empty_string(record.last_message_at()),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+type ConversationRecordLike = crate::internal::local_state::conversations::ConversationRecord;
+
+#[cfg(not(feature = "sqlite"))]
+struct NoSqliteConversationRecord;
+
+#[cfg(feature = "sqlite")]
+impl ConversationRecordExt for crate::internal::local_state::conversations::ConversationRecord {
+    fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+
+    fn message_count(&self) -> i64 {
+        self.message_count
+    }
+
+    fn unread_count(&self) -> i64 {
+        self.unread_count
+    }
+
+    fn last_message_at(&self) -> &str {
+        &self.last_message_at
+    }
+
+    fn last_message(&self) -> Option<&crate::internal::local_state::messages::MessageRecord> {
+        self.last_message.as_ref()
+    }
+}
+
+#[cfg(not(feature = "sqlite"))]
+impl ConversationRecordExt for NoSqliteConversationRecord {
+    fn thread_id(&self) -> &str {
+        ""
+    }
+
+    fn message_count(&self) -> i64 {
+        0
+    }
+
+    fn unread_count(&self) -> i64 {
+        0
+    }
+
+    fn last_message_at(&self) -> &str {
+        ""
+    }
+
+    fn last_message(&self) -> Option<&crate::internal::local_state::messages::MessageRecord> {
+        None
+    }
+}
+
+trait ConversationRecordExt {
+    fn thread_id(&self) -> &str;
+    fn message_count(&self) -> i64;
+    fn unread_count(&self) -> i64;
+    fn last_message_at(&self) -> &str;
+    fn last_message(&self) -> Option<&crate::internal::local_state::messages::MessageRecord>;
+}
+
+fn conversation_thread(
+    owner_did: &str,
+    record: &impl ConversationRecordExt,
+    last_message: Option<&crate::messages::Message>,
+) -> crate::ImResult<crate::messages::ThreadRef> {
+    if let Some(message) = last_message {
+        if let Some(group) = &message.group {
+            return Ok(crate::messages::ThreadRef::Group(group.clone()));
+        }
+        if let Some(peer) = direct_peer_from_message(owner_did, message) {
+            return Ok(crate::messages::ThreadRef::Direct(peer));
+        }
+    }
+    let thread_id = record.thread_id().trim();
+    if let Some(group) = thread_id.strip_prefix("group:") {
+        return Ok(crate::messages::ThreadRef::Group(
+            crate::ids::GroupRef::parse(group)?,
+        ));
+    }
+    Ok(crate::messages::ThreadRef::Thread(
+        crate::ids::ThreadId::parse(thread_id)?,
+    ))
+}
+
+fn conversation_participants(
+    owner_did: &str,
+    thread: &crate::messages::ThreadRef,
+    last_message: Option<&crate::messages::Message>,
+) -> crate::ImResult<Vec<crate::ids::PeerRef>> {
+    match thread {
+        crate::messages::ThreadRef::Direct(peer) => Ok(vec![peer.clone()]),
+        crate::messages::ThreadRef::Group(_) | crate::messages::ThreadRef::Thread(_) => {
+            let Some(message) = last_message else {
+                return Ok(Vec::new());
+            };
+            let mut participants = Vec::new();
+            for candidate in [
+                Some(&message.sender),
+                message.receiver.as_ref(),
+                direct_peer_from_message(owner_did, message).as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if candidate.as_str() != owner_did
+                    && !participants
+                        .iter()
+                        .any(|known: &crate::ids::PeerRef| known == candidate)
+                {
+                    participants.push(candidate.clone());
+                }
+            }
+            Ok(participants)
+        }
+    }
+}
+
+fn direct_peer_from_message(
+    owner_did: &str,
+    message: &crate::messages::Message,
+) -> Option<crate::ids::PeerRef> {
+    if message.sender.as_str() != owner_did {
+        return Some(message.sender.clone());
+    }
+    message.receiver.clone()
+}
+
+fn message_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> crate::ImResult<crate::messages::Message> {
+    let thread = message_thread(record)?;
+    Ok(crate::messages::Message {
+        id: crate::ids::MessageId::parse(&record.msg_id)?,
+        thread,
+        direction: message_direction(record.direction),
+        sender: crate::ids::PeerRef::parse(
+            non_empty_or(&record.sender_did, "did:unknown:sender"),
+            "",
+        )?,
+        receiver: non_empty_string(&record.receiver_did)
+            .map(|value| crate::ids::PeerRef::parse(value, ""))
+            .transpose()?,
+        group: group_ref_from_record(record)?,
+        body: message_body(record),
+        sent_at: non_empty_string(&record.sent_at),
+        received_at: None,
+        metadata: crate::messages::MessageMetadata {
+            operation_id: metadata_string(&record.metadata, "operation_id"),
+            delivery_state: metadata_string(&record.metadata, "delivery_state"),
+            server_sequence: record.server_seq,
+            content_type: non_empty_string(&record.content_type),
+            attributes: Vec::new(),
+        },
+    })
+}
+
+fn message_thread(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> crate::ImResult<crate::messages::ThreadRef> {
+    if let Some(group) = group_ref_from_record(record)? {
+        return Ok(crate::messages::ThreadRef::Group(group));
+    }
+    let peer = if record.sender_did.trim() != record.owner_did.trim() {
+        record.sender_did.as_str()
+    } else {
+        record.receiver_did.as_str()
+    };
+    if !peer.trim().is_empty() {
+        return Ok(crate::messages::ThreadRef::Direct(
+            crate::ids::PeerRef::parse(peer, "")?,
+        ));
+    }
+    Ok(crate::messages::ThreadRef::Thread(
+        crate::ids::ThreadId::parse(&record.thread_id)?,
+    ))
+}
+
+fn group_ref_from_record(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> crate::ImResult<Option<crate::ids::GroupRef>> {
+    if !record.group_did.trim().is_empty() {
+        return crate::ids::GroupRef::parse(&record.group_did).map(Some);
+    }
+    if !record.group_id.trim().is_empty() {
+        return crate::ids::GroupRef::parse(&record.group_id).map(Some);
+    }
+    if let Some(group) = record.thread_id.trim().strip_prefix("group:") {
+        return crate::ids::GroupRef::parse(group).map(Some);
+    }
+    Ok(None)
+}
+
+fn message_direction(direction: i64) -> crate::messages::MessageDirection {
+    match direction {
+        1 => crate::messages::MessageDirection::Outgoing,
+        0 => crate::messages::MessageDirection::Incoming,
+        _ => crate::messages::MessageDirection::Unknown,
+    }
+}
+
+fn message_body(
+    record: &crate::internal::local_state::messages::MessageRecord,
+) -> crate::messages::MessageBodyView {
+    let content_type = non_empty_string(&record.content_type);
+    let kind = match content_type.as_deref() {
+        Some("text/markdown") => crate::messages::MessageKind::Markdown,
+        Some("text/plain") | Some("text") | None => crate::messages::MessageKind::Text,
+        _ => return crate::messages::MessageBodyView::Unsupported { content_type },
+    };
+    crate::messages::MessageBodyView::Text {
+        text: record.content.clone(),
+        kind,
+    }
+}
+
+fn metadata_string(metadata: &str, key: &str) -> Option<String> {
+    if metadata.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(metadata)
+        .ok()
+        .and_then(|value| {
+            value
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn page_limit(limit: crate::ids::PageLimit, fallback: usize) -> usize {
+    if limit.0 == 0 {
+        fallback
+    } else {
+        usize::try_from(limit.0).unwrap_or(fallback)
+    }
+}
+
+fn u32_count(value: i64) -> u32 {
+    u32::try_from(value.max(0)).unwrap_or(u32::MAX)
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.trim().is_empty() {
+        fallback
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn message_conversation_runtime_projects_direct_and_group_conversations() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message(
+            &client,
+            "direct-old",
+            "",
+            0,
+            "old",
+            "2026-05-21T00:00:01Z",
+            1,
+        );
+        fixture.seed_message(
+            &client,
+            "direct-new",
+            "",
+            0,
+            "new",
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+        fixture.seed_message(
+            &client,
+            "group-new",
+            "did:example:group-1",
+            0,
+            "group",
+            "2026-05-21T00:00:04Z",
+            0,
+        );
+
+        let page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+
+        assert!(!page.has_more);
+        assert_eq!(page.items.len(), 2);
+        assert!(matches!(
+            page.items[0].thread,
+            crate::messages::ThreadRef::Group(_)
+        ));
+        assert_eq!(page.items[0].message_count, 1);
+        assert_eq!(page.items[0].unread_count, 1);
+        assert_eq!(
+            page.items[0].last_message.as_ref().unwrap().id.as_str(),
+            "group-new"
+        );
+        assert!(matches!(
+            page.items[1].thread,
+            crate::messages::ThreadRef::Direct(_)
+        ));
+        assert_eq!(page.items[1].message_count, 2);
+        assert_eq!(page.items[1].unread_count, 1);
+        assert_eq!(
+            page.items[1].last_message_at.as_deref(),
+            Some("2026-05-21T00:00:03Z")
+        );
+        assert_eq!(
+            page.items[1].last_message.as_ref().unwrap().id.as_str(),
+            "direct-new"
+        );
+        assert_eq!(page.items[1].participants[0].as_str(), "did:example:bob");
+    }
+
+    #[test]
+    fn message_conversation_runtime_filters_unread_and_sets_has_more() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message(
+            &client,
+            "direct-read",
+            "",
+            0,
+            "read",
+            "2026-05-21T00:00:01Z",
+            1,
+        );
+        fixture.seed_message(
+            &client,
+            "group-unread-1",
+            "did:example:group-1",
+            0,
+            "group 1",
+            "2026-05-21T00:00:02Z",
+            0,
+        );
+        fixture.seed_message(
+            &client,
+            "group-unread-2",
+            "did:example:group-2",
+            0,
+            "group 2",
+            "2026-05-21T00:00:03Z",
+            0,
+        );
+
+        let page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(1),
+                include_groups: true,
+                include_direct: false,
+                unread_only: true,
+            })
+            .unwrap();
+
+        assert!(page.has_more);
+        assert_eq!(page.items.len(), 1);
+        assert!(matches!(
+            page.items[0].thread,
+            crate::messages::ThreadRef::Group(_)
+        ));
+        assert_eq!(
+            page.items[0].last_message.as_ref().unwrap().id.as_str(),
+            "group-unread-2"
+        );
+    }
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = unique_temp_root();
+            let identities = root.join("identities");
+            fs::create_dir_all(identities.join("alice")).unwrap();
+            fs::write(identities.join("default"), "alice\n").unwrap();
+            fs::write(
+                identities.join("registry.json"),
+                r#"{
+                  "default_identity": "alice",
+                  "identities": [{
+                    "id": "alice-id",
+                    "did": "did:example:alice",
+                    "local_alias": "alice",
+                    "ready_for_auth": true,
+                    "ready_for_messaging": true,
+                    "missing": []
+                  }]
+                }"#,
+            )
+            .unwrap();
+            Self { root }
+        }
+
+        fn client(&self) -> crate::core::ImClient {
+            crate::core::ImCore::new(
+                crate::ImCoreConfig {
+                    service_base_url: crate::ServiceEndpoint::parse("https://example.test")
+                        .unwrap(),
+                    did_domain: "awiki.test".to_string(),
+                    user_service_endpoint: None,
+                    message_service_endpoint: None,
+                    transport_policy: crate::MessageTransportPolicy::HttpOnly,
+                },
+                crate::ImCorePaths {
+                    identities: crate::paths::IdentityRegistryPaths {
+                        identity_root_dir: self.root.join("identities"),
+                        registry_path: self.root.join("identities").join("registry.json"),
+                        default_identity_path: Some(self.root.join("identities").join("default")),
+                    },
+                    local_state: crate::paths::LocalStatePaths {
+                        sqlite_path: self.root.join("local").join("im.sqlite"),
+                    },
+                    runtime: crate::paths::RuntimePaths {
+                        cache_dir: self.root.join("cache"),
+                        temp_dir: self.root.join("tmp"),
+                    },
+                },
+            )
+            .unwrap()
+            .client(crate::identity::IdentitySelector::LocalAlias(
+                "alice".to_string(),
+            ))
+            .unwrap()
+        }
+
+        fn seed_message(
+            &self,
+            client: &crate::core::ImClient,
+            message_id: &str,
+            group_did: &str,
+            direction: i64,
+            content: &str,
+            sent_at: &str,
+            is_read: i64,
+        ) {
+            let connection = crate::internal::local_state::open_writable(
+                &client.core_inner().sdk_paths().local_state.sqlite_path,
+            )
+            .unwrap();
+            let thread_id = if group_did.trim().is_empty() {
+                "dm:did:example:alice:did:example:bob".to_string()
+            } else {
+                format!("group:{group_did}")
+            };
+            let (sender_did, receiver_did) = if direction == 0 {
+                ("did:example:bob", client.did().as_str())
+            } else {
+                (client.did().as_str(), "did:example:bob")
+            };
+            connection
+                .execute(
+                    r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+     content_type, content, sent_at, stored_at, is_read)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
+                    (
+                        message_id,
+                        client.did().as_str(),
+                        thread_id,
+                        direction,
+                        sender_did,
+                        receiver_did,
+                        group_did,
+                        content,
+                        sent_at,
+                        is_read,
+                    ),
+                )
+                .unwrap();
+        }
+    }
+
+    fn unique_temp_root() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "im-core-conversations-runtime-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+}

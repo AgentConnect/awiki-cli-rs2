@@ -85,6 +85,16 @@ impl<'a> MessageService<'a> {
         .mark_read(crate::internal::message_runtime::mark_read::MarkReadInput { message_ids: ids })
         .map(|result| result.sdk_result)
     }
+
+    pub fn conversations(
+        &self,
+        query: super::ConversationQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::Conversation>> {
+        crate::internal::message_runtime::conversations::MessageConversationRuntime::new(
+            self.client,
+        )
+        .conversations(query)
+    }
 }
 
 fn validate_body(body: &super::MessageBody) -> crate::ImResult<()> {
