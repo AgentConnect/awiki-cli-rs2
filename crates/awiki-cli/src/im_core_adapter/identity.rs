@@ -1,14 +1,16 @@
 use im_core::prelude::{
     AuthScope, ContactBindingMethod, ContactBindingRequest, ContactBindingState, Did, Handle,
-    IdentitySelector, InitialProfile, PeerRef, ProfilePatch, RegisterHandleRequest, SessionBundle,
-    VerificationInput,
+    IdentitySelector, InitialProfile, PeerRef, ProfilePatch, RecoverGeneratedIdentity,
+    RecoverHandleRequest, RegisterHandleRequest, SessionBundle, VerificationInput,
 };
+use serde_json::json;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::cli::ParsedCommand;
 use crate::identity;
 use crate::output::ExitError;
+use crate::store;
 use crate::transportcfg::Profile;
 
 #[derive(Debug, Clone)]
@@ -40,6 +42,12 @@ pub struct SetProfileBridgeRequest {
 pub struct BindContactBridgeRequest {
     pub sdk: ContactBindingRequest,
     pub legacy: identity::BindParams,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecoverHandleBridgeRequest {
+    pub sdk: RecoverHandleRequest,
+    pub legacy: identity::RecoverParams,
 }
 
 pub fn cli_identity_selector(identity_flag: &str) -> IdentitySelector {
@@ -235,6 +243,172 @@ pub fn bind_contact_via_im_core(
             bind_command_result(&identity, result).map_err(crate::app::identity_exit)?
         };
     Ok(result)
+}
+
+pub fn recover_handle_request(
+    handle: String,
+    phone: String,
+    otp: Option<String>,
+    generated_identity: Option<RecoverGeneratedIdentity>,
+    default_domain: &str,
+) -> Result<RecoverHandleRequest, ExitError> {
+    Ok(RecoverHandleRequest {
+        handle: Handle::parse(handle, default_domain)
+            .map_err(|err| super::map_im_error(err, "id recover"))?,
+        phone,
+        otp,
+        generated_identity,
+    })
+}
+
+pub fn recover_handle_bridge_request(
+    params: identity::RecoverParams,
+    generated_identity: Option<RecoverGeneratedIdentity>,
+    default_domain: &str,
+) -> Result<RecoverHandleBridgeRequest, ExitError> {
+    let sdk = recover_handle_request(
+        params.handle.clone(),
+        params.phone.clone(),
+        trimmed_optional(&params.otp),
+        generated_identity,
+        default_domain,
+    )?;
+    Ok(RecoverHandleBridgeRequest {
+        sdk,
+        legacy: params,
+    })
+}
+
+pub fn recover_handle_plan_via_im_core(
+    manager: &identity::Manager,
+    did_domain: &str,
+    params: identity::RecoverParams,
+) -> Result<identity::CommandResult, ExitError> {
+    let bridge = recover_handle_bridge_request(params, None, did_domain)?;
+    let _sdk_request = bridge.sdk;
+    identity::recover_preview(manager, did_domain, bridge.legacy).map_err(crate::app::identity_exit)
+}
+
+pub fn recover_handle_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    params: identity::RecoverParams,
+) -> Result<identity::CommandResult, ExitError> {
+    let phone = params.phone.trim().to_string();
+    let otp = params.otp.trim().to_string();
+    if params.handle.trim().is_empty() || phone.is_empty() {
+        return Err(crate::app::identity_exit(
+            identity::IdentityError::InvalidInput(
+                "invalid input: handle and phone are required".to_string(),
+            ),
+        ));
+    }
+
+    let plan = identity::recover::build_recover_plan(manager, &resolved.did_domain, &params)
+        .map_err(crate::app::identity_exit)?;
+
+    if otp.is_empty() {
+        let bridge = recover_handle_bridge_request(params, None, &resolved.did_domain)?;
+        let result = im_core::compat::identity::recover_handle_with_bridge(
+            bridge.sdk,
+            IdentityRecoveryRpcTransport { resolved },
+        )
+        .map_err(|err| super::map_im_error(err, "id recover"))?;
+        return identity::wire::recover_otp_result(
+            &plan.final_identity_name,
+            &plan.target_local_part,
+            &plan.target_handle,
+            &phone,
+            result.raw,
+        )
+        .map_err(crate::app::identity_exit);
+    }
+
+    let generated = identity::generate_identity_with_path_segments(
+        &plan.effective_domain,
+        [plan.target_local_part.as_str()],
+        &resolved.anp_service_endpoint,
+        &resolved.anp_service_did,
+    )
+    .map_err(crate::app::identity_exit)?;
+    let sdk_generated = RecoverGeneratedIdentity {
+        did: Did::parse(&generated.did).map_err(|err| super::map_im_error(err, "id recover"))?,
+        unique_id: generated.unique_id.clone(),
+        did_document: generated.did_document.clone(),
+    };
+    let bridge = recover_handle_bridge_request(params, Some(sdk_generated), &resolved.did_domain)?;
+    let active_before = identity::recover::recover_active_before(&resolved.paths.config_file)
+        .map_err(crate::app::identity_exit)?;
+    let backup = manager
+        .backup_identities_for_handle_recovery(identity::recover::RecoverBackupRequest {
+            handle: &plan.target_handle,
+            candidates: &plan.same_handle_candidates,
+            planned_final_identity_name: &plan.final_identity_name,
+            planned_temp_identity_name: &plan.temp_identity_name,
+            active_before: &active_before,
+            config_file: Some(&resolved.paths.config_file),
+        })
+        .map_err(crate::app::identity_exit)?;
+
+    let bridge_result = im_core::compat::identity::recover_handle_with_bridge(
+        bridge.sdk,
+        IdentityRecoveryRpcTransport { resolved },
+    )
+    .map_err(|err| super::map_im_error(err, "id recover"))?;
+    let raw = bridge_result.raw;
+    let record = manager
+        .save(identity::types::SaveInput {
+            identity_name: plan.temp_identity_name.clone(),
+            did: string_value(&raw, "did", &generated.did),
+            unique_id: generated.unique_id,
+            user_id: string_value(&raw, "user_id", ""),
+            display_name: plan.target_local_part.clone(),
+            handle: default_string_value(&raw, "handle", &plan.target_local_part),
+            full_handle: default_string_value(&raw, "full_handle", &plan.target_handle),
+            jwt_token: string_value(&raw, "access_token", ""),
+            did_document: Some(generated.did_document),
+            key1_private_pem: generated.key1_private_pem,
+            key1_public_pem: generated.key1_public_pem,
+            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+            ..identity::types::SaveInput::default()
+        })
+        .map_err(crate::app::identity_exit)?;
+    let summary = identity::store::identity_summary_from_record(&record);
+    Ok(identity::CommandResult {
+        data: json!({
+            "action": "recover_handle",
+            "identity": summary,
+            "backup_path": backup.backup_path,
+            "archived_identities": plan.archived_identity_names(),
+            "archived_dids": plan.archived_dids(),
+            "old_dids": plan.old_owner_dids_in_merge_order(),
+            "full_handle": plan.target_handle,
+            "final_identity_name": plan.final_identity_name,
+            "temp_identity_name": plan.temp_identity_name,
+            "active_before": active_before,
+            "result": raw,
+        }),
+        summary: format!("Handle {} recovered successfully", plan.target_handle),
+        warnings: Vec::new(),
+    })
+}
+
+pub fn merge_recovered_handle_local_state_via_im_core(
+    paths: &crate::config::Paths,
+    old_owner_dids: Vec<String>,
+    new_owner_did: String,
+    final_identity_name: String,
+) -> Result<im_core::compat::identity::RecoverLocalStateMergeResult, store::StoreError> {
+    im_core::compat::identity::merge_recovered_handle_local_state_with_bridge(
+        im_core::compat::identity::RecoverLocalStateMergeRequest {
+            old_owner_dids,
+            new_owner_did,
+            final_identity_name,
+        },
+        RecoverLocalStateStore { paths },
+    )
+    .map_err(store_error_from_im_error)
 }
 
 fn bind_email_wait_via_im_core(
@@ -687,6 +861,14 @@ struct DirectoryLegacyTransport<'a> {
     resolved: &'a crate::config::Resolved,
 }
 
+struct IdentityRecoveryRpcTransport<'a> {
+    resolved: &'a crate::config::Resolved,
+}
+
+struct RecoverLocalStateStore<'a> {
+    paths: &'a crate::config::Paths,
+}
+
 impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacyTransport<'_> {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> im_core::ImResult<Value> {
         let client =
@@ -698,6 +880,35 @@ impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacy
         client
             .rpc_call_profile(profile, endpoint, method, params)
             .map_err(identity_error_to_im_error)
+    }
+}
+
+impl im_core::compat::identity::BridgeIdentityRpcTransport for IdentityRecoveryRpcTransport<'_> {
+    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> im_core::ImResult<Value> {
+        let client =
+            identity::client::Client::new(self.resolved).map_err(identity_error_to_im_error)?;
+        client
+            .rpc_call_profile(Profile::RpcDefault, endpoint, method, params)
+            .map_err(identity_error_to_im_error)
+    }
+}
+
+impl im_core::compat::identity::BridgeRecoverLocalStateStore for RecoverLocalStateStore<'_> {
+    fn merge_recovered_handle_local_state(
+        &mut self,
+        request: im_core::compat::identity::RecoverLocalStateMergeRequest,
+    ) -> im_core::ImResult<im_core::compat::identity::RecoverLocalStateMergeResult> {
+        let (store_merge_counts, e2ee_cleanup_counts) = store::merge_recovered_handle_local_state(
+            self.paths,
+            &request.old_owner_dids,
+            &request.new_owner_did,
+            &request.final_identity_name,
+        )
+        .map_err(store_error_to_im_error)?;
+        Ok(im_core::compat::identity::RecoverLocalStateMergeResult {
+            store_merge_counts,
+            e2ee_cleanup_counts,
+        })
     }
 }
 
@@ -876,6 +1087,26 @@ fn identity_error_to_im_error(err: identity::IdentityError) -> im_core::ImError 
     }
 }
 
+fn store_error_to_im_error(err: store::StoreError) -> im_core::ImError {
+    match err {
+        store::StoreError::Invalid(message) => im_core::ImError::invalid_input(None, message),
+        store::StoreError::NotFound(message) => {
+            im_core::ImError::LocalStateUnavailable { detail: message }
+        }
+        err => im_core::ImError::LocalStateUnavailable {
+            detail: err.to_string(),
+        },
+    }
+}
+
+fn store_error_from_im_error(err: im_core::ImError) -> store::StoreError {
+    match err {
+        im_core::ImError::InvalidInput { message, .. } => store::StoreError::invalid(message),
+        im_core::ImError::LocalStateUnavailable { detail } => store::StoreError::Invalid(detail),
+        err => store::StoreError::Invalid(err.to_string()),
+    }
+}
+
 fn looks_like_handle(value: &str) -> bool {
     value.starts_with('@') || value.contains('.')
 }
@@ -890,5 +1121,23 @@ fn trimmed_optional(value: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+fn string_value(result: &Value, key: &str, fallback: &str) -> String {
+    result
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn default_string_value(result: &Value, key: &str, fallback: &str) -> String {
+    let value = string_value(result, key, "");
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value
     }
 }

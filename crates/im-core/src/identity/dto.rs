@@ -135,3 +135,41 @@ pub enum ContactBindingState {
     Pending,
     Completed,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecoverHandleRequest {
+    pub handle: crate::ids::Handle,
+    pub phone: String,
+    pub otp: Option<String>,
+    pub generated_identity: Option<RecoverGeneratedIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecoverGeneratedIdentity {
+    pub did: crate::ids::Did,
+    pub unique_id: String,
+    pub did_document: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecoverHandleResult {
+    pub handle: crate::ids::Handle,
+    pub phone: String,
+    pub state: RecoverHandleState,
+    pub recovered_identity: Option<RecoveredIdentity>,
+    pub raw: Option<serde_json::Value>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecoverHandleState {
+    OtpSent,
+    Recovered,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecoveredIdentity {
+    pub identity: IdentitySummary,
+    pub user_id: Option<String>,
+    pub access_token_present: bool,
+}

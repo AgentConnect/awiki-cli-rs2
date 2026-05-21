@@ -111,6 +111,35 @@ pub trait BridgeIdentityAuthenticatedRestTransport {
     ) -> crate::ImResult<serde_json::Value>;
 }
 
+pub trait BridgeIdentityRpcTransport {
+    fn rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> crate::ImResult<serde_json::Value>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverLocalStateMergeRequest {
+    pub old_owner_dids: Vec<String>,
+    pub new_owner_did: String,
+    pub final_identity_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverLocalStateMergeResult {
+    pub store_merge_counts: std::collections::BTreeMap<String, i64>,
+    pub e2ee_cleanup_counts: std::collections::BTreeMap<String, i64>,
+}
+
+pub trait BridgeRecoverLocalStateStore {
+    fn merge_recovered_handle_local_state(
+        &mut self,
+        request: RecoverLocalStateMergeRequest,
+    ) -> crate::ImResult<RecoverLocalStateMergeResult>;
+}
+
 #[doc(hidden)]
 pub fn bind_contact_with_bridge<P, T>(
     client: &crate::core::ImClient,
@@ -155,6 +184,60 @@ where
         raw_status: result.raw_status,
         raw_send: result.raw_send,
     })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecoverHandleBridgeResult {
+    pub result: crate::identity::RecoverHandleResult,
+    pub raw: serde_json::Value,
+}
+
+#[doc(hidden)]
+pub fn recover_handle_with_bridge<T>(
+    request: crate::identity::RecoverHandleRequest,
+    transport: T,
+) -> crate::ImResult<RecoverHandleBridgeResult>
+where
+    T: BridgeIdentityRpcTransport,
+{
+    let result = crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new(
+        CompatIdentityRpcTransport(transport),
+    )
+    .recover_handle(request)?;
+    Ok(RecoverHandleBridgeResult {
+        result: result.sdk_result,
+        raw: result.raw,
+    })
+}
+
+#[doc(hidden)]
+pub fn merge_recovered_handle_local_state_with_bridge<S>(
+    request: RecoverLocalStateMergeRequest,
+    mut store: S,
+) -> crate::ImResult<RecoverLocalStateMergeResult>
+where
+    S: BridgeRecoverLocalStateStore,
+{
+    validate_recover_local_state_merge_request(&request)?;
+    store.merge_recovered_handle_local_state(request)
+}
+
+fn validate_recover_local_state_merge_request(
+    request: &RecoverLocalStateMergeRequest,
+) -> crate::ImResult<()> {
+    if request.new_owner_did.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("new_owner_did".to_string()),
+            "new owner DID is required",
+        ));
+    }
+    if request.final_identity_name.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("final_identity_name".to_string()),
+            "final identity name is required",
+        ));
+    }
+    Ok(())
 }
 
 struct CompatIdentitySessionProvider<P>(P);
@@ -208,5 +291,21 @@ where
         query: &std::collections::BTreeMap<String, String>,
     ) -> crate::ImResult<serde_json::Value> {
         self.0.authenticated_rest_get(endpoint, method, query)
+    }
+}
+
+struct CompatIdentityRpcTransport<T>(T);
+
+impl<T> crate::internal::transport::RpcTransport for CompatIdentityRpcTransport<T>
+where
+    T: BridgeIdentityRpcTransport,
+{
+    fn rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> crate::ImResult<serde_json::Value> {
+        self.0.rpc(endpoint, method, params)
     }
 }

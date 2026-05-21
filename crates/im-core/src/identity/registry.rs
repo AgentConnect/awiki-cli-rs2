@@ -187,6 +187,18 @@ impl<'a> IdentityRegistry<'a> {
         })
     }
 
+    pub fn recover_handle(
+        &self,
+        request: super::RecoverHandleRequest,
+    ) -> crate::ImResult<super::RecoverHandleResult> {
+        crate::internal::identity_recovery_runtime::validate_request(&request)?;
+        crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new(
+            crate::internal::transport::UnavailableTransport,
+        )
+        .recover_handle(request)
+        .map(|result| result.sdk_result)
+    }
+
     pub fn plan_default_identity_change(
         &self,
         selector: super::IdentitySelector,

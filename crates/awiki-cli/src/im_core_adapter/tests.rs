@@ -77,6 +77,24 @@ fn register_handle_bridge_preserves_legacy_registration_inputs() {
 }
 
 #[test]
+fn recover_handle_bridge_builds_sdk_request_and_preserves_legacy_inputs() {
+    let params = crate::identity::RecoverParams {
+        identity_name: "ignored".to_string(),
+        handle: "Alice".to_string(),
+        phone: "13800138000".to_string(),
+        otp: " 12 34 56 ".to_string(),
+    };
+    let bridge = identity::recover_handle_bridge_request(params, None, "awiki.test").unwrap();
+
+    assert_eq!(bridge.sdk.handle.as_str(), "alice.awiki.test");
+    assert_eq!(bridge.sdk.phone, "13800138000");
+    assert_eq!(bridge.sdk.otp.as_deref(), Some("12 34 56"));
+    assert!(bridge.sdk.generated_identity.is_none());
+    assert_eq!(bridge.legacy.identity_name, "ignored");
+    assert_eq!(bridge.legacy.otp, " 12 34 56 ");
+}
+
+#[test]
 fn im_error_unsupported_maps_to_phase_unsupported_exit_error() {
     let err = error::map_im_error(
         ImError::UnsupportedCapability {

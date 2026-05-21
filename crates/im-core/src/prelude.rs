@@ -12,8 +12,9 @@ pub use crate::identity::{
     ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
     ContactBindingState, DefaultIdentityChange, HandleRegistrationResult, IdentityMissingItem,
     IdentityReadiness, IdentityRegistry, IdentitySelector, IdentityService, IdentitySummary,
-    InitialProfile, Profile, ProfileAttribute, ProfilePatch, RegisterHandleRequest,
-    VerificationInput,
+    InitialProfile, Profile, ProfileAttribute, ProfilePatch, RecoverGeneratedIdentity,
+    RecoverHandleRequest, RecoverHandleResult, RecoverHandleState, RecoveredIdentity,
+    RegisterHandleRequest, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
