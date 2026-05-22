@@ -29,12 +29,12 @@ use super::listener_secure_ack_delivery::{
 use super::listener_secure_notifications::{
     is_direct_secure_incoming_notification, plaintext_body_to_notification_body,
 };
-use super::listener_secure_replay::{
-    secure_pending_history_replay_candidates, secure_unread_replay_candidates, ReplayStoreLookup,
-};
+use super::listener_secure_replay::ReplayStoreLookup;
 use super::listener_secure_sessions;
 use super::listener_secure_sync::{
-    SECURE_DIRECT_SYNC_TIMEOUT, SECURE_PENDING_HISTORY_LIMIT, SECURE_UNREAD_INBOX_LIMIT,
+    secure_pending_confirmation_history_replay_actions,
+    secure_pending_confirmation_history_rpc_call, secure_unread_direct_inbox_replay_actions,
+    secure_unread_direct_inbox_rpc_call,
 };
 use super::listener_service_did::{
     fetch_message_service_did, ListenerServiceDidRpc, ListenerServiceDidSession,
@@ -798,21 +798,11 @@ fn sync_unread_secure_direct_inbox(
     let Ok(mut rpc) = SessionSharedRpc::new(session_rpcs, &record.identity_name) else {
         return;
     };
-    let params = message::build_inbox_rpc_params(
-        record,
-        message::InboxRequest {
-            scope: "direct".to_string(),
-            unread_only: true,
-            limit: SECURE_UNREAD_INBOX_LIMIT,
-            ..message::InboxRequest::default()
-        },
-    );
-    let Value::Object(params) = params else {
+    let call = secure_unread_direct_inbox_rpc_call(record);
+    let Value::Object(params) = call.params else {
         return;
     };
-    let Ok(result) =
-        rpc.send_rpc_with_timeout("inbox.get", params, Some(SECURE_DIRECT_SYNC_TIMEOUT))
-    else {
+    let Ok(result) = rpc.send_rpc_with_timeout(&call.method, params, Some(call.timeout)) else {
         return;
     };
     replay_secure_messages_from_rpc_result(
@@ -848,24 +838,13 @@ fn sync_pending_confirmation_secure_history(
         return;
     };
     for peer_did in peer_dids {
-        let Ok(params) = message::build_history_rpc_params(
-            record,
-            message::HistoryRequest {
-                with: peer_did,
-                limit: SECURE_PENDING_HISTORY_LIMIT,
-                ..message::HistoryRequest::default()
-            },
-        ) else {
+        let Ok(call) = secure_pending_confirmation_history_rpc_call(record, &peer_did) else {
             continue;
         };
-        let Value::Object(params) = params else {
+        let Value::Object(params) = call.params else {
             continue;
         };
-        let Ok(result) = rpc.send_rpc_with_timeout(
-            "direct.get_history",
-            params,
-            Some(SECURE_DIRECT_SYNC_TIMEOUT),
-        ) else {
+        let Ok(result) = rpc.send_rpc_with_timeout(&call.method, params, Some(call.timeout)) else {
             continue;
         };
         replay_secure_messages_from_rpc_result(
@@ -893,11 +872,6 @@ fn replay_secure_messages_from_rpc_result(
     result: &Map<String, Value>,
     skip_self_sent: bool,
 ) {
-    let messages = result
-        .get("messages")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
     let mut lookup = |message_id: &str, owner_did: &str, _credential_name: &str| {
         if cached_message_exists(resolved, owner_did, message_id) {
             ReplayStoreLookup::Exists
@@ -905,27 +879,34 @@ fn replay_secure_messages_from_rpc_result(
             ReplayStoreLookup::Missing
         }
     };
-    let candidates = if skip_self_sent {
-        secure_pending_history_replay_candidates(
-            &messages,
-            &record.did,
-            &record.identity_name,
+    let actions = if skip_self_sent {
+        secure_pending_confirmation_history_replay_actions(
+            record,
+            &Value::Object(result.clone()),
             &mut lookup,
         )
     } else {
-        secure_unread_replay_candidates(&messages, &record.did, &record.identity_name, &mut lookup)
-    };
-    for candidate in candidates {
-        handle_replayed_secure_notification(
-            resolved,
-            manager,
-            status,
-            host_notify,
-            local_notifications,
-            session_rpcs,
+        secure_unread_direct_inbox_replay_actions(
             record,
-            &candidate.notification,
-        );
+            &Value::Object(result.clone()),
+            &mut lookup,
+        )
+    };
+    for action in actions {
+        if let super::listener_secure_sync::SecureSyncAction::HandleNotification { notification } =
+            action
+        {
+            handle_replayed_secure_notification(
+                resolved,
+                manager,
+                status,
+                host_notify,
+                local_notifications,
+                session_rpcs,
+                record,
+                &notification,
+            );
+        }
     }
 }
 
