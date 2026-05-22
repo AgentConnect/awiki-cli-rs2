@@ -4,6 +4,9 @@ use crate::config::Resolved;
 use crate::identity::{self, Manager};
 use crate::output::ExitError;
 
+// Temporary migration-only legacy bridge exception.
+// Delete in PR C3/C7 when id refresh-token defaults to client.auth().refresh_session()
+// and no longer calls the legacy identity refresh flow.
 pub fn auth_scope_from_cli(value: &str) -> Result<AuthScope, ExitError> {
     match value.trim().to_ascii_lowercase().as_str() {
         "" | "profile" | "user-profile" | "user_profile" => Ok(AuthScope::UserProfile),

@@ -1,3 +1,7 @@
+// Temporary migration-only legacy bridge exception.
+// Delete in PR C5/C7 when listener run/service-run always use public realtime
+// runner APIs without compat constants or MVP feature-flag selection here.
+
 use im_core::prelude::{RealtimeOptions, RealtimeSubscription, ReconnectPolicy, ShutdownSignal};
 
 use crate::runtime;

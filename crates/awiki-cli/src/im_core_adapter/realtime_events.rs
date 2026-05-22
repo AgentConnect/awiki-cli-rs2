@@ -1,3 +1,8 @@
+// Temporary migration-only legacy bridge exception.
+// Delete in PR C5/C7 when realtime runner event delivery uses stable im-core
+// event sink APIs and this module is only CLI-owned host-notification
+// projection, with no compat trait implementation or listener legacy loop ties.
+
 use crate::runtime::host_notify::{
     DirectMessageNotificationData, GroupMessageNotificationData, GroupStateChangedNotificationData,
     HostNotificationData, HostNotificationEvent, HOST_NOTIFICATION_VERSION,

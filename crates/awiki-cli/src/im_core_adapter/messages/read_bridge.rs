@@ -1,3 +1,8 @@
+// Temporary migration-only legacy bridge exception.
+// Delete in PR C4/C7 when read/mark-read default handlers call im-core public
+// APIs directly and no longer reuse legacy message cache, websocket fallback,
+// or compat transport bridges from this adapter.
+
 use im_core::prelude::{
     AuthScope, HistoryQuery, InboxQuery, InboxScope, MessageId, SessionBundle, ThreadRef,
 };

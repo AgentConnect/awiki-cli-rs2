@@ -1,5 +1,10 @@
 mod read_bridge;
 
+// Temporary migration-only legacy bridge exception.
+// Delete in PR C4/C7 when msg send/inbox/history/mark-read default handlers call
+// im-core public message APIs directly instead of translating SDK DTOs back to
+// legacy message requests, compat bridges, and legacy render records.
+
 use std::fs;
 
 use im_core::prelude::{

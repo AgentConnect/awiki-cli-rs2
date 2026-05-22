@@ -1,3 +1,8 @@
+// Temporary migration-only legacy bridge exception.
+// Delete in PR C3/C7 when identity/profile/directory default handlers call
+// im-core public APIs directly and this adapter no longer converts SDK DTOs
+// back to legacy identity requests, stores, clients, or compat bridges.
+
 use im_core::prelude::{
     AuthScope, ContactBindingMethod, ContactBindingRequest, ContactBindingState, Did, Handle,
     IdentitySelector, InitialProfile, PeerRef, ProfilePatch, RecoverGeneratedIdentity,

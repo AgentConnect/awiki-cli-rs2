@@ -1,3 +1,8 @@
+// Temporary migration-only legacy bridge exception.
+// Delete in PR C4/C7 when group lifecycle/read default handlers call im-core
+// public GroupService APIs directly and no longer reuse legacy message group
+// requests, cache projection, websocket fallback, or compat transports here.
+
 use im_core::prelude::{
     AuthScope, Cursor, Did, GroupCreateRequest, GroupJoinRequest, GroupLeaveRequest,
     GroupListRequest, GroupMemberMutationRequest, GroupMembersRequest, GroupMessagesRequest,

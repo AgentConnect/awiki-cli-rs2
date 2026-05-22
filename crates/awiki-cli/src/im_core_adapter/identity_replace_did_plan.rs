@@ -1,3 +1,8 @@
+// Temporary migration-only legacy bridge exception.
+// Delete in PR C3/C7 when replace-did is hidden/advanced through the cutover
+// classifier and any remaining execution path uses im-core public identity APIs
+// without legacy local identity mutation bridges in this adapter.
+
 use im_core::prelude::{
     Did, Handle, IdentityId, IdentitySelector, ReplaceDidAffectedLocalState,
     ReplaceDidExecutionRequest, ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity,
