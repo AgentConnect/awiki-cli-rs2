@@ -28,8 +28,7 @@ use crate::output::ExitError;
 use crate::store;
 
 pub use super::identity_replace_did_plan::{
-    replace_did_plan_bridge_request, replace_did_plan_via_im_core, replace_did_via_im_core,
-    ReplaceDidPlanBridgeRequest,
+    replace_did_plan_bridge_request, replace_did_plan_via_im_core, ReplaceDidPlanBridgeRequest,
 };
 
 #[derive(Debug, Clone)]

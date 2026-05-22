@@ -22,17 +22,10 @@ impl App {
             return self.render_identity_result("awiki-cli id replace-did", &resolved, result);
         }
 
-        let manager = self.identity_manager(&resolved);
-        let result = crate::im_core_adapter::identity::replace_did_via_im_core(
-            &resolved,
-            &manager,
-            &self.globals.identity,
-            is_public,
-            is_agent,
-            role,
-            endpoint_url,
-        )?;
-
-        self.render_identity_result("awiki-cli id replace-did", &resolved, result)
+        Err(crate::im_core_adapter::unsupported_cutover_command(
+            "id.replace-did",
+            "replace-did execution",
+            "stable im-core identity replace-did execution API",
+        ))
     }
 }
