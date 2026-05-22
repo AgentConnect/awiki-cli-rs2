@@ -935,16 +935,11 @@ pub fn get_public_profile_via_im_core(
     let Some(client) =
         build_optional_directory_client(resolved, manager, identity_flag, "id profile get")?
     else {
-        return identity::get_profile(
-            resolved,
-            manager,
-            identity::GetProfileParams {
-                self_profile: request.self_profile,
-                handle: request.handle,
-                did: request.did,
-            },
-        )
-        .map_err(crate::app::identity_exit);
+        return Err(super::unsupported_cutover_command(
+            "id.profile.get",
+            "unauthenticated public profile lookup",
+            "anonymous directory client support",
+        ));
     };
     let mut subject = serde_json::Map::new();
     let profile_did = request.did.trim().to_string();
@@ -1007,14 +1002,11 @@ pub fn resolve_identity_via_im_core(
     let Some(client) =
         build_optional_directory_client(resolved, manager, identity_flag, "id resolve")?
     else {
-        return identity::resolve_identity(
-            resolved,
-            identity::ResolveParams {
-                handle: request.handle,
-                did: request.did,
-            },
-        )
-        .map_err(crate::app::identity_exit);
+        return Err(super::unsupported_cutover_command(
+            "id.resolve",
+            "unauthenticated directory resolve",
+            "anonymous directory client support",
+        ));
     };
     let peer = if !handle.is_empty() {
         let target = identity::normalize_handle_input(handle, &resolved.did_domain)
