@@ -466,24 +466,18 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
     assert_output_contains(logs_command, "ndjson");
     assert_eq!(schema_flag(logs_command, "follow")["type"], "bool");
 
-    for (args, name, phase, command_path) in [
-        (
-            &["group", "code", "get", "--group", "did:group"][..],
-            "group.code.get",
-            "PHASE5",
-            "awiki-cli group code get",
-        ),
+    for (args, command, capability, required_phase) in [
         (
             &["runtime", "heartbeat", "status"][..],
             "runtime.heartbeat.status",
-            "PHASE7",
-            "awiki-cli runtime heartbeat status",
+            "runtime-heartbeat",
+            "outside current im-core cutover",
         ),
         (
             &["people", "search", "alice"][..],
             "people.search",
-            "PHASE8",
-            "awiki-cli people search",
+            "people-directory",
+            "future directory/relation API",
         ),
         (
             &[
@@ -496,8 +490,34 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
                 "alice",
             ][..],
             "people.contacts.save",
-            "PHASE8",
-            "awiki-cli people contacts save",
+            "people-directory",
+            "future directory/relation API",
+        ),
+    ] {
+        let output = awiki_cmd(args);
+        assert_code(&output, 2);
+        assert_stdout_empty(&output);
+        let envelope = error_json(&output);
+
+        assert_eq!(envelope["error"]["code"], "unsupported_capability");
+        assert_eq!(envelope["error"]["details"]["command"], command);
+        assert_eq!(envelope["error"]["details"]["capability"], capability);
+        assert_eq!(
+            envelope["error"]["details"]["required_phase"],
+            required_phase
+        );
+        assert_eq!(
+            envelope["error"]["details"]["cutover_status"],
+            "unsupported"
+        );
+    }
+
+    for (args, name, phase, command_path) in [
+        (
+            &["group", "code", "get", "--group", "did:group"][..],
+            "group.code.get",
+            "PHASE5",
+            "awiki-cli group code get",
         ),
         (
             &["debug", "raw", "rpc"][..],

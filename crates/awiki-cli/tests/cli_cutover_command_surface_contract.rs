@@ -1,5 +1,6 @@
 use awiki_cli::cmdmeta::{self, CutoverStatus};
 use serde_json::Value;
+use std::process::{Command, Output};
 
 #[test]
 fn every_command_spec_has_cutover_classification() {
@@ -259,6 +260,40 @@ fn unsupported_cutover_error_has_stable_contract() {
     );
 }
 
+#[test]
+fn unsupported_cutover_stub_commands_do_not_enter_legacy_stub_boundary() {
+    for (args, command, capability, required_phase) in [
+        (
+            &["runtime", "heartbeat", "status"][..],
+            "runtime.heartbeat.status",
+            "runtime-heartbeat",
+            "outside current im-core cutover",
+        ),
+        (
+            &["people", "search", "alice"][..],
+            "people.search",
+            "people-directory",
+            "future directory/relation API",
+        ),
+    ] {
+        let output = awiki_cmd(args);
+        assert_code(&output, 2);
+        let envelope = error_json(&output);
+
+        assert_eq!(envelope["error"]["code"], "unsupported_capability");
+        assert_eq!(envelope["error"]["details"]["command"], command);
+        assert_eq!(envelope["error"]["details"]["capability"], capability);
+        assert_eq!(
+            envelope["error"]["details"]["required_phase"],
+            required_phase
+        );
+        assert_eq!(
+            envelope["error"]["details"]["cutover_status"],
+            "unsupported"
+        );
+    }
+}
+
 fn schema_value(command: &str) -> Value {
     serde_json::to_value(cmdmeta::lookup(command).expect("command schema exists"))
         .expect("schema serializes")
@@ -270,4 +305,41 @@ fn schema_child(parent: &str, child: &str) -> Value {
         .find(|spec| spec.name == child)
         .map(|spec| serde_json::to_value(spec).expect("schema serializes"))
         .unwrap_or_else(|| panic!("missing child {child} under {parent}"))
+}
+
+fn awiki_cmd(args: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
+    command
+        .args(args)
+        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
+        .env_remove("AWIKI_WORKSPACE")
+        .env_remove("AWIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_HOME")
+        .env_remove("AVIKI_WORKSPACE_HOME")
+        .env_remove("AWIKI_FORMAT")
+        .env_remove("AVIKI_FORMAT")
+        .env_remove("AWIKI_CLI_TRACE_TIMING");
+    command.output().expect("run awiki-cli binary")
+}
+
+fn assert_code(output: &Output, code: i32) {
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn error_json(output: &Output) -> Value {
+    assert!(
+        output.stdout.is_empty(),
+        "stdout should be empty: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let envelope: Value =
+        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
+    assert_eq!(envelope["ok"], false);
+    envelope
 }

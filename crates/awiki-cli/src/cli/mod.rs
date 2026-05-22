@@ -376,6 +376,12 @@ fn is_go_stub_command(command: &str) -> bool {
 }
 
 fn go_stub_error(command: &str) -> ExitError {
+    if let cmdmeta::CutoverStatus::Unsupported { capability, phase } =
+        cmdmeta::cutover_status(command)
+    {
+        return crate::app::unsupported::unsupported_cutover_command(command, capability, phase);
+    }
+
     let spec = cmdmeta::lookup(command).expect("known Go stub command");
     let command_path = format!("awiki-cli {}", command.replace('.', " "));
     ExitError::new(
