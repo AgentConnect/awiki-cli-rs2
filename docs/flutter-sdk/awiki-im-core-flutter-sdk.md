@@ -47,7 +47,7 @@ Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitiv
 
 ## Realtime ownership
 
-v0.1 exposes capability/status shape only. Realtime connect/session/events are deferred; `connect()` returns `unsupported_capability("realtime-runner")`. Transport details such as raw frames, ping/pong, request IDs, and dispatch queues are internal to `im-core` and must not become Dart public API. Future realtime work should expose high-level sessions/events only.
+v0.1 exposes capability/status shape only. Realtime connect/session/events are deferred; `connect()` returns `unsupported_capability("realtime-runner")`. WebSocket remains an `im-core` internal transport concern. Transport details such as WebSocket URLs, raw frames, ping/pong, request IDs, and dispatch queues are internal to `im-core` and must not become Dart public API. Future realtime work should expose high-level sessions/events only.
 
 ## Codegen
 
@@ -72,6 +72,7 @@ scripts/flutter/build-host.sh
 scripts/flutter/build-android.sh --dry-run
 scripts/flutter/build-apple.sh --dry-run
 scripts/flutter/build-all.sh
+scripts/flutter/package.sh --dry-run
 ```
 
 Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS with Xcode and Rust Apple targets installed.

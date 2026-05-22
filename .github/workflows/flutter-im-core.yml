@@ -15,6 +15,9 @@ jobs:
         with:
           repository: agent-network-protocol/anp
           path: anp
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
       - name: Rust
         working-directory: awiki-cli-rs2
         run: |
@@ -23,6 +26,7 @@ jobs:
           cargo +1.78.0 check -p im-core --locked
           cargo +1.79.0 check -p im-core-dart --locked
           cargo +1.79.0 test -p im-core-dart --locked
+          cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
           scripts/flutter/codegen-check.sh
           cargo +1.79.0 run -p xtask --locked -- check-structure
 
@@ -38,7 +42,7 @@ jobs:
           path: anp
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
+          channel: stable
       - name: Check package
         working-directory: awiki-cli-rs2/packages/awiki_im_core
         run: |
