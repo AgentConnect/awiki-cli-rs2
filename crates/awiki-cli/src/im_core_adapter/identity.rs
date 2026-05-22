@@ -547,22 +547,24 @@ pub fn recover_handle_via_im_core(
     let plan = recover_handle_plan(manager, &resolved.did_domain, &params)?;
 
     if otp.is_empty() {
+        let core = super::build_im_core(resolved, manager)?;
         let bridge = recover_handle_bridge_request(params, None, &resolved.did_domain)?;
-        let result = im_core::compat::identity::recover_handle_with_bridge(
-            bridge.sdk,
-            IdentityRecoveryRpcTransport { resolved },
-        )
-        .map_err(|err| super::map_im_error(err, "id recover"))?;
+        let result = core
+            .identities()
+            .recover_handle(bridge.sdk)
+            .map_err(|err| super::map_im_error(err, "id recover"))?;
+        let raw = result.raw.unwrap_or(Value::Null);
         return identity::wire::recover_otp_result(
             &plan.final_identity_name,
             &plan.target_local_part,
             &plan.target_handle,
             &phone,
-            result.raw,
+            raw,
         )
         .map_err(crate::app::identity_exit);
     }
 
+    let core = super::build_im_core(resolved, manager)?;
     let generated = identity::generate_identity_with_path_segments(
         &plan.effective_domain,
         [plan.target_local_part.as_str()],
@@ -580,12 +582,11 @@ pub fn recover_handle_via_im_core(
     let backup =
         recover_handle_backup(manager, &plan, &active_before, &resolved.paths.config_file)?;
 
-    let bridge_result = im_core::compat::identity::recover_handle_with_bridge(
-        bridge.sdk,
-        IdentityRecoveryRpcTransport { resolved },
-    )
-    .map_err(|err| super::map_im_error(err, "id recover"))?;
-    let raw = bridge_result.raw;
+    let result = core
+        .identities()
+        .recover_handle(bridge.sdk)
+        .map_err(|err| super::map_im_error(err, "id recover"))?;
+    let raw = result.raw.unwrap_or(Value::Null);
     let record = manager
         .save(identity::types::SaveInput {
             identity_name: plan.temp_identity_name.clone(),
@@ -1091,10 +1092,6 @@ struct DirectoryLegacyTransport<'a> {
     resolved: &'a crate::config::Resolved,
 }
 
-struct IdentityRecoveryRpcTransport<'a> {
-    resolved: &'a crate::config::Resolved,
-}
-
 struct RecoverLocalStateStore<'a> {
     paths: &'a crate::config::Paths,
 }
@@ -1109,16 +1106,6 @@ impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacy
         };
         client
             .rpc_call_profile(profile, endpoint, method, params)
-            .map_err(identity_error_to_im_error)
-    }
-}
-
-impl im_core::compat::identity::BridgeIdentityRpcTransport for IdentityRecoveryRpcTransport<'_> {
-    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> im_core::ImResult<Value> {
-        let client =
-            identity::client::Client::new(self.resolved).map_err(identity_error_to_im_error)?;
-        client
-            .rpc_call_profile(Profile::RpcDefault, endpoint, method, params)
             .map_err(identity_error_to_im_error)
     }
 }

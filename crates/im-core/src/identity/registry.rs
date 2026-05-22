@@ -166,7 +166,7 @@ impl IdentityRegistry<'_> {
     ) -> crate::ImResult<super::RecoverHandleResult> {
         crate::internal::identity_recovery_runtime::validate_request(&request)?;
         crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new(
-            crate::internal::transport::UnavailableTransport,
+            crate::internal::transport::CorePlainTransport::new(self.core),
         )
         .recover_handle(request)
         .map(|result| result.sdk_result)
