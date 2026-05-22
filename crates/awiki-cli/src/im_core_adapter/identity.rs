@@ -5,8 +5,9 @@
 
 use im_core::prelude::{
     AuthScope, ContactBindingMethod, ContactBindingRequest, ContactBindingState, Did, Handle,
-    IdentitySelector, InitialProfile, PeerRef, ProfilePatch, RecoverGeneratedIdentity,
-    RecoverHandleRequest, RegisterHandleRequest, SessionBundle, VerificationInput,
+    HandleRegistrationResult, HandleRegistrationState, IdentitySelector, InitialProfile, PeerRef,
+    ProfilePatch, RecoverGeneratedIdentity, RecoverHandleRequest, RegisterHandleRequest,
+    RegistrationMethod, SessionBundle, VerificationInput,
 };
 use serde_json::json;
 use serde_json::Value;
@@ -184,10 +185,58 @@ pub fn register_handle_via_im_core(
 ) -> Result<identity::CommandResult, ExitError> {
     let bridge = register_handle_bridge_request(command, identity_flag)?;
     let core = super::build_im_core(resolved, manager)?;
-    core.identities()
+    let result = core
+        .identities()
         .register_handle(bridge.sdk)
         .map_err(|err| super::map_im_error(err, "id register"))?;
-    identity::register(resolved, manager, bridge.legacy).map_err(crate::app::identity_exit)
+    register_handle_command_result(result, manager, &bridge.legacy)
+}
+
+fn register_handle_command_result(
+    result: HandleRegistrationResult,
+    manager: &identity::Manager,
+    legacy: &identity::RegisterParams,
+) -> Result<identity::CommandResult, ExitError> {
+    let full_handle = result.handle.as_str().to_string();
+    let handle = full_handle
+        .split_once('.')
+        .map(|(local, _)| local)
+        .unwrap_or(full_handle.as_str())
+        .to_string();
+    let method = registration_method_label(result.method);
+    let verification_state = registration_state_label(result.state);
+    let identity_name = result
+        .identity
+        .as_ref()
+        .map(sdk_identity_name)
+        .unwrap_or_else(|| pending_registration_identity_name(legacy, &handle, &full_handle));
+    let mut data = json!({
+        "action": registration_action(result.state),
+        "identity_name": identity_name,
+        "handle": handle,
+        "full_handle": full_handle,
+        "method": method,
+        "verification_state": verification_state,
+    });
+    if let Some(identity) = result.identity.as_ref() {
+        data["identity"] = json!(cli_identity_summary_from_sdk_with_manager(
+            identity, manager
+        )?);
+    }
+    let phone = legacy.phone.trim();
+    if !phone.is_empty() {
+        data["phone"] = json!(im_core::compat::identity::normalize_phone(phone)
+            .map_err(|err| super::map_im_error(err, "id register"))?);
+    }
+    let email = im_core::compat::identity::normalize_email(&legacy.email);
+    if !email.is_empty() {
+        data["email"] = json!(email);
+    }
+    Ok(identity::CommandResult {
+        summary: registration_summary(result.state, data["full_handle"].as_str().unwrap_or("")),
+        data,
+        warnings: result.warnings,
+    })
 }
 
 pub fn list_identities_via_im_core(
@@ -1366,6 +1415,61 @@ fn sdk_identity_name(summary: &im_core::IdentitySummary) -> String {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| summary.id.as_str())
         .to_string()
+}
+
+fn pending_registration_identity_name(
+    legacy: &identity::RegisterParams,
+    handle: &str,
+    full_handle: &str,
+) -> String {
+    let identity_name = legacy.identity_name.trim();
+    if !identity_name.is_empty() {
+        return identity_name.to_string();
+    }
+    if legacy.handle.trim().contains('.') {
+        full_handle.to_string()
+    } else {
+        handle.to_string()
+    }
+}
+
+fn registration_action(state: HandleRegistrationState) -> &'static str {
+    match state {
+        HandleRegistrationState::OtpSent => "send_handle_otp",
+        HandleRegistrationState::EmailSent => "send_registration_email",
+        HandleRegistrationState::EmailPending => "wait_for_registration_email",
+        HandleRegistrationState::Registered => "register_handle",
+    }
+}
+
+fn registration_state_label(state: HandleRegistrationState) -> &'static str {
+    match state {
+        HandleRegistrationState::OtpSent => "otp_sent",
+        HandleRegistrationState::EmailSent => "email_sent",
+        HandleRegistrationState::EmailPending => "pending",
+        HandleRegistrationState::Registered => "completed",
+    }
+}
+
+fn registration_method_label(method: RegistrationMethod) -> &'static str {
+    match method {
+        RegistrationMethod::Phone => "phone",
+        RegistrationMethod::Email => "email",
+        RegistrationMethod::AlreadyVerified => "already_verified",
+    }
+}
+
+fn registration_summary(state: HandleRegistrationState, full_handle: &str) -> String {
+    match state {
+        HandleRegistrationState::OtpSent => format!("OTP sent for handle {full_handle}"),
+        HandleRegistrationState::EmailSent => {
+            format!("Activation email sent for handle {full_handle}")
+        }
+        HandleRegistrationState::EmailPending => "Email verification is still pending".to_string(),
+        HandleRegistrationState::Registered => {
+            format!("Handle {full_handle} registered successfully")
+        }
+    }
 }
 
 fn sdk_user_state(summary: &im_core::IdentitySummary) -> identity::UserState {

@@ -365,7 +365,7 @@ fn identity_register_phone_without_otp_live_posts_send_otp_and_does_not_create_i
     assert_eq!(envelope["data"]["method"], "phone");
     assert_eq!(envelope["data"]["phone"], "+8613800138000");
     assert_eq!(envelope["data"]["verification_state"], "otp_sent");
-    assert_eq!(envelope["data"]["result"], json!({ "sent": true }));
+    assert!(envelope["data"].get("result").is_none());
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);

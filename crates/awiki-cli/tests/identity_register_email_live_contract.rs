@@ -41,10 +41,7 @@ fn identity_register_email_without_wait_checks_status_then_sends_activation_like
     assert_eq!(envelope["data"]["method"], "email");
     assert_eq!(envelope["data"]["email"], "alice@example.com");
     assert_eq!(envelope["data"]["verification_state"], "email_sent");
-    assert_eq!(
-        envelope["data"]["result"],
-        json!({ "message": "Activation email sent." })
-    );
+    assert!(envelope["data"].get("result").is_none());
 
     let requests = server.requests();
     assert_eq!(requests.len(), 2);

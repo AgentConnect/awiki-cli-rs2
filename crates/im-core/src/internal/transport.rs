@@ -14,6 +14,17 @@ pub(crate) trait RpcTransport {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
 }
 
+pub(crate) trait RestTransport {
+    fn rest_post(&mut self, endpoint: &str, method: &str, body: Value) -> crate::ImResult<Value>;
+
+    fn rest_get(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        query: &std::collections::BTreeMap<String, String>,
+    ) -> crate::ImResult<Value>;
+}
+
 pub(crate) trait AuthenticatedRestTransport {
     fn authenticated_rest_post(
         &mut self,
@@ -35,6 +46,11 @@ pub(crate) struct CoreHttpTransport<'a> {
     http: crate::internal::http::HttpClient,
     auth: anp::authentication::DIDWbaAuthHeader,
     jwt_token: Option<String>,
+}
+
+pub(crate) struct CorePlainTransport<'a> {
+    core: &'a crate::core::ImCore,
+    http: crate::internal::http::HttpClient,
 }
 
 impl<'a> CoreHttpTransport<'a> {
@@ -125,12 +141,17 @@ impl<'a> CoreHttpTransport<'a> {
         method: &str,
         body: Vec<u8>,
         query: Option<&BTreeMap<String, String>>,
+        signed: bool,
     ) -> crate::ImResult<Value> {
         let mut url = self.rpc_url(endpoint);
         if let Some(query) = query {
             url = append_query(&url, query);
         }
-        let response = self.execute_json_request(method, &url, body, false)?;
+        let response = if signed {
+            self.execute_json_request(method, &url, body, false)?
+        } else {
+            self.execute_unsigned_json_request(method, &url, body)?
+        };
         if response.status_code >= 400 {
             return Err(service_error_from_http(
                 response.status_code,
@@ -138,6 +159,24 @@ impl<'a> CoreHttpTransport<'a> {
             ));
         }
         crate::internal::json_rpc::decode_plain_response(&response.body)
+    }
+
+    fn execute_unsigned_json_request(
+        &self,
+        method: &str,
+        url: &str,
+        body: Vec<u8>,
+    ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        let request = crate::internal::http::HttpRequest {
+            method: method.to_string(),
+            url: url.to_string(),
+            headers: BTreeMap::from([(
+                "Content-Type".to_string(),
+                crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+            )]),
+            body,
+        };
+        self.http.execute(request)
     }
 
     fn execute_json_request(
@@ -276,6 +315,51 @@ impl<'a> CoreHttpTransport<'a> {
     }
 }
 
+impl<'a> CorePlainTransport<'a> {
+    pub(crate) fn new(core: &'a crate::core::ImCore) -> Self {
+        Self {
+            core,
+            http: crate::internal::http::HttpClient::new(),
+        }
+    }
+
+    fn rpc_url(&self, endpoint: &str) -> String {
+        let base = if endpoint.starts_with("/im/") {
+            self.core
+                .inner()
+                .sdk_config()
+                .message_service_endpoint
+                .as_ref()
+                .unwrap_or(&self.core.inner().sdk_config().service_base_url)
+        } else {
+            self.core
+                .inner()
+                .sdk_config()
+                .user_service_endpoint
+                .as_ref()
+                .unwrap_or(&self.core.inner().sdk_config().service_base_url)
+        };
+        join_base_url(base.as_str(), endpoint)
+    }
+
+    fn execute_unsigned_json_request(
+        &self,
+        method: &str,
+        url: &str,
+        body: Vec<u8>,
+    ) -> crate::ImResult<crate::internal::http::HttpResponse> {
+        self.http.execute(crate::internal::http::HttpRequest {
+            method: method.to_string(),
+            url: url.to_string(),
+            headers: BTreeMap::from([(
+                "Content-Type".to_string(),
+                crate::internal::json_rpc::CONTENT_TYPE_JSON.to_string(),
+            )]),
+            body,
+        })
+    }
+}
+
 impl AuthenticatedRpcTransport for CoreHttpTransport<'_> {
     fn authenticated_rpc(
         &mut self,
@@ -301,6 +385,76 @@ impl RpcTransport for CoreHttpTransport<'_> {
     }
 }
 
+impl RpcTransport for CorePlainTransport<'_> {
+    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        let url = self.rpc_url(endpoint);
+        let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(method, params))
+            .map_err(|err| crate::ImError::Serialization {
+                detail: err.to_string(),
+            })?;
+        let response = self.execute_unsigned_json_request("POST", &url, body)?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        crate::internal::json_rpc::decode_response(&response.body)
+    }
+}
+
+impl RestTransport for CoreHttpTransport<'_> {
+    fn rest_post(&mut self, endpoint: &str, method: &str, body: Value) -> crate::ImResult<Value> {
+        let body = serde_json::to_vec(&body).map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })?;
+        self.authenticated_rest(endpoint, method, body, None, false)
+    }
+
+    fn rest_get(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        query: &BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        self.authenticated_rest(endpoint, method, Vec::new(), Some(query), false)
+    }
+}
+
+impl RestTransport for CorePlainTransport<'_> {
+    fn rest_post(&mut self, endpoint: &str, method: &str, body: Value) -> crate::ImResult<Value> {
+        let url = self.rpc_url(endpoint);
+        let body = serde_json::to_vec(&body).map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })?;
+        let response = self.execute_unsigned_json_request(method, &url, body)?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        crate::internal::json_rpc::decode_plain_response(&response.body)
+    }
+
+    fn rest_get(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        query: &BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        let url = append_query(&self.rpc_url(endpoint), query);
+        let response = self.execute_unsigned_json_request(method, &url, Vec::new())?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        crate::internal::json_rpc::decode_plain_response(&response.body)
+    }
+}
+
 impl AuthenticatedRestTransport for CoreHttpTransport<'_> {
     fn authenticated_rest_post(
         &mut self,
@@ -311,7 +465,7 @@ impl AuthenticatedRestTransport for CoreHttpTransport<'_> {
         let body = serde_json::to_vec(&body).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
-        self.authenticated_rest(endpoint, method, body, None)
+        self.authenticated_rest(endpoint, method, body, None, true)
     }
 
     fn authenticated_rest_get(
@@ -320,7 +474,7 @@ impl AuthenticatedRestTransport for CoreHttpTransport<'_> {
         method: &str,
         query: &BTreeMap<String, String>,
     ) -> crate::ImResult<Value> {
-        self.authenticated_rest(endpoint, method, Vec::new(), Some(query))
+        self.authenticated_rest(endpoint, method, Vec::new(), Some(query), true)
     }
 }
 
@@ -422,6 +576,25 @@ fn persist_jwt_token(path: &std::path::Path, token: &str) -> crate::ImResult<()>
 
 impl RpcTransport for UnavailableTransport {
     fn rpc(&mut self, endpoint: &str, method: &str, _params: Value) -> crate::ImResult<Value> {
+        Err(crate::ImError::TransportUnavailable {
+            detail: format!("{method} transport is not configured for {endpoint}"),
+        })
+    }
+}
+
+impl RestTransport for UnavailableTransport {
+    fn rest_post(&mut self, endpoint: &str, method: &str, _body: Value) -> crate::ImResult<Value> {
+        Err(crate::ImError::TransportUnavailable {
+            detail: format!("{method} transport is not configured for {endpoint}"),
+        })
+    }
+
+    fn rest_get(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        _query: &std::collections::BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
         Err(crate::ImError::TransportUnavailable {
             detail: format!("{method} transport is not configured for {endpoint}"),
         })

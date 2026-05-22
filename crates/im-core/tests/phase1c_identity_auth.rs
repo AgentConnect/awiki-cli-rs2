@@ -1,7 +1,12 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use im_core::prelude::*;
+use serde_json::{json, Value};
 
 #[test]
 fn identity_registry_lists_default_and_resolves_selectors() {
@@ -58,8 +63,15 @@ fn plan_default_identity_change_returns_previous_and_next() {
 
 #[test]
 fn register_handle_returns_identity_and_default_change() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "did": "did:wba:awiki.test:carol:e1_registered",
+        "user_id": "user-carol",
+        "handle": "carol",
+        "full_handle": "carol.awiki.test",
+        "access_token": "jwt-carol"
+    }))]);
     let fixture = Fixture::new();
-    let core = fixture.core();
+    let core = fixture.core_with_base_url(server.base_url());
 
     let result = core
         .identities()
@@ -85,12 +97,22 @@ fn register_handle_returns_identity_and_default_change() {
     assert_eq!(identity.display_name.as_deref(), Some("Carol"));
     assert!(identity.readiness.ready_for_auth);
     assert!(result.default_identity_change.is_some());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    let body = requests[0].json_body();
+    assert_eq!(body["method"], "register");
+    assert_eq!(body["params"]["handle"], "carol");
+    assert!(body["params"]["did_document"].is_object());
 }
 
 #[test]
 fn register_phone_without_otp_returns_pending_otp_state() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({ "sent": true }))]);
     let fixture = Fixture::new();
-    let core = fixture.core();
+    let core = fixture.core_with_base_url(server.base_url());
 
     let result = core
         .identities()
@@ -115,12 +137,24 @@ fn register_phone_without_otp_returns_pending_otp_state() {
     assert_eq!(result.handle.as_str(), "carol.awiki.test");
     assert!(result.identity.is_none());
     assert!(result.default_identity_change.is_none());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    let body = requests[0].json_body();
+    assert_eq!(body["method"], "send_otp");
+    assert_eq!(body["params"], json!({ "phone": "+15551234567" }));
 }
 
 #[test]
 fn register_email_without_wait_returns_email_sent_state() {
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::json(json!({ "verified": false })),
+        ExpectedHttp::json(json!({ "sent": true })),
+    ]);
     let fixture = Fixture::new();
-    let core = fixture.core();
+    let core = fixture.core_with_base_url(server.base_url());
 
     let result = core
         .identities()
@@ -145,6 +179,20 @@ fn register_email_without_wait_returns_email_sent_state() {
     assert_eq!(result.handle.as_str(), "carol.awiki.test");
     assert!(result.identity.is_none());
     assert!(result.default_identity_change.is_none());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(
+        requests[0].path,
+        "/user-service/auth/email-status?email=carol%40example.test&handle=carol.awiki.test"
+    );
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].path, "/user-service/auth/email-send");
+    assert_eq!(
+        requests[1].json_body(),
+        json!({ "email": "carol@example.test", "handle": "carol.awiki.test" })
+    );
 }
 
 #[test]
@@ -225,9 +273,13 @@ impl Fixture {
     }
 
     fn core(&self) -> ImCore {
+        self.core_with_base_url("https://example.test")
+    }
+
+    fn core_with_base_url(&self, base_url: &str) -> ImCore {
         ImCore::new(
             ImCoreConfig {
-                service_base_url: ServiceEndpoint::parse("https://example.test").unwrap(),
+                service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
                 user_service_endpoint: None,
                 message_service_endpoint: None,
@@ -280,4 +332,139 @@ fn unique_temp_root() -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("im-core-phase1c-{}-{nanos}", std::process::id()))
+}
+
+struct TestServer {
+    base_url: String,
+    handle: thread::JoinHandle<Vec<CapturedHttp>>,
+}
+
+impl TestServer {
+    fn spawn(responses: Vec<ExpectedHttp>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut captured = Vec::new();
+            for response in responses {
+                let mut stream = accept_before_deadline(&listener, deadline);
+                let request = read_http_request(&mut stream);
+                write_json_response(&mut stream, response.status_code, &response.body);
+                captured.push(request);
+            }
+            captured
+        });
+        Self { base_url, handle }
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn join(self) -> Vec<CapturedHttp> {
+        self.handle.join().unwrap()
+    }
+}
+
+struct ExpectedHttp {
+    status_code: u16,
+    body: Value,
+}
+
+impl ExpectedHttp {
+    fn json(body: Value) -> Self {
+        Self {
+            status_code: 200,
+            body,
+        }
+    }
+
+    fn rpc_result(result: Value) -> Self {
+        Self::json(json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "result": result,
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct CapturedHttp {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+impl CapturedHttp {
+    fn json_body(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap()
+    }
+}
+
+fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "timed out waiting for request");
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("accept request: {err}"),
+        }
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> CapturedHttp {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let count = stream.read(&mut buffer).unwrap();
+        assert!(count > 0, "request closed before headers");
+        raw.extend_from_slice(&buffer[..count]);
+        if let Some(index) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index;
+        }
+    };
+    let headers_text = std::str::from_utf8(&raw[..header_end]).unwrap();
+    let mut lines = headers_text.lines();
+    let request_line = lines.next().unwrap();
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap().to_string();
+    let path = request_parts.next().unwrap().to_string();
+    let headers = lines
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    while raw.len() < body_start + content_length {
+        let count = stream.read(&mut buffer).unwrap();
+        assert!(count > 0, "request closed before body");
+        raw.extend_from_slice(&buffer[..count]);
+    }
+    CapturedHttp {
+        method,
+        path,
+        body: raw[body_start..body_start + content_length].to_vec(),
+    }
+}
+
+fn write_json_response(stream: &mut TcpStream, status_code: u16, body: &Value) {
+    let body = body.to_string();
+    write!(
+        stream,
+        "HTTP/1.1 {status_code} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .unwrap();
 }
