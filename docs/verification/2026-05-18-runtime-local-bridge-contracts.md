@@ -54,7 +54,7 @@ Observed results:
 - The new focused `awiki-system-test` selector passed with 1 passed, 0 failed,
   and 0 skipped in 0.57s.
 - The modified system-test wrapper is 1121 lines, below both the older
-  1200-line visibility target and the current ordinary 3000-line limit.
+  1200-line visibility target and the active 3000-line test-file limit.
 
 System-test configuration context:
 

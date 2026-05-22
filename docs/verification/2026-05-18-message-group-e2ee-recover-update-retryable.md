@@ -56,8 +56,7 @@ Observed results:
 - File-size check after edits:
   `group_e2ee_recover_member_contract.rs` 1075 lines and
   `group_e2ee_update_key_contract.rs` 1052 lines. Both remain below the
-  1200-line structure visibility threshold and below the ordinary 3000-line
-  cap; no file-size exception is needed.
+  active 3000-line test limit; no file-size exception is needed.
 
 System-test configuration context:
 

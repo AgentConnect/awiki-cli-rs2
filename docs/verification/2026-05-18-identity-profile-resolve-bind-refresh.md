@@ -55,8 +55,8 @@ Observed results:
   failed, and 0 skipped in 0.61s.
 - `identity_live_contract.rs` is 1133 lines after the new test, still below the
   1200-line visibility target. `tests_v2/id/test_identity_cli.py` is 1286
-  lines, above the older 1200-line preference but well below the current
-  ordinary 3000-line limit.
+  lines, above the older 1200-line preference but well below the active
+  3000-line test-file limit.
 
 System-test configuration context:
 

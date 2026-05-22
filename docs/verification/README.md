@@ -21,7 +21,8 @@ Store command transcripts and summary reports for parity, structure, Rust unit t
   updates at the end of the module batch.
 - File-size policy: Rust source files should target at most 2500
   non-generated lines by default. Rust test files should target at most 3000
-  non-generated lines by default. Files above the applicable source/test limit
+  non-generated lines by default. The structure checker enforces these
+  source/test limits for counted Rust files. Files above the applicable limit
   are allowed as documented exceptions when recorded in
   `docs/file-size-exceptions.md` with a concrete reason. Older verification
   entries may still mention the previous 1200-line review target as historical
@@ -196,8 +197,9 @@ session-RPC sender/registry/request/pending lifecycle out of
 `listener_session_rpc.rs` module. This preserves the existing shared active
 session WebSocket behavior and moved the three focused session-RPC unit tests
 with the helper code. `listener_supervisor_run.rs` dropped from 2334 to 2030
-lines and remains a documented exception under the ordinary 3000-line relaxed
-limit. Rust fmt/check passed, moved session-RPC unit tests passed 3 tests,
+lines and now falls below the active 2500-line source limit, so it no longer
+needs an active file-size exception. It remains called out as a large runtime
+owner. Rust fmt/check passed, moved session-RPC unit tests passed 3 tests,
 focused bridge/wsclient/secure-replay/notification-consume/secure-inbox-poll
 regression targets passed 57 tests, structure and whitespace checks passed, and
 the focused non-mail local bridge deterministic system selector passed 1 test.
@@ -758,9 +760,8 @@ focused Rust-only `awiki-system-test` selector for the existing
 `runtime_listener_local_notifications_contract` targets. Rust direct validation
 passed 13 tests; wrapper syntax passed; the new non-mail selector passed with
 1 test; `listener_supervisor_run.rs` was an existing 2334-line integration
-hub under the current 3000-line relaxed limit at the time of that selector
-batch; and mail selectors remained
-deferred.
+hub under the current 2500-line source limit at the time of that selector
+batch; and mail selectors remained deferred.
 
 ## 2026-05-18 Runtime Listener Foreground Signal Selector Batch
 
@@ -1189,9 +1190,9 @@ I/O, non-Linux service-manager parity, a real Hermes service/bridge lifecycle,
 and broad repository-wide system acceptance remain separate work.
 
 File-size note: `listener_supervisor_run.rs` is 2334 lines after this batch,
-below the current ordinary 3000-line target but still documented as a large
-runtime owner because the structure checker keeps the older 1200-line
-visibility threshold. New helper/test files are small:
+below the active 2500-line source limit but still documented as a large runtime
+owner to keep future listener work biased toward focused helper modules. New
+helper/test files are small:
 `listener_known_sessions.rs` 74 lines and
 `runtime_listener_known_sessions_contract.rs` 137 lines.
 
@@ -1406,10 +1407,10 @@ remain unchanged. SQLite stays on the approved `rusqlite + bundled` path, and
 the WebSocket/TLS path remains std-socket plus Rustls without OpenSSL,
 `native-tls`, or a WebSocket crate.
 
-File-size note: `listener_supervisor_run.rs` remains a documented exception and
-is now 2304 lines, below the current ordinary 3000-line relaxed limit.
-`listener_ws_transport.rs` is 1040 lines, under the default 1200-line cap. No
-new Rust source/test file exceeds the default cap.
+File-size note: `listener_supervisor_run.rs` remains a large runtime owner to
+monitor and is now 2304 lines, below the active 2500-line source limit.
+`listener_ws_transport.rs` is 1040 lines, under the active 2500-line source
+limit. No new Rust source/test file exceeds its applicable source/test limit.
 
 ## 2026-05-18 Runtime Listener WebSocket Ping Timeout Batch
 
@@ -1773,7 +1774,7 @@ Additional observed results:
 - The updated non-mail `awiki-system-test` selector passed with 1 passed,
   0 failed, and 0 skipped in 130.91s.
 - File sizes remain below both the older 1200-line visibility target and the
-  current ordinary 3000-line target:
+  active source/test policy limits:
   `msg_ws_mark_read_live_contract.rs` is 865 lines,
   `msg_all_inbox_live_contract.rs` is 919 lines, and
   `test_awiki_cli_runtime_listener_local.py` is 1121 lines.
@@ -1871,8 +1872,8 @@ Observed results:
 - Rust `cargo check -p awiki-cli --locked`: passed.
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` remains the documented oversized
-  translation-time exception at 2304 lines, below the current ordinary
-  3000-line relaxed limit.
+  translation-time exception at 2304 lines, below the active 2500-line source
+  limit.
 - `git diff --check`: passed.
 - Go focused runtime listener guards: passed.
 - Go focused message secure guards: passed.
@@ -1943,7 +1944,7 @@ Observed results:
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` remains the documented oversized
   translation-time exception at 2011 lines; this is above Go `server.go`'s 1802
-  lines but below the current ordinary 3000-line relaxed limit.
+  lines but below the active 2500-line source limit.
 - `git diff --check`: passed.
 - Go focused listener guards, including the bridge request history/group skip
   guard: passed.
@@ -2023,8 +2024,8 @@ Observed results:
 - Rust `cargo check -p awiki-cli --locked`: passed.
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` remains the documented oversized
-  translation-time exception at 2123 lines, below the current ordinary
-  3000-line relaxed limit.
+  translation-time exception at 2123 lines, below the active 2500-line source
+  limit.
 - `git diff --check`: passed.
 - `awiki-system-test` Batch 1 non-mail contract selector: 1 passed, 0 failed,
   0 skipped.
@@ -2101,7 +2102,7 @@ Observed results:
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines. `listener_supervisor_run.rs` is documented as an oversized
   translation-time exception at 1810 lines, slightly above Go `server.go`'s
-  1802 lines and below the current ordinary 3000-line relaxed limit.
+  1802 lines and below the active 2500-line source limit.
   `listener_ws_transport.rs` is 711 lines.
 - Go focused listener guards: passed.
 - New `awiki-system-test` Batch 1 non-mail selector: 1 passed, 0 failed,

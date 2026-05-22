@@ -166,5 +166,5 @@ Observed result: see final batch report for pass/fail status.
 - TLS remains Rustls-first where TLS is involved; this selector uses only local
   HTTP/systemd paths.
 - `tests_v2/runtime/test_runtime_cli.py` is a pre-existing system-test
-  aggregation file and remains below the relaxed 3000-line policy. No Rust
+  aggregation file and remains below the active 3000-line test-file policy. No Rust
   source file changed in this batch.

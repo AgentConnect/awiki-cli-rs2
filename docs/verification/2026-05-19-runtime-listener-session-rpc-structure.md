@@ -73,12 +73,13 @@ uv run pytest -p no:cacheprovider \
 
 ## File Size
 
-- `listener_session_rpc.rs`: 318 lines, below the default 1200-line target.
-- `listener_supervisor_run.rs`: 2030 lines after extraction, still above the
-  default 1200-line target but below the ordinary 3000-line relaxed limit.
-  The exception remains documented because Go `internal/runtime/listener/server.go`
-  is an oversized integrated runtime owner and Rust still keeps the foreground
-  execution owner in one traceable file.
+- `listener_session_rpc.rs`: 318 lines, below the active 2500-line source
+  target.
+- `listener_supervisor_run.rs`: 2030 lines after extraction, below the active
+  2500-line source target. It remains called out as a large runtime owner
+  because Go `internal/runtime/listener/server.go` is an oversized integrated
+  runtime owner and Rust still keeps the foreground execution owner in one
+  traceable file.
 
 ## Not Tested
 

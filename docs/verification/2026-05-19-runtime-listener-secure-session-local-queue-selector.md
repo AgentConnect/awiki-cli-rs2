@@ -53,15 +53,15 @@ Observed results:
   `runtime_listener_secure_sessions_contract.rs` 184 lines, and
   `runtime_listener_local_notifications_contract.rs` 104 lines.
 - `listener_supervisor_run.rs` remains 2334 lines. It is above the default
-  1200-line review target but below the current ordinary 3000-line relaxed
+  1200-line review target but below the active 2500-line source
   limit. The file is the Rust integration hub for Go `server.go`, which is
   already 1802 lines; this batch did not grow it. Future runtime/listener work
   should prefer adding or extending small helper modules instead of increasing
   the supervisor file unless integration code is unavoidable.
 - `tests_v2/cli/test_awiki_cli_runtime_listener_local.py` is 1322 lines after
   this selector update. It is above the default 1200-line review target but
-  below the current ordinary 3000-line relaxed limit; the exception is localized
-  to an existing system-test wrapper that aggregates runtime listener probes and
+  below the active 3000-line test-file limit; the exception is localized to an
+  existing system-test wrapper that aggregates runtime listener probes and
   Rust-only selector entrypoints.
 
 System-test configuration context:

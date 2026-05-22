@@ -45,7 +45,7 @@ Observed results:
   skipped in 35.33s.
 - `tests_v2/cli/test_awiki_cli_runtime_listener_local.py` is 1199 lines after
   this selector update, still below the older 1200-line visibility target and
-  well below the current ordinary 3000-line limit.
+  well below the active 3000-line test-file limit.
 
 System-test configuration context:
 

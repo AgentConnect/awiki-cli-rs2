@@ -62,8 +62,7 @@ Observed results:
 - File-size check after edits:
   `group_e2ee_send_contract.rs` 1112 lines and
   `group_e2ee_remove_leave_contract.rs` 1112 lines. Both remain below the
-  1200-line structure visibility threshold and below the active ordinary
-  3000-line cap; no file-size exception is needed.
+  active 3000-line test limit; no file-size exception is needed.
 
 System-test configuration context:
 

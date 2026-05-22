@@ -56,7 +56,7 @@ File-size evidence:
 - `crates/awiki-cli/tests/mail_contract.rs`: 536 lines.
 - `crates/awiki-cli/tests/mail_wire_contract.rs`: 270 lines.
 - `crates/awiki-cli/tests/mail_live_contract.rs`: 855 lines.
-- All scoped Rust test files remain below the default 1200-line target.
+- All scoped Rust test files remain below the active 3000-line test target.
 
 System-test configuration context:
 

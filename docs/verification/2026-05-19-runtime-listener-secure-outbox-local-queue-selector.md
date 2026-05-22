@@ -75,8 +75,8 @@ File-size and dependency notes:
 - `listener_supervisor_run.rs` remains the documented runtime listener
   translation-time large integration hub and was not expanded.
 - The modified `tests_v2/cli/test_awiki_cli_runtime_listener_local.py` is an
-  existing system-test aggregation wrapper. It is above the default 1200-line
-  target but below the current ordinary 3000-line relaxed limit.
+  existing system-test aggregation wrapper. It is above the older 1200-line
+  review target but below the active 3000-line test-file limit.
 - No dependency was added. The batch reuses existing std/Rustls listener code,
   existing local ANP/E2EE helper boundaries, and the approved `rusqlite +
   bundled` SQLite path. TLS remains Rustls-first; no OpenSSL, `native-tls`,

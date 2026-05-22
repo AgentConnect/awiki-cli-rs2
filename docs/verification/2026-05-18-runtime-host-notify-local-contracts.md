@@ -52,9 +52,9 @@ Observed results:
 - Python compile and whitespace checks for the system-test wrapper passed.
 - The new focused `awiki-system-test` selector passed with 1 passed in 1.85s.
 - The modified system-test wrapper is 1560 lines. This exceeds the older
-  1200-line visibility threshold but remains below the current ordinary
-  3000-line limit; it is an existing runtime command wrapper that now aggregates
-  local Rust contract selectors as well.
+  1200-line visibility threshold but remains below the active 3000-line
+  test-file limit; it is an existing runtime command wrapper that now
+  aggregates local Rust contract selectors as well.
 
 System-test configuration context:
 

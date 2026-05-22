@@ -266,8 +266,9 @@ Known notes:
   `message_secure_commands_contract.rs` were near the older default limit; under
   the current 3000-line test-file target, neither requires an exception.
 - `tests_v2/runtime/test_runtime_cli.py` is a pre-existing aggregation file
-  above the ordinary limit; the runtime-small batch documented it as a
-  system-test aggregation exception.
+  above the older review-size target but below the current 3000-line test-file
+  target; the runtime-small batch documented it as a system-test aggregation
+  exception.
 - `listener_supervisor_run.rs` was reduced by extracting
   `listener_session_rpc.rs`. It is below the current 2500-line source target,
   but remains close enough to the limit that future listener work should keep

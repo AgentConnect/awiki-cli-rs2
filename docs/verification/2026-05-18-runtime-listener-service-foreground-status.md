@@ -44,7 +44,7 @@ Observed results:
 - The focused saved-status merge contract passed.
 - The focused Go runtime/listener guard passed.
 - Python compile and whitespace checks for the system-test wrapper passed. The
-  wrapper is 962 lines, below the current ordinary file-size target.
+  wrapper is 962 lines, below the active 3000-line test-file target.
 - The new focused `awiki-system-test` selector passed with 1 passed in 0.40s.
 
 System-test configuration context:

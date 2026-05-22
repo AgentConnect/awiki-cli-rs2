@@ -62,7 +62,7 @@ Observed results:
   passed.
 - The new system-test wrapper is below the default review-size limit. Rust
   files did not grow in this batch. The largest related Rust contract targets
-  remain under the current ordinary 3000-line cap and near the older 1200-line
+  remain under the active 3000-line test limit and near the older 1200-line
   visibility threshold, so future local-upgrade additions should prefer a split
   or a documented exception before growing them further.
 

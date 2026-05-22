@@ -67,10 +67,9 @@ Observed results:
   0 failed, 0 skipped in 0.75s.
 - File sizes stayed below the default source review-size limit:
   `src/cli/mod.rs` 589 lines and `tests/cli_parser_contract.rs` 165 lines.
-  The updated `docs/parity-matrix.md` is 1291 lines, below the current
-  ordinary 3000-line relaxed limit. The existing verification index is already
-  oversized and remains a documentation aggregate file rather than a Rust
-  source file.
+  The updated `docs/parity-matrix.md` is a documentation aggregate file rather
+  than a Rust source or test file. The existing verification index is already
+  oversized for the same reason.
 - Disk remained stable after verification: `/home/ecs-user/awiki-space` had
   26G available and 73% used before the batch edits, so no cleanup was needed
   in this batch.

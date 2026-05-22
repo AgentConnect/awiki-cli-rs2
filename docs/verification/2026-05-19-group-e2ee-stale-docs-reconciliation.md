@@ -49,13 +49,13 @@ send/decrypt, lifecycle, recovery, update/rejoin, and negative local flows.
 
 File-size note:
 
-- Split production group E2EE modules remain below the default 1200-line
+- Split production group E2EE modules remain below the active 2500-line source
   target. Current `group_e2ee_*.rs` source files range from 175 to 856 lines.
 - Focused group E2EE contract test files range from 404 to 1165 lines, below
-  the default 1200-line target.
+  the active 3000-line test target.
 - No file-size exception is needed for this docs-only batch. The repository's
-  ordinary relaxed limit remains 3000 lines, with rare documented exceptions
-  only when traceable translation requires them.
+  active limits are 2500 lines for source files and 3000 lines for test files,
+  with documented exceptions allowed when traceable translation requires them.
 
 Dependency note:
 

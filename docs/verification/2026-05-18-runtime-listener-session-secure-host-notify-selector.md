@@ -58,7 +58,7 @@ Observed results:
   passed.
 - `tests_v2/cli/test_awiki_cli_runtime_listener_local.py` is 1256 lines after
   this selector update. This exceeds the older 1200-line review target but
-  stays well below the current ordinary 3000-line limit; it is the existing
+  stays well below the active 3000-line test-file limit; it is the existing
   runtime/listener selector hub and no Rust source/test file grew in this
   batch. No Rust file-size exception is needed.
 
