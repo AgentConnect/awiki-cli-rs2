@@ -1272,6 +1272,76 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
 }
 
 #[test]
+fn group_e2ee_live_commands_are_cutover_unsupported() {
+    let workspace = TempDir::new().expect("workspace");
+    let group = "did:wba:awiki.ai:groups:demo:e1_group";
+    let commands = [
+        (
+            "group.e2ee.status",
+            vec!["group", "e2ee", "status", "--group", group],
+        ),
+        (
+            "group.e2ee.publish-key-package",
+            vec!["group", "e2ee", "publish-key-package", "--group", group],
+        ),
+        (
+            "group.e2ee.pending",
+            vec!["group", "e2ee", "pending", "--group", group],
+        ),
+        (
+            "group.e2ee.repair",
+            vec!["group", "e2ee", "repair", "--group", group],
+        ),
+        (
+            "group.e2ee.process-leave-request",
+            vec![
+                "group",
+                "e2ee",
+                "process-leave-request",
+                "--group",
+                group,
+                "--member",
+                "bob",
+            ],
+        ),
+        (
+            "group.e2ee.recover-member",
+            vec![
+                "group",
+                "e2ee",
+                "recover-member",
+                "--group",
+                group,
+                "--member",
+                "bob",
+            ],
+        ),
+        (
+            "group.e2ee.update-key",
+            vec![
+                "group",
+                "e2ee",
+                "update-key",
+                "--group",
+                group,
+                "--member",
+                "bob",
+            ],
+        ),
+        (
+            "group.e2ee.rejoin",
+            vec![
+                "group", "e2ee", "rejoin", "--group", group, "--member", "bob",
+            ],
+        ),
+    ];
+    for (command, args) in commands {
+        let output = awiki_cmd(&args, workspace.path());
+        assert_group_e2ee_unsupported(&output, command);
+    }
+}
+
+#[test]
 fn group_e2ee_schema_exposes_hidden_and_side_effect_contracts() {
     let workspace = TempDir::new().expect("workspace");
     let schema = success_json(&awiki_cmd(&["schema", "group", "e2ee"], workspace.path()));
@@ -1492,7 +1562,7 @@ fn assert_group_e2ee_unsupported(output: &Output, command: &str) {
     let envelope = error_json(output);
     assert_eq!(envelope["error"]["code"], "unsupported_capability");
     assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], "group-e2ee");
+    assert_eq!(envelope["error"]["details"]["capability"], "group e2ee");
     assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
 }
 

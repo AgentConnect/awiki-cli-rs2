@@ -587,7 +587,7 @@ fn group_membership_cutover_exit(err: MessageAdapterError, command: &str) -> Exi
 }
 
 fn unsupported_group_e2ee_command(command: &str) -> ExitError {
-    super::unsupported::unsupported_cutover_command(command, "group-e2ee", "Phase 6")
+    super::unsupported::unsupported_cutover_command(command, "group e2ee", "Phase 6")
 }
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {
