@@ -281,6 +281,12 @@ fn message_id_from_group_result(
 
 fn metadata_attributes(result: &GroupRpcResult) -> Vec<crate::messages::MessageMetadataAttribute> {
     let mut attributes = Vec::new();
+    if !result.message_id.trim().is_empty() {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "raw_message_id".to_string(),
+            value: result.message_id.clone(),
+        });
+    }
     if !result.group_event_seq.trim().is_empty() {
         attributes.push(crate::messages::MessageMetadataAttribute {
             key: "group_event_seq".to_string(),

@@ -645,7 +645,8 @@ impl GroupSendResult {
             accepted: delivery_was_accepted(&result.delivery),
             final_acceptance: matches!(result.delivery, DeliveryState::Sent),
             group_did: group_did.to_string(),
-            message_id: result.message.id.as_str().to_string(),
+            message_id: message_attribute(&result.message.metadata.attributes, "raw_message_id")
+                .unwrap_or_else(|| result.message.id.as_str().to_string()),
             operation_id: result
                 .message
                 .metadata
