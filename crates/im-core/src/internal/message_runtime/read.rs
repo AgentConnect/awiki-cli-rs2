@@ -64,25 +64,52 @@ where
     }
 
     pub(crate) fn history(mut self, input: HistoryRead) -> crate::ImResult<ReadPageResult> {
-        self.session_provider
-            .ensure_session(crate::auth::AuthScope::Messaging)?;
-        let peer = direct_thread(input.thread, input.resolved_peer_did)?;
-        let params = crate::internal::wire::history::build_history_rpc_params(
-            &crate::internal::wire::common::WireIdentity {
-                did: self.client.did().as_str().to_string(),
-            },
-            crate::internal::wire::history::HistoryWireRequest {
-                peer_did: peer.resolved_did.clone(),
-                limit: page_limit(input.query.limit, 50),
-                cursor: input.query.cursor.map(|cursor| cursor.as_str().to_string()),
-                skip: 0,
-            },
-        )?;
-        let raw =
-            self.transport
-                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)?;
-        let page = page_from_raw(&raw, input.query.limit)?;
-        Ok(ReadPageResult { page, raw })
+        match input.thread {
+            crate::messages::ThreadRef::Direct(peer) => {
+                self.session_provider
+                    .ensure_session(crate::auth::AuthScope::Messaging)?;
+                let peer = direct_thread(peer, input.resolved_peer_did)?;
+                let params = crate::internal::wire::history::build_history_rpc_params(
+                    &crate::internal::wire::common::WireIdentity {
+                        did: self.client.did().as_str().to_string(),
+                    },
+                    crate::internal::wire::history::HistoryWireRequest {
+                        peer_did: peer.resolved_did.clone(),
+                        limit: page_limit(input.query.limit, 50),
+                        cursor: input.query.cursor.map(|cursor| cursor.as_str().to_string()),
+                        skip: 0,
+                    },
+                )?;
+                let raw = self.transport.authenticated_rpc(
+                    MESSAGE_RPC_ENDPOINT,
+                    "direct.get_history",
+                    params,
+                )?;
+                let page = page_from_raw(&raw, input.query.limit)?;
+                Ok(ReadPageResult { page, raw })
+            }
+            crate::messages::ThreadRef::Group(group) => {
+                self.session_provider
+                    .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+                let params = crate::internal::wire::group::build_group_messages_rpc_params(
+                    self.client.did().as_str(),
+                    group.as_str(),
+                    page_limit(input.query.limit, 50),
+                    input.query.cursor.as_ref().map(crate::ids::Cursor::as_str),
+                    0,
+                )?;
+                let raw = self.transport.authenticated_rpc(
+                    MESSAGE_RPC_ENDPOINT,
+                    "group.list_messages",
+                    params,
+                )?;
+                let page = page_from_raw_with_group(&raw, input.query.limit, Some(&group))?;
+                Ok(ReadPageResult { page, raw })
+            }
+            crate::messages::ThreadRef::Thread(_) => {
+                Err(crate::ImError::unsupported("thread-history"))
+            }
+        }
     }
 }
 
@@ -91,12 +118,9 @@ struct DirectThread {
 }
 
 fn direct_thread(
-    thread: crate::messages::ThreadRef,
+    peer: crate::ids::PeerRef,
     resolved_peer_did: Option<String>,
 ) -> crate::ImResult<DirectThread> {
-    let crate::messages::ThreadRef::Direct(peer) = thread else {
-        return Err(crate::ImError::unsupported("group-history"));
-    };
     let resolved = resolved_peer_did
         .as_deref()
         .map(str::trim)
@@ -124,13 +148,21 @@ fn page_from_raw(
     raw: &Value,
     requested_limit: crate::ids::PageLimit,
 ) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
+    page_from_raw_with_group(raw, requested_limit, None)
+}
+
+fn page_from_raw_with_group(
+    raw: &Value,
+    requested_limit: crate::ids::PageLimit,
+    group: Option<&crate::ids::GroupRef>,
+) -> crate::ImResult<crate::ids::Page<crate::messages::Message>> {
     let messages = raw
         .get("messages")
         .and_then(Value::as_array)
         .map(|items| {
             items
                 .iter()
-                .filter_map(|item| message_from_value(item).transpose())
+                .filter_map(|item| message_from_value(item, group).transpose())
                 .collect::<crate::ImResult<Vec<_>>>()
         })
         .transpose()?
@@ -154,7 +186,10 @@ fn page_from_raw(
     })
 }
 
-fn message_from_value(value: &Value) -> crate::ImResult<Option<crate::messages::Message>> {
+fn message_from_value(
+    value: &Value,
+    fallback_group: Option<&crate::ids::GroupRef>,
+) -> crate::ImResult<Option<crate::messages::Message>> {
     let Some(object) = value.as_object() else {
         return Ok(None);
     };
@@ -164,7 +199,12 @@ fn message_from_value(value: &Value) -> crate::ImResult<Option<crate::messages::
     }
     let sender_did = string_value(object.get("sender_did"));
     let receiver_did = string_value(object.get("receiver_did"));
-    let group_did = string_value(object.get("group_did"));
+    let mut group_did = string_value(object.get("group_did"));
+    if group_did.trim().is_empty() {
+        if let Some(group) = fallback_group {
+            group_did = group.as_str().to_string();
+        }
+    }
     let retry_target = if group_did.trim().is_empty() {
         Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText)
     } else {
@@ -484,6 +524,64 @@ mod tests {
         assert_eq!(calls[0].params["body"]["since_seq"], "42");
     }
 
+    #[test]
+    fn messages_read_runtime_builds_group_history_rpc() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group = crate::ids::GroupRef::parse("did:example:group").unwrap();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "messages": [{
+                        "id": "msg-group-history-1",
+                        "sender_did": "did:example:bob",
+                        "content": "hello group",
+                        "content_type": "text/plain",
+                        "group_event_seq": 9
+                    }],
+                    "has_more": false
+                }),
+            },
+        );
+
+        let result = runtime
+            .history(HistoryRead {
+                thread: crate::messages::ThreadRef::Group(group.clone()),
+                query: crate::messages::HistoryQuery {
+                    limit: crate::ids::PageLimit(5),
+                    cursor: Some(crate::ids::Cursor::parse("42").unwrap()),
+                },
+                resolved_peer_did: None,
+            })
+            .unwrap();
+
+        assert_eq!(result.page.items.len(), 1);
+        let message = &result.page.items[0];
+        assert_eq!(message.id.as_str(), "msg-group-history-1");
+        assert_eq!(message.group.as_ref(), Some(&group));
+        assert_eq!(
+            message.thread,
+            crate::messages::ThreadRef::Group(group.clone())
+        );
+        assert_eq!(message.metadata.server_sequence, Some(9));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
+        assert_eq!(calls[0].method, "group.list_messages");
+        assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
+        assert_eq!(
+            calls[0].params["meta"]["target"],
+            json!({"kind": "group", "did": "did:example:group"})
+        );
+        assert_eq!(calls[0].params["body"]["group_did"], "did:example:group");
+        assert_eq!(calls[0].params["body"]["limit"], 5);
+        assert_eq!(calls[0].params["body"]["since_seq"], "42");
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -493,6 +591,32 @@ mod tests {
             scope: crate::auth::AuthScope,
         ) -> crate::ImResult<crate::auth::SessionBundle> {
             assert_eq!(scope, crate::auth::AuthScope::Messaging);
+            Ok(crate::auth::SessionBundle {
+                subject: crate::ids::Did::parse("did:example:alice")?,
+                scope,
+                expires_at: None,
+                refreshed: false,
+            })
+        }
+
+        fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            unreachable!("read runtime should not refresh through the session provider")
+        }
+
+        fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("read runtime should not read status")
+        }
+    }
+
+    #[derive(Clone)]
+    struct ReadyGroupSessionProvider;
+
+    impl SessionProvider for ReadyGroupSessionProvider {
+        fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            assert_eq!(scope, crate::auth::AuthScope::GroupMessaging);
             Ok(crate::auth::SessionBundle {
                 subject: crate::ids::Did::parse("did:example:alice")?,
                 scope,

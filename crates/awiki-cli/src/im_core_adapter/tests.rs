@@ -467,6 +467,22 @@ fn history_request_builds_direct_thread_and_query() {
 }
 
 #[test]
+fn history_request_builds_group_thread_and_query() {
+    let command = command_with_flags([
+        ("group", "did:example:group"),
+        ("limit", "7"),
+        ("cursor", "group-2"),
+    ]);
+    let (thread, query) = messages::history_request(&command, "awiki.test").unwrap();
+    assert!(matches!(
+        thread,
+        ThreadRef::Group(ref group) if group == &GroupRef::parse("did:example:group").unwrap()
+    ));
+    assert_eq!(query.limit.0, 7);
+    assert_eq!(query.cursor.unwrap().as_str(), "group-2");
+}
+
+#[test]
 fn inbox_query_builds_scope_limit_cursor_and_unread_flag() {
     let command = command_with_flags([
         ("scope", "group"),

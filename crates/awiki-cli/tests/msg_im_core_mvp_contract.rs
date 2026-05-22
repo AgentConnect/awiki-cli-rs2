@@ -274,6 +274,77 @@ fn msg_history_default_cutover_direct_posts_im_core_rpc() {
 }
 
 #[test]
+fn msg_history_default_cutover_group_posts_im_core_rpc() {
+    let workspace = TempDir::new().expect("workspace");
+    let manager = identity_manager(workspace.path());
+    let alice = register_generated_read_identity(
+        &manager,
+        "alice-group-history-cutover",
+        "alice",
+        "jwt-alice",
+    );
+    let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "messages": [{
+            "id": "msg-group-history-cutover-1",
+            "sender_did": alice.did,
+            "content": "hello group history",
+            "content_type": "text/plain",
+            "sent_at": "2026-05-21T00:00:00Z",
+            "group_event_seq": 12
+        }],
+        "total": 1,
+        "source": "remote_http"
+    })))]);
+    write_msg_config(workspace.path(), &server.base_url());
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "alice-group-history-cutover",
+            "msg",
+            "history",
+            "--group",
+            group_did,
+            "--limit",
+            "6",
+            "--cursor",
+            "11",
+        ],
+        workspace.path(),
+    );
+
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Loaded 1 group history messages");
+    assert_eq!(
+        envelope["data"]["messages"][0]["id"],
+        "msg-group-history-cutover-1"
+    );
+    assert_eq!(envelope["data"]["messages"][0]["group_did"], group_did);
+    assert_eq!(envelope["data"]["group"], group_did);
+    assert_eq!(envelope["data"]["source"], "remote_http");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(
+        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
+        "missing bearer auth:\n{}",
+        requests[0]
+    );
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
+    assert_eq!(body["method"], "group.list_messages");
+    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
+    assert_eq!(
+        body["params"]["meta"]["target"],
+        json!({"kind": "group", "did": group_did})
+    );
+    assert_eq!(body["params"]["body"]["group_did"], group_did);
+    assert_eq!(body["params"]["body"]["limit"], 6);
+    assert_eq!(body["params"]["body"]["since_seq"], "11");
+}
+
+#[test]
 fn msg_mark_read_default_cutover_posts_im_core_rpc_and_updates_local_cache() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());

@@ -241,7 +241,6 @@ impl App {
     }
 
     fn run_msg_history_im_core(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        require_flags(command, &["with"])?;
         let resolved = self.resolve_config_for_workspace()?;
         let (thread, query) =
             crate::im_core_adapter::messages::history_request(command, &resolved.did_domain)?;
@@ -276,12 +275,40 @@ impl App {
         command: &ParsedCommand,
         resolved: &Resolved,
     ) -> Result<(), ExitError> {
-        let with = string_flag(command, "with");
+        let (thread, query) =
+            crate::im_core_adapter::messages::history_request(command, &resolved.did_domain)?;
         let mut plan = Map::new();
-        plan.insert(
-            "action".to_string(),
-            Value::String("direct.get_history".to_string()),
-        );
+        let summary = match thread {
+            im_core::prelude::ThreadRef::Direct(_) => {
+                let with = string_flag(command, "with");
+                plan.insert(
+                    "action".to_string(),
+                    Value::String("direct.get_history".to_string()),
+                );
+                plan.insert("with".to_string(), Value::String(with.clone()));
+                insert_completed_handle(&mut plan, "with_handle", &with, &resolved.did_domain);
+                "Dry run: direct history read planned"
+            }
+            im_core::prelude::ThreadRef::Group(group) => {
+                plan.insert(
+                    "action".to_string(),
+                    Value::String("group.list_messages".to_string()),
+                );
+                plan.insert(
+                    "group".to_string(),
+                    Value::String(group.as_str().to_string()),
+                );
+                "Dry run: group history read planned"
+            }
+            im_core::prelude::ThreadRef::Thread(_) => {
+                return Err(ExitError::new(
+                    "unsupported_capability",
+                    2,
+                    "thread history is not supported by the im-core CLI cutover path.",
+                    "Use --with <handle|did> or --group <group_did>.",
+                ));
+            }
+        };
         plan.insert(
             "identity".to_string(),
             Value::String(self.globals.identity.clone()),
@@ -290,18 +317,22 @@ impl App {
             "runtime_mode".to_string(),
             Value::String(resolved.runtime_mode.clone()),
         );
-        plan.insert("with".to_string(), Value::String(with.clone()));
-        plan.insert("limit".to_string(), json!(int_flag(command, "limit", 50)?));
+        plan.insert("limit".to_string(), json!(query.limit.0));
         plan.insert(
             "cursor".to_string(),
-            Value::String(string_flag(command, "cursor")),
+            Value::String(
+                query
+                    .cursor
+                    .as_ref()
+                    .map(|cursor| cursor.as_str().to_string())
+                    .unwrap_or_default(),
+            ),
         );
-        insert_completed_handle(&mut plan, "with_handle", &with, &resolved.did_domain);
         self.render_success(
             "awiki-cli msg history",
             &resolved,
             json!({ "plan": plan }),
-            "Dry run: direct history read planned",
+            summary,
             Vec::new(),
         )
     }
@@ -492,28 +523,6 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
         .flags
         .get(name)
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-}
-
-fn require_flags(command: &ParsedCommand, names: &[&str]) -> Result<(), ExitError> {
-    let missing: Vec<_> = names
-        .iter()
-        .copied()
-        .filter(|name| string_flag(command, name).trim().is_empty())
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    let quoted = missing
-        .iter()
-        .map(|name| format!("{name:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(ExitError::new(
-        "internal_error",
-        1,
-        format!("required flag(s) {quoted} not set"),
-        "",
-    ))
 }
 
 pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {

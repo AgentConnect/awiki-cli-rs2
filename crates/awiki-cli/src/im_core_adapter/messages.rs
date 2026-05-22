@@ -159,9 +159,30 @@ pub fn read_history_via_im_core(
     thread: ThreadRef,
     query: HistoryQuery,
 ) -> Result<message::CommandResult, MessageError> {
+    match thread {
+        ThreadRef::Direct(peer) => {
+            read_direct_history_via_im_core(resolved, manager, client, identity_name, peer, query)
+        }
+        ThreadRef::Group(group) => {
+            read_group_history_via_im_core(resolved, manager, client, identity_name, group, query)
+        }
+        ThreadRef::Thread(_) => Err(MessageError::Internal(
+            "thread history is not supported by the CLI renderer".to_string(),
+        )),
+    }
+}
+
+fn read_direct_history_via_im_core(
+    resolved: &Resolved,
+    manager: &crate::identity::Manager,
+    client: &im_core::ImClient,
+    identity_name: &str,
+    peer: PeerRef,
+    query: HistoryQuery,
+) -> Result<message::CommandResult, MessageError> {
     let record = message::require_active_identity(resolved, manager, identity_name)?;
     let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
-    let (thread, target, target_is_handle) = resolve_history_thread(client, thread)?;
+    let (thread, target, target_is_handle) = resolve_history_thread(client, peer)?;
     let page = client
         .messages()
         .history(thread, query.clone())
@@ -217,6 +238,55 @@ pub fn read_history_via_im_core(
             "resolved_dids": resolved_dids,
         }),
         summary: format!("Loaded {total} direct history messages"),
+        warnings: message::compact_warnings(warnings),
+    })
+}
+
+fn read_group_history_via_im_core(
+    resolved: &Resolved,
+    manager: &crate::identity::Manager,
+    client: &im_core::ImClient,
+    identity_name: &str,
+    group: GroupRef,
+    query: HistoryQuery,
+) -> Result<message::CommandResult, MessageError> {
+    let record = message::require_active_identity(resolved, manager, identity_name)?;
+    let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
+    let page = client
+        .messages()
+        .history(ThreadRef::Group(group.clone()), query.clone())
+        .map_err(im_error_to_message_error)?;
+    let mut raw = read_page_to_cli_raw(
+        &page,
+        source_default_for_mode(message::runtime_mode(resolved)),
+    );
+    warnings.extend(message::maybe_decrypt_group_messages(
+        resolved,
+        &record,
+        group.as_str(),
+        &mut raw,
+    ));
+    warnings.extend(message::persist_group_messages(
+        resolved,
+        &record,
+        group.as_str(),
+        &raw,
+    ));
+    let messages = raw
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let source = source_with_default_for_mode(&raw, message::runtime_mode(resolved));
+    let total = messages.len();
+    Ok(message::CommandResult {
+        data: json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "group": group.as_str(),
+        }),
+        summary: format!("Loaded {total} group history messages"),
         warnings: message::compact_warnings(warnings),
     })
 }
@@ -413,11 +483,8 @@ fn resolve_direct_target_for_sdk(
 
 fn resolve_history_thread(
     client: &im_core::ImClient,
-    thread: ThreadRef,
+    peer: PeerRef,
 ) -> Result<(ThreadRef, message::TargetResolution, bool), MessageError> {
-    let ThreadRef::Direct(peer) = thread else {
-        return Err(MessageError::GroupNotSupported);
-    };
     let original = peer.as_str().trim().to_string();
     let target_is_handle = !original.is_empty() && !original.starts_with("did:");
     let target = if target_is_handle {
