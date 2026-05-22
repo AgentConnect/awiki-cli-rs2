@@ -47,7 +47,6 @@ pub(crate) use attachment::{find_attachment_selection_with_paging, load_attachme
 pub use attachment_service::download_attachment;
 pub use client::Client;
 pub use group_create::create_group;
-pub(crate) use group_e2ee_decrypt::maybe_decrypt_group_messages;
 pub use group_e2ee_provider::{default_mls_data_dir, ANP_MLS_BINARY_ENV};
 pub use group_e2ee_publish::{publish_group_e2ee_key_package, GroupE2eePublishKeyPackageRequest};
 pub use group_e2ee_recover::recover_group_e2ee_member;
@@ -75,7 +74,7 @@ pub use group_service::{
 };
 pub(crate) use group_service::{
     cached_group_members, cached_group_snapshot, group_control_warnings, mark_cached_group_left,
-    persist_group_messages, sync_group_state,
+    sync_group_state,
 };
 pub use group_wire::{
     build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_info_rpc_params,
@@ -122,9 +121,7 @@ pub use secure_outbox_flush::{
     SecureOutboxFlushRowOutcome, SecureOutboxSendOutcome, SecureOutboxSendRequest,
     StoreMessageOutcome,
 };
-pub(crate) use service::{
-    auth_session, maybe_publish_secure_prekeys, persist_history_messages, persist_inbox_messages,
-};
+pub(crate) use service::{auth_session, maybe_publish_secure_prekeys};
 pub use service::{
     send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,
     SecureDirectSendRequest,
