@@ -82,7 +82,7 @@ fn register_handle_request_builds_email_sdk_dto() {
 }
 
 #[test]
-fn register_handle_bridge_preserves_legacy_registration_inputs() {
+fn register_handle_command_request_uses_cli_identity_alias() {
     let command = command_with_flags([
         ("handle", "alice"),
         ("phone", "+15551234567"),
@@ -91,21 +91,16 @@ fn register_handle_bridge_preserves_legacy_registration_inputs() {
         ("wait", "true"),
     ]);
 
-    let bridge = identity::register_handle_bridge_request(&command, "alice-local").unwrap();
+    let request = identity::register_handle_command_request(&command, "alice-local").unwrap();
 
-    assert_eq!(bridge.sdk.local_alias.as_deref(), Some("alice-local"));
-    assert_eq!(bridge.sdk.requested_handle.as_str(), "alice");
+    assert_eq!(request.local_alias.as_deref(), Some("alice-local"));
+    assert_eq!(request.requested_handle.as_str(), "alice");
     assert!(matches!(
-        bridge.sdk.verification,
+        request.verification,
         VerificationInput::Phone { ref phone, ref otp } if phone == "+15551234567"
             && otp.as_deref() == Some("123456")
     ));
-    assert_eq!(bridge.sdk.invite_code.as_deref(), Some("invite-1"));
-    assert_eq!(bridge.legacy.identity_name, "alice-local");
-    assert_eq!(bridge.legacy.phone, "+15551234567");
-    assert_eq!(bridge.legacy.otp, "123456");
-    assert_eq!(bridge.legacy.invite_code, "invite-1");
-    assert!(bridge.legacy.wait);
+    assert_eq!(request.invite_code.as_deref(), Some("invite-1"));
 }
 
 #[test]

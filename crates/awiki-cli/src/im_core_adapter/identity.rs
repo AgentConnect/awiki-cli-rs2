@@ -52,12 +52,6 @@ impl IdentityDiagnosticRaw for im_core::identity::RecoverHandleResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct RegisterHandleBridgeRequest {
-    pub sdk: RegisterHandleRequest,
-    pub legacy: identity::RegisterParams,
-}
-
-#[derive(Debug, Clone)]
 pub struct GetProfileBridgeRequest {
     pub self_profile: bool,
     pub handle: String,
@@ -179,28 +173,13 @@ pub fn register_handle_request(
     })
 }
 
-pub fn register_handle_bridge_request(
+pub fn register_handle_command_request(
     command: &ParsedCommand,
     identity_flag: &str,
-) -> Result<RegisterHandleBridgeRequest, ExitError> {
+) -> Result<RegisterHandleRequest, ExitError> {
     let mut sdk_command = command.clone();
     sdk_command.globals.identity = identity_flag.to_string();
-    let sdk = register_handle_request(&sdk_command)?;
-    let legacy = identity::RegisterParams {
-        identity_name: identity_flag.to_string(),
-        handle: string_flag(command, "handle"),
-        phone: string_flag(command, "phone"),
-        email: string_flag(command, "email"),
-        otp: string_flag(command, "otp"),
-        invite_code: string_flag(command, "invite-code"),
-        wait: command
-            .flags
-            .get("wait")
-            .is_some_and(|value| value == "true"),
-        verification_timeout: 300,
-        poll_interval_seconds: 5.0,
-    };
-    Ok(RegisterHandleBridgeRequest { sdk, legacy })
+    register_handle_request(&sdk_command)
 }
 
 pub fn register_handle_plan_via_im_core(
@@ -209,8 +188,8 @@ pub fn register_handle_plan_via_im_core(
     command: &ParsedCommand,
     identity_flag: &str,
 ) -> Result<identity::CommandResult, ExitError> {
-    let bridge = register_handle_bridge_request(command, identity_flag)?;
-    register_handle_plan_command_result(manager, did_domain, bridge.sdk, &bridge.legacy)
+    let request = register_handle_command_request(command, identity_flag)?;
+    register_handle_plan_command_result(manager, did_domain, request)
 }
 
 pub fn register_handle_via_im_core(
@@ -219,19 +198,19 @@ pub fn register_handle_via_im_core(
     command: &ParsedCommand,
     identity_flag: &str,
 ) -> Result<identity::CommandResult, ExitError> {
-    let bridge = register_handle_bridge_request(command, identity_flag)?;
+    let request = register_handle_command_request(command, identity_flag)?;
     let core = super::build_im_core(resolved, manager)?;
     let result = core
         .identities()
-        .register_handle(bridge.sdk)
+        .register_handle(request.clone())
         .map_err(|err| super::map_im_error(err, "id register"))?;
-    register_handle_command_result(result, manager, &bridge.legacy)
+    register_handle_command_result(result, manager, &request)
 }
 
 fn register_handle_command_result(
     result: HandleRegistrationResult,
     manager: &identity::Manager,
-    legacy: &identity::RegisterParams,
+    request: &RegisterHandleRequest,
 ) -> Result<identity::CommandResult, ExitError> {
     let full_handle = result.handle.as_str().to_string();
     let handle = full_handle
@@ -245,7 +224,7 @@ fn register_handle_command_result(
         .identity
         .as_ref()
         .map(sdk_identity_name)
-        .unwrap_or_else(|| pending_registration_identity_name(legacy, &handle, &full_handle));
+        .unwrap_or_else(|| pending_registration_identity_name(request, &handle, &full_handle));
     let mut data = json!({
         "action": registration_action(result.state),
         "identity_name": identity_name,
@@ -259,13 +238,11 @@ fn register_handle_command_result(
             identity, manager
         )?);
     }
-    let phone = legacy.phone.trim();
-    if !phone.is_empty() {
+    if let Some(phone) = registration_phone(&request.verification) {
         data["phone"] = json!(normalize_registration_phone(phone)?);
     }
-    let email = normalize_registration_email(&legacy.email);
-    if !email.is_empty() {
-        data["email"] = json!(email);
+    if let Some(email) = registration_email(&request.verification) {
+        data["email"] = json!(normalize_registration_email(email));
     }
     Ok(identity::CommandResult {
         summary: registration_summary(result.state, data["full_handle"].as_str().unwrap_or("")),
@@ -1343,7 +1320,6 @@ fn register_handle_plan_command_result(
     manager: &identity::Manager,
     did_domain: &str,
     request: RegisterHandleRequest,
-    legacy: &identity::RegisterParams,
 ) -> Result<identity::CommandResult, ExitError> {
     let target = register_plan_target(request.requested_handle.as_str(), did_domain)?;
     let existing = manager.list().unwrap_or_default();
@@ -1366,8 +1342,8 @@ fn register_handle_plan_command_result(
                 "handle": target.local_part,
                 "full_handle": target.full_handle.as_str(),
                 "did_domain": target.effective_domain,
-                "phone": legacy.phone,
-                "email": legacy.email,
+                "phone": registration_phone(&request.verification).unwrap_or_default(),
+                "email": registration_email(&request.verification).unwrap_or_default(),
                 "remote_calls": remote_calls,
             }
         }),
@@ -1444,6 +1420,20 @@ fn register_plan_action_and_calls(
             ],
         ),
         _ => ("register_handle", vec!["did-auth.register"]),
+    }
+}
+
+fn registration_phone(verification: &VerificationInput) -> Option<&str> {
+    match verification {
+        VerificationInput::Phone { phone, .. } => Some(phone.as_str()),
+        _ => None,
+    }
+}
+
+fn registration_email(verification: &VerificationInput) -> Option<&str> {
+    match verification {
+        VerificationInput::Email { email, .. } => Some(email.as_str()),
+        _ => None,
     }
 }
 
@@ -1863,15 +1853,19 @@ fn compare_rfc3339(left: &str, right: &str) -> Ordering {
 }
 
 fn pending_registration_identity_name(
-    legacy: &identity::RegisterParams,
+    request: &RegisterHandleRequest,
     handle: &str,
     full_handle: &str,
 ) -> String {
-    let identity_name = legacy.identity_name.trim();
-    if !identity_name.is_empty() {
+    if let Some(identity_name) = request
+        .local_alias
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         return identity_name.to_string();
     }
-    if legacy.handle.trim().contains('.') {
+    if request.requested_handle.as_str().trim().contains('.') {
         full_handle.to_string()
     } else {
         handle.to_string()
