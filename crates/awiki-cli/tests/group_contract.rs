@@ -197,7 +197,7 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
     assert_eq!(join_request["Group"], group);
     assert_eq!(join_request["ReasonText"], "joinable group");
 
-    let add = success_json(&awiki_cmd(
+    let add = awiki_cmd(
         &[
             "--identity",
             "alice",
@@ -211,16 +211,8 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
             "--e2ee",
         ],
         workspace.path(),
-    ));
-    assert_eq!(add["summary"], "Dry run: group membership change planned");
-    assert_eq!(add["data"]["plan"]["action"], "group.add");
-    assert_eq!(add["data"]["plan"]["member_handle"], "bob.awiki.ai");
-    let add_request = &add["data"]["plan"]["request"];
-    assert_eq!(add_request["Member"], "bob");
-    assert_eq!(add_request["Role"], "member");
-    assert_eq!(add_request["ReasonText"], "");
-    assert_eq!(add_request["E2EE"], true);
-    assert_eq!(add_request["LeaveRequestID"], "");
+    );
+    assert_group_e2ee_unsupported(&add, "group.add");
 
     let empty_membership = success_json(&awiki_cmd(
         &["group", "add", "--dry-run", "--group=", "--member="],
@@ -230,7 +222,7 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
     assert_eq!(empty_membership_request["Group"], "");
     assert_eq!(empty_membership_request["Member"], "");
 
-    let remove = success_json(&awiki_cmd(
+    let remove = awiki_cmd(
         &[
             "--identity",
             "alice",
@@ -246,11 +238,8 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
             "--e2ee",
         ],
         workspace.path(),
-    ));
-    assert_eq!(remove["data"]["plan"]["action"], "group.kick");
-    let remove_request = &remove["data"]["plan"]["request"];
-    assert_eq!(remove_request["ReasonText"], "cleanup");
-    assert_eq!(remove_request["E2EE"], true);
+    );
+    assert_group_e2ee_unsupported(&remove, "group.remove");
 
     let kick = success_json(&awiki_cmd(
         &[
@@ -269,7 +258,7 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
     assert_eq!(kick["data"]["plan"]["action"], "group.kick");
     assert_eq!(kick["data"]["plan"]["member_handle"], Value::Null);
 
-    let leave = success_json(&awiki_cmd(
+    let leave = awiki_cmd(
         &[
             "--identity",
             "bob",
@@ -283,11 +272,8 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
             "--e2ee",
         ],
         workspace.path(),
-    ));
-    assert_eq!(leave["summary"], "Dry run: group leave planned");
-    let leave_request = &leave["data"]["plan"]["request"];
-    assert_eq!(leave_request["ReasonText"], "done");
-    assert_eq!(leave_request["E2EE"], true);
+    );
+    assert_group_e2ee_unsupported(&leave, "group.leave");
 
     let list = success_json(&awiki_cmd(
         &[
@@ -345,11 +331,11 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
 }
 
 #[test]
-fn group_reads_im_core_mvp_route_through_group_service_bridge() {
+fn group_reads_default_cutover_route_through_group_service_bridge() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
     let alice =
-        register_generated_group_identity(&manager, "alice-group-mvp", "alice", "jwt-alice");
+        register_generated_group_identity(&manager, "alice-group-cutover", "alice", "jwt-alice");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
@@ -403,41 +389,39 @@ fn group_reads_im_core_mvp_route_through_group_service_bridge() {
     ]);
     write_group_config(workspace.path(), &server.base_url());
 
-    let get = success_json(&awiki_cmd_with_env(
+    let get = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-mvp",
+            "alice-group-cutover",
             "group",
             "get",
             "--group",
             group_did,
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(get["summary"], "Loaded group snapshot");
     assert_eq!(get["data"]["group"]["group_did"], group_did);
     assert_eq!(get["data"]["group"]["name"], "Demo Group");
 
-    let list = success_json(&awiki_cmd_with_env(
+    let list = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-mvp",
+            "alice-group-cutover",
             "group",
             "list",
             "--limit",
             "25",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(list["summary"], "Loaded 1 groups");
     assert_eq!(list["data"]["groups"][0]["group_did"], group_did);
 
-    let members = success_json(&awiki_cmd_with_env(
+    let members = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-mvp",
+            "alice-group-cutover",
             "group",
             "members",
             "--group",
@@ -446,15 +430,14 @@ fn group_reads_im_core_mvp_route_through_group_service_bridge() {
             "10",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(members["summary"], "Loaded 1 group members");
     assert_eq!(members["data"]["members"][0]["member_handle"], "bob");
 
-    let messages = success_json(&awiki_cmd_with_env(
+    let messages = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-mvp",
+            "alice-group-cutover",
             "group",
             "messages",
             "--group",
@@ -465,7 +448,6 @@ fn group_reads_im_core_mvp_route_through_group_service_bridge() {
             "41",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(messages["summary"], "Loaded 1 group messages");
     assert_eq!(messages["data"]["messages"][0]["msg_id"], "group-msg-1");
@@ -493,11 +475,15 @@ fn group_reads_im_core_mvp_route_through_group_service_bridge() {
 }
 
 #[test]
-fn group_lifecycle_im_core_mvp_routes_plain_create_join_and_leave() {
+fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
-    let alice =
-        register_generated_group_identity(&manager, "alice-group-life-mvp", "alice", "jwt-alice");
+    let alice = register_generated_group_identity(
+        &manager,
+        "alice-group-life-cutover",
+        "alice",
+        "jwt-alice",
+    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group_lifecycle";
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
@@ -551,10 +537,10 @@ fn group_lifecycle_im_core_mvp_routes_plain_create_join_and_leave() {
     ]);
     write_group_config(workspace.path(), &server.base_url());
 
-    let create = success_json(&awiki_cmd_with_env(
+    let create = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-life-mvp",
+            "alice-group-life-cutover",
             "group",
             "create",
             "--name",
@@ -565,16 +551,15 @@ fn group_lifecycle_im_core_mvp_routes_plain_create_join_and_leave() {
             "public",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(create["summary"], format!("Created group {group_did}"));
     assert_eq!(create["data"]["group"]["group_did"], group_did);
     assert_eq!(create["data"]["members"][0]["member_did"], alice.did);
 
-    let join = success_json(&awiki_cmd_with_env(
+    let join = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-life-mvp",
+            "alice-group-life-cutover",
             "group",
             "join",
             "--group",
@@ -583,15 +568,14 @@ fn group_lifecycle_im_core_mvp_routes_plain_create_join_and_leave() {
             "  join me  ",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(join["summary"], format!("Joined group {group_did}"));
     assert_eq!(join["data"]["group"]["member_role"], "member");
 
-    let leave = success_json(&awiki_cmd_with_env(
+    let leave = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-life-mvp",
+            "alice-group-life-cutover",
             "group",
             "leave",
             "--group",
@@ -600,7 +584,6 @@ fn group_lifecycle_im_core_mvp_routes_plain_create_join_and_leave() {
             "ignored by plain leave",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(leave["summary"], format!("Left group {group_did}"));
     assert_eq!(leave["data"]["group"], group_did);
@@ -662,35 +645,16 @@ fn group_lifecycle_im_core_mvp_routes_plain_create_join_and_leave() {
 }
 
 #[test]
-fn group_lifecycle_im_core_mvp_keeps_e2ee_create_on_legacy_path() {
+fn group_lifecycle_default_cutover_rejects_e2ee_create() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
-    register_generated_group_identity(&manager, "alice-group-e2ee-legacy", "alice", "jwt-alice");
-    let group_did = "did:wba:awiki.ai:groups:demo:e1_group_e2ee";
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "group_policy": {
-                "message_security_profile": "group-e2ee"
-            },
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "members": [],
-            "total": 0,
-            "source": "remote_http"
-        }))),
-    ]);
-    write_group_config(workspace.path(), &server.base_url());
+    register_generated_group_identity(&manager, "alice-group-e2ee-cutover", "alice", "jwt-alice");
+    write_group_config(workspace.path(), "http://127.0.0.1:9");
 
-    let create = success_json(&awiki_cmd_with_env(
+    let output = awiki_cmd(
         &[
             "--identity",
-            "alice-group-e2ee-legacy",
+            "alice-group-e2ee-cutover",
             "group",
             "create",
             "--name",
@@ -698,35 +662,21 @@ fn group_lifecycle_im_core_mvp_keeps_e2ee_create_on_legacy_path() {
             "--e2ee",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
-    ));
-    assert_eq!(create["summary"], format!("Created group {group_did}"));
+    );
 
-    let requests = server.requests();
-    assert_eq!(requests.len(), 3);
-    let bodies = requests
-        .iter()
-        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(bodies[0]["method"], "group.create");
-    assert_eq!(
-        bodies[0]["params"]["body"]["group_policy"]["message_security_profile"],
-        "group-e2ee"
-    );
-    assert_eq!(
-        bodies[0]["params"]["auth"]["scheme"],
-        "anp-rfc9421-origin-proof-v1"
-    );
-    assert_eq!(bodies[1]["method"], "group.get");
-    assert_eq!(bodies[2]["method"], "group.list_members");
+    assert_group_e2ee_unsupported(&output, "group.create");
 }
 
 #[test]
-fn group_lifecycle_im_core_mvp_preserves_owner_cannot_leave_guard() {
+fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
-    let alice =
-        register_generated_group_identity(&manager, "alice-owner-guard-mvp", "alice", "jwt-alice");
+    let alice = register_generated_group_identity(
+        &manager,
+        "alice-owner-guard-cutover",
+        "alice",
+        "jwt-alice",
+    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_owner_guard";
     write_group_config(workspace.path(), "http://127.0.0.1:9");
     seed_group_snapshot(
@@ -737,17 +687,16 @@ fn group_lifecycle_im_core_mvp_preserves_owner_cannot_leave_guard() {
         "owner",
     );
 
-    let output = awiki_cmd_with_env(
+    let output = awiki_cmd(
         &[
             "--identity",
-            "alice-owner-guard-mvp",
+            "alice-owner-guard-cutover",
             "group",
             "leave",
             "--group",
             group_did,
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
 
     assert_code(&output, 2);
@@ -757,12 +706,12 @@ fn group_lifecycle_im_core_mvp_preserves_owner_cannot_leave_guard() {
 }
 
 #[test]
-fn group_mutation_im_core_mvp_keeps_cached_e2ee_group_add_on_legacy_path() {
+fn group_mutation_default_cutover_rejects_e2ee_member_paths() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
     let alice = register_generated_group_identity(
         &manager,
-        "alice-group-e2ee-mutation-legacy",
+        "alice-group-e2ee-mutation-cutover",
         "alice",
         "jwt-alice",
     );
@@ -776,52 +725,26 @@ fn group_mutation_im_core_mvp_keeps_cached_e2ee_group_add_on_legacy_path() {
         group_did,
         "owner",
     );
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({
-            "accepted": true,
-            "group_did": group_did,
-            "member_did": bob_did,
-            "operation_id": "op-add-e2ee-cached",
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "group_did": group_did,
-            "group_policy": {
-                "message_security_profile": "group-e2ee"
-            },
-            "member_role": "owner",
-            "member_status": "active",
-            "member_count": 2,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "members": [{
-                "member_did": bob_did,
-                "member_handle": "bob.awiki.ai",
-                "role": "member",
-                "status": "active"
-            }],
-            "total": 1,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(
-            &json!({
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32004,
-                    "message": "no key package"
-                },
-                "id": "req-1"
-            })
-            .to_string(),
-        ),
-    ]);
-    write_group_config(workspace.path(), &server.base_url());
-
-    let add = success_json(&awiki_cmd_with_env(
+    let add = awiki_cmd(
         &[
             "--identity",
-            "alice-group-e2ee-mutation-legacy",
+            "alice-group-e2ee-mutation-cutover",
+            "group",
+            "add",
+            "--group",
+            group_did,
+            "--member",
+            bob_did,
+            "--e2ee",
+        ],
+        workspace.path(),
+    );
+    assert_group_e2ee_unsupported(&add, "group.add");
+
+    let cached_e2ee_add = awiki_cmd(
+        &[
+            "--identity",
+            "alice-group-e2ee-mutation-cutover",
             "group",
             "add",
             "--group",
@@ -830,49 +753,17 @@ fn group_mutation_im_core_mvp_keeps_cached_e2ee_group_add_on_legacy_path() {
             bob_did,
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
-    ));
-    assert_eq!(add["summary"], "Added member to group");
-    assert_eq!(
-        add["data"]["delivery"]["operation_id"],
-        "op-add-e2ee-cached"
     );
-    assert_contains(
-        &add["warnings"][0],
-        "Group E2EE member KeyPackage lookup failed",
-    );
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 4);
-    let bodies = requests
-        .iter()
-        .map(|request| serde_json::from_str::<Value>(request_body(request)).unwrap())
-        .collect::<Vec<_>>();
-    let methods = bodies
-        .iter()
-        .map(|body| body["method"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        methods,
-        vec![
-            "group.add",
-            "group.get",
-            "group.list_members",
-            "group.e2ee.get_key_package",
-        ]
-    );
-    assert_eq!(bodies[0]["params"]["body"]["member_did"], bob_did);
-    assert_eq!(bodies[3]["params"]["meta"]["profile"], "anp.group.e2ee.v1");
-    assert_eq!(bodies[3]["params"]["body"]["target_did"], bob_did);
+    assert_group_e2ee_unsupported(&cached_e2ee_add, "group.add");
 }
 
 #[test]
-fn group_mutation_im_core_mvp_routes_plain_member_and_update_paths() {
+fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
     let alice = register_generated_group_identity(
         &manager,
-        "alice-group-mutation-mvp",
+        "alice-group-mutation-cutover",
         "alice",
         "jwt-alice",
     );
@@ -958,10 +849,10 @@ fn group_mutation_im_core_mvp_routes_plain_member_and_update_paths() {
     ]);
     write_group_config(workspace.path(), &server.base_url());
 
-    let add = success_json(&awiki_cmd_with_env(
+    let add = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-mutation-mvp",
+            "alice-group-mutation-cutover",
             "group",
             "add",
             "--group",
@@ -972,7 +863,6 @@ fn group_mutation_im_core_mvp_routes_plain_member_and_update_paths() {
             " admin ",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(add["summary"], "Added member to group");
     assert_eq!(add["data"]["group"]["group_did"], group_did);
@@ -980,10 +870,10 @@ fn group_mutation_im_core_mvp_routes_plain_member_and_update_paths() {
     assert_eq!(add["data"]["member"]["handle"], "bob");
     assert_eq!(add["data"]["members"][0]["member_handle"], "bob");
 
-    let remove = success_json(&awiki_cmd_with_env(
+    let remove = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-mutation-mvp",
+            "alice-group-mutation-cutover",
             "group",
             "remove",
             "--group",
@@ -994,16 +884,15 @@ fn group_mutation_im_core_mvp_routes_plain_member_and_update_paths() {
             " cleanup ",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(remove["summary"], "Removed member from group");
     assert_eq!(remove["data"]["member"]["did"], bob_did);
     assert_eq!(remove["data"]["members"].as_array().unwrap().len(), 0);
 
-    let update = success_json(&awiki_cmd_with_env(
+    let update = success_json(&awiki_cmd(
         &[
             "--identity",
-            "alice-group-mutation-mvp",
+            "alice-group-mutation-cutover",
             "group",
             "update",
             "--group",
@@ -1023,7 +912,6 @@ fn group_mutation_im_core_mvp_routes_plain_member_and_update_paths() {
             "4096",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(update["summary"], format!("Updated group {group_did}"));
     assert_eq!(update["data"]["group"]["name"], "Renamed Mutation Group");
@@ -1101,7 +989,7 @@ fn group_mutation_im_core_mvp_routes_plain_member_and_update_paths() {
 }
 
 #[test]
-fn group_e2ee_leave_loads_identity_before_live_leave_request_flow() {
+fn group_e2ee_leave_is_cutover_unsupported_before_identity_lookup() {
     let workspace = TempDir::new().expect("workspace");
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
 
@@ -1118,14 +1006,7 @@ fn group_e2ee_leave_loads_identity_before_live_leave_request_flow() {
         workspace.path(),
     );
 
-    assert_code(&output, 5);
-    let envelope = error_json(&output);
-    assert_eq!(envelope["error"]["code"], "not_found");
-    assert_contains(&envelope["error"]["message"], "identity not found: alice");
-    assert_eq!(
-        envelope["error"]["hint"],
-        "Run `awiki-cli id list` to inspect available identities."
-    );
+    assert_group_e2ee_unsupported(&output, "group.leave");
 }
 
 #[test]
@@ -1447,24 +1328,6 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command.output().expect("run awiki-cli")
 }
 
-fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
-    command
-        .args(args)
-        .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
-        .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
-        .env_remove("AWIKI_WORKSPACE")
-        .env_remove("AWIKI_WORKSPACE_HOME")
-        .env_remove("AWIKI_HOME")
-        .env_remove("AVIKI_WORKSPACE_HOME")
-        .env_remove("AWIKI_FORMAT")
-        .env_remove("AVIKI_FORMAT");
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-    command.output().expect("run awiki-cli")
-}
-
 fn register_generated_group_identity(
     manager: &Manager,
     identity_name: &str,
@@ -1622,6 +1485,15 @@ fn assert_code(output: &Output, expected: i32) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn assert_group_e2ee_unsupported(output: &Output, command: &str) {
+    assert_code(output, 2);
+    let envelope = error_json(output);
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], "group-e2ee");
+    assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
 }
 
 fn assert_contains(value: &Value, needle: &str) {
