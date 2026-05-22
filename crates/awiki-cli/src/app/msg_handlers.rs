@@ -2,7 +2,9 @@ use super::App;
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
 use crate::identity;
-use crate::message::{CommandResult, MessageError};
+use crate::im_core_adapter::message_result::{
+    CommandResult, IdentityErrorKind, MessageAdapterError,
+};
 use crate::output::ExitError;
 use im_core::prelude::{MessageBody, MessageKind};
 use serde_json::{json, Map, Value};
@@ -525,62 +527,63 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
-pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {
+pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> ExitError {
+    let err = err.into();
     match err {
-        MessageError::TargetRequired
-        | MessageError::TextRequired
-        | MessageError::AttachmentIdRequired
-        | MessageError::AttachmentMessageInvalid
-        | MessageError::AttachmentSenderRequired
-        | MessageError::GroupRequired
-        | MessageError::MemberRequired
-        | MessageError::GroupOwnerCannotLeave
-        | MessageError::FilePathRequired
-        | MessageError::MimeTypeWithoutFile
-        | MessageError::MessageIdRequired
-        | MessageError::OutputPathRequired
-        | MessageError::DownloadTargetNeeded
-        | MessageError::DownloadTargetConflict
-        | MessageError::MissingMessageServiceDid
-        | MessageError::MissingAttachmentServiceDid
-        | MessageError::InvalidAttachmentServiceEndpoint(_)
-        | MessageError::Json(_) => ExitError::new(
+        MessageAdapterError::TargetRequired
+        | MessageAdapterError::TextRequired
+        | MessageAdapterError::AttachmentIdRequired
+        | MessageAdapterError::AttachmentMessageInvalid
+        | MessageAdapterError::AttachmentSenderRequired
+        | MessageAdapterError::GroupRequired
+        | MessageAdapterError::MemberRequired
+        | MessageAdapterError::GroupOwnerCannotLeave
+        | MessageAdapterError::FilePathRequired
+        | MessageAdapterError::MimeTypeWithoutFile
+        | MessageAdapterError::MessageIdRequired
+        | MessageAdapterError::OutputPathRequired
+        | MessageAdapterError::DownloadTargetNeeded
+        | MessageAdapterError::DownloadTargetConflict
+        | MessageAdapterError::MissingMessageServiceDid
+        | MessageAdapterError::MissingAttachmentServiceDid
+        | MessageAdapterError::InvalidAttachmentServiceEndpoint(_)
+        | MessageAdapterError::Json(_) => ExitError::new(
             "invalid_argument",
             2,
             err.to_string(),
             "Check the message command arguments and try again.",
         ),
-        MessageError::MessageNotFound | MessageError::AttachmentNotFound => {
+        MessageAdapterError::MessageNotFound | MessageAdapterError::AttachmentNotFound => {
             ExitError::new("not_found", 5, err.to_string(), hint)
         }
-        MessageError::IdentityRequired(message) => ExitError::new(
+        MessageAdapterError::IdentityRequired(message) => ExitError::new(
             "identity_required",
             3,
             message,
             "Complete user setup with `awiki-cli id register --handle <handle> ...` or recover an existing handle before using `awiki-cli msg` commands.",
         ),
-        MessageError::SecureNotSupported => ExitError::new(
+        MessageAdapterError::SecureNotSupported => ExitError::new(
             "unsupported_mode",
             1,
             err.to_string(),
             "Secure messaging is currently supported only for direct text messaging.",
         ),
-        MessageError::GroupE2eeSelfLeaveUnsupported => ExitError::new(
+        MessageAdapterError::GroupE2eeSelfLeaveUnsupported => ExitError::new(
             "unsupported_mode",
             1,
             err.to_string(),
             "For PR-A group E2EE, ask the group owner to remove the member; self-leave requires a future epoch-advancing leave-request flow.",
         ),
-        MessageError::TransportUnavailable(_) => ExitError::new(
+        MessageAdapterError::TransportUnavailable(_) => ExitError::new(
             "transport_unavailable",
             1,
             err.to_string(),
             "Start the websocket listener/daemon or switch runtime.mode back to http.",
         ),
-        MessageError::AttachmentNotSupported | MessageError::GroupNotSupported => {
+        MessageAdapterError::AttachmentNotSupported | MessageAdapterError::GroupNotSupported => {
             ExitError::new("not_implemented", 1, err.to_string(), hint)
         }
-        MessageError::Service(service_err) => match () {
+        MessageAdapterError::Service(service_err) => match () {
             _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
                 ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
             }
@@ -618,8 +621,39 @@ pub(super) fn message_exit(err: MessageError, hint: &str) -> ExitError {
             }
             _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
         },
-        MessageError::Identity(err) => super::identity_exit(err),
-        MessageError::Internal(message) => ExitError::new("internal_error", 1, message, hint),
+        MessageAdapterError::Identity(err) => match err.kind {
+            IdentityErrorKind::InvalidInput => ExitError::new(
+                "invalid_argument",
+                2,
+                err.message,
+                "Run `awiki-cli id list` to inspect available identities.",
+            ),
+            IdentityErrorKind::NotFound => ExitError::new(
+                "not_found",
+                5,
+                err.message,
+                "Run `awiki-cli id list` to inspect available identities.",
+            ),
+            IdentityErrorKind::Conflict => ExitError::new(
+                "conflict",
+                1,
+                err.message,
+                "Use a different --identity value if the alias is already occupied.",
+            ),
+            IdentityErrorKind::AuthRequired => ExitError::new(
+                "auth_required",
+                3,
+                err.message,
+                "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+            ),
+            IdentityErrorKind::Internal => ExitError::new(
+                "internal_error",
+                1,
+                err.message,
+                "Run `awiki-cli doctor` to inspect configuration and storage paths.",
+            ),
+        },
+        MessageAdapterError::Internal(message) => ExitError::new("internal_error", 1, message, hint),
     }
 }
 
@@ -630,7 +664,7 @@ mod tests {
     #[test]
     fn message_exit_maps_transport_unavailable_like_go() {
         let exit = message_exit(
-            MessageError::transport_unavailable("bridge offline"),
+            MessageAdapterError::transport_unavailable("bridge offline"),
             "fallback hint",
         );
 

@@ -1,7 +1,8 @@
 use super::{msg_handlers::message_exit, App};
 use crate::cli::ParsedCommand;
 use crate::identity;
-use crate::message::{self, CommandResult};
+use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError};
+use crate::message;
 use crate::output::ExitError;
 use serde_json::{json, Value};
 
@@ -557,30 +558,30 @@ impl App {
     }
 }
 
-fn group_exit(err: message::MessageError) -> ExitError {
+fn group_exit(err: MessageAdapterError) -> ExitError {
     message_exit(
         err,
         "Ensure the active identity is ready and the message service is reachable.",
     )
 }
 
-fn group_cutover_exit(err: message::MessageError, command: &str) -> ExitError {
+fn group_cutover_exit(err: MessageAdapterError, command: &str) -> ExitError {
     match err {
-        message::MessageError::GroupNotSupported => unsupported_group_e2ee_command(command),
+        MessageAdapterError::GroupNotSupported => unsupported_group_e2ee_command(command),
         err => group_exit(err),
     }
 }
 
-fn group_membership_exit(err: message::MessageError) -> ExitError {
+fn group_membership_exit(err: MessageAdapterError) -> ExitError {
     message_exit(
         err,
         "Make sure the group and member exist and the active identity has the owner role required for membership changes.",
     )
 }
 
-fn group_membership_cutover_exit(err: message::MessageError, command: &str) -> ExitError {
+fn group_membership_cutover_exit(err: MessageAdapterError, command: &str) -> ExitError {
     match err {
-        message::MessageError::GroupNotSupported => unsupported_group_e2ee_command(command),
+        MessageAdapterError::GroupNotSupported => unsupported_group_e2ee_command(command),
         err => group_membership_exit(err),
     }
 }

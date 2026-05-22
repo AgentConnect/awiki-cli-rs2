@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
+use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError, ServiceError};
 use crate::message;
-use crate::message::MessageError;
 use crate::output::ExitError;
 use crate::store::{self, MessageRecord};
 
@@ -83,7 +83,7 @@ pub fn send_text_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
     mut request: SendMessageRequest,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     let direct_target = resolve_direct_target_for_sdk(client, &request)?;
     if let Some(target) = &direct_target {
         request.target = MessageTarget::Direct(
@@ -102,7 +102,7 @@ pub fn send_text_via_im_core(
         ThreadRef::Group(group) => {
             persist_group_send_result(resolved, client, group.as_str(), &result)
         }
-        ThreadRef::Thread(_) => Err(MessageError::Internal(
+        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread send results are not supported by the CLI renderer".to_string(),
         )),
     }
@@ -114,8 +114,9 @@ pub fn read_inbox_via_im_core(
     client: &im_core::ImClient,
     identity_name: &str,
     query: InboxQuery,
-) -> Result<message::CommandResult, MessageError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)?;
+) -> Result<CommandResult, MessageAdapterError> {
+    let record = message::require_active_identity(resolved, manager, identity_name)
+        .map_err(MessageAdapterError::from)?;
     let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
     let page = client
         .messages()
@@ -144,7 +145,7 @@ pub fn read_inbox_via_im_core(
             "source": source,
         }),
     };
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data,
         summary: format!("Loaded {total} inbox messages"),
         warnings: message::compact_warnings(warnings),
@@ -158,7 +159,7 @@ pub fn read_history_via_im_core(
     identity_name: &str,
     thread: ThreadRef,
     query: HistoryQuery,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     match thread {
         ThreadRef::Direct(peer) => {
             read_direct_history_via_im_core(resolved, manager, client, identity_name, peer, query)
@@ -166,7 +167,7 @@ pub fn read_history_via_im_core(
         ThreadRef::Group(group) => {
             read_group_history_via_im_core(resolved, manager, client, identity_name, group, query)
         }
-        ThreadRef::Thread(_) => Err(MessageError::Internal(
+        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread history is not supported by the CLI renderer".to_string(),
         )),
     }
@@ -179,8 +180,9 @@ fn read_direct_history_via_im_core(
     identity_name: &str,
     peer: PeerRef,
     query: HistoryQuery,
-) -> Result<message::CommandResult, MessageError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)?;
+) -> Result<CommandResult, MessageAdapterError> {
+    let record = message::require_active_identity(resolved, manager, identity_name)
+        .map_err(MessageAdapterError::from)?;
     let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
     let (thread, target, target_is_handle) = resolve_history_thread(client, peer)?;
     let page = client
@@ -229,7 +231,7 @@ fn read_direct_history_via_im_core(
         }
     }
     let total = messages.len();
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "messages": messages,
             "total": total,
@@ -249,8 +251,9 @@ fn read_group_history_via_im_core(
     identity_name: &str,
     group: GroupRef,
     query: HistoryQuery,
-) -> Result<message::CommandResult, MessageError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)?;
+) -> Result<CommandResult, MessageAdapterError> {
+    let record = message::require_active_identity(resolved, manager, identity_name)
+        .map_err(MessageAdapterError::from)?;
     let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
     let page = client
         .messages()
@@ -279,7 +282,7 @@ fn read_group_history_via_im_core(
         .unwrap_or_default();
     let source = source_with_default_for_mode(&raw, message::runtime_mode(resolved));
     let total = messages.len();
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "messages": messages,
             "total": total,
@@ -297,9 +300,9 @@ pub fn mark_read_via_im_core(
     client: &im_core::ImClient,
     _identity_name: &str,
     message_ids: Vec<String>,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     if message_ids.is_empty() {
-        return Err(MessageError::MessageNotFound);
+        return Err(MessageAdapterError::MessageNotFound);
     }
     let ids = message_ids
         .iter()
@@ -311,7 +314,7 @@ pub fn mark_read_via_im_core(
         .mark_read(ids)
         .map_err(im_error_to_message_error)?;
     let updated_count = result.updated_count;
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "action": "mark_read",
             "updated_count": updated_count,
@@ -460,7 +463,7 @@ fn inbox_scope(raw: &str) -> Result<InboxScope, ExitError> {
 fn resolve_direct_target_for_sdk(
     client: &im_core::ImClient,
     request: &SendMessageRequest,
-) -> Result<Option<message::TargetResolution>, MessageError> {
+) -> Result<Option<message::TargetResolution>, MessageAdapterError> {
     let MessageTarget::Direct(peer) = &request.target else {
         return Ok(None);
     };
@@ -484,7 +487,7 @@ fn resolve_direct_target_for_sdk(
 fn resolve_history_thread(
     client: &im_core::ImClient,
     peer: PeerRef,
-) -> Result<(ThreadRef, message::TargetResolution, bool), MessageError> {
+) -> Result<(ThreadRef, message::TargetResolution, bool), MessageAdapterError> {
     let original = peer.as_str().trim().to_string();
     let target_is_handle = !original.is_empty() && !original.starts_with("did:");
     let target = if target_is_handle {
@@ -603,13 +606,17 @@ fn direct_target_from_result(result: &SendMessageResult) -> message::TargetResol
     }
 }
 
-fn message_text_and_type(body: &MessageBodyView) -> Result<(&str, &'static str), MessageError> {
+fn message_text_and_type(
+    body: &MessageBodyView,
+) -> Result<(&str, &'static str), MessageAdapterError> {
     match body {
         MessageBodyView::Text { text, kind } => Ok((text.as_str(), message_type_for_kind(kind))),
-        MessageBodyView::Unsupported { content_type } => Err(MessageError::Internal(format!(
-            "unsupported message body returned by im-core: {}",
-            content_type.as_deref().unwrap_or("unknown")
-        ))),
+        MessageBodyView::Unsupported { content_type } => {
+            Err(MessageAdapterError::Internal(format!(
+                "unsupported message body returned by im-core: {}",
+                content_type.as_deref().unwrap_or("unknown")
+            )))
+        }
     }
 }
 
@@ -745,7 +752,7 @@ fn persist_send_result(
     client: &im_core::ImClient,
     target: &message::TargetResolution,
     sdk_result: &SendMessageResult,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     let result = DirectSendResult::from_sdk_result(sdk_result, target);
     let (text, message_type) = message_text_and_type(&sdk_result.message.body)?;
     let owner_did = client.did().as_str();
@@ -782,7 +789,7 @@ fn persist_send_result(
             }
         }
     }
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "action": "send_message",
             "target": {
@@ -808,7 +815,7 @@ fn persist_group_send_result(
     client: &im_core::ImClient,
     group_did: &str,
     sdk_result: &SendMessageResult,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     let result = GroupSendResult::from_sdk_result(sdk_result, group_did);
     let (text, message_type) = message_text_and_type(&sdk_result.message.body)?;
     let owner_did = client.did().as_str();
@@ -861,7 +868,7 @@ fn persist_group_send_result(
             }
         }
     }
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "action": "send_message",
             "target": {
@@ -918,34 +925,37 @@ fn metadata_string(value: Value) -> String {
     serde_json::to_string(&value).unwrap_or_default()
 }
 
-fn im_error_to_message_error(err: im_core::ImError) -> MessageError {
+fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
     match err {
         im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("text") => {
-            MessageError::TextRequired
+            MessageAdapterError::TextRequired
         }
         im_core::ImError::PeerNotFound { peer } => {
-            MessageError::IdentityRequired(format!("peer not found: {peer}"))
+            MessageAdapterError::IdentityRequired(format!("peer not found: {peer}"))
         }
         im_core::ImError::UnsupportedCapability { capability } if capability == "group-send" => {
-            MessageError::GroupNotSupported
+            MessageAdapterError::GroupNotSupported
         }
         im_core::ImError::UnsupportedCapability { capability } if capability == "attachments" => {
-            MessageError::AttachmentNotSupported
+            MessageAdapterError::AttachmentNotSupported
         }
         im_core::ImError::UnsupportedCapability { capability } if capability == "secure-direct" => {
-            MessageError::SecureNotSupported
+            MessageAdapterError::SecureNotSupported
         }
         im_core::ImError::AuthRequired | im_core::ImError::SessionExpired => {
-            MessageError::IdentityRequired("authentication is required".to_string())
+            MessageAdapterError::IdentityRequired("authentication is required".to_string())
         }
-        im_core::ImError::IdentityNotReady { identity, missing } => MessageError::IdentityRequired(
-            format!("identity {identity} is not ready: {}", missing.join(", ")),
-        ),
+        im_core::ImError::IdentityNotReady { identity, missing } => {
+            MessageAdapterError::IdentityRequired(format!(
+                "identity {identity} is not ready: {}",
+                missing.join(", ")
+            ))
+        }
         im_core::ImError::Service {
             status_code,
             code,
             message,
-        } => MessageError::Service(crate::identity::wire::ServiceError {
+        } => MessageAdapterError::Service(ServiceError {
             status_code: status_code.unwrap_or_default(),
             rpc_code: code
                 .and_then(|value| value.parse().ok())
@@ -954,9 +964,9 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageError {
             data: None,
         }),
         im_core::ImError::TransportUnavailable { detail } => {
-            MessageError::TransportUnavailable(detail)
+            MessageAdapterError::TransportUnavailable(detail)
         }
-        err => MessageError::Internal(err.to_string()),
+        err => MessageAdapterError::Internal(err.to_string()),
     }
 }
 

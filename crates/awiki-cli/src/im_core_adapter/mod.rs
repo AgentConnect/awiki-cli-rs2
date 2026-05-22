@@ -19,6 +19,7 @@ pub mod error;
 pub mod groups;
 pub mod identity;
 pub mod identity_replace_did_plan;
+pub mod message_result;
 pub mod messages;
 pub mod paths;
 pub mod realtime;

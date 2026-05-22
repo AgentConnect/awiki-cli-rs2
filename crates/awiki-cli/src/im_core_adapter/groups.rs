@@ -13,7 +13,8 @@ use serde_json::{json, Value};
 
 use crate::config::Resolved;
 use crate::identity::Manager;
-use crate::message::{self, MessageError};
+use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError, ServiceError};
+use crate::message;
 use crate::runtime;
 
 fn group_diagnostic_raw(result: &im_core::groups::GroupReadResult) -> Value {
@@ -25,9 +26,9 @@ pub fn create_group_via_im_core(
     manager: &Manager,
     client: &im_core::ImClient,
     request: message::GroupCreateRequest,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     if request.name.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
+        return Err(MessageAdapterError::GroupRequired);
     }
     let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
     let result = client
@@ -45,7 +46,7 @@ pub fn create_group_via_im_core(
         .unwrap_or(Value::Null);
     let members =
         message::cached_group_members(resolved, &record, &group_did, 100).unwrap_or_default();
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "group": snapshot,
             "members": members,
@@ -62,9 +63,9 @@ pub fn join_group_via_im_core(
     manager: &Manager,
     client: &im_core::ImClient,
     request: message::GroupJoinRequest,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     if request.group.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
+        return Err(MessageAdapterError::GroupRequired);
     }
     let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
     let requested_group = request.group.clone();
@@ -84,7 +85,7 @@ pub fn join_group_via_im_core(
     let snapshot = message::cached_group_snapshot(resolved, &record, &group_did)
         .or_else(|| message::normalize_group_snapshot(&raw))
         .unwrap_or_else(|| json!({ "group_did": group_did }));
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "group": snapshot,
             "delivery": raw,
@@ -100,12 +101,12 @@ pub fn leave_group_via_im_core(
     manager: &Manager,
     client: &im_core::ImClient,
     request: message::GroupLeaveRequest,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     if request.group.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
+        return Err(MessageAdapterError::GroupRequired);
     }
     if request.e2ee {
-        return Err(MessageError::GroupNotSupported);
+        return Err(MessageAdapterError::GroupNotSupported);
     }
     let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
     let cached_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
@@ -113,13 +114,13 @@ pub fn leave_group_via_im_core(
         .as_ref()
         .is_some_and(message::is_active_group_owner)
     {
-        return Err(MessageError::GroupOwnerCannotLeave);
+        return Err(MessageAdapterError::GroupOwnerCannotLeave);
     }
     if cached_snapshot
         .as_ref()
         .is_some_and(group_snapshot_uses_e2ee)
     {
-        return Err(MessageError::GroupNotSupported);
+        return Err(MessageAdapterError::GroupNotSupported);
     }
     let result = client
         .groups()
@@ -134,7 +135,7 @@ pub fn leave_group_via_im_core(
         &record,
         &request.group,
     ));
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "delivery": raw,
             "group": request.group,
@@ -149,7 +150,7 @@ pub fn add_group_member_via_im_core(
     manager: &Manager,
     client: &im_core::ImClient,
     request: message::GroupMemberRequest,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     mutate_group_member_via_im_core(resolved, manager, client, request, "add")
 }
 
@@ -158,7 +159,7 @@ pub fn remove_group_member_via_im_core(
     manager: &Manager,
     client: &im_core::ImClient,
     request: message::GroupMemberRequest,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     mutate_group_member_via_im_core(resolved, manager, client, request, "remove")
 }
 
@@ -168,15 +169,15 @@ fn mutate_group_member_via_im_core(
     client: &im_core::ImClient,
     request: message::GroupMemberRequest,
     action: &str,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     if request.group.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
+        return Err(MessageAdapterError::GroupRequired);
     }
     if request.member.trim().is_empty() {
-        return Err(MessageError::MemberRequired);
+        return Err(MessageAdapterError::MemberRequired);
     }
     if request.e2ee {
-        return Err(MessageError::GroupNotSupported);
+        return Err(MessageAdapterError::GroupNotSupported);
     }
     let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
     let pre_mutation_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
@@ -184,7 +185,7 @@ fn mutate_group_member_via_im_core(
         .as_ref()
         .is_some_and(group_snapshot_uses_e2ee)
     {
-        return Err(MessageError::GroupNotSupported);
+        return Err(MessageAdapterError::GroupNotSupported);
     }
     let member = resolve_group_member_via_directory(resolved, client, &request.member)?;
     let sdk_request = GroupMemberMutationRequest {
@@ -213,7 +214,7 @@ fn mutate_group_member_via_im_core(
         .unwrap_or_else(|| json!({ "group_did": request.group }));
     let members =
         message::cached_group_members(resolved, &record, &request.group, 100).unwrap_or_default();
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "group": snapshot,
             "members": members,
@@ -233,15 +234,15 @@ pub fn update_group_via_im_core(
     manager: &Manager,
     client: &im_core::ImClient,
     request: message::GroupUpdateRequest,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     if request.group.trim().is_empty() {
-        return Err(MessageError::GroupRequired);
+        return Err(MessageAdapterError::GroupRequired);
     }
     let profile_patch = group_profile_patch(&request);
     let policy_patch = group_policy_patch(&request);
     if profile_patch == GroupProfilePatch::default() && policy_patch == GroupPolicyPatch::default()
     {
-        return Err(MessageError::Internal(
+        return Err(MessageAdapterError::Internal(
             "group update requires at least one mutable field".to_string(),
         ));
     }
@@ -251,7 +252,7 @@ pub fn update_group_via_im_core(
         .as_ref()
         .is_some_and(group_snapshot_uses_e2ee)
     {
-        return Err(MessageError::GroupNotSupported);
+        return Err(MessageAdapterError::GroupNotSupported);
     }
     let group = GroupRef::parse(&request.group).map_err(im_error_to_message_error)?;
     let mut responses = Vec::new();
@@ -288,7 +289,7 @@ pub fn update_group_via_im_core(
     ));
     let snapshot = message::cached_group_snapshot(resolved, &record, &request.group)
         .unwrap_or_else(|| json!({ "group_did": request.group }));
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "group": snapshot,
             "delivery": responses,
@@ -304,7 +305,7 @@ pub fn get_group_via_im_core(
     client: &im_core::ImClient,
     identity_name: &str,
     group: String,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     let record = message::require_active_identity(resolved, manager, identity_name)?;
     let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let result = client
@@ -317,7 +318,7 @@ pub fn get_group_via_im_core(
     let snapshot = message::cached_group_snapshot(resolved, &record, &group)
         .or_else(|| message::normalize_group_snapshot(&raw))
         .unwrap_or(Value::Null);
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "group": snapshot,
             "source": message::group_control_source(&raw),
@@ -333,7 +334,7 @@ pub fn list_groups_via_im_core(
     client: &im_core::ImClient,
     identity_name: &str,
     limit: i64,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     let _record = message::require_active_identity(resolved, manager, identity_name)?;
     let request = GroupListRequest {
         limit: page_limit(limit, 50)?,
@@ -345,7 +346,7 @@ pub fn list_groups_via_im_core(
     let raw = group_diagnostic_raw(&result);
     let groups = message::values_from_array(raw.get("groups"));
     let total = message::int_value(raw.get("total"), groups.len() as i64);
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "groups": groups,
             "total": total,
@@ -363,7 +364,7 @@ pub fn group_members_via_im_core(
     identity_name: &str,
     group: String,
     limit: i64,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     let record = message::require_active_identity(resolved, manager, identity_name)?;
     let request = GroupMembersRequest {
         group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
@@ -382,7 +383,7 @@ pub fn group_members_via_im_core(
         .filter(|items| !items.is_empty())
         .unwrap_or_else(|| message::values_from_array(raw.get("members")));
     let total = message::int_value(raw.get("total"), members.len() as i64);
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "group": group,
             "members": members,
@@ -402,7 +403,7 @@ pub fn group_messages_via_im_core(
     group: String,
     limit: i64,
     cursor: String,
-) -> Result<message::CommandResult, MessageError> {
+) -> Result<CommandResult, MessageAdapterError> {
     let record = message::require_active_identity(resolved, manager, identity_name)?;
     let request = GroupMessagesRequest {
         group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
@@ -427,7 +428,7 @@ pub fn group_messages_via_im_core(
         .filter(|items| !items.is_empty())
         .unwrap_or_else(|| message::values_from_array(raw.get("messages")));
     let total = message::int_value(raw.get("total"), messages.len() as i64);
-    Ok(message::CommandResult {
+    Ok(CommandResult {
         data: json!({
             "group": group,
             "messages": messages,
@@ -444,10 +445,10 @@ pub fn group_messages_via_im_core(
 fn group_create_request(
     request: message::GroupCreateRequest,
     service_did: &str,
-) -> Result<GroupCreateRequest, MessageError> {
+) -> Result<GroupCreateRequest, MessageAdapterError> {
     let service_did = service_did.trim();
     if service_did.is_empty() {
-        return Err(MessageError::MissingMessageServiceDid);
+        return Err(MessageAdapterError::MissingMessageServiceDid);
     }
     Ok(GroupCreateRequest {
         name: request.name,
@@ -473,10 +474,10 @@ fn resolve_group_member_via_directory(
     resolved: &Resolved,
     client: &im_core::ImClient,
     member: &str,
-) -> Result<message::TargetResolution, MessageError> {
+) -> Result<message::TargetResolution, MessageAdapterError> {
     let member = member.trim();
     if member.is_empty() {
-        return Err(MessageError::MemberRequired);
+        return Err(MessageAdapterError::MemberRequired);
     }
     if member.starts_with("did:") {
         return Ok(message::TargetResolution {
@@ -535,16 +536,17 @@ fn source_with_default_for_mode(raw: &Value, mode: &str) -> String {
         .to_string()
 }
 
-fn page_limit(value: i64, fallback: u32) -> Result<PageLimit, MessageError> {
+fn page_limit(value: i64, fallback: u32) -> Result<PageLimit, MessageAdapterError> {
     let value = if value <= 0 {
         fallback
     } else {
-        u32::try_from(value).map_err(|_| MessageError::Json("limit is too large".to_string()))?
+        u32::try_from(value)
+            .map_err(|_| MessageAdapterError::Json("limit is too large".to_string()))?
     };
     PageLimit::new(value).map_err(im_error_to_message_error)
 }
 
-fn optional_cursor(value: &str) -> Result<Option<Cursor>, MessageError> {
+fn optional_cursor(value: &str) -> Result<Option<Cursor>, MessageAdapterError> {
     if value.trim().is_empty() {
         return Ok(None);
     }
@@ -620,23 +622,26 @@ fn normalize_handle_value(value: &str) -> String {
     }
 }
 
-fn im_error_to_message_error(err: im_core::ImError) -> MessageError {
+fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
     match err {
         im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("group") => {
-            MessageError::GroupRequired
+            MessageAdapterError::GroupRequired
         }
-        im_core::ImError::GroupNotFound { .. } => MessageError::GroupRequired,
+        im_core::ImError::GroupNotFound { .. } => MessageAdapterError::GroupRequired,
         im_core::ImError::AuthRequired | im_core::ImError::SessionExpired => {
-            MessageError::IdentityRequired("authentication is required".to_string())
+            MessageAdapterError::IdentityRequired("authentication is required".to_string())
         }
-        im_core::ImError::IdentityNotReady { identity, missing } => MessageError::IdentityRequired(
-            format!("identity {identity} is not ready: {}", missing.join(", ")),
-        ),
+        im_core::ImError::IdentityNotReady { identity, missing } => {
+            MessageAdapterError::IdentityRequired(format!(
+                "identity {identity} is not ready: {}",
+                missing.join(", ")
+            ))
+        }
         im_core::ImError::Service {
             status_code,
             code,
             message,
-        } => MessageError::Service(crate::identity::wire::ServiceError {
+        } => MessageAdapterError::Service(ServiceError {
             status_code: status_code.unwrap_or_default(),
             rpc_code: code
                 .and_then(|value| value.parse().ok())
@@ -645,8 +650,8 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageError {
             data: None,
         }),
         im_core::ImError::TransportUnavailable { detail } => {
-            MessageError::TransportUnavailable(detail)
+            MessageAdapterError::TransportUnavailable(detail)
         }
-        err => MessageError::Internal(err.to_string()),
+        err => MessageAdapterError::Internal(err.to_string()),
     }
 }
