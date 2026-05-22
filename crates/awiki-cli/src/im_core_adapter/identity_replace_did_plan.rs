@@ -60,7 +60,9 @@ pub fn replace_did_plan_via_im_core(
         manager,
         IdentitySelector::LocalAlias(bridge.identity_name.clone()),
     )?;
-    let plan = im_core::compat::identity::replace_did_plan_with_bridge(&client, bridge.sdk)
+    let plan = client
+        .identity()
+        .replace_did_plan(bridge.sdk)
         .map_err(|err| super::map_im_error(err, "id replace-did"))?;
     replace_did_plan_command_result(plan)
 }
@@ -175,7 +177,9 @@ fn replace_did_execution_bridge_request(
         manager,
         IdentitySelector::LocalAlias(bridge.identity_name.clone()),
     )?;
-    let plan = im_core::compat::identity::replace_did_plan_with_bridge(&client, bridge.sdk)
+    let plan = client
+        .identity()
+        .replace_did_plan(bridge.sdk)
         .map_err(|err| super::map_im_error(err, "id replace-did"))?;
     Ok(ReplaceDidExecutionBridgeRequest {
         sdk: ReplaceDidExecutionRequest {

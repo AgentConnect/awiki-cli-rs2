@@ -42,7 +42,7 @@ pub fn refresh_token_via_im_core(
     client
         .auth()
         .refresh_session()
-        .map_err(|err| super::map_im_error(err, "id refresh-token"))?;
+        .map_err(|err| refresh_token_error_from_im(err, "id refresh-token", &identity_name))?;
     let refreshed = manager
         .load(&identity_name)
         .map_err(crate::app::identity_exit)?;
@@ -57,4 +57,21 @@ pub fn refresh_token_via_im_core(
         summary: format!("JWT refreshed for identity {}", identity.identity_name),
         warnings: Vec::new(),
     })
+}
+
+fn refresh_token_error_from_im(
+    err: im_core::ImError,
+    context: &'static str,
+    identity_name: &str,
+) -> ExitError {
+    match err {
+        im_core::ImError::CredentialFileUnreadable { path_kind, .. }
+            if matches!(path_kind.as_str(), "did_document" | "private_key") =>
+        {
+            crate::app::identity_exit(identity::IdentityError::AuthRequired(format!(
+                "authentication required: failed to refresh jwt for identity {identity_name}"
+            )))
+        }
+        err => super::map_im_error(err, context),
+    }
 }

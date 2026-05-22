@@ -773,8 +773,16 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         &["schema", "id", "replace-did"],
         workspace.path(),
     ));
-    assert_eq!(schema["data"]["command"]["hidden"], Value::Null);
+    assert_eq!(schema["data"]["command"]["hidden"], true);
     assert_eq!(schema["data"]["command"]["side_effect"], true);
+    assert_eq!(
+        schema["data"]["command"]["cutover"]["status"],
+        "diagnostic_only"
+    );
+    assert_eq!(
+        schema["data"]["command"]["cutover"]["default_surface"],
+        false
+    );
     assert!(schema["data"]["command"]["short"]
         .as_str()
         .unwrap()

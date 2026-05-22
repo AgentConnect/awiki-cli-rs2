@@ -261,14 +261,6 @@ where
 }
 
 #[doc(hidden)]
-pub fn replace_did_plan_with_bridge(
-    client: &crate::core::ImClient,
-    request: crate::identity::ReplaceDidPlanRequest,
-) -> crate::ImResult<crate::identity::ReplaceDidPlan> {
-    client.identity().replace_did_plan(request)
-}
-
-#[doc(hidden)]
 pub fn replace_did_with_bridge<B>(
     client: &crate::core::ImClient,
     request: crate::identity::ReplaceDidExecutionRequest,
