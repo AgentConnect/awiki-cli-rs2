@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn identity_im_core_mvp_replace_did_executes_through_bridge_and_rebinds_local_state() {
+fn identity_default_cutover_replace_did_executes_through_bridge_and_rebinds_local_state() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
@@ -53,7 +53,7 @@ fn identity_im_core_mvp_replace_did_executes_through_bridge_and_rebinds_local_st
             " https://agent.example/rpc ",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
 
     assert_eq!(

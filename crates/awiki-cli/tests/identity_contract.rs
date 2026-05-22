@@ -623,13 +623,13 @@ fn assert_identity_boundary_after_legacy_config_upgrade(args: &[&str], label: &s
     );
 
     let result = awiki_cmd(args, workspace.path());
-    assert_code(&result, 5);
+    assert_code(&result, 2);
     let result = error_json(&result);
-    assert_eq!(result["error"]["code"], "not_found");
+    assert_eq!(result["error"]["code"], "identity_required");
     assert!(result["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("identity not found: no active identity is configured"));
+        .contains("build im-client: default identity is missing"));
 
     assert!(!legacy_config.exists());
     assert_migrated_config(&workspace_home, &service_base_url, &did_domain);
@@ -780,6 +780,30 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         .unwrap()
         .contains("Danger"));
 
+    let generated = awiki_cli::identity::generate_identity(
+        "awiki.ai",
+        "https://awiki.ai/anp-im/rpc",
+        "did:wba:awiki.ai",
+    )
+    .expect("replace-did fixture identity");
+    identity_manager(&workspace.path().join(".awiki-cli"))
+        .save(awiki_cli::identity::types::SaveInput {
+            identity_name: "alice".to_string(),
+            did: "did:wba:awiki.ai:alice:e1_alice".to_string(),
+            unique_id: "e1_alice".to_string(),
+            display_name: "Alice".to_string(),
+            handle: "alice".to_string(),
+            full_handle: "alice.awiki.ai".to_string(),
+            jwt_token: "jwt-alice".to_string(),
+            did_document: Some(generated.did_document),
+            key1_private_pem: generated.key1_private_pem,
+            key1_public_pem: generated.key1_public_pem,
+            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+            ..Default::default()
+        })
+        .expect("save replace-did fixture identity");
+
     let replace = success_json(&awiki_cmd(
         &[
             "--identity",
@@ -796,22 +820,49 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         workspace.path(),
     ));
     assert_eq!(replace["data"]["plan"]["action"], "replace_did");
-    assert_eq!(replace["data"]["plan"]["identity_name"], "alice");
     assert_eq!(replace["data"]["plan"]["dangerous"], true);
-    assert_eq!(replace["data"]["plan"]["remote_params"]["is_public"], false);
-    assert_eq!(replace["data"]["plan"]["remote_params"]["role"], "");
+    assert_eq!(replace["data"]["plan"]["identity"]["local_alias"], "alice");
     assert_eq!(
-        replace["data"]["plan"]["remote_params"]["endpoint_url"],
+        replace["data"]["plan"]["identity"]["did"],
+        "did:wba:awiki.ai:alice:e1_alice"
+    );
+    assert_eq!(
+        replace["data"]["plan"]["remote_replace_did_call_preview"]["params"]["is_public"],
+        false
+    );
+    assert_eq!(
+        replace["data"]["plan"]["remote_replace_did_call_preview"]["params"]["role"],
+        Value::Null
+    );
+    assert_eq!(
+        replace["data"]["plan"]["remote_replace_did_call_preview"]["params"]["endpoint_url"],
         "https://example.com/agent"
     );
-    assert!(replace["data"]["plan"]["remote_calls"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("did-auth.replace_did")));
+    assert_eq!(
+        replace["data"]["plan"]["remote_replace_did_call_preview"]["method"],
+        "replace_did"
+    );
+    assert_eq!(
+        replace["data"]["plan"]["backup_plan"]["manifest_preview"]["old_did"],
+        "did:wba:awiki.ai:alice:e1_alice"
+    );
+    assert_eq!(
+        replace["data"]["plan"]["local_rebind_plan"]["old_owner_did"],
+        "did:wba:awiki.ai:alice:e1_alice"
+    );
+    assert_eq!(
+        replace["data"]["plan"]["local_rebind_plan"]["dry_run_only"],
+        true
+    );
     assert!(replace["data"]["plan"]["local_writes"]
         .as_array()
         .unwrap()
         .contains(&json!(".legacy-backup/replace-did")));
+    assert!(replace["data"]["plan"]["rollback_notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|note| note.as_str().unwrap().contains("backup manifest")));
     assert!(replace["warnings"][0]
         .as_str()
         .unwrap()

@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn identity_im_core_mvp_register_and_refresh_dry_run_keep_legacy_contract() {
+fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() {
     let workspace = TempDir::new().expect("workspace");
 
     let register = success_json(&awiki_cmd_with_env(
@@ -28,7 +28,7 @@ fn identity_im_core_mvp_register_and_refresh_dry_run_keep_legacy_contract() {
             "invite-1",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(
         register["summary"],
@@ -52,7 +52,7 @@ fn identity_im_core_mvp_register_and_refresh_dry_run_keep_legacy_contract() {
             "--dry-run",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(refresh["data"]["plan"]["action"], "refresh_token");
     assert_eq!(refresh["data"]["plan"]["identity_name"], "alice-local");
@@ -63,7 +63,7 @@ fn identity_im_core_mvp_register_and_refresh_dry_run_keep_legacy_contract() {
 }
 
 #[test]
-fn identity_im_core_mvp_refresh_selects_identity_before_legacy_auth() {
+fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
     let manager = identity_manager(&workspace_home);
@@ -89,7 +89,7 @@ fn identity_im_core_mvp_refresh_selects_identity_before_legacy_auth() {
     let result = awiki_cmd_with_env(
         &["--identity", "bob", "id", "refresh-token"],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     );
     assert_code(&result, 3);
     let result = error_json(&result);
@@ -98,7 +98,7 @@ fn identity_im_core_mvp_refresh_selects_identity_before_legacy_auth() {
 }
 
 #[test]
-fn identity_im_core_mvp_profile_get_self_routes_get_me_through_bridge() {
+fn identity_default_cutover_profile_get_self_routes_get_me_through_bridge() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
@@ -127,7 +127,7 @@ fn identity_im_core_mvp_profile_get_self_routes_get_me_through_bridge() {
     let profile = success_json(&awiki_cmd_with_env(
         &["--identity", "alice", "id", "profile", "get", "--self"],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(profile["summary"], "Fetched current identity profile");
     assert_eq!(profile["data"]["subject"], "self");
@@ -151,7 +151,7 @@ fn identity_im_core_mvp_profile_get_self_routes_get_me_through_bridge() {
 }
 
 #[test]
-fn identity_im_core_mvp_profile_set_routes_update_me_through_bridge() {
+fn identity_default_cutover_profile_set_routes_update_me_through_bridge() {
     let workspace = TempDir::new().expect("workspace");
     let markdown_file = workspace.path().join("profile.md");
     std::fs::write(&markdown_file, " \n# Alice\n\nProfile body\n ").expect("write markdown");
@@ -196,7 +196,7 @@ fn identity_im_core_mvp_profile_set_routes_update_me_through_bridge() {
             markdown_file.to_str().unwrap(),
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(profile["summary"], "Profile updated successfully");
     assert_eq!(profile["data"]["action"], "update_profile");
@@ -232,7 +232,7 @@ fn identity_im_core_mvp_profile_set_routes_update_me_through_bridge() {
 }
 
 #[test]
-fn identity_im_core_mvp_bind_phone_routes_authenticated_rest_through_bridge() {
+fn identity_default_cutover_bind_phone_routes_authenticated_rest_through_bridge() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
@@ -266,7 +266,7 @@ fn identity_im_core_mvp_bind_phone_routes_authenticated_rest_through_bridge() {
             "13800138001",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(bind["summary"], "Phone binding OTP sent");
     assert_eq!(bind["data"]["action"], "send_bind_phone_otp");
@@ -282,7 +282,7 @@ fn identity_im_core_mvp_bind_phone_routes_authenticated_rest_through_bridge() {
 }
 
 #[test]
-fn identity_im_core_mvp_bind_email_maps_sent_and_wait_completed_states() {
+fn identity_default_cutover_bind_email_maps_sent_and_wait_completed_states() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
@@ -317,7 +317,7 @@ fn identity_im_core_mvp_bind_email_maps_sent_and_wait_completed_states() {
             " Alice@Example.COM ",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(sent["summary"], "Binding email sent");
     assert_eq!(sent["data"]["action"], "send_bind_email");
@@ -368,7 +368,7 @@ fn identity_im_core_mvp_bind_email_maps_sent_and_wait_completed_states() {
             "--wait",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(completed["summary"], "Email binding verified successfully");
     assert_eq!(completed["data"]["action"], "bind_email");
@@ -376,7 +376,7 @@ fn identity_im_core_mvp_bind_email_maps_sent_and_wait_completed_states() {
 }
 
 #[test]
-fn identity_im_core_mvp_resolve_handle_routes_directory_sequence() {
+fn identity_default_cutover_resolve_handle_routes_directory_sequence() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
@@ -409,7 +409,7 @@ fn identity_im_core_mvp_resolve_handle_routes_directory_sequence() {
     let resolve = success_json(&awiki_cmd_with_env(
         &["id", "resolve", "--handle", "Alice"],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(resolve["summary"], "Identity resolved successfully");
     assert_eq!(
@@ -445,7 +445,7 @@ fn identity_im_core_mvp_resolve_handle_routes_directory_sequence() {
 }
 
 #[test]
-fn identity_im_core_mvp_resolve_did_keeps_nonfatal_directory_warnings() {
+fn identity_default_cutover_resolve_did_keeps_nonfatal_directory_warnings() {
     let workspace = TempDir::new().expect("workspace");
     let did = "did:wba:awiki.ai:alice:e1_remote";
     let server = TestServer::new(vec![
@@ -477,7 +477,7 @@ fn identity_im_core_mvp_resolve_did_keeps_nonfatal_directory_warnings() {
     let resolve = success_json(&awiki_cmd_with_env(
         &["id", "resolve", "--did", did],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(resolve["summary"], "Identity resolved successfully");
     assert_eq!(resolve["data"]["resolve"]["did"], did);
@@ -493,7 +493,7 @@ fn identity_im_core_mvp_resolve_did_keeps_nonfatal_directory_warnings() {
 }
 
 #[test]
-fn identity_im_core_mvp_recover_without_otp_routes_send_otp_through_bridge() {
+fn identity_default_cutover_recover_without_otp_routes_send_otp_through_bridge() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
@@ -527,7 +527,7 @@ fn identity_im_core_mvp_recover_without_otp_routes_send_otp_through_bridge() {
             "13800138000",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(
         recover["summary"],
@@ -546,7 +546,7 @@ fn identity_im_core_mvp_recover_without_otp_routes_send_otp_through_bridge() {
 }
 
 #[test]
-fn identity_im_core_mvp_recover_with_otp_routes_recover_handle_and_finalizes() {
+fn identity_default_cutover_recover_with_otp_routes_recover_handle_and_finalizes() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
@@ -584,7 +584,7 @@ fn identity_im_core_mvp_recover_with_otp_routes_recover_handle_and_finalizes() {
             " 65 43 21 ",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     assert_eq!(
         recover["summary"],
@@ -623,7 +623,7 @@ fn identity_im_core_mvp_recover_with_otp_routes_recover_handle_and_finalizes() {
 }
 
 #[test]
-fn identity_im_core_mvp_replace_did_dry_run_returns_sdk_plan_without_remote_replace() {
+fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_replace() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![TestResponse::ok(register_alice_response())]);
     write_service_config(&workspace.path().join(".awiki-cli"), &server.base_url());
@@ -658,7 +658,7 @@ fn identity_im_core_mvp_replace_did_dry_run_returns_sdk_plan_without_remote_repl
             "https://example.com/agent",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
+        &[],
     ));
     let plan = &replace["data"]["plan"];
     assert_eq!(replace["summary"], "Dry run: DID replacement planned");

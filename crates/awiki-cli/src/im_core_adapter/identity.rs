@@ -162,6 +162,63 @@ pub fn register_handle_via_im_core(
     identity::register(resolved, manager, bridge.legacy).map_err(crate::app::identity_exit)
 }
 
+pub fn list_identities_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+) -> Result<identity::CommandResult, ExitError> {
+    let core = super::build_im_core(resolved, manager)?;
+    let _identities = core
+        .identities()
+        .list()
+        .map_err(|err| super::map_im_error(err, "id list"))?;
+    identity::list_identities(manager).map_err(crate::app::identity_exit)
+}
+
+pub fn current_identity_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+) -> Result<identity::CommandResult, ExitError> {
+    let core = super::build_im_core(resolved, manager)?;
+    let _default_identity = core
+        .identities()
+        .default_identity()
+        .map_err(|err| super::map_im_error(err, "id current"))?;
+    identity::current_identity(manager).map_err(crate::app::identity_exit)
+}
+
+pub fn identity_status_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+) -> Result<identity::CommandResult, ExitError> {
+    let core = super::build_im_core(resolved, manager)?;
+    let identities = core
+        .identities()
+        .list()
+        .map_err(|err| super::map_im_error(err, "id status"))?;
+    let _default_ready_for_messaging = identities
+        .iter()
+        .find(|identity| identity.is_default)
+        .map(|identity| &identity.readiness)
+        .is_some_and(|readiness| readiness.ready_for_messaging);
+    identity::identity_status(manager).map_err(crate::app::identity_exit)
+}
+
+pub fn use_identity_plan_via_im_core(identity_name: &str) -> identity::CommandResult {
+    identity::use_plan(identity_name)
+}
+
+pub fn use_identity_via_im_core(
+    resolved: &crate::config::Resolved,
+    manager: &identity::Manager,
+    identity_name: &str,
+) -> Result<identity::CommandResult, ExitError> {
+    let core = super::build_im_core(resolved, manager)?;
+    core.identities()
+        .plan_default_identity_change(IdentitySelector::LocalAlias(identity_name.to_string()))
+        .map_err(|err| super::map_im_error(err, "id use"))?;
+    identity::switch_default_identity(manager, identity_name).map_err(crate::app::identity_exit)
+}
+
 pub fn bind_contact_request(command: &ParsedCommand) -> Result<ContactBindingRequest, ExitError> {
     let phone = string_flag(command, "phone");
     let email = string_flag(command, "email");

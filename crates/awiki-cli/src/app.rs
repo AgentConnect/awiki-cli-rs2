@@ -412,58 +412,37 @@ impl App {
     pub fn run_id_register(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let manager = self.identity_manager(&resolved);
-        if crate::im_core_adapter::use_im_core_mvp() {
-            let result = if self.globals.dry_run {
-                crate::im_core_adapter::identity::register_handle_plan_via_im_core(
-                    &manager,
-                    &resolved.did_domain,
-                    command,
-                    &self.globals.identity,
-                )?
-            } else {
-                crate::im_core_adapter::identity::register_handle_via_im_core(
-                    &resolved,
-                    &manager,
-                    command,
-                    &self.globals.identity,
-                )?
-            };
-            return self.render_identity_result("awiki-cli id register", &resolved, result);
-        }
-        let params = identity::RegisterParams {
-            identity_name: self.globals.identity.clone(),
-            handle: string_flag(command, "handle"),
-            phone: string_flag(command, "phone"),
-            email: string_flag(command, "email"),
-            otp: string_flag(command, "otp"),
-            invite_code: string_flag(command, "invite-code"),
-            wait: command
-                .flags
-                .get("wait")
-                .is_some_and(|value| value == "true"),
-            verification_timeout: 300,
-            poll_interval_seconds: 5.0,
-        };
         let result = if self.globals.dry_run {
-            identity::register_plan(&manager, &resolved.did_domain, &params)
-                .map_err(identity_exit)?
+            crate::im_core_adapter::identity::register_handle_plan_via_im_core(
+                &manager,
+                &resolved.did_domain,
+                command,
+                &self.globals.identity,
+            )?
         } else {
-            identity::register(&resolved, &manager, params).map_err(identity_exit)?
+            crate::im_core_adapter::identity::register_handle_via_im_core(
+                &resolved,
+                &manager,
+                command,
+                &self.globals.identity,
+            )?
         };
         self.render_identity_result("awiki-cli id register", &resolved, result)
     }
 
     pub fn run_id_list(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
+        let manager = self.identity_manager(&resolved);
         let result =
-            identity::list_identities(&self.identity_manager(&resolved)).map_err(identity_exit)?;
+            crate::im_core_adapter::identity::list_identities_via_im_core(&resolved, &manager)?;
         self.render_identity_result("awiki-cli id list", &resolved, result)
     }
 
     pub fn run_id_current(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
+        let manager = self.identity_manager(&resolved);
         let result =
-            identity::current_identity(&self.identity_manager(&resolved)).map_err(identity_exit)?;
+            crate::im_core_adapter::identity::current_identity_via_im_core(&resolved, &manager)?;
         self.render_identity_result("awiki-cli id current", &resolved, result)
     }
 
@@ -479,17 +458,22 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
-            identity::use_plan(&command.args[0])
+            crate::im_core_adapter::identity::use_identity_plan_via_im_core(&command.args[0])
         } else {
-            identity::switch_default_identity(&manager, &command.args[0]).map_err(identity_exit)?
+            crate::im_core_adapter::identity::use_identity_via_im_core(
+                &resolved,
+                &manager,
+                &command.args[0],
+            )?
         };
         self.render_identity_result("awiki-cli id use", &resolved, result)
     }
 
     pub fn run_id_status(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
+        let manager = self.identity_manager(&resolved);
         let result =
-            identity::identity_status(&self.identity_manager(&resolved)).map_err(identity_exit)?;
+            crate::im_core_adapter::identity::identity_status_via_im_core(&resolved, &manager)?;
         self.render_identity_result("awiki-cli id status", &resolved, result)
     }
 
@@ -525,34 +509,15 @@ impl App {
     pub fn run_id_bind(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let manager = self.identity_manager(&resolved);
-        if crate::im_core_adapter::use_im_core_mvp() {
-            let result = if self.globals.dry_run {
-                crate::im_core_adapter::identity::bind_contact_plan_via_im_core(command)?
-            } else {
-                crate::im_core_adapter::identity::bind_contact_via_im_core(
-                    &resolved,
-                    &manager,
-                    &self.globals.identity,
-                    command,
-                )?
-            };
-            return self.render_identity_result("awiki-cli id bind", &resolved, result);
-        }
-        let params = identity::BindParams {
-            phone: string_flag(command, "phone"),
-            email: string_flag(command, "email"),
-            otp: string_flag(command, "otp"),
-            wait: command
-                .flags
-                .get("wait")
-                .is_some_and(|value| value == "true"),
-            verification_timeout: 300,
-            poll_interval_seconds: 5.0,
-        };
         let result = if self.globals.dry_run {
-            identity::bind_plan(&params)
+            crate::im_core_adapter::identity::bind_contact_plan_via_im_core(command)?
         } else {
-            identity::bind(&resolved, &manager, params).map_err(identity_exit)?
+            crate::im_core_adapter::identity::bind_contact_via_im_core(
+                &resolved,
+                &manager,
+                &self.globals.identity,
+                command,
+            )?
         };
         self.render_identity_result("awiki-cli id bind", &resolved, result)
     }
@@ -562,15 +527,12 @@ impl App {
         let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             identity::refresh_token_plan(&manager, &self.globals.identity)
-        } else if crate::im_core_adapter::use_im_core_mvp() {
+        } else {
             crate::im_core_adapter::auth::refresh_token_via_im_core(
                 &resolved,
                 &manager,
                 &self.globals.identity,
             )?
-        } else {
-            identity::refresh_token(&resolved, &manager, &self.globals.identity)
-                .map_err(identity_exit)?
         };
         self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
     }
@@ -613,34 +575,19 @@ impl App {
             );
         }
         let manager = self.identity_manager(&resolved);
-        let result = if crate::im_core_adapter::use_im_core_mvp() {
-            let request = crate::im_core_adapter::identity::set_profile_request(
-                display_name,
-                bio,
-                tags,
-                markdown,
-                markdown_file,
-            )?;
-            crate::im_core_adapter::identity::set_profile_via_im_core(
-                &resolved,
-                &manager,
-                &self.globals.identity,
-                request,
-            )?
-        } else {
-            identity::set_profile(
-                &resolved,
-                &manager,
-                identity::SetProfileParams {
-                    display_name,
-                    bio,
-                    tags_csv: tags,
-                    markdown,
-                    markdown_file,
-                },
-            )
-            .map_err(identity_exit)?
-        };
+        let request = crate::im_core_adapter::identity::set_profile_request(
+            display_name,
+            bio,
+            tags,
+            markdown,
+            markdown_file,
+        )?;
+        let result = crate::im_core_adapter::identity::set_profile_via_im_core(
+            &resolved,
+            &manager,
+            &self.globals.identity,
+            request,
+        )?;
         self.render_identity_result("awiki-cli id profile set", &resolved, result)
     }
 
@@ -650,53 +597,31 @@ impl App {
         let request = crate::im_core_adapter::identity::get_profile_request(command);
         let self_profile = request.self_profile
             || (request.handle.trim().is_empty() && request.did.trim().is_empty());
-        let result = if crate::im_core_adapter::use_im_core_mvp() && self_profile {
+        let result = if self_profile {
             crate::im_core_adapter::identity::get_self_profile_via_im_core(
                 &resolved,
                 &manager,
                 &self.globals.identity,
             )?
-        } else if crate::im_core_adapter::use_im_core_mvp() {
+        } else {
             crate::im_core_adapter::identity::get_public_profile_via_im_core(
                 &resolved,
                 &manager,
                 &self.globals.identity,
                 request,
             )?
-        } else {
-            identity::get_profile(
-                &resolved,
-                &manager,
-                identity::GetProfileParams {
-                    self_profile: request.self_profile,
-                    handle: request.handle,
-                    did: request.did,
-                },
-            )
-            .map_err(identity_exit)?
         };
         self.render_identity_result("awiki-cli id profile get", &resolved, result)
     }
 
     pub fn run_id_resolve(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let result = if crate::im_core_adapter::use_im_core_mvp() {
-            crate::im_core_adapter::identity::resolve_identity_via_im_core(
-                &resolved,
-                &self.identity_manager(&resolved),
-                &self.globals.identity,
-                crate::im_core_adapter::identity::resolve_request(command),
-            )?
-        } else {
-            identity::resolve_identity(
-                &resolved,
-                identity::ResolveParams {
-                    handle: string_flag(command, "handle"),
-                    did: string_flag(command, "did"),
-                },
-            )
-            .map_err(identity_exit)?
-        };
+        let result = crate::im_core_adapter::identity::resolve_identity_via_im_core(
+            &resolved,
+            &self.identity_manager(&resolved),
+            &self.globals.identity,
+            crate::im_core_adapter::identity::resolve_request(command),
+        )?;
         self.render_identity_result("awiki-cli id resolve", &resolved, result)
     }
 

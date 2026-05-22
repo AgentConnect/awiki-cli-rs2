@@ -1,4 +1,4 @@
-use super::{identity_exit, store_exit, App};
+use super::{store_exit, App};
 use crate::cli::ParsedCommand;
 use crate::identity::{self, RecoverFinalizeRequest};
 use crate::output::ExitError;
@@ -30,20 +30,16 @@ impl App {
             otp: string_flag(command, "otp"),
         };
         let manager = self.identity_manager(&resolved);
-        let mut result = if crate::im_core_adapter::use_im_core_mvp() && self.globals.dry_run {
+        let mut result = if self.globals.dry_run {
             crate::im_core_adapter::identity::recover_handle_plan_via_im_core(
                 &manager,
                 &resolved.did_domain,
                 params,
             )
-        } else if crate::im_core_adapter::use_im_core_mvp() {
+        } else {
             crate::im_core_adapter::identity::recover_handle_via_im_core(
                 &resolved, &manager, params,
             )
-        } else if self.globals.dry_run {
-            identity::recover_preview(&manager, &resolved.did_domain, params).map_err(identity_exit)
-        } else {
-            identity::recover(&resolved, &manager, params).map_err(identity_exit)
         }?;
 
         if result.data.get("action").and_then(Value::as_str) != Some("recover_handle") {
@@ -69,28 +65,18 @@ impl App {
             .unwrap_or_default()
             .to_string();
 
-        let (store_merge_counts, e2ee_cleanup_counts) = if crate::im_core_adapter::use_im_core_mvp()
-        {
-            let result =
-                crate::im_core_adapter::identity::merge_recovered_handle_local_state_via_im_core(
-                    &resolved.paths,
-                    old_dids.clone(),
-                    new_did.clone(),
-                    final_identity_name.clone(),
-                )
-                .map_err(|err| {
-                    recover_store_exit(err, &backup_path, &temp_identity_name, &new_did)
-                })?;
-            (result.store_merge_counts, result.e2ee_cleanup_counts)
-        } else {
-            store::merge_recovered_handle_local_state(
+        let merge_result =
+            crate::im_core_adapter::identity::merge_recovered_handle_local_state_via_im_core(
                 &resolved.paths,
-                &old_dids,
-                &new_did,
-                &final_identity_name,
+                old_dids.clone(),
+                new_did.clone(),
+                final_identity_name.clone(),
             )
-            .map_err(|err| recover_store_exit(err, &backup_path, &temp_identity_name, &new_did))?
-        };
+            .map_err(|err| recover_store_exit(err, &backup_path, &temp_identity_name, &new_did))?;
+        let (store_merge_counts, e2ee_cleanup_counts) = (
+            merge_result.store_merge_counts,
+            merge_result.e2ee_cleanup_counts,
+        );
 
         let promoted = identity::finalize_recovered_handle(
             &manager,
