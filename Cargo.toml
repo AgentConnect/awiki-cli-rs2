@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/im-core",
+    "crates/im-core-dart",
     "crates/awiki-cli",
     "xtask",
 ]

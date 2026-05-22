@@ -26,3 +26,4 @@ Record active exceptions below.
 
 | Rust path | Kind | Rust lines | Reference path | Reference lines | Reason |
 | --- | --- | ---: | --- | ---: | --- |
+| `crates/im-core-dart/src/frb_generated.rs` | Generated flutter_rust_bridge glue; stale checked by scripts/flutter/codegen-check.sh. | Flutter SDK |
