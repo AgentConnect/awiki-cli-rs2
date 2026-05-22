@@ -27,6 +27,50 @@ pub struct CommandSpec {
     pub flags: &'static [FlagSpec],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CutoverStatus {
+    CliOwned,
+    ImCore,
+    Unsupported {
+        capability: &'static str,
+        phase: &'static str,
+    },
+    Hidden,
+    Removed,
+    DiagnosticOnly,
+}
+
+impl CutoverStatus {
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::CliOwned => "cli_owned",
+            Self::ImCore => "im_core",
+            Self::Unsupported { .. } => "unsupported",
+            Self::Hidden => "hidden",
+            Self::Removed => "removed",
+            Self::DiagnosticOnly => "diagnostic_only",
+        }
+    }
+
+    pub fn capability(self) -> Option<&'static str> {
+        match self {
+            Self::Unsupported { capability, .. } => Some(capability),
+            _ => None,
+        }
+    }
+
+    pub fn required_phase(self) -> Option<&'static str> {
+        match self {
+            Self::Unsupported { phase, .. } => Some(phase),
+            _ => None,
+        }
+    }
+
+    pub fn include_in_default_surface(self) -> bool {
+        matches!(self, Self::CliOwned | Self::ImCore)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCommand {
     pub name: String,
@@ -46,6 +90,10 @@ impl CommandSpec {
     pub fn json_use(&self) -> &'static str {
         self.use_
     }
+
+    pub fn cutover_status(&self) -> CutoverStatus {
+        cutover_status(self.name)
+    }
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -58,6 +106,178 @@ pub fn lookup(raw: &str) -> Option<CommandSpec> {
         .iter()
         .find(|spec| normalize_name(spec.name) == needle)
         .cloned()
+}
+
+pub fn cutover_status(raw: &str) -> CutoverStatus {
+    try_cutover_status(raw).unwrap_or(CutoverStatus::Removed)
+}
+
+pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if is_one_of(
+        name,
+        &[
+            "id.create",
+            "runtime.listener.run",
+            "runtime.listener.service-run",
+            "runtime.host-notify.hermes.bridge",
+            "runtime.host-notify.hermes.bridge.service-run",
+            "debug.schema-cache",
+            "debug.logs",
+        ],
+    ) {
+        return Some(CutoverStatus::Hidden);
+    }
+    if has_any_command_prefix(name, &["group.code", "debug.raw"]) {
+        return Some(CutoverStatus::Removed);
+    }
+    if has_any_command_prefix(name, &["group.e2ee", "runtime.host-notify.openclaw"])
+        || is_one_of(
+            name,
+            &[
+                "id.import-v1",
+                "id.replace-did",
+                "msg.secure.failed",
+                "msg.secure.retry",
+                "msg.secure.drop",
+                "runtime.host-notify.hermes.set",
+                "runtime.host-notify.hermes.set-secret",
+                "runtime.host-notify.hermes.clear-secret",
+                "debug",
+                "debug.db",
+                "debug.db.handle-history",
+                "debug.db.query",
+                "debug.db.import-v1",
+            ],
+        )
+    {
+        return Some(CutoverStatus::DiagnosticOnly);
+    }
+    if has_command_prefix(name, "msg.attachment") {
+        return Some(CutoverStatus::Unsupported {
+            capability: "attachments",
+            phase: "Phase 4",
+        });
+    }
+    if has_command_prefix(name, "msg.secure") {
+        return Some(CutoverStatus::Unsupported {
+            capability: "secure-direct",
+            phase: "Phase 6",
+        });
+    }
+    if has_command_prefix(name, "mail") {
+        return Some(CutoverStatus::Unsupported {
+            capability: "mail",
+            phase: "outside current im-core cutover",
+        });
+    }
+    if has_command_prefix(name, "runtime.heartbeat") {
+        return Some(CutoverStatus::Unsupported {
+            capability: "runtime-heartbeat",
+            phase: "outside current im-core cutover",
+        });
+    }
+    if has_command_prefix(name, "people") {
+        return Some(CutoverStatus::Unsupported {
+            capability: "people-directory",
+            phase: "future directory/relation API",
+        });
+    }
+    if has_any_command_prefix(name, &["page", "site"]) {
+        return Some(CutoverStatus::Unsupported {
+            capability: "page-site",
+            phase: "outside current im-core cutover",
+        });
+    }
+    if is_one_of(
+        name,
+        &[
+            "id",
+            "id.status",
+            "id.register",
+            "id.bind",
+            "id.refresh-token",
+            "id.resolve",
+            "id.recover",
+            "id.list",
+            "id.current",
+            "id.use",
+            "id.profile",
+            "id.profile.get",
+            "id.profile.set",
+            "msg",
+            "msg.send",
+            "msg.inbox",
+            "msg.history",
+            "msg.mark-read",
+            "group",
+            "group.create",
+            "group.get",
+            "group.join",
+            "group.add",
+            "group.remove",
+            "group.leave",
+            "group.update",
+            "group.list",
+            "group.members",
+            "group.messages",
+        ],
+    ) {
+        return Some(CutoverStatus::ImCore);
+    }
+    if is_one_of(
+        name,
+        &[
+            "status",
+            "docs",
+            "schema",
+            "doctor",
+            "version",
+            "upgrade",
+            "init",
+            "completion",
+            "completion.bash",
+            "completion.zsh",
+            "completion.fish",
+            "completion.powershell",
+            "config",
+            "config.show",
+            "config.set",
+            "runtime",
+            "runtime.status",
+            "runtime.apply",
+            "runtime.setup",
+            "runtime.mode",
+            "runtime.mode.get",
+            "runtime.mode.set",
+            "runtime.listener",
+            "runtime.listener.status",
+            "runtime.listener.install",
+            "runtime.listener.start",
+            "runtime.listener.stop",
+            "runtime.listener.restart",
+            "runtime.listener.uninstall",
+            "runtime.listener.config",
+            "runtime.listener.config.show",
+            "runtime.listener.config.set",
+            "runtime.listener.enable",
+            "runtime.listener.disable",
+            "runtime.host-notify",
+            "runtime.host-notify.config",
+            "runtime.host-notify.config.show",
+            "runtime.host-notify.config.set",
+            "runtime.host-notify.enable",
+            "runtime.host-notify.disable",
+            "runtime.host-notify.hermes",
+            "runtime.host-notify.hermes.guide",
+            "runtime.host-notify.hermes.status",
+            "runtime.host-notify.hermes.setup",
+        ],
+    ) {
+        return Some(CutoverStatus::CliOwned);
+    }
+    None
 }
 
 pub fn children_of(parent: &str) -> Vec<CommandSpec> {
@@ -169,6 +389,23 @@ fn path_matches(path: &[&str], words: &[&str]) -> bool {
     path.iter()
         .zip(words.iter())
         .all(|(expected, actual)| expected == actual)
+}
+
+fn is_one_of(name: &str, values: &[&str]) -> bool {
+    values.contains(&name)
+}
+
+fn has_command_prefix(name: &str, prefix: &str) -> bool {
+    name == prefix
+        || name
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+fn has_any_command_prefix(name: &str, prefixes: &[&str]) -> bool {
+    prefixes
+        .iter()
+        .any(|prefix| has_command_prefix(name, prefix))
 }
 
 fn parent_name(name: &str) -> String {
@@ -480,6 +717,26 @@ impl Serialize for CommandSpec {
         }
         if !self.flags.is_empty() {
             map.serialize_entry("flags", self.flags)?;
+        }
+        map.serialize_entry("cutover", &self.cutover_status())?;
+        map.end()
+    }
+}
+
+impl Serialize for CutoverStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("status", self.kind())?;
+        map.serialize_entry("default_surface", &self.include_in_default_surface())?;
+        if let Some(capability) = self.capability() {
+            map.serialize_entry("capability", capability)?;
+        }
+        if let Some(phase) = self.required_phase() {
+            map.serialize_entry("required_phase", phase)?;
         }
         map.end()
     }
