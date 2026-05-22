@@ -19,6 +19,12 @@ use crate::message;
 use crate::output::ExitError;
 use crate::store::{self, MessageRecord};
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TargetResolution {
+    did: String,
+    handle: String,
+}
+
 pub fn send_message_request(
     command: &ParsedCommand,
     default_domain: &str,
@@ -122,13 +128,10 @@ pub fn read_inbox_via_im_core(
         .messages()
         .inbox(query.clone())
         .map_err(im_error_to_message_error)?;
-    let raw = read_page_to_cli_raw(
-        &page,
-        source_default_for_mode(message::runtime_mode(resolved)),
-    );
+    let raw = read_page_to_cli_raw(&page, source_default());
     let mut messages =
         message::persist_inbox_messages(resolved, manager, &record, &raw, "", &mut warnings);
-    let source = source_with_default_for_mode(&raw, message::runtime_mode(resolved));
+    let source = source_with_default(&raw);
     messages =
         message::apply_inbox_filters(messages, "", query.unread_only, i64::from(query.limit.0));
     let total = messages.len();
@@ -148,7 +151,7 @@ pub fn read_inbox_via_im_core(
     Ok(CommandResult {
         data,
         summary: format!("Loaded {total} inbox messages"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -189,10 +192,7 @@ fn read_direct_history_via_im_core(
         .messages()
         .history(thread, query.clone())
         .map_err(im_error_to_message_error)?;
-    let mut raw = read_page_to_cli_raw(
-        &page,
-        source_default_for_mode(message::runtime_mode(resolved)),
-    );
+    let mut raw = read_page_to_cli_raw(&page, source_default());
     if target_is_handle {
         let dids = message::peer_dids_for_handle_from_store(
             resolved,
@@ -212,13 +212,14 @@ fn read_direct_history_via_im_core(
         &raw,
         &mut warnings,
     );
-    let mut source = source_with_default_for_mode(&raw, message::runtime_mode(resolved));
+    let mut source = source_with_default(&raw);
     let mut resolved_dids = message::resolved_dids_value(&raw);
     if target_is_handle {
+        let legacy_target = legacy_target_resolution(&target);
         let dids = message::merge_handle_history_messages(
             resolved,
             &record.did,
-            &target,
+            &legacy_target,
             i64::from(query.limit.0),
             false,
             false,
@@ -236,11 +237,11 @@ fn read_direct_history_via_im_core(
             "messages": messages,
             "total": total,
             "source": source,
-            "with": message::peer_handle_or_did(&target),
+            "with": peer_handle_or_did(&target),
             "resolved_dids": resolved_dids,
         }),
         summary: format!("Loaded {total} direct history messages"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -259,10 +260,7 @@ fn read_group_history_via_im_core(
         .messages()
         .history(ThreadRef::Group(group.clone()), query.clone())
         .map_err(im_error_to_message_error)?;
-    let mut raw = read_page_to_cli_raw(
-        &page,
-        source_default_for_mode(message::runtime_mode(resolved)),
-    );
+    let mut raw = read_page_to_cli_raw(&page, source_default());
     warnings.extend(message::maybe_decrypt_group_messages(
         resolved,
         &record,
@@ -280,7 +278,7 @@ fn read_group_history_via_im_core(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let source = source_with_default_for_mode(&raw, message::runtime_mode(resolved));
+    let source = source_with_default(&raw);
     let total = messages.len();
     Ok(CommandResult {
         data: json!({
@@ -290,7 +288,7 @@ fn read_group_history_via_im_core(
             "group": group.as_str(),
         }),
         summary: format!("Loaded {total} group history messages"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -321,7 +319,7 @@ pub fn mark_read_via_im_core(
             "message_ids": message_ids,
         }),
         summary: format!("Marked {updated_count} messages as read"),
-        warnings: message::compact_warnings(result.warnings),
+        warnings: compact_warnings(result.warnings),
     })
 }
 
@@ -463,12 +461,12 @@ fn inbox_scope(raw: &str) -> Result<InboxScope, ExitError> {
 fn resolve_direct_target_for_sdk(
     client: &im_core::ImClient,
     request: &SendMessageRequest,
-) -> Result<Option<message::TargetResolution>, MessageAdapterError> {
+) -> Result<Option<TargetResolution>, MessageAdapterError> {
     let MessageTarget::Direct(peer) = &request.target else {
         return Ok(None);
     };
     if peer.as_str().starts_with("did:") {
-        return Ok(Some(message::TargetResolution {
+        return Ok(Some(TargetResolution {
             did: peer.as_str().to_string(),
             handle: String::new(),
         }));
@@ -478,7 +476,7 @@ fn resolve_direct_target_for_sdk(
         .directory()
         .lookup_handle(handle)
         .map_err(im_error_to_message_error)?;
-    Ok(Some(message::TargetResolution {
+    Ok(Some(TargetResolution {
         did: lookup.did.as_str().to_string(),
         handle: lookup.handle.as_str().to_string(),
     }))
@@ -487,7 +485,7 @@ fn resolve_direct_target_for_sdk(
 fn resolve_history_thread(
     client: &im_core::ImClient,
     peer: PeerRef,
-) -> Result<(ThreadRef, message::TargetResolution, bool), MessageAdapterError> {
+) -> Result<(ThreadRef, TargetResolution, bool), MessageAdapterError> {
     let original = peer.as_str().trim().to_string();
     let target_is_handle = !original.is_empty() && !original.starts_with("did:");
     let target = if target_is_handle {
@@ -496,12 +494,12 @@ fn resolve_history_thread(
             .directory()
             .lookup_handle(handle)
             .map_err(im_error_to_message_error)?;
-        message::TargetResolution {
+        TargetResolution {
             did: lookup.did.as_str().to_string(),
             handle: lookup.handle.as_str().to_string(),
         }
     } else {
-        message::TargetResolution {
+        TargetResolution {
             did: original,
             handle: String::new(),
         }
@@ -576,20 +574,19 @@ fn message_content_type(body: &MessageBodyView) -> &'static str {
     }
 }
 
-fn source_default_for_mode(mode: &str) -> &'static str {
-    let _ = mode;
+fn source_default() -> &'static str {
     "remote_http"
 }
 
-fn source_with_default_for_mode(raw: &Value, mode: &str) -> String {
+fn source_with_default(raw: &Value) -> String {
     raw.get("source")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or(source_default_for_mode(mode))
+        .unwrap_or(source_default())
         .to_string()
 }
 
-fn direct_target_from_result(result: &SendMessageResult) -> message::TargetResolution {
+fn direct_target_from_result(result: &SendMessageResult) -> TargetResolution {
     let did = result
         .message
         .receiver
@@ -600,9 +597,24 @@ fn direct_target_from_result(result: &SendMessageResult) -> message::TargetResol
         })
         .map(|peer| peer.as_str().to_string())
         .unwrap_or_default();
-    message::TargetResolution {
+    TargetResolution {
         did,
         handle: String::new(),
+    }
+}
+
+fn peer_handle_or_did(target: &TargetResolution) -> String {
+    if target.handle.trim().is_empty() {
+        target.did.clone()
+    } else {
+        target.handle.clone()
+    }
+}
+
+fn legacy_target_resolution(target: &TargetResolution) -> message::TargetResolution {
+    message::TargetResolution {
+        did: target.did.clone(),
+        handle: target.handle.clone(),
     }
 }
 
@@ -695,7 +707,7 @@ struct GroupSendResult {
 }
 
 impl DirectSendResult {
-    fn from_sdk_result(result: &SendMessageResult, target: &message::TargetResolution) -> Self {
+    fn from_sdk_result(result: &SendMessageResult, target: &TargetResolution) -> Self {
         Self {
             accepted: delivery_was_accepted(&result.delivery),
             message_id: result.message.id.as_str().to_string(),
@@ -750,7 +762,7 @@ impl GroupSendResult {
 fn persist_send_result(
     resolved: &Resolved,
     client: &im_core::ImClient,
-    target: &message::TargetResolution,
+    target: &TargetResolution,
     sdk_result: &SendMessageResult,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = DirectSendResult::from_sdk_result(sdk_result, target);
@@ -806,7 +818,7 @@ fn persist_send_result(
             "delivery": result,
         }),
         summary: format!("Sent a direct {message_type} message"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -885,8 +897,20 @@ fn persist_group_send_result(
             "source": "remote_http",
         }),
         summary: format!("Sent a group {message_type} message"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
+}
+
+fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
+    let mut compact = Vec::new();
+    for warning in warnings {
+        let warning = warning.trim().to_string();
+        if warning.is_empty() || compact.iter().any(|known| known == &warning) {
+            continue;
+        }
+        compact.push(warning);
+    }
+    compact
 }
 
 fn group_send_message_id(group_did: &str, result: &GroupSendResult) -> String {
