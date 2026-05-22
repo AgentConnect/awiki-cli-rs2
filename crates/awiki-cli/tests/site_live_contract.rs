@@ -3,17 +3,19 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn site_root_get_live_posts_authenticated_json_rpc_like_go() {
+fn site_root_live_command_is_blocked_before_legacy_site_rpc() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_identity(workspace.path(), "alice-site", "alice", "jwt-site");
     let server = TestServer::new(vec![TestResponse::ok(
-        r#"{"jsonrpc":"2.0","result":{"domain":"tenant.example","kind":"root","body":"Welcome"},"id":"req-1"}"#,
+        r#"{"jsonrpc":"2.0","result":{"domain":"tenant.example","root_page":{"slug":"home"}},"id":"req-1"}"#,
     )]);
     write_service_config(workspace.path(), &server.base_url());
 
@@ -25,41 +27,29 @@ fn site_root_get_live_posts_authenticated_json_rpc_like_go() {
             "root",
             "get",
             "--domain",
-            "Tenant.Example.",
+            "tenant.example",
         ],
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Fetched site root for tenant.example");
-    assert_eq!(envelope["data"]["action"], "site_root_get");
-    assert_eq!(envelope["data"]["root"]["kind"], "root");
-    assert_eq!(envelope["data"]["identity"]["handle"], "alice");
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /site/rpc HTTP/1.1"));
-    assert_contains_text(&requests[0], "Authorization: Bearer jwt-site\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_cutover_unsupported(&output, "site.root.get");
+    assert!(
+        server.requests().is_empty(),
+        "site cutover guard must not reach legacy site RPC server"
+    );
     assert_eq!(
-        body,
-        json!({
-            "jsonrpc": "2.0",
-            "id": "req-1",
-            "method": "get_root",
-            "params": {
-                "domain": "tenant.example",
-            },
-        })
+        read_identity_auth_token(workspace.path(), "alice-site"),
+        "jwt-site",
+        "unsupported site command must not refresh legacy auth"
     );
 }
 
 #[test]
-fn site_page_create_live_posts_domain_slug_and_body_like_go() {
+fn site_page_live_command_is_blocked_before_legacy_site_rpc() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_identity(workspace.path(), "alice-site", "alice", "jwt-site");
     let server = TestServer::new(vec![TestResponse::ok(
-        r#"{"jsonrpc":"2.0","result":{"domain":"tenant.example","slug":"hello","body":"Body"},"id":"req-1"}"#,
+        r#"{"jsonrpc":"2.0","result":{"slug":"hello","body":"Body"},"id":"req-1"}"#,
     )]);
     write_service_config(workspace.path(), &server.base_url());
 
@@ -73,125 +63,18 @@ fn site_page_create_live_posts_domain_slug_and_body_like_go() {
             "--domain",
             "tenant.example",
             "--slug",
-            " hello ",
+            "hello",
             "--markdown",
             "Body",
         ],
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        "Created site page hello for tenant.example"
+    assert_cutover_unsupported(&output, "site.page.create");
+    assert!(
+        server.requests().is_empty(),
+        "site page cutover guard must not reach legacy site RPC server"
     );
-    assert_eq!(envelope["data"]["action"], "site_page_create");
-    assert_eq!(envelope["data"]["page"]["slug"], "hello");
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /site/rpc HTTP/1.1"));
-    assert_contains_text(&requests[0], "Authorization: Bearer jwt-site\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
-    assert_eq!(
-        body,
-        json!({
-            "jsonrpc": "2.0",
-            "id": "req-1",
-            "method": "create_page",
-            "params": {
-                "domain": "tenant.example",
-                "slug": "hello",
-                "body": "Body",
-            },
-        })
-    );
-}
-
-#[test]
-fn site_page_delete_live_maps_rpc_forbidden_like_go() {
-    let workspace = TempDir::new().expect("workspace");
-    register_ready_identity(workspace.path(), "alice-site", "alice", "jwt-site");
-    let server = TestServer::new(vec![TestResponse::ok(
-        r#"{"jsonrpc":"2.0","error":{"code":-32001,"message":"forbidden"},"id":"req-1"}"#,
-    )]);
-    write_service_config(workspace.path(), &server.base_url());
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "alice-site",
-            "site",
-            "page",
-            "delete",
-            "--domain",
-            "tenant.example",
-            "--slug",
-            "hello",
-        ],
-        workspace.path(),
-    );
-
-    assert_code(&output, 4);
-    let envelope = error_json(&output);
-    assert_eq!(envelope["error"]["code"], "forbidden");
-    assert_eq!(
-        envelope["error"]["message"],
-        "service rpc error -32001: forbidden"
-    );
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /site/rpc HTTP/1.1"));
-}
-
-#[test]
-fn site_root_get_live_bootstraps_and_persists_jwt_like_go() {
-    let workspace = TempDir::new().expect("workspace");
-    register_ready_identity(workspace.path(), "alice-site", "alice", "");
-    let server = TestServer::new(vec![
-        TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-site","handle":"alice"},"id":"req-1"}"#,
-        ),
-        TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"domain":"tenant.example","kind":"root","body":"Welcome"},"id":"req-1"}"#,
-        ),
-    ]);
-    write_service_config(workspace.path(), &server.base_url());
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "alice-site",
-            "site",
-            "root",
-            "get",
-            "--domain",
-            "tenant.example",
-        ],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    assert_eq!(
-        read_identity_auth_token(workspace.path(), "alice-site"),
-        "fresh-site"
-    );
-    let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
-    let bootstrap_body: Value =
-        serde_json::from_str(request_body(&requests[0])).expect("bootstrap request body");
-    assert_eq!(
-        bootstrap_body,
-        json!({
-            "jsonrpc": "2.0",
-            "id": "req-1",
-            "method": "get_me",
-            "params": {},
-        })
-    );
-    assert!(requests[1].starts_with("POST /site/rpc HTTP/1.1"));
-    assert_contains_text(&requests[1], "Authorization: Bearer fresh-site\r\n");
 }
 
 fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, jwt_token: &str) {
@@ -271,37 +154,34 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env_remove("AWIKI_HOME")
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
-        .env_remove("AVIKI_FORMAT");
+        .env_remove("AVIKI_FORMAT")
+        .env_remove("AWIKI_CLI_TRACE_TIMING");
     command.output().expect("run awiki-cli binary")
 }
 
 fn assert_success(output: &Output) {
-    assert_code(output, 0);
-}
-
-fn assert_code(output: &Output, code: i32) {
     assert_eq!(
         output.status.code(),
-        Some(code),
+        Some(0),
         "unexpected exit status; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn success_json(output: &Output) -> Value {
     assert!(
         output.stderr.is_empty(),
         "stderr should be empty: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let envelope: Value =
-        serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
-    assert_eq!(envelope["ok"], true);
-    envelope
 }
 
-fn error_json(output: &Output) -> Value {
+fn assert_cutover_unsupported(output: &Output, command: &str) {
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(
         output.stdout.is_empty(),
         "stdout should be empty: {}",
@@ -310,18 +190,17 @@ fn error_json(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
     assert_eq!(envelope["ok"], false);
-    envelope
-}
-
-fn assert_contains_text(haystack: &str, needle: &str) {
-    assert!(
-        haystack.contains(needle),
-        "expected request to contain {needle:?}, got:\n{haystack}"
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], "page-site");
+    assert_eq!(
+        envelope["error"]["details"]["required_phase"],
+        "outside current im-core cutover"
     );
-}
-
-fn request_body(raw: &str) -> &str {
-    raw.split("\r\n\r\n").nth(1).unwrap_or_default()
+    assert_eq!(
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
+    );
 }
 
 #[derive(Clone)]
@@ -466,7 +345,7 @@ impl TempDir {
             .unwrap_or_default()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-site-live-test-{}-{nanos}",
+            "awiki-cli-rs2-site-live-cutover-test-{}-{nanos}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

@@ -294,6 +294,53 @@ fn unsupported_cutover_stub_commands_do_not_enter_legacy_stub_boundary() {
     }
 }
 
+#[test]
+fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
+    for (args, command, capability) in [
+        (&["mail", "inbox"][..], "mail.inbox", "mail"),
+        (&["--dry-run", "mail", "notify"][..], "mail.notify", "mail"),
+        (&["page", "list"][..], "page.list", "page-site"),
+        (
+            &["--dry-run", "page", "create", "--slug", "hello"][..],
+            "page.create",
+            "page-site",
+        ),
+        (
+            &["site", "page", "list", "--domain", "tenant.example"][..],
+            "site.page.list",
+            "page-site",
+        ),
+        (
+            &[
+                "--dry-run",
+                "site",
+                "root",
+                "set",
+                "--domain",
+                "tenant.example",
+            ][..],
+            "site.root.set",
+            "page-site",
+        ),
+    ] {
+        let output = awiki_cmd(args);
+        assert_code(&output, 2);
+        let envelope = error_json(&output);
+
+        assert_eq!(envelope["error"]["code"], "unsupported_capability");
+        assert_eq!(envelope["error"]["details"]["command"], command);
+        assert_eq!(envelope["error"]["details"]["capability"], capability);
+        assert_eq!(
+            envelope["error"]["details"]["required_phase"],
+            "outside current im-core cutover"
+        );
+        assert_eq!(
+            envelope["error"]["details"]["cutover_status"],
+            "unsupported"
+        );
+    }
+}
+
 fn schema_value(command: &str) -> Value {
     serde_json::to_value(cmdmeta::lookup(command).expect("command schema exists"))
         .expect("schema serializes")

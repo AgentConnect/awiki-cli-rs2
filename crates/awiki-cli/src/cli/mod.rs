@@ -85,6 +85,10 @@ where
 }
 
 pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
+    if let Some(err) = default_cutover_boundary_error(&command.name) {
+        return Err(err);
+    }
+
     match command.name.as_str() {
         "status" => app.run_status(),
         "version" => app.run_version(),
@@ -373,6 +377,33 @@ fn is_id_create_context(words: &[String]) -> bool {
 
 fn is_go_stub_command(command: &str) -> bool {
     cmdmeta::lookup(command).is_some_and(|spec| spec.handler == "stub")
+}
+
+fn default_cutover_boundary_error(command: &str) -> Option<ExitError> {
+    if !is_default_cutover_blocked_domain(command) {
+        return None;
+    }
+    match cmdmeta::cutover_status(command) {
+        cmdmeta::CutoverStatus::Unsupported { capability, phase } => Some(
+            crate::app::unsupported::unsupported_cutover_command(command, capability, phase),
+        ),
+        _ => None,
+    }
+}
+
+fn is_default_cutover_blocked_domain(command: &str) -> bool {
+    command == "mail"
+        || command
+            .strip_prefix("mail.")
+            .is_some_and(|suffix| !suffix.is_empty())
+        || command == "page"
+        || command
+            .strip_prefix("page.")
+            .is_some_and(|suffix| !suffix.is_empty())
+        || command == "site"
+        || command
+            .strip_prefix("site.")
+            .is_some_and(|suffix| !suffix.is_empty())
 }
 
 fn go_stub_error(command: &str) -> ExitError {

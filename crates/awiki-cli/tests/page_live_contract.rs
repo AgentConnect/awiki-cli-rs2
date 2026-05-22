@@ -3,12 +3,15 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn page_list_live_posts_authenticated_json_rpc_like_go() {
+fn page_live_command_is_blocked_before_legacy_content_rpc() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_identity(workspace.path(), "alice-page", "alice", "jwt-page");
     let server = TestServer::new(vec![TestResponse::ok(
@@ -21,30 +24,20 @@ fn page_list_live_posts_authenticated_json_rpc_like_go() {
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Fetched 2 content pages");
-    assert_eq!(envelope["data"]["action"], "list_pages");
-    assert_eq!(envelope["data"]["count"], 2);
-    assert_eq!(envelope["data"]["identity"]["handle"], "alice");
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("POST /content/rpc HTTP/1.1"));
-    assert_contains_text(&requests[0], "Authorization: Bearer jwt-page\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
+    assert_cutover_unsupported(&output, "page.list");
+    assert!(
+        server.requests().is_empty(),
+        "page cutover guard must not reach legacy content RPC server"
+    );
     assert_eq!(
-        body,
-        json!({
-            "jsonrpc": "2.0",
-            "id": "req-1",
-            "method": "list",
-            "params": {},
-        })
+        read_identity_auth_token(workspace.path(), "alice-page"),
+        "jwt-page",
+        "unsupported page command must not refresh legacy auth"
     );
 }
 
 #[test]
-fn page_create_live_posts_content_payload_like_go() {
+fn page_create_live_command_is_blocked_before_legacy_content_rpc() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_identity(workspace.path(), "alice-page", "alice", "jwt-page");
     let server = TestServer::new(vec![TestResponse::ok(
@@ -59,115 +52,20 @@ fn page_create_live_posts_content_payload_like_go() {
             "page",
             "create",
             "--slug",
-            " hello ",
+            "hello",
             "--title",
-            " Hello ",
+            "Hello",
             "--markdown",
             "Body",
-            "--visibility",
-            "DRAFT",
         ],
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Created content page hello");
-    assert_eq!(envelope["data"]["action"], "create_page");
-    assert_eq!(envelope["data"]["page"]["slug"], "hello");
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
-    assert_eq!(
-        body,
-        json!({
-            "jsonrpc": "2.0",
-            "id": "req-1",
-            "method": "create",
-            "params": {
-                "slug": "hello",
-                "title": "Hello",
-                "body": "Body",
-                "visibility": "draft",
-            },
-        })
+    assert_cutover_unsupported(&output, "page.create");
+    assert!(
+        server.requests().is_empty(),
+        "page create cutover guard must not reach legacy content RPC server"
     );
-}
-
-#[test]
-fn page_get_live_maps_rpc_not_found_like_go() {
-    let workspace = TempDir::new().expect("workspace");
-    register_ready_identity(workspace.path(), "alice-page", "alice", "jwt-page");
-    let server = TestServer::new(vec![TestResponse::ok(
-        r#"{"jsonrpc":"2.0","error":{"code":-32002,"message":"page not found","data":{"slug":"missing"}},"id":"req-1"}"#,
-    )]);
-    write_service_config(workspace.path(), &server.base_url());
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "alice-page",
-            "page",
-            "get",
-            "--slug",
-            "missing",
-        ],
-        workspace.path(),
-    );
-
-    assert_code(&output, 5);
-    let envelope = error_json(&output);
-    assert_eq!(envelope["error"]["code"], "not_found");
-    assert_eq!(
-        envelope["error"]["message"],
-        "service rpc error -32002: page not found"
-    );
-    assert_contains(
-        &envelope["error"]["hint"],
-        "Make sure the page exists and the active identity can access it.",
-    );
-}
-
-#[test]
-fn page_list_live_bootstraps_and_persists_jwt_like_go() {
-    let workspace = TempDir::new().expect("workspace");
-    register_ready_identity(workspace.path(), "alice-page", "alice", "");
-    let server = TestServer::new(vec![
-        TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-page","handle":"alice"},"id":"req-1"}"#,
-        ),
-        TestResponse::ok(
-            r#"{"jsonrpc":"2.0","result":{"count":1,"pages":[{"slug":"fresh"}]},"id":"req-1"}"#,
-        ),
-    ]);
-    write_service_config(workspace.path(), &server.base_url());
-
-    let output = awiki_cmd(
-        &["--identity", "alice-page", "page", "list"],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    assert_eq!(
-        read_identity_auth_token(workspace.path(), "alice-page"),
-        "fresh-page"
-    );
-    let requests = server.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[0].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
-    let bootstrap_body: Value =
-        serde_json::from_str(request_body(&requests[0])).expect("bootstrap request body");
-    assert_eq!(
-        bootstrap_body,
-        json!({
-            "jsonrpc": "2.0",
-            "id": "req-1",
-            "method": "get_me",
-            "params": {},
-        })
-    );
-    assert!(requests[1].starts_with("POST /content/rpc HTTP/1.1"));
-    assert_contains_text(&requests[1], "Authorization: Bearer fresh-page\r\n");
 }
 
 fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, jwt_token: &str) {
@@ -247,37 +145,34 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env_remove("AWIKI_HOME")
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
-        .env_remove("AVIKI_FORMAT");
+        .env_remove("AVIKI_FORMAT")
+        .env_remove("AWIKI_CLI_TRACE_TIMING");
     command.output().expect("run awiki-cli binary")
 }
 
 fn assert_success(output: &Output) {
-    assert_code(output, 0);
-}
-
-fn assert_code(output: &Output, code: i32) {
     assert_eq!(
         output.status.code(),
-        Some(code),
+        Some(0),
         "unexpected exit status; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn success_json(output: &Output) -> Value {
     assert!(
         output.stderr.is_empty(),
         "stderr should be empty: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let envelope: Value =
-        serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
-    assert_eq!(envelope["ok"], true);
-    envelope
 }
 
-fn error_json(output: &Output) -> Value {
+fn assert_cutover_unsupported(output: &Output, command: &str) {
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(
         output.stdout.is_empty(),
         "stdout should be empty: {}",
@@ -286,28 +181,17 @@ fn error_json(output: &Output) -> Value {
     let envelope: Value =
         serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
     assert_eq!(envelope["ok"], false);
-    envelope
-}
-
-fn assert_contains(value: &Value, needle: &str) {
-    let haystack = value
-        .as_str()
-        .unwrap_or_else(|| panic!("expected string containing {needle:?}, got {value:?}"));
-    assert!(
-        haystack.contains(needle),
-        "expected {haystack:?} to contain {needle:?}"
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], "page-site");
+    assert_eq!(
+        envelope["error"]["details"]["required_phase"],
+        "outside current im-core cutover"
     );
-}
-
-fn assert_contains_text(haystack: &str, needle: &str) {
-    assert!(
-        haystack.contains(needle),
-        "expected request to contain {needle:?}, got:\n{haystack}"
+    assert_eq!(
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
     );
-}
-
-fn request_body(raw: &str) -> &str {
-    raw.split("\r\n\r\n").nth(1).unwrap_or_default()
 }
 
 #[derive(Clone)]
@@ -328,26 +212,44 @@ impl TestResponse {
 struct TestServer {
     address: String,
     requests: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
     join: Option<thread::JoinHandle<()>>,
 }
 
 impl TestServer {
     fn new(responses: Vec<TestResponse>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        listener
+            .set_nonblocking(true)
+            .expect("set test server nonblocking");
         let address = format!("http://{}", listener.local_addr().expect("local addr"));
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
         let server_requests = Arc::clone(&requests);
+        let server_stop = Arc::clone(&stop);
         let join = thread::spawn(move || {
             for response in responses {
-                let Ok((stream, _)) = listener.accept() else {
-                    break;
-                };
-                handle_connection(stream, &server_requests, response);
+                loop {
+                    if server_stop.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            handle_connection(stream, &server_requests, response);
+                            break;
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => return,
+                    }
+                }
             }
         });
         Self {
             address,
             requests,
+            stop,
             join: Some(join),
         }
     }
@@ -363,6 +265,7 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -433,7 +336,7 @@ impl TempDir {
             .unwrap_or_default()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-page-live-test-{}-{nanos}",
+            "awiki-cli-rs2-page-live-cutover-test-{}-{nanos}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

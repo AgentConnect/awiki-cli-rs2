@@ -1,16 +1,29 @@
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn site_schema_exposes_go_command_surface() {
+fn site_schema_remains_exactly_queryable_but_outside_default_cutover_surface() {
     let workspace = TempDir::new().expect("workspace");
     let output = awiki_cmd(&["schema", "site"], workspace.path());
     assert_success(&output);
     let envelope = success_json(&output);
 
     assert_eq!(envelope["data"]["command"]["name"], "site");
+    assert_eq!(
+        envelope["data"]["command"]["cutover"]["status"],
+        "unsupported"
+    );
+    assert_eq!(
+        envelope["data"]["command"]["cutover"]["capability"],
+        "page-site"
+    );
+    assert_eq!(
+        envelope["data"]["command"]["cutover"]["default_surface"],
+        false
+    );
+
     let children: Vec<_> = envelope["data"]["children"]
         .as_array()
         .expect("children should be an array")
@@ -23,462 +36,111 @@ fn site_schema_exposes_go_command_surface() {
             "site schema children should include {expected}: {children:?}"
         );
     }
+}
 
-    let page = success_json(&awiki_cmd(&["schema", "site", "page"], workspace.path()));
-    let page_children: Vec<_> = page["data"]["children"]
-        .as_array()
-        .expect("site page children should be an array")
-        .iter()
-        .map(|child| child["name"].as_str().unwrap())
-        .collect();
-    for expected in [
-        "site.page.create",
-        "site.page.delete",
-        "site.page.get",
-        "site.page.list",
-        "site.page.rename",
-        "site.page.update",
+#[test]
+fn site_commands_return_cutover_unsupported_instead_of_legacy_plans() {
+    let workspace = TempDir::new().expect("workspace");
+
+    for (args, command) in [
+        (
+            &["site", "root", "get", "--domain", "tenant.example"][..],
+            "site.root.get",
+        ),
+        (
+            &[
+                "--dry-run",
+                "site",
+                "root",
+                "set",
+                "--domain",
+                "tenant.example",
+                "--markdown",
+                "Body",
+            ][..],
+            "site.root.set",
+        ),
+        (
+            &["site", "page", "list", "--domain", "tenant.example"][..],
+            "site.page.list",
+        ),
+        (
+            &[
+                "--dry-run",
+                "site",
+                "page",
+                "get",
+                "--domain",
+                "tenant.example",
+                "--slug",
+                "hello",
+            ][..],
+            "site.page.get",
+        ),
+        (
+            &[
+                "site",
+                "page",
+                "create",
+                "--domain",
+                "tenant.example",
+                "--slug",
+                "hello",
+                "--markdown",
+                "Body",
+            ][..],
+            "site.page.create",
+        ),
+        (
+            &[
+                "site",
+                "page",
+                "update",
+                "--domain",
+                "tenant.example",
+                "--slug",
+                "hello",
+                "--markdown",
+                "Body",
+            ][..],
+            "site.page.update",
+        ),
+        (
+            &[
+                "site",
+                "page",
+                "rename",
+                "--domain",
+                "tenant.example",
+                "--slug",
+                "hello",
+                "--to",
+                "new",
+            ][..],
+            "site.page.rename",
+        ),
+        (
+            &[
+                "site",
+                "page",
+                "delete",
+                "--domain",
+                "tenant.example",
+                "--slug",
+                "hello",
+            ][..],
+            "site.page.delete",
+        ),
     ] {
-        assert!(
-            page_children.contains(&expected),
-            "site page schema children should include {expected}: {page_children:?}"
-        );
+        let output = awiki_cmd(args, workspace.path());
+        assert_cutover_unsupported(&output, command);
     }
-
-    let root = success_json(&awiki_cmd(&["schema", "site", "root"], workspace.path()));
-    let root_children: Vec<_> = root["data"]["children"]
-        .as_array()
-        .expect("site root children should be an array")
-        .iter()
-        .map(|child| child["name"].as_str().unwrap())
-        .collect();
-    for expected in ["site.root.get", "site.root.set"] {
-        assert!(
-            root_children.contains(&expected),
-            "site root schema children should include {expected}: {root_children:?}"
-        );
-    }
-}
-
-#[test]
-fn site_root_dry_run_plans_match_go_contracts() {
-    let workspace = TempDir::new().expect("workspace");
-
-    let get = success_json(&awiki_cmd(
-        &[
-            "--identity",
-            "alice",
-            "--dry-run",
-            "site",
-            "root",
-            "get",
-            "--domain",
-            " Tenant.Example ",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(get["summary"], "Dry run: site root get planned");
-    assert_eq!(get["data"]["plan"]["action"], "site.root.get");
-    assert_eq!(get["data"]["plan"]["identity"], "alice");
-    assert_eq!(get["data"]["plan"]["rpc_endpoint"], "/site/rpc");
-    assert_eq!(get["data"]["plan"]["rpc_method"], "get_root");
-    assert_eq!(
-        get["data"]["plan"]["request"],
-        json!({ "domain": "Tenant.Example" })
-    );
-
-    let set = success_json(&awiki_cmd(
-        &[
-            "--identity",
-            "alice",
-            "--dry-run",
-            "site",
-            "root",
-            "set",
-            "--domain",
-            "tenant.example",
-            "--markdown",
-            "body",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(set["summary"], "Dry run: site root set planned");
-    assert_eq!(set["data"]["plan"]["action"], "site.root.set");
-    assert_eq!(set["data"]["plan"]["rpc_method"], "set_root");
-    assert_eq!(
-        set["data"]["plan"]["request"],
-        json!({ "domain": "tenant.example", "body_bytes": 4 })
-    );
-
-    let empty_domain = success_json(&awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "root",
-            "set",
-            "--domain=",
-            "--markdown",
-            "body",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(empty_domain["summary"], "Dry run: site root set planned");
-    assert_eq!(
-        empty_domain["data"]["plan"]["request"],
-        json!({ "domain": "", "body_bytes": 4 })
-    );
-}
-
-#[test]
-fn site_page_dry_run_plans_match_go_contracts() {
-    let workspace = TempDir::new().expect("workspace");
-
-    let list = success_json(&awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "page",
-            "list",
-            "--domain",
-            " tenant.example ",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(list["summary"], "Dry run: site page list planned");
-    assert_eq!(list["data"]["plan"]["action"], "site.page.list");
-    assert_eq!(list["data"]["plan"]["rpc_method"], "list_pages");
-    assert_eq!(list["data"]["plan"]["request"]["domain"], "tenant.example");
-
-    let get = success_json(&awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "page",
-            "get",
-            "--domain",
-            "tenant.example",
-            "--slug",
-            " hello ",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(get["summary"], "Dry run: site page get planned");
-    assert_eq!(get["data"]["plan"]["action"], "site.page.get");
-    assert_eq!(get["data"]["plan"]["rpc_method"], "get_page");
-    assert_eq!(
-        get["data"]["plan"]["request"],
-        json!({ "domain": "tenant.example", "slug": "hello" })
-    );
-
-    let empty_get = success_json(&awiki_cmd(
-        &["--dry-run", "site", "page", "get", "--domain=", "--slug="],
-        workspace.path(),
-    ));
-    assert_eq!(empty_get["summary"], "Dry run: site page get planned");
-    assert_eq!(
-        empty_get["data"]["plan"]["request"],
-        json!({ "domain": "", "slug": "" })
-    );
-
-    let body_file = workspace.path().join("site-page.md");
-    std::fs::write(&body_file, "# File Body\n").expect("write markdown file");
-    let create = success_json(&awiki_cmd(
-        &[
-            "--identity",
-            "alice",
-            "--dry-run",
-            "site",
-            "page",
-            "create",
-            "--domain",
-            "tenant.example",
-            "--slug",
-            "from-file",
-            "--markdown-file",
-            body_file.to_str().expect("path is utf8"),
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(create["summary"], "Dry run: site page create planned");
-    assert_eq!(create["data"]["plan"]["action"], "site.page.create");
-    assert_eq!(create["data"]["plan"]["identity"], "alice");
-    assert_eq!(create["data"]["plan"]["rpc_method"], "create_page");
-    assert_eq!(
-        create["data"]["plan"]["request"],
-        json!({
-            "domain": "tenant.example",
-            "slug": "from-file",
-            "body_bytes": "# File Body\n".len(),
-        })
-    );
-
-    let update = success_json(&awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "page",
-            "update",
-            "--domain",
-            "tenant.example",
-            "--slug",
-            "hello",
-            "--markdown",
-            "updated",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(update["summary"], "Dry run: site page update planned");
-    assert_eq!(update["data"]["plan"]["action"], "site.page.update");
-    assert_eq!(update["data"]["plan"]["rpc_method"], "update_page");
-    assert_eq!(
-        update["data"]["plan"]["request"],
-        json!({ "domain": "tenant.example", "slug": "hello", "body_bytes": 7 })
-    );
-
-    let rename = success_json(&awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "page",
-            "rename",
-            "--domain",
-            "tenant.example",
-            "--slug",
-            " old ",
-            "--to",
-            " new ",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(rename["summary"], "Dry run: site page rename planned");
-    assert_eq!(rename["data"]["plan"]["action"], "site.page.rename");
-    assert_eq!(
-        rename["data"]["plan"]["request"],
-        json!({ "domain": "tenant.example", "old_slug": "old", "new_slug": "new" })
-    );
-
-    let delete = success_json(&awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "page",
-            "delete",
-            "--domain",
-            "tenant.example",
-            "--slug",
-            " old ",
-        ],
-        workspace.path(),
-    ));
-    assert_eq!(delete["summary"], "Dry run: site page delete planned");
-    assert_eq!(delete["data"]["plan"]["action"], "site.page.delete");
-    assert_eq!(
-        delete["data"]["plan"]["request"],
-        json!({ "domain": "tenant.example", "slug": "old" })
-    );
-}
-
-#[test]
-fn site_validation_errors_match_go_cli_boundary() {
-    let workspace = TempDir::new().expect("workspace");
-
-    let missing_body = awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "root",
-            "set",
-            "--domain",
-            "tenant.example",
-        ],
-        workspace.path(),
-    );
-    assert_code(&missing_body, 2);
-    let envelope = error_json(&missing_body);
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
-    assert_contains(
-        &envelope["error"]["message"],
-        "provide either inline markdown or markdown file",
-    );
-    assert_eq!(
-        envelope["error"]["hint"],
-        "Provide --markdown or --markdown-file."
-    );
-
-    let body_file = workspace.path().join("conflict.md");
-    std::fs::write(&body_file, "# Conflict\n").expect("write markdown file");
-    let conflict = awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "page",
-            "create",
-            "--domain",
-            "tenant.example",
-            "--slug",
-            "conflict",
-            "--markdown",
-            "inline",
-            "--markdown-file",
-            body_file.to_str().expect("path is utf8"),
-        ],
-        workspace.path(),
-    );
-    assert_code(&conflict, 2);
-    let envelope = error_json(&conflict);
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
-    assert_contains(
-        &envelope["error"]["message"],
-        "use either inline markdown or markdown file, not both",
-    );
-    assert_contains(&envelope["error"]["hint"], "Choose one content body source");
-
-    let missing_required = awiki_cmd(
-        &[
-            "--dry-run",
-            "site",
-            "page",
-            "get",
-            "--domain",
-            "tenant.example",
-        ],
-        workspace.path(),
-    );
-    assert_code(&missing_required, 1);
-    let envelope = error_json(&missing_required);
-    assert_eq!(envelope["error"]["code"], "internal_error");
-    assert_contains(
-        &envelope["error"]["message"],
-        "required flag(s) \"slug\" not set",
-    );
-}
-
-#[test]
-fn site_non_dry_run_requires_active_identity_before_site_rpc() {
-    let workspace = TempDir::new().expect("workspace");
-
-    let get = awiki_cmd(
-        &["site", "root", "get", "--domain", "tenant.example"],
-        workspace.path(),
-    );
-    assert_code(&get, 5);
-    let envelope = error_json(&get);
-    assert_eq!(envelope["error"]["code"], "not_found");
-    assert_contains(
-        &envelope["error"]["message"],
-        "identity not found: no active identity is configured",
-    );
-
-    let create = awiki_cmd(
-        &[
-            "site",
-            "page",
-            "create",
-            "--domain",
-            "tenant.example",
-            "--slug",
-            "deferred",
-            "--markdown",
-            "body",
-        ],
-        workspace.path(),
-    );
-    assert_code(&create, 5);
-    let envelope = error_json(&create);
-    assert_eq!(envelope["error"]["code"], "not_found");
-}
-
-#[test]
-fn site_page_list_migrates_legacy_config_json_before_identity_boundary_like_go() {
-    let workspace = TempDir::new().expect("workspace");
-    let legacy_config = workspace.path().join("config.json");
-    std::fs::write(
-        &legacy_config,
-        r#"{"schema_version":1,"services":{"service_base_url":"https://legacy-site.example","did_domain":"legacy-site.example"},"runtime":{"mode":"http"}}"#,
-    )
-    .expect("write legacy config");
-
-    let list = awiki_cmd(
-        &["site", "page", "list", "--domain", "tenant.example"],
-        workspace.path(),
-    );
-    assert_code(&list, 5);
-    let envelope = error_json(&list);
-    assert_eq!(envelope["error"]["code"], "not_found");
-    assert_contains(
-        &envelope["error"]["message"],
-        "identity not found: no active identity is configured",
-    );
-
-    assert!(
-        !legacy_config.exists(),
-        "legacy config.json should be removed after workspace upgrade"
-    );
-    let config_yaml = workspace.path().join("config.yaml");
-    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
-    assert!(
-        config_text.contains("  mode: http\n"),
-        "migrated config should keep runtime mode, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  service_base_url: https://legacy-site.example\n"),
-        "migrated config should keep service URL, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  did_domain: legacy-site.example\n"),
-        "migrated config should keep DID domain, got {config_text:?}"
-    );
-
-    let meta_path = workspace.path().join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
-    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
-    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
-    assert_eq!(
-        backup_dir.parent(),
-        Some(workspace.path().join("upgrade").join("backups").as_path())
-    );
-    assert!(backup_dir.join("config.json.bak").is_file());
-    assert!(
-        !workspace
-            .path()
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
-    );
-    assert!(
-        !workspace.path().join("data").join("awiki-cli.db").exists(),
-        "site page list should fail at identity boundary before creating SQLite state"
-    );
-    assert!(
-        !workspace
-            .path()
-            .join("runtime")
-            .join("message-daemon.sock")
-            .exists(),
-        "site page list must not create runtime socket artifacts"
-    );
-    assert!(
-        !workspace
-            .path()
-            .join("runtime")
-            .join("listener.pid")
-            .exists(),
-        "site page list must not create listener pid artifacts"
-    );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
-    let home = workspace.join("home");
-    std::fs::create_dir_all(&home).expect("create isolated HOME");
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
-        .env("HOME", &home)
         .env("AWIKI_CLI_WORKSPACE_HOME_DIR", workspace)
         .env("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")
         .env_remove("AWIKI_WORKSPACE")
@@ -486,30 +148,16 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env_remove("AWIKI_HOME")
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
-        .env_remove("AVIKI_FORMAT");
-    command.output().expect("run awiki-cli")
-}
-
-fn success_json(output: &Output) -> Value {
-    assert_success(output);
-    serde_json::from_slice(&output.stdout).expect("success JSON")
-}
-
-fn error_json(output: &Output) -> Value {
-    assert!(
-        !output.status.success(),
-        "command should fail\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stderr).expect("error JSON")
+        .env_remove("AVIKI_FORMAT")
+        .env_remove("AWIKI_CLI_TRACE_TIMING");
+    command.output().expect("run awiki-cli binary")
 }
 
 fn assert_success(output: &Output) {
     assert_eq!(
         output.status.code(),
         Some(0),
-        "stdout:\n{}\nstderr:\n{}",
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -520,28 +168,39 @@ fn assert_success(output: &Output) {
     );
 }
 
-fn assert_code(output: &Output, expected: i32) {
+fn success_json(output: &Output) -> Value {
+    let envelope: Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
+    assert_eq!(envelope["ok"], true);
+    envelope
+}
+
+fn assert_cutover_unsupported(output: &Output, command: &str) {
     assert_eq!(
         output.status.code(),
-        Some(expected),
-        "stdout:\n{}\nstderr:\n{}",
+        Some(2),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn assert_contains(value: &Value, needle: &str) {
-    let haystack = value.as_str().unwrap_or_default();
     assert!(
-        haystack.contains(needle),
-        "{haystack:?} should contain {needle:?}"
+        output.stdout.is_empty(),
+        "stdout should be empty: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
-}
-
-fn assert_non_empty_string(value: &Value, field: &str) {
-    assert!(
-        value.as_str().is_some_and(|text| !text.trim().is_empty()),
-        "{field} should be a non-empty string: {value:?}"
+    let envelope: Value =
+        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], "page-site");
+    assert_eq!(
+        envelope["error"]["details"]["required_phase"],
+        "outside current im-core cutover"
+    );
+    assert_eq!(
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
     );
 }
 
@@ -556,7 +215,7 @@ impl TempDir {
             .unwrap_or_default()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-site-test-{}-{nanos}",
+            "awiki-cli-rs2-site-cutover-test-{}-{nanos}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;
