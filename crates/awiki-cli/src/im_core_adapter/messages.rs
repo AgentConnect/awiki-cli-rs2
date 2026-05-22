@@ -215,11 +215,10 @@ fn read_direct_history_via_im_core(
     let mut source = source_with_default(&raw);
     let mut resolved_dids = message::resolved_dids_value(&raw);
     if target_is_handle {
-        let legacy_target = legacy_target_resolution(&target);
-        let dids = message::merge_handle_history_messages(
+        let dids = merge_handle_history_messages(
             resolved,
             &record.did,
-            &legacy_target,
+            &target,
             i64::from(query.limit.0),
             false,
             false,
@@ -611,10 +610,187 @@ fn peer_handle_or_did(target: &TargetResolution) -> String {
     }
 }
 
-fn legacy_target_resolution(target: &TargetResolution) -> message::TargetResolution {
-    message::TargetResolution {
-        did: target.did.clone(),
-        handle: target.handle.clone(),
+fn merge_handle_history_messages(
+    resolved: &Resolved,
+    owner_did: &str,
+    target: &TargetResolution,
+    limit: i64,
+    unread_only: bool,
+    inbox_only: bool,
+    messages: &mut Vec<Value>,
+    source: &mut String,
+    warnings: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    let dids = match message::peer_dids_for_handle_from_store(
+        resolved,
+        owner_did,
+        &target.handle,
+        &target.did,
+    ) {
+        Ok(dids) => dids,
+        Err(err) => {
+            warnings.push(format!("Failed to expand handle history: {err}"));
+            return None;
+        }
+    };
+    if dids.is_empty() {
+        return Some(dids);
+    }
+    let Ok(connection) = store::open(&resolved.paths) else {
+        return Some(dids);
+    };
+    if store::ensure_schema(&connection).is_err() {
+        return Some(dids);
+    }
+    match store::list_direct_messages_by_peer_dids(
+        &connection,
+        owner_did,
+        &dids,
+        limit,
+        unread_only,
+        inbox_only,
+    ) {
+        Ok(cached) if !cached.is_empty() => {
+            let cache_has_pending_direct_e2ee = contains_pending_direct_e2ee_wire_messages(&cached);
+            let cached = message::filter_displayable_direct_e2ee_messages(cached);
+            if cached.is_empty() {
+                return Some(dids);
+            }
+            let should_prefer_cache = !cache_has_pending_direct_e2ee
+                && should_prefer_direct_cache_messages(messages, &cached);
+            let merged = merge_direct_history_messages(messages, cached, limit);
+            if merged.len() > messages.len() || should_prefer_cache {
+                *messages = merged;
+                if !source.ends_with("+handle_history") {
+                    source.push_str("+handle_history");
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(err) => warnings.push(format!("Failed to load handle history from cache: {err}")),
+    }
+    Some(dids)
+}
+
+fn should_prefer_direct_cache_messages(remote: &[Value], cached: &[Value]) -> bool {
+    !cached.is_empty() && !contains_processed_direct_e2ee_messages(remote)
+}
+
+fn contains_processed_direct_e2ee_messages(messages: &[Value]) -> bool {
+    messages.iter().any(|message| {
+        let Some(object) = message.as_object() else {
+            return false;
+        };
+        if !bool_value(object.get("secure")) {
+            return false;
+        }
+        let state = string_value(object.get("decryption_state"));
+        state == "decrypted" || state == "undecryptable" || bool_value(object.get("secure_control"))
+    })
+}
+
+fn contains_pending_direct_e2ee_wire_messages(messages: &[Value]) -> bool {
+    messages.iter().any(|message| {
+        message
+            .get("content_type")
+            .and_then(Value::as_str)
+            .map(message::is_direct_e2ee_wire_content_type)
+            .unwrap_or(false)
+    })
+}
+
+fn merge_direct_history_messages(remote: &[Value], cached: Vec<Value>, limit: i64) -> Vec<Value> {
+    if remote.is_empty() {
+        return limit_messages(cached, limit);
+    }
+    if cached.is_empty() {
+        return remote.to_vec();
+    }
+    let mut merged = Vec::with_capacity(remote.len() + cached.len());
+    let mut seen = Vec::new();
+    for message in cached.into_iter().chain(remote.iter().cloned()) {
+        let mut id = message_identity(&message);
+        if id.is_empty() {
+            id = format!("idx:{}", merged.len());
+        }
+        if seen.iter().any(|known| known == &id) {
+            continue;
+        }
+        seen.push(id);
+        merged.push(message);
+    }
+    merged.sort_by(|left, right| {
+        comparable_server_seq(right)
+            .cmp(&comparable_server_seq(left))
+            .then_with(|| comparable_message_time(right).cmp(&comparable_message_time(left)))
+            .then_with(|| message_identity(right).cmp(&message_identity(left)))
+    });
+    limit_messages(merged, limit)
+}
+
+fn limit_messages(mut messages: Vec<Value>, limit: i64) -> Vec<Value> {
+    if limit > 0 {
+        messages.truncate(limit as usize);
+    }
+    messages
+}
+
+fn message_identity(message: &Value) -> String {
+    message
+        .as_object()
+        .and_then(|object| {
+            object
+                .get("id")
+                .or_else(|| object.get("message_id"))
+                .or_else(|| object.get("msg_id"))
+                .or_else(|| object.get("client_msg_id"))
+        })
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn comparable_server_seq(message: &Value) -> i64 {
+    i64_value(message.get("server_seq")).unwrap_or_default()
+}
+
+fn comparable_message_time(message: &Value) -> String {
+    message
+        .get("sent_at")
+        .or_else(|| message.get("created_at"))
+        .or_else(|| message.get("stored_at"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn string_value(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn i64_value(value: Option<&Value>) -> Option<i64> {
+    match value {
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .or_else(|| number.as_f64().map(|value| value as i64)),
+        Some(Value::String(value)) => value.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn bool_value(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(number)) => number.as_i64().unwrap_or_default() != 0,
+        Some(Value::String(value)) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "y" | "on"
+        ),
+        _ => false,
     }
 }
 
