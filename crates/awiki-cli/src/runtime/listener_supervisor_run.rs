@@ -54,7 +54,7 @@ use crate::anpsdk::{
     self, ApplicationPlaintext, DirectEnvelopeMetadata, FileSessionStore, RatchetHeader,
 };
 use crate::authsdk::Session;
-use crate::config::{self, Resolved};
+use crate::config::Resolved;
 use crate::identity::{self, types::StoredIdentity, Manager};
 use crate::im_core_adapter::realtime::{
     self as im_core_realtime_adapter, ListenerRunHostKind, ListenerRunnerMode,
@@ -2024,16 +2024,16 @@ fn seed_message_scopes(resolved: &Resolved, auth: &mut Session, token: &str) {
     if base_url.is_empty() {
         return;
     }
-    let did_auth_url =
-        config::join_base_url(base_url, crate::identity::wire::DID_AUTH_RPC_ENDPOINT);
-    let message_ws_url = config::join_base_url(base_url, message::MESSAGE_WS_ENDPOINT);
-    auth.remember_scope(base_url);
-    auth.remember_scope(&did_auth_url);
-    auth.remember_scope(&message_ws_url);
+    let Ok(plan) = im_core::realtime::realtime_client_construction_plan(base_url) else {
+        return;
+    };
+    for scope in &plan.remembered_scope_inputs {
+        auth.remember_scope(scope);
+    }
     if !token.trim().is_empty() {
-        auth.set_bearer(base_url, token);
-        auth.set_bearer(&did_auth_url, token);
-        auth.set_bearer(&message_ws_url, token);
+        for scope in &plan.remembered_scope_inputs {
+            auth.set_bearer(scope, token);
+        }
     }
 }
 

@@ -1,6 +1,3 @@
-use crate::config;
-use crate::identity::wire::DID_AUTH_RPC_ENDPOINT;
-use crate::message::MESSAGE_WS_ENDPOINT;
 use std::time::Duration;
 
 pub const LISTENER_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -231,17 +228,16 @@ pub fn connect_session_bearer_seedings(
     if jwt_token.trim().is_empty() {
         return Vec::new();
     }
-    [
-        service_base_url.to_string(),
-        config::join_base_url(service_base_url, DID_AUTH_RPC_ENDPOINT),
-        config::join_base_url(service_base_url, MESSAGE_WS_ENDPOINT),
-    ]
-    .into_iter()
-    .map(|scope| ConnectSessionBearerSeed {
-        scope,
-        token: jwt_token.to_string(),
-    })
-    .collect()
+    let Ok(plan) = im_core::realtime::realtime_client_construction_plan(service_base_url) else {
+        return Vec::new();
+    };
+    plan.remembered_scope_inputs
+        .into_iter()
+        .map(|scope| ConnectSessionBearerSeed {
+            scope,
+            token: jwt_token.to_string(),
+        })
+        .collect()
 }
 
 fn user_registration_error(record: &ConnectSessionRecord) -> Option<String> {
