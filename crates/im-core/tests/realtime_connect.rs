@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use im_core::compat::realtime::{
+use im_core::prelude::*;
+use im_core::realtime::{
     connect_realtime_with_transport, realtime_client_construction_plan, realtime_client_endpoints,
     simulate_realtime_connect, RealtimeAuthProvider, RealtimeConnectAction, RealtimeDialOutcome,
     RealtimeRefreshOutcome, RealtimeTransport,
 };
-use im_core::prelude::*;
 
 #[test]
 fn realtime_connect_endpoints_match_legacy_listener_derivation() {

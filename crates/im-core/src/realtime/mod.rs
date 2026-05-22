@@ -37,3 +37,10 @@ pub use crate::internal::realtime::session_loop::{
     SECURE_PREKEY_RETRY_DELAY,
 };
 pub use crate::internal::realtime::shutdown::{shutdown_decision, RealtimeShutdownDecision};
+pub use crate::internal::realtime::transport::{
+    bearer_authorization_header, connect_realtime_with_transport, format_dial_error_message,
+    realtime_client_construction_plan, realtime_client_endpoints, simulate_realtime_connect,
+    validate_refresh_bearer_preconditions, RealtimeAuthProvider, RealtimeClientConstructionPlan,
+    RealtimeClientEndpoints, RealtimeConnectAction, RealtimeConnectSimulation, RealtimeDialOutcome,
+    RealtimeRefreshOutcome, RealtimeTransport,
+};

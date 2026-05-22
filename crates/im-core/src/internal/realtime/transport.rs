@@ -233,7 +233,8 @@ pub(crate) fn default_connect(
 ) -> crate::ImResult<crate::realtime::RealtimeHandle> {
     let service_base_url = client.core_inner().sdk_config().service_base_url.as_str();
     let endpoints = realtime_client_endpoints(service_base_url)?;
-    let current_jwt = read_auth_token(&client.runtime().auth_state_path)?.unwrap_or_default();
+    let current_jwt =
+        read_auth_token(&client.runtime().auth_state_path)?.ok_or(crate::ImError::AuthRequired)?;
     let mut transport = UnavailableRealtimeTransport;
     let mut auth = FileRealtimeAuthProvider::new(client);
     connect_realtime_with_transport(&endpoints, &current_jwt, &mut transport, &mut auth)
