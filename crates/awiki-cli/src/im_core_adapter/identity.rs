@@ -71,9 +71,10 @@ pub struct SetProfileCommandRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct BindContactBridgeRequest {
+pub struct BindContactCommandRequest {
     pub sdk: ContactBindingRequest,
-    pub legacy: identity::BindParams,
+    pub verification_timeout: i64,
+    pub poll_interval_seconds: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -429,30 +430,22 @@ pub fn bind_contact_request(command: &ParsedCommand) -> Result<ContactBindingReq
     })
 }
 
-pub fn bind_contact_bridge_request(
+pub fn bind_contact_command_request(
     command: &ParsedCommand,
-) -> Result<BindContactBridgeRequest, ExitError> {
+) -> Result<BindContactCommandRequest, ExitError> {
     let sdk = bind_contact_request(command)?;
-    let legacy = identity::BindParams {
-        phone: string_flag(command, "phone"),
-        email: string_flag(command, "email"),
-        otp: string_flag(command, "otp"),
-        wait: command
-            .flags
-            .get("wait")
-            .is_some_and(|value| value == "true"),
+    Ok(BindContactCommandRequest {
+        sdk,
         verification_timeout: 300,
         poll_interval_seconds: 5.0,
-    };
-    Ok(BindContactBridgeRequest { sdk, legacy })
+    })
 }
 
 pub fn bind_contact_plan_via_im_core(
     command: &ParsedCommand,
 ) -> Result<identity::CommandResult, ExitError> {
-    let bridge = bind_contact_bridge_request(command)?;
-    let _sdk_request = bridge.sdk;
-    Ok(identity::bind_plan(&bridge.legacy))
+    let request = bind_contact_command_request(command)?;
+    Ok(bind_contact_plan_command_result(&request.sdk))
 }
 
 pub fn bind_contact_via_im_core(
@@ -461,22 +454,23 @@ pub fn bind_contact_via_im_core(
     identity_flag: &str,
     command: &ParsedCommand,
 ) -> Result<identity::CommandResult, ExitError> {
-    let bridge = bind_contact_bridge_request(command)?;
+    let request = bind_contact_command_request(command)?;
     let selector = cli_identity_selector(identity_flag);
     let client = super::build_im_client(resolved, manager, selector)?;
     let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
         .map_err(crate::app::identity_exit)?;
     let identity = identity::store::identity_summary_from_record(&record);
-    let result =
-        if bridge.legacy.wait && matches!(bridge.sdk.method, ContactBindingMethod::Email { .. }) {
-            bind_email_wait_via_im_core(&client, &identity, bridge)?
-        } else {
-            let result = client
-                .identity()
-                .bind_contact(bridge.sdk)
-                .map_err(|err| super::map_im_error(err, "id bind"))?;
-            bind_command_result(&identity, result).map_err(crate::app::identity_exit)?
-        };
+    let result = if request.sdk.wait_for_email_verification
+        && matches!(request.sdk.method, ContactBindingMethod::Email { .. })
+    {
+        bind_email_wait_via_im_core(&client, &identity, request)?
+    } else {
+        let result = client
+            .identity()
+            .bind_contact(request.sdk)
+            .map_err(|err| super::map_im_error(err, "id bind"))?;
+        bind_command_result(&identity, result).map_err(crate::app::identity_exit)?
+    };
     Ok(result)
 }
 
@@ -818,15 +812,15 @@ fn string_slice_from_data(data: &Value, key: &str) -> Vec<String> {
 fn bind_email_wait_via_im_core(
     client: &im_core::ImClient,
     identity: &identity::IdentitySummary,
-    bridge: BindContactBridgeRequest,
+    request: BindContactCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let email = match &bridge.sdk.method {
+    let email = match &request.sdk.method {
         ContactBindingMethod::Email { email } => email.clone(),
-        _ => unreachable!("wait bridge is only used for email"),
+        _ => unreachable!("wait request is only used for email"),
     };
     let mut result = client
         .identity()
-        .bind_contact(bridge.sdk.clone())
+        .bind_contact(request.sdk.clone())
         .map_err(|err| super::map_im_error(err, "id bind"))?;
     if result.state == ContactBindingState::Completed {
         return bind_command_result(identity, result).map_err(crate::app::identity_exit);
@@ -838,8 +832,8 @@ fn bind_email_wait_via_im_core(
     let wait_result = wait_for_email_verification_via_im_core(
         client,
         &email,
-        bridge.legacy.verification_timeout,
-        bridge.legacy.poll_interval_seconds,
+        request.verification_timeout,
+        request.poll_interval_seconds,
     )?;
     result = wait_result;
     bind_command_result(identity, result).map_err(crate::app::identity_exit)
@@ -1421,6 +1415,54 @@ fn register_plan_action_and_calls(
             ],
         ),
         _ => ("register_handle", vec!["did-auth.register"]),
+    }
+}
+
+fn bind_contact_plan_command_result(request: &ContactBindingRequest) -> identity::CommandResult {
+    let (action, phone, email, remote_calls) = match &request.method {
+        ContactBindingMethod::Phone { phone, otp }
+            if otp.as_deref().unwrap_or_default().is_empty() =>
+        {
+            (
+                "send_bind_phone_otp",
+                phone.as_str(),
+                "",
+                vec!["POST /user-service/auth/phone-bind-send"],
+            )
+        }
+        ContactBindingMethod::Phone { phone, .. } => (
+            "bind_phone",
+            phone.as_str(),
+            "",
+            vec!["POST /user-service/auth/phone-bind-verify"],
+        ),
+        ContactBindingMethod::Email { email } if !request.wait_for_email_verification => (
+            "send_bind_email",
+            "",
+            email.as_str(),
+            vec!["POST /user-service/auth/email-send"],
+        ),
+        ContactBindingMethod::Email { email } => (
+            "bind_email",
+            "",
+            email.as_str(),
+            vec![
+                "GET /user-service/auth/email-status",
+                "POST /user-service/auth/email-send",
+            ],
+        ),
+    };
+    identity::CommandResult {
+        data: json!({
+            "plan": {
+                "action": action,
+                "phone": phone,
+                "email": email,
+                "remote_calls": remote_calls,
+            }
+        }),
+        summary: "Dry run: contact binding flow planned".to_string(),
+        warnings: Vec::new(),
     }
 }
 
