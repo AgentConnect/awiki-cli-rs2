@@ -193,13 +193,9 @@ fn read_direct_history_via_im_core(
         .map_err(im_error_to_message_error)?;
     let mut raw = read_page_to_cli_raw(&page, source_default());
     if target_is_handle {
-        let dids = message::peer_dids_for_handle_from_store(
-            resolved,
-            &record.did,
-            &target.handle,
-            &target.did,
-        )
-        .unwrap_or_else(|_| vec![target.did.clone()]);
+        let dids =
+            peer_dids_for_handle_from_store(resolved, &record.did, &target.handle, &target.did)
+                .unwrap_or_else(|_| vec![target.did.clone()]);
         raw["resolved_dids"] = json!(dids);
     }
     let mut messages = message::persist_history_messages(
@@ -620,18 +616,14 @@ fn merge_handle_history_messages(
     source: &mut String,
     warnings: &mut Vec<String>,
 ) -> Option<Vec<String>> {
-    let dids = match message::peer_dids_for_handle_from_store(
-        resolved,
-        owner_did,
-        &target.handle,
-        &target.did,
-    ) {
-        Ok(dids) => dids,
-        Err(err) => {
-            warnings.push(format!("Failed to expand handle history: {err}"));
-            return None;
-        }
-    };
+    let dids =
+        match peer_dids_for_handle_from_store(resolved, owner_did, &target.handle, &target.did) {
+            Ok(dids) => dids,
+            Err(err) => {
+                warnings.push(format!("Failed to expand handle history: {err}"));
+                return None;
+            }
+        };
     if dids.is_empty() {
         return Some(dids);
     }
@@ -669,6 +661,58 @@ fn merge_handle_history_messages(
         Err(err) => warnings.push(format!("Failed to load handle history from cache: {err}")),
     }
     Some(dids)
+}
+
+fn peer_dids_for_handle_from_store(
+    resolved: &Resolved,
+    owner_did: &str,
+    handle: &str,
+    current_did: &str,
+) -> Result<Vec<String>, MessageAdapterError> {
+    let handle = normalize_handle_value(handle);
+    if handle.is_empty() {
+        return Ok(merge_peer_dids(current_did, &[]));
+    }
+    let connection = store::open(&resolved.paths)
+        .map_err(|err| MessageAdapterError::Internal(format!("open local message store: {err}")))?;
+    store::ensure_schema(&connection).map_err(|err| {
+        MessageAdapterError::Internal(format!("ensure local message store schema: {err}"))
+    })?;
+    let dids = store::list_dids_by_handle(&connection, owner_did, &handle).map_err(|err| {
+        MessageAdapterError::Internal(format!("list contact DIDs by handle: {err}"))
+    })?;
+    Ok(merge_peer_dids(current_did, &dids))
+}
+
+fn normalize_handle_value(value: &str) -> String {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return String::new();
+    }
+    let value = value.trim_start_matches("wba://");
+    match value.find('.') {
+        Some(index) if index > 0 => value[..index].to_string(),
+        _ => value.to_string(),
+    }
+}
+
+fn merge_peer_dids(current: &str, historical: &[String]) -> Vec<String> {
+    let mut seen = Vec::with_capacity(historical.len() + 1);
+    let mut result = Vec::with_capacity(historical.len() + 1);
+    let current = current.trim();
+    if !current.is_empty() {
+        seen.push(current.to_string());
+        result.push(current.to_string());
+    }
+    for did in historical {
+        let did = did.trim();
+        if did.is_empty() || seen.iter().any(|known| known == did) {
+            continue;
+        }
+        seen.push(did.to_string());
+        result.push(did.to_string());
+    }
+    result
 }
 
 fn apply_inbox_filters(

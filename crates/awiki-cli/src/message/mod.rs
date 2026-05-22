@@ -46,7 +46,6 @@ pub use attachment::{
 pub(crate) use attachment::{find_attachment_selection_with_paging, load_attachment_file};
 pub use attachment_service::download_attachment;
 pub use client::Client;
-pub(crate) use contact_sync::peer_dids_for_handle_from_store;
 pub use group_create::create_group;
 pub(crate) use group_e2ee_decrypt::maybe_decrypt_group_messages;
 pub use group_e2ee_provider::{default_mls_data_dir, ANP_MLS_BINARY_ENV};
