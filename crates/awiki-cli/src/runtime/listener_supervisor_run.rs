@@ -56,6 +56,9 @@ use crate::anpsdk::{
 use crate::authsdk::Session;
 use crate::config::{self, Resolved};
 use crate::identity::{self, types::StoredIdentity, Manager};
+use crate::im_core_adapter::realtime::{
+    self as im_core_realtime_adapter, ListenerRunHostKind, ListenerRunnerMode,
+};
 use crate::message;
 use crate::runtime;
 use crate::store;
@@ -78,15 +81,19 @@ const WATCH_IDENTITIES_INTERVAL: Duration = Duration::from_secs(3);
 const SESSION_NOTIFICATION_READ_POLL: Duration = Duration::from_millis(500);
 
 pub fn run_foreground(resolved: Resolved) -> anyhow::Result<()> {
-    run_listener(resolved)
+    run_listener(resolved, ListenerRunHostKind::Foreground)
 }
 
 pub fn run_service(resolved: Resolved) -> anyhow::Result<()> {
-    run_listener(resolved)
+    run_listener(resolved, ListenerRunHostKind::Service)
 }
 
-fn run_listener(resolved: Resolved) -> anyhow::Result<()> {
-    let mut supervisor = ListenerSupervisor::new(resolved)?;
+fn run_listener(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result<()> {
+    let runner = im_core_realtime_adapter::listener_runner_selection(
+        crate::im_core_adapter::use_im_core_mvp(),
+        host,
+    );
+    let mut supervisor = ListenerSupervisor::new(resolved, runner.mode, host)?;
     let result = supervisor.run();
     supervisor.cleanup_runtime_artifacts();
     result
@@ -101,10 +108,16 @@ struct ListenerSupervisor {
     host_notify: Arc<HostNotifySinkImpl>,
     local_notifications: Arc<Mutex<LocalNotificationQueue>>,
     session_rpcs: Arc<Mutex<SessionRpcRegistry>>,
+    runner_mode: ListenerRunnerMode,
+    host: ListenerRunHostKind,
 }
 
 impl ListenerSupervisor {
-    fn new(resolved: Resolved) -> anyhow::Result<Self> {
+    fn new(
+        resolved: Resolved,
+        runner_mode: ListenerRunnerMode,
+        host: ListenerRunHostKind,
+    ) -> anyhow::Result<Self> {
         let db = store::open(&resolved.paths)?;
         store::ensure_schema(&db)?;
         drop(db);
@@ -139,6 +152,8 @@ impl ListenerSupervisor {
             host_notify: Arc::new(host_notify),
             local_notifications: Arc::new(Mutex::new(LocalNotificationQueue::default())),
             session_rpcs: Arc::new(Mutex::new(SessionRpcRegistry::default())),
+            runner_mode,
+            host,
         })
     }
 
@@ -146,6 +161,14 @@ impl ListenerSupervisor {
         install_foreground_shutdown_handler(self.shutdown.clone())?;
         if runtime::resolve(&self.resolved).mode != bridge::MODE_WEBSOCKET {
             anyhow::bail!("runtime mode must be websocket before starting the listener");
+        }
+        if self.runner_mode == ListenerRunnerMode::ImCore
+            && !im_core_realtime_adapter::runtime_mode_supports_sdk_runner(&self.resolved)
+        {
+            anyhow::bail!(
+                "{} requires websocket runtime mode for the SDK runner",
+                im_core_realtime_adapter::runner_host_label(self.host)
+            );
         }
         {
             let status = self.lock_status();
@@ -177,6 +200,7 @@ impl ListenerSupervisor {
         let local_notifications = self.local_notifications.clone();
         let session_rpcs = self.session_rpcs.clone();
         let shutdown = self.shutdown.clone();
+        let runner_mode = self.runner_mode;
         let listener_for_loop = listener;
         thread::spawn(move || {
             while !shutdown.load(Ordering::SeqCst) {
@@ -190,6 +214,7 @@ impl ListenerSupervisor {
                             local_notifications: local_notifications.clone(),
                             session_rpcs: session_rpcs.clone(),
                             shutdown: shutdown.clone(),
+                            runner_mode,
                         };
                         thread::spawn(move || handle_bridge_stream(stream, runtime));
                     }
@@ -222,6 +247,7 @@ impl ListenerSupervisor {
         let host_notify = self.host_notify.clone();
         let local_notifications = self.local_notifications.clone();
         let session_rpcs = self.session_rpcs.clone();
+        let runner_mode = self.runner_mode;
         thread::spawn(move || {
             while !shutdown.load(Ordering::SeqCst) {
                 if let Ok(identities) = manager.list() {
@@ -247,6 +273,7 @@ impl ListenerSupervisor {
                                 summary.identity_name,
                                 summary.did,
                                 None,
+                                runner_mode,
                             );
                         }
                     }
@@ -279,6 +306,7 @@ impl ListenerSupervisor {
             identity_name.to_string(),
             did.to_string(),
             Some(initial_signal),
+            self.runner_mode,
         );
         match known_session_startup_error(
             identity_name,
@@ -334,6 +362,7 @@ struct BridgeRuntime {
     local_notifications: Arc<Mutex<LocalNotificationQueue>>,
     session_rpcs: Arc<Mutex<SessionRpcRegistry>>,
     shutdown: Arc<AtomicBool>,
+    runner_mode: ListenerRunnerMode,
 }
 
 impl ListenerBridgeRuntime for BridgeRuntime {
@@ -368,6 +397,7 @@ impl ListenerBridgeRuntime for BridgeRuntime {
                 identity_name.clone(),
                 did,
                 Some(initial_signal),
+                self.runner_mode,
             );
             match wait_for_bridge_session_bootstrap(initial_waiter) {
                 BridgeSessionBootstrapResult::Connected => {}
@@ -450,6 +480,7 @@ fn spawn_session_loop(
     identity_name: String,
     _did: String,
     initial_signal: Option<BridgeSessionBootstrapSignal>,
+    runner_mode: ListenerRunnerMode,
 ) {
     {
         let mut guard = status.lock().expect("listener status mutex poisoned");
@@ -485,47 +516,48 @@ fn spawn_session_loop(
                         signal.signal_success();
                     }
                     delay = SESSION_RECONNECT_BASE_DELAY;
-                    flush_local_notifications_for_session(
+                    start_connected_session_tasks(
                         &resolved,
                         &manager,
                         &status,
                         &host_notify,
                         &local_notifications,
                         &session_rpcs,
-                        &record,
-                    );
-                    spawn_secure_prekey_retry(
-                        resolved.clone(),
-                        manager.clone(),
-                        status.clone(),
-                        shutdown.clone(),
-                        record.clone(),
-                    );
-                    spawn_secure_backlog_poller(
-                        resolved.clone(),
-                        manager.clone(),
-                        status.clone(),
-                        host_notify.clone(),
-                        local_notifications.clone(),
-                        session_rpcs.clone(),
-                        shutdown.clone(),
-                        record.identity_name.clone(),
-                    );
-                    let error = consume_notifications(
-                        &resolved,
-                        &manager,
-                        &status,
-                        &host_notify,
-                        &local_notifications,
-                        &record,
-                        &mut transport,
-                        &rpc_rx,
-                        &session_rpcs,
-                        &rpc_active,
                         &shutdown,
-                    )
-                    .err()
-                    .map(|err| err.to_string());
+                        &record,
+                    );
+                    let error = match runner_mode {
+                        ListenerRunnerMode::Legacy => consume_notifications(
+                            &resolved,
+                            &manager,
+                            &status,
+                            &host_notify,
+                            &local_notifications,
+                            &record,
+                            &mut transport,
+                            &rpc_rx,
+                            &session_rpcs,
+                            &rpc_active,
+                            &shutdown,
+                        )
+                        .err()
+                        .map(|err| err.to_string()),
+                        ListenerRunnerMode::ImCore => consume_notifications_with_im_core_runner(
+                            &resolved,
+                            &manager,
+                            &status,
+                            &host_notify,
+                            &local_notifications,
+                            &record,
+                            &mut transport,
+                            &rpc_rx,
+                            &session_rpcs,
+                            &rpc_active,
+                            &shutdown,
+                        )
+                        .err()
+                        .map(|err| err.to_string()),
+                    };
                     close_session_rpc_active(&rpc_active);
                     remove_session_rpc_sender(&session_rpcs, &identity_name);
                     let _ = transport.close();
@@ -591,6 +623,44 @@ fn connect_session(
     let mut updated = record;
     updated.jwt_token = auth.current_jwt().to_string();
     Ok((updated, transport))
+}
+
+fn start_connected_session_tasks(
+    resolved: &Arc<Resolved>,
+    manager: &Manager,
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
+    shutdown: &Arc<AtomicBool>,
+    record: &StoredIdentity,
+) {
+    flush_local_notifications_for_session(
+        resolved,
+        manager,
+        status,
+        host_notify,
+        local_notifications,
+        session_rpcs,
+        record,
+    );
+    spawn_secure_prekey_retry(
+        resolved.clone(),
+        manager.clone(),
+        status.clone(),
+        shutdown.clone(),
+        record.clone(),
+    );
+    spawn_secure_backlog_poller(
+        resolved.clone(),
+        manager.clone(),
+        status.clone(),
+        host_notify.clone(),
+        local_notifications.clone(),
+        session_rpcs.clone(),
+        shutdown.clone(),
+        record.identity_name.clone(),
+    );
 }
 
 fn connect_ws_with_refresh(
@@ -1117,6 +1187,188 @@ fn consume_notifications(
     drop(notification_tx);
     let _ = handler.join();
     loop_result
+}
+
+fn consume_notifications_with_im_core_runner(
+    resolved: &Resolved,
+    manager: &Manager,
+    status: &Arc<Mutex<Status>>,
+    host_notify: &Arc<HostNotifySinkImpl>,
+    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
+    record: &StoredIdentity,
+    transport: &mut WsTransport,
+    rpc_rx: &mpsc::Receiver<SessionRpcRequest>,
+    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
+    rpc_active: &Arc<Mutex<bool>>,
+    shutdown: &Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let (notification_tx, notification_rx) = mpsc::channel::<SessionNotificationTask>();
+    let handler_resolved = resolved.clone();
+    let handler_manager = manager.clone();
+    let handler_status = status.clone();
+    let handler_host_notify = host_notify.clone();
+    let handler_local_notifications = local_notifications.clone();
+    let handler_session_rpcs = session_rpcs.clone();
+    let handler_record = record.clone();
+    let handler = thread::spawn(move || {
+        while let Ok(task) = notification_rx.recv() {
+            handle_session_notification(
+                &handler_resolved,
+                &handler_manager,
+                &handler_status,
+                &handler_host_notify,
+                &handler_local_notifications,
+                &handler_session_rpcs,
+                &handler_record,
+                task.notification,
+            );
+        }
+    });
+    let sdk_shutdown =
+        im_core_realtime_adapter::sdk_shutdown_signal_from_listener_shutdown(shutdown);
+    let mut runner_transport = CliRealtimeRunnerTransport {
+        transport,
+        rpc_rx,
+        shutdown: shutdown.clone(),
+        sdk_shutdown: sdk_shutdown.clone(),
+        notification_tx,
+        next_ping: Instant::now() + SESSION_PING_INTERVAL,
+        next_id: 0,
+        dispatch: super::listener_wsclient::ListenerWsPendingDispatch::default(),
+        pending_rpc_responses: BTreeMap::new(),
+    };
+    let mut event_sink = im_core::compat::realtime::DiscardRealtimeRunnerEventSink;
+    let control = im_core::prelude::RealtimeControl::default();
+    let result = im_core::compat::realtime::run_realtime_transport_with_event_sink_until_shutdown(
+        im_core_realtime_adapter::listener_realtime_options(),
+        sdk_shutdown.clone(),
+        control,
+        &mut runner_transport,
+        &mut event_sink,
+    )
+    .map_err(im_core_realtime_adapter::map_sdk_runner_error);
+    im_core_realtime_adapter::mark_sdk_shutdown_requested(&sdk_shutdown);
+    let close_error = match &result {
+        Ok(outcome) => realtime_exit_error_text(&outcome.exit),
+        Err(err) => err.to_string(),
+    };
+    close_session_rpc_active(rpc_active);
+    runner_transport.close_pending(&close_error);
+    drop(runner_transport);
+    let _ = handler.join();
+    result.map(|_| ())
+}
+
+struct CliRealtimeRunnerTransport<'a> {
+    transport: &'a mut WsTransport,
+    rpc_rx: &'a mpsc::Receiver<SessionRpcRequest>,
+    shutdown: Arc<AtomicBool>,
+    sdk_shutdown: im_core::prelude::ShutdownSignal,
+    notification_tx: mpsc::Sender<SessionNotificationTask>,
+    next_ping: Instant,
+    next_id: i64,
+    dispatch: super::listener_wsclient::ListenerWsPendingDispatch,
+    pending_rpc_responses: BTreeMap<String, PendingSessionRpc>,
+}
+
+impl CliRealtimeRunnerTransport<'_> {
+    fn close_pending(&mut self, error: &str) {
+        fail_session_rpc_pending(error, &mut self.dispatch, &mut self.pending_rpc_responses);
+        fail_session_rpc_queued(error, self.rpc_rx);
+    }
+}
+
+impl im_core::compat::realtime::RealtimeRunnerTransport for CliRealtimeRunnerTransport<'_> {
+    fn connect(&mut self) -> im_core::ImResult<()> {
+        Ok(())
+    }
+
+    fn next_notification(&mut self) -> im_core::ImResult<Option<Value>> {
+        if self.shutdown.load(Ordering::SeqCst) {
+            self.sdk_shutdown.request();
+            return Ok(None);
+        }
+        drain_session_rpc_requests(
+            self.transport,
+            self.rpc_rx,
+            &mut self.next_id,
+            &mut self.dispatch,
+            &mut self.pending_rpc_responses,
+        )
+        .map_err(|err| im_core::ImError::TransportUnavailable {
+            detail: err.to_string(),
+        })?;
+        expire_session_rpc_pending(
+            Instant::now(),
+            &mut self.dispatch,
+            &mut self.pending_rpc_responses,
+        );
+        if Instant::now() >= self.next_ping {
+            if let Err(err) = self.transport.ping_with_timeout_until(
+                super::listener_notification_consume::SESSION_PING_TIMEOUT,
+                || self.shutdown.load(Ordering::SeqCst),
+            ) {
+                if self.shutdown.load(Ordering::SeqCst) {
+                    self.sdk_shutdown.request();
+                    return Ok(None);
+                }
+                return Err(im_core::ImError::TransportUnavailable {
+                    detail: format!("websocket ping failed: {err}"),
+                });
+            }
+            self.next_ping = Instant::now() + SESSION_PING_INTERVAL;
+        }
+        let notification = self
+            .transport
+            .read_json_message_timeout(SESSION_NOTIFICATION_READ_POLL)
+            .map_err(|err| im_core::ImError::TransportUnavailable {
+                detail: err.to_string(),
+            })?;
+        let Some(notification) = notification else {
+            if self.shutdown.load(Ordering::SeqCst) {
+                self.sdk_shutdown.request();
+                return Ok(None);
+            }
+            return Ok(Some(Value::Null));
+        };
+        if notification.get("id").is_some() {
+            route_session_rpc_response(
+                notification,
+                &mut self.dispatch,
+                &mut self.pending_rpc_responses,
+            );
+            return Ok(Some(Value::Null));
+        }
+        self.notification_tx
+            .send(SessionNotificationTask {
+                notification: notification.clone(),
+            })
+            .map_err(|_| im_core::ImError::TransportUnavailable {
+                detail: "websocket notification handler is closed".to_string(),
+            })?;
+        Ok(Some(Value::Object(notification)))
+    }
+}
+
+fn realtime_exit_error_text(exit: &im_core::prelude::RealtimeExit) -> String {
+    if let Some(warning) = exit.warnings.last() {
+        return warning.clone();
+    }
+    match exit.reason {
+        im_core::prelude::RealtimeExitReason::ShutdownRequested => "context canceled".to_string(),
+        im_core::prelude::RealtimeExitReason::ConnectionClosed => {
+            "websocket notification loop closed".to_string()
+        }
+        im_core::prelude::RealtimeExitReason::AuthFailed => {
+            "listener authentication is required".to_string()
+        }
+        im_core::prelude::RealtimeExitReason::TransportUnavailable => {
+            "runtime listener websocket transport unavailable".to_string()
+        }
+        im_core::prelude::RealtimeExitReason::FatalError => {
+            "runtime listener SDK runner failed".to_string()
+        }
+    }
 }
 
 fn handle_session_notification(

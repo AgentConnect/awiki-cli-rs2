@@ -8,6 +8,7 @@ pub mod identity;
 pub mod identity_replace_did_plan;
 pub mod messages;
 pub mod paths;
+pub mod realtime;
 pub mod render;
 
 pub use auth::auth_scope_from_cli;

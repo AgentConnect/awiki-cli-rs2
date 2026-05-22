@@ -46,5 +46,7 @@ pub use crate::internal::realtime::transport::{
 };
 #[doc(hidden)]
 pub use crate::realtime::runner::{
-    run_realtime_transport_until_shutdown, RealtimeRunnerOutcome, RealtimeRunnerTransport,
+    run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
+    DiscardRealtimeRunnerEventSink, RealtimeRunnerEventSink, RealtimeRunnerOutcome,
+    RealtimeRunnerTransport,
 };

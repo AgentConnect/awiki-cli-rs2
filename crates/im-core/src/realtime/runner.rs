@@ -8,6 +8,19 @@ pub trait RealtimeRunnerTransport {
     fn next_notification(&mut self) -> crate::ImResult<Option<Value>>;
 }
 
+pub trait RealtimeRunnerEventSink {
+    fn emit(&mut self, event: super::ImEvent) -> crate::ImResult<()>;
+}
+
+#[derive(Debug, Default)]
+pub struct DiscardRealtimeRunnerEventSink;
+
+impl RealtimeRunnerEventSink for DiscardRealtimeRunnerEventSink {
+    fn emit(&mut self, _event: super::ImEvent) -> crate::ImResult<()> {
+        Ok(())
+    }
+}
+
 pub struct RealtimeRunnerOutcome {
     pub exit: super::RealtimeExit,
     pub handle: super::RealtimeHandle,
@@ -23,6 +36,38 @@ where
     T: RealtimeRunnerTransport,
 {
     let (sender, receiver) = mpsc::sync_channel(options.event_buffer);
+    let mut events = ChannelRunnerEvents { sender };
+    run_realtime_transport_loop(options, shutdown, control, transport, receiver, &mut events)
+}
+
+pub fn run_realtime_transport_with_event_sink_until_shutdown<T, S>(
+    options: super::RealtimeOptions,
+    shutdown: super::ShutdownSignal,
+    control: super::RealtimeControl,
+    transport: &mut T,
+    event_sink: &mut S,
+) -> crate::ImResult<RealtimeRunnerOutcome>
+where
+    T: RealtimeRunnerTransport,
+    S: RealtimeRunnerEventSink,
+{
+    let (_sender, receiver) = mpsc::sync_channel(options.event_buffer);
+    let mut events = SinkRunnerEvents { sink: event_sink };
+    run_realtime_transport_loop(options, shutdown, control, transport, receiver, &mut events)
+}
+
+fn run_realtime_transport_loop<T, E>(
+    options: super::RealtimeOptions,
+    shutdown: super::ShutdownSignal,
+    control: super::RealtimeControl,
+    transport: &mut T,
+    receiver: mpsc::Receiver<super::ImEvent>,
+    events: &mut E,
+) -> crate::ImResult<RealtimeRunnerOutcome>
+where
+    T: RealtimeRunnerTransport,
+    E: RunnerEvents,
+{
     let mut warnings = Vec::new();
     let mut reconnect_attempts = 0;
     let mut first_attempt = true;
@@ -30,7 +75,7 @@ where
     loop {
         if shutdown.is_requested() || control.is_closed() {
             emit_state(
-                &sender,
+                events,
                 super::RealtimeConnectionState::Closed,
                 Some("shutdown requested".to_string()),
             );
@@ -43,7 +88,7 @@ where
             ));
         }
         emit_state(
-            &sender,
+            events,
             if first_attempt {
                 super::RealtimeConnectionState::Connecting
             } else {
@@ -58,7 +103,7 @@ where
                 warnings.push(error.to_string());
                 if !should_retry_connect(&options.reconnect, reconnect_attempts) {
                     let reason = exit_reason_for_connect_error(&error);
-                    emit_state(&sender, super::RealtimeConnectionState::Disconnected, None);
+                    emit_state(events, super::RealtimeConnectionState::Disconnected, None);
                     return Ok(outcome(
                         receiver,
                         control,
@@ -72,11 +117,11 @@ where
         }
     }
 
-    emit_state(&sender, super::RealtimeConnectionState::Connected, None);
+    emit_state(events, super::RealtimeConnectionState::Connected, None);
     loop {
         if shutdown.is_requested() || control.is_closed() {
             emit_state(
-                &sender,
+                events,
                 super::RealtimeConnectionState::Closed,
                 Some("shutdown requested".to_string()),
             );
@@ -92,8 +137,8 @@ where
             Some(notification) => {
                 let projection =
                     crate::internal::realtime::projection::project_notification(&notification);
-                if sender.try_send(projection.event).is_err() {
-                    warnings.push("realtime event buffer is full or closed".to_string());
+                if let Err(warning) = events.emit(projection.event) {
+                    warnings.push(warning);
                     return Ok(outcome(
                         receiver,
                         control,
@@ -104,16 +149,54 @@ where
                 }
             }
             None => {
-                emit_state(&sender, super::RealtimeConnectionState::Closed, None);
+                let shutdown_requested = shutdown.is_requested() || control.is_closed();
+                emit_state(
+                    events,
+                    super::RealtimeConnectionState::Closed,
+                    shutdown_requested.then(|| "shutdown requested".to_string()),
+                );
                 return Ok(outcome(
                     receiver,
                     control,
-                    super::RealtimeExitReason::ConnectionClosed,
+                    if shutdown_requested {
+                        super::RealtimeExitReason::ShutdownRequested
+                    } else {
+                        super::RealtimeExitReason::ConnectionClosed
+                    },
                     reconnect_attempts,
                     warnings,
                 ));
             }
         }
+    }
+}
+
+trait RunnerEvents {
+    fn emit(&mut self, event: super::ImEvent) -> Result<(), String>;
+}
+
+struct ChannelRunnerEvents {
+    sender: mpsc::SyncSender<super::ImEvent>,
+}
+
+impl RunnerEvents for ChannelRunnerEvents {
+    fn emit(&mut self, event: super::ImEvent) -> Result<(), String> {
+        self.sender
+            .try_send(event)
+            .map_err(|_| "realtime event buffer is full or closed".to_string())
+    }
+}
+
+struct SinkRunnerEvents<'a, S> {
+    sink: &'a mut S,
+}
+
+impl<S> RunnerEvents for SinkRunnerEvents<'_, S>
+where
+    S: RealtimeRunnerEventSink,
+{
+    fn emit(&mut self, event: super::ImEvent) -> Result<(), String> {
+        self.sink.emit(event).map_err(|err| err.to_string())
     }
 }
 
@@ -160,11 +243,11 @@ fn outcome(
 }
 
 fn emit_state(
-    sender: &mpsc::SyncSender<super::ImEvent>,
+    events: &mut impl RunnerEvents,
     state: super::RealtimeConnectionState,
     reason: Option<String>,
 ) {
-    let _ = sender.try_send(super::ImEvent::ConnectionStateChanged(
+    let _ = events.emit(super::ImEvent::ConnectionStateChanged(
         super::ConnectionStateChanged { state, reason },
     ));
 }

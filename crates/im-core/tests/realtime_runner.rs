@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use im_core::compat::realtime::{run_realtime_transport_until_shutdown, RealtimeRunnerTransport};
+use im_core::compat::realtime::{
+    run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
+    RealtimeRunnerEventSink, RealtimeRunnerTransport,
+};
 use im_core::prelude::*;
 use serde_json::{json, Value};
 
@@ -207,6 +210,58 @@ fn realtime_runner_external_shutdown_exits_before_connect() {
 }
 
 #[test]
+fn realtime_runner_can_emit_through_migration_event_sink() {
+    let mut transport = FakeRunnerTransport {
+        connect_attempts: 0,
+        connect_results: VecDeque::from([Ok(())]),
+        notifications: VecDeque::from([
+            Ok(Some(json!({
+                "method": "local.notification",
+                "params": {"id": "local-1", "title": "title"}
+            }))),
+            Ok(None),
+        ]),
+        shutdown_after_notifications: None,
+    };
+    let mut sink = RecordingSink::default();
+
+    let outcome = run_realtime_transport_with_event_sink_until_shutdown(
+        RealtimeOptions::default(),
+        ShutdownSignal::pending(),
+        RealtimeControl::default(),
+        &mut transport,
+        &mut sink,
+    )
+    .expect("runner exit");
+
+    assert_eq!(outcome.exit.reason, RealtimeExitReason::ConnectionClosed);
+    assert_eq!(transport.connect_attempts, 1);
+    let handle_events = outcome.handle.events.into_iter().collect::<Vec<_>>();
+    assert!(handle_events.is_empty());
+    assert!(matches!(
+        sink.events.as_slice(),
+        [
+            ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+                state: RealtimeConnectionState::Connecting,
+                ..
+            }),
+            ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+                state: RealtimeConnectionState::Connected,
+                ..
+            }),
+            ImEvent::LocalNotification(LocalNotificationEvent {
+                notification_id: Some(id),
+                ..
+            }),
+            ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+                state: RealtimeConnectionState::Closed,
+                ..
+            }),
+        ] if id == "local-1"
+    ));
+}
+
+#[test]
 fn realtime_runner_maps_auth_error_to_auth_failed_exit() {
     let mut transport = FakeRunnerTransport {
         connect_attempts: 0,
@@ -228,6 +283,18 @@ fn realtime_runner_maps_auth_error_to_auth_failed_exit() {
         outcome.exit.warnings,
         vec!["authentication is required".to_string()]
     );
+}
+
+#[derive(Default)]
+struct RecordingSink {
+    events: Vec<ImEvent>,
+}
+
+impl RealtimeRunnerEventSink for RecordingSink {
+    fn emit(&mut self, event: ImEvent) -> ImResult<()> {
+        self.events.push(event);
+        Ok(())
+    }
 }
 
 struct FakeRunnerTransport {

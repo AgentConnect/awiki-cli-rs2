@@ -16,6 +16,7 @@ pub enum ListenerForegroundRunAction {
     StartSocket(ListenerStartSocketAction),
     StartKnownSessions,
     SpawnWatchNewIdentities,
+    RunImCoreRealtimeRunner,
     WaitForContextDone,
 }
 
@@ -93,6 +94,26 @@ pub fn listener_foreground_run_plan(
     listen_bridge_error: Option<&str>,
     start_known_sessions_error: Option<&str>,
 ) -> ListenerForegroundRunPlan {
+    listener_foreground_run_plan_with_sdk_runner(
+        runtime_mode,
+        socket_path,
+        false,
+        write_pid_error,
+        write_status_error,
+        listen_bridge_error,
+        start_known_sessions_error,
+    )
+}
+
+pub fn listener_foreground_run_plan_with_sdk_runner(
+    runtime_mode: &str,
+    socket_path: &str,
+    use_im_core_runner: bool,
+    write_pid_error: Option<&str>,
+    write_status_error: Option<&str>,
+    listen_bridge_error: Option<&str>,
+    start_known_sessions_error: Option<&str>,
+) -> ListenerForegroundRunPlan {
     let mut actions = vec![ListenerForegroundRunAction::ValidateWebSocketMode {
         mode: runtime_mode.to_string(),
     }];
@@ -145,6 +166,9 @@ pub fn listener_foreground_run_plan(
     }
 
     actions.push(ListenerForegroundRunAction::SpawnWatchNewIdentities);
+    if use_im_core_runner {
+        actions.push(ListenerForegroundRunAction::RunImCoreRealtimeRunner);
+    }
     actions.push(ListenerForegroundRunAction::WaitForContextDone);
 
     ListenerForegroundRunPlan {
