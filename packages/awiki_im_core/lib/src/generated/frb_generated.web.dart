@@ -85,6 +85,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDefaultIdentityChange dco_decode_box_autoadd_dart_default_identity_change(
+    dynamic raw,
+  );
+
+  @protected
   DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw);
 
   @protected
@@ -103,6 +108,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw);
+
+  @protected
+  DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw);
 
   @protected
   DartMessage dco_decode_box_autoadd_dart_message(dynamic raw);
@@ -146,6 +154,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw);
 
   @protected
+  DartDefaultIdentityChange dco_decode_dart_default_identity_change(
+    dynamic raw,
+  );
+
+  @protected
   DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw);
 
   @protected
@@ -159,6 +172,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupSummary dco_decode_dart_group_summary(dynamic raw);
+
+  @protected
+  DartHandleRegistrationResult dco_decode_dart_handle_registration_result(
+    dynamic raw,
+  );
 
   @protected
   DartIdentitySelector dco_decode_dart_identity_selector(dynamic raw);
@@ -177,6 +195,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartImError dco_decode_dart_im_error(dynamic raw);
+
+  @protected
+  DartInitialProfile dco_decode_dart_initial_profile(dynamic raw);
 
   @protected
   DartMarkReadResult dco_decode_dart_mark_read_result(dynamic raw);
@@ -220,6 +241,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRealtimeStatus dco_decode_dart_realtime_status(dynamic raw);
+
+  @protected
+  DartRecoverHandleResult dco_decode_dart_recover_handle_result(dynamic raw);
 
   @protected
   DartRelationStatus dco_decode_dart_relation_status(dynamic raw);
@@ -278,6 +302,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
+
+  @protected
+  DartDefaultIdentityChange?
+  dco_decode_opt_box_autoadd_dart_default_identity_change(dynamic raw);
 
   @protected
   DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
@@ -361,6 +389,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDefaultIdentityChange sse_decode_box_autoadd_dart_default_identity_change(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartGroupSnapshot sse_decode_box_autoadd_dart_group_snapshot(
     SseDeserializer deserializer,
   );
@@ -387,6 +420,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartImCorePaths sse_decode_box_autoadd_dart_im_core_paths(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartInitialProfile sse_decode_box_autoadd_dart_initial_profile(
     SseDeserializer deserializer,
   );
 
@@ -442,6 +480,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDefaultIdentityChange sse_decode_dart_default_identity_change(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartDirectoryResolution sse_decode_dart_directory_resolution(
     SseDeserializer deserializer,
   );
@@ -461,6 +504,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer);
+
+  @protected
+  DartHandleRegistrationResult sse_decode_dart_handle_registration_result(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartIdentitySelector sse_decode_dart_identity_selector(
@@ -485,6 +533,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartImError sse_decode_dart_im_error(SseDeserializer deserializer);
+
+  @protected
+  DartInitialProfile sse_decode_dart_initial_profile(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartMarkReadResult sse_decode_dart_mark_read_result(
@@ -542,6 +595,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartRealtimeStatus sse_decode_dart_realtime_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRecoverHandleResult sse_decode_dart_recover_handle_result(
     SseDeserializer deserializer,
   );
 
@@ -620,6 +678,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  DartDefaultIdentityChange?
+  sse_decode_opt_box_autoadd_dart_default_identity_change(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
@@ -712,6 +776,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_default_identity_change(
+    DartDefaultIdentityChange self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_group_snapshot(
     DartGroupSnapshot self,
     SseSerializer serializer,
@@ -744,6 +814,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_dart_im_core_paths(
     DartImCorePaths self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_dart_initial_profile(
+    DartInitialProfile self,
     SseSerializer serializer,
   );
 
@@ -817,6 +893,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_default_identity_change(
+    DartDefaultIdentityChange self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_directory_resolution(
     DartDirectoryResolution self,
     SseSerializer serializer,
@@ -843,6 +925,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_group_summary(
     DartGroupSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_handle_registration_result(
+    DartHandleRegistrationResult self,
     SseSerializer serializer,
   );
 
@@ -878,6 +966,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_dart_im_error(DartImError self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_dart_initial_profile(
+    DartInitialProfile self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_dart_mark_read_result(
@@ -951,6 +1045,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_realtime_status(
     DartRealtimeStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_recover_handle_result(
+    DartRecoverHandleResult self,
     SseSerializer serializer,
   );
 
@@ -1049,6 +1149,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_dart_default_identity_change(
+    DartDefaultIdentityChange? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_dart_group_snapshot(

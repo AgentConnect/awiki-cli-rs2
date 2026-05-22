@@ -41,7 +41,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -986984247;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2017672291;
 
 // Section: executor
 
@@ -1094,6 +1094,44 @@ fn wire__crate__api__realtime__realtime_status_impl(
         },
     )
 }
+fn wire__crate__api__identity__recover_handle_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "recover_handle",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_core = <Arc<DartImCore>>::sse_decode(&mut deserializer);
+            let api_handle = <String>::sse_decode(&mut deserializer);
+            let api_phone = <String>::sse_decode(&mut deserializer);
+            let api_otp = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let output_ok = crate::api::identity::recover_handle(
+                        api_core, api_handle, api_phone, api_otp,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__groups__refresh_group_join_code_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1123,6 +1161,106 @@ fn wire__crate__api__groups__refresh_group_join_code_impl(
                 transform_result_sse::<_, crate::dto::error::DartImError>((move || {
                     let output_ok =
                         crate::api::groups::refresh_group_join_code(api__client, api__group_did)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__identity__register_handle_with_email_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "register_handle_with_email",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_core = <Arc<DartImCore>>::sse_decode(&mut deserializer);
+            let api_local_alias = <Option<String>>::sse_decode(&mut deserializer);
+            let api_requested_handle = <String>::sse_decode(&mut deserializer);
+            let api_email = <String>::sse_decode(&mut deserializer);
+            let api_wait_for_verification = <bool>::sse_decode(&mut deserializer);
+            let api_invite_code = <Option<String>>::sse_decode(&mut deserializer);
+            let api_profile =
+                <crate::dto::identity::DartInitialProfile>::sse_decode(&mut deserializer);
+            let api_make_default = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let output_ok = crate::api::identity::register_handle_with_email(
+                        api_core,
+                        api_local_alias,
+                        api_requested_handle,
+                        api_email,
+                        api_wait_for_verification,
+                        api_invite_code,
+                        api_profile,
+                        api_make_default,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__identity__register_handle_with_phone_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "register_handle_with_phone",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_core = <Arc<DartImCore>>::sse_decode(&mut deserializer);
+            let api_local_alias = <Option<String>>::sse_decode(&mut deserializer);
+            let api_requested_handle = <String>::sse_decode(&mut deserializer);
+            let api_phone = <String>::sse_decode(&mut deserializer);
+            let api_otp = <Option<String>>::sse_decode(&mut deserializer);
+            let api_invite_code = <Option<String>>::sse_decode(&mut deserializer);
+            let api_profile =
+                <crate::dto::identity::DartInitialProfile>::sse_decode(&mut deserializer);
+            let api_make_default = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let output_ok = crate::api::identity::register_handle_with_phone(
+                        api_core,
+                        api_local_alias,
+                        api_requested_handle,
+                        api_phone,
+                        api_otp,
+                        api_invite_code,
+                        api_profile,
+                        api_make_default,
+                    )?;
                     Ok(output_ok)
                 })())
             }
@@ -1613,6 +1751,23 @@ impl SseDecode for crate::dto::group::DartCreateGroupRequest {
     }
 }
 
+impl SseDecode for crate::dto::identity::DartDefaultIdentityChange {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_previous =
+            <Option<crate::dto::identity::DartIdentitySummary>>::sse_decode(deserializer);
+        let mut var_next = <crate::dto::identity::DartIdentitySummary>::sse_decode(deserializer);
+        let mut var_requiresDefaultIdentityWrite = <bool>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::identity::DartDefaultIdentityChange {
+            previous: var_previous,
+            next: var_next,
+            requires_default_identity_write: var_requiresDefaultIdentityWrite,
+            warnings: var_warnings,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::directory::DartDirectoryResolution {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1713,6 +1868,28 @@ impl SseDecode for crate::dto::group::DartGroupSummary {
             membership_status: var_membershipStatus,
             member_count: var_memberCount,
             last_message_at: var_lastMessageAt,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::identity::DartHandleRegistrationResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_identity =
+            <Option<crate::dto::identity::DartIdentitySummary>>::sse_decode(deserializer);
+        let mut var_handle = <String>::sse_decode(deserializer);
+        let mut var_method = <String>::sse_decode(deserializer);
+        let mut var_state = <String>::sse_decode(deserializer);
+        let mut var_defaultIdentityChange =
+            <Option<crate::dto::identity::DartDefaultIdentityChange>>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::identity::DartHandleRegistrationResult {
+            identity: var_identity,
+            handle: var_handle,
+            method: var_method,
+            state: var_state,
+            default_identity_change: var_defaultIdentityChange,
+            warnings: var_warnings,
         };
     }
 }
@@ -1857,6 +2034,18 @@ impl SseDecode for crate::dto::error::DartImError {
             field: var_field,
             status_code: var_statusCode,
             capability: var_capability,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::identity::DartInitialProfile {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_displayName = <Option<String>>::sse_decode(deserializer);
+        let mut var_avatarUrl = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::identity::DartInitialProfile {
+            display_name: var_displayName,
+            avatar_url: var_avatarUrl,
         };
     }
 }
@@ -2076,6 +2265,29 @@ impl SseDecode for crate::dto::realtime::DartRealtimeStatus {
             state: var_state,
             subscriptions: var_subscriptions,
             last_error: var_lastError,
+            warnings: var_warnings,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::identity::DartRecoverHandleResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_handle = <String>::sse_decode(deserializer);
+        let mut var_phone = <String>::sse_decode(deserializer);
+        let mut var_state = <String>::sse_decode(deserializer);
+        let mut var_recoveredIdentity =
+            <Option<crate::dto::identity::DartIdentitySummary>>::sse_decode(deserializer);
+        let mut var_userId = <Option<String>>::sse_decode(deserializer);
+        let mut var_accessTokenPresent = <bool>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::identity::DartRecoverHandleResult {
+            handle: var_handle,
+            phone: var_phone,
+            state: var_state,
+            recovered_identity: var_recoveredIdentity,
+            user_id: var_userId,
+            access_token_present: var_accessTokenPresent,
             warnings: var_warnings,
         };
     }
@@ -2356,6 +2568,19 @@ impl SseDecode for Option<bool> {
     }
 }
 
+impl SseDecode for Option<crate::dto::identity::DartDefaultIdentityChange> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::dto::identity::DartDefaultIdentityChange>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::dto::group::DartGroupSnapshot> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2526,21 +2751,34 @@ fn pde_ffi_dispatcher_primary_impl(
         }
         29 => wire__crate__api__realtime__realtime_connect_impl(port, ptr, rust_vec_len, data_len),
         30 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__groups__refresh_group_join_code_impl(
+        31 => wire__crate__api__identity__recover_handle_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__groups__refresh_group_join_code_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        32 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__identity__register_handle_with_email_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        34 => wire__crate__api__identity__register_handle_with_phone_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        35 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2720,6 +2958,31 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartCreateGroupRequest
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartDefaultIdentityChange {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.previous.into_into_dart().into_dart(),
+            self.next.into_into_dart().into_dart(),
+            self.requires_default_identity_write
+                .into_into_dart()
+                .into_dart(),
+            self.warnings.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartDefaultIdentityChange
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartDefaultIdentityChange>
+    for crate::dto::identity::DartDefaultIdentityChange
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartDefaultIdentityChange {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::directory::DartDirectoryResolution {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -2842,6 +3105,31 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::group::DartGroupSummary>
     for crate::dto::group::DartGroupSummary
 {
     fn into_into_dart(self) -> crate::dto::group::DartGroupSummary {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartHandleRegistrationResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.identity.into_into_dart().into_dart(),
+            self.handle.into_into_dart().into_dart(),
+            self.method.into_into_dart().into_dart(),
+            self.state.into_into_dart().into_dart(),
+            self.default_identity_change.into_into_dart().into_dart(),
+            self.warnings.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartHandleRegistrationResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartHandleRegistrationResult>
+    for crate::dto::identity::DartHandleRegistrationResult
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartHandleRegistrationResult {
         self
     }
 }
@@ -3010,6 +3298,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::error::DartImError>
     for crate::dto::error::DartImError
 {
     fn into_into_dart(self) -> crate::dto::error::DartImError {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartInitialProfile {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.display_name.into_into_dart().into_dart(),
+            self.avatar_url.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartInitialProfile
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartInitialProfile>
+    for crate::dto::identity::DartInitialProfile
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartInitialProfile {
         self
     }
 }
@@ -3322,6 +3631,32 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::realtime::DartRealtimeStatus>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::identity::DartRecoverHandleResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.handle.into_into_dart().into_dart(),
+            self.phone.into_into_dart().into_dart(),
+            self.state.into_into_dart().into_dart(),
+            self.recovered_identity.into_into_dart().into_dart(),
+            self.user_id.into_into_dart().into_dart(),
+            self.access_token_present.into_into_dart().into_dart(),
+            self.warnings.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::identity::DartRecoverHandleResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::identity::DartRecoverHandleResult>
+    for crate::dto::identity::DartRecoverHandleResult
+{
+    fn into_into_dart(self) -> crate::dto::identity::DartRecoverHandleResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::directory::DartRelationStatus {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -3618,6 +3953,16 @@ impl SseEncode for crate::dto::group::DartCreateGroupRequest {
     }
 }
 
+impl SseEncode for crate::dto::identity::DartDefaultIdentityChange {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<crate::dto::identity::DartIdentitySummary>>::sse_encode(self.previous, serializer);
+        <crate::dto::identity::DartIdentitySummary>::sse_encode(self.next, serializer);
+        <bool>::sse_encode(self.requires_default_identity_write, serializer);
+        <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::directory::DartDirectoryResolution {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3676,6 +4021,21 @@ impl SseEncode for crate::dto::group::DartGroupSummary {
         <Option<String>>::sse_encode(self.membership_status, serializer);
         <Option<u32>>::sse_encode(self.member_count, serializer);
         <Option<String>>::sse_encode(self.last_message_at, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::identity::DartHandleRegistrationResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<crate::dto::identity::DartIdentitySummary>>::sse_encode(self.identity, serializer);
+        <String>::sse_encode(self.handle, serializer);
+        <String>::sse_encode(self.method, serializer);
+        <String>::sse_encode(self.state, serializer);
+        <Option<crate::dto::identity::DartDefaultIdentityChange>>::sse_encode(
+            self.default_identity_change,
+            serializer,
+        );
+        <Vec<String>>::sse_encode(self.warnings, serializer);
     }
 }
 
@@ -3784,6 +4144,14 @@ impl SseEncode for crate::dto::error::DartImError {
         <Option<String>>::sse_encode(self.field, serializer);
         <Option<u16>>::sse_encode(self.status_code, serializer);
         <Option<String>>::sse_encode(self.capability, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::identity::DartInitialProfile {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.display_name, serializer);
+        <Option<String>>::sse_encode(self.avatar_url, serializer);
     }
 }
 
@@ -3954,6 +4322,22 @@ impl SseEncode for crate::dto::realtime::DartRealtimeStatus {
         <String>::sse_encode(self.state, serializer);
         <Vec<String>>::sse_encode(self.subscriptions, serializer);
         <Option<String>>::sse_encode(self.last_error, serializer);
+        <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::identity::DartRecoverHandleResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.handle, serializer);
+        <String>::sse_encode(self.phone, serializer);
+        <String>::sse_encode(self.state, serializer);
+        <Option<crate::dto::identity::DartIdentitySummary>>::sse_encode(
+            self.recovered_identity,
+            serializer,
+        );
+        <Option<String>>::sse_encode(self.user_id, serializer);
+        <bool>::sse_encode(self.access_token_present, serializer);
         <Vec<String>>::sse_encode(self.warnings, serializer);
     }
 }
@@ -4156,6 +4540,16 @@ impl SseEncode for Option<bool> {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <bool>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::dto::identity::DartDefaultIdentityChange> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::dto::identity::DartDefaultIdentityChange>::sse_encode(value, serializer);
         }
     }
 }

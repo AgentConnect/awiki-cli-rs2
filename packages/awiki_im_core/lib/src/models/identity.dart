@@ -58,3 +58,62 @@ class IdentitySummary {
   final bool readyForMessaging;
   final List<String> missing;
 }
+
+class InitialProfile {
+  const InitialProfile({this.displayName, this.avatarUrl});
+
+  final String? displayName;
+  final String? avatarUrl;
+}
+
+class DefaultIdentityChange {
+  const DefaultIdentityChange({
+    this.previous,
+    required this.next,
+    required this.requiresDefaultIdentityWrite,
+    this.warnings = const [],
+  });
+
+  final IdentitySummary? previous;
+  final IdentitySummary next;
+  final bool requiresDefaultIdentityWrite;
+  final List<String> warnings;
+}
+
+class HandleRegistrationResult {
+  const HandleRegistrationResult({
+    this.identity,
+    required this.handle,
+    required this.method,
+    required this.state,
+    this.defaultIdentityChange,
+    this.warnings = const [],
+  });
+
+  final IdentitySummary? identity;
+  final String handle;
+  final String method;
+  final String state;
+  final DefaultIdentityChange? defaultIdentityChange;
+  final List<String> warnings;
+}
+
+class RecoverHandleResult {
+  const RecoverHandleResult({
+    required this.handle,
+    required this.phone,
+    required this.state,
+    this.recoveredIdentity,
+    this.userId,
+    required this.accessTokenPresent,
+    this.warnings = const [],
+  });
+
+  final String handle;
+  final String phone;
+  final String state;
+  final IdentitySummary? recoveredIdentity;
+  final String? userId;
+  final bool accessTokenPresent;
+  final List<String> warnings;
+}

@@ -107,6 +107,73 @@ class AwikiImCore {
     return identity._toModel();
   }
 
+  Future<HandleRegistrationResult> registerHandleWithPhone({
+    String? localAlias,
+    required String requestedHandle,
+    required String phone,
+    String? otp,
+    String? inviteCode,
+    InitialProfile profile = const InitialProfile(),
+    bool makeDefault = true,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.registerHandleWithPhone(
+        core: _inner,
+        localAlias: localAlias,
+        requestedHandle: requestedHandle,
+        phone: phone,
+        otp: otp,
+        inviteCode: inviteCode,
+        profile: profile._toGen(),
+        makeDefault: makeDefault,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<HandleRegistrationResult> registerHandleWithEmail({
+    String? localAlias,
+    required String requestedHandle,
+    required String email,
+    bool waitForVerification = true,
+    String? inviteCode,
+    InitialProfile profile = const InitialProfile(),
+    bool makeDefault = true,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.registerHandleWithEmail(
+        core: _inner,
+        localAlias: localAlias,
+        requestedHandle: requestedHandle,
+        email: email,
+        waitForVerification: waitForVerification,
+        inviteCode: inviteCode,
+        profile: profile._toGen(),
+        makeDefault: makeDefault,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<RecoverHandleResult> recoverHandle({
+    required String handle,
+    required String phone,
+    String? otp,
+  }) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.recoverHandle(
+        core: _inner,
+        handle: handle,
+        phone: phone,
+        otp: otp,
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<void> dispose() async {
     if (_disposed) return;
     await _mapNativeErrors(() => gen_core.closeCore(core: _inner));
@@ -556,6 +623,45 @@ extension on gen_identity.DartIdentitySummary {
     readyForAuth: readyForAuth,
     readyForMessaging: readyForMessaging,
     missing: missing,
+  );
+}
+
+extension on InitialProfile {
+  gen_identity.DartInitialProfile _toGen() => gen_identity.DartInitialProfile(
+    displayName: displayName,
+    avatarUrl: avatarUrl,
+  );
+}
+
+extension on gen_identity.DartDefaultIdentityChange {
+  DefaultIdentityChange _toModel() => DefaultIdentityChange(
+    previous: previous?._toModel(),
+    next: next._toModel(),
+    requiresDefaultIdentityWrite: requiresDefaultIdentityWrite,
+    warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartHandleRegistrationResult {
+  HandleRegistrationResult _toModel() => HandleRegistrationResult(
+    identity: identity?._toModel(),
+    handle: handle,
+    method: method,
+    state: state,
+    defaultIdentityChange: defaultIdentityChange?._toModel(),
+    warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartRecoverHandleResult {
+  RecoverHandleResult _toModel() => RecoverHandleResult(
+    handle: handle,
+    phone: phone,
+    state: state,
+    recoveredIdentity: recoveredIdentity?._toModel(),
+    userId: userId,
+    accessTokenPresent: accessTokenPresent,
+    warnings: warnings,
   );
 }
 

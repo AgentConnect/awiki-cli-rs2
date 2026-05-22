@@ -8,6 +8,76 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'identity.freezed.dart';
 
+class DartDefaultIdentityChange {
+  final DartIdentitySummary? previous;
+  final DartIdentitySummary next;
+  final bool requiresDefaultIdentityWrite;
+  final List<String> warnings;
+
+  const DartDefaultIdentityChange({
+    this.previous,
+    required this.next,
+    required this.requiresDefaultIdentityWrite,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      previous.hashCode ^
+      next.hashCode ^
+      requiresDefaultIdentityWrite.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDefaultIdentityChange &&
+          runtimeType == other.runtimeType &&
+          previous == other.previous &&
+          next == other.next &&
+          requiresDefaultIdentityWrite == other.requiresDefaultIdentityWrite &&
+          warnings == other.warnings;
+}
+
+class DartHandleRegistrationResult {
+  final DartIdentitySummary? identity;
+  final String handle;
+  final String method;
+  final String state;
+  final DartDefaultIdentityChange? defaultIdentityChange;
+  final List<String> warnings;
+
+  const DartHandleRegistrationResult({
+    this.identity,
+    required this.handle,
+    required this.method,
+    required this.state,
+    this.defaultIdentityChange,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      identity.hashCode ^
+      handle.hashCode ^
+      method.hashCode ^
+      state.hashCode ^
+      defaultIdentityChange.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartHandleRegistrationResult &&
+          runtimeType == other.runtimeType &&
+          identity == other.identity &&
+          handle == other.handle &&
+          method == other.method &&
+          state == other.state &&
+          defaultIdentityChange == other.defaultIdentityChange &&
+          warnings == other.warnings;
+}
+
 @freezed
 sealed class DartIdentitySelector with _$DartIdentitySelector {
   const DartIdentitySelector._();
@@ -76,4 +146,65 @@ class DartIdentitySummary {
           readyForAuth == other.readyForAuth &&
           readyForMessaging == other.readyForMessaging &&
           missing == other.missing;
+}
+
+class DartInitialProfile {
+  final String? displayName;
+  final String? avatarUrl;
+
+  const DartInitialProfile({this.displayName, this.avatarUrl});
+
+  @override
+  int get hashCode => displayName.hashCode ^ avatarUrl.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartInitialProfile &&
+          runtimeType == other.runtimeType &&
+          displayName == other.displayName &&
+          avatarUrl == other.avatarUrl;
+}
+
+class DartRecoverHandleResult {
+  final String handle;
+  final String phone;
+  final String state;
+  final DartIdentitySummary? recoveredIdentity;
+  final String? userId;
+  final bool accessTokenPresent;
+  final List<String> warnings;
+
+  const DartRecoverHandleResult({
+    required this.handle,
+    required this.phone,
+    required this.state,
+    this.recoveredIdentity,
+    this.userId,
+    required this.accessTokenPresent,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      handle.hashCode ^
+      phone.hashCode ^
+      state.hashCode ^
+      recoveredIdentity.hashCode ^
+      userId.hashCode ^
+      accessTokenPresent.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRecoverHandleResult &&
+          runtimeType == other.runtimeType &&
+          handle == other.handle &&
+          phone == other.phone &&
+          state == other.state &&
+          recoveredIdentity == other.recoveredIdentity &&
+          userId == other.userId &&
+          accessTokenPresent == other.accessTokenPresent &&
+          warnings == other.warnings;
 }

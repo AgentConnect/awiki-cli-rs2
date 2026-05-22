@@ -33,6 +33,10 @@ The Rust facade exposes opaque `DartImCore` and `DartImClient` objects. Each obj
 
 Facade DTOs follow `im-core` public DTO semantics and use Dart-friendly primitives at the boundary. Time values remain ISO-8601 strings. The Dart wrapper may add convenience getters such as `AuthStatus.authenticated`, but it must not rename Rust DTO semantics such as `has_session` into a different facade meaning.
 
+## Identity registration and recovery
+
+The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recoverHandle` on `AwikiImCore`. These calls are core-level identity registry operations that map to `im-core` public identity DTOs; they do not depend on any `awiki-me` account gateway or UI model.
+
 ## Group creation service DID
 
 `CreateGroupRequest.serviceDid` maps to `im_core::groups::GroupCreateRequest.service_did`. Resolution order is:

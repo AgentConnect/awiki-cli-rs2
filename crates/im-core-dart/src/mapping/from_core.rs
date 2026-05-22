@@ -2,7 +2,10 @@ use crate::dto::{
     auth::{DartAuthScope, DartAuthStatus, DartSessionBundle, DartSessionUpdate},
     directory::{DartDirectoryResolution, DartRelationStatus},
     group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
-    identity::DartIdentitySummary,
+    identity::{
+        DartDefaultIdentityChange, DartHandleRegistrationResult, DartIdentitySummary,
+        DartRecoverHandleResult,
+    },
     message::{
         DartConversation, DartConversationPage, DartMarkReadResult, DartMessage,
         DartMessageBodyView, DartMessageDirection, DartMessageMetadata,
@@ -31,6 +34,78 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .map(identity_missing_item_to_string)
                 .collect(),
         }
+    }
+}
+
+impl From<im_core::identity::DefaultIdentityChange> for DartDefaultIdentityChange {
+    fn from(value: im_core::identity::DefaultIdentityChange) -> Self {
+        Self {
+            previous: value.previous.map(Into::into),
+            next: value.next.into(),
+            requires_default_identity_write: value.requires_default_identity_write,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::HandleRegistrationResult> for DartHandleRegistrationResult {
+    fn from(value: im_core::identity::HandleRegistrationResult) -> Self {
+        Self {
+            identity: value.identity.map(Into::into),
+            handle: value.handle.as_str().to_string(),
+            method: registration_method_to_string(value.method),
+            state: registration_state_to_string(value.state),
+            default_identity_change: value.default_identity_change.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+fn registration_method_to_string(value: im_core::identity::RegistrationMethod) -> String {
+    match value {
+        im_core::identity::RegistrationMethod::Phone => "phone".to_string(),
+        im_core::identity::RegistrationMethod::Email => "email".to_string(),
+        im_core::identity::RegistrationMethod::AlreadyVerified => "already_verified".to_string(),
+    }
+}
+
+fn registration_state_to_string(value: im_core::identity::HandleRegistrationState) -> String {
+    match value {
+        im_core::identity::HandleRegistrationState::OtpSent => "otp_sent".to_string(),
+        im_core::identity::HandleRegistrationState::EmailSent => "email_sent".to_string(),
+        im_core::identity::HandleRegistrationState::EmailPending => "email_pending".to_string(),
+        im_core::identity::HandleRegistrationState::Registered => "registered".to_string(),
+    }
+}
+
+impl From<im_core::identity::RecoverHandleResult> for DartRecoverHandleResult {
+    fn from(value: im_core::identity::RecoverHandleResult) -> Self {
+        let (recovered_identity, user_id, access_token_present) = value
+            .recovered_identity
+            .map(|recovered| {
+                (
+                    Some(recovered.identity.into()),
+                    recovered.user_id,
+                    recovered.access_token_present,
+                )
+            })
+            .unwrap_or((None, None, false));
+        Self {
+            handle: value.handle.as_str().to_string(),
+            phone: value.phone,
+            state: recover_state_to_string(value.state),
+            recovered_identity,
+            user_id,
+            access_token_present,
+            warnings: value.warnings,
+        }
+    }
+}
+
+fn recover_state_to_string(value: im_core::identity::RecoverHandleState) -> String {
+    match value {
+        im_core::identity::RecoverHandleState::OtpSent => "otp_sent".to_string(),
+        im_core::identity::RecoverHandleState::Recovered => "recovered".to_string(),
     }
 }
 

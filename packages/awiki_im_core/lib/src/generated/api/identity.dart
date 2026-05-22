@@ -9,6 +9,8 @@ import '../frb_generated.dart';
 import 'client.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `from`
+
 Future<List<DartIdentitySummary>> listIdentities({
   required ArcDartImCore core,
 }) => RustLib.instance.api.crateApiIdentityListIdentities(core: core);
@@ -22,4 +24,56 @@ Future<DartIdentitySummary> resolveIdentity({
 }) => RustLib.instance.api.crateApiIdentityResolveIdentity(
   core: core,
   selector: selector,
+);
+
+Future<DartHandleRegistrationResult> registerHandleWithPhone({
+  required ArcDartImCore core,
+  String? localAlias,
+  required String requestedHandle,
+  required String phone,
+  String? otp,
+  String? inviteCode,
+  required DartInitialProfile profile,
+  required bool makeDefault,
+}) => RustLib.instance.api.crateApiIdentityRegisterHandleWithPhone(
+  core: core,
+  localAlias: localAlias,
+  requestedHandle: requestedHandle,
+  phone: phone,
+  otp: otp,
+  inviteCode: inviteCode,
+  profile: profile,
+  makeDefault: makeDefault,
+);
+
+Future<DartHandleRegistrationResult> registerHandleWithEmail({
+  required ArcDartImCore core,
+  String? localAlias,
+  required String requestedHandle,
+  required String email,
+  required bool waitForVerification,
+  String? inviteCode,
+  required DartInitialProfile profile,
+  required bool makeDefault,
+}) => RustLib.instance.api.crateApiIdentityRegisterHandleWithEmail(
+  core: core,
+  localAlias: localAlias,
+  requestedHandle: requestedHandle,
+  email: email,
+  waitForVerification: waitForVerification,
+  inviteCode: inviteCode,
+  profile: profile,
+  makeDefault: makeDefault,
+);
+
+Future<DartRecoverHandleResult> recoverHandle({
+  required ArcDartImCore core,
+  required String handle,
+  required String phone,
+  String? otp,
+}) => RustLib.instance.api.crateApiIdentityRecoverHandle(
+  core: core,
+  handle: handle,
+  phone: phone,
+  otp: otp,
 );
