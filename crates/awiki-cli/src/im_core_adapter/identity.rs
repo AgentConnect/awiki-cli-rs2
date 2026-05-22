@@ -173,8 +173,7 @@ pub fn register_handle_plan_via_im_core(
     identity_flag: &str,
 ) -> Result<identity::CommandResult, ExitError> {
     let bridge = register_handle_bridge_request(command, identity_flag)?;
-    let _sdk_request = bridge.sdk;
-    identity::register_plan(manager, did_domain, &bridge.legacy).map_err(crate::app::identity_exit)
+    register_handle_plan_command_result(manager, did_domain, bridge.sdk, &bridge.legacy)
 }
 
 pub fn register_handle_via_im_core(
@@ -1415,6 +1414,121 @@ fn sdk_identity_name(summary: &im_core::IdentitySummary) -> String {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| summary.id.as_str())
         .to_string()
+}
+
+struct RegisterPlanTarget {
+    local_part: String,
+    full_handle: Handle,
+    effective_domain: String,
+    explicit_domain: bool,
+}
+
+fn register_handle_plan_command_result(
+    manager: &identity::Manager,
+    did_domain: &str,
+    request: RegisterHandleRequest,
+    legacy: &identity::RegisterParams,
+) -> Result<identity::CommandResult, ExitError> {
+    let target = register_plan_target(request.requested_handle.as_str(), did_domain)?;
+    let existing = manager.list().unwrap_or_default();
+    let alias_base = if target.explicit_domain {
+        target.full_handle.as_str()
+    } else {
+        target.local_part.as_str()
+    };
+    let identity_name = identity::store::choose_named_identity(
+        &request.local_alias.unwrap_or_default(),
+        &existing,
+        alias_base,
+    );
+    let (action, remote_calls) = register_plan_action_and_calls(&request.verification);
+    Ok(identity::CommandResult {
+        data: json!({
+            "plan": {
+                "action": action,
+                "identity_name": identity_name,
+                "handle": target.local_part,
+                "full_handle": target.full_handle.as_str(),
+                "did_domain": target.effective_domain,
+                "phone": legacy.phone,
+                "email": legacy.email,
+                "remote_calls": remote_calls,
+            }
+        }),
+        summary: "Dry run: handle registration flow planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+fn register_plan_target(raw: &str, did_domain: &str) -> Result<RegisterPlanTarget, ExitError> {
+    let trimmed = raw.trim().trim_start_matches('@').to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "id register requires --handle.",
+            "Use a non-empty handle local part or full handle.",
+        ));
+    }
+    let handle = trimmed.strip_prefix("wba://").unwrap_or(&trimmed);
+    let (local_part, effective_domain, explicit_domain) = if let Some(dot) = handle.find('.') {
+        (
+            handle[..dot].trim().to_string(),
+            handle[dot + 1..].trim().trim_end_matches('.').to_string(),
+            true,
+        )
+    } else {
+        (
+            handle.to_string(),
+            did_domain.trim().trim_end_matches('.').to_ascii_lowercase(),
+            false,
+        )
+    };
+    if local_part.is_empty() || effective_domain.is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "id register requires a handle local part and domain.",
+            "Use --handle <local> with configured did_domain, or --handle <local.domain>.",
+        ));
+    }
+    let full_handle = Handle::parse(format!("{local_part}.{effective_domain}"), "")
+        .map_err(|err| super::map_im_error(err, "id register"))?;
+    Ok(RegisterPlanTarget {
+        local_part,
+        full_handle,
+        effective_domain,
+        explicit_domain,
+    })
+}
+
+fn register_plan_action_and_calls(
+    verification: &VerificationInput,
+) -> (&'static str, Vec<&'static str>) {
+    match verification {
+        VerificationInput::Phone { otp, .. } if otp.as_deref().unwrap_or_default().is_empty() => {
+            ("send_handle_otp", vec!["handle.send_otp"])
+        }
+        VerificationInput::Email {
+            wait_for_verification: false,
+            ..
+        } => (
+            "send_registration_email",
+            vec!["POST /user-service/auth/email-send"],
+        ),
+        VerificationInput::Email {
+            wait_for_verification: true,
+            ..
+        } => (
+            "register_handle",
+            vec![
+                "GET /user-service/auth/email-status",
+                "POST /user-service/auth/email-send",
+                "did-auth.register",
+            ],
+        ),
+        _ => ("register_handle", vec!["did-auth.register"]),
+    }
 }
 
 fn pending_registration_identity_name(
