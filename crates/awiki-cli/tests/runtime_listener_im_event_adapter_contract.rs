@@ -1,10 +1,10 @@
-use awiki_cli::im_core_adapter::realtime_events::{
-    handle_im_event, should_legacy_handle_raw_notification_with_im_core_runner,
-    IM_EVENT_UNKNOWN_WARNING_PREFIX,
-};
 use awiki_cli::runtime::host_notify::{HostNotificationData, HostNotificationEvent};
 use awiki_cli::runtime::host_notify_sink::HostNotifySink;
 use awiki_cli::runtime::listener::{HostNotifyStatus, Status};
+use awiki_cli::runtime::listener_im_event_adapter::{
+    handle_im_event, should_legacy_handle_raw_notification_with_im_core_runner,
+    IM_EVENT_UNKNOWN_WARNING_PREFIX,
+};
 use awiki_cli::runtime::listener_notification_plan::{
     NotificationRoute, NotificationSessionContext,
 };

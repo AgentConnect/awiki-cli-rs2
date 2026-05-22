@@ -59,11 +59,11 @@ use crate::identity::{self, types::StoredIdentity, Manager};
 use crate::im_core_adapter::realtime::{
     self as im_core_realtime_adapter, ListenerRunHostKind, ListenerRunnerMode,
 };
-use crate::im_core_adapter::realtime_events::{
-    self as im_core_realtime_events, CliRealtimeEventSink,
-};
 use crate::message;
 use crate::runtime;
+use crate::runtime::listener_im_event_adapter::{
+    self as im_core_realtime_events, CliRealtimeEventSink,
+};
 use crate::store;
 use rand::RngCore;
 use serde_json::{Map, Value};

@@ -20,6 +20,7 @@ pub mod listener_contact_sync;
 pub mod listener_foreground;
 pub mod listener_handle_lookup;
 pub mod listener_identity_watch;
+pub mod listener_im_event_adapter;
 pub mod listener_json_helpers;
 pub mod listener_known_sessions;
 pub mod listener_launchd;

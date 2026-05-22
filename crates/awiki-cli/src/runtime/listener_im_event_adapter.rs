@@ -1,7 +1,6 @@
-// Temporary migration-only legacy bridge exception.
-// Delete in PR C7 when realtime event projection no longer imports listener_*
-// internals and can be owned by a stable im-core event API. The compat runner
-// trait shim lives in the runtime listener host, not this CLI boundary adapter.
+// Runtime listener projection for `im-core` realtime events.
+// Delete or shrink in PR C7 when realtime event projection can be owned by a
+// stable im-core event API instead of the CLI listener local-state boundary.
 
 use crate::runtime::host_notify::{
     DirectMessageNotificationData, GroupMessageNotificationData, GroupStateChangedNotificationData,
