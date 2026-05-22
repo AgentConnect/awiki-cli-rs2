@@ -5,10 +5,10 @@
 
 use im_core::prelude::{
     ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
-    ContactBindingState, Did, Handle, HandleRegistrationResult, HandleRegistrationState,
-    IdentitySelector, IdentitySubject, InitialProfile, PeerRef, ProfilePatch,
-    RecoverGeneratedIdentity, RecoverHandleRequest, RegisterHandleRequest, RegistrationMethod,
-    VerificationInput,
+    ContactBindingState, Did, DirectoryResolution, Handle, HandleRegistrationResult,
+    HandleRegistrationState, IdentitySelector, IdentitySubject, InitialProfile, PeerRef,
+    ProfilePatch, RecoverGeneratedIdentity, RecoverHandleRequest, RegisterHandleRequest,
+    RegistrationMethod, VerificationInput,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -26,7 +26,6 @@ use crate::identity;
 use crate::identity::types::LEGACY_LAYOUT_HINT;
 use crate::output::ExitError;
 use crate::store;
-use crate::transportcfg::Profile as TransportProfile;
 
 pub use super::identity_replace_did_plan::{
     replace_did_plan_bridge_request, replace_did_plan_via_im_core, replace_did_via_im_core,
@@ -852,18 +851,11 @@ pub fn resolve_identity_via_im_core(
     } else {
         PeerRef::parse(did, "").map_err(|err| super::map_im_error(err, "id resolve"))?
     };
-    let result = im_core::compat::directory::resolve_peer_with_bridge(
-        &client,
-        peer,
-        DirectoryLegacyTransport { resolved },
-    )
-    .map_err(|err| super::map_im_error(err, "id resolve"))?;
-    Ok(identity::wire::resolve_result(
-        result.resolve,
-        result.lookup,
-        result.public_profile,
-        result.resolution.warnings,
-    ))
+    let result = client
+        .directory()
+        .resolve_peer(peer)
+        .map_err(|err| super::map_im_error(err, "id resolve"))?;
+    Ok(resolve_command_result_from_sdk(result))
 }
 
 fn build_optional_directory_client(
@@ -1030,49 +1022,17 @@ fn legacy_profile_value(profile: &im_core::identity::Profile) -> Value {
     Value::Object(value)
 }
 
-struct DirectoryLegacyTransport<'a> {
-    resolved: &'a crate::config::Resolved,
-}
-
-impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacyTransport<'_> {
-    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> im_core::ImResult<Value> {
-        let client =
-            identity::client::Client::new(self.resolved).map_err(identity_error_to_im_error)?;
-        let profile = match method {
-            "get_public_profile" => TransportProfile::RpcReadHeavy,
-            _ => TransportProfile::RpcDefault,
-        };
-        client
-            .rpc_call_profile(profile, endpoint, method, params)
-            .map_err(identity_error_to_im_error)
-    }
-}
-
-fn identity_error_to_im_error(err: identity::IdentityError) -> im_core::ImError {
-    match err {
-        identity::IdentityError::InvalidInput(message) => {
-            im_core::ImError::invalid_input(None, message)
-        }
-        identity::IdentityError::NotFound(message)
-        | identity::IdentityError::NoDefaultIdentity(message) => {
-            im_core::ImError::IdentityNotFound { selector: message }
-        }
-        identity::IdentityError::AuthRequired(_) => im_core::ImError::AuthRequired,
-        identity::IdentityError::Service(service) => im_core::ImError::Service {
-            status_code: (service.status_code != 0).then_some(service.status_code),
-            code: (service.rpc_code != 0).then(|| service.rpc_code.to_string()),
-            message: service.message,
-        },
-        identity::IdentityError::Io(err) => im_core::ImError::Io {
-            detail: err.to_string(),
-        },
-        identity::IdentityError::Json(err) => im_core::ImError::Serialization {
-            detail: err.to_string(),
-        },
-        err => im_core::ImError::Internal {
-            message: err.to_string(),
-        },
-    }
+fn resolve_command_result_from_sdk(resolution: DirectoryResolution) -> identity::CommandResult {
+    let resolve = Some(json!({ "did": resolution.did.as_str() }));
+    let lookup = resolution.handle.as_ref().map(|handle| {
+        json!({
+            "did": resolution.did.as_str(),
+            "handle": handle.as_str(),
+            "full_handle": handle.as_str(),
+        })
+    });
+    let public_profile = resolution.profile.as_ref().map(legacy_profile_value);
+    identity::wire::resolve_result(resolve, lookup, public_profile, resolution.warnings)
 }
 
 fn cli_identity_summaries_from_sdk(

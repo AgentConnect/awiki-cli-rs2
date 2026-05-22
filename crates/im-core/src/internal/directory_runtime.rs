@@ -89,7 +89,12 @@ where
         let resolve_raw = resolve_profile_by_did(&mut self.transport, lookup.did.as_str())?;
         let profile_dto = profile
             .as_ref()
-            .map(|raw| crate::internal::profile_runtime::profile_from_value(self.client, raw))
+            .map(|raw| {
+                let mut profile =
+                    crate::internal::profile_runtime::profile_from_value(self.client, raw)?;
+                profile.subject = lookup.did.clone();
+                Ok::<_, crate::ImError>(profile)
+            })
             .transpose()?;
         Ok(DirectoryResolveResult {
             resolution: crate::directory::DirectoryResolution {
@@ -123,10 +128,10 @@ where
         let mut profile = None;
         match public_profile_by_did(&mut self.transport, did.as_str()) {
             Ok(raw) => {
-                profile = Some(crate::internal::profile_runtime::profile_from_value(
-                    self.client,
-                    &raw,
-                )?);
+                let mut value =
+                    crate::internal::profile_runtime::profile_from_value(self.client, &raw)?;
+                value.subject = did.clone();
+                profile = Some(value);
                 profile_raw = Some(raw);
             }
             Err(err) => warnings.push(format!("Public profile lookup failed: {err}")),

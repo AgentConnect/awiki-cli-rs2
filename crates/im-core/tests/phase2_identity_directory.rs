@@ -219,6 +219,10 @@ fn directory_service_exposes_contact_store_and_resolution_api() {
         resolved.profile.as_ref().unwrap().display_name.as_deref(),
         Some("Bob")
     );
+    assert_eq!(
+        resolved.profile.as_ref().unwrap().subject.as_str(),
+        "did:example:bob"
+    );
     assert!(resolved.warnings.is_empty());
     let requests = server.join();
     assert_eq!(requests.len(), 3);
