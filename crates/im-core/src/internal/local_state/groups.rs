@@ -1,3 +1,6 @@
+#[cfg(feature = "sqlite")]
+use time::OffsetDateTime;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct GroupRecord {
     pub(crate) owner_identity_id: String,
@@ -46,6 +49,227 @@ pub(crate) struct GroupMemberRecord {
     pub(crate) last_synced_at: String,
     pub(crate) metadata: String,
     pub(crate) credential_name: String,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn upsert_group(
+    connection: &rusqlite::Connection,
+    record: GroupRecord,
+) -> crate::ImResult<()> {
+    let owner_did = normalize(&record.owner_did);
+    let owner_identity_id = normalize_owner_identity_id(&default_string(
+        record.owner_identity_id.clone(),
+        &record.credential_name,
+    ));
+    let group_id = normalize(&record.group_id);
+    if owner_did.is_empty() || group_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            None,
+            "owner_did and group_id are required",
+        ));
+    }
+    let stored_at = default_string(record.stored_at.clone(), &now_utc());
+    connection
+        .execute(
+            r#"
+INSERT INTO groups
+    (owner_identity_id, owner_did, group_id, group_did, name, group_mode, slug, description, goal, rules, message_prompt,
+     doc_url, group_owner_did, group_owner_handle, my_role, membership_status, join_enabled, join_code,
+     join_code_expires_at, member_count, last_synced_seq, last_read_seq, last_message_at,
+     remote_created_at, remote_updated_at, stored_at, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
+ON CONFLICT(owner_did, group_id)
+DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, groups.owner_identity_id),
+    group_did = excluded.group_did,
+    name = excluded.name,
+    group_mode = excluded.group_mode,
+    slug = excluded.slug,
+    description = excluded.description,
+    goal = excluded.goal,
+    rules = excluded.rules,
+    message_prompt = excluded.message_prompt,
+    doc_url = excluded.doc_url,
+    group_owner_did = excluded.group_owner_did,
+    group_owner_handle = excluded.group_owner_handle,
+    my_role = excluded.my_role,
+    membership_status = excluded.membership_status,
+    join_enabled = excluded.join_enabled,
+    join_code = excluded.join_code,
+    join_code_expires_at = excluded.join_code_expires_at,
+    member_count = excluded.member_count,
+    last_synced_seq = excluded.last_synced_seq,
+    last_read_seq = excluded.last_read_seq,
+    last_message_at = excluded.last_message_at,
+    remote_created_at = excluded.remote_created_at,
+    remote_updated_at = excluded.remote_updated_at,
+    stored_at = excluded.stored_at,
+    metadata = excluded.metadata,
+    credential_name = excluded.credential_name"#,
+            rusqlite::params![
+                optional_string(&owner_identity_id),
+                owner_did,
+                group_id,
+                optional_string(&record.group_did),
+                optional_string(&record.name),
+                default_string(record.group_mode.clone(), "general"),
+                optional_string(&record.slug),
+                optional_string(&record.description),
+                optional_string(&record.goal),
+                optional_string(&record.rules),
+                optional_string(&record.message_prompt),
+                optional_string(&record.doc_url),
+                optional_string(&record.group_owner_did),
+                optional_string(&record.group_owner_handle),
+                optional_string(&record.my_role),
+                default_string(record.membership_status.clone(), "active"),
+                optional_bool(record.join_enabled),
+                optional_string(&record.join_code),
+                optional_string(&record.join_code_expires_at),
+                record.member_count,
+                record.last_synced_seq,
+                record.last_read_seq,
+                optional_string(&record.last_message_at),
+                optional_string(&record.remote_created_at),
+                optional_string(&record.remote_updated_at),
+                stored_at,
+                optional_string(&record.metadata),
+                normalize(&record.credential_name),
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn replace_group_members(
+    connection: &mut rusqlite::Connection,
+    owner_did: &str,
+    group_id: &str,
+    members: &[GroupMemberRecord],
+    credential_name: &str,
+) -> crate::ImResult<()> {
+    let owner_did = normalize(owner_did);
+    let owner_identity_id = normalize_owner_identity_id(credential_name);
+    let group_id = normalize(group_id);
+    if owner_did.is_empty() || group_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            None,
+            "owner_did and group_id are required",
+        ));
+    }
+    let transaction = connection
+        .transaction()
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .execute(
+            "DELETE FROM group_members WHERE owner_did = ?1 AND group_id = ?2",
+            rusqlite::params![owner_did.as_str(), group_id.as_str()],
+        )
+        .map_err(super::local_state_unavailable)?;
+    let now = now_utc();
+    {
+        let mut statement = transaction
+            .prepare(
+                r#"
+INSERT INTO group_members
+    (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, profile_url, role, status,
+     joined_at, sent_message_count, last_synced_at, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
+            )
+            .map_err(super::local_state_unavailable)?;
+        for member in members {
+            let user_id = normalize(&member.user_id);
+            if user_id.is_empty() {
+                continue;
+            }
+            let last_synced_at = default_string(member.last_synced_at.clone(), &now);
+            statement
+                .execute(rusqlite::params![
+                    optional_string(&owner_identity_id),
+                    owner_did.as_str(),
+                    group_id.as_str(),
+                    user_id,
+                    optional_string(&member.member_did),
+                    optional_string(&member.member_handle),
+                    optional_string(&member.profile_url),
+                    optional_string(&member.role),
+                    default_string(member.status.clone(), "active"),
+                    optional_string(&member.joined_at),
+                    member.sent_message_count.or(Some(0)),
+                    last_synced_at,
+                    optional_string(&member.metadata),
+                    normalize(&default_string(
+                        member.credential_name.clone(),
+                        credential_name,
+                    )),
+                ])
+                .map_err(super::local_state_unavailable)?;
+        }
+    }
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn mark_group_left(
+    connection: &mut rusqlite::Connection,
+    owner_did: &str,
+    group_id: &str,
+    group_did: &str,
+    credential_name: &str,
+) -> crate::ImResult<()> {
+    let owner_did = normalize(owner_did);
+    let group_id = normalize(group_id);
+    if owner_did.is_empty() || group_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            None,
+            "owner_did and group_id are required",
+        ));
+    }
+    let now = now_utc();
+    let credential_name = normalize(credential_name);
+    let owner_identity_id = normalize_owner_identity_id(&credential_name);
+    let transaction = connection
+        .transaction()
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .execute(
+            r#"
+INSERT INTO groups
+    (owner_identity_id, owner_did, group_id, group_did, group_mode, my_role, membership_status, stored_at,
+     credential_name)
+VALUES (?1, ?2, ?3, ?4, 'general', NULL, 'left', ?5, ?6)
+ON CONFLICT(owner_did, group_id)
+DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, groups.owner_identity_id),
+    group_did = COALESCE(excluded.group_did, groups.group_did),
+    my_role = NULL,
+    membership_status = 'left',
+    stored_at = excluded.stored_at,
+    credential_name = COALESCE(excluded.credential_name, groups.credential_name)"#,
+            rusqlite::params![
+                optional_string(&owner_identity_id),
+                owner_did.as_str(),
+                group_id.as_str(),
+                optional_string(group_did),
+                now.as_str(),
+                credential_name,
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .execute(
+            "DELETE FROM group_members WHERE owner_did = ?1 AND group_id = ?2",
+            rusqlite::params![owner_did.as_str(), group_id.as_str()],
+        )
+        .map_err(super::local_state_unavailable)?;
+    transaction
+        .commit()
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
 }
 
 #[cfg(feature = "sqlite")]
@@ -260,6 +484,49 @@ fn owner_predicate(alias: &str) -> String {
 #[cfg(feature = "sqlite")]
 fn normalize(value: &str) -> String {
     value.trim().to_string()
+}
+
+#[cfg(feature = "sqlite")]
+fn normalize_owner_identity_id(value: &str) -> String {
+    value.trim().to_string()
+}
+
+#[cfg(feature = "sqlite")]
+fn default_string(value: String, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn optional_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn optional_bool(value: Option<bool>) -> Option<i64> {
+    value.map(i64::from)
+}
+
+#[cfg(feature = "sqlite")]
+fn now_utc() -> String {
+    let value = OffsetDateTime::now_utc();
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        value.year(),
+        u8::from(value.month()),
+        value.day(),
+        value.hour(),
+        value.minute(),
+        value.second()
+    )
 }
 
 #[cfg(all(test, feature = "sqlite"))]

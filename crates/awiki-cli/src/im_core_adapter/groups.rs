@@ -1,8 +1,3 @@
-// Temporary migration-only legacy bridge exception.
-// Delete in PR C4/C7 when group lifecycle/read default handlers call im-core
-// public GroupService APIs directly and no longer reuse legacy message group
-// requests, cache projection, websocket fallback, or compat transports here.
-
 use im_core::prelude::{
     Cursor, Did, GroupCreateRequest as SdkGroupCreateRequest,
     GroupJoinRequest as SdkGroupJoinRequest, GroupLeaveRequest as SdkGroupLeaveRequest,
@@ -14,11 +9,12 @@ use im_core::prelude::{
 use serde_json::{json, Value};
 
 use crate::config::Resolved;
+use crate::identity::types::StoredIdentity;
 use crate::identity::Manager;
 use crate::im_core_adapter::active_identity;
 use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError, ServiceError};
-use crate::message;
 use crate::runtime;
+use crate::store;
 
 pub const GROUP_E2EE_SECURITY_PROFILE: &str = "group-e2ee";
 
@@ -115,14 +111,11 @@ pub fn create_group_via_im_core(
     let raw = group_diagnostic_raw(&result);
     let group_did = group_did_from_result(&raw);
     let mut warnings = group_control_warnings(resolved, result.warnings);
-    warnings.extend(message::sync_group_state(
-        resolved, manager, &record, &group_did, true,
-    ));
-    let snapshot = message::cached_group_snapshot(resolved, &record, &group_did)
+    warnings.extend(sync_group_state(client, &group_did, true));
+    let snapshot = cached_group_snapshot(resolved, &record, &group_did)
         .or_else(|| normalize_group_snapshot(&raw))
         .unwrap_or(Value::Null);
-    let members =
-        message::cached_group_members(resolved, &record, &group_did, 100).unwrap_or_default();
+    let members = cached_group_members(resolved, &record, &group_did, 100).unwrap_or_default();
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
@@ -157,10 +150,8 @@ pub fn join_group_via_im_core(
     let raw = group_diagnostic_raw(&result);
     let group_did = default_string(&group_did_from_result(&raw), &requested_group);
     let mut warnings = group_control_warnings(resolved, result.warnings);
-    warnings.extend(message::sync_group_state(
-        resolved, manager, &record, &group_did, true,
-    ));
-    let snapshot = message::cached_group_snapshot(resolved, &record, &group_did)
+    warnings.extend(sync_group_state(client, &group_did, true));
+    let snapshot = cached_group_snapshot(resolved, &record, &group_did)
         .or_else(|| normalize_group_snapshot(&raw))
         .unwrap_or_else(|| json!({ "group_did": group_did }));
     Ok(CommandResult {
@@ -188,7 +179,7 @@ pub fn leave_group_via_im_core(
     }
     let record =
         active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
-    let cached_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
+    let cached_snapshot = cached_group_snapshot(resolved, &record, &request.group);
     if cached_snapshot.as_ref().is_some_and(is_active_group_owner) {
         return Err(MessageAdapterError::GroupOwnerCannotLeave);
     }
@@ -205,12 +196,7 @@ pub fn leave_group_via_im_core(
         })
         .map_err(im_error_to_message_error)?;
     let raw = group_diagnostic_raw(&result);
-    let mut warnings = group_control_warnings(resolved, result.warnings);
-    warnings.extend(message::mark_cached_group_left(
-        resolved,
-        &record,
-        &request.group,
-    ));
+    let warnings = group_control_warnings(resolved, result.warnings);
     Ok(CommandResult {
         data: json!({
             "delivery": raw,
@@ -257,7 +243,7 @@ fn mutate_group_member_via_im_core(
     }
     let record =
         active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
-    let pre_mutation_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
+    let pre_mutation_snapshot = cached_group_snapshot(resolved, &record, &request.group);
     if pre_mutation_snapshot
         .as_ref()
         .is_some_and(group_snapshot_uses_e2ee)
@@ -279,18 +265,11 @@ fn mutate_group_member_via_im_core(
     .map_err(im_error_to_message_error)?;
     let raw = group_diagnostic_raw(&result);
     let mut warnings = group_control_warnings(resolved, result.warnings);
-    warnings.extend(message::sync_group_state(
-        resolved,
-        manager,
-        &record,
-        &request.group,
-        true,
-    ));
-    let snapshot = message::cached_group_snapshot(resolved, &record, &request.group)
+    warnings.extend(sync_group_state(client, &request.group, true));
+    let snapshot = cached_group_snapshot(resolved, &record, &request.group)
         .or_else(|| normalize_group_snapshot(&raw))
         .unwrap_or_else(|| json!({ "group_did": request.group }));
-    let members =
-        message::cached_group_members(resolved, &record, &request.group, 100).unwrap_or_default();
+    let members = cached_group_members(resolved, &record, &request.group, 100).unwrap_or_default();
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
@@ -325,7 +304,7 @@ pub fn update_group_via_im_core(
     }
     let record =
         active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
-    let cached_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
+    let cached_snapshot = cached_group_snapshot(resolved, &record, &request.group);
     if cached_snapshot
         .as_ref()
         .is_some_and(group_snapshot_uses_e2ee)
@@ -358,14 +337,8 @@ pub fn update_group_via_im_core(
         warnings.extend(result.warnings);
     }
     let mut warnings = group_control_warnings(resolved, warnings);
-    warnings.extend(message::sync_group_state(
-        resolved,
-        manager,
-        &record,
-        &request.group,
-        false,
-    ));
-    let snapshot = message::cached_group_snapshot(resolved, &record, &request.group)
+    warnings.extend(sync_group_state(client, &request.group, false));
+    let snapshot = cached_group_snapshot(resolved, &record, &request.group)
         .unwrap_or_else(|| json!({ "group_did": request.group }));
     Ok(CommandResult {
         data: json!({
@@ -581,8 +554,160 @@ fn group_policy_patch(request: &GroupUpdateRequest) -> GroupPolicyPatch {
 }
 
 fn group_control_warnings(resolved: &Resolved, mut warnings: Vec<String>) -> Vec<String> {
-    warnings.extend(message::group_control_warnings(resolved));
+    if runtime_mode(resolved) == runtime::bridge::MODE_WEBSOCKET {
+        warnings.push(
+            "Group lifecycle commands use HTTP transport even when runtime.mode is websocket."
+                .to_string(),
+        );
+    }
     compact_warnings(warnings)
+}
+
+fn sync_group_state(
+    client: &im_core::ImClient,
+    group_did: &str,
+    include_members: bool,
+) -> Vec<String> {
+    let group_did = group_did.trim();
+    if group_did.is_empty() {
+        return Vec::new();
+    }
+    let mut warnings = Vec::new();
+    let group_ref = match GroupRef::parse(group_did) {
+        Ok(group_ref) => group_ref,
+        Err(err) => return vec![format!("Failed to refresh group snapshot: {err}")],
+    };
+    match client.groups().get(group_ref.clone()) {
+        Ok(_) => {}
+        Err(err) => return vec![format!("Failed to refresh group snapshot: {err}")],
+    }
+    if include_members {
+        let request = match page_limit(100, 100) {
+            Ok(limit) => GroupMembersRequest {
+                group: group_ref,
+                limit,
+            },
+            Err(err) => return vec![format!("Failed to refresh group members: {err}")],
+        };
+        match client.groups().members(request) {
+            Ok(_) => {}
+            Err(err) => warnings.push(format!("Failed to refresh group members: {err}")),
+        }
+    }
+    warnings
+}
+
+fn cached_group_snapshot(
+    resolved: &Resolved,
+    record: &StoredIdentity,
+    group_did: &str,
+) -> Option<Value> {
+    let connection = store::open(&resolved.paths).ok()?;
+    store::ensure_schema(&connection).ok()?;
+    cached_owner_identity_ids(record)
+        .iter()
+        .find_map(|owner_identity_id| {
+            store::get_group_snapshot_for_owner_identity(
+                &connection,
+                owner_identity_id,
+                &record.did,
+                &group_storage_key(group_did),
+            )
+            .ok()
+        })
+        .map(enrich_cached_group_snapshot)
+}
+
+fn cached_group_members(
+    resolved: &Resolved,
+    record: &StoredIdentity,
+    group_did: &str,
+    limit: i64,
+) -> Option<Vec<Value>> {
+    let connection = store::open(&resolved.paths).ok()?;
+    store::ensure_schema(&connection).ok()?;
+    store::list_cached_group_members(
+        &connection,
+        &record.did,
+        &group_storage_key(group_did),
+        limit,
+    )
+    .ok()
+}
+
+fn cached_owner_identity_ids(record: &StoredIdentity) -> Vec<String> {
+    let mut ids = Vec::new();
+    push_nonempty_unique(&mut ids, &record.unique_id);
+    push_nonempty_unique(&mut ids, &record.identity_name);
+    ids
+}
+
+fn push_nonempty_unique(values: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if value.is_empty() || values.iter().any(|known| known == value) {
+        return;
+    }
+    values.push(value.to_string());
+}
+
+fn enrich_cached_group_snapshot(mut snapshot: Value) -> Value {
+    let metadata = snapshot
+        .get("metadata")
+        .and_then(Value::as_str)
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .and_then(|value| normalize_group_snapshot(&value));
+    if let (Some(object), Some(Value::Object(metadata_object))) =
+        (snapshot.as_object_mut(), metadata)
+    {
+        for (key, value) in metadata_object {
+            object.entry(key).or_insert(value);
+        }
+    }
+    if let Some(object) = snapshot.as_object_mut() {
+        let group_did = string_value(object.get("group_did"));
+        if !group_did.trim().is_empty() {
+            object
+                .entry("did".to_string())
+                .or_insert(Value::String(group_did));
+        }
+        let my_role = string_value(object.get("my_role"));
+        if !my_role.trim().is_empty() {
+            object
+                .entry("member_role".to_string())
+                .or_insert(Value::String(my_role));
+        }
+        let status = string_value(object.get("membership_status"));
+        if !status.trim().is_empty() {
+            object
+                .entry("member_status".to_string())
+                .or_insert(Value::String(status));
+        }
+        if !object.contains_key("group_profile") {
+            let mut profile = serde_json::Map::new();
+            insert_from_object(object, &mut profile, "display_name", "name");
+            insert_from_object(object, &mut profile, "description", "description");
+            insert_from_object(object, &mut profile, "slug", "slug");
+            insert_from_object(object, &mut profile, "goal", "goal");
+            insert_from_object(object, &mut profile, "rules", "rules");
+            insert_from_object(object, &mut profile, "message_prompt", "message_prompt");
+            insert_from_object(object, &mut profile, "doc_url", "doc_url");
+            if !profile.is_empty() {
+                object.insert("group_profile".to_string(), Value::Object(profile));
+            }
+        }
+    }
+    snapshot
+}
+
+fn insert_from_object(
+    source: &serde_json::Map<String, Value>,
+    target: &mut serde_json::Map<String, Value>,
+    target_key: &str,
+    source_key: &str,
+) {
+    if let Some(value) = source.get(source_key).filter(|value| !value.is_null()) {
+        target.insert(target_key.to_string(), value.clone());
+    }
 }
 
 fn group_read_source(result: &GroupReadResult, raw: &Value) -> String {
@@ -792,6 +917,14 @@ fn source_with_default_for_mode(raw: &Value, mode: &str) -> String {
         .to_string()
 }
 
+fn runtime_mode(resolved: &Resolved) -> &'static str {
+    if resolved.runtime_mode.trim().eq_ignore_ascii_case("http") {
+        runtime::bridge::MODE_HTTP
+    } else {
+        runtime::bridge::MODE_WEBSOCKET
+    }
+}
+
 fn page_limit(value: i64, fallback: u32) -> Result<PageLimit, MessageAdapterError> {
     let value = if value <= 0 {
         fallback
@@ -935,6 +1068,10 @@ fn is_active_group_owner(snapshot: &Value) -> bool {
 
 fn group_control_source(raw: &Value) -> String {
     string_value(raw.get("source")).or_else_nonempty(|| "remote_http".to_string())
+}
+
+fn group_storage_key(group_did: &str) -> String {
+    group_did.trim().to_string()
 }
 
 fn string_value(value: Option<&Value>) -> String {

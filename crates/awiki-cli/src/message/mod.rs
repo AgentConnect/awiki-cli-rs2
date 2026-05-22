@@ -72,10 +72,6 @@ pub use group_service::{
     add_group_member, get_group, group_members, group_messages, join_group, leave_group,
     list_groups, remove_group_member, update_group,
 };
-pub(crate) use group_service::{
-    cached_group_members, cached_group_snapshot, group_control_warnings, mark_cached_group_left,
-    sync_group_state,
-};
 pub use group_wire::{
     build_group_add_rpc_params, build_group_create_rpc_params, build_group_get_info_rpc_params,
     build_group_get_rpc_params, build_group_join_rpc_params, build_group_leave_rpc_params,

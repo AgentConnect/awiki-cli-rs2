@@ -11,93 +11,110 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupCreateRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .create(request, None)
+        .create(request, None)?;
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        Ok(result)
     }
 
     pub fn join(
         &self,
         request: super::GroupJoinRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .join(request, None)
+        .join(request, None)?;
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        Ok(result)
     }
 
     pub fn leave(
         &self,
         request: super::GroupLeaveRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let group = request.group.as_str().to_string();
+        let result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .leave(request, None)
+        .leave(request, None)?;
+        crate::internal::group_runtime::projection::project_group_left(self.client, &group);
+        Ok(result)
     }
 
     pub fn add_member(
         &self,
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .add_member(request, None)
+        .add_member(request, None)?;
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        Ok(result)
     }
 
     pub fn remove_member(
         &self,
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .remove_member(request, None)
+        .remove_member(request, None)?;
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        Ok(result)
     }
 
     pub fn update_profile(
         &self,
         request: super::GroupUpdateProfileRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .update_profile(request, None)
+        .update_profile(request, None)?;
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        Ok(result)
     }
 
     pub fn update_policy(
         &self,
         request: super::GroupUpdatePolicyRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
+        let result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .update_policy(request, None)
+        .update_policy(request, None)?;
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        Ok(result)
     }
 
     pub fn get(&self, group: crate::ids::GroupRef) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::read::GroupReadRuntime::new(
+        let result = crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .get(group)
+        .get(group)?;
+        crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
+        Ok(result)
     }
 
     pub fn list(
@@ -116,12 +133,19 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupMembersRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::read::GroupReadRuntime::new(
+        let group = request.group.as_str().to_string();
+        let result = crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .members(request)
+        .members(request)?;
+        crate::internal::group_runtime::projection::project_group_members(
+            self.client,
+            &group,
+            &result,
+        );
+        Ok(result)
     }
 
     pub fn messages(
