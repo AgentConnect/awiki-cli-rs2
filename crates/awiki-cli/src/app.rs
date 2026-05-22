@@ -277,7 +277,7 @@ impl App {
             return self.render_success(
                 "awiki-cli schema",
                 &resolved,
-                json!({ "commands": cmdmeta::specs(), "phase": "phase1-shell" }),
+                json!({ "commands": cmdmeta::default_surface_specs(), "phase": "phase1-shell" }),
                 "Static command contract",
                 Vec::new(),
             );

@@ -185,6 +185,55 @@ fn schema_serializes_cutover_status_for_commands_and_children() {
 }
 
 #[test]
+fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
+    let names: Vec<_> = cmdmeta::default_surface_specs()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+
+    for command in [
+        "status",
+        "schema",
+        "id.list",
+        "msg.send",
+        "msg.inbox",
+        "group.create",
+        "runtime.listener.start",
+        "runtime.host-notify.hermes.setup",
+    ] {
+        assert!(
+            names.contains(&command),
+            "{command} should remain on the default schema/help surface"
+        );
+    }
+
+    for command in [
+        "msg.attachment.download",
+        "msg.secure.status",
+        "mail.inbox",
+        "people.search",
+        "page.list",
+        "site.page.list",
+        "runtime.heartbeat.status",
+        "group.e2ee.publish-key-package",
+        "debug.db.query",
+        "runtime.host-notify.openclaw.set-token",
+        "runtime.listener.run",
+        "group.code.get",
+        "debug.raw.rpc",
+    ] {
+        assert!(
+            !names.contains(&command),
+            "{command} should not be advertised on the default schema/help surface"
+        );
+        assert!(
+            cmdmeta::lookup(command).is_some(),
+            "{command} should remain queryable by exact schema target"
+        );
+    }
+}
+
+#[test]
 fn unsupported_cutover_error_has_stable_contract() {
     let err = awiki_cli::app::unsupported::unsupported_cutover_command(
         "msg.send",

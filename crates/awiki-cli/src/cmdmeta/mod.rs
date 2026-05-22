@@ -100,6 +100,14 @@ pub fn specs() -> Vec<CommandSpec> {
     default_specs().to_vec()
 }
 
+pub fn default_surface_specs() -> Vec<CommandSpec> {
+    default_specs()
+        .iter()
+        .filter(|spec| spec.cutover_status().include_in_default_surface())
+        .cloned()
+        .collect()
+}
+
 pub fn lookup(raw: &str) -> Option<CommandSpec> {
     let needle = normalize_name(raw);
     default_specs()
