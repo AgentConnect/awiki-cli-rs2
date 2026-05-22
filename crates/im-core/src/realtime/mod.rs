@@ -21,3 +21,19 @@ pub use self::runner::{
     RealtimeRunnerEventSink, RealtimeRunnerOutcome, RealtimeRunnerTransport,
 };
 pub use self::service::RealtimeService;
+pub use crate::internal::realtime::heartbeat::{
+    consume_notifications_step, ConsumeNotificationsAction, ConsumeNotificationsDecision,
+    ConsumeNotificationsEvent, ConsumeNotificationsStep, NotificationPingOutcome,
+    SESSION_PING_INTERVAL, SESSION_PING_TIMEOUT,
+};
+pub use crate::internal::realtime::reconnect::{
+    ConsumeFinishedDecision, ContextSleep, SessionLoopBackoff, SessionLoopRetryDecision,
+    SessionLoopRetryPhase, SESSION_RECONNECT_BASE_DELAY, SESSION_RECONNECT_MAX_DELAY,
+};
+pub use crate::internal::realtime::session_loop::{
+    secure_prekey_retry_decision, session_loop_start_decision, ConnectedSessionAction,
+    ConsumeFinishedAction, InitialSessionSignal, SecurePrekeyRetryDecision,
+    SessionLoopStartDecision, CONNECTED_SESSION_ACTIONS, CONSUME_FINISHED_ACTIONS,
+    SECURE_PREKEY_RETRY_DELAY,
+};
+pub use crate::internal::realtime::shutdown::{shutdown_decision, RealtimeShutdownDecision};
