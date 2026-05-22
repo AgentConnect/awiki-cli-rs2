@@ -49,7 +49,6 @@ fn stable_boundary_modules_do_not_use_legacy_bridge_needles() {
         "config.rs",
         "core.rs",
         "error.rs",
-        "feature_flag.rs",
         "paths.rs",
         "render.rs",
         "unsupported.rs",
