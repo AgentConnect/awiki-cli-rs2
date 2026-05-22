@@ -82,12 +82,6 @@ pub struct BindContactBridgeRequest {
     pub legacy: identity::BindParams,
 }
 
-#[derive(Debug, Clone)]
-pub struct RecoverHandleBridgeRequest {
-    pub sdk: RecoverHandleRequest,
-    pub legacy: identity::RecoverParams,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct RecoverHandleCommandRequest {
     pub identity_name: String,
@@ -525,41 +519,22 @@ pub fn recover_handle_request(
     })
 }
 
-pub fn recover_handle_bridge_request(
-    params: identity::RecoverParams,
-    generated_identity: Option<RecoverGeneratedIdentity>,
-    default_domain: &str,
-) -> Result<RecoverHandleBridgeRequest, ExitError> {
-    let sdk = recover_handle_request(
-        params.handle.clone(),
-        params.phone.clone(),
-        trimmed_optional(&params.otp),
-        generated_identity,
-        default_domain,
-    )?;
-    Ok(RecoverHandleBridgeRequest {
-        sdk,
-        legacy: params,
-    })
-}
-
 pub fn recover_handle_plan_via_im_core(
     manager: &identity::Manager,
     did_domain: &str,
-    params: identity::RecoverParams,
+    request: RecoverHandleCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let bridge = recover_handle_bridge_request(params, None, did_domain)?;
-    recover_handle_plan_command_result(manager, did_domain, bridge.sdk, bridge.legacy)
+    recover_handle_plan_command_result(manager, did_domain, &request)
 }
 
 pub fn recover_handle_via_im_core(
     resolved: &crate::config::Resolved,
     manager: &identity::Manager,
-    params: identity::RecoverParams,
+    request: RecoverHandleCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let phone = params.phone.trim().to_string();
-    let otp = params.otp.trim().to_string();
-    if params.handle.trim().is_empty() || phone.is_empty() {
+    let phone = request.phone.trim().to_string();
+    let otp = request.otp.trim().to_string();
+    if request.handle.trim().is_empty() || phone.is_empty() {
         return Err(crate::app::identity_exit(
             identity::IdentityError::InvalidInput(
                 "invalid input: handle and phone are required".to_string(),
@@ -567,14 +542,20 @@ pub fn recover_handle_via_im_core(
         ));
     }
 
-    let plan = recover_handle_plan(manager, &resolved.did_domain, &params)?;
+    let plan = recover_handle_plan(manager, &resolved.did_domain, &request)?;
 
     if otp.is_empty() {
         let core = super::build_im_core(resolved, manager)?;
-        let bridge = recover_handle_bridge_request(params, None, &resolved.did_domain)?;
+        let sdk_request = recover_handle_request(
+            request.handle.clone(),
+            request.phone.clone(),
+            trimmed_optional(&request.otp),
+            None,
+            &resolved.did_domain,
+        )?;
         let result = core
             .identities()
-            .recover_handle(bridge.sdk)
+            .recover_handle(sdk_request)
             .map_err(|err| super::map_im_error(err, "id recover"))?;
         let raw = identity_diagnostic_raw(&result);
         return identity::wire::recover_otp_result(
@@ -600,14 +581,20 @@ pub fn recover_handle_via_im_core(
         unique_id: generated.unique_id.clone(),
         did_document: generated.did_document.clone(),
     };
-    let bridge = recover_handle_bridge_request(params, Some(sdk_generated), &resolved.did_domain)?;
+    let sdk_request = recover_handle_request(
+        request.handle.clone(),
+        request.phone.clone(),
+        trimmed_optional(&request.otp),
+        Some(sdk_generated),
+        &resolved.did_domain,
+    )?;
     let active_before = recover_active_before(&resolved.paths.config_file)?;
     let backup =
         recover_handle_backup(manager, &plan, &active_before, &resolved.paths.config_file)?;
 
     let result = core
         .identities()
-        .recover_handle(bridge.sdk)
+        .recover_handle(sdk_request)
         .map_err(|err| super::map_im_error(err, "id recover"))?;
     let raw = identity_diagnostic_raw(&result);
     let record = manager
@@ -655,11 +642,10 @@ pub fn recover_handle_command_via_im_core(
     dry_run: bool,
     identity_changed: bool,
 ) -> Result<identity::CommandResult, ExitError> {
-    let params = recover_params_from_command(request);
     let mut result = if dry_run {
-        recover_handle_plan_via_im_core(manager, &resolved.did_domain, params)
+        recover_handle_plan_via_im_core(manager, &resolved.did_domain, request)
     } else {
-        recover_handle_via_im_core(resolved, manager, params)
+        recover_handle_via_im_core(resolved, manager, request)
     }?;
     if result.data.get("action").and_then(Value::as_str) != Some("recover_handle") {
         append_recover_identity_warning(&mut result, identity_changed);
@@ -684,15 +670,6 @@ pub fn merge_recovered_handle_local_state_via_im_core(
         store_merge_counts,
         e2ee_cleanup_counts,
     })
-}
-
-fn recover_params_from_command(request: RecoverHandleCommandRequest) -> identity::RecoverParams {
-    identity::RecoverParams {
-        identity_name: request.identity_name,
-        handle: request.handle,
-        phone: request.phone,
-        otp: request.otp,
-    }
 }
 
 fn finalize_recovered_handle_result_via_im_core(
@@ -1535,11 +1512,10 @@ impl RecoverHandlePlan {
 fn recover_handle_plan_command_result(
     manager: &identity::Manager,
     did_domain: &str,
-    _request: RecoverHandleRequest,
-    params: identity::RecoverParams,
+    request: &RecoverHandleCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let plan = recover_handle_plan(manager, did_domain, &params)?;
-    let (action, remote_calls, local_writes, backup_path) = if params.otp.trim().is_empty() {
+    let plan = recover_handle_plan(manager, did_domain, request)?;
+    let (action, remote_calls, local_writes, backup_path) = if request.otp.trim().is_empty() {
         (
             "send_recover_otp",
             json!(["handle.send_otp"]),
@@ -1578,7 +1554,7 @@ fn recover_handle_plan_command_result(
                 "same_handle_candidates": plan.same_handle_candidates,
                 "excluded_identities": plan.excluded_identities,
                 "backup_path": backup_path,
-                "phone": params.phone,
+                "phone": request.phone,
                 "remote_calls": remote_calls,
                 "local_writes": local_writes,
             }
@@ -1591,9 +1567,9 @@ fn recover_handle_plan_command_result(
 fn recover_handle_plan(
     manager: &identity::Manager,
     did_domain: &str,
-    params: &identity::RecoverParams,
+    request: &RecoverHandleCommandRequest,
 ) -> Result<RecoverHandlePlan, ExitError> {
-    let target = identity::normalize_handle_input(&params.handle, did_domain)
+    let target = identity::normalize_handle_input(&request.handle, did_domain)
         .map_err(crate::app::identity_exit)?;
     let existing = manager.list().map_err(crate::app::identity_exit)?;
     let identity_base = if target.explicit_domain {
@@ -1606,7 +1582,7 @@ fn recover_handle_plan(
         return Err(crate::app::identity_exit(
             identity::IdentityError::InvalidInput(format!(
                 "invalid input: handle {:?} cannot be used as an identity name",
-                params.handle
+                request.handle
             )),
         ));
     }
