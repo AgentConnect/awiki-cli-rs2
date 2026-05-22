@@ -31,6 +31,26 @@ pub use super::identity_replace_did_plan::{
     replace_did_plan_bridge_request, replace_did_plan_via_im_core, ReplaceDidPlanBridgeRequest,
 };
 
+fn identity_diagnostic_raw(result: &impl IdentityDiagnosticRaw) -> Value {
+    result.diagnostic_raw().cloned().unwrap_or(Value::Null)
+}
+
+trait IdentityDiagnosticRaw {
+    fn diagnostic_raw(&self) -> Option<&Value>;
+}
+
+impl IdentityDiagnosticRaw for ContactBindingResult {
+    fn diagnostic_raw(&self) -> Option<&Value> {
+        ContactBindingResult::diagnostic_raw(self)
+    }
+}
+
+impl IdentityDiagnosticRaw for im_core::identity::RecoverHandleResult {
+    fn diagnostic_raw(&self) -> Option<&Value> {
+        im_core::identity::RecoverHandleResult::diagnostic_raw(self)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RegisterHandleBridgeRequest {
     pub sdk: RegisterHandleRequest,
@@ -545,7 +565,7 @@ pub fn recover_handle_via_im_core(
             .identities()
             .recover_handle(bridge.sdk)
             .map_err(|err| super::map_im_error(err, "id recover"))?;
-        let raw = result.raw.unwrap_or(Value::Null);
+        let raw = identity_diagnostic_raw(&result);
         return identity::wire::recover_otp_result(
             &plan.final_identity_name,
             &plan.target_local_part,
@@ -578,7 +598,7 @@ pub fn recover_handle_via_im_core(
         .identities()
         .recover_handle(bridge.sdk)
         .map_err(|err| super::map_im_error(err, "id recover"))?;
-    let raw = result.raw.unwrap_or(Value::Null);
+    let raw = identity_diagnostic_raw(&result);
     let record = manager
         .save(identity::types::SaveInput {
             identity_name: plan.temp_identity_name.clone(),
@@ -698,7 +718,7 @@ fn bind_command_result(
         ContactBindingState::OtpSent => identity::wire::bind_phone_otp_result(
             identity,
             &result.target,
-            result.raw.unwrap_or(Value::Null),
+            identity_diagnostic_raw(&result),
         ),
         ContactBindingState::Completed
             if matches!(result.method, ContactBindingMethodKind::Phone) =>
@@ -706,13 +726,13 @@ fn bind_command_result(
             identity::wire::bind_phone_completed_result(
                 identity,
                 &result.target,
-                result.raw.unwrap_or(Value::Null),
+                identity_diagnostic_raw(&result),
             )
         }
         ContactBindingState::EmailSent => Ok(identity::wire::bind_email_sent_result(
             identity,
             &result.target,
-            result.raw.unwrap_or(Value::Null),
+            identity_diagnostic_raw(&result),
         )),
         ContactBindingState::Pending => Ok(identity::wire::bind_email_pending_result(
             identity,

@@ -148,8 +148,31 @@ pub struct ContactBindingResult {
     pub method: ContactBindingMethodKind,
     pub target: String,
     pub state: ContactBindingState,
-    pub raw: Option<serde_json::Value>,
+    #[serde(skip)]
+    diagnostic_raw: Option<serde_json::Value>,
     pub warnings: Vec<String>,
+}
+
+impl ContactBindingResult {
+    pub(crate) fn with_diagnostic_raw(
+        method: ContactBindingMethodKind,
+        target: String,
+        state: ContactBindingState,
+        diagnostic_raw: Option<serde_json::Value>,
+        warnings: Vec<String>,
+    ) -> Self {
+        Self {
+            method,
+            target,
+            state,
+            diagnostic_raw,
+            warnings,
+        }
+    }
+
+    pub fn diagnostic_raw(&self) -> Option<&serde_json::Value> {
+        self.diagnostic_raw.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,8 +210,33 @@ pub struct RecoverHandleResult {
     pub phone: String,
     pub state: RecoverHandleState,
     pub recovered_identity: Option<RecoveredIdentity>,
-    pub raw: Option<serde_json::Value>,
+    #[serde(skip)]
+    diagnostic_raw: Option<serde_json::Value>,
     pub warnings: Vec<String>,
+}
+
+impl RecoverHandleResult {
+    pub(crate) fn with_diagnostic_raw(
+        handle: crate::ids::Handle,
+        phone: String,
+        state: RecoverHandleState,
+        recovered_identity: Option<RecoveredIdentity>,
+        diagnostic_raw: Option<serde_json::Value>,
+        warnings: Vec<String>,
+    ) -> Self {
+        Self {
+            handle,
+            phone,
+            state,
+            recovered_identity,
+            diagnostic_raw,
+            warnings,
+        }
+    }
+
+    pub fn diagnostic_raw(&self) -> Option<&serde_json::Value> {
+        self.diagnostic_raw.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,4 +348,46 @@ pub struct ReplaceDidExecutionResult {
     pub remote_result: serde_json::Value,
     pub warnings: Vec<String>,
     pub recovery_notes: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn binding_and_recover_results_keep_raw_diagnostic_only() {
+        let binding = ContactBindingResult::with_diagnostic_raw(
+            ContactBindingMethodKind::Email,
+            "alice@example.test".to_string(),
+            ContactBindingState::EmailSent,
+            Some(json!({ "provider_state": "sent" })),
+            vec!["queued".to_string()],
+        );
+        let binding_json = serde_json::to_value(&binding).expect("serialize binding result");
+        assert_eq!(
+            binding
+                .diagnostic_raw()
+                .and_then(|raw| raw.get("provider_state")),
+            Some(&json!("sent"))
+        );
+        assert!(binding_json.get("diagnostic_raw").is_none());
+        assert!(binding_json.get("raw").is_none());
+
+        let recover = RecoverHandleResult::with_diagnostic_raw(
+            crate::ids::Handle::parse("alice", "example.test").expect("handle"),
+            "+15551234567".to_string(),
+            RecoverHandleState::OtpSent,
+            None,
+            Some(json!({ "sent": true })),
+            Vec::new(),
+        );
+        let recover_json = serde_json::to_value(&recover).expect("serialize recover result");
+        assert_eq!(
+            recover.diagnostic_raw().and_then(|raw| raw.get("sent")),
+            Some(&json!(true))
+        );
+        assert!(recover_json.get("diagnostic_raw").is_none());
+        assert!(recover_json.get("raw").is_none());
+    }
 }

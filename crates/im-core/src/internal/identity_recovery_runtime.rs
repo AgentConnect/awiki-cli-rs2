@@ -39,14 +39,14 @@ where
         let raw = self
             .transport
             .rpc(call.endpoint, call.method, call.params.clone())?;
-        let sdk_result = crate::identity::RecoverHandleResult {
-            handle: request.handle,
+        let sdk_result = crate::identity::RecoverHandleResult::with_diagnostic_raw(
+            request.handle,
             phone,
-            state: crate::identity::RecoverHandleState::OtpSent,
-            recovered_identity: None,
-            raw: Some(raw.clone()),
-            warnings: Vec::new(),
-        };
+            crate::identity::RecoverHandleState::OtpSent,
+            None,
+            Some(raw.clone()),
+            Vec::new(),
+        );
         Ok(IdentityRecoveryRuntimeResult { sdk_result, raw })
     }
 
@@ -85,14 +85,14 @@ where
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty()),
         };
-        let sdk_result = crate::identity::RecoverHandleResult {
-            handle: request.handle,
+        let sdk_result = crate::identity::RecoverHandleResult::with_diagnostic_raw(
+            request.handle,
             phone,
-            state: crate::identity::RecoverHandleState::Recovered,
-            recovered_identity: Some(recovered_identity),
-            raw: Some(raw.clone()),
-            warnings: Vec::new(),
-        };
+            crate::identity::RecoverHandleState::Recovered,
+            Some(recovered_identity),
+            Some(raw.clone()),
+            Vec::new(),
+        );
         Ok(IdentityRecoveryRuntimeResult { sdk_result, raw })
     }
 }
