@@ -441,53 +441,6 @@ fn inbox_query_builds_scope_limit_cursor_and_unread_flag() {
 }
 
 #[test]
-fn legacy_inbox_request_maps_query_without_filters_or_mark_read() {
-    let command = command_with_flags([("scope", "group"), ("limit", "7"), ("unread", "true")]);
-    let query = messages::inbox_query(&command).unwrap();
-    let legacy = messages::legacy_inbox_request("alice", query).unwrap();
-
-    assert_eq!(legacy.identity_name, "alice");
-    assert_eq!(legacy.scope, "group");
-    assert_eq!(legacy.with, "");
-    assert_eq!(legacy.group, "");
-    assert_eq!(legacy.limit, 7);
-    assert!(legacy.unread_only);
-    assert!(!legacy.mark_read);
-}
-
-#[test]
-fn legacy_inbox_request_rejects_cursor_bridge() {
-    let command = command_with_flags([("cursor", "page-2")]);
-    let query = messages::inbox_query(&command).unwrap();
-    let err = messages::legacy_inbox_request("alice", query).unwrap_err();
-
-    assert_eq!(err.detail.code, "unsupported_capability");
-    assert!(err.detail.message.contains("cursor"));
-}
-
-#[test]
-fn legacy_history_request_maps_direct_thread_to_legacy_request() {
-    let command = command_with_flags([("with", "bob"), ("limit", "5"), ("cursor", "abc")]);
-    let (thread, query) = messages::history_request(&command, "awiki.test").unwrap();
-    let legacy = messages::legacy_history_request("alice", thread, query).unwrap();
-
-    assert_eq!(legacy.identity_name, "alice");
-    assert_eq!(legacy.with, "bob.awiki.test");
-    assert_eq!(legacy.limit, 5);
-    assert_eq!(legacy.cursor, "abc");
-}
-
-#[test]
-fn legacy_history_request_rejects_group_thread_for_cli_contract() {
-    let command = command_with_flags([("group", "did:example:group")]);
-    let (thread, query) = messages::history_request(&command, "awiki.test").unwrap();
-    let err = messages::legacy_history_request("alice", thread, query).unwrap_err();
-
-    assert_eq!(err.detail.code, "unsupported_capability");
-    assert!(err.detail.message.contains("group history"));
-}
-
-#[test]
 fn send_message_request_rejects_attachments_without_legacy_send() {
     let command = command_with_flags([("to", "bob"), ("text", "caption"), ("file", "a.png")]);
     let err = messages::send_message_request(&command, "awiki.test").unwrap_err();

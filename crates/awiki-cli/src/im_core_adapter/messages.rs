@@ -1,17 +1,14 @@
-mod read_bridge;
-
 // Temporary migration-only legacy bridge exception.
-// Delete in PR C4/C7 when msg send/inbox/history/mark-read default handlers call
-// im-core public message APIs directly instead of translating SDK DTOs back to
-// legacy message requests, compat bridges, and legacy render records.
+// Delete in PR C7 when identity/group/profile default handlers no longer keep
+// message rendering adapters coupled to legacy cache/render helpers.
 
 use std::fs;
 
 use im_core::prelude::{
     Cursor, DeliveryState, GroupRef, Handle, HistoryQuery, InboxQuery, InboxScope, MessageBody,
-    MessageBodyView, MessageDeliveryOptions, MessageKind, MessageMetadataAttribute,
-    MessageSecurityMode, MessageTarget, PageLimit, PeerRef, SendMessageRequest, SendMessageResult,
-    ThreadRef,
+    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageId, MessageKind,
+    MessageMetadataAttribute, MessageSecurityMode, MessageTarget, Page, PageLimit, PeerRef,
+    SendMessageRequest, SendMessageResult, ThreadRef,
 };
 use serde_json::{json, Value};
 
@@ -21,8 +18,6 @@ use crate::message;
 use crate::message::MessageError;
 use crate::output::ExitError;
 use crate::store::{self, MessageRecord};
-
-pub use read_bridge::{mark_read_via_im_core, read_history_via_im_core, read_inbox_via_im_core};
 
 pub fn send_message_request(
     command: &ParsedCommand,
@@ -113,61 +108,147 @@ pub fn send_text_via_im_core(
     }
 }
 
-pub fn legacy_inbox_request(
+pub fn read_inbox_via_im_core(
+    resolved: &Resolved,
+    manager: &crate::identity::Manager,
+    client: &im_core::ImClient,
     identity_name: &str,
     query: InboxQuery,
-) -> Result<message::InboxRequest, ExitError> {
-    if query.cursor.is_some() {
-        return Err(ExitError::new(
-            "unsupported_capability",
-            2,
-            "inbox cursor is not supported by the Phase 1G IM Core adapter bridge.",
-            "Use the existing legacy inbox path until cursor pagination is migrated.",
-        ));
-    }
-    Ok(message::InboxRequest {
-        identity_name: identity_name.to_string(),
-        scope: legacy_inbox_scope(query.scope),
-        limit: query.limit.0 as i64,
-        unread_only: query.unread_only,
-        mark_read: false,
-        ..message::InboxRequest::default()
+) -> Result<message::CommandResult, MessageError> {
+    let record = message::require_active_identity(resolved, manager, identity_name)?;
+    let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
+    let page = client
+        .messages()
+        .inbox(query.clone())
+        .map_err(im_error_to_message_error)?;
+    let raw = read_page_to_cli_raw(
+        &page,
+        source_default_for_mode(message::runtime_mode(resolved)),
+    );
+    let mut messages =
+        message::persist_inbox_messages(resolved, manager, &record, &raw, "", &mut warnings);
+    let source = source_with_default_for_mode(&raw, message::runtime_mode(resolved));
+    messages =
+        message::apply_inbox_filters(messages, "", query.unread_only, i64::from(query.limit.0));
+    let total = messages.len();
+    let data = match query.scope {
+        InboxScope::DirectOnly => json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "with": "",
+        }),
+        InboxScope::All | InboxScope::GroupOnly => json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+        }),
+    };
+    Ok(message::CommandResult {
+        data,
+        summary: format!("Loaded {total} inbox messages"),
+        warnings: message::compact_warnings(warnings),
     })
 }
 
-pub fn legacy_history_request(
+pub fn read_history_via_im_core(
+    resolved: &Resolved,
+    manager: &crate::identity::Manager,
+    client: &im_core::ImClient,
     identity_name: &str,
     thread: ThreadRef,
     query: HistoryQuery,
-) -> Result<message::HistoryRequest, ExitError> {
-    let with = match thread {
-        ThreadRef::Direct(peer) => peer.as_str().to_string(),
-        ThreadRef::Group(_) => {
-            return Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "group history is not routed through the Phase 1G IM Core adapter.",
-                "Use the existing group messages command until group history is migrated.",
-            ));
+) -> Result<message::CommandResult, MessageError> {
+    let record = message::require_active_identity(resolved, manager, identity_name)?;
+    let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
+    let (thread, target, target_is_handle) = resolve_history_thread(client, thread)?;
+    let page = client
+        .messages()
+        .history(thread, query.clone())
+        .map_err(im_error_to_message_error)?;
+    let mut raw = read_page_to_cli_raw(
+        &page,
+        source_default_for_mode(message::runtime_mode(resolved)),
+    );
+    if target_is_handle {
+        let dids = message::peer_dids_for_handle_from_store(
+            resolved,
+            &record.did,
+            &target.handle,
+            &target.did,
+        )
+        .unwrap_or_else(|_| vec![target.did.clone()]);
+        raw["resolved_dids"] = json!(dids);
+    }
+    let mut messages = message::persist_history_messages(
+        resolved,
+        manager,
+        &record,
+        &target.did,
+        &target.handle,
+        &raw,
+        &mut warnings,
+    );
+    let mut source = source_with_default_for_mode(&raw, message::runtime_mode(resolved));
+    let mut resolved_dids = message::resolved_dids_value(&raw);
+    if target_is_handle {
+        let dids = message::merge_handle_history_messages(
+            resolved,
+            &record.did,
+            &target,
+            i64::from(query.limit.0),
+            false,
+            false,
+            &mut messages,
+            &mut source,
+            &mut warnings,
+        );
+        if let Some(dids) = dids {
+            resolved_dids = json!(dids);
         }
-        ThreadRef::Thread(_) => {
-            return Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "thread history is not supported by the Phase 1G IM Core adapter.",
-                "Use direct history with --with in this phase.",
-            ));
-        }
-    };
-    Ok(message::HistoryRequest {
-        identity_name: identity_name.to_string(),
-        with,
-        limit: query.limit.0 as i64,
-        cursor: query
-            .cursor
-            .map(|cursor| cursor.as_str().to_string())
-            .unwrap_or_default(),
-        ..message::HistoryRequest::default()
+    }
+    let total = messages.len();
+    Ok(message::CommandResult {
+        data: json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "with": message::peer_handle_or_did(&target),
+            "resolved_dids": resolved_dids,
+        }),
+        summary: format!("Loaded {total} direct history messages"),
+        warnings: message::compact_warnings(warnings),
+    })
+}
+
+pub fn mark_read_via_im_core(
+    _resolved: &Resolved,
+    _manager: &crate::identity::Manager,
+    client: &im_core::ImClient,
+    _identity_name: &str,
+    message_ids: Vec<String>,
+) -> Result<message::CommandResult, MessageError> {
+    if message_ids.is_empty() {
+        return Err(MessageError::MessageNotFound);
+    }
+    let ids = message_ids
+        .iter()
+        .map(MessageId::parse)
+        .collect::<im_core::ImResult<Vec<_>>>()
+        .map_err(im_error_to_message_error)?;
+    let result = client
+        .messages()
+        .mark_read(ids)
+        .map_err(im_error_to_message_error)?;
+    let updated_count = result.updated_count;
+    Ok(message::CommandResult {
+        data: json!({
+            "action": "mark_read",
+            "updated_count": updated_count,
+            "message_ids": message_ids,
+        }),
+        summary: format!("Marked {updated_count} messages as read"),
+        warnings: message::compact_warnings(result.warnings),
     })
 }
 
@@ -306,15 +387,6 @@ fn inbox_scope(raw: &str) -> Result<InboxScope, ExitError> {
     }
 }
 
-fn legacy_inbox_scope(scope: InboxScope) -> String {
-    match scope {
-        InboxScope::All => "all",
-        InboxScope::DirectOnly => "direct",
-        InboxScope::GroupOnly => "group",
-    }
-    .to_string()
-}
-
 fn resolve_direct_target_for_sdk(
     client: &im_core::ImClient,
     request: &SendMessageRequest,
@@ -337,6 +409,114 @@ fn resolve_direct_target_for_sdk(
         did: lookup.did.as_str().to_string(),
         handle: lookup.handle.as_str().to_string(),
     }))
+}
+
+fn resolve_history_thread(
+    client: &im_core::ImClient,
+    thread: ThreadRef,
+) -> Result<(ThreadRef, message::TargetResolution, bool), MessageError> {
+    let ThreadRef::Direct(peer) = thread else {
+        return Err(MessageError::GroupNotSupported);
+    };
+    let original = peer.as_str().trim().to_string();
+    let target_is_handle = !original.is_empty() && !original.starts_with("did:");
+    let target = if target_is_handle {
+        let handle = Handle::parse(&original, "").map_err(im_error_to_message_error)?;
+        let lookup = client
+            .directory()
+            .lookup_handle(handle)
+            .map_err(im_error_to_message_error)?;
+        message::TargetResolution {
+            did: lookup.did.as_str().to_string(),
+            handle: lookup.handle.as_str().to_string(),
+        }
+    } else {
+        message::TargetResolution {
+            did: original,
+            handle: String::new(),
+        }
+    };
+    let thread =
+        ThreadRef::Direct(PeerRef::parse(&target.did, "").map_err(im_error_to_message_error)?);
+    Ok((thread, target, target_is_handle))
+}
+
+fn read_page_to_cli_raw(page: &Page<im_core::prelude::Message>, source: &str) -> Value {
+    json!({
+        "messages": page.items.iter().map(message_to_cli_json).collect::<Vec<_>>(),
+        "total": page.items.len(),
+        "source": source,
+        "next_cursor": page.next_cursor.as_ref().map(|cursor| cursor.as_str().to_string()),
+        "has_more": page.has_more,
+    })
+}
+
+fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
+    let mut value = json!({
+        "id": message.id.as_str(),
+        "msg_id": message.id.as_str(),
+        "message_id": message.id.as_str(),
+        "sender_did": message.sender.as_str(),
+        "receiver_did": message.receiver.as_ref().map(|peer| peer.as_str()).unwrap_or_default(),
+        "group_did": message.group.as_ref().map(|group| group.as_str()).unwrap_or_default(),
+        "content": message_body_content(&message.body),
+        "content_type": message_content_type(&message.body),
+        "sent_at": message.sent_at.clone().unwrap_or_default(),
+        "received_at": message.received_at.clone().unwrap_or_default(),
+        "is_read": false,
+        "secure": false,
+        "direction": match message.direction {
+            MessageDirection::Outgoing => 1,
+            MessageDirection::Incoming => 0,
+            MessageDirection::Unknown => -1,
+        },
+    });
+    if let Some(sequence) = message.metadata.server_sequence {
+        value["server_seq"] = json!(sequence);
+    }
+    if let Some(operation_id) = &message.metadata.operation_id {
+        value["operation_id"] = json!(operation_id);
+    }
+    if let Some(delivery_state) = &message.metadata.delivery_state {
+        value["delivery_state"] = json!(delivery_state);
+    }
+    for attribute in &message.metadata.attributes {
+        if !attribute.key.trim().is_empty() {
+            value[attribute.key.as_str()] = json!(attribute.value);
+        }
+    }
+    value
+}
+
+fn message_body_content(body: &MessageBodyView) -> String {
+    match body {
+        MessageBodyView::Text { text, .. } => text.clone(),
+        MessageBodyView::Unsupported { .. } => String::new(),
+    }
+}
+
+fn message_content_type(body: &MessageBodyView) -> &'static str {
+    match body {
+        MessageBodyView::Text {
+            kind: MessageKind::Markdown,
+            ..
+        } => "text/markdown",
+        MessageBodyView::Text { .. } => "text/plain",
+        MessageBodyView::Unsupported { .. } => "application/octet-stream",
+    }
+}
+
+fn source_default_for_mode(mode: &str) -> &'static str {
+    let _ = mode;
+    "remote_http"
+}
+
+fn source_with_default_for_mode(raw: &Value, mode: &str) -> String {
+    raw.get("source")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(source_default_for_mode(mode))
+        .to_string()
 }
 
 fn direct_target_from_result(result: &SendMessageResult) -> message::TargetResolution {
@@ -709,33 +889,6 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageError {
             MessageError::TransportUnavailable(detail)
         }
         err => MessageError::Internal(err.to_string()),
-    }
-}
-
-fn message_error_to_im_error(err: MessageError) -> im_core::ImError {
-    match err {
-        MessageError::Service(service_err) => im_core::ImError::Service {
-            status_code: (service_err.status_code != 0).then_some(service_err.status_code),
-            code: (service_err.rpc_code != 0).then(|| service_err.rpc_code.to_string()),
-            message: service_err.message,
-        },
-        MessageError::TransportUnavailable(detail) => {
-            im_core::ImError::TransportUnavailable { detail }
-        }
-        MessageError::TargetRequired => im_core::ImError::PeerNotFound {
-            peer: "direct target".to_string(),
-        },
-        MessageError::TextRequired => im_core::ImError::invalid_input(
-            Some("text".to_string()),
-            "text message must not be empty",
-        ),
-        MessageError::IdentityRequired(message) => im_core::ImError::IdentityNotReady {
-            identity: message,
-            missing: Vec::new(),
-        },
-        err => im_core::ImError::Internal {
-            message: err.to_string(),
-        },
     }
 }
 

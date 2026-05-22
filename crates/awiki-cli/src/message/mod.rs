@@ -46,6 +46,7 @@ pub use attachment::{
 pub(crate) use attachment::{find_attachment_selection_with_paging, load_attachment_file};
 pub use attachment_service::download_attachment;
 pub use client::Client;
+pub(crate) use contact_sync::peer_dids_for_handle_from_store;
 pub use group_create::create_group;
 pub(crate) use group_e2ee_decrypt::maybe_decrypt_group_messages;
 pub use group_e2ee_provider::{default_mls_data_dir, ANP_MLS_BINARY_ENV};
@@ -128,7 +129,7 @@ pub(crate) use service::{
     apply_inbox_filters, auth_session, bool_value, int_value, is_session_unauthorized,
     maybe_publish_secure_prekeys, merge_handle_history_messages, peer_handle_or_did,
     persist_history_messages, persist_inbox_messages, refresh_jwt_fallback,
-    require_active_identity, resolve_target, resolved_dids_value, runtime_mode, TargetResolution,
+    require_active_identity, resolved_dids_value, runtime_mode, TargetResolution,
 };
 pub use service::{
     send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,
