@@ -387,6 +387,13 @@ fn default_cutover_boundary_error(command: &str) -> Option<ExitError> {
         cmdmeta::CutoverStatus::Unsupported { capability, phase } => Some(
             crate::app::unsupported::unsupported_cutover_command(command, capability, phase),
         ),
+        cmdmeta::CutoverStatus::Removed if command == "debug.raw.rpc" => {
+            Some(crate::app::unsupported::unsupported_cutover_command(
+                command,
+                "raw-rpc",
+                "outside current im-core cutover",
+            ))
+        }
         _ => None,
     }
 }
@@ -404,6 +411,8 @@ fn is_default_cutover_blocked_domain(command: &str) -> bool {
         || command
             .strip_prefix("site.")
             .is_some_and(|suffix| !suffix.is_empty())
+        || command == "debug.db.query"
+        || command == "debug.raw.rpc"
 }
 
 fn go_stub_error(command: &str) -> ExitError {

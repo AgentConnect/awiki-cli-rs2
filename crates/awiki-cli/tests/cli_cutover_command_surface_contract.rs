@@ -147,7 +147,10 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
     );
     assert_eq!(
         cmdmeta::cutover_status("debug.db.query"),
-        CutoverStatus::DiagnosticOnly
+        CutoverStatus::Unsupported {
+            capability: "raw-sql",
+            phase: "outside current im-core cutover",
+        }
     );
     assert_eq!(
         cmdmeta::cutover_status("runtime.host-notify.openclaw.set-token"),
@@ -275,6 +278,12 @@ fn unsupported_cutover_stub_commands_do_not_enter_legacy_stub_boundary() {
             "people-directory",
             "future directory/relation API",
         ),
+        (
+            &["debug", "raw", "rpc"][..],
+            "debug.raw.rpc",
+            "raw-rpc",
+            "outside current im-core cutover",
+        ),
     ] {
         let output = awiki_cmd(args);
         assert_code(&output, 2);
@@ -321,6 +330,11 @@ fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
             ][..],
             "site.root.set",
             "page-site",
+        ),
+        (
+            &["debug", "db", "query", "SELECT 1"][..],
+            "debug.db.query",
+            "raw-sql",
         ),
     ] {
         let output = awiki_cmd(args);

@@ -155,12 +155,17 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
                 "debug",
                 "debug.db",
                 "debug.db.handle-history",
-                "debug.db.query",
                 "debug.db.import-v1",
             ],
         )
     {
         return Some(CutoverStatus::DiagnosticOnly);
+    }
+    if name == "debug.db.query" {
+        return Some(CutoverStatus::Unsupported {
+            capability: "raw-sql",
+            phase: "outside current im-core cutover",
+        });
     }
     if has_command_prefix(name, "msg.attachment") {
         return Some(CutoverStatus::Unsupported {

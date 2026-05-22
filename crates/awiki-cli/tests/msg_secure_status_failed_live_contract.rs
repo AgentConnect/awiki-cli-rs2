@@ -1,379 +1,109 @@
 use awiki_cli::config::Paths;
 use awiki_cli::identity::{types::SaveInput, Manager};
 use awiki_cli::store::{self, E2EEOutboxRecord};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_secure_status_live_routes_cli_and_redacts_local_state_like_go() {
-    let workspace = TempDir::new("msg-secure-status-live").expect("workspace");
+fn msg_secure_status_failed_retry_and_drop_return_cutover_unsupported_without_local_mutation() {
+    let workspace = TempDir::new("msg-secure-cutover-unsupported").expect("workspace");
     let manager = Manager::new(test_paths(workspace.path()));
-    let alice = save_ready_identity(&manager, "alice-status", "alice");
-    let peer_did = "did:wba:awiki.ai:user:bob:e1_bob";
-    let other_peer_did = "did:wba:awiki.ai:user:carol:e1_carol";
-
-    seed_secure_session(
-        &manager,
-        "alice-status",
-        "session-bob",
-        peer_did,
-        "established",
-    );
-    seed_secure_session(
-        &manager,
-        "alice-status",
-        "session-carol",
-        other_peer_did,
-        "pending-confirmation",
-    );
-    seed_secure_outbox(
-        workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "status-bob-failed".to_string(),
-            owner_did: alice.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-bob".to_string(),
-            original_type: "text".to_string(),
-            plaintext: "secret failed plaintext".to_string(),
-            local_status: "failed".to_string(),
-            last_error_code: "send_failed".to_string(),
-            retry_hint: "retry".to_string(),
-            metadata: "{\"private\":\"metadata\"}".to_string(),
-            created_at: "2026-05-17T00:00:00Z".to_string(),
-            updated_at: "2026-05-17T00:03:00Z".to_string(),
-            credential_name: "alice-status".to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    );
-    seed_secure_outbox(
-        workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "status-bob-queued".to_string(),
-            owner_did: alice.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-bob".to_string(),
-            original_type: "json".to_string(),
-            plaintext: "{\"secret\":true}".to_string(),
-            local_status: "queued".to_string(),
-            created_at: "2026-05-17T00:01:00Z".to_string(),
-            updated_at: "2026-05-17T00:02:00Z".to_string(),
-            credential_name: "alice-status".to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    );
-    seed_secure_outbox(
-        workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "status-carol-failed".to_string(),
-            owner_did: alice.did.clone(),
-            peer_did: other_peer_did.to_string(),
-            session_id: "session-carol".to_string(),
-            original_type: "text".to_string(),
-            plaintext: "other peer plaintext".to_string(),
-            local_status: "failed".to_string(),
-            created_at: "2026-05-17T00:04:00Z".to_string(),
-            updated_at: "2026-05-17T00:04:00Z".to_string(),
-            credential_name: "alice-status".to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "alice-status",
-            "msg",
-            "secure",
-            "status",
-            "--with",
-            peer_did,
-        ],
-        workspace.path(),
-    );
-
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        "Loaded 1 secure session(s) and 2 secure outbox record(s)"
-    );
-    assert_eq!(envelope["data"]["with"], peer_did);
-
-    let sessions = envelope["data"]["sessions"]
-        .as_array()
-        .expect("sessions array");
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0]["session_id"], "session-bob");
-    assert_eq!(sessions[0]["peer_did"], peer_did);
-    assert_eq!(sessions[0]["status"], "established");
-    assert_eq!(sessions[0]["send_n"], 7);
-    assert_eq!(sessions[0]["recv_n"], 3);
-    assert_eq!(sessions[0]["previous_send_chain_length"], 2);
-    assert_eq!(sessions[0]["skipped_key_count"], 2);
-    assert_absent(&sessions[0], "root_key_b64u");
-    assert_absent(&sessions[0], "ratchet_private_key_b64u");
-
-    assert_eq!(envelope["data"]["outbox"]["total"], 2);
-    assert_eq!(envelope["data"]["outbox"]["by_status"]["failed"], 1);
-    assert_eq!(envelope["data"]["outbox"]["by_status"]["queued"], 1);
-    let records = envelope["data"]["outbox"]["records"]
-        .as_array()
-        .expect("outbox records array");
-    assert_eq!(
-        outbox_ids(records),
-        vec!["status-bob-failed", "status-bob-queued"]
-    );
-    for record in records {
-        assert_eq!(record["peer_did"], peer_did);
-        assert_absent(record, "owner_did");
-        assert_absent(record, "credential_name");
-        assert_absent(record, "plaintext");
-        assert_absent(record, "metadata");
-    }
-}
-
-#[test]
-fn msg_secure_status_migrates_legacy_config_json_before_local_outbox_read_like_go() {
-    let workspace = TempDir::new("msg-secure-status-legacy-config").expect("workspace");
-    let legacy_config = workspace.path().join("config.json");
-    std::fs::write(
-        &legacy_config,
-        r#"{"schema_version":1,"identity":{"active":"alice-status"},"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
-    )
-    .expect("write legacy config");
-    let manager = Manager::new(test_paths(workspace.path()));
-    let alice = save_ready_identity(&manager, "alice-status", "alice");
-    let peer_did = "did:wba:legacy.example:user:bob:e1_bob";
-    seed_secure_outbox(
-        workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "status-legacy-config".to_string(),
-            owner_did: alice.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-legacy-config".to_string(),
-            original_type: "text".to_string(),
-            plaintext: "legacy config plaintext".to_string(),
-            local_status: "failed".to_string(),
-            created_at: "2026-05-17T02:00:00Z".to_string(),
-            updated_at: "2026-05-17T02:00:00Z".to_string(),
-            credential_name: "alice-status".to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    );
-
-    let output = awiki_cmd(&["msg", "secure", "status"], workspace.path());
-    let envelope = success_json(&output);
-
-    assert_eq!(envelope["command"], "awiki-cli msg secure status");
-    assert_eq!(
-        envelope["summary"],
-        "Loaded 0 secure session(s) and 1 secure outbox record(s)"
-    );
-    assert_eq!(envelope["data"]["outbox"]["total"], 1);
-    assert_eq!(
-        envelope["data"]["outbox"]["records"][0]["outbox_id"],
-        "status-legacy-config"
-    );
-    assert!(
-        !legacy_config.exists(),
-        "legacy config.json should be removed after workspace upgrade"
-    );
-    let migrated = std::fs::read_to_string(workspace.path().join("config.yaml"))
-        .expect("read migrated config");
-    assert!(
-        migrated.contains("  active: alice-status\n"),
-        "migrated config should keep active identity, got {migrated:?}"
-    );
-    assert!(
-        migrated.contains("  service_base_url: https://legacy.example\n"),
-        "migrated config should keep service URL, got {migrated:?}"
-    );
-    assert!(
-        migrated.contains("  did_domain: legacy.example\n"),
-        "migrated config should keep DID domain, got {migrated:?}"
-    );
-    assert_workspace_upgrade_meta(workspace.path(), "config.json.bak");
-}
-
-#[test]
-fn msg_secure_failed_live_routes_cli_and_filters_active_identity_like_go() {
-    let workspace = TempDir::new("msg-secure-failed-live").expect("workspace");
-    let manager = Manager::new(test_paths(workspace.path()));
-    let alice = save_ready_identity(&manager, "alice-failed", "alice");
-    let bob = save_ready_identity(&manager, "bob-failed", "bob");
+    let alice = save_ready_identity(&manager, "alice-secure", "alice");
+    let bob = save_ready_identity(&manager, "bob-secure", "bob");
     let peer_did = "did:wba:awiki.ai:user:peer:e1_peer";
 
     seed_secure_outbox(
         workspace.path(),
         E2EEOutboxRecord {
-            outbox_id: "alice-failed-new".to_string(),
+            outbox_id: "alice-failed".to_string(),
             owner_did: alice.did.clone(),
             peer_did: peer_did.to_string(),
-            session_id: "session-alice-new".to_string(),
+            session_id: "session-alice".to_string(),
             original_type: "text".to_string(),
-            plaintext: "new failed plaintext".to_string(),
+            plaintext: "failed plaintext".to_string(),
             local_status: "failed".to_string(),
             last_error_code: "send_failed".to_string(),
             retry_hint: "retry".to_string(),
             created_at: "2026-05-17T01:00:00Z".to_string(),
-            updated_at: "2026-05-17T01:03:00Z".to_string(),
-            credential_name: "alice-failed".to_string(),
+            updated_at: "2026-05-17T01:00:00Z".to_string(),
+            credential_name: "alice-secure".to_string(),
             ..E2EEOutboxRecord::default()
         },
     );
     seed_secure_outbox(
         workspace.path(),
         E2EEOutboxRecord {
-            outbox_id: "alice-queued".to_string(),
-            owner_did: alice.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-alice-queued".to_string(),
-            original_type: "text".to_string(),
-            plaintext: "queued plaintext".to_string(),
-            local_status: "queued".to_string(),
-            created_at: "2026-05-17T01:01:00Z".to_string(),
-            updated_at: "2026-05-17T01:04:00Z".to_string(),
-            credential_name: "alice-failed".to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    );
-    seed_secure_outbox(
-        workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "alice-failed-old".to_string(),
-            owner_did: alice.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-alice-old".to_string(),
-            original_type: "json".to_string(),
-            plaintext: "{\"failed\":true}".to_string(),
-            local_status: "failed".to_string(),
-            last_error_code: "send_failed".to_string(),
-            retry_hint: "retry".to_string(),
-            created_at: "2026-05-17T01:02:00Z".to_string(),
-            updated_at: "2026-05-17T01:02:00Z".to_string(),
-            credential_name: "alice-failed".to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    );
-    seed_secure_outbox(
-        workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "bob-failed-hidden".to_string(),
+            outbox_id: "bob-failed".to_string(),
             owner_did: bob.did.clone(),
             peer_did: peer_did.to_string(),
             session_id: "session-bob".to_string(),
             original_type: "text".to_string(),
-            plaintext: "bob failed plaintext".to_string(),
-            local_status: "failed".to_string(),
-            last_error_code: "send_failed".to_string(),
-            retry_hint: "retry".to_string(),
-            created_at: "2026-05-17T01:05:00Z".to_string(),
-            updated_at: "2026-05-17T01:05:00Z".to_string(),
-            credential_name: "bob-failed".to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    );
-
-    let output = awiki_cmd(
-        &["--identity", "alice-failed", "msg", "secure", "failed"],
-        workspace.path(),
-    );
-
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        "Loaded 2 failed secure outbox record(s)"
-    );
-    assert_eq!(envelope["data"]["total"], 2);
-    let rows = envelope["data"]["failed"]
-        .as_array()
-        .expect("failed rows array");
-    assert_eq!(
-        outbox_ids(rows),
-        vec!["alice-failed-new", "alice-failed-old"]
-    );
-    for row in rows {
-        assert_eq!(row["owner_did"], alice.did);
-        assert_eq!(row["credential_name"], "alice-failed");
-        assert_eq!(row["local_status"], "failed");
-    }
-}
-
-#[test]
-fn msg_secure_drop_live_routes_cli_and_marks_active_identity_outbox_like_go() {
-    let workspace = TempDir::new("msg-secure-drop-live").expect("workspace");
-    let manager = Manager::new(test_paths(workspace.path()));
-    let alice = save_ready_identity(&manager, "alice-drop", "alice");
-    let bob = save_ready_identity(&manager, "bob-drop", "bob");
-    let peer_did = "did:wba:awiki.ai:user:peer:e1_peer";
-
-    seed_secure_outbox(
-        workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "drop-live".to_string(),
-            owner_did: alice.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-drop-live".to_string(),
-            original_type: "text".to_string(),
-            plaintext: "drop this queued secure text".to_string(),
-            local_status: "failed".to_string(),
-            last_error_code: "send_failed".to_string(),
-            retry_hint: "drop".to_string(),
-            created_at: "2026-05-17T02:00:00Z".to_string(),
-            updated_at: "2026-05-17T02:00:00Z".to_string(),
-            credential_name: "alice-drop".to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    );
-    seed_secure_outbox(
-        workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "drop-other-owner".to_string(),
-            owner_did: bob.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-drop-other".to_string(),
-            original_type: "text".to_string(),
             plaintext: "other owner plaintext".to_string(),
             local_status: "failed".to_string(),
-            created_at: "2026-05-17T02:01:00Z".to_string(),
-            updated_at: "2026-05-17T02:01:00Z".to_string(),
-            credential_name: "bob-drop".to_string(),
+            created_at: "2026-05-17T01:01:00Z".to_string(),
+            updated_at: "2026-05-17T01:01:00Z".to_string(),
+            credential_name: "bob-secure".to_string(),
             ..E2EEOutboxRecord::default()
         },
     );
 
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "alice-drop",
-            "msg",
-            "secure",
-            "drop",
-            "drop-live",
-        ],
-        workspace.path(),
-    );
-
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        "Dropped secure outbox record drop-live"
-    );
-    assert_eq!(envelope["data"]["outbox_id"], "drop-live");
-    assert_eq!(envelope["data"]["status"], "dropped");
+    for (args, command) in [
+        (
+            &[
+                "--identity",
+                "alice-secure",
+                "msg",
+                "secure",
+                "status",
+                "--with",
+                peer_did,
+            ][..],
+            "msg.secure.status",
+        ),
+        (
+            &["--identity", "alice-secure", "msg", "secure", "failed"][..],
+            "msg.secure.failed",
+        ),
+        (
+            &[
+                "--identity",
+                "alice-secure",
+                "msg",
+                "secure",
+                "retry",
+                "alice-failed",
+            ][..],
+            "msg.secure.retry",
+        ),
+        (
+            &[
+                "--identity",
+                "alice-secure",
+                "msg",
+                "secure",
+                "drop",
+                "alice-failed",
+            ][..],
+            "msg.secure.drop",
+        ),
+    ] {
+        let output = awiki_cmd(args, workspace.path());
+        assert_secure_direct_unsupported(&output, command);
+    }
 
     let rows = query_rows(
         workspace.path(),
         "SELECT outbox_id, local_status, credential_name FROM e2ee_outbox ORDER BY outbox_id",
     );
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["outbox_id"], "drop-live");
-    assert_eq!(rows[0]["local_status"], "dropped");
-    assert_eq!(rows[0]["credential_name"], "alice-drop");
-    assert_eq!(rows[1]["outbox_id"], "drop-other-owner");
+    assert_eq!(rows[0]["outbox_id"], "alice-failed");
+    assert_eq!(rows[0]["local_status"], "failed");
+    assert_eq!(rows[0]["credential_name"], "alice-secure");
+    assert_eq!(rows[1]["outbox_id"], "bob-failed");
     assert_eq!(rows[1]["local_status"], "failed");
-    assert_eq!(rows[1]["credential_name"], "bob-drop");
+    assert_eq!(rows[1]["credential_name"], "bob-secure");
 }
 
 fn save_ready_identity(
@@ -396,38 +126,6 @@ fn save_ready_identity(
         .expect("save ready identity")
 }
 
-fn seed_secure_session(
-    manager: &Manager,
-    identity_name: &str,
-    session_id: &str,
-    peer_did: &str,
-    status: &str,
-) {
-    let paths = manager
-        .paths_for_identity(identity_name)
-        .expect("identity paths");
-    let root = Path::new(&paths.identity_dir).join("p5-e2ee-sessions");
-    std::fs::create_dir_all(&root).expect("create secure session root");
-    let session = json!({
-        "session_id": session_id,
-        "suite": "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1",
-        "peer_did": peer_did,
-        "status": status,
-        "is_initiator": true,
-        "send_n": 7,
-        "recv_n": 3,
-        "previous_send_chain_length": 2,
-        "skipped_message_keys": [{"n": 1}, {"n": 2}],
-        "root_key_b64u": "secret-root",
-        "ratchet_private_key_b64u": "secret-ratchet-private",
-    });
-    std::fs::write(
-        root.join(format!("{session_id}.json")),
-        serde_json::to_vec_pretty(&session).expect("session json"),
-    )
-    .expect("write secure session");
-}
-
 fn seed_secure_outbox(workspace: &Path, record: E2EEOutboxRecord) {
     let paths = test_paths(workspace);
     let connection = store::open(&paths).expect("open store");
@@ -436,11 +134,24 @@ fn seed_secure_outbox(workspace: &Path, record: E2EEOutboxRecord) {
 }
 
 fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
-    let output = awiki_cmd(&["debug", "db", "query", sql], workspace);
-    success_json(&output)["data"]["rows"]
-        .as_array()
-        .cloned()
-        .expect("query rows")
+    let paths = test_paths(workspace);
+    let connection = store::open(&paths).expect("open store");
+    let mut statement = connection.prepare(sql).expect("prepare query");
+    let columns = statement
+        .column_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let rows = statement
+        .query_map([], |row| {
+            let mut value = serde_json::Map::new();
+            for (index, column) in columns.iter().enumerate() {
+                value.insert(column.clone(), Value::String(row.get(index)?));
+            }
+            Ok(Value::Object(value))
+        })
+        .expect("query rows");
+    rows.map(|row| row.expect("read row")).collect()
 }
 
 fn test_paths(workspace: &Path) -> Paths {
@@ -482,63 +193,29 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     command.output().expect("run awiki-cli")
 }
 
-fn success_json(output: &Output) -> Value {
+fn assert_secure_direct_unsupported(output: &Output, command: &str) {
     assert_eq!(
         output.status.code(),
-        Some(0),
-        "stdout:\n{}\nstderr:\n{}",
+        Some(2),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        output.stderr.is_empty(),
-        "stderr should be empty: {}",
-        String::from_utf8_lossy(&output.stderr)
+        output.stdout.is_empty(),
+        "stdout should be empty: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
-    serde_json::from_slice(&output.stdout).expect("success JSON")
-}
-
-fn outbox_ids(rows: &[Value]) -> Vec<&str> {
-    rows.iter()
-        .map(|row| {
-            row.get("outbox_id")
-                .and_then(Value::as_str)
-                .expect("outbox_id string")
-        })
-        .collect()
-}
-
-fn assert_absent(value: &Value, field: &str) {
-    assert!(
-        value.get(field).is_none(),
-        "{field} should be absent from {value:?}"
-    );
-}
-
-fn assert_workspace_upgrade_meta(workspace: &Path, backup_file: &str) {
-    let meta_path = workspace.join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
-    assert!(
-        meta["last_upgrade_id"]
-            .as_str()
-            .is_some_and(|value| !value.trim().is_empty()),
-        "last_upgrade_id should be non-empty: {meta:?}"
-    );
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap_or_default());
+    let envelope: Value =
+        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
+    assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
     assert_eq!(
-        backup_dir.parent(),
-        Some(workspace.join("upgrade").join("backups").as_path())
-    );
-    assert!(backup_dir.join(backup_file).is_file());
-    assert!(
-        !workspace
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
     );
 }
 

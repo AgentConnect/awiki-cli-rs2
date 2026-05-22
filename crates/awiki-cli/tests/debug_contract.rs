@@ -133,11 +133,10 @@ fn debug_db_handle_history_returns_not_found_for_unknown_normalized_handle() {
 }
 
 #[test]
-fn debug_db_query_migrates_legacy_config_json_before_opening_store_like_go() {
+fn debug_db_query_returns_stable_unsupported_capability_without_opening_store() {
     let workspace = TempDir::new().expect("temp workspace");
-    let legacy_config = workspace.path().join("config.json");
     std::fs::write(
-        &legacy_config,
+        workspace.path().join("config.json"),
         r#"{"schema_version":1,"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
     )
     .expect("write legacy config");
@@ -151,59 +150,23 @@ fn debug_db_query_migrates_legacy_config_json_before_opening_store_like_go() {
         ],
         workspace.path(),
     );
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["command"], "awiki-cli debug db query");
-    assert_eq!(
-        envelope["data"]["database_file"],
-        workspace
-            .path()
-            .join("data")
-            .join("awiki-cli.db")
-            .to_string_lossy()
-            .as_ref()
-    );
-    assert_eq!(envelope["data"]["rows"][0]["name"], "messages");
+    assert_code(&output, 2);
+    let envelope = error_json(&output);
 
-    assert!(
-        !legacy_config.exists(),
-        "legacy config.json should be removed after workspace upgrade"
-    );
-    let config_yaml = workspace.path().join("config.yaml");
-    let config_text = std::fs::read_to_string(&config_yaml).expect("read migrated config");
-    assert!(
-        config_text.contains("  service_base_url: https://legacy.example\n"),
-        "migrated config should keep service URL, got {config_text:?}"
-    );
-    assert!(
-        config_text.contains("  did_domain: legacy.example\n"),
-        "migrated config should keep DID domain, got {config_text:?}"
-    );
-
-    let meta_path = workspace.path().join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
-    assert_non_empty_string(&meta["last_upgrade_id"], "last_upgrade_id");
-    assert_non_empty_string(&meta["last_backup_dir"], "last_backup_dir");
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], "debug.db.query");
+    assert_eq!(envelope["error"]["details"]["capability"], "raw-sql");
     assert_eq!(
-        backup_dir.parent(),
-        Some(workspace.path().join("upgrade").join("backups").as_path())
+        envelope["error"]["details"]["required_phase"],
+        "outside current im-core cutover"
     );
-    assert!(backup_dir.join("config.json.bak").is_file());
-    assert!(
-        !workspace
-            .path()
-            .join("upgrade")
-            .join("upgrade_journal.json")
-            .exists(),
-        "journal should be cleared after successful upgrade"
+    assert_eq!(
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
     );
     assert!(
-        workspace.path().join("data").join("awiki-cli.db").is_file(),
-        "debug db query should create the local SQLite store"
+        !workspace.path().join("data").join("awiki-cli.db").exists(),
+        "unsupported debug db query must not create the local SQLite store"
     );
     assert!(
         !workspace
@@ -211,7 +174,7 @@ fn debug_db_query_migrates_legacy_config_json_before_opening_store_like_go() {
             .join("runtime")
             .join("message-daemon.sock")
             .exists(),
-        "debug db query must not create runtime socket artifacts"
+        "unsupported debug db query must not create runtime socket artifacts"
     );
     assert!(
         !workspace
@@ -219,7 +182,7 @@ fn debug_db_query_migrates_legacy_config_json_before_opening_store_like_go() {
             .join("runtime")
             .join("listener.pid")
             .exists(),
-        "debug db query must not create listener pid artifacts"
+        "unsupported debug db query must not create listener pid artifacts"
     );
 }
 
@@ -386,13 +349,6 @@ fn assert_contains(value: &Value, needle: &str) {
     assert!(
         haystack.contains(needle),
         "expected {haystack:?} to contain {needle:?}"
-    );
-}
-
-fn assert_non_empty_string(value: &Value, name: &str) {
-    assert!(
-        value.as_str().is_some_and(|text| !text.trim().is_empty()),
-        "{name} should be a non-empty string, got {value:?}"
     );
 }
 

@@ -1,3 +1,4 @@
+use rusqlite::Connection;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -493,6 +494,12 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
             "people-directory",
             "future directory/relation API",
         ),
+        (
+            &["debug", "raw", "rpc"][..],
+            "debug.raw.rpc",
+            "raw-rpc",
+            "outside current im-core cutover",
+        ),
     ] {
         let output = awiki_cmd(args);
         assert_code(&output, 2);
@@ -518,12 +525,6 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
             "group.code.get",
             "PHASE5",
             "awiki-cli group code get",
-        ),
-        (
-            &["debug", "raw", "rpc"][..],
-            "debug.raw.rpc",
-            "PHASE7",
-            "awiki-cli debug raw rpc",
         ),
         (
             &["debug", "logs", "--follow"][..],
@@ -832,70 +833,45 @@ fn init_creates_real_sqlite_schema() {
     let init_output = awiki_cmd_with_workspace(&["init"], workspace.path().to_str().unwrap());
     assert_success(&init_output);
 
-    let query_output = awiki_cmd_with_workspace(
-        &[
-            "debug",
-            "db",
-            "query",
+    let connection =
+        Connection::open(workspace.path().join("data").join("awiki-cli.db")).expect("open db");
+    let table_name: String = connection
+        .query_row(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
-        ],
-        workspace.path().to_str().unwrap(),
-    );
-    assert_success(&query_output);
-    let envelope = success_json(&query_output);
-    assert_eq!(envelope["command"], "awiki-cli debug db query");
-    assert_eq!(envelope["data"]["rows"][0]["name"], "messages");
+            [],
+            |row| row.get(0),
+        )
+        .expect("messages table exists");
+    assert_eq!(table_name, "messages");
 }
 
 #[test]
-fn debug_db_query_rejects_unsafe_sql_and_supports_table_output() {
+fn debug_db_query_returns_stable_unsupported_capability() {
     let workspace = TempDir::new().expect("temp workspace");
 
-    let empty = awiki_cmd_with_workspace(
-        &["debug", "db", "query", "   "],
+    let output = awiki_cmd_with_workspace(
+        &["debug", "db", "query", "SELECT 1 AS value"],
         workspace.path().to_str().unwrap(),
     );
-    assert_code(&empty, 2);
-    let envelope = error_json(&empty);
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
-    assert_contains(&envelope["error"]["message"], "empty statement");
+    assert_code(&output, 2);
+    assert_stdout_empty(&output);
+    let envelope = error_json(&output);
 
-    let multiple = awiki_cmd_with_workspace(
-        &["debug", "db", "query", "SELECT 1; SELECT 2"],
-        workspace.path().to_str().unwrap(),
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], "debug.db.query");
+    assert_eq!(envelope["error"]["details"]["capability"], "raw-sql");
+    assert_eq!(
+        envelope["error"]["details"]["required_phase"],
+        "outside current im-core cutover"
     );
-    assert_code(&multiple, 2);
-    let envelope = error_json(&multiple);
-    assert_contains(
-        &envelope["error"]["message"],
-        "multiple statements are not allowed",
+    assert_eq!(
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
     );
-
-    let delete = awiki_cmd_with_workspace(
-        &["debug", "db", "query", "DELETE FROM messages"],
-        workspace.path().to_str().unwrap(),
+    assert!(
+        !workspace.path().join("data").join("awiki-cli.db").exists(),
+        "unsupported debug db query must not create the local SQLite store"
     );
-    assert_code(&delete, 2);
-    let envelope = error_json(&delete);
-    assert_contains(
-        &envelope["error"]["message"],
-        "DELETE without WHERE clause is not allowed",
-    );
-
-    let table = awiki_cmd_with_workspace(
-        &[
-            "debug",
-            "db",
-            "query",
-            "SELECT 1 AS value",
-            "--format",
-            "table",
-        ],
-        workspace.path().to_str().unwrap(),
-    );
-    assert_success(&table);
-    let stdout = String::from_utf8_lossy(&table.stdout);
-    assert!(stdout.contains("value"), "table stdout: {stdout}");
 }
 
 #[test]
