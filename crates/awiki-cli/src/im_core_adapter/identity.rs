@@ -9,14 +9,18 @@ use im_core::prelude::{
     ProfilePatch, RecoverGeneratedIdentity, RecoverHandleRequest, RegisterHandleRequest,
     RegistrationMethod, SessionBundle, VerificationInput,
 };
+use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use crate::cli::ParsedCommand;
+use crate::config;
 use crate::identity;
 use crate::identity::types::LEGACY_LAYOUT_HINT;
 use crate::output::ExitError;
@@ -540,8 +544,7 @@ pub fn recover_handle_via_im_core(
         ));
     }
 
-    let plan = identity::recover::build_recover_plan(manager, &resolved.did_domain, &params)
-        .map_err(crate::app::identity_exit)?;
+    let plan = recover_handle_plan(manager, &resolved.did_domain, &params)?;
 
     if otp.is_empty() {
         let bridge = recover_handle_bridge_request(params, None, &resolved.did_domain)?;
@@ -573,18 +576,9 @@ pub fn recover_handle_via_im_core(
         did_document: generated.did_document.clone(),
     };
     let bridge = recover_handle_bridge_request(params, Some(sdk_generated), &resolved.did_domain)?;
-    let active_before = identity::recover::recover_active_before(&resolved.paths.config_file)
-        .map_err(crate::app::identity_exit)?;
-    let backup = manager
-        .backup_identities_for_handle_recovery(identity::recover::RecoverBackupRequest {
-            handle: &plan.target_handle,
-            candidates: &plan.same_handle_candidates,
-            planned_final_identity_name: &plan.final_identity_name,
-            planned_temp_identity_name: &plan.temp_identity_name,
-            active_before: &active_before,
-            config_file: Some(&resolved.paths.config_file),
-        })
-        .map_err(crate::app::identity_exit)?;
+    let active_before = recover_active_before(&resolved.paths.config_file)?;
+    let backup =
+        recover_handle_backup(manager, &plan, &active_before, &resolved.paths.config_file)?;
 
     let bridge_result = im_core::compat::identity::recover_handle_with_bridge(
         bridge.sdk,
@@ -1536,11 +1530,63 @@ fn register_plan_action_and_calls(
 #[derive(Debug, Clone)]
 struct RecoverHandlePlan {
     target_handle: String,
+    target_local_part: String,
+    effective_domain: String,
     final_identity_name: String,
     temp_identity_name: String,
     backup_path_preview: String,
     same_handle_candidates: Vec<identity::IdentitySummary>,
     excluded_identities: Vec<identity::IdentitySummary>,
+}
+
+#[derive(Debug, Clone)]
+struct RecoverHandleBackup {
+    backup_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RecoverHandleBackupManifest {
+    reason: String,
+    created_at: String,
+    handle: String,
+    archived_identity_names: Vec<String>,
+    archived_dids: Vec<String>,
+    archived_dir_names: Vec<String>,
+    default_before: String,
+    active_before: String,
+    planned_final_identity: String,
+    planned_temp_identity: String,
+}
+
+impl RecoverHandlePlan {
+    fn archived_identity_names(&self) -> Vec<String> {
+        self.same_handle_candidates
+            .iter()
+            .map(|summary| summary.identity_name.clone())
+            .collect()
+    }
+
+    fn archived_dids(&self) -> Vec<String> {
+        self.same_handle_candidates
+            .iter()
+            .filter_map(|summary| {
+                let did = summary.did.trim();
+                (!did.is_empty()).then(|| did.to_string())
+            })
+            .collect()
+    }
+
+    fn old_owner_dids_in_merge_order(&self) -> Vec<String> {
+        let mut dids = Vec::with_capacity(self.same_handle_candidates.len());
+        for summary in &self.same_handle_candidates {
+            let did = summary.did.trim();
+            if did.is_empty() || dids.iter().any(|seen| seen == did) {
+                continue;
+            }
+            dids.push(did.to_string());
+        }
+        dids
+    }
 }
 
 fn recover_handle_plan_command_result(
@@ -1663,6 +1709,8 @@ fn recover_handle_plan(
 
     Ok(RecoverHandlePlan {
         target_handle: target.full_handle,
+        target_local_part: target.local_part,
+        effective_domain: target.effective_domain,
         final_identity_name,
         temp_identity_name,
         backup_path_preview,
@@ -1672,15 +1720,167 @@ fn recover_handle_plan(
 }
 
 fn recover_backup_path_preview(manager: &identity::Manager, handle: &str) -> String {
-    std::path::Path::new(manager.root_dir())
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from(manager.root_dir()))
-        .join(identity::types::LEGACY_BACKUP_DIR_NAME)
+    recover_backup_root(manager)
         .join("recover-handle")
         .join(recover_backup_preview_name(handle))
         .to_string_lossy()
         .into_owned()
+}
+
+fn recover_active_before(config_file: &str) -> Result<String, ExitError> {
+    if config_file.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let (file_config, _, error) = config::read_file_config(config_file);
+    if !error.is_empty() {
+        return Err(crate::app::identity_exit(
+            identity::IdentityError::Internal(format!(
+                "read config before handle recover: {error}"
+            )),
+        ));
+    }
+    Ok(file_config.identity.active.trim().to_string())
+}
+
+fn recover_handle_backup(
+    manager: &identity::Manager,
+    plan: &RecoverHandlePlan,
+    active_before: &str,
+    config_file: &str,
+) -> Result<RecoverHandleBackup, ExitError> {
+    if plan.target_handle.trim().is_empty() {
+        return Err(crate::app::identity_exit(
+            identity::IdentityError::InvalidInput("invalid input: handle is required".to_string()),
+        ));
+    }
+    manager.ensure_root().map_err(crate::app::identity_exit)?;
+    let index = manager.load_index().map_err(crate::app::identity_exit)?;
+    let created_at = OffsetDateTime::now_utc();
+    let backup_root = recover_backup_root(manager).join("recover-handle");
+    let backup_dir = recover_unique_backup_dir(
+        backup_root.join(recover_backup_dir_name(created_at, &plan.target_handle)),
+    );
+    identity::layout::ensure_dir(&backup_dir).map_err(|err| {
+        crate::app::identity_exit(identity::IdentityError::Internal(format!(
+            "create recover backup directory: {err}"
+        )))
+    })?;
+
+    identity::layout::write_secure_json(
+        &backup_dir.join("index.before.json").to_string_lossy(),
+        &index,
+    )
+    .map_err(|err| {
+        crate::app::identity_exit(identity::IdentityError::Internal(format!(
+            "write recover backup index snapshot: {err}"
+        )))
+    })?;
+    let config_file = config_file.trim();
+    if !config_file.is_empty() {
+        match fs::read(config_file) {
+            Ok(raw) => {
+                identity::layout::write_secure_text(
+                    &backup_dir.join("config.before.yaml").to_string_lossy(),
+                    &String::from_utf8_lossy(&raw),
+                )
+                .map_err(|err| {
+                    crate::app::identity_exit(identity::IdentityError::Internal(format!(
+                        "write recover backup config snapshot: {err}"
+                    )))
+                })?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(crate::app::identity_exit(
+                    identity::IdentityError::Internal(format!(
+                        "read config before recover backup: {err}"
+                    )),
+                ));
+            }
+        }
+    }
+
+    let mut archived_identity_names = Vec::with_capacity(plan.same_handle_candidates.len());
+    let mut archived_dids = Vec::with_capacity(plan.same_handle_candidates.len());
+    let mut archived_dir_names = Vec::with_capacity(plan.same_handle_candidates.len());
+    for (idx, summary) in plan.same_handle_candidates.iter().enumerate() {
+        archived_identity_names.push(summary.identity_name.clone());
+        archived_dids.push(summary.did.clone());
+        archived_dir_names.push(summary.dir_name.clone());
+        let source = PathBuf::from(manager.build_paths(&summary.dir_name).identity_dir);
+        let metadata = match fs::metadata(&source) {
+            Ok(metadata) => metadata,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(crate::app::identity_exit(
+                    identity::IdentityError::Internal(format!(
+                        "stat identity directory before recover backup: {err}"
+                    )),
+                ));
+            }
+        };
+        if !metadata.is_dir() {
+            return Err(crate::app::identity_exit(
+                identity::IdentityError::InvalidInput(format!(
+                    "invalid input: identity path is not a directory: {}",
+                    source.to_string_lossy()
+                )),
+            ));
+        }
+        let mut target_name = format!(
+            "{:02}-{}",
+            idx + 1,
+            identity::layout::sanitize_component(&summary.identity_name)
+        );
+        if target_name.trim().is_empty() {
+            target_name = format!(
+                "{:02}-{}",
+                idx + 1,
+                identity::layout::sanitize_component(&summary.dir_name)
+            );
+        }
+        identity::layout::copy_dir(&source, &backup_dir.join("identities").join(target_name))
+            .map_err(|err| {
+                crate::app::identity_exit(identity::IdentityError::Internal(format!(
+                    "backup identity directory before recover: {err}"
+                )))
+            })?;
+    }
+
+    let manifest = RecoverHandleBackupManifest {
+        reason: "recover_handle".to_string(),
+        created_at: created_at
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string()),
+        handle: plan.target_handle.clone(),
+        archived_identity_names,
+        archived_dids,
+        archived_dir_names,
+        default_before: index.default_credential_name,
+        active_before: active_before.trim().to_string(),
+        planned_final_identity: plan.final_identity_name.clone(),
+        planned_temp_identity: plan.temp_identity_name.clone(),
+    };
+    identity::layout::write_secure_json(
+        &backup_dir.join("backup_manifest.json").to_string_lossy(),
+        &manifest,
+    )
+    .map_err(|err| {
+        crate::app::identity_exit(identity::IdentityError::Internal(format!(
+            "write recover backup manifest: {err}"
+        )))
+    })?;
+    Ok(RecoverHandleBackup {
+        backup_path: backup_dir.to_string_lossy().into_owned(),
+    })
+}
+
+fn recover_backup_root(manager: &identity::Manager) -> PathBuf {
+    Path::new(manager.root_dir())
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(manager.root_dir()))
+        .join(identity::types::LEGACY_BACKUP_DIR_NAME)
 }
 
 fn recover_backup_preview_name(handle: &str) -> String {
@@ -1689,6 +1889,35 @@ fn recover_backup_preview_name(handle: &str) -> String {
         handle_part = "handle".to_string();
     }
     format!("<timestamp>-{handle_part}")
+}
+
+fn recover_backup_dir_name(created_at: OffsetDateTime, handle: &str) -> String {
+    let mut handle_part = identity::layout::sanitize_identity_name(handle);
+    if handle_part.is_empty() {
+        handle_part = "handle".to_string();
+    }
+    let timestamp = created_at
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+        .replace(':', "-");
+    format!("{timestamp}-{handle_part}")
+}
+
+fn recover_unique_backup_dir(base: PathBuf) -> PathBuf {
+    if !base.exists() {
+        return base;
+    }
+    for idx in 2..1000 {
+        let candidate = PathBuf::from(format!("{}-{idx}", base.to_string_lossy()));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from(format!(
+        "{}-{}",
+        base.to_string_lossy(),
+        OffsetDateTime::now_utc().unix_timestamp()
+    ))
 }
 
 fn canonical_handle(raw: &str) -> String {
