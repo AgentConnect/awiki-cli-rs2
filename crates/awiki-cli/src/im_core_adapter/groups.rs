@@ -6,9 +6,10 @@
 use im_core::prelude::{
     Cursor, Did, GroupCreateRequest as SdkGroupCreateRequest,
     GroupJoinRequest as SdkGroupJoinRequest, GroupLeaveRequest as SdkGroupLeaveRequest,
-    GroupListRequest, GroupMemberMutationRequest, GroupMembersRequest, GroupMessagesRequest,
-    GroupPolicyPatch, GroupProfilePatch, GroupRef, GroupUpdatePolicyRequest,
-    GroupUpdateProfileRequest, Handle, PageLimit,
+    GroupListRequest, GroupMember, GroupMemberMutationRequest, GroupMembersRequest,
+    GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch, GroupReadResult, GroupRef,
+    GroupSnapshot, GroupSummary, GroupUpdatePolicyRequest, GroupUpdateProfileRequest, Handle,
+    Message, PageLimit,
 };
 use serde_json::{json, Value};
 
@@ -383,25 +384,23 @@ pub fn get_group_via_im_core(
     identity_name: &str,
     group: String,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
+    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let result = client
         .groups()
         .get(group_ref)
         .map_err(im_error_to_message_error)?;
     let raw = group_diagnostic_raw(&result);
-    let mut warnings = group_control_warnings(resolved, result.warnings);
-    warnings.extend(message::persist_group_snapshot(resolved, &record, &raw));
-    let snapshot = message::cached_group_snapshot(resolved, &record, &group)
+    let snapshot = group_snapshot_to_cli_json(result.group.as_ref())
         .or_else(|| normalize_group_snapshot(&raw))
         .unwrap_or(Value::Null);
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
-            "source": group_control_source(&raw),
+            "source": group_read_source(&result, &raw),
         }),
         summary: "Loaded group snapshot".to_string(),
-        warnings: compact_warnings(warnings),
+        warnings: group_control_warnings(resolved, result.warnings),
     })
 }
 
@@ -421,13 +420,13 @@ pub fn list_groups_via_im_core(
         .list(request)
         .map_err(im_error_to_message_error)?;
     let raw = group_diagnostic_raw(&result);
-    let groups = values_from_array(raw.get("groups"));
-    let total = int_value(raw.get("total"), groups.len() as i64);
+    let groups = groups_to_cli_json(&result);
+    let total = group_read_total(&result, groups.len());
     Ok(CommandResult {
         data: json!({
             "groups": groups,
             "total": total,
-            "source": group_control_source(&raw),
+            "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} groups"),
         warnings: group_control_warnings(resolved, result.warnings),
@@ -442,7 +441,7 @@ pub fn group_members_via_im_core(
     group: String,
     limit: i64,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
+    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let request = GroupMembersRequest {
         group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
         limit: page_limit(limit, 100)?,
@@ -452,23 +451,17 @@ pub fn group_members_via_im_core(
         .members(request)
         .map_err(im_error_to_message_error)?;
     let raw = group_diagnostic_raw(&result);
-    let mut warnings = group_control_warnings(resolved, result.warnings);
-    warnings.extend(message::persist_group_members(
-        resolved, &record, &group, &raw,
-    ));
-    let members = message::cached_group_members(resolved, &record, &group, limit)
-        .filter(|items| !items.is_empty())
-        .unwrap_or_else(|| values_from_array(raw.get("members")));
-    let total = int_value(raw.get("total"), members.len() as i64);
+    let members = group_members_to_cli_json(&result, &raw);
+    let total = group_read_total(&result, members.len());
     Ok(CommandResult {
         data: json!({
             "group": group,
             "members": members,
             "total": total,
-            "source": group_control_source(&raw),
+            "source": group_read_source(&result, &raw),
         }),
         summary: format!("Loaded {total} group members"),
-        warnings: compact_warnings(warnings),
+        warnings: group_control_warnings(resolved, result.warnings),
     })
 }
 
@@ -481,7 +474,7 @@ pub fn group_messages_via_im_core(
     limit: i64,
     cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
+    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let request = GroupMessagesRequest {
         group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
         limit: page_limit(limit, 50)?,
@@ -491,20 +484,11 @@ pub fn group_messages_via_im_core(
         .groups()
         .messages(request)
         .map_err(im_error_to_message_error)?;
-    let mut raw = group_diagnostic_raw(&result);
-    let mut warnings = group_control_warnings(resolved, result.warnings);
+    let raw = group_diagnostic_raw(&result);
     let result_source_mode = runtime::bridge::MODE_HTTP;
 
-    warnings.extend(message::maybe_decrypt_group_messages(
-        resolved, &record, &group, &mut raw,
-    ));
-    warnings.extend(message::persist_group_messages(
-        resolved, &record, &group, &raw,
-    ));
-    let messages = message::cached_group_messages(resolved, &record, &group, limit, &cursor)
-        .filter(|items| !items.is_empty())
-        .unwrap_or_else(|| values_from_array(raw.get("messages")));
-    let total = int_value(raw.get("total"), messages.len() as i64);
+    let messages = group_messages_to_cli_json(&result, &raw);
+    let total = group_read_total(&result, messages.len());
     Ok(CommandResult {
         data: json!({
             "group": group,
@@ -515,7 +499,7 @@ pub fn group_messages_via_im_core(
             "source": source_with_default_for_mode(&raw, result_source_mode),
         }),
         summary: format!("Loaded {total} group messages"),
-        warnings: compact_warnings(warnings),
+        warnings: group_control_warnings(resolved, result.warnings),
     })
 }
 
@@ -599,6 +583,189 @@ fn group_policy_patch(request: &GroupUpdateRequest) -> GroupPolicyPatch {
 fn group_control_warnings(resolved: &Resolved, mut warnings: Vec<String>) -> Vec<String> {
     warnings.extend(message::group_control_warnings(resolved));
     compact_warnings(warnings)
+}
+
+fn group_read_source(result: &GroupReadResult, raw: &Value) -> String {
+    result
+        .source
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| group_control_source(raw))
+}
+
+fn group_read_total(result: &GroupReadResult, fallback_len: usize) -> i64 {
+    result
+        .total
+        .map(i64::from)
+        .unwrap_or_else(|| fallback_len as i64)
+}
+
+fn groups_to_cli_json(result: &GroupReadResult) -> Vec<Value> {
+    if !result.groups.is_empty() {
+        return result.groups.iter().map(group_summary_to_json).collect();
+    }
+    result
+        .diagnostic_raw()
+        .map(|raw| values_from_array(raw.get("groups")))
+        .unwrap_or_default()
+}
+
+fn group_members_to_cli_json(result: &GroupReadResult, raw: &Value) -> Vec<Value> {
+    if !result.members.is_empty() {
+        return result.members.iter().map(group_member_to_json).collect();
+    }
+    values_from_array(raw.get("members"))
+        .into_iter()
+        .map(normalize_group_member_json)
+        .collect()
+}
+
+fn group_messages_to_cli_json(result: &GroupReadResult, raw: &Value) -> Vec<Value> {
+    if !result.messages.items.is_empty() {
+        return result
+            .messages
+            .items
+            .iter()
+            .map(group_message_to_json)
+            .collect();
+    }
+    values_from_array(raw.get("messages"))
+}
+
+fn group_snapshot_to_cli_json(snapshot: Option<&GroupSnapshot>) -> Option<Value> {
+    let snapshot = snapshot?;
+    Some(json!({
+        "id": snapshot.id,
+        "group_did": snapshot.did.as_str(),
+        "did": snapshot.did.as_str(),
+        "name": snapshot.name,
+        "description": snapshot.description,
+        "member_role": snapshot.my_role,
+        "my_role": snapshot.my_role,
+        "member_status": snapshot.membership_status,
+        "membership_status": snapshot.membership_status,
+        "member_count": snapshot.member_count,
+        "last_message_at": snapshot.last_message_at,
+    }))
+}
+
+fn group_summary_to_json(group: &GroupSummary) -> Value {
+    json!({
+        "id": group.id,
+        "group_did": group.did.as_str(),
+        "did": group.did.as_str(),
+        "name": group.name,
+        "member_status": group.membership_status,
+        "membership_status": group.membership_status,
+        "member_count": group.member_count,
+        "last_message_at": group.last_message_at,
+    })
+}
+
+fn group_member_to_json(member: &GroupMember) -> Value {
+    let did = member.did.as_ref().map(Did::as_str).unwrap_or_default();
+    let handle = member
+        .handle
+        .as_ref()
+        .map(Handle::as_str)
+        .map(normalize_handle_value)
+        .unwrap_or_default();
+    json!({
+        "member_did": did,
+        "did": did,
+        "member_handle": handle,
+        "handle": handle,
+        "role": member.role,
+        "status": member.status,
+        "joined_at": member.joined_at,
+    })
+}
+
+fn normalize_group_member_json(mut member: Value) -> Value {
+    let Some(object) = member.as_object_mut() else {
+        return member;
+    };
+    let did = default_string(
+        &string_value(object.get("agent_did")),
+        &default_string(
+            &string_value(object.get("member_did")),
+            &string_value(object.get("did")),
+        ),
+    );
+    if !did.trim().is_empty() {
+        object
+            .entry("member_did".to_string())
+            .or_insert_with(|| Value::String(did.clone()));
+        object
+            .entry("did".to_string())
+            .or_insert_with(|| Value::String(did));
+    }
+    let handle = normalize_handle_value(&default_string(
+        &string_value(object.get("handle")),
+        &default_string(
+            &string_value(object.get("member_handle")),
+            &string_value(object.get("agent_handle")),
+        ),
+    ));
+    if !handle.is_empty() {
+        object.insert("member_handle".to_string(), Value::String(handle.clone()));
+        object
+            .entry("handle".to_string())
+            .or_insert_with(|| Value::String(handle));
+    }
+    member
+}
+
+fn group_message_to_json(message: &Message) -> Value {
+    let content = message_body_content(&message.body);
+    let content_type = message_content_type(&message.body);
+    let mut value = json!({
+        "id": message.id.as_str(),
+        "msg_id": message.id.as_str(),
+        "message_id": message.id.as_str(),
+        "sender_did": message.sender.as_str(),
+        "group_did": message.group.as_ref().map(GroupRef::as_str).unwrap_or_default(),
+        "content": content,
+        "content_type": content_type,
+        "sent_at": message.sent_at.clone().unwrap_or_default(),
+        "received_at": message.received_at.clone().unwrap_or_default(),
+        "is_read": false,
+        "secure": false,
+        "direction": match message.direction {
+            im_core::prelude::MessageDirection::Outgoing => 1,
+            im_core::prelude::MessageDirection::Incoming => 0,
+            im_core::prelude::MessageDirection::Unknown => -1,
+        },
+    });
+    if let Some(sequence) = message.metadata.server_sequence {
+        value["server_seq"] = json!(sequence);
+    }
+    if let Some(operation_id) = &message.metadata.operation_id {
+        value["operation_id"] = json!(operation_id);
+    }
+    if let Some(delivery_state) = &message.metadata.delivery_state {
+        value["delivery_state"] = json!(delivery_state);
+    }
+    value
+}
+
+fn message_body_content(body: &im_core::prelude::MessageBodyView) -> String {
+    match body {
+        im_core::prelude::MessageBodyView::Text { text, .. } => text.clone(),
+        im_core::prelude::MessageBodyView::Unsupported { .. } => String::new(),
+    }
+}
+
+fn message_content_type(body: &im_core::prelude::MessageBodyView) -> &'static str {
+    match body {
+        im_core::prelude::MessageBodyView::Text {
+            kind: im_core::prelude::MessageKind::Markdown,
+            ..
+        } => "text/markdown",
+        im_core::prelude::MessageBodyView::Text { .. } => "text/plain",
+        im_core::prelude::MessageBodyView::Unsupported { .. } => "application/octet-stream",
+    }
 }
 
 fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
@@ -775,18 +942,6 @@ fn string_value(value: Option<&Value>) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
-}
-
-fn int_value(value: Option<&Value>, fallback: i64) -> i64 {
-    match value {
-        Some(Value::Number(number)) => number
-            .as_i64()
-            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
-            .or_else(|| number.as_f64().map(|value| value as i64))
-            .unwrap_or(fallback),
-        Some(Value::String(value)) => value.trim().parse::<i64>().unwrap_or(fallback),
-        _ => fallback,
-    }
 }
 
 fn bool_value(value: Option<&Value>) -> bool {
