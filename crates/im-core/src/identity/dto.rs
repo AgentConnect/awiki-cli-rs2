@@ -44,13 +44,24 @@ pub struct RegisterHandleRequest {
     pub local_alias: Option<String>,
     pub requested_handle: crate::ids::Handle,
     pub verification: VerificationInput,
+    pub invite_code: Option<String>,
     pub profile: InitialProfile,
     pub make_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerificationInput {
-    Otp { code: String },
+    Otp {
+        code: String,
+    },
+    Phone {
+        phone: String,
+        otp: Option<String>,
+    },
+    Email {
+        email: String,
+        wait_for_verification: bool,
+    },
     AlreadyVerified,
 }
 
@@ -62,9 +73,27 @@ pub struct InitialProfile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleRegistrationResult {
-    pub identity: IdentitySummary,
+    pub identity: Option<IdentitySummary>,
+    pub handle: crate::ids::Handle,
+    pub method: RegistrationMethod,
+    pub state: HandleRegistrationState,
     pub default_identity_change: Option<DefaultIdentityChange>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RegistrationMethod {
+    Phone,
+    Email,
+    AlreadyVerified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HandleRegistrationState {
+    OtpSent,
+    EmailSent,
+    EmailPending,
+    Registered,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

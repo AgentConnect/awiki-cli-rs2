@@ -16,14 +16,14 @@ pub use crate::groups::{
 };
 pub use crate::identity::{
     ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
-    ContactBindingState, DefaultIdentityChange, HandleRegistrationResult, IdentityMissingItem,
-    IdentityReadiness, IdentityRegistry, IdentitySelector, IdentityService, IdentitySummary,
-    InitialProfile, Profile, ProfileAttribute, ProfilePatch, RecoverGeneratedIdentity,
-    RecoverHandleRequest, RecoverHandleResult, RecoverHandleState, RecoveredIdentity,
-    RegisterHandleRequest, ReplaceDidAffectedLocalState, ReplaceDidBackupManifestPreview,
-    ReplaceDidBackupPlan, ReplaceDidExecutionRequest, ReplaceDidExecutionResult,
-    ReplaceDidGeneratedIdentity, ReplaceDidLocalRebindPlan, ReplaceDidPlan, ReplaceDidPlanRequest,
-    ReplaceDidRemoteCallPreview, VerificationInput,
+    ContactBindingState, DefaultIdentityChange, HandleRegistrationResult, HandleRegistrationState,
+    IdentityMissingItem, IdentityReadiness, IdentityRegistry, IdentitySelector, IdentityService,
+    IdentitySummary, InitialProfile, Profile, ProfileAttribute, ProfilePatch,
+    RecoverGeneratedIdentity, RecoverHandleRequest, RecoverHandleResult, RecoverHandleState,
+    RecoveredIdentity, RegisterHandleRequest, RegistrationMethod, ReplaceDidAffectedLocalState,
+    ReplaceDidBackupManifestPreview, ReplaceDidBackupPlan, ReplaceDidExecutionRequest,
+    ReplaceDidExecutionResult, ReplaceDidGeneratedIdentity, ReplaceDidLocalRebindPlan,
+    ReplaceDidPlan, ReplaceDidPlanRequest, ReplaceDidRemoteCallPreview, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,

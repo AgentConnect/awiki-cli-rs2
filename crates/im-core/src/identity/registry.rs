@@ -150,43 +150,121 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         request: super::RegisterHandleRequest,
     ) -> crate::ImResult<super::HandleRegistrationResult> {
-        let alias = request
-            .local_alias
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| local_part(request.requested_handle.as_str()));
-        let did = crate::ids::Did::parse(format!(
-            "did:awiki:{}",
-            sanitize_did_suffix(request.requested_handle.as_str())
-        ))?;
-        let identity = super::IdentitySummary {
-            id: crate::ids::IdentityId::parse(alias)?,
-            did,
-            handle: Some(request.requested_handle.clone()),
-            display_name: request.profile.display_name.clone(),
-            local_alias: Some(alias.to_string()),
-            device_id: None,
-            is_default: request.make_default,
-            readiness: super::IdentityReadiness {
-                ready_for_auth: true,
-                ready_for_messaging: true,
-                missing: Vec::new(),
-            },
+        let state = self.registration_state(&request.verification);
+        let identity = if matches!(state, super::HandleRegistrationState::Registered) {
+            Some(self.registration_identity(&request)?)
+        } else {
+            None
         };
-        let default_identity_change = request.make_default.then(|| super::DefaultIdentityChange {
+        self.registration_result(request, identity, state)
+    }
+
+    pub(crate) fn registration_identity(
+        &self,
+        request: &super::RegisterHandleRequest,
+    ) -> crate::ImResult<super::IdentitySummary> {
+        registration_identity(request)
+    }
+
+    pub(crate) fn registration_default_identity_change(
+        &self,
+        identity: super::IdentitySummary,
+    ) -> super::DefaultIdentityChange {
+        super::DefaultIdentityChange {
             previous: self.default_identity().ok().flatten(),
-            next: identity.clone(),
+            next: identity,
             requires_default_identity_write: true,
             warnings: Vec::new(),
-        });
+        }
+    }
+
+    pub(crate) fn registration_result(
+        &self,
+        request: super::RegisterHandleRequest,
+        identity: Option<super::IdentitySummary>,
+        state: super::HandleRegistrationState,
+    ) -> crate::ImResult<super::HandleRegistrationResult> {
+        let method = registration_method(&request.verification);
+        let default_identity_change = if request.make_default {
+            identity
+                .clone()
+                .map(|identity| self.registration_default_identity_change(identity))
+        } else {
+            None
+        };
         Ok(super::HandleRegistrationResult {
             identity,
+            handle: request.requested_handle,
+            method,
+            state,
             default_identity_change,
             warnings: Vec::new(),
         })
     }
 
+    pub(crate) fn registration_state(
+        &self,
+        verification: &super::VerificationInput,
+    ) -> super::HandleRegistrationState {
+        registration_state(verification)
+    }
+}
+
+fn registration_identity(
+    request: &super::RegisterHandleRequest,
+) -> crate::ImResult<super::IdentitySummary> {
+    let alias = request
+        .local_alias
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| local_part(request.requested_handle.as_str()));
+    let did = crate::ids::Did::parse(format!(
+        "did:awiki:{}",
+        sanitize_did_suffix(request.requested_handle.as_str())
+    ))?;
+    Ok(super::IdentitySummary {
+        id: crate::ids::IdentityId::parse(alias)?,
+        did,
+        handle: Some(request.requested_handle.clone()),
+        display_name: request.profile.display_name.clone(),
+        local_alias: Some(alias.to_string()),
+        device_id: None,
+        is_default: request.make_default,
+        readiness: super::IdentityReadiness {
+            ready_for_auth: true,
+            ready_for_messaging: true,
+            missing: Vec::new(),
+        },
+    })
+}
+
+fn registration_method(verification: &super::VerificationInput) -> super::RegistrationMethod {
+    match verification {
+        super::VerificationInput::Phone { .. } | super::VerificationInput::Otp { .. } => {
+            super::RegistrationMethod::Phone
+        }
+        super::VerificationInput::Email { .. } => super::RegistrationMethod::Email,
+        super::VerificationInput::AlreadyVerified => super::RegistrationMethod::AlreadyVerified,
+    }
+}
+
+fn registration_state(verification: &super::VerificationInput) -> super::HandleRegistrationState {
+    match verification {
+        super::VerificationInput::Phone { otp, .. }
+            if otp.as_deref().map(str::is_empty).unwrap_or(true) =>
+        {
+            super::HandleRegistrationState::OtpSent
+        }
+        super::VerificationInput::Email {
+            wait_for_verification: false,
+            ..
+        } => super::HandleRegistrationState::EmailSent,
+        _ => super::HandleRegistrationState::Registered,
+    }
+}
+
+impl IdentityRegistry<'_> {
     pub fn recover_handle(
         &self,
         request: super::RecoverHandleRequest,

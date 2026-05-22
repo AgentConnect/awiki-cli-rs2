@@ -67,6 +67,7 @@ fn register_handle_returns_identity_and_default_change() {
             local_alias: Some("carol".to_string()),
             requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
             profile: InitialProfile {
                 display_name: Some("Carol".to_string()),
                 avatar_url: None,
@@ -75,11 +76,75 @@ fn register_handle_returns_identity_and_default_change() {
         })
         .unwrap();
 
-    assert_eq!(result.identity.local_alias.as_deref(), Some("carol"));
-    assert_eq!(result.identity.handle.unwrap().as_str(), "carol.awiki.test");
-    assert_eq!(result.identity.display_name.as_deref(), Some("Carol"));
-    assert!(result.identity.readiness.ready_for_auth);
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    assert_eq!(result.method, RegistrationMethod::AlreadyVerified);
+    assert_eq!(result.handle.as_str(), "carol.awiki.test");
+    let identity = result.identity.unwrap();
+    assert_eq!(identity.local_alias.as_deref(), Some("carol"));
+    assert_eq!(identity.handle.unwrap().as_str(), "carol.awiki.test");
+    assert_eq!(identity.display_name.as_deref(), Some("Carol"));
+    assert!(identity.readiness.ready_for_auth);
     assert!(result.default_identity_change.is_some());
+}
+
+#[test]
+fn register_phone_without_otp_returns_pending_otp_state() {
+    let fixture = Fixture::new();
+    let core = fixture.core();
+
+    let result = core
+        .identities()
+        .register_handle(RegisterHandleRequest {
+            local_alias: Some("carol".to_string()),
+            requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
+            verification: VerificationInput::Phone {
+                phone: "+15551234567".to_string(),
+                otp: None,
+            },
+            invite_code: Some("invite-1".to_string()),
+            profile: InitialProfile {
+                display_name: Some("Carol".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        })
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::OtpSent);
+    assert_eq!(result.method, RegistrationMethod::Phone);
+    assert_eq!(result.handle.as_str(), "carol.awiki.test");
+    assert!(result.identity.is_none());
+    assert!(result.default_identity_change.is_none());
+}
+
+#[test]
+fn register_email_without_wait_returns_email_sent_state() {
+    let fixture = Fixture::new();
+    let core = fixture.core();
+
+    let result = core
+        .identities()
+        .register_handle(RegisterHandleRequest {
+            local_alias: Some("carol".to_string()),
+            requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
+            verification: VerificationInput::Email {
+                email: "carol@example.test".to_string(),
+                wait_for_verification: false,
+            },
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("Carol".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        })
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::EmailSent);
+    assert_eq!(result.method, RegistrationMethod::Email);
+    assert_eq!(result.handle.as_str(), "carol.awiki.test");
+    assert!(result.identity.is_none());
+    assert!(result.default_identity_change.is_none());
 }
 
 #[test]

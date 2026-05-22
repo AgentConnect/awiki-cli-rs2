@@ -92,17 +92,44 @@ pub fn register_handle_request(
         )
     })?;
     let local_alias = trimmed_optional(&command.globals.identity);
+    let phone = trimmed_optional(&string_flag(command, "phone"));
+    let email = trimmed_optional(&string_flag(command, "email"));
     let otp = string_flag(command, "otp");
+    let otp = trimmed_optional(&otp);
+    let wait_for_verification = command
+        .flags
+        .get("wait")
+        .is_some_and(|value| value == "true");
+    let verification = match (phone, email, otp) {
+        (Some(phone), None, otp) => VerificationInput::Phone { phone, otp },
+        (None, Some(email), None) => VerificationInput::Email {
+            email,
+            wait_for_verification,
+        },
+        (None, None, Some(code)) => VerificationInput::Otp { code },
+        (None, None, None) => VerificationInput::AlreadyVerified,
+        (Some(_), Some(_), _) => {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "id register accepts either --phone or --email, but not both.",
+                "Choose one verification method for handle registration.",
+            ));
+        }
+        (None, Some(_), Some(_)) => {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "id register --otp requires --phone when --email is not used.",
+                "Use --phone with --otp for phone registration, or use --email without --otp.",
+            ));
+        }
+    };
     Ok(RegisterHandleRequest {
         local_alias,
         requested_handle,
-        verification: if otp.trim().is_empty() {
-            VerificationInput::AlreadyVerified
-        } else {
-            VerificationInput::Otp {
-                code: otp.trim().to_string(),
-            }
-        },
+        verification,
+        invite_code: trimmed_optional(&string_flag(command, "invite-code")),
         profile: InitialProfile {
             display_name: trimmed_optional(&string_flag(command, "display-name")),
             avatar_url: trimmed_optional(&string_flag(command, "avatar-url")),

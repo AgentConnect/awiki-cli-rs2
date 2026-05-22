@@ -39,7 +39,9 @@ fn identity_selector_did_parses_did() {
 fn register_handle_request_builds_sdk_dto() {
     let mut command = command_with_flags([
         ("handle", "Alice.Awiki.Test"),
+        ("phone", "+15551234567"),
         ("otp", " 123456 "),
+        ("invite-code", "invite-1"),
         ("display-name", "Alice"),
     ]);
     command.globals.identity = "alice".to_string();
@@ -50,10 +52,33 @@ fn register_handle_request_builds_sdk_dto() {
     assert_eq!(request.requested_handle.as_str(), "alice.awiki.test");
     assert!(matches!(
         request.verification,
-        VerificationInput::Otp { ref code } if code == "123456"
+        VerificationInput::Phone { ref phone, ref otp } if phone == "+15551234567"
+            && otp.as_deref() == Some("123456")
     ));
+    assert_eq!(request.invite_code.as_deref(), Some("invite-1"));
     assert_eq!(request.profile.display_name.as_deref(), Some("Alice"));
     assert!(request.make_default);
+}
+
+#[test]
+fn register_handle_request_builds_email_sdk_dto() {
+    let mut command = command_with_flags([
+        ("handle", "alice"),
+        ("email", " alice@example.test "),
+        ("wait", "true"),
+    ]);
+    command.globals.identity = "alice".to_string();
+
+    let request = identity::register_handle_request(&command).unwrap();
+
+    assert!(matches!(
+        request.verification,
+        VerificationInput::Email {
+            ref email,
+            wait_for_verification: true,
+        } if email == "alice@example.test"
+    ));
+    assert_eq!(request.invite_code, None);
 }
 
 #[test]
@@ -70,6 +95,12 @@ fn register_handle_bridge_preserves_legacy_registration_inputs() {
 
     assert_eq!(bridge.sdk.local_alias.as_deref(), Some("alice-local"));
     assert_eq!(bridge.sdk.requested_handle.as_str(), "alice");
+    assert!(matches!(
+        bridge.sdk.verification,
+        VerificationInput::Phone { ref phone, ref otp } if phone == "+15551234567"
+            && otp.as_deref() == Some("123456")
+    ));
+    assert_eq!(bridge.sdk.invite_code.as_deref(), Some("invite-1"));
     assert_eq!(bridge.legacy.identity_name, "alice-local");
     assert_eq!(bridge.legacy.phone, "+15551234567");
     assert_eq!(bridge.legacy.otp, "123456");
