@@ -35,3 +35,12 @@ pub use crate::internal::realtime::session_loop::{
 };
 #[doc(hidden)]
 pub use crate::internal::realtime::shutdown::{shutdown_decision, RealtimeShutdownDecision};
+#[doc(hidden)]
+pub use crate::internal::realtime::transport::{
+    bearer_authorization_header, connect_realtime_with_transport, derive_websocket_url,
+    format_dial_error_message, join_base_url, realtime_client_construction_plan,
+    realtime_client_endpoints, simulate_realtime_connect, validate_refresh_bearer_preconditions,
+    RealtimeAuthProvider, RealtimeClientConstructionPlan, RealtimeClientEndpoints,
+    RealtimeConnectAction, RealtimeConnectSimulation, RealtimeDialOutcome, RealtimeRefreshOutcome,
+    RealtimeTransport, DIAL_ERROR_BODY_LIMIT, MESSAGE_WS_ENDPOINT,
+};

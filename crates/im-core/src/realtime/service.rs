@@ -1,10 +1,10 @@
 pub struct RealtimeService<'a> {
-    _client: &'a crate::core::ImClient,
+    client: &'a crate::core::ImClient,
 }
 
 impl<'a> RealtimeService<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
-        Self { _client: client }
+        Self { client }
     }
 
     pub fn status(&self) -> crate::ImResult<super::RealtimeStatus> {
@@ -21,7 +21,7 @@ impl<'a> RealtimeService<'a> {
         options: super::RealtimeOptions,
     ) -> crate::ImResult<super::RealtimeHandle> {
         validate_options(&options)?;
-        Err(crate::ImError::unsupported("realtime-connect"))
+        crate::internal::realtime::transport::default_connect(self.client)
     }
 
     pub fn run_until_shutdown(

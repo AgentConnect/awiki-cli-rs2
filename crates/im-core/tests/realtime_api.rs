@@ -33,17 +33,14 @@ fn realtime_options_default_is_blocking_first_and_channel_ready() {
 }
 
 #[test]
-fn realtime_connect_and_runner_are_reserved_until_transport_slice() {
+fn realtime_connect_enters_transport_slice_and_runner_remains_reserved() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
 
     let connect = client.realtime().connect(RealtimeOptions::default());
-    assert!(matches!(
-        connect,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "realtime-connect"
-    ));
+    assert!(matches!(connect, Err(ImError::AuthRequired)));
 
     let run = client
         .realtime()
