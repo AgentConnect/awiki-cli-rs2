@@ -53,12 +53,15 @@ impl SessionProvider for FileSessionProvider<'_> {
 
     fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
         let snapshot = self.snapshot()?;
-        snapshot.ensure_ready(crate::auth::AuthScope::UserProfile)?;
+        snapshot.ensure_refresh_ready()?;
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+        transport.refresh_jwt()?;
+        let refreshed = self.snapshot()?;
         Ok(crate::auth::SessionUpdate {
             subject: snapshot.subject,
             previous_expires_at: snapshot.auth_state.expires_at.clone(),
-            new_expires_at: snapshot.auth_state.expires_at,
-            refreshed: false,
+            new_expires_at: refreshed.auth_state.expires_at,
+            refreshed: true,
         })
     }
 
@@ -134,6 +137,25 @@ impl SessionSnapshot {
             warnings.push("auth state has no JWT".to_string());
         }
         warnings
+    }
+
+    fn ensure_refresh_ready(&self) -> crate::ImResult<()> {
+        if !self.ready_for_auth {
+            return Err(crate::ImError::AuthRequired);
+        }
+        if !self.did_document_exists {
+            return Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "did_document".to_string(),
+                detail: "file is missing".to_string(),
+            });
+        }
+        if !self.private_key_exists {
+            return Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "private_key".to_string(),
+                detail: "file is missing".to_string(),
+            });
+        }
+        Ok(())
     }
 }
 

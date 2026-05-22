@@ -233,7 +233,7 @@ impl<'a> CoreHttpTransport<'a> {
         Ok(headers)
     }
 
-    fn refresh_jwt(&mut self) -> crate::ImResult<()> {
+    pub(crate) fn refresh_jwt(&mut self) -> crate::ImResult<String> {
         let endpoint = crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT;
         let url = self.rpc_url(endpoint);
         let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(
@@ -263,7 +263,7 @@ impl<'a> CoreHttpTransport<'a> {
             &url,
             &BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
         );
-        Ok(())
+        Ok(token.to_string())
     }
 
     fn capture_token(&mut self, url: &str, headers: &BTreeMap<String, String>) {

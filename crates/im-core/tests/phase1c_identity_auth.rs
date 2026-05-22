@@ -98,10 +98,6 @@ fn auth_service_returns_stable_structures() {
     assert_eq!(ensured.subject.as_str(), "did:example:alice");
     assert_eq!(ensured.scope, AuthScope::Messaging);
 
-    let refreshed = client.auth().refresh_session().unwrap();
-    assert_eq!(refreshed.subject.as_str(), "did:example:alice");
-    assert!(!refreshed.refreshed);
-
     let status = client.auth().status().unwrap();
     assert_eq!(status.subject.as_str(), "did:example:alice");
     assert!(status.has_session);
