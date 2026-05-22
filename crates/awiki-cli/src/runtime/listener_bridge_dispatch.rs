@@ -5,12 +5,15 @@ use crate::message::{
     build_group_leave_rpc_params, build_group_list_rpc_params, build_group_members_rpc_params,
     build_group_messages_rpc_params, build_group_remove_rpc_params, build_group_send_rpc_params,
     build_group_update_policy_rpc_params, build_group_update_profile_rpc_params,
-    build_history_rpc_params, build_inbox_rpc_params, build_mark_read_rpc_params,
     GroupCreateRequest, GroupGetRequest, GroupInfoRequest, GroupJoinRequest, GroupLeaveRequest,
     GroupListRequest, GroupMemberRequest, GroupMembersRequest, GroupMessagesRequest,
-    HistoryRequest, InboxRequest, MarkReadRequest,
 };
 use crate::runtime::bridge::BridgeRequest;
+// Migration-only websocket bridge wire shape; remove when listener bridge
+// dispatch no longer builds raw message RPC calls.
+use im_core::compat::wire::{
+    self, HistoryWireRequest, InboxWireRequest, MarkReadWireRequest, WireIdentity,
+};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,28 +208,23 @@ pub fn build_bridge_rpc_call(
         ),
         "inbox.get" => (
             "inbox.get",
-            build_inbox_rpc_params(
-                record,
-                InboxRequest {
+            wire::build_inbox_rpc_params(
+                &wire_identity(record),
+                InboxWireRequest {
                     limit: int_value(params.get("limit")),
-                    with: string_value(params.get("with")),
-                    unread_only: bool_value(params.get("unread")),
-                    mark_read: bool_value(params.get("mark_read")),
-                    ..InboxRequest::default()
                 },
             ),
             Vec::new(),
         ),
         "direct.get_history" => (
             "direct.get_history",
-            build_history_rpc_params(
-                record,
-                HistoryRequest {
-                    with: string_value(params.get("with")),
+            wire::build_history_rpc_params(
+                &wire_identity(record),
+                HistoryWireRequest {
+                    peer_did: string_value(params.get("with")),
                     limit: int_value(params.get("limit")),
-                    cursor: string_value(params.get("cursor")),
+                    cursor: optional_string_value(params.get("cursor")),
                     skip: int_value(params.get("skip")),
-                    ..HistoryRequest::default()
                 },
             )?,
             Vec::new(),
@@ -235,11 +233,10 @@ pub fn build_bridge_rpc_call(
             let message_ids = string_array_value(params.get("message_ids"));
             (
                 "inbox.mark_read",
-                build_mark_read_rpc_params(
-                    record,
-                    MarkReadRequest {
+                wire::build_mark_read_rpc_params(
+                    &wire_identity(record),
+                    MarkReadWireRequest {
                         message_ids: message_ids.clone(),
-                        ..MarkReadRequest::default()
                     },
                 )?,
                 message_ids,
@@ -439,6 +436,13 @@ fn string_value(value: Option<&Value>) -> String {
     }
 }
 
+fn optional_string_value(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+        _ => None,
+    }
+}
+
 fn int_value(value: Option<&Value>) -> i64 {
     match value {
         Some(Value::Number(number)) => number
@@ -499,5 +503,11 @@ fn map_value(value: Option<&Value>) -> Map<String, Value> {
     match value {
         Some(Value::Object(map)) => map.clone(),
         _ => Map::new(),
+    }
+}
+
+fn wire_identity(record: &StoredIdentity) -> WireIdentity {
+    WireIdentity {
+        did: record.did.clone(),
     }
 }
