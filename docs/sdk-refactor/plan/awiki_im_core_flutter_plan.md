@@ -1,233 +1,111 @@
-# awiki-cli-rs2 / im-core 面向 awiki-me Flutter App 的可执行接入计划
 
-本文档目标是让 Codex 在 `awiki-cli-rs2` 仓库中一次性完成 `im-core` 的 Flutter/Dart SDK 封装方案。当前阶段**不修改 `awiki-me` 仓库**，只在 `awiki-cli-rs2` 中补齐可被 `awiki-me` 将来依赖的 Flutter package、Rust-Dart bridge、构建脚本、测试和文档。
+# awiki-cli-rs2 / im-core Flutter SDK 可执行计划（修订版）
+
+本文档用于 Codex 在 `awiki-cli-rs2` 仓库中一次性补齐 `im-core` 的 Flutter/Dart SDK 封装。当前阶段**不修改 `awiki-me` 仓库**，只在 `awiki-cli-rs2` 中新增可被 `awiki-me` 未来依赖的通用 Flutter SDK package、Rust-Dart facade、构建脚本、测试和文档。
+
+> 定位修订：`packages/awiki_im_core` 是**通用 im-core Flutter SDK**，不是 `awiki-me` 专用 adapter。`awiki-me` 只是未来首个目标接入方。任何 `awiki-me` 的 UI/cache DTO mapping 都放在未来 `awiki-me` 集成阶段，不进入本 SDK 公共接口。
 
 ---
 
-## 0. 结论
+## 0. Review 采纳说明
 
-最佳方案是：
+除“计划范围过大”外，本版采纳 review 中的关键意见：
+
+1. **SDK 定位**：明确 `packages/awiki_im_core` 是通用 Flutter SDK，不固化 `awiki-me` 当前 `AwikiGateway` / `ChatMessage` / `ConversationSummary` 形状。
+2. **FFI 生命周期与线程模型**：增加 opaque object、dispose、Send/Sync、blocking 调用线程池要求。
+3. **retry_message**：首版不得从展示用 message DTO 重建发送请求；先返回 `UnsupportedCapability("message-retry")`。
+4. **group create**：`GroupCreateRequest.service_did` 必须显式解决，优先使用 request.service_did，其次使用 `ImCoreConfig.anp_service_did`，都没有则返回 `invalid_input`.
+5. **realtime/WebSocket**：本次延后 realtime connect/session/events 与 WebSocket runtime；只暴露 capabilities/status 和明确 unsupported connect，未来再单独设计。
+6. **DTO 漂移**：Dart/Rust facade DTO 贴近 `im-core` public DTO，Dart wrapper 可提供便利 getter，但不能改变语义。
+7. **平台打包闭环**：补充 Android、iOS、macOS 的构建脚本、iOS/macOS podspec / vendored framework 或 library、loader 规则。Windows 不在 v0.1 范围内。
+8. **MSRV**：保持 workspace `rust-version = "1.78"`，CI 可用 `1.79.0` 验证，但不得无说明提升 MSRV。
+9. **generated 文件策略**：generated files 入库，并增加 codegen diff check；Rust generated 大文件需要 `docs/file-size-exceptions.md` 例外。
+
+“计划范围过大”意见本版不处理，因为当前目标仍是一次性让 Codex 完成该 SDK scaffold、facade、脚本、测试和文档。
+
+---
+
+## 1. 总体方案
+
+### 1.1 分层
 
 ```text
 awiki-me Flutter App
     |
     | 未来通过 pubspec path/git/pub dependency 引入
     v
-packages/awiki_im_core              # Flutter/Dart SDK package
+packages/awiki_im_core
+    通用 Flutter/Dart SDK package
+    - Dart public API
+    - conditional import
+    - native loader
+    - generated flutter_rust_bridge Dart binding
+    - web stub
     |
     | flutter_rust_bridge / dart:ffi
     v
-crates/im-core-dart                 # Rust -> Dart facade crate
+crates/im-core-dart
+    Rust -> Dart facade crate
+    - im-core-facing DTO
+    - mapping to/from im-core DTO
+    - error mapping
+    - opaque object lifecycle
+    - blocking call boundary
     |
     v
-crates/im-core                      # 纯 Rust IM 核心 SDK
-```
-
-核心原则：
-
-1. `crates/im-core` 继续保持纯 Rust 业务核心，不引入 Flutter、Dart、FFI、C ABI、平台打包逻辑。
-2. 新增 `crates/im-core-dart`，专门承接 Flutter/Dart FFI facade。
-3. 新增 `packages/awiki_im_core`，作为 `awiki-me` 未来直接依赖的 Flutter package。
-4. 首版只支持 Flutter native 平台：Android、iOS、macOS、Windows。Web 只提供 Dart stub，让依赖方可以分析通过，但运行时返回 `UnsupportedError`。
-5. 因为 `awiki-me` 当前 Flutter 下限是 `>=3.24.0`，不要依赖 Flutter 3.38+ 才推荐的 `package_ffi` build hooks 作为唯一方案。首版采用 Flutter FFI plugin/package 兼容形态 + 显式构建脚本。后续如果 `awiki-me` 升级到 Flutter 3.38+，再迁移到 `package_ffi`/native assets build hooks。
-6. 当前 goal 不切换 `awiki-me` 的 `AwikiGateway` / `AwikiAccountGateway` 实现，只准备可集成 SDK。
-
----
-
-## 1. 仓库现状与约束
-
-### 1.1 awiki-cli-rs2
-
-`new-im-core` 分支已经具备下列基础：
-
-```text
 crates/im-core
-crates/awiki-cli
-xtask
+    纯 Rust IM 核心 SDK
+    - identity / auth / directory / messages / groups / realtime
+    - sqlite / http / local-state orchestration
+    - no Flutter / Dart / FFI / platform packaging
 ```
 
-`im-core` 已经是独立 Rust crate，并且默认 feature 是：
+### 1.2 核心原则
 
-```toml
-default = ["blocking", "sqlite", "http"]
-```
+1. `crates/im-core` 继续保持纯 Rust SDK，不引入 Flutter、Dart、FFI、C ABI、平台打包逻辑。
+2. `crates/im-core-dart` 只做 Dart facade，不承载业务逻辑，不重新实现 ANP RPC。
+3. `packages/awiki_im_core` 是通用 SDK 包，不 import `awiki-me` 类型，不暴露 `awiki-me` 的 UI/cache DTO。
+4. Dart public API 必须表达 `im-core` 业务意图：选择身份、auth、profile、directory、messages、groups、capabilities。
+5. App-facing mapping，例如 `DartMessage -> awiki-me ChatMessage`、`DartConversation -> awiki-me ConversationSummary`，留到未来 `awiki-me` 仓库修改阶段。
+6. 首版只支持 Flutter native 平台：Android、iOS、macOS。Windows 与 Web 均不在 v0.1 native 支持范围内；Web 只提供 stub，运行时抛 `UnsupportedError`。
+7. 不切换 `awiki-me` 当前 `AwikiGateway` / `AwikiAccountGateway` 实现。
 
-同时预留了：
-
-```text
-attachments
-realtime
-secure-direct
-group-e2ee
-provider-traits
-internal-test-helpers
-```
-
-这说明当前最适合做法不是把 `im-core` 改成 Flutter crate，而是在它旁边新增 Dart facade。
-
-`im-core` 当前已暴露或准备暴露的业务入口包括：
-
-```text
-ImCore
-ImClient
-IdentityRegistry
-AuthService
-IdentityService
-DirectoryService
-MessageService
-GroupService
-RealtimeService
-```
-
-### 1.2 awiki-me
-
-`awiki-me` 当前是 Dart-only Flutter App，README 说明账号创建、DID-WBA 认证、User Service、IM、message proof 都在 Dart 代码中完成。
-
-`awiki-me` 的 `pubspec.yaml` 约束：
-
-```yaml
-environment:
-  sdk: ">=3.8.0 <4.0.0"
-  flutter: ">=3.24.0"
-```
-
-关键依赖包括：
-
-```text
-anp
-http
-web_socket_channel
-flutter_secure_storage
-sqflite
-sqlite3_flutter_libs
-path_provider
-flutter_riverpod
-flutter_local_notifications
-```
-
-`AppBootstrap.create()` 当前构造了：
-
-```text
-AwikiAccountService
-AwikiAnpGateway
-AwikiWsRealtimeGateway
-AppNotificationFacade
-NoopE2eeFacade
-LocalePreferenceService
-AppUpdateService
-```
-
-`AwikiGateway` 当前包含完整 App 业务入口：
-
-```text
-loadCapabilities
-loadMyProfile
-updateProfile
-loadPublicProfile
-listFollowers / listFollowing / follow / unfollow / getRelationshipStatus
-listConversations
-fetchDmHistory / fetchGroupHistory
-sendTextMessage / retryMessage
-createGroup / joinGroup / getGroup / listGroups / listGroupMembers
-consumeRealtimeEvent
-markRead
-deleteLocalThread
-```
-
-`AwikiAccountGateway` 当前包含：
-
-```text
-restoreSession
-currentSession
-refreshSession
-currentAnpSession
-logout
-listLocalCredentials
-loginWithLocalCredential
-deleteLocalCredential
-exportCurrentCredentialAsZip
-importCredentialFromZip
-sendOtp
-sendEmailVerification
-checkEmailVerified
-registerHandle
-registerHandleWithEmail
-recoverHandle
-```
-
-`AwikiAnpGateway` 当前承担 User Service、Message Service、profile、relationship、conversation、message、group 与 local cache 的聚合逻辑；`AwikiLocalCache` 使用 `sqflite` 存储 conversations、messages、groups。
-
-因此 Flutter SDK 的第一版不能只暴露“send message”一个函数，至少要为未来 `awiki-me` adapter 预留完整 App-facing API 形状；但当前 goal 不要求修改 `awiki-me` 本身。
-
----
-
-## 2. 整体方案
-
-### 2.1 分层
-
-```text
-┌──────────────────────────────────────────────┐
-│ awiki-me                                     │
-│ Flutter App，未来只依赖 Dart package          │
-└──────────────────────┬───────────────────────┘
-                       │
-                       v
-┌──────────────────────────────────────────────┐
-│ packages/awiki_im_core                       │
-│ Flutter package                              │
-│ - App-friendly Dart API                      │
-│ - conditional import                         │
-│ - native loader                              │
-│ - generated FRB Dart binding                 │
-│ - web stub                                   │
-└──────────────────────┬───────────────────────┘
-                       │
-                       v
-┌──────────────────────────────────────────────┐
-│ crates/im-core-dart                          │
-│ Rust facade for Dart                         │
-│ - FFI-safe/app-friendly DTO                  │
-│ - mapping to/from im-core DTO                │
-│ - error mapping                              │
-│ - async wrappers for blocking im-core calls  │
-└──────────────────────┬───────────────────────┘
-                       │
-                       v
-┌──────────────────────────────────────────────┐
-│ crates/im-core                               │
-│ Pure Rust SDK                                │
-│ - identity/auth/message/group/directory      │
-│ - sqlite/http/realtime internal orchestration│
-│ - no Flutter/Dart/FFI concern                │
-└──────────────────────────────────────────────┘
-```
-
-### 2.2 为什么用 flutter_rust_bridge
+### 1.3 为什么选择 flutter_rust_bridge
 
 首版采用 `flutter_rust_bridge v2`：
 
 ```text
 Dart/Flutter API 友好
-支持 Rust struct/enum/Result
-支持 async Dart 调用
-减少手写 char* / handle / free / error-buffer 的 C ABI 维护成本
-方便未来扩展 Stream/realtime
+支持 Rust struct / enum / Result
+支持 sync Rust -> async Dart
+默认可把同步 Rust 函数放入 FRB worker thread pool
+支持 opaque Rust object
+减少手写 C ABI 的 char* / handle / free / error-buffer 维护成本
+方便未来扩展 Stream / realtime
 ```
 
 不采用 UniFFI 作为首选，因为当前 App 只有 Flutter/Dart，没有原生 Swift/Kotlin App。
 
 不采用纯手写 `dart:ffi + C ABI + ffigen` 作为首选，因为 `im-core` 是复杂业务 SDK，DTO、错误、对象生命周期、异步调用会产生大量手工胶水代码。
 
-### 2.3 平台支持边界
+### 1.4 平台支持边界
 
-首版支持：
+首版目标：
 
 ```text
-Android: arm64-v8a, x86_64, optional armeabi-v7a
-iphoneOS: aarch64-apple-ios
-iOS Simulator: aarch64-apple-ios-sim, optional x86_64-apple-ios
-macOS: aarch64-apple-darwin, x86_64-apple-darwin
-Windows: x86_64-pc-windows-msvc, optional aarch64-pc-windows-msvc
+Android:
+  arm64-v8a
+  x86_64
+  optional armeabi-v7a
+
+iOS:
+  aarch64-apple-ios
+  aarch64-apple-ios-sim
+  optional x86_64-apple-ios
+
+macOS:
+  aarch64-apple-darwin
+  x86_64-apple-darwin
 ```
 
 Web：
@@ -236,12 +114,21 @@ Web：
 不支持 native im-core。
 提供 Dart stub，保证 package 可被引用和 analyze。
 运行时抛出 UnsupportedError。
-awiki-me Web 后续继续走 Dart-only gateway，或另做 wasm 方案。
+未来如果需要 Web，另做 wasm 或纯 Dart API 方案。
+```
+
+Windows：
+
+```text
+v0.1 不支持。
+不声明 Flutter Windows plugin platform。
+不创建 Windows DLL 构建脚本。
+未来如果需要 Windows，另做独立平台计划，补齐 DLL 构建、CMake、loader 和 CI。
 ```
 
 ---
 
-## 3. 目标目录结构
+## 2. 目标目录结构
 
 Codex 应在 `awiki-cli-rs2` 中新增/调整如下结构：
 
@@ -251,9 +138,7 @@ awiki-cli-rs2/
 
   crates/
     im-core/
-      Cargo.toml
-      src/
-        ...existing...
+      ...existing...
 
     im-core-dart/
       Cargo.toml
@@ -263,12 +148,13 @@ awiki-cli-rs2/
           mod.rs
           core.rs
           client.rs
-          auth.rs
           identity.rs
+          auth.rs
           directory.rs
           messages.rs
           groups.rs
           profile.rs
+          realtime.rs
           unsupported.rs
         dto/
           mod.rs
@@ -279,12 +165,13 @@ awiki-cli-rs2/
           message.rs
           group.rs
           profile.rs
+          realtime.rs
           error.rs
         mapping/
           mod.rs
           to_core.rs
           from_core.rs
-        frb_generated.rs              # generated; do not hand-edit after generation
+        frb_generated.rs              # generated; committed; do not hand-edit
       tests/
         facade_contract.rs
 
@@ -315,10 +202,10 @@ awiki-cli-rs2/
             message.dart
             group.dart
             profile.dart
+            realtime.dart
             error.dart
           generated/
-            bridge_generated.dart      # generated
-            frb_generated.dart         # generated if required by FRB version
+            bridge_generated.dart      # generated; committed
       android/
         build.gradle
         src/main/AndroidManifest.xml
@@ -330,13 +217,14 @@ awiki-cli-rs2/
         awiki_im_core.podspec
         Classes/.gitkeep
         Frameworks/.gitkeep
+        include/
+          awiki_im_core.h
       macos/
         awiki_im_core.podspec
         Classes/.gitkeep
         Frameworks/.gitkeep
-      windows/
-        CMakeLists.txt
-        awiki_im_core.dll.placeholder
+        include/
+          awiki_im_core.h
       test/
         awiki_im_core_stub_test.dart
       example/
@@ -346,10 +234,10 @@ awiki-cli-rs2/
   scripts/
     flutter/
       codegen.sh
+      codegen-check.sh
       build-host.sh
       build-android.sh
       build-apple.sh
-      build-windows.ps1
       build-all.sh
       package.sh
 
@@ -365,7 +253,7 @@ awiki-cli-rs2/
 
 ---
 
-## 4. 详细执行步骤
+## 3. 详细执行步骤
 
 ### Step 1：确认工作分支和基础检查
 
@@ -373,15 +261,10 @@ awiki-cli-rs2/
 
 ```bash
 git status
+git checkout new-im-core
 cargo +1.79.0 check -p im-core --locked
 cargo +1.79.0 test -p im-core --locked
 cargo +1.79.0 run -p xtask --locked -- check-structure
-```
-
-如果当前分支不是包含 `crates/im-core` 的分支，先切到对应分支：
-
-```bash
-git checkout new-im-core
 ```
 
 验收：
@@ -408,7 +291,7 @@ members = [
 resolver = "2"
 ```
 
-不要改 `im-core` 的职责，不要在 `crates/im-core` 中引入 Flutter/Dart 依赖。
+不要改 `crates/im-core` 的职责，不要在 `crates/im-core` 中引入 Flutter/Dart 依赖。
 
 验收：
 
@@ -443,7 +326,6 @@ http = ["im-core/http"]
 android = []
 ios = []
 macos = []
-windows = []
 attachments = ["im-core/attachments"]
 realtime = ["im-core/realtime"]
 secure-direct = ["im-core/secure-direct"]
@@ -460,7 +342,16 @@ flutter_rust_bridge = "2.12.0"
 tempfile = "=3.3.0"
 ```
 
-如果 `flutter_rust_bridge = "2.12.0"` 与仓库 Rust toolchain/MSRV 冲突，Codex 应改为最新能在 `cargo +1.79.0 check -p im-core-dart` 下通过的 `2.x` 版本，并在 `docs/flutter-sdk/awiki-im-core-flutter-sdk.md` 记录实际版本。
+MSRV 规则：
+
+```text
+workspace rust-version 仍保持 1.78。
+CI/脚本可使用 cargo +1.79.0 作为当前仓库已有验证工具链。
+如果 flutter_rust_bridge = "2.12.0" 与 Rust 1.78/1.79 不兼容：
+  1. 优先 pin 到能通过 cargo +1.78.0 check 和 cargo +1.79.0 check 的最新 2.x 版本；
+  2. 只有在没有兼容 2.x 版本时，才允许提交 MSRV 升级；
+  3. 若升级 MSRV，必须在 docs/flutter-sdk/awiki-im-core-flutter-sdk.md 说明原因。
+```
 
 创建 `crates/im-core-dart/src/lib.rs`：
 
@@ -485,6 +376,7 @@ pub mod groups;
 pub mod identity;
 pub mod messages;
 pub mod profile;
+pub mod realtime;
 pub mod unsupported;
 ```
 
@@ -493,33 +385,27 @@ pub mod unsupported;
 验收：
 
 ```bash
-cargo +1.79.0 check -p im-core-dart --locked
-```
-
-如果首次新增 crate 需要更新 lockfile，则执行：
-
-```bash
 cargo +1.79.0 check -p im-core-dart
 ```
 
-然后保留更新后的 `Cargo.lock`。
+如果首次新增 crate 需要更新 lockfile，则保留更新后的 `Cargo.lock`，后续 CI 再恢复 `--locked`。
 
 ---
 
-### Step 4：定义 Dart facade DTO
+### Step 4：定义 Rust facade DTO
 
 DTO 设计原则：
 
 ```text
-全部使用 String / int / bool / List / Option / struct / enum
-不暴露 PathBuf
-不暴露泛型 Page<T>
-不暴露 raw serde_json::Value，除非字段名为 diagnosticRawJson
-不暴露 im-core internal 类型
-错误统一转换为 DartImError
+贴近 im-core public DTO，不贴近 awiki-me UI/cache DTO。
+全部使用 String / int / bool / List / Option / struct / enum。
+不暴露 PathBuf。
+不暴露泛型 Page<T>，改成专用 Page DTO。
+不暴露 raw serde_json::Value，除非字段名为 diagnostic_raw_json。
+不暴露 im-core internal 类型。
+错误统一转换为 DartImError。
+Dart package 可在 wrapper 层提供便利 getter，但 Rust facade DTO 字段语义不得漂移。
 ```
-
-必须实现以下 DTO。
 
 #### 4.1 config DTO
 
@@ -586,7 +472,7 @@ pub struct DartIdentitySummary {
 
 #### 4.3 auth DTO
 
-`dto/auth.rs`：
+`dto/auth.rs` 必须贴近当前 `im_core::auth` DTO：
 
 ```rust
 #[derive(Debug, Clone)]
@@ -598,24 +484,39 @@ pub enum DartAuthScope {
 
 #[derive(Debug, Clone)]
 pub struct DartAuthStatus {
-    pub authenticated: bool,
-    pub expired: bool,
-    pub did: String,
-    pub handle: Option<String>,
+    pub subject: String,
+    pub has_session: bool,
     pub expires_at: Option<String>,
+    pub needs_refresh: bool,
     pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DartSessionBundle {
-    pub did: String,
-    pub handle: Option<String>,
+    pub subject: String,
+    pub scope: DartAuthScope,
     pub expires_at: Option<String>,
-    pub warnings: Vec<String>,
+    pub refreshed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartSessionUpdate {
+    pub subject: String,
+    pub previous_expires_at: Option<String>,
+    pub new_expires_at: Option<String>,
+    pub refreshed: bool,
 }
 ```
 
-字段从 `im-core::auth` 实际 DTO 映射。若字段名不同，以 `im-core` 的当前 public DTO 为准，但 Dart DTO 名称保持不变。
+Dart wrapper 可以提供便利 getter，例如：
+
+```dart
+extension AuthStatusConvenience on AuthStatus {
+  bool get authenticated => hasSession;
+}
+```
+
+不要在 Rust facade DTO 中把 `has_session` 改名成 `authenticated`，避免语义漂移。
 
 #### 4.4 message DTO
 
@@ -650,38 +551,55 @@ pub struct DartSendTextRequest {
     pub markdown: bool,
     pub security: DartMessageSecurityMode,
     pub client_message_id: Option<String>,
+    pub idempotency_key: Option<String>,
     pub wait_for_final_acceptance: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum DartMessageDirection {
+    Outgoing,
+    Incoming,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartMessageBodyView {
+    pub text: Option<String>,
+    pub kind: Option<String>,
+    pub unsupported_content_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartMessageMetadata {
+    pub operation_id: Option<String>,
+    pub delivery_state: Option<String>,
+    pub send_state: Option<String>,
+    pub retryable: Option<bool>,
+    pub retry_action: Option<String>,
+    pub server_sequence: Option<i64>,
+    pub content_type: Option<String>,
+    pub attributes: Vec<DartMessageMetadataAttribute>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartMessageMetadataAttribute {
+    pub key: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct DartMessage {
     pub id: String,
+    pub thread_kind: String,
     pub thread_id: String,
-    pub sender_did: String,
-    pub sender_name: Option<String>,
-    pub receiver_did: Option<String>,
-    pub group_id: Option<String>,
-    pub text: Option<String>,
-    pub original_type: String,
+    pub direction: DartMessageDirection,
+    pub sender: String,
+    pub receiver: Option<String>,
+    pub group: Option<String>,
+    pub body: DartMessageBodyView,
     pub sent_at: Option<String>,
     pub received_at: Option<String>,
-    pub is_mine: bool,
-    pub server_sequence: Option<i64>,
-    pub is_encrypted: bool,
-    pub send_state: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct DartConversationSummary {
-    pub thread_id: String,
-    pub display_name: String,
-    pub last_message_preview: String,
-    pub last_message_at: Option<String>,
-    pub unread_count: u32,
-    pub is_group: bool,
-    pub target_did: Option<String>,
-    pub group_id: Option<String>,
-    pub avatar_seed: Option<String>,
+    pub metadata: DartMessageMetadata,
 }
 
 #[derive(Debug, Clone)]
@@ -692,8 +610,20 @@ pub struct DartMessagePage {
 }
 
 #[derive(Debug, Clone)]
+pub struct DartConversation {
+    pub thread_kind: String,
+    pub thread_id: String,
+    pub title: Option<String>,
+    pub participants: Vec<String>,
+    pub last_message: Option<DartMessage>,
+    pub unread_count: u32,
+    pub message_count: u32,
+    pub last_message_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct DartConversationPage {
-    pub items: Vec<DartConversationSummary>,
+    pub items: Vec<DartConversation>,
     pub next_cursor: Option<String>,
     pub has_more: bool,
 }
@@ -713,7 +643,7 @@ pub struct DartMarkReadResult {
 }
 ```
 
-这些字段刻意接近 `awiki-me` 的 `ChatMessage` 和 `ConversationSummary`，但不要 import `awiki-me` 类型。
+不要在 Rust facade DTO 中加入 `last_message_preview`、`avatar_seed` 等 `awiki-me` UI/cache 字段。未来 `awiki-me` adapter 可从 `DartConversation.last_message` 派生。
 
 #### 4.5 group DTO
 
@@ -722,69 +652,160 @@ pub struct DartMarkReadResult {
 ```rust
 #[derive(Debug, Clone)]
 pub struct DartGroupSummary {
-    pub group_id: String,
-    pub name: String,
-    pub description: String,
-    pub member_count: u32,
+    pub id: Option<String>,
+    pub did: String,
+    pub name: Option<String>,
+    pub membership_status: Option<String>,
+    pub member_count: Option<u32>,
     pub last_message_at: Option<String>,
-    pub my_role: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct DartGroupMemberSummary {
+pub struct DartGroupSnapshot {
+    pub id: Option<String>,
     pub did: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub my_role: Option<String>,
+    pub membership_status: Option<String>,
+    pub member_count: Option<u32>,
+    pub last_message_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartGroupMember {
+    pub did: Option<String>,
     pub handle: Option<String>,
-    pub display_name: Option<String>,
     pub role: Option<String>,
+    pub status: Option<String>,
     pub joined_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DartCreateGroupRequest {
     pub name: String,
-    pub slug: String,
-    pub description: String,
-    pub goal: String,
-    pub rules: String,
+    pub description: Option<String>,
+    pub discoverability: Option<String>,
+    pub admission_mode: Option<String>,
+    pub message_security_profile: Option<String>,
+    pub e2ee: bool,
+    pub slug: Option<String>,
+    pub goal: Option<String>,
+    pub rules: Option<String>,
     pub message_prompt: Option<String>,
-    pub group_mode: Option<String>,
+    pub doc_url: Option<String>,
+    pub attachments_allowed: Option<bool>,
+    pub max_members: Option<String>,
+    pub member_max_messages: Option<i64>,
+    pub member_max_total_chars: Option<i64>,
+
+    // Mapping requirement:
+    // 1. if present, map to im_core::groups::GroupCreateRequest.service_did
+    // 2. otherwise use DartImClient.default_service_did captured from DartImCoreConfig.anp_service_did
+    // 3. if both missing, return DartImError invalid_input(field = "service_did")
+    pub service_did: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartGroupReadResult {
+    pub group: Option<DartGroupSnapshot>,
+    pub groups: Vec<DartGroupSummary>,
+    pub members: Vec<DartGroupMember>,
+    pub messages: DartMessagePage,
+    pub total: Option<u32>,
+    pub source: Option<String>,
+    pub warnings: Vec<String>,
 }
 ```
 
-#### 4.6 profile / relationship DTO
+#### 4.6 profile / directory DTO
 
 `dto/profile.rs`：
 
 ```rust
 #[derive(Debug, Clone)]
 pub struct DartUserProfile {
-    pub did: String,
+    pub subject: String,
     pub handle: Option<String>,
-    pub nick_name: String,
-    pub bio: String,
+    pub display_name: Option<String>,
+    pub bio: Option<String>,
     pub tags: Vec<String>,
-    pub profile_markdown: String,
+    pub markdown: Option<String>,
     pub avatar_url: Option<String>,
     pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DartProfilePatch {
-    pub nick_name: Option<String>,
+    pub display_name: Option<String>,
     pub bio: Option<String>,
     pub tags: Option<Vec<String>>,
-    pub profile_markdown: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DartRelationshipSummary {
-    pub did: String,
-    pub display_name: String,
-    pub relationship: String,
+    pub markdown: Option<String>,
 }
 ```
 
-#### 4.7 error DTO
+`dto/directory.rs`：
+
+```rust
+#[derive(Debug, Clone)]
+pub enum DartIdentitySubject {
+    Did { did: String },
+    Handle { handle: String },
+    Any { value: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct DartDirectoryResolution {
+    pub input: String,
+    pub did: String,
+    pub handle: Option<String>,
+    pub profile: Option<DartUserProfile>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartRelationStatus {
+    pub peer: String,
+    pub relationship: Option<String>,
+    pub display_name: Option<String>,
+}
+```
+
+Remote relationship mutation APIs，如 `follow`、`unfollow`、`list_followers`、`list_following`，如果 `im-core` 尚无 public API，则首版不要伪造实现。
+
+#### 4.7 realtime DTO
+
+`dto/realtime.rs`：
+
+```rust
+#[derive(Debug, Clone)]
+pub struct DartRealtimeCapability {
+    pub status_supported: bool,
+    pub connect_supported: bool,
+    pub runner_exposed: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartRealtimeStatus {
+    pub connected: bool,
+    pub state: String,
+    pub subscriptions: Vec<String>,
+    pub last_error: Option<String>,
+    pub warnings: Vec<String>,
+}
+```
+
+Realtime DTO 规则：
+
+```text
+本次不暴露 RealtimeSession / Stream<RealtimeEvent> / runner / connect。
+realtime_connect 必须返回 UnsupportedCapability("realtime-runner")。
+WebSocket / ws / wss / ping / pong / raw frame / request id / pending dispatch queue 不得进入 Dart public DTO。
+未来若启用 realtime bridge，WebSocket 仍只能是 im-core internal transport。
+```
+
+#### 4.8 error DTO
 
 `dto/error.rs`：
 
@@ -799,6 +820,19 @@ pub struct DartImError {
 }
 
 impl DartImError {
+    pub fn invalid_input(
+        field: impl Into<Option<String>>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: "invalid_input".to_string(),
+            message: message.into(),
+            field: field.into(),
+            status_code: None,
+            capability: None,
+        }
+    }
+
     pub fn unsupported(capability: impl Into<String>) -> Self {
         let capability = capability.into();
         Self {
@@ -809,22 +843,34 @@ impl DartImError {
             capability: Some(capability),
         }
     }
+
+    pub fn object_closed(object: impl Into<String>) -> Self {
+        let object = object.into();
+        Self {
+            code: "object_closed".to_string(),
+            message: format!("{object} has been disposed"),
+            field: None,
+            status_code: None,
+            capability: None,
+        }
+    }
 }
 ```
 
-实现：
+必须实现：
 
 ```rust
 impl From<im_core::ImError> for DartImError { ... }
 ```
 
-必须映射：
+错误码映射：
 
 ```text
 InvalidInput -> invalid_input
 IdentityRequired -> identity_required
 IdentityNotFound -> identity_not_found
 DefaultIdentityMissing -> default_identity_missing
+IdentityNotReady -> identity_not_ready
 AuthRequired -> auth_required
 SessionExpired -> session_expired
 PermissionDenied -> permission_denied
@@ -869,33 +915,47 @@ DartAuthScope -> im_core::auth::AuthScope
 DartMessageTarget -> im_core::messages::MessageTarget
 DartThreadRef -> im_core::messages::ThreadRef
 DartMessageSecurityMode -> im_core::messages::MessageSecurityMode
-DartCreateGroupRequest -> im_core::groups::GroupCreateRequest
+DartCreateGroupRequest + service_did resolution -> im_core::groups::GroupCreateRequest
 DartProfilePatch -> im_core::identity::ProfilePatch
+DartIdentitySubject -> im_core::directory::IdentitySubject
 ```
 
 `from_core.rs` 负责：
 
 ```text
 IdentitySummary -> DartIdentitySummary
-AuthStatus / SessionBundle / SessionUpdate -> DartAuthStatus / DartSessionBundle
+AuthStatus -> DartAuthStatus
+SessionBundle -> DartSessionBundle
+SessionUpdate -> DartSessionUpdate
 Message -> DartMessage
 SendMessageResult -> DartSendMessageResult
 Page<Message> -> DartMessagePage
-Conversation -> DartConversationSummary
+Conversation -> DartConversation
 Page<Conversation> -> DartConversationPage
-Group read result -> DartGroupSummary / DartGroupMemberSummary
+GroupReadResult -> DartGroupReadResult
 Profile / PublicProfile -> DartUserProfile
-RelationStatus -> DartRelationshipSummary
+DirectoryResolution -> DartDirectoryResolution
+RelationStatus -> DartRelationStatus
+RealtimeStatus -> DartRealtimeStatus
 ```
 
-映射规则：
+关键映射规则：
 
 1. 所有 ID newtype 通过 `.as_str().to_string()` 转出。
 2. 时间字段保持 ISO-8601 string，不在 Rust-Dart 边界转换成 `DateTime`。
-3. `MessageBodyView::Text` 映射为 `text = Some(text)`，否则 `text = None` 且 `original_type = "unsupported"`。
-4. `MessageDirection::Outgoing` 映射 `is_mine = true`，其他为 `false`。
-5. `ThreadRef::Direct(peer)` 生成 `thread_id = "dm:$peer"`；`ThreadRef::Group(group)` 生成 `thread_id = "group:$group"`；`ThreadRef::Thread(id)` 直接使用 id。
-6. 对于 im-core 尚无字段，使用安全默认值，不 panic。
+3. `MessageBodyView::Text` 映射为 `DartMessageBodyView { text: Some(text), kind: Some(kind), unsupported_content_type: None }`。
+4. `MessageBodyView::Unsupported` 映射为 `text: None` 且 `unsupported_content_type` 保留。
+5. `ThreadRef::Direct(peer)` 映射为 `thread_kind = "direct"`、`thread_id = peer`。
+6. `ThreadRef::Group(group)` 映射为 `thread_kind = "group"`、`thread_id = group`。
+7. `ThreadRef::Thread(id)` 映射为 `thread_kind = "thread"`、`thread_id = id`。
+8. 对于 im-core 尚无字段，使用安全默认值，不 panic。
+9. `DartCreateGroupRequest.service_did` 解析优先级：
+   ```text
+   request.service_did
+   -> DartImClient.default_service_did
+   -> invalid_input(field = "service_did")
+   ```
+10. realtime bridge 延后；本次不得把 `im_core::realtime::ImEvent`、raw notification JSON、WebSocket frame 或 transport error object 透传到 Dart public API。
 
 验收：
 
@@ -905,67 +965,173 @@ cargo +1.79.0 test -p im-core-dart
 
 ---
 
-### Step 6：实现 Rust API facade
+### Step 6：实现 FFI 对象生命周期与线程模型
 
-#### 6.1 core API
+#### 6.1 opaque object 原则
+
+`DartImCore` 与 `DartImClient` 是 FRB opaque Rust objects，不导出裸指针，不手写 C handle/free。
+
+要求：
+
+```text
+DartImCore 和 DartImClient 必须是 Send + Sync。
+内部使用 Arc 和 Mutex/RwLock 管理状态。
+对象必须有 close/dispose 方法。
+close 后再次调用任何方法必须返回 DartImError { code: "object_closed" }。
+不得依赖 Dart GC 作为唯一释放方式；Dart wrapper 必须暴露 dispose()。
+```
+
+建议结构：
+
+```rust
+use std::sync::{Arc, RwLock};
+
+pub struct DartImCore {
+    state: Arc<RwLock<DartImCoreState>>,
+}
+
+struct DartImCoreState {
+    inner: Option<im_core::ImCore>,
+    default_service_did: Option<String>,
+}
+
+pub struct DartImClient {
+    state: Arc<RwLock<DartImClientState>>,
+}
+
+struct DartImClientState {
+    inner: Option<im_core::ImClient>,
+    default_service_did: Option<String>,
+}
+
+```
+
+辅助函数：
+
+```rust
+impl DartImCore {
+    fn with_inner<T>(
+        &self,
+        f: impl FnOnce(&im_core::ImCore) -> Result<T, crate::dto::error::DartImError>,
+    ) -> Result<T, crate::dto::error::DartImError> {
+        let guard = self.state.read().map_err(|_| {
+            crate::dto::error::DartImError::internal("core lock poisoned")
+        })?;
+        let inner = guard.inner.as_ref().ok_or_else(|| {
+            crate::dto::error::DartImError::object_closed("DartImCore")
+        })?;
+        f(inner)
+    }
+}
+```
+
+`DartImClient` 同理。Realtime session / runner lifecycle 不在本次实现范围内。
+
+#### 6.2 blocking 调用线程模型
+
+`im-core` 当前是 blocking-first。所有可能触发 IO / SQLite / HTTP 的 facade 函数不得在 Dart synchronous mode 下调用。
+
+要求：
+
+```text
+Rust facade API 使用普通 Rust fn 即可，但 generated Dart API 使用 async Future。
+不要给这些函数加 FRB sync 标记。
+Dart wrapper 的 public API 一律返回 Future<T>。
+禁止在 Widget build 等同步路径调用 native blocking 方法。
+```
+
+如果 Codex 发现 FRB 生成结果把某个 blocking 方法生成为 sync Dart API，应调整 FRB 注解或 wrapper，使其对 App 仍是 `Future<T>`。
+
+#### 6.3 错误跨 isolate / worker 传递
+
+所有跨边界错误统一为 `DartImError`。
+
+要求：
+
+```text
+不要跨 FFI 传递 anyhow::Error。
+不要让 panic 跨 FFI 边界。
+panic 应通过 std::panic::catch_unwind 或 FRB 默认错误机制转成 internal_error。
+Dart wrapper 接收到 generated exception 后，统一包装为 AwikiImCoreException。
+```
+
+---
+
+### Step 7：实现 Rust API facade
+
+#### 7.1 core API
 
 `api/core.rs`：
 
 ```rust
-use std::sync::Arc;
-
-pub struct DartImCore {
-    inner: im_core::ImCore,
-}
+use std::sync::{Arc, RwLock};
 
 pub fn open_core(
     config: crate::dto::config::DartImCoreConfig,
     paths: crate::dto::config::DartImCorePaths,
 ) -> Result<Arc<DartImCore>, crate::dto::error::DartImError> {
+    let default_service_did = config.anp_service_did.clone();
     let inner = im_core::ImCore::new(config.try_into()?, paths.try_into()?)
         .map_err(crate::dto::error::DartImError::from)?;
-    Ok(Arc::new(DartImCore { inner }))
+
+    Ok(Arc::new(DartImCore {
+        state: Arc::new(RwLock::new(DartImCoreState {
+            inner: Some(inner),
+            default_service_did,
+        })),
+    }))
+}
+
+pub fn close_core(core: Arc<DartImCore>) -> Result<(), crate::dto::error::DartImError> {
+    let mut guard = core.state.write().map_err(|_| {
+        crate::dto::error::DartImError::internal("core lock poisoned")
+    })?;
+    guard.inner = None;
+    Ok(())
 }
 
 pub fn validate_paths(
     core: Arc<DartImCore>,
 ) -> Result<Vec<String>, crate::dto::error::DartImError> {
-    let report = core.inner.bootstrap().validate_paths()
-        .map_err(crate::dto::error::DartImError::from)?;
-    Ok(format_path_report(report))
+    core.with_inner(|inner| {
+        let report = inner.bootstrap().validate_paths()
+            .map_err(crate::dto::error::DartImError::from)?;
+        Ok(format_path_report(report))
+    })
 }
 ```
 
 `format_path_report` 用稳定字符串列表输出即可，避免先暴露复杂 path report DTO。
 
-#### 6.2 client API
+#### 7.2 client API
 
 `api/client.rs`：
 
 ```rust
-use std::sync::Arc;
-
-pub struct DartImClient {
-    inner: im_core::ImClient,
-}
-
 pub fn core_client(
     core: Arc<crate::api::core::DartImCore>,
     selector: crate::dto::identity::DartIdentitySelector,
 ) -> Result<Arc<DartImClient>, crate::dto::error::DartImError> {
-    let inner = core.inner.client(selector.try_into()?)
-        .map_err(crate::dto::error::DartImError::from)?;
-    Ok(Arc::new(DartImClient { inner }))
+    let default_service_did = core.default_service_did()?;
+    core.with_inner(|inner| {
+        let client = inner.client(selector.try_into()?)
+            .map_err(crate::dto::error::DartImError::from)?;
+        Ok(Arc::new(DartImClient::new(client, default_service_did)))
+    })
+}
+
+pub fn close_client(client: Arc<DartImClient>) -> Result<(), crate::dto::error::DartImError> {
+    client.close()
 }
 
 pub fn current_identity(
     client: Arc<DartImClient>,
-) -> crate::dto::identity::DartIdentitySummary {
-    client.inner.current_identity().into()
+) -> Result<crate::dto::identity::DartIdentitySummary, crate::dto::error::DartImError> {
+    client.with_inner(|inner| Ok(inner.current_identity().into()))
 }
 ```
 
-#### 6.3 identity API
+#### 7.3 identity API
 
 `api/identity.rs`：
 
@@ -980,9 +1146,9 @@ recover_handle(core, ...)
 
 这些方法直接调用 `core.inner.identities()`。
 
-如果某个 im-core registration API 当前字段与 Dart DTO 不完全一致，Codex 应根据 `crates/im-core/src/identity/dto.rs` 的实际 public DTO 调整 mapping，保持 Dart API 名称不变。
+如果某个 im-core registration API 当前字段与 Dart DTO 不完全一致，Codex 应根据 `crates/im-core/src/identity/dto.rs` 的实际 public DTO 调整 mapping，不得 invent 字段。
 
-#### 6.4 auth API
+#### 7.4 auth API
 
 `api/auth.rs`：
 
@@ -1002,14 +1168,22 @@ client.inner.auth().ensure_session(scope)
 client.inner.auth().refresh_session()
 ```
 
-#### 6.5 profile / directory API
+映射到：
+
+```text
+AuthStatus -> DartAuthStatus
+SessionBundle -> DartSessionBundle
+SessionUpdate -> DartSessionUpdate
+```
+
+#### 7.5 profile / directory API
 
 `api/profile.rs`：
 
 ```text
 load_my_profile(client)
 update_profile(client, patch)
-load_public_profile(client, did_or_handle)
+load_public_profile(client, subject)
 ```
 
 实现：
@@ -1028,15 +1202,24 @@ lookup_handle(client, handle)
 relation_status(client, peer)
 ```
 
-`awiki-me` 目前的 follow/unfollow/listFollowers/listFollowing 逻辑需要完整 remote relationship RPC。若 `im-core` 尚未有对应 public API，先在 `im-core-dart` 中保留函数但返回：
+不实现 remote mutation fallback：
+
+```text
+follow
+unfollow
+list_followers
+list_following
+```
+
+如果为了未来 Dart wrapper API 兼容保留函数名，必须返回：
 
 ```rust
 Err(DartImError::unsupported("relationship-remote-mutation"))
 ```
 
-必须保留函数名，便于未来 `awiki-me` adapter 一次性切换接口。
+不要在 `im-core-dart` 中重新写 HTTP RPC。
 
-#### 6.6 message API
+#### 7.6 message API
 
 `api/messages.rs`：
 
@@ -1046,7 +1229,7 @@ inbox(client, limit, cursor, unread_only)
 history(client, thread, limit, cursor)
 mark_read(client, message_ids)
 conversations(client, limit, include_groups, include_direct, unread_only)
-retry_message(client, message)
+retry_message(client, message_id)
 ```
 
 实现：
@@ -1057,22 +1240,23 @@ inbox -> client.inner.messages().inbox(...)
 history -> client.inner.messages().history(...)
 mark_read -> client.inner.messages().mark_read(...)
 conversations -> client.inner.messages().conversations(...)
-retry_message -> rebuild SendTextRequest from DartMessage if enough fields exist; otherwise return invalid_input
+retry_message -> UnsupportedCapability("message-retry")
 ```
 
-`fetchDmHistory(peerDid)` 的未来 Dart wrapper 应使用：
+`retry_message` 规则：
 
-```text
-history(ThreadRef::Direct(peerDid), limit, cursor)
+```rust
+pub fn retry_message(
+    _client: Arc<DartImClient>,
+    _message_id: String,
+) -> Result<crate::dto::message::DartSendMessageResult, crate::dto::error::DartImError> {
+    Err(crate::dto::error::DartImError::unsupported("message-retry"))
+}
 ```
 
-`fetchGroupHistory(groupId)` 的未来 Dart wrapper 应使用：
+禁止从 `DartMessage` 重建 `SendTextRequest`。展示用 message DTO 会丢失 target、body type、security、client idempotency、metadata/retry plan，存在重复发送或发错对象风险。只有当 `im-core` public API 增加正式 `messages().retry(...)` 后，才能改为真正实现。
 
-```text
-history(ThreadRef::Group(groupId), limit, cursor)
-```
-
-#### 6.7 group API
+#### 7.7 group API
 
 `api/groups.rs`：
 
@@ -1080,34 +1264,106 @@ history(ThreadRef::Group(groupId), limit, cursor)
 create_group(client, request)
 join_group(client, group_did)
 get_group(client, group_did)
-list_groups(client, limit, cursor)
-list_group_members(client, group_did, limit, cursor)
+list_groups(client, limit)
+list_group_members(client, group_did, limit)
+list_group_messages(client, group_did, limit, cursor)
 leave_group(client, group_did)
+get_group_join_code(client, group_did)
+refresh_group_join_code(client, group_did)
 ```
 
 直接调用 `client.inner.groups()` 中已有 public API。
 
-`getGroupJoinCode` / `refreshGroupJoinCode` 当前 `awiki-me` 也是 `null`，在 SDK 中可以实现为：
+`create_group` 的 `service_did` 必须这样解析：
 
 ```rust
-pub fn get_group_join_code(...) -> Result<Option<String>, DartImError> { Ok(None) }
-pub fn refresh_group_join_code(...) -> Result<Option<String>, DartImError> { Ok(None) }
+let service_did = request.service_did
+    .clone()
+    .or_else(|| client.default_service_did())
+    .ok_or_else(|| DartImError::invalid_input(
+        Some("service_did".to_string()),
+        "group create requires service_did or ImCoreConfig.anp_service_did",
+    ))?;
+
+let core_request = im_core::groups::GroupCreateRequest {
+    name: request.name,
+    description: request.description,
+    discoverability: request.discoverability,
+    admission_mode: request.admission_mode,
+    message_security_profile: request.message_security_profile,
+    e2ee: request.e2ee,
+    slug: request.slug,
+    goal: request.goal,
+    rules: request.rules,
+    message_prompt: request.message_prompt,
+    doc_url: request.doc_url,
+    attachments_allowed: request.attachments_allowed,
+    max_members: request.max_members,
+    member_max_messages: request.member_max_messages,
+    member_max_total_chars: request.member_max_total_chars,
+    service_did: im_core::ids::Did::parse(service_did)?,
+};
 ```
 
-#### 6.8 realtime API
+`get_group_join_code` / `refresh_group_join_code` 首版：
 
-首版只做 stub：
+```rust
+pub fn get_group_join_code(...) -> Result<Option<String>, DartImError> {
+    Ok(None)
+}
+
+pub fn refresh_group_join_code(...) -> Result<Option<String>, DartImError> {
+    Ok(None)
+}
+```
+
+#### 7.8 realtime API
+
+本次延后 realtime/WebSocket runtime 接入。`im-core` 可以继续保留已有 `ImClient::realtime()`、runner/event 类型，但 Flutter SDK v0.1 不暴露可工作的 runner/connect。
+
+`api/realtime.rs` 首版只提供：
 
 ```text
-realtime_status(client) -> unsupported or disconnected status
+realtime_capability(client) -> DartRealtimeCapability {
+  status_supported: true/false depending on im-core status availability
+  connect_supported: false
+  runner_exposed: false
+  reason: "Dart SDK v0.1 does not expose realtime runner yet"
+}
+
+realtime_status(client) -> call client.inner.realtime().status() if public API compiles
+                         -> otherwise stable not_exposed status
+
 realtime_connect(...) -> UnsupportedCapability("realtime-runner")
 ```
 
-原因：`awiki-me` 当前已有 Dart WebSocket gateway；当前 goal 不切换它。
+Rust facade 示例：
+
+```rust
+pub fn realtime_connect(
+    _client: Arc<DartImClient>,
+) -> Result<(), crate::dto::error::DartImError> {
+    Err(crate::dto::error::DartImError::unsupported("realtime-runner"))
+}
+```
+
+未来真正启用 realtime bridge 时，WebSocket 仍只能作为 `im-core` internal transport。Dart SDK / `awiki-me` 只应消费高层 `RealtimeSession` / `Stream<RealtimeEvent>`，不直接依赖 WebSocket、raw frame、ping/pong、request id 或 pending queue。
+
+验收必须覆盖：
+
+```text
+realtime_capability.connect_supported == false
+realtime_capability.runner_exposed == false
+realtime_status 可以调用
+realtime_connect 返回 UnsupportedCapability("realtime-runner")
+WebSocket 字符串、raw frame、ping/pong、request id 不出现在 Dart public API
+```
+
+`awiki-me` 当前 Dart WebSocket gateway 未来可以继续作为 fallback。真正把 realtime runner 接入 Flutter 需要单独处理 stream、shutdown、lifecycle、reconnect、App background/foreground，不在本次计划中完成。
 
 ---
 
-### Step 7：新增 Flutter package：`packages/awiki_im_core`
+### Step 8：新增 Flutter package：`packages/awiki_im_core`
 
 创建 `packages/awiki_im_core/pubspec.yaml`：
 
@@ -1143,11 +1399,15 @@ flutter:
         ffiPlugin: true
       macos:
         ffiPlugin: true
-      windows:
-        ffiPlugin: true
 ```
 
-如果 Flutter 3.24 对 `ffiPlugin: true` 的平台配置有差异，Codex 应以 `flutter create --template=plugin_ffi` 在临时目录生成的 pubspec 结构为准，然后迁移到 `packages/awiki_im_core`。
+如果 Flutter 3.24 对 `ffiPlugin: true` 的平台配置有差异，Codex 应以：
+
+```bash
+flutter create --template=plugin_ffi temp_awiki_im_core_plugin
+```
+
+生成的结构为准，然后迁移到 `packages/awiki_im_core`。
 
 创建 `lib/awiki_im_core.dart`：
 
@@ -1163,6 +1423,7 @@ export 'src/models/group.dart';
 export 'src/models/identity.dart';
 export 'src/models/message.dart';
 export 'src/models/profile.dart';
+export 'src/models/realtime.dart';
 ```
 
 创建 `lib/src/awiki_im_core_base.dart`：
@@ -1187,8 +1448,12 @@ class AwikiImCore {
     required AwikiImCoreConfig config,
     required AwikiImCorePaths paths,
   }) async {
-    throw UnsupportedError('awiki_im_core native Rust backend is not supported on Flutter Web.');
+    throw UnsupportedError(
+      'awiki_im_core native Rust backend is not supported on Flutter Web.',
+    );
   }
+
+  Future<void> dispose() async {}
 }
 ```
 
@@ -1196,29 +1461,84 @@ class AwikiImCore {
 
 ```dart
 class AwikiImCore {
+  AwikiImCore._(this._inner);
+
+  final Object _inner;
+  bool _disposed = false;
+
   static Future<AwikiImCore> open({
     required AwikiImCoreConfig config,
     required AwikiImCorePaths paths,
   }) async {
     // initialize native library
     // call generated openCore
+    // return AwikiImCore._(inner)
+    throw UnimplementedError();
   }
 
-  Future<AwikiImClient> client(IdentitySelector selector);
-  Future<List<IdentitySummary>> listIdentities();
-  Future<IdentitySummary?> defaultIdentity();
+  Future<AwikiImClient> client(IdentitySelector selector) async {
+    _ensureNotDisposed();
+    // call generated coreClient
+    throw UnimplementedError();
+  }
+
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    // call generated closeCore
+  }
+
+  void _ensureNotDisposed() {
+    if (_disposed) {
+      throw AwikiImCoreException(code: 'object_closed', message: 'core disposed');
+    }
+  }
 }
 
 class AwikiImClient {
-  AuthApi get auth;
-  IdentityApi get identity;
-  DirectoryApi get directory;
-  MessageApi get messages;
-  GroupApi get groups;
+  AwikiImClient._(this._inner);
+
+  final Object _inner;
+  bool _disposed = false;
+
+  AuthApi get auth => AuthApi._(this);
+  IdentityApi get identity => IdentityApi._(this);
+  DirectoryApi get directory => DirectoryApi._(this);
+  MessageApi get messages => MessageApi._(this);
+  GroupApi get groups => GroupApi._(this);
+  RealtimeApi get realtime => RealtimeApi._(this);
+
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    // call generated closeClient
+  }
+}
+
+class RealtimeApi {
+  RealtimeApi._(this._client);
+
+  final AwikiImClient _client;
+
+  Future<RealtimeStatus> status() async {
+    _client._ensureNotDisposed();
+    // call generated realtimeStatus
+    throw UnimplementedError();
+  }
+
+  Future<void> connect() async {
+    _client._ensureNotDisposed();
+    // call generated realtimeConnect, which returns unsupported_capability("realtime-runner")
+    throw AwikiImCoreException(
+      code: 'unsupported_capability',
+      message: 'unsupported capability: realtime-runner',
+      capability: 'realtime-runner',
+    );
+  }
 }
 ```
 
-Dart model 文件应与 Rust DTO 同名同义，但可以更 Dart 化，例如 camelCase 字段。
+Dart model 文件应与 Rust DTO 同名同义，但可以使用 camelCase 字段。Realtime Dart public API 不得出现 `WebSocket`、`ws://`、`wss://`、raw frame、ping/pong、request id 等 transport 概念。`RealtimeSession` / `Stream<RealtimeEvent>` 不在本次实现范围内。
 
 验收：
 
@@ -1231,7 +1551,7 @@ flutter test
 
 ---
 
-### Step 8：生成 flutter_rust_bridge 绑定
+### Step 9：生成 flutter_rust_bridge 绑定
 
 创建 `scripts/flutter/codegen.sh`：
 
@@ -1280,7 +1600,65 @@ cd packages/awiki_im_core && dart analyze 通过
 
 ---
 
-### Step 9：native library loader
+### Step 10：generated 文件策略
+
+本计划要求 generated files 入库：
+
+```text
+crates/im-core-dart/src/frb_generated.rs
+packages/awiki_im_core/lib/src/generated/bridge_generated.dart
+```
+
+原因：
+
+```text
+让 package checkout 后可 analyze / build。
+避免用户必须先安装 codegen 才能使用 SDK。
+让 CI 能检查 generated 文件是否过期。
+```
+
+创建 `scripts/flutter/codegen-check.sh`：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${ROOT_DIR}"
+
+scripts/flutter/codegen.sh
+
+git diff --exit-code -- \
+  crates/im-core-dart/src/frb_generated.rs \
+  packages/awiki_im_core/lib/src/generated/bridge_generated.dart
+```
+
+`xtask check-structure` 风险处理：
+
+```text
+如果 crates/im-core-dart/src/frb_generated.rs 超过 1200 行：
+  在 docs/file-size-exceptions.md 增加一行，说明该文件为 generated FRB glue，不手工维护。
+  不修改 xtask 规则本身。
+```
+
+示例 exception：
+
+```markdown
+| Rust path | Reason | Owner |
+| --- | --- | --- |
+| `crates/im-core-dart/src/frb_generated.rs` | Generated flutter_rust_bridge glue; stale checked by scripts/flutter/codegen-check.sh. | Flutter SDK |
+```
+
+验收：
+
+```bash
+scripts/flutter/codegen-check.sh
+cargo +1.79.0 run -p xtask --locked -- check-structure
+```
+
+---
+
+### Step 11：native library loader
 
 创建 `packages/awiki_im_core/lib/src/native_library_loader.dart`。
 
@@ -1288,9 +1666,9 @@ cd packages/awiki_im_core && dart analyze 通过
 
 ```text
 Android -> DynamicLibrary.open('libawiki_im_core.so')
-Windows -> DynamicLibrary.open('awiki_im_core.dll')
-macOS -> DynamicLibrary.open('libawiki_im_core.dylib') 或 DynamicLibrary.process()
-iOS -> DynamicLibrary.process() / DynamicLibrary.executable()
+macOS -> DynamicLibrary.open('libawiki_im_core.dylib') or process/executable depending on plugin template
+iOS -> DynamicLibrary.process() when statically linked through podspec/xcframework
+Windows -> unsupported in v0.1
 ```
 
 示例：
@@ -1303,24 +1681,24 @@ DynamicLibrary loadAwikiImCoreLibrary() {
   if (Platform.isAndroid) {
     return DynamicLibrary.open('libawiki_im_core.so');
   }
-  if (Platform.isWindows) {
-    return DynamicLibrary.open('awiki_im_core.dll');
-  }
   if (Platform.isMacOS) {
     return DynamicLibrary.open('libawiki_im_core.dylib');
   }
   if (Platform.isIOS) {
     return DynamicLibrary.process();
   }
+  if (Platform.isWindows) {
+    throw UnsupportedError('Windows is not supported by awiki_im_core v0.1.');
+  }
   throw UnsupportedError('Unsupported platform for awiki_im_core native library.');
 }
 ```
 
-Codex 应按 FRB 2.x 生成代码要求，将 loader 接入 generated API 初始化位置。
+Codex 应按 FRB 2.x 生成代码要求，将 loader 接入 generated API 初始化位置。若 FRB starter / generated API 对 loader 有不同约定，以 generated API 为准，但必须保留 native loader 文件和平台分支。
 
 ---
 
-### Step 10：Android 构建脚本
+### Step 12：Android 构建脚本
 
 创建 `scripts/flutter/build-android.sh`：
 
@@ -1380,7 +1758,23 @@ ls packages/awiki_im_core/android/src/main/jniLibs/x86_64/libawiki_im_core.so
 
 ---
 
-### Step 11：Apple 构建脚本
+### Step 13：Apple 构建脚本与 podspec 闭环
+
+首版 Apple 推荐使用 XCFramework，而不是散放多个 `.a` 文件。这样 iOS device / simulator / macOS universal 的选择由 Xcode 处理，Flutter plugin 的 podspec 也更清晰。
+
+创建 `packages/awiki_im_core/ios/include/awiki_im_core.h`：
+
+```c
+#pragma once
+// The FFI symbols are generated by flutter_rust_bridge.
+// This header exists so xcodebuild can create a static-library XCFramework.
+```
+
+macOS 同理：
+
+```text
+packages/awiki_im_core/macos/include/awiki_im_core.h
+```
 
 创建 `scripts/flutter/build-apple.sh`：
 
@@ -1399,7 +1793,11 @@ fi
 LIB_NAME="awiki_im_core"
 IOS_FRAMEWORK_DIR="${ROOT_DIR}/packages/awiki_im_core/ios/Frameworks"
 MACOS_FRAMEWORK_DIR="${ROOT_DIR}/packages/awiki_im_core/macos/Frameworks"
-DIST_DIR="${ROOT_DIR}/dist/flutter/awiki_im_core/apple"
+IOS_INCLUDE_DIR="${ROOT_DIR}/packages/awiki_im_core/ios/include"
+MACOS_INCLUDE_DIR="${ROOT_DIR}/packages/awiki_im_core/macos/include"
+
+IOS_XCFRAMEWORK="${IOS_FRAMEWORK_DIR}/AwikiImCore.xcframework"
+MACOS_XCFRAMEWORK="${MACOS_FRAMEWORK_DIR}/AwikiImCore.xcframework"
 
 TARGETS=(
   aarch64-apple-ios
@@ -1411,7 +1809,7 @@ TARGETS=(
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "Would rustup target add: ${TARGETS[*]}"
-  echo "Would build staticlibs and lipo universal simulator/macos libs"
+  echo "Would build staticlibs and create iOS/macOS XCFrameworks"
   exit 0
 fi
 
@@ -1431,23 +1829,84 @@ for target in "${TARGETS[@]}"; do
     --features blocking,sqlite,http,ios,macos
 done
 
-mkdir -p "${IOS_FRAMEWORK_DIR}" "${MACOS_FRAMEWORK_DIR}" "${DIST_DIR}"
+mkdir -p "${IOS_FRAMEWORK_DIR}" "${MACOS_FRAMEWORK_DIR}" "${IOS_INCLUDE_DIR}" "${MACOS_INCLUDE_DIR}"
 
-cp "target/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
-  "${IOS_FRAMEWORK_DIR}/lib${LIB_NAME}_ios_device.a"
+cat > "${IOS_INCLUDE_DIR}/awiki_im_core.h" <<'HEADER'
+#pragma once
+HEADER
+
+cat > "${MACOS_INCLUDE_DIR}/awiki_im_core.h" <<'HEADER'
+#pragma once
+HEADER
+
+SIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/awiki-ios-sim.XXXXXX")"
+MACOS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/awiki-macos.XXXXXX")"
 
 lipo -create \
   "target/aarch64-apple-ios-sim/release/lib${LIB_NAME}.a" \
   "target/x86_64-apple-ios/release/lib${LIB_NAME}.a" \
-  -output "${IOS_FRAMEWORK_DIR}/lib${LIB_NAME}_ios_simulator.a"
+  -output "${SIM_DIR}/lib${LIB_NAME}.a"
 
 lipo -create \
   "target/aarch64-apple-darwin/release/lib${LIB_NAME}.a" \
   "target/x86_64-apple-darwin/release/lib${LIB_NAME}.a" \
-  -output "${MACOS_FRAMEWORK_DIR}/lib${LIB_NAME}.a"
+  -output "${MACOS_DIR}/lib${LIB_NAME}.a"
+
+rm -rf "${IOS_XCFRAMEWORK}" "${MACOS_XCFRAMEWORK}"
+
+xcodebuild -create-xcframework \
+  -library "target/aarch64-apple-ios/release/lib${LIB_NAME}.a" \
+  -headers "${IOS_INCLUDE_DIR}" \
+  -library "${SIM_DIR}/lib${LIB_NAME}.a" \
+  -headers "${IOS_INCLUDE_DIR}" \
+  -output "${IOS_XCFRAMEWORK}"
+
+xcodebuild -create-xcframework \
+  -library "${MACOS_DIR}/lib${LIB_NAME}.a" \
+  -headers "${MACOS_INCLUDE_DIR}" \
+  -output "${MACOS_XCFRAMEWORK}"
 ```
 
-创建 `packages/awiki_im_core/ios/awiki_im_core.podspec` 和 `macos/awiki_im_core.podspec`，链接对应 static library。
+创建 `packages/awiki_im_core/ios/awiki_im_core.podspec`：
+
+```ruby
+Pod::Spec.new do |s|
+  s.name             = 'awiki_im_core'
+  s.version          = '0.1.0'
+  s.summary          = 'Awiki IM Core Flutter SDK'
+  s.description      = 'Flutter FFI bindings for Rust im-core.'
+  s.homepage         = 'https://github.com/AgentConnect/awiki-cli-rs2'
+  s.license          = { :type => 'MIT' }
+  s.author           = { 'AgentConnect' => 'dev@awiki.ai' }
+  s.source           = { :path => '.' }
+  s.platform         = :ios, '12.0'
+  s.source_files     = 'Classes/**/*'
+  s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
+  s.pod_target_xcconfig = {
+    'OTHER_LDFLAGS' => '$(inherited) -force_load $(PODS_TARGET_SRCROOT)/Frameworks/AwikiImCore.xcframework/ios-arm64/libawiki_im_core.a'
+  }
+end
+```
+
+创建 `packages/awiki_im_core/macos/awiki_im_core.podspec`：
+
+```ruby
+Pod::Spec.new do |s|
+  s.name             = 'awiki_im_core'
+  s.version          = '0.1.0'
+  s.summary          = 'Awiki IM Core Flutter SDK'
+  s.description      = 'Flutter FFI bindings for Rust im-core.'
+  s.homepage         = 'https://github.com/AgentConnect/awiki-cli-rs2'
+  s.license          = { :type => 'MIT' }
+  s.author           = { 'AgentConnect' => 'dev@awiki.ai' }
+  s.source           = { :path => '.' }
+  s.platform         = :osx, '10.14'
+  s.source_files     = 'Classes/**/*'
+  s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
+end
+```
+
+如果 `-force_load` 路径因 XCFramework slice 名称不同而失败，Codex 应按 `xcodebuild -create-xcframework` 生成的 `Info.plist` slice 路径修正 podspec。目标是保证 iOS static symbols 能被链接进 app executable，使 `DynamicLibrary.process()` 能解析 FRB symbols。
 
 验收：
 
@@ -1459,51 +1918,9 @@ scripts/flutter/build-apple.sh --dry-run
 
 ---
 
-### Step 12：Windows 构建脚本
+### Step 14：host 构建脚本
 
-创建 `scripts/flutter/build-windows.ps1`：
-
-```powershell
-param(
-  [string]$Target = "x86_64-pc-windows-msvc",
-  [switch]$DryRun
-)
-
-$ErrorActionPreference = "Stop"
-
-$Root = Resolve-Path (Join-Path $PSScriptRoot "../..")
-Set-Location $Root
-
-if ($DryRun) {
-  Write-Host "Would rustup target add $Target"
-  Write-Host "Would cargo build -p im-core-dart --release --target $Target"
-  exit 0
-}
-
-rustup target add $Target
-
-cargo build `
-  -p im-core-dart `
-  --release `
-  --target $Target `
-  --no-default-features `
-  --features blocking,sqlite,http,windows
-
-New-Item -ItemType Directory -Force -Path "packages/awiki_im_core/windows" | Out-Null
-Copy-Item "target/$Target/release/awiki_im_core.dll" "packages/awiki_im_core/windows/awiki_im_core.dll" -Force
-```
-
-验收：
-
-```powershell
-scripts/flutter/build-windows.ps1 -DryRun
-```
-
----
-
-### Step 13：host 构建脚本
-
-创建 `scripts/flutter/build-host.sh`，方便本地 macOS/Linux/Windows bash 环境做 smoke build：
+创建 `scripts/flutter/build-host.sh`：
 
 ```bash
 #!/usr/bin/env bash
@@ -1521,7 +1938,7 @@ cargo build \
 
 ---
 
-### Step 14：总构建脚本
+### Step 15：总构建脚本
 
 创建 `scripts/flutter/build-all.sh`：
 
@@ -1548,11 +1965,11 @@ fi
 )
 ```
 
-注意：`build-all.sh` 默认只做 Android/Apple dry-run，避免非 Android/Apple 环境失败。完整平台构建交给 CI matrix。
+注意：`build-all.sh` 默认只做 Android/Apple dry-run，避免非 Android/Apple 环境失败。完整平台构建交给 CI matrix 或人工平台验证。
 
 ---
 
-### Step 15：Flutter package tests
+### Step 16：Flutter package tests
 
 创建 `packages/awiki_im_core/test/awiki_im_core_stub_test.dart`：
 
@@ -1568,6 +1985,10 @@ void main() {
     );
     expect(config.serviceBaseUrl, 'https://awiki.ai');
   });
+
+  test('web/native API exposes disposable core type', () {
+    expect(AwikiImCore, isNotNull);
+  });
 }
 ```
 
@@ -1576,9 +1997,28 @@ void main() {
 ```rust
 #[test]
 fn dart_error_unsupported_has_stable_code() {
-    let err = im_core_dart::dto::error::DartImError::unsupported("realtime-runner");
+    let err = im_core_dart::dto::error::DartImError::unsupported("relationship-remote-mutation");
     assert_eq!(err.code, "unsupported_capability");
-    assert_eq!(err.capability.as_deref(), Some("realtime-runner"));
+    assert_eq!(err.capability.as_deref(), Some("relationship-remote-mutation"));
+}
+
+#[test]
+fn retry_message_is_explicitly_unsupported_until_im_core_has_retry_api() {
+    let err = im_core_dart::dto::error::DartImError::unsupported("message-retry");
+    assert_eq!(err.code, "unsupported_capability");
+    assert_eq!(err.capability.as_deref(), Some("message-retry"));
+}
+
+#[test]
+fn realtime_connect_is_explicitly_unsupported_until_bridge_plan_is_ready() {
+    let capability = im_core_dart::dto::realtime::DartRealtimeCapability {
+        status_supported: true,
+        connect_supported: false,
+        runner_exposed: false,
+        reason: Some("Dart SDK v0.1 does not expose realtime runner yet".to_string()),
+    };
+    assert!(!capability.connect_supported);
+    assert!(!capability.runner_exposed);
 }
 ```
 
@@ -1591,23 +2031,31 @@ cd packages/awiki_im_core && flutter test
 
 ---
 
-### Step 16：文档
+### Step 17：文档
 
 创建 `docs/flutter-sdk/awiki-im-core-flutter-sdk.md`，内容包括：
 
 ```text
 SDK 分层
+通用 im-core Flutter SDK 定位
+为什么不是 awiki-me adapter
 支持平台
 不支持 Web native 的原因
+opaque object / dispose / blocking thread pool 说明
+Realtime/WebSocket ownership：本次延后 runtime bridge；未来 WebSocket 仍应是 im-core internal transport
 如何 codegen
-如何构建 Android/iOS/macOS/Windows
-如何在 awiki-me 未来通过 path dependency 引入
-常见错误：找不到 anp sibling checkout、cargo-ndk 未安装、iOS staticlib 未链接、Windows dll 未复制
+generated files 入库和 codegen-check
+如何构建 Android/iOS/macOS
+group create service_did 规则
+retry_message 为什么 unsupported
+realtime connect/session/events 为什么延后
+Windows 不在 v0.1 native 支持范围内
+常见错误：找不到 anp sibling checkout、cargo-ndk 未安装、iOS staticlib 未链接
 ```
 
-创建 `docs/flutter-sdk/awiki-me-future-integration.md`，只描述未来 awiki-me 需要怎么接，不实际修改仓库。
+创建 `docs/flutter-sdk/awiki-me-future-integration.md`，只描述未来 `awiki-me` 需要怎么接，不实际修改仓库。
 
-未来 awiki-me 集成建议：
+未来 `awiki-me` 集成建议：
 
 ```yaml
 dependencies:
@@ -1615,7 +2063,7 @@ dependencies:
     path: ../awiki-cli-rs2/packages/awiki_im_core
 ```
 
-未来 AppBootstrap 切换建议：
+未来 `AppBootstrap` 切换建议：
 
 ```dart
 const backend = String.fromEnvironment(
@@ -1634,7 +2082,7 @@ if (backend == 'rust') {
 
 ---
 
-### Step 17：可选 CI workflow
+### Step 18：可选 CI workflow
 
 创建 `.github/workflows/flutter-im-core.yml`：
 
@@ -1659,10 +2107,13 @@ jobs:
       - name: Rust
         working-directory: awiki-cli-rs2
         run: |
+          rustup toolchain install 1.78.0 --profile minimal
           rustup toolchain install 1.79.0 --profile minimal
-          cargo +1.79.0 check -p im-core --locked
+          cargo +1.78.0 check -p im-core --locked
           cargo +1.79.0 check -p im-core-dart --locked
           cargo +1.79.0 test -p im-core-dart --locked
+          scripts/flutter/codegen-check.sh
+          cargo +1.79.0 run -p xtask --locked -- check-structure
 
   flutter-check:
     runs-on: ubuntu-latest
@@ -1685,43 +2136,67 @@ jobs:
           flutter test
 ```
 
-如果 `Cargo.lock` 更新后 `--locked` 不适用，Codex 应先更新 lockfile并提交，然后恢复 `--locked`。
+如果 `Cargo.lock` 更新后 `--locked` 不适用，Codex 应先更新 lockfile 并提交，然后恢复 `--locked`。
 
 ---
 
-## 5. Codex 一次性执行 Goal
+## 4. Codex 一次性执行 Goal
 
 把下面内容作为 Codex goal 使用：
 
 ```text
-Goal: In the awiki-cli-rs2 repository, on the branch that contains crates/im-core, add a Flutter/Dart SDK package for im-core without modifying the awiki-me repository.
+Goal: In the awiki-cli-rs2 repository, on the branch that contains crates/im-core, add a general-purpose Flutter/Dart SDK package for im-core without modifying the awiki-me repository.
 
 Requirements:
 1. Keep crates/im-core as a pure Rust SDK. Do not add Flutter, Dart, FFI, or platform packaging logic to crates/im-core.
 2. Add crates/im-core-dart as a Rust facade crate depending on im-core. Its lib name must be awiki_im_core and crate-type must include cdylib, staticlib, and rlib.
-3. Add DTO, mapping, and API modules under crates/im-core-dart. The exposed API must cover core open/client, identity list/default/resolve/register/recover, auth status/login/ensure/refresh, profile read/update/public profile, directory resolve/lookup/relation status, message send/inbox/history/mark-read/conversations/retry, group create/join/get/list/members, and realtime stubs. For im-core capabilities that are not yet implemented, return a stable DartImError with code unsupported_capability instead of omitting the function.
-4. Add packages/awiki_im_core as a Flutter package compatible with Dart >=3.8.0 and Flutter >=3.24.0. Use flutter_rust_bridge 2.x and dart:ffi. Do not rely exclusively on Flutter 3.38+ package_ffi build hooks.
-5. Add a web stub so the package can be analyzed when imported by a Flutter project that also has web support. The stub must throw UnsupportedError at runtime.
-6. Add scripts/flutter/codegen.sh, build-host.sh, build-android.sh, build-apple.sh, build-windows.ps1, and build-all.sh. All platform build scripts must support --dry-run or -DryRun where appropriate.
-7. Add minimal Rust and Flutter tests.
-8. Add docs/flutter-sdk/awiki-im-core-flutter-sdk.md and docs/flutter-sdk/awiki-me-future-integration.md.
-9. Do not modify awiki-me. Do not change the current awiki-cli release workflow unless required for workspace correctness.
-10. Run and fix: cargo +1.79.0 check -p im-core-dart, cargo +1.79.0 test -p im-core-dart, scripts/flutter/build-android.sh --dry-run, scripts/flutter/build-all.sh if Flutter is available, and cargo +1.79.0 run -p xtask --locked -- check-structure.
+3. packages/awiki_im_core must be a general im-core Flutter SDK, not an awiki-me adapter. Do not import awiki-me types or encode awiki-me UI/cache DTOs such as ChatMessage or ConversationSummary into the SDK public DTO.
+4. Add DTO, mapping, and API modules under crates/im-core-dart. DTOs must follow im-core public DTO semantics:
+   - AuthStatus: subject, has_session, expires_at, needs_refresh, warnings.
+   - SessionBundle: subject, scope, expires_at, refreshed.
+   - GroupCreateRequest must resolve service_did from request.service_did or ImCoreConfig.anp_service_did; if missing, return invalid_input(field = service_did).
+5. Add explicit opaque object lifecycle:
+   - DartImCore and DartImClient are FRB opaque Rust objects.
+   - Expose close/dispose.
+   - Calls after close return DartImError code object_closed.
+   - Blocking im-core calls are exposed as Future-returning Dart APIs, not sync Dart calls.
+6. Message API must include send_text, inbox, history, mark_read, conversations. retry_message must return unsupported_capability("message-retry") until im-core exposes a real messages().retry API. Do not rebuild SendTextRequest from DartMessage.
+7. Realtime/WebSocket runtime bridge is deferred:
+   - Dart SDK v0.1 may expose capabilities/status only.
+   - realtime connect must return unsupported_capability("realtime-runner").
+   - Do not implement WebSocket transport in packages/awiki_im_core or im-core-dart.
+   - Do not expose WebSocket, ws/wss URLs, raw frames, ping/pong, request id, pending queue, RealtimeSession, or Stream<RealtimeEvent> in the Dart public API.
+   - Future realtime bridge work should keep WebSocket as im-core internal transport and expose only high-level session/events.
+8. Add packages/awiki_im_core as a Flutter package compatible with Dart >=3.8.0 and Flutter >=3.24.0. Use flutter_rust_bridge 2.x and dart:ffi. Do not rely exclusively on Flutter 3.38+ package_ffi build hooks.
+9. Add a web stub so the package can be analyzed when imported by a Flutter project that also has web support. The stub must throw UnsupportedError at runtime.
+10. Add scripts/flutter/codegen.sh, codegen-check.sh, build-host.sh, build-android.sh, build-apple.sh, and build-all.sh. Android and Apple platform build scripts must support --dry-run. Do not add Windows build support in v0.1.
+11. Generated files must be committed:
+    - crates/im-core-dart/src/frb_generated.rs
+    - packages/awiki_im_core/lib/src/generated/bridge_generated.dart
+    Add scripts/flutter/codegen-check.sh and docs/file-size-exceptions.md entry if frb_generated.rs exceeds the xtask line limit.
+12. Add minimal Rust and Flutter tests.
+13. Add docs/flutter-sdk/awiki-im-core-flutter-sdk.md and docs/flutter-sdk/awiki-me-future-integration.md.
+14. Do not modify awiki-me. Do not change the current awiki-cli release workflow unless required for workspace correctness.
+15. Keep workspace rust-version = 1.78 unless flutter_rust_bridge has no compatible 2.x version. CI may use 1.79.0 as validation toolchain, but MSRV changes must be explicitly documented.
 
 Acceptance:
 - cargo metadata succeeds.
-- cargo check -p im-core-dart succeeds.
-- cargo test -p im-core-dart succeeds.
+- cargo +1.79.0 check -p im-core-dart succeeds.
+- cargo +1.79.0 test -p im-core-dart succeeds.
 - packages/awiki_im_core/pubspec.yaml exists and flutter pub get succeeds when Flutter is available.
 - dart analyze succeeds for packages/awiki_im_core when Flutter is available.
+- Realtime capability reports connect_supported = false and runner_exposed = false.
+- realtime connect returns unsupported_capability("realtime-runner").
+- Realtime Dart public API does not expose RealtimeSession / Stream<RealtimeEvent> / WebSocket transport details.
+- scripts/flutter/codegen-check.sh succeeds when codegen tool is available.
 - scripts/flutter/build-android.sh --dry-run succeeds.
-- scripts/flutter/build-windows.ps1 -DryRun succeeds on Windows or is syntactically valid.
+- cargo +1.79.0 run -p xtask --locked -- check-structure succeeds.
 - No file in awiki-me is modified.
 ```
 
 ---
 
-## 6. 后续 awiki-me 集成方向，不在本次执行范围
+## 5. 后续 awiki-me 集成方向，不在本次执行范围
 
 未来真正修改 `awiki-me` 时，建议按以下方式切换，而不是直接删除 Dart-only 实现：
 
@@ -1754,33 +2229,53 @@ flutter run --dart-define=AWIKI_IM_BACKEND=dart
 
 在 `awiki-me` 未切换前，现有 Dart-only gateway 继续作为 production fallback。
 
+未来 `awiki-me` adapter 可做这些 mapping：
+
+```text
+DartMessage -> awiki-me ChatMessage
+DartConversation -> awiki-me ConversationSummary
+DartGroupSummary / DartGroupSnapshot -> awiki-me GroupSummary
+DartUserProfile -> awiki-me UserProfile
+DartImError -> awiki-me UI error state
+```
+
+这些 mapping 不应反向污染 `packages/awiki_im_core` 的公共 DTO。
+
 ---
 
-## 7. 风险与处理
+## 6. 风险与处理
 
-### 7.1 Flutter Web
+### 6.1 Flutter Web
 
 `dart:ffi` 不支持 Web native library。当前 package 必须提供 web stub，不能承诺 Web 使用 Rust backend。
 
-### 7.2 SQLite 双缓存
+### 6.2 SQLite 双缓存
 
 `awiki-me` 当前用 `sqflite` 做 local cache，`im-core` 默认也启用 `sqlite`。未来切换时应选择一个 source of truth。建议未来 Rust backend 模式下以 `im-core` local state 为准，`awiki-me` 的 `AwikiLocalCache` 逐步退化为 UI cache 或删除。
 
-### 7.3 anp sibling dependency
+### 6.3 anp sibling dependency
 
 `awiki-cli-rs2` 当前 workspace 依赖 sibling path `../anp/rust`。CI 和本地构建必须 checkout sibling `anp`。后续发布 Flutter SDK 时，应评估把 `anp` 改成 pinned git dependency 或 vendored submodule。
 
-### 7.4 flutter_rust_bridge 版本
+### 6.4 flutter_rust_bridge 版本
 
-首选使用 `2.12.0`。如果与 Rust 1.79/MSRV 不兼容，Codex 应 pin 到能通过 workspace 检查的最新 2.x 版本，并在文档中记录。
+首选使用 `2.12.0`。如果与 Rust 1.78/1.79 不兼容，Codex 应 pin 到能通过 workspace 检查的最新 2.x 版本，并在文档中记录。不要静默提升 workspace MSRV。
 
-### 7.5 iOS static linking
+### 6.5 iOS static linking
 
-首版 iOS 用 staticlib。Dart 端通过 `DynamicLibrary.process()` 解析符号。若后续改 dynamic framework，需要额外处理 framework embedding、signing、App Store 审核风险。
+首版 iOS 用 staticlib XCFramework。Dart 端通过 `DynamicLibrary.process()` 解析符号。podspec 必须声明 `vendored_frameworks`，必要时使用 `OTHER_LDFLAGS` / `-force_load` 保证 FRB symbols 被链接进 executable。
+
+### 6.6 Opaque object 泄漏
+
+Dart wrapper 必须暴露 `dispose()`。Rust side close 后应清空内部 `Option<im_core::ImCore>` / `Option<im_core::ImClient>`。GC 只能作为兜底，不是生命周期策略。
+
+### 6.7 blocking 调用卡 UI
+
+所有 IO/SQLite/HTTP 相关函数必须作为 Dart `Future` 暴露。不要生成或包装成 synchronous Dart API。若 FRB sync mode 被误用，必须移除。
 
 ---
 
-## 8. 最终验收命令清单
+## 7. 最终验收命令清单
 
 在 `awiki-cli-rs2` 根目录：
 
@@ -1792,6 +2287,7 @@ cargo +1.79.0 check -p im-core-dart --locked
 cargo +1.79.0 test -p im-core-dart --locked
 cargo +1.79.0 run -p xtask --locked -- check-structure
 bash -n scripts/flutter/codegen.sh
+bash -n scripts/flutter/codegen-check.sh
 bash -n scripts/flutter/build-host.sh
 bash -n scripts/flutter/build-android.sh
 bash -n scripts/flutter/build-apple.sh
@@ -1807,17 +2303,17 @@ dart analyze
 flutter test
 ```
 
-Windows PowerShell：
-
-```powershell
-scripts/flutter/build-windows.ps1 -DryRun
-```
-
 完成后应满足：
 
 ```text
-awiki-cli-rs2 中新增 Flutter SDK package
+awiki-cli-rs2 中新增通用 Flutter SDK package
 awiki-cli-rs2 中新增 Rust-Dart facade crate
+SDK public DTO 不绑定 awiki-me UI/cache DTO
+retry_message 明确 unsupported，不伪造重发
+group create service_did 有确定来源
+realtime connect/session/events 延后，connect 明确 unsupported
+WebSocket runtime 不在本次范围内，也不暴露给 Dart SDK / awiki-me
+generated files 入库且有 codegen-check
 平台构建脚本存在且 dry-run 通过
 不修改 awiki-me
 im-core 仍为纯 Rust SDK
