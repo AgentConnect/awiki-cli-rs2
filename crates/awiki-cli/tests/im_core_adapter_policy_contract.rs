@@ -85,6 +85,29 @@ fn adapter_unsupported_cutover_error_has_stable_contract() {
     assert!(err.detail.hint.contains("Phase 4"));
 }
 
+#[test]
+fn runtime_listener_host_uses_public_realtime_runner_api() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("runtime")
+        .join("listener_supervisor_run.rs");
+    let text = fs::read_to_string(&path).expect("read runtime listener supervisor");
+    for forbidden in [
+        "im_core::compat::realtime::run_realtime_transport",
+        "im_core::compat::realtime::RealtimeRunnerEventSink",
+        "im_core::compat::realtime::RealtimeRunnerTransport",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "runtime listener host should use im_core::prelude realtime runner API, not {forbidden}"
+        );
+    }
+    assert!(
+        text.contains("im_core::realtime::run_realtime_transport_with_event_sink_until_shutdown"),
+        "runtime listener host should call the public realtime runner API outside compat"
+    );
+}
+
 const LEGACY_BRIDGE_NEEDLES: &[&str] = &[
     "im_core::compat",
     "use crate::message",
