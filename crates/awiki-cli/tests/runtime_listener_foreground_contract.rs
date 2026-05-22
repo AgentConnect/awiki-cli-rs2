@@ -2,8 +2,7 @@ use awiki_cli::im_core_adapter::realtime::{
     listener_runner_selection, ListenerRunHostKind, ListenerRunnerAction, ListenerRunnerMode,
 };
 use awiki_cli::runtime::listener_foreground::{
-    listener_accept_loop_step, listener_foreground_run_plan,
-    listener_foreground_run_plan_with_sdk_runner, listener_start_socket_plan,
+    listener_accept_loop_step, listener_foreground_run_plan, listener_start_socket_plan,
     ListenerAcceptLoopAction, ListenerAcceptLoopDecision, ListenerAcceptLoopEvent,
     ListenerForegroundDecision, ListenerForegroundRunAction, ListenerStartSocketAction,
 };
@@ -65,42 +64,6 @@ fn run_writes_pid_then_status_before_starting_socket() {
             ListenerForegroundRunAction::StartSocket(ListenerStartSocketAction::SpawnAcceptLoop),
             ListenerForegroundRunAction::StartKnownSessions,
             ListenerForegroundRunAction::SpawnWatchNewIdentities,
-            ListenerForegroundRunAction::WaitForContextDone,
-        ]
-    );
-    assert_eq!(plan.decision, ListenerForegroundDecision::ReturnOk);
-}
-
-#[test]
-fn im_core_mvp_run_keeps_cli_host_setup_then_runs_sdk_runner() {
-    let plan = listener_foreground_run_plan_with_sdk_runner(
-        "websocket",
-        "/tmp/awiki.sock",
-        true,
-        None,
-        None,
-        None,
-        None,
-    );
-
-    assert_eq!(
-        plan.actions,
-        vec![
-            ListenerForegroundRunAction::ValidateWebSocketMode {
-                mode: "websocket".to_string(),
-            },
-            ListenerForegroundRunAction::WritePid,
-            ListenerForegroundRunAction::WriteStatus,
-            ListenerForegroundRunAction::StartSocket(ListenerStartSocketAction::ListenBridge {
-                socket_path: "/tmp/awiki.sock".to_string(),
-            }),
-            ListenerForegroundRunAction::StartSocket(ListenerStartSocketAction::StoreListener),
-            ListenerForegroundRunAction::StartSocket(
-                ListenerStartSocketAction::SetBridgeAvailable { available: true },
-            ),
-            ListenerForegroundRunAction::StartSocket(ListenerStartSocketAction::SpawnAcceptLoop),
-            ListenerForegroundRunAction::StartKnownSessions,
-            ListenerForegroundRunAction::SpawnWatchNewIdentities,
             ListenerForegroundRunAction::RunImCoreRealtimeRunner,
             ListenerForegroundRunAction::WaitForContextDone,
         ]
@@ -109,15 +72,8 @@ fn im_core_mvp_run_keeps_cli_host_setup_then_runs_sdk_runner() {
 }
 
 #[test]
-fn listener_runner_selection_keeps_legacy_default_and_flags_sdk_hosts() {
-    let legacy = listener_runner_selection(false, ListenerRunHostKind::Foreground);
-    assert_eq!(legacy.mode, ListenerRunnerMode::Legacy);
-    assert_eq!(
-        legacy.actions,
-        vec![ListenerRunnerAction::UseLegacySupervisor]
-    );
-
-    let foreground = listener_runner_selection(true, ListenerRunHostKind::Foreground);
+fn listener_runner_selection_defaults_foreground_and_service_to_sdk_hosts() {
+    let foreground = listener_runner_selection(ListenerRunHostKind::Foreground);
     assert_eq!(foreground.mode, ListenerRunnerMode::ImCore);
     assert_eq!(
         foreground.actions,
@@ -126,7 +82,7 @@ fn listener_runner_selection_keeps_legacy_default_and_flags_sdk_hosts() {
         }]
     );
 
-    let service = listener_runner_selection(true, ListenerRunHostKind::Service);
+    let service = listener_runner_selection(ListenerRunHostKind::Service);
     assert_eq!(service.mode, ListenerRunnerMode::ImCore);
     assert_eq!(
         service.actions,

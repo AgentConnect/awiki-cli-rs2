@@ -92,10 +92,7 @@ pub fn run_service(resolved: Resolved) -> anyhow::Result<()> {
 }
 
 fn run_listener(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result<()> {
-    let runner = im_core_realtime_adapter::listener_runner_selection(
-        crate::im_core_adapter::use_im_core_mvp(),
-        host,
-    );
+    let runner = im_core_realtime_adapter::listener_runner_selection(host);
     let mut supervisor = ListenerSupervisor::new(resolved, runner.mode, host)?;
     let result = supervisor.run();
     supervisor.cleanup_runtime_artifacts();
@@ -530,21 +527,6 @@ fn spawn_session_loop(
                         &record,
                     );
                     let error = match runner_mode {
-                        ListenerRunnerMode::Legacy => consume_notifications(
-                            &resolved,
-                            &manager,
-                            &status,
-                            &host_notify,
-                            &local_notifications,
-                            &record,
-                            &mut transport,
-                            &rpc_rx,
-                            &session_rpcs,
-                            &rpc_active,
-                            &shutdown,
-                        )
-                        .err()
-                        .map(|err| err.to_string()),
                         ListenerRunnerMode::ImCore => consume_notifications_with_im_core_runner(
                             &resolved,
                             &manager,
@@ -1091,105 +1073,6 @@ fn cached_message_exists(resolved: &Resolved, owner_did: &str, message_id: &str)
     store::list_messages_by_ids(&connection, owner_did, &[message_id.to_string()])
         .map(|messages| !messages.is_empty())
         .unwrap_or(true)
-}
-
-fn consume_notifications(
-    resolved: &Resolved,
-    manager: &Manager,
-    status: &Arc<Mutex<Status>>,
-    host_notify: &Arc<HostNotifySinkImpl>,
-    local_notifications: &Arc<Mutex<LocalNotificationQueue>>,
-    record: &StoredIdentity,
-    transport: &mut WsTransport,
-    rpc_rx: &mpsc::Receiver<SessionRpcRequest>,
-    session_rpcs: &Arc<Mutex<SessionRpcRegistry>>,
-    rpc_active: &Arc<Mutex<bool>>,
-    shutdown: &Arc<AtomicBool>,
-) -> anyhow::Result<()> {
-    let (notification_tx, notification_rx) = mpsc::channel::<SessionNotificationTask>();
-    let handler_resolved = resolved.clone();
-    let handler_manager = manager.clone();
-    let handler_status = status.clone();
-    let handler_host_notify = host_notify.clone();
-    let handler_local_notifications = local_notifications.clone();
-    let handler_session_rpcs = session_rpcs.clone();
-    let handler_record = record.clone();
-    let handler = thread::spawn(move || {
-        while let Ok(task) = notification_rx.recv() {
-            handle_session_notification(
-                &handler_resolved,
-                &handler_manager,
-                &handler_status,
-                &handler_host_notify,
-                &handler_local_notifications,
-                &handler_session_rpcs,
-                &handler_record,
-                task.notification,
-            );
-        }
-    });
-    let mut next_ping = Instant::now() + SESSION_PING_INTERVAL;
-    let mut next_id = 0_i64;
-    let mut dispatch = super::listener_wsclient::ListenerWsPendingDispatch::default();
-    let mut pending_rpc_responses = BTreeMap::<String, PendingSessionRpc>::new();
-    let mut loop_result = Ok(());
-    while !shutdown.load(Ordering::SeqCst) {
-        if let Err(err) = drain_session_rpc_requests(
-            transport,
-            rpc_rx,
-            &mut next_id,
-            &mut dispatch,
-            &mut pending_rpc_responses,
-        ) {
-            loop_result = Err(err);
-            break;
-        }
-        expire_session_rpc_pending(Instant::now(), &mut dispatch, &mut pending_rpc_responses);
-        if Instant::now() >= next_ping {
-            if let Err(err) = transport
-                .ping_with_timeout_until(
-                    super::listener_notification_consume::SESSION_PING_TIMEOUT,
-                    || shutdown.load(Ordering::SeqCst),
-                )
-                .map_err(|err| anyhow::anyhow!("websocket ping failed: {err}"))
-            {
-                loop_result = Err(err);
-                break;
-            }
-            next_ping = Instant::now() + SESSION_PING_INTERVAL;
-        }
-        let notification = match transport.read_json_message_timeout(SESSION_NOTIFICATION_READ_POLL)
-        {
-            Ok(Some(notification)) => notification,
-            Ok(None) => continue,
-            Err(err) => {
-                loop_result = Err(err);
-                break;
-            }
-        };
-        if notification.get("id").is_some() {
-            route_session_rpc_response(notification, &mut dispatch, &mut pending_rpc_responses);
-            continue;
-        }
-        if notification_tx
-            .send(SessionNotificationTask { notification })
-            .is_err()
-        {
-            loop_result = Err(anyhow::anyhow!("websocket notification handler is closed"));
-            break;
-        }
-    }
-    let close_error = loop_result
-        .as_ref()
-        .err()
-        .map(|err| err.to_string())
-        .unwrap_or_else(|| "websocket notification loop closed".to_string());
-    close_session_rpc_active(rpc_active);
-    fail_session_rpc_pending(&close_error, &mut dispatch, &mut pending_rpc_responses);
-    fail_session_rpc_queued(&close_error, rpc_rx);
-    drop(notification_tx);
-    let _ = handler.join();
-    loop_result
 }
 
 fn consume_notifications_with_im_core_runner(

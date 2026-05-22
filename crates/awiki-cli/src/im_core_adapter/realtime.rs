@@ -1,6 +1,6 @@
 // Temporary migration-only legacy bridge exception.
-// Delete in PR C5/C7 when listener run/service-run always use public realtime
-// runner APIs without compat constants or MVP feature-flag selection here.
+// Delete in PR C7 when listener run/service-run use public realtime runner APIs
+// without migration-only compat queue sizing here.
 
 use im_core::prelude::{RealtimeOptions, RealtimeSubscription, ReconnectPolicy, ShutdownSignal};
 
@@ -8,7 +8,6 @@ use crate::runtime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListenerRunnerMode {
-    Legacy,
     ImCore,
 }
 
@@ -20,7 +19,6 @@ pub enum ListenerRunHostKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListenerRunnerAction {
-    UseLegacySupervisor,
     UseImCoreRunner { host: ListenerRunHostKind },
 }
 
@@ -30,19 +28,10 @@ pub struct ListenerRunnerSelection {
     pub actions: Vec<ListenerRunnerAction>,
 }
 
-pub fn listener_runner_selection(
-    use_im_core_mvp: bool,
-    host: ListenerRunHostKind,
-) -> ListenerRunnerSelection {
-    if use_im_core_mvp {
-        return ListenerRunnerSelection {
-            mode: ListenerRunnerMode::ImCore,
-            actions: vec![ListenerRunnerAction::UseImCoreRunner { host }],
-        };
-    }
+pub fn listener_runner_selection(host: ListenerRunHostKind) -> ListenerRunnerSelection {
     ListenerRunnerSelection {
-        mode: ListenerRunnerMode::Legacy,
-        actions: vec![ListenerRunnerAction::UseLegacySupervisor],
+        mode: ListenerRunnerMode::ImCore,
+        actions: vec![ListenerRunnerAction::UseImCoreRunner { host }],
     }
 }
 
