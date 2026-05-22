@@ -65,9 +65,9 @@ pub struct ResolveBridgeRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct SetProfileBridgeRequest {
+pub struct SetProfileCommandRequest {
     pub patch: ProfilePatch,
-    pub legacy: identity::SetProfileParams,
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1059,35 +1059,32 @@ pub fn set_profile_request(
     tags_csv: String,
     markdown: String,
     markdown_file: String,
-) -> Result<SetProfileBridgeRequest, ExitError> {
-    let legacy = identity::SetProfileParams {
+) -> Result<SetProfileCommandRequest, ExitError> {
+    let patch =
+        profile_patch_from_command(&display_name, &bio, &tags_csv, &markdown, &markdown_file)?;
+    Ok(SetProfileCommandRequest {
+        patch,
         display_name,
-        bio,
-        tags_csv,
-        markdown,
-        markdown_file,
-    };
-    let patch = profile_patch_from_legacy_params(&legacy)?;
-    Ok(SetProfileBridgeRequest { patch, legacy })
+    })
 }
 
 pub fn set_profile_via_im_core(
     resolved: &crate::config::Resolved,
     manager: &identity::Manager,
     identity_flag: &str,
-    request: SetProfileBridgeRequest,
+    request: SetProfileCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let selector = cli_identity_selector(identity_flag);
-    let client = super::build_im_client(resolved, manager, selector)?;
     let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
         .map_err(crate::app::identity_exit)?;
+    let selector = cli_identity_selector(identity_flag);
+    let client = super::build_im_client(resolved, manager, selector)?;
     let identity = identity::store::identity_summary_from_record(&record);
     let changed_fields = changed_fields_from_profile_patch(&request.patch);
     let profile = client
         .identity()
         .update_profile(request.patch)
         .map_err(|err| super::map_im_error(err, "id profile set"))?;
-    let display_name = request.legacy.display_name.trim();
+    let display_name = request.display_name.trim();
     if !display_name.is_empty() {
         let _ = manager.update_display_name(&record.identity_name, display_name);
     }
@@ -1098,14 +1095,18 @@ pub fn set_profile_via_im_core(
     ))
 }
 
-fn profile_patch_from_legacy_params(
-    params: &identity::SetProfileParams,
+fn profile_patch_from_command(
+    display_name: &str,
+    bio: &str,
+    tags_csv: &str,
+    markdown: &str,
+    markdown_file: &str,
 ) -> Result<ProfilePatch, ExitError> {
-    let markdown_file = params.markdown_file.trim();
+    let markdown_file = markdown_file.trim();
     let markdown = if markdown_file.is_empty() {
-        trimmed_optional(&params.markdown)
+        trimmed_optional(markdown)
     } else {
-        let raw = std::fs::read(&params.markdown_file).map_err(|err| {
+        let raw = std::fs::read(markdown_file).map_err(|err| {
             ExitError::new(
                 "invalid_argument",
                 2,
@@ -1117,9 +1118,9 @@ fn profile_patch_from_legacy_params(
         (!markdown.trim().is_empty()).then_some(markdown)
     };
     Ok(ProfilePatch {
-        display_name: trimmed_optional(&params.display_name),
-        bio: trimmed_optional(&params.bio),
-        tags: tags_patch(&params.tags_csv),
+        display_name: trimmed_optional(display_name),
+        bio: trimmed_optional(bio),
+        tags: tags_patch(tags_csv),
         markdown,
     })
 }
