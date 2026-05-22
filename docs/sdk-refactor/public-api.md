@@ -367,6 +367,7 @@ pub enum IdentitySubject {
 impl DirectoryService<'_> {
     pub fn resolve_peer(&self, subject: IdentitySubject) -> ImResult<PeerProfile>;
     pub fn lookup_handle(&self, handle: Handle) -> ImResult<ResolvedIdentity>;
+    pub fn public_profile(&self, subject: IdentitySubject) -> ImResult<PublicProfile>;
     pub fn save_contact(&self, request: SaveContactRequest) -> ImResult<Contact>;
     pub fn contacts(&self, query: ContactQuery) -> ImResult<Page<Contact>>;
     pub fn relation_status(&self, peer: PeerRef) -> ImResult<RelationStatus>;

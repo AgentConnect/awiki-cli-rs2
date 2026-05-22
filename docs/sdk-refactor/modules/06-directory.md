@@ -57,6 +57,11 @@ impl DirectoryService<'_> {
         handle: Handle,
     ) -> ImResult<ResolvedIdentity>;
 
+    pub fn public_profile(
+        &self,
+        subject: IdentitySubject,
+    ) -> ImResult<PublicProfile>;
+
     pub fn save_contact(
         &self,
         request: SaveContactRequest,

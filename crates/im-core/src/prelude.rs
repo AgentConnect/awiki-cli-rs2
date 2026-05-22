@@ -5,7 +5,7 @@ pub use crate::core::{
 };
 pub use crate::directory::{
     Contact, ContactListQuery, DirectoryResolution, DirectoryService, HandleLookupResult,
-    RelationStatus, SaveContactRequest,
+    IdentitySubject, PublicProfile, RelationStatus, SaveContactRequest,
 };
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::{

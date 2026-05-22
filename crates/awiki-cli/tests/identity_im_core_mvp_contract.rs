@@ -98,7 +98,7 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
 }
 
 #[test]
-fn identity_default_cutover_profile_get_self_routes_get_me_through_bridge() {
+fn identity_default_cutover_profile_get_self_routes_get_me_through_public_api() {
     let workspace = TempDir::new().expect("workspace");
     let server = TestServer::new(vec![
         TestResponse::ok(register_alice_response()),
@@ -151,7 +151,7 @@ fn identity_default_cutover_profile_get_self_routes_get_me_through_bridge() {
 }
 
 #[test]
-fn identity_default_cutover_profile_set_routes_update_me_through_bridge() {
+fn identity_default_cutover_profile_set_routes_update_me_through_public_api() {
     let workspace = TempDir::new().expect("workspace");
     let markdown_file = workspace.path().join("profile.md");
     std::fs::write(&markdown_file, " \n# Alice\n\nProfile body\n ").expect("write markdown");

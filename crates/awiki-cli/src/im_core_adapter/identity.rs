@@ -4,15 +4,15 @@
 // back to legacy identity requests, stores, clients, or compat bridges.
 
 use im_core::prelude::{
-    AuthScope, ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest,
-    ContactBindingResult, ContactBindingState, Did, Handle, HandleRegistrationResult,
-    HandleRegistrationState, IdentitySelector, InitialProfile, PeerRef, ProfilePatch,
+    ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
+    ContactBindingState, Did, Handle, HandleRegistrationResult, HandleRegistrationState,
+    IdentitySelector, IdentitySubject, InitialProfile, PeerRef, ProfilePatch,
     RecoverGeneratedIdentity, RecoverHandleRequest, RegisterHandleRequest, RegistrationMethod,
-    SessionBundle, VerificationInput,
+    VerificationInput,
 };
 use serde::Serialize;
 use serde_json::json;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,7 +26,7 @@ use crate::identity;
 use crate::identity::types::LEGACY_LAYOUT_HINT;
 use crate::output::ExitError;
 use crate::store;
-use crate::transportcfg::Profile;
+use crate::transportcfg::Profile as TransportProfile;
 
 pub use super::identity_replace_did_plan::{
     replace_did_plan_bridge_request, replace_did_plan_via_im_core, replace_did_via_im_core,
@@ -745,24 +745,13 @@ pub fn get_self_profile_via_im_core(
 ) -> Result<identity::CommandResult, ExitError> {
     let selector = cli_identity_selector(identity_flag);
     let client = super::build_im_client(resolved, manager, selector)?;
-    let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
-        .map_err(crate::app::identity_exit)?;
-    let result = im_core::compat::profile::read_self_profile_with_bridge(
-        &client,
-        ProfileSessionProvider {
-            subject: client.did().clone(),
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-        ProfileLegacyTransport {
-            resolved,
-            manager,
-            record,
-        },
-    )
-    .map_err(|err| super::map_im_error(err, "id profile get"))?;
-    Ok(identity::wire::profile_self_result(result.raw))
+    let profile = client
+        .identity()
+        .profile()
+        .map_err(|err| super::map_im_error(err, "id profile get"))?;
+    Ok(identity::wire::profile_self_result(legacy_profile_value(
+        &profile,
+    )))
 }
 
 pub fn get_public_profile_via_im_core(
@@ -790,39 +779,33 @@ pub fn get_public_profile_via_im_core(
     if !request.handle.trim().is_empty() {
         let target = identity::normalize_handle_input(&request.handle, &resolved.did_domain)
             .map_err(crate::app::identity_exit)?;
-        let peer = PeerRef::parse(&target.full_handle, "")
+        let handle = Handle::parse(&target.full_handle, "")
             .map_err(|err| super::map_im_error(err, "id profile get"))?;
-        let result = im_core::compat::directory::resolve_peer_with_bridge(
-            &client,
-            peer,
-            DirectoryLegacyTransport { resolved },
-        )
-        .map_err(|err| super::map_im_error(err, "id profile get"))?;
-        let did = result.resolution.did.as_str().to_string();
+        let result = client
+            .directory()
+            .public_profile(IdentitySubject::Handle(handle))
+            .map_err(|err| super::map_im_error(err, "id profile get"))?;
+        let did = result.did.as_str().to_string();
         subject.insert("handle".to_string(), Value::String(target.local_part));
         subject.insert("full_handle".to_string(), Value::String(target.full_handle));
         subject.insert("domain".to_string(), Value::String(target.effective_domain));
         subject.insert("did".to_string(), Value::String(did));
-        let profile = result.public_profile.unwrap_or(Value::Null);
         return Ok(identity::wire::profile_public_result(
             Value::Object(subject),
-            profile,
+            legacy_profile_value(&result.profile),
         ));
     }
     if !profile_did.trim().is_empty() {
         subject.insert("did".to_string(), Value::String(profile_did.clone()));
     }
-    let peer = PeerRef::parse(&profile_did, "")
+    let did = Did::parse(&profile_did).map_err(|err| super::map_im_error(err, "id profile get"))?;
+    let result = client
+        .directory()
+        .public_profile(IdentitySubject::Did(did))
         .map_err(|err| super::map_im_error(err, "id profile get"))?;
-    let result = im_core::compat::directory::resolve_peer_with_bridge(
-        &client,
-        peer,
-        DirectoryLegacyTransport { resolved },
-    )
-    .map_err(|err| super::map_im_error(err, "id profile get"))?;
     Ok(identity::wire::profile_public_result(
         Value::Object(subject),
-        result.public_profile.unwrap_or(Value::Null),
+        legacy_profile_value(&result.profile),
     ))
 }
 
@@ -928,30 +911,19 @@ pub fn set_profile_via_im_core(
     let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
         .map_err(crate::app::identity_exit)?;
     let identity = identity::store::identity_summary_from_record(&record);
-    let result = im_core::compat::profile::update_profile_with_bridge(
-        &client,
-        request.patch,
-        ProfileSessionProvider {
-            subject: client.did().clone(),
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-        ProfileLegacyTransport {
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-    )
-    .map_err(|err| super::map_im_error(err, "id profile set"))?;
+    let changed_fields = changed_fields_from_profile_patch(&request.patch);
+    let profile = client
+        .identity()
+        .update_profile(request.patch)
+        .map_err(|err| super::map_im_error(err, "id profile set"))?;
     let display_name = request.legacy.display_name.trim();
     if !display_name.is_empty() {
         let _ = manager.update_display_name(&record.identity_name, display_name);
     }
     Ok(identity::wire::profile_update_result(
         &identity,
-        result.changed_fields,
-        result.raw,
+        changed_fields,
+        legacy_profile_value(&profile),
     ))
 }
 
@@ -991,30 +963,71 @@ fn tags_patch(tags_csv: &str) -> Option<Vec<String>> {
     (!tags.is_empty()).then_some(tags)
 }
 
-struct ProfileSessionProvider<'a> {
-    subject: Did,
-    resolved: &'a crate::config::Resolved,
-    manager: &'a identity::Manager,
-    record: identity::types::StoredIdentity,
-}
-
-impl im_core::compat::profile::BridgeProfileSessionProvider for ProfileSessionProvider<'_> {
-    fn ensure_profile_session(&self) -> im_core::ImResult<SessionBundle> {
-        let session = identity::service::auth_session(self.resolved, self.manager, &self.record)
-            .map_err(identity_error_to_im_error)?;
-        Ok(SessionBundle {
-            subject: self.subject.clone(),
-            scope: AuthScope::UserProfile,
-            expires_at: None,
-            refreshed: session.current_jwt().trim() != self.record.jwt_token.trim(),
-        })
+fn changed_fields_from_profile_patch(patch: &ProfilePatch) -> Vec<String> {
+    let mut fields = Vec::new();
+    if patch.display_name.is_some() {
+        fields.push("display_name".to_string());
     }
+    if patch.bio.is_some() {
+        fields.push("bio".to_string());
+    }
+    if patch.tags.is_some() {
+        fields.push("tags".to_string());
+    }
+    if patch.markdown.is_some() {
+        fields.push("profile_md".to_string());
+    }
+    fields
 }
 
-struct ProfileLegacyTransport<'a> {
-    resolved: &'a crate::config::Resolved,
-    manager: &'a identity::Manager,
-    record: identity::types::StoredIdentity,
+fn legacy_profile_value(profile: &im_core::identity::Profile) -> Value {
+    let mut value = Map::new();
+    value.insert(
+        "did".to_string(),
+        Value::String(profile.subject.as_str().to_string()),
+    );
+    if let Some(handle) = profile.handle.as_ref() {
+        value.insert(
+            "handle".to_string(),
+            Value::String(handle.as_str().to_string()),
+        );
+    }
+    if let Some(display_name) = profile.display_name.as_ref() {
+        value.insert("nick_name".to_string(), Value::String(display_name.clone()));
+    }
+    if let Some(bio) = profile.bio.as_ref() {
+        value.insert("bio".to_string(), Value::String(bio.clone()));
+    }
+    if !profile.tags.is_empty() {
+        value.insert("tags".to_string(), json!(profile.tags));
+    }
+    if let Some(markdown) = profile.markdown.as_ref() {
+        value.insert("profile_md".to_string(), Value::String(markdown.clone()));
+    }
+    if let Some(avatar_url) = profile.avatar_url.as_ref() {
+        value.insert("avatar_url".to_string(), Value::String(avatar_url.clone()));
+    }
+    if let Some(updated_at) = profile.updated_at.as_ref() {
+        value.insert("updated_at".to_string(), Value::String(updated_at.clone()));
+    }
+    if !profile.metadata.is_empty() {
+        value.insert(
+            "metadata".to_string(),
+            Value::Object(
+                profile
+                    .metadata
+                    .iter()
+                    .map(|attribute| {
+                        (
+                            attribute.key.clone(),
+                            Value::String(attribute.value.clone()),
+                        )
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    Value::Object(value)
 }
 
 struct DirectoryLegacyTransport<'a> {
@@ -1026,84 +1039,13 @@ impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacy
         let client =
             identity::client::Client::new(self.resolved).map_err(identity_error_to_im_error)?;
         let profile = match method {
-            "get_public_profile" => Profile::RpcReadHeavy,
-            _ => Profile::RpcDefault,
+            "get_public_profile" => TransportProfile::RpcReadHeavy,
+            _ => TransportProfile::RpcDefault,
         };
         client
             .rpc_call_profile(profile, endpoint, method, params)
             .map_err(identity_error_to_im_error)
     }
-}
-
-impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport
-    for ProfileLegacyTransport<'_>
-{
-    fn authenticated_rpc(
-        &mut self,
-        endpoint: &str,
-        method: &str,
-        params: Value,
-    ) -> im_core::ImResult<Value> {
-        read_authenticated_profile_with_fallback(
-            self.resolved,
-            self.manager,
-            &self.record,
-            endpoint,
-            method,
-            params,
-        )
-        .map_err(identity_error_to_im_error)
-    }
-}
-
-fn read_authenticated_profile_with_fallback(
-    resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
-    record: &identity::types::StoredIdentity,
-    endpoint: &str,
-    method: &str,
-    params: Value,
-) -> Result<Value, identity::IdentityError> {
-    match read_authenticated_profile(resolved, manager, record, endpoint, method, params.clone()) {
-        Ok(result) => Ok(result),
-        Err(err) if identity_error_is_unauthorized(&err) => {
-            let refreshed = identity::refresh_token(resolved, manager, &record.identity_name).ok();
-            let record = refreshed
-                .as_ref()
-                .and_then(|_| manager.load(&record.identity_name).ok())
-                .unwrap_or_else(|| record.clone());
-            match read_authenticated_profile(resolved, manager, &record, endpoint, method, params) {
-                Ok(result) => Ok(result),
-                Err(_) => Err(err),
-            }
-        }
-        Err(err) => Err(err),
-    }
-}
-
-fn read_authenticated_profile(
-    resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
-    record: &identity::types::StoredIdentity,
-    endpoint: &str,
-    method: &str,
-    params: Value,
-) -> Result<Value, identity::IdentityError> {
-    let mut auth = identity::service::auth_session(resolved, manager, record)?;
-    let client = identity::client::Client::new(resolved)?;
-    let profile = match method {
-        "get_me" => Profile::RpcReadHeavy,
-        _ => Profile::RpcDefault,
-    };
-    client.authenticated_rpc_call_profile(profile, endpoint, method, params, &mut auth)
-}
-
-fn identity_error_is_unauthorized(err: &identity::IdentityError) -> bool {
-    matches!(
-        err,
-        identity::IdentityError::Service(service)
-            if service.status_code == 401 || service.rpc_code == -32001
-    )
 }
 
 fn identity_error_to_im_error(err: identity::IdentityError) -> im_core::ImError {

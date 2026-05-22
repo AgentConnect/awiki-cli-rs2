@@ -262,6 +262,60 @@ fn directory_service_exposes_contact_store_and_resolution_api() {
 }
 
 #[test]
+fn directory_service_reads_public_profile_without_resolve_call() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_public_profile",
+            json!({ "did": "did:example:bob" }),
+            public_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_public_profile",
+            json!({ "did": "did:example:bob" }),
+            public_profile_value(),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    let handle_profile = client
+        .directory()
+        .public_profile(IdentitySubject::Handle(
+            Handle::parse("bob.awiki.test", "").unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(handle_profile.did.as_str(), "did:example:bob");
+    assert_eq!(
+        handle_profile.handle.as_ref().unwrap().as_str(),
+        "bob.awiki.test"
+    );
+    assert_eq!(handle_profile.profile.display_name.as_deref(), Some("Bob"));
+    assert!(matches!(handle_profile.subject, IdentitySubject::Handle(_)));
+
+    let did_profile = client
+        .directory()
+        .public_profile(IdentitySubject::Did(Did::parse("did:example:bob").unwrap()))
+        .unwrap();
+    assert_eq!(did_profile.did.as_str(), "did:example:bob");
+    assert_eq!(did_profile.profile.subject.as_str(), "did:example:bob");
+    assert_eq!(did_profile.profile.display_name.as_deref(), Some("Bob"));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].rpc_method, "lookup");
+    assert_eq!(requests[1].rpc_method, "get_public_profile");
+    assert_eq!(requests[2].rpc_method, "get_public_profile");
+}
+
+#[test]
 fn directory_bridge_resolves_handle_with_public_profile_projection() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");

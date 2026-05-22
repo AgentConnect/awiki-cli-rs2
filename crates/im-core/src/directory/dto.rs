@@ -10,6 +10,22 @@ pub struct DirectoryResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdentitySubject {
+    Did(crate::ids::Did),
+    Handle(crate::ids::Handle),
+    Any(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicProfile {
+    pub subject: IdentitySubject,
+    pub did: crate::ids::Did,
+    pub handle: Option<crate::ids::Handle>,
+    pub profile: crate::identity::Profile,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandleLookupResult {
     pub handle: crate::ids::Handle,
     pub did: crate::ids::Did,

@@ -31,6 +31,35 @@ where
         handle_lookup_from_value(&raw)
     }
 
+    pub(crate) fn public_profile(
+        mut self,
+        subject: crate::directory::IdentitySubject,
+    ) -> crate::ImResult<crate::directory::PublicProfile> {
+        match subject {
+            crate::directory::IdentitySubject::Did(did) => self.public_profile_by_did(
+                crate::directory::IdentitySubject::Did(did.clone()),
+                did,
+                None,
+            ),
+            crate::directory::IdentitySubject::Handle(handle) => {
+                self.public_profile_by_handle(handle)
+            }
+            crate::directory::IdentitySubject::Any(input) => {
+                if input.trim().starts_with("did:") {
+                    let did = crate::ids::Did::parse(input.trim())?;
+                    self.public_profile_by_did(
+                        crate::directory::IdentitySubject::Did(did.clone()),
+                        did,
+                        None,
+                    )
+                } else {
+                    let handle = crate::ids::Handle::parse(input.trim(), "")?;
+                    self.public_profile_by_handle(handle)
+                }
+            }
+        }
+    }
+
     pub(crate) fn resolve_peer(
         mut self,
         peer: crate::ids::PeerRef,
@@ -113,6 +142,37 @@ where
             resolve: Some(resolve_raw),
             lookup: lookup_raw,
             public_profile: profile_raw,
+        })
+    }
+
+    fn public_profile_by_handle(
+        &mut self,
+        handle: crate::ids::Handle,
+    ) -> crate::ImResult<crate::directory::PublicProfile> {
+        let lookup_raw = lookup_by_handle(&mut self.transport, handle.as_str())?;
+        let lookup = handle_lookup_from_value(&lookup_raw)?;
+        self.public_profile_by_did(
+            crate::directory::IdentitySubject::Handle(handle),
+            lookup.did,
+            Some(lookup.handle),
+        )
+    }
+
+    fn public_profile_by_did(
+        &mut self,
+        subject: crate::directory::IdentitySubject,
+        did: crate::ids::Did,
+        handle: Option<crate::ids::Handle>,
+    ) -> crate::ImResult<crate::directory::PublicProfile> {
+        let raw = public_profile_by_did(&mut self.transport, did.as_str())?;
+        let mut profile = crate::internal::profile_runtime::profile_from_value(self.client, &raw)?;
+        profile.subject = did.clone();
+        Ok(crate::directory::PublicProfile {
+            subject,
+            did,
+            handle: handle.or_else(|| profile.handle.clone()),
+            profile,
+            warnings: Vec::new(),
         })
     }
 }

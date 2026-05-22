@@ -71,6 +71,42 @@ impl<'a> DirectoryService<'a> {
             .lookup_handle(handle)
     }
 
+    pub fn public_profile(
+        &self,
+        subject: super::IdentitySubject,
+    ) -> crate::ImResult<super::PublicProfile> {
+        validate_identity_subject(&subject)?;
+        self.public_profile_with_runtime(
+            subject,
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+    }
+
+    pub(crate) fn public_profile_with_runtime<T>(
+        &self,
+        subject: super::IdentitySubject,
+        transport: T,
+    ) -> crate::ImResult<super::PublicProfile>
+    where
+        T: crate::internal::transport::RpcTransport,
+    {
+        let result =
+            crate::internal::directory_runtime::DirectoryRuntime::new(self.client, transport)
+                .public_profile(subject)?;
+        #[cfg(feature = "sqlite")]
+        crate::internal::contact_store::projection::project_directory_resolution(
+            self.client,
+            &crate::directory::DirectoryResolution {
+                input: result.did.as_str().to_string(),
+                did: result.did.clone(),
+                handle: result.handle.clone(),
+                profile: Some(result.profile.clone()),
+                warnings: result.warnings.clone(),
+            },
+        );
+        Ok(result)
+    }
+
     pub fn save_contact(
         &self,
         request: super::SaveContactRequest,
@@ -188,6 +224,21 @@ impl<'a> DirectoryService<'a> {
 
     fn owner_identity_id(&self) -> &str {
         self.client.current_identity().id.as_str()
+    }
+}
+
+fn validate_identity_subject(subject: &super::IdentitySubject) -> crate::ImResult<()> {
+    match subject {
+        super::IdentitySubject::Did(did) if did.as_str().trim().is_empty() => Err(
+            crate::ImError::invalid_input(Some("did".to_string()), "did must not be empty"),
+        ),
+        super::IdentitySubject::Handle(handle) if handle.as_str().trim().is_empty() => Err(
+            crate::ImError::invalid_input(Some("handle".to_string()), "handle must not be empty"),
+        ),
+        super::IdentitySubject::Any(value) if value.trim().is_empty() => Err(
+            crate::ImError::invalid_input(Some("subject".to_string()), "subject must not be empty"),
+        ),
+        _ => Ok(()),
     }
 }
 
