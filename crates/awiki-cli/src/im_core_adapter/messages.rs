@@ -651,7 +651,7 @@ fn merge_handle_history_messages(
     ) {
         Ok(cached) if !cached.is_empty() => {
             let cache_has_pending_direct_e2ee = contains_pending_direct_e2ee_wire_messages(&cached);
-            let cached = message::filter_displayable_direct_e2ee_messages(cached);
+            let cached = filter_displayable_direct_e2ee_messages(cached);
             if cached.is_empty() {
                 return Some(dids);
             }
@@ -730,9 +730,39 @@ fn contains_pending_direct_e2ee_wire_messages(messages: &[Value]) -> bool {
         message
             .get("content_type")
             .and_then(Value::as_str)
-            .map(message::is_direct_e2ee_wire_content_type)
+            .map(is_direct_e2ee_wire_content_type)
             .unwrap_or(false)
     })
+}
+
+fn filter_displayable_direct_e2ee_messages(messages: Vec<Value>) -> Vec<Value> {
+    messages
+        .into_iter()
+        .filter(|message| !is_direct_e2ee_control_or_undisplayable(message))
+        .collect()
+}
+
+fn is_direct_e2ee_control_or_undisplayable(message: &Value) -> bool {
+    let Some(object) = message.as_object() else {
+        return false;
+    };
+    if bool_value(object.get("secure_control")) {
+        return true;
+    }
+    if !is_direct_e2ee_wire_content_type(&string_value(object.get("content_type"))) {
+        return false;
+    }
+    matches!(
+        string_value(object.get("decryption_state")).as_str(),
+        "" | "undecryptable" | "failed"
+    )
+}
+
+fn is_direct_e2ee_wire_content_type(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "application/anp-direct-init+json" | "application/anp-direct-cipher+json"
+    )
 }
 
 fn merge_direct_history_messages(remote: &[Value], cached: Vec<Value>, limit: i64) -> Vec<Value> {
