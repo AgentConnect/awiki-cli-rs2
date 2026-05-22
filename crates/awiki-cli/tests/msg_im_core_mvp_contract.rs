@@ -10,10 +10,10 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_send_im_core_mvp_direct_text_posts_im_core_rpc() {
+fn msg_send_default_cutover_direct_text_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
-    let alice = register_generated_msg_identity(&manager, "alice-mvp", "alice", "jwt-alice");
+    let alice = register_generated_msg_identity(&manager, "alice-cutover", "alice", "jwt-alice");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "accepted": true,
@@ -23,19 +23,18 @@ fn msg_send_im_core_mvp_direct_text_posts_im_core_rpc() {
     })))]);
     write_msg_config(workspace.path(), &server.base_url());
 
-    let output = awiki_cmd_with_env(
+    let output = awiki_cmd(
         &[
             "--identity",
-            "alice-mvp",
+            "alice-cutover",
             "msg",
             "send",
             "--to",
             bob_did,
             "--text",
-            "hello through im-core",
+            "hello through default cutover",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
 
     let envelope = success_json(&output);
@@ -69,7 +68,7 @@ fn msg_send_im_core_mvp_direct_text_posts_im_core_rpc() {
     );
     assert_eq!(
         body["params"]["body"],
-        json!({"text": "hello through im-core"})
+        json!({"text": "hello through default cutover"})
     );
     assert_eq!(
         body["params"]["auth"]["scheme"],
@@ -78,10 +77,11 @@ fn msg_send_im_core_mvp_direct_text_posts_im_core_rpc() {
 }
 
 #[test]
-fn msg_send_im_core_mvp_group_text_posts_im_core_rpc() {
+fn msg_send_default_cutover_group_text_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
-    let alice = register_generated_msg_identity(&manager, "alice-group-mvp", "alice", "jwt-alice");
+    let alice =
+        register_generated_msg_identity(&manager, "alice-group-cutover", "alice", "jwt-alice");
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "accepted": true,
@@ -95,19 +95,18 @@ fn msg_send_im_core_mvp_group_text_posts_im_core_rpc() {
     })))]);
     write_msg_config(workspace.path(), &server.base_url());
 
-    let output = awiki_cmd_with_env(
+    let output = awiki_cmd(
         &[
             "--identity",
-            "alice-group-mvp",
+            "alice-group-cutover",
             "msg",
             "send",
             "--group",
             group_did,
             "--text",
-            "hello group through im-core",
+            "hello group through default cutover",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
 
     let envelope = success_json(&output);
@@ -142,7 +141,7 @@ fn msg_send_im_core_mvp_group_text_posts_im_core_rpc() {
     assert_eq!(body["params"]["meta"]["content_type"], "text/plain");
     assert_eq!(
         body["params"]["body"],
-        json!({"text": "hello group through im-core"})
+        json!({"text": "hello group through default cutover"})
     );
     assert_eq!(
         body["params"]["auth"]["scheme"],
@@ -151,14 +150,15 @@ fn msg_send_im_core_mvp_group_text_posts_im_core_rpc() {
 }
 
 #[test]
-fn msg_inbox_im_core_mvp_direct_posts_im_core_rpc() {
+fn msg_inbox_default_cutover_direct_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
-    let alice = register_generated_read_identity(&manager, "alice-inbox-mvp", "alice", "jwt-alice");
+    let alice =
+        register_generated_read_identity(&manager, "alice-inbox-cutover", "alice", "jwt-alice");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "messages": [{
-            "id": "msg-inbox-mvp-1",
+            "id": "msg-inbox-cutover-1",
             "sender_did": bob_did,
             "receiver_did": alice.did,
             "content": "hello inbox",
@@ -172,10 +172,10 @@ fn msg_inbox_im_core_mvp_direct_posts_im_core_rpc() {
     })))]);
     write_msg_config(workspace.path(), &server.base_url());
 
-    let output = awiki_cmd_with_env(
+    let output = awiki_cmd(
         &[
             "--identity",
-            "alice-inbox-mvp",
+            "alice-inbox-cutover",
             "msg",
             "inbox",
             "--scope",
@@ -185,12 +185,11 @@ fn msg_inbox_im_core_mvp_direct_posts_im_core_rpc() {
             "--unread",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
 
     let envelope = success_json(&output);
     assert_eq!(envelope["summary"], "Loaded 1 inbox messages");
-    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-inbox-mvp-1");
+    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-inbox-cutover-1");
     assert_eq!(envelope["data"]["source"], "remote_http");
 
     let requests = server.requests();
@@ -210,15 +209,15 @@ fn msg_inbox_im_core_mvp_direct_posts_im_core_rpc() {
 }
 
 #[test]
-fn msg_history_im_core_mvp_direct_posts_im_core_rpc() {
+fn msg_history_default_cutover_direct_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
     let alice =
-        register_generated_read_identity(&manager, "alice-history-mvp", "alice", "jwt-alice");
+        register_generated_read_identity(&manager, "alice-history-cutover", "alice", "jwt-alice");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "messages": [{
-            "id": "msg-history-mvp-1",
+            "id": "msg-history-cutover-1",
             "sender_did": alice.did,
             "receiver_did": bob_did,
             "content": "hello history",
@@ -232,10 +231,10 @@ fn msg_history_im_core_mvp_direct_posts_im_core_rpc() {
     })))]);
     write_msg_config(workspace.path(), &server.base_url());
 
-    let output = awiki_cmd_with_env(
+    let output = awiki_cmd(
         &[
             "--identity",
-            "alice-history-mvp",
+            "alice-history-cutover",
             "msg",
             "history",
             "--with",
@@ -246,12 +245,14 @@ fn msg_history_im_core_mvp_direct_posts_im_core_rpc() {
             "8",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
 
     let envelope = success_json(&output);
     assert_eq!(envelope["summary"], "Loaded 1 direct history messages");
-    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-history-mvp-1");
+    assert_eq!(
+        envelope["data"]["messages"][0]["id"],
+        "msg-history-cutover-1"
+    );
     assert_eq!(envelope["data"]["with"], bob_did);
     assert_eq!(envelope["data"]["source"], "remote_http");
 
@@ -273,10 +274,11 @@ fn msg_history_im_core_mvp_direct_posts_im_core_rpc() {
 }
 
 #[test]
-fn msg_mark_read_im_core_mvp_posts_im_core_rpc_and_updates_local_cache() {
+fn msg_mark_read_default_cutover_posts_im_core_rpc_and_updates_local_cache() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
-    let alice = register_generated_read_identity(&manager, "alice-mark-mvp", "alice", "jwt-alice");
+    let alice =
+        register_generated_read_identity(&manager, "alice-mark-cutover", "alice", "jwt-alice");
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "updated_count": 4
     })))]);
@@ -284,30 +286,35 @@ fn msg_mark_read_im_core_mvp_posts_im_core_rpc_and_updates_local_cache() {
     seed_message(
         workspace.path(),
         &alice.did,
-        "direct-mark-mvp",
+        "direct-mark-cutover",
         "",
         "text/plain",
         "",
     );
 
-    let output = awiki_cmd_with_env(
+    let output = awiki_cmd(
         &[
             "--identity",
-            "alice-mark-mvp",
+            "alice-mark-cutover",
             "msg",
             "mark-read",
-            "direct-mark-mvp",
+            "direct-mark-cutover",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
 
     let envelope = success_json(&output);
     assert_eq!(envelope["summary"], "Marked 4 messages as read");
     assert_eq!(envelope["data"]["action"], "mark_read");
     assert_eq!(envelope["data"]["updated_count"], 4);
-    assert_eq!(envelope["data"]["message_ids"], json!(["direct-mark-mvp"]));
-    assert_eq!(is_read(workspace.path(), &alice.did, "direct-mark-mvp"), 1);
+    assert_eq!(
+        envelope["data"]["message_ids"],
+        json!(["direct-mark-cutover"])
+    );
+    assert_eq!(
+        is_read(workspace.path(), &alice.did, "direct-mark-cutover"),
+        1
+    );
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -323,22 +330,26 @@ fn msg_mark_read_im_core_mvp_posts_im_core_rpc_and_updates_local_cache() {
     assert_eq!(body["params"]["body"]["user_did"], alice.did);
     assert_eq!(
         body["params"]["body"]["message_ids"],
-        json!(["direct-mark-mvp"])
+        json!(["direct-mark-cutover"])
     );
 }
 
 #[test]
-fn msg_mark_read_im_core_mvp_keeps_group_and_mail_local_only() {
+fn msg_mark_read_default_cutover_keeps_group_and_mail_local_only() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
-    let alice =
-        register_generated_read_identity(&manager, "alice-local-mark-mvp", "alice", "jwt-alice");
+    let alice = register_generated_read_identity(
+        &manager,
+        "alice-local-mark-cutover",
+        "alice",
+        "jwt-alice",
+    );
     let server = TestServer::new(Vec::new());
     write_msg_config(workspace.path(), &server.base_url());
     seed_message(
         workspace.path(),
         &alice.did,
-        "group-mark-mvp",
+        "group-mark-cutover",
         "did:wba:awiki.ai:groups:demo:e1_group",
         "text/plain",
         "",
@@ -346,34 +357,39 @@ fn msg_mark_read_im_core_mvp_keeps_group_and_mail_local_only() {
     seed_message(
         workspace.path(),
         &alice.did,
-        "mail-mark-mvp",
+        "mail-mark-cutover",
         "",
         "mail.notification",
         r#"{"source_kind":"mail"}"#,
     );
 
-    let output = awiki_cmd_with_env(
+    let output = awiki_cmd(
         &[
             "--identity",
-            "alice-local-mark-mvp",
+            "alice-local-mark-cutover",
             "msg",
             "mark-read",
-            "group-mark-mvp",
-            "mail-mark-mvp",
+            "group-mark-cutover",
+            "mail-mark-cutover",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
 
     let envelope = success_json(&output);
     assert_eq!(envelope["summary"], "Marked 2 messages as read");
     assert_eq!(envelope["data"]["updated_count"], 2);
     assert_eq!(server.requests().len(), 0);
-    assert_eq!(is_read(workspace.path(), &alice.did, "group-mark-mvp"), 1);
-    assert_eq!(is_read(workspace.path(), &alice.did, "mail-mark-mvp"), 1);
+    assert_eq!(
+        is_read(workspace.path(), &alice.did, "group-mark-cutover"),
+        1
+    );
+    assert_eq!(
+        is_read(workspace.path(), &alice.did, "mail-mark-cutover"),
+        1
+    );
 }
 
-fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) -> Output {
+fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -385,9 +401,6 @@ fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) ->
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT");
-    for (key, value) in envs {
-        command.env(key, value);
-    }
     command.output().expect("run awiki-cli")
 }
 
@@ -698,7 +711,7 @@ impl TempDir {
             .unwrap_or_default()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-msg-im-core-mvp-test-{}-{nanos}",
+            "awiki-cli-rs2-msg-im-core-cutover-test-{}-{nanos}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

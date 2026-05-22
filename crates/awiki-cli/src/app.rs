@@ -919,15 +919,6 @@ fn count_identity_dirs(path: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn not_implemented_side_effect(command: &str) -> ExitError {
-    ExitError::new(
-        "not_implemented",
-        1,
-        format!("{command} requires non-dry-run implementation in a later port slice."),
-        "Use --dry-run for this first Rust parity slice.",
-    )
-}
-
 pub(crate) fn identity_exit(err: IdentityError) -> ExitError {
     match err {
         IdentityError::InvalidInput(message) => ExitError::new(

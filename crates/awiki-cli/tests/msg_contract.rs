@@ -83,7 +83,7 @@ fn msg_dry_run_plans_match_go_contracts() {
         json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
     );
 
-    let secure_direct = success_json(&awiki_cmd(
+    let secure_direct = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -98,16 +98,13 @@ fn msg_dry_run_plans_match_go_contracts() {
             "on",
         ],
         workspace.path(),
-    ));
-    assert_eq!(secure_direct["summary"], "Dry run: message send planned");
-    assert_eq!(secure_direct["data"]["plan"]["action"], "direct.send");
-    assert_eq!(secure_direct["data"]["plan"]["message_type"], "text");
-    assert_eq!(
-        secure_direct["data"]["plan"]["target"]["handle"],
-        "bob.awiki.ai"
     );
+    assert_code(&secure_direct, 2);
+    let secure_direct = error_json(&secure_direct);
+    assert_eq!(secure_direct["error"]["code"], "unsupported_capability");
+    assert_contains(&secure_direct["error"]["message"], "secure direct");
 
-    let secure_direct_equals = success_json(&awiki_cmd(
+    let secure_direct_equals = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -121,13 +118,15 @@ fn msg_dry_run_plans_match_go_contracts() {
             "--secure=on",
         ],
         workspace.path(),
-    ));
+    );
+    assert_code(&secure_direct_equals, 2);
+    let secure_direct_equals = error_json(&secure_direct_equals);
     assert_eq!(
-        secure_direct_equals["data"]["plan"],
-        secure_direct["data"]["plan"]
+        secure_direct_equals["error"]["message"],
+        secure_direct["error"]["message"]
     );
 
-    let attachment_send = success_json(&awiki_cmd(
+    let attachment_send = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -140,21 +139,13 @@ fn msg_dry_run_plans_match_go_contracts() {
             "caption",
             "--file",
             "/tmp/demo.txt",
-            "--mime-type",
-            "text/plain",
         ],
         workspace.path(),
-    ));
-    assert_eq!(attachment_send["data"]["plan"]["action"], "attachment.send");
-    assert_eq!(
-        attachment_send["data"]["plan"]["message_type"],
-        "attachment_manifest"
     );
-    assert_eq!(attachment_send["data"]["plan"]["transport"], "http");
-    assert_eq!(
-        attachment_send["data"]["plan"]["attachment"],
-        json!({ "path": "/tmp/demo.txt", "mime_type": "text/plain", "caption": "caption" })
-    );
+    assert_code(&attachment_send, 2);
+    let attachment_send = error_json(&attachment_send);
+    assert_eq!(attachment_send["error"]["code"], "unsupported_capability");
+    assert_contains(&attachment_send["error"]["message"], "attachments");
 
     let group = success_json(&awiki_cmd(
         &[
@@ -176,7 +167,7 @@ fn msg_dry_run_plans_match_go_contracts() {
         json!({ "did": "did:wba:awiki.ai:groups:demo:e1_group", "kind": "group" })
     );
 
-    let download = success_json(&awiki_cmd(
+    let download = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -194,14 +185,15 @@ fn msg_dry_run_plans_match_go_contracts() {
             "out.bin",
         ],
         workspace.path(),
-    ));
-    assert_eq!(download["summary"], "Dry run: attachment download planned");
-    assert_eq!(download["data"]["plan"]["action"], "download_attachment");
-    assert_eq!(download["data"]["plan"]["with_handle"], "bob.awiki.ai");
-    assert_eq!(download["data"]["plan"]["transport"], "http");
-    assert_eq!(download["data"]["plan"]["message_id"], "msg-1");
-    assert_eq!(download["data"]["plan"]["attachment_id"], "att-1");
-    assert_eq!(download["data"]["plan"]["output"], "out.bin");
+    );
+    assert_code(&download, 2);
+    let download = error_json(&download);
+    assert_eq!(download["error"]["code"], "unsupported_capability");
+    assert_eq!(
+        download["error"]["details"]["command"],
+        "msg.attachment.download"
+    );
+    assert_eq!(download["error"]["details"]["capability"], "attachments");
 
     let inbox = success_json(&awiki_cmd(
         &[
@@ -212,23 +204,20 @@ fn msg_dry_run_plans_match_go_contracts() {
             "inbox",
             "--scope",
             "all",
-            "--with",
-            "bob",
             "--unread",
             "--limit",
             "7",
-            "--mark-read",
         ],
         workspace.path(),
     ));
     assert_eq!(inbox["summary"], "Dry run: inbox read planned");
     assert_eq!(inbox["data"]["plan"]["action"], "inbox.get");
     assert_eq!(inbox["data"]["plan"]["scope"], "all");
-    assert_eq!(inbox["data"]["plan"]["with"], "bob");
-    assert_eq!(inbox["data"]["plan"]["with_handle"], "bob.awiki.ai");
+    assert_eq!(inbox["data"]["plan"]["with"], "");
+    assert_eq!(inbox["data"]["plan"].get("with_handle"), None);
     assert_eq!(inbox["data"]["plan"]["group"], "");
     assert_eq!(inbox["data"]["plan"]["limit"], 7);
-    assert_eq!(inbox["data"]["plan"]["mark_read"], true);
+    assert_eq!(inbox["data"]["plan"]["mark_read"], false);
     assert_eq!(inbox["data"]["plan"].get("unread"), None);
 
     let history = success_json(&awiki_cmd(
@@ -275,9 +264,9 @@ fn msg_dry_run_plans_match_go_contracts() {
 }
 
 #[test]
-fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
+fn msg_send_default_cutover_dry_run_routes_direct_and_group_text() {
     let workspace = TempDir::new().expect("workspace");
-    let direct = success_json(&awiki_cmd_with_env(
+    let direct = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -292,7 +281,6 @@ fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
             "plain",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(direct["summary"], "Dry run: message send planned");
     assert_eq!(direct["data"]["plan"]["action"], "direct.send");
@@ -304,7 +292,7 @@ fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
 
     let text_path = workspace.path().join("body.txt");
     std::fs::write(&text_path, "hello from file").expect("write text file");
-    let text_file = success_json(&awiki_cmd_with_env(
+    let text_file = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -317,11 +305,10 @@ fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
             text_path.to_str().unwrap(),
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(text_file["data"]["plan"]["action"], "direct.send");
 
-    let group = success_json(&awiki_cmd_with_env(
+    let group = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -334,7 +321,6 @@ fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
             "hello group",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(group["data"]["plan"]["action"], "group.send");
     assert_eq!(group["data"]["plan"]["identity"], "alice");
@@ -346,7 +332,7 @@ fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
 
     let group_text_path = workspace.path().join("group-body.txt");
     std::fs::write(&group_text_path, "hello group from file").expect("write group text file");
-    let group_text_file = success_json(&awiki_cmd_with_env(
+    let group_text_file = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -359,7 +345,6 @@ fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
             group_text_path.to_str().unwrap(),
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(group_text_file["data"]["plan"]["action"], "group.send");
     assert_eq!(
@@ -369,10 +354,10 @@ fn msg_send_im_core_mvp_dry_run_routes_direct_and_group_text() {
 }
 
 #[test]
-fn msg_send_im_core_mvp_rejects_attachment_and_secure_direct() {
+fn msg_send_default_cutover_rejects_attachment_and_secure_direct() {
     let workspace = TempDir::new().expect("workspace");
 
-    let attachment = awiki_cmd_with_env(
+    let attachment = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -387,14 +372,13 @@ fn msg_send_im_core_mvp_rejects_attachment_and_secure_direct() {
             "/tmp/demo.txt",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
     assert_code(&attachment, 2);
     let attachment = error_json(&attachment);
     assert_eq!(attachment["error"]["code"], "unsupported_capability");
     assert_contains(&attachment["error"]["message"], "attachments");
 
-    let secure = awiki_cmd_with_env(
+    let secure = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -409,7 +393,6 @@ fn msg_send_im_core_mvp_rejects_attachment_and_secure_direct() {
             "on",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     );
     assert_code(&secure, 2);
     let secure = error_json(&secure);
@@ -418,10 +401,10 @@ fn msg_send_im_core_mvp_rejects_attachment_and_secure_direct() {
 }
 
 #[test]
-fn msg_read_im_core_mvp_dry_run_routes_inbox_and_history_subset() {
+fn msg_read_default_cutover_dry_run_routes_inbox_and_history_subset() {
     let workspace = TempDir::new().expect("workspace");
 
-    let inbox = success_json(&awiki_cmd_with_env(
+    let inbox = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -435,7 +418,6 @@ fn msg_read_im_core_mvp_dry_run_routes_inbox_and_history_subset() {
             "5",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(inbox["summary"], "Dry run: inbox read planned");
     assert_eq!(inbox["data"]["plan"]["action"], "inbox.get");
@@ -446,7 +428,7 @@ fn msg_read_im_core_mvp_dry_run_routes_inbox_and_history_subset() {
     assert_eq!(inbox["data"]["plan"]["limit"], 5);
     assert_eq!(inbox["data"]["plan"]["mark_read"], false);
 
-    let history = success_json(&awiki_cmd_with_env(
+    let history = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -461,7 +443,6 @@ fn msg_read_im_core_mvp_dry_run_routes_inbox_and_history_subset() {
             "seq-2",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
     ));
     assert_eq!(history["summary"], "Dry run: direct history read planned");
     assert_eq!(history["data"]["plan"]["action"], "direct.get_history");
@@ -473,10 +454,10 @@ fn msg_read_im_core_mvp_dry_run_routes_inbox_and_history_subset() {
 }
 
 #[test]
-fn msg_inbox_im_core_mvp_keeps_filter_and_mark_read_on_legacy_plan() {
+fn msg_inbox_default_cutover_rejects_filters_and_mark_read_side_effect() {
     let workspace = TempDir::new().expect("workspace");
 
-    let with_filter = success_json(&awiki_cmd_with_env(
+    let with_filter = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -489,14 +470,17 @@ fn msg_inbox_im_core_mvp_keeps_filter_and_mark_read_on_legacy_plan() {
             "7",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
-    ));
-    assert_eq!(with_filter["data"]["plan"]["action"], "inbox.get");
-    assert_eq!(with_filter["data"]["plan"]["with"], "bob");
-    assert_eq!(with_filter["data"]["plan"]["with_handle"], "bob.awiki.ai");
-    assert_eq!(with_filter["data"]["plan"]["limit"], 7);
+    );
+    assert_code(&with_filter, 2);
+    let with_filter = error_json(&with_filter);
+    assert_eq!(with_filter["error"]["code"], "unsupported_capability");
+    assert_eq!(with_filter["error"]["details"]["command"], "msg.inbox");
+    assert_eq!(
+        with_filter["error"]["details"]["capability"],
+        "inbox-target-filters"
+    );
 
-    let group_filter = success_json(&awiki_cmd_with_env(
+    let group_filter = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -507,14 +491,15 @@ fn msg_inbox_im_core_mvp_keeps_filter_and_mark_read_on_legacy_plan() {
             "did:wba:awiki.ai:groups:demo:e1_group",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
-    ));
+    );
+    assert_code(&group_filter, 2);
+    let group_filter = error_json(&group_filter);
     assert_eq!(
-        group_filter["data"]["plan"]["group"],
-        "did:wba:awiki.ai:groups:demo:e1_group"
+        group_filter["error"]["details"]["capability"],
+        "inbox-target-filters"
     );
 
-    let mark_read = success_json(&awiki_cmd_with_env(
+    let mark_read = awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -524,17 +509,21 @@ fn msg_inbox_im_core_mvp_keeps_filter_and_mark_read_on_legacy_plan() {
             "--mark-read",
         ],
         workspace.path(),
-        &[("AWIKI_USE_IM_CORE_MVP", "1")],
-    ));
-    assert_eq!(mark_read["data"]["plan"]["mark_read"], true);
+    );
+    assert_code(&mark_read, 2);
+    let mark_read = error_json(&mark_read);
+    assert_eq!(
+        mark_read["error"]["details"]["capability"],
+        "inbox-mark-read-side-effect"
+    );
 }
 
 #[test]
-fn msg_secure_dry_run_plans_match_go_contracts() {
+fn msg_secure_commands_are_cutover_unsupported() {
     let workspace = TempDir::new().expect("workspace");
 
-    let status = success_json(&awiki_cmd(
-        &[
+    for args in [
+        vec![
             "--dry-run",
             "--identity",
             "alice",
@@ -544,15 +533,7 @@ fn msg_secure_dry_run_plans_match_go_contracts() {
             "--with",
             "bob",
         ],
-        workspace.path(),
-    ));
-    assert_eq!(status["summary"], "Dry run: secure status planned");
-    assert_eq!(status["data"]["plan"]["action"], "msg.secure.status");
-    assert_eq!(status["data"]["plan"]["identity"], "alice");
-    assert_eq!(status["data"]["plan"]["with"], "bob");
-
-    let init = success_json(&awiki_cmd(
-        &[
+        vec![
             "--dry-run",
             "--identity",
             "alice",
@@ -562,14 +543,7 @@ fn msg_secure_dry_run_plans_match_go_contracts() {
             "--with",
             "bob",
         ],
-        workspace.path(),
-    ));
-    assert_eq!(init["summary"], "Dry run: secure init planned");
-    assert_eq!(init["data"]["plan"]["action"], "msg.secure.init");
-    assert_eq!(init["data"]["plan"]["with"], "bob");
-
-    let repair = success_json(&awiki_cmd(
-        &[
+        vec![
             "--dry-run",
             "--identity",
             "alice",
@@ -579,14 +553,7 @@ fn msg_secure_dry_run_plans_match_go_contracts() {
             "--with",
             "bob",
         ],
-        workspace.path(),
-    ));
-    assert_eq!(repair["summary"], "Dry run: secure repair planned");
-    assert_eq!(repair["data"]["plan"]["action"], "msg.secure.repair");
-    assert_eq!(repair["data"]["plan"]["with"], "bob");
-
-    let failed = success_json(&awiki_cmd(
-        &[
+        vec![
             "--dry-run",
             "--identity",
             "alice",
@@ -594,14 +561,7 @@ fn msg_secure_dry_run_plans_match_go_contracts() {
             "secure",
             "failed",
         ],
-        workspace.path(),
-    ));
-    assert_eq!(failed["summary"], "Dry run: secure failed listing planned");
-    assert_eq!(failed["data"]["plan"]["action"], "msg.secure.failed");
-    assert_eq!(failed["data"]["plan"]["identity"], "alice");
-
-    let retry = success_json(&awiki_cmd(
-        &[
+        vec![
             "--dry-run",
             "--identity",
             "alice",
@@ -610,14 +570,7 @@ fn msg_secure_dry_run_plans_match_go_contracts() {
             "retry",
             "outbox-1",
         ],
-        workspace.path(),
-    ));
-    assert_eq!(retry["summary"], "Dry run: secure retry planned");
-    assert_eq!(retry["data"]["plan"]["action"], "msg.secure.retry");
-    assert_eq!(retry["data"]["plan"]["outbox_id"], "outbox-1");
-
-    let drop = success_json(&awiki_cmd(
-        &[
+        vec![
             "--dry-run",
             "--identity",
             "alice",
@@ -626,11 +579,14 @@ fn msg_secure_dry_run_plans_match_go_contracts() {
             "drop",
             "outbox-1",
         ],
-        workspace.path(),
-    ));
-    assert_eq!(drop["summary"], "Dry run: secure drop planned");
-    assert_eq!(drop["data"]["plan"]["action"], "msg.secure.drop");
-    assert_eq!(drop["data"]["plan"]["outbox_id"], "outbox-1");
+    ] {
+        let output = awiki_cmd(&args, workspace.path());
+        assert_code(&output, 2);
+        let envelope = error_json(&output);
+        assert_eq!(envelope["error"]["code"], "unsupported_capability");
+        assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
+        assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
+    }
 }
 
 #[test]
@@ -699,23 +655,6 @@ fn msg_validation_errors_match_go_handler_boundary() {
         "mime_type requires an attachment file",
     );
 
-    let secure_retry_missing =
-        awiki_cmd(&["--dry-run", "msg", "secure", "retry"], workspace.path());
-    assert_code(&secure_retry_missing, 2);
-    let envelope = error_json(&secure_retry_missing);
-    assert_contains(
-        &envelope["error"]["message"],
-        "msg secure retry requires one outbox id.",
-    );
-
-    let secure_drop_missing = awiki_cmd(&["--dry-run", "msg", "secure", "drop"], workspace.path());
-    assert_code(&secure_drop_missing, 2);
-    let envelope = error_json(&secure_drop_missing);
-    assert_contains(
-        &envelope["error"]["message"],
-        "msg secure drop requires one outbox id.",
-    );
-
     let download_missing_target = awiki_cmd(
         &[
             "msg",
@@ -730,11 +669,12 @@ fn msg_validation_errors_match_go_handler_boundary() {
     );
     assert_code(&download_missing_target, 2);
     let envelope = error_json(&download_missing_target);
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
-    assert_contains(
-        &envelope["error"]["message"],
-        "attachment download requires either --with or --group",
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(
+        envelope["error"]["details"]["command"],
+        "msg.attachment.download"
     );
+    assert_eq!(envelope["error"]["details"]["capability"], "attachments");
 
     let download_target_conflict = awiki_cmd(
         &[
@@ -754,15 +694,16 @@ fn msg_validation_errors_match_go_handler_boundary() {
     );
     assert_code(&download_target_conflict, 2);
     let envelope = error_json(&download_target_conflict);
-    assert_eq!(envelope["error"]["code"], "invalid_argument");
-    assert_contains(
-        &envelope["error"]["message"],
-        "attachment download accepts either --with or --group, but not both",
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(
+        envelope["error"]["details"]["command"],
+        "msg.attachment.download"
     );
+    assert_eq!(envelope["error"]["details"]["capability"], "attachments");
 }
 
 #[test]
-fn msg_unsupported_secure_mode_errors_match_go_handler_boundary() {
+fn msg_unsupported_secure_mode_errors_match_cutover_boundary() {
     let workspace = TempDir::new().expect("workspace");
     let attachment = workspace.path().join("payload.txt");
     std::fs::write(&attachment, "attachment body").expect("write attachment");
@@ -784,17 +725,10 @@ fn msg_unsupported_secure_mode_errors_match_go_handler_boundary() {
         ],
         workspace.path(),
     );
-    assert_code(&secure_attachment, 1);
+    assert_code(&secure_attachment, 2);
     let envelope = error_json(&secure_attachment);
-    assert_eq!(envelope["error"]["code"], "unsupported_mode");
-    assert_contains(
-        &envelope["error"]["message"],
-        "secure messaging is not supported for this command yet",
-    );
-    assert_eq!(
-        envelope["error"]["hint"],
-        "Secure messaging is currently supported only for direct text messaging."
-    );
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_contains(&envelope["error"]["message"], "attachments");
 }
 
 #[test]
@@ -814,31 +748,28 @@ fn msg_required_flag_errors_match_go_cobra_boundary() {
         &["--dry-run", "msg", "attachment", "download"],
         workspace.path(),
     );
-    assert_code(&attachment, 1);
+    assert_code(&attachment, 2);
     let envelope = error_json(&attachment);
-    assert_eq!(envelope["error"]["code"], "internal_error");
-    assert_contains(
-        &envelope["error"]["message"],
-        "required flag(s) \"message-id\", \"output\" not set",
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(
+        envelope["error"]["details"]["command"],
+        "msg.attachment.download"
     );
+    assert_eq!(envelope["error"]["details"]["capability"], "attachments");
 
     let init = awiki_cmd(&["--dry-run", "msg", "secure", "init"], workspace.path());
-    assert_code(&init, 1);
+    assert_code(&init, 2);
     let envelope = error_json(&init);
-    assert_eq!(envelope["error"]["code"], "internal_error");
-    assert_contains(
-        &envelope["error"]["message"],
-        "required flag(s) \"with\" not set",
-    );
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], "msg.secure.init");
+    assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
 
     let repair = awiki_cmd(&["--dry-run", "msg", "secure", "repair"], workspace.path());
-    assert_code(&repair, 1);
+    assert_code(&repair, 2);
     let envelope = error_json(&repair);
-    assert_eq!(envelope["error"]["code"], "internal_error");
-    assert_contains(
-        &envelope["error"]["message"],
-        "required flag(s) \"with\" not set",
-    );
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], "msg.secure.repair");
+    assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

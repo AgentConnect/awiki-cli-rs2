@@ -1,12 +1,11 @@
-use super::{not_implemented_side_effect, App};
+use super::App;
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
 use crate::identity;
-use crate::message::{self, CommandResult, MessageError};
+use crate::message::{CommandResult, MessageError};
 use crate::output::ExitError;
 use im_core::prelude::MessageTarget;
 use serde_json::{json, Map, Value};
-use std::fs;
 
 struct MsgSendPlan<'a> {
     identity: &'a str,
@@ -21,17 +20,12 @@ struct MsgSendPlan<'a> {
 
 impl App {
     pub fn run_msg_send(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        if crate::im_core_adapter::use_im_core_mvp() {
-            return self.run_msg_send_im_core_mvp(command);
-        }
-        self.run_msg_send_legacy(command)
+        self.run_msg_send_im_core(command)
     }
 
-    fn run_msg_send_im_core_mvp(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+    fn run_msg_send_im_core(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let file_path = string_flag(command, "file");
         let mime_type = string_flag(command, "mime-type");
-        let group = string_flag(command, "group");
-        let secure_mode = string_flag(command, "secure");
         if file_path.trim().is_empty() && !mime_type.trim().is_empty() {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -39,9 +33,6 @@ impl App {
                 "mime_type requires an attachment file",
                 "Use --mime-type only together with --file.",
             ));
-        }
-        if !group.trim().is_empty() && group_secure_mode_enabled(&secure_mode) {
-            return self.run_msg_send_legacy(command);
         }
 
         let resolved = self.resolve_config_for_workspace()?;
@@ -100,96 +91,6 @@ impl App {
             )
         })?;
         self.render_message_result("awiki-cli msg send", &resolved, result)
-    }
-
-    fn run_msg_send_legacy(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let mut text = string_flag(command, "text");
-        let to = string_flag(command, "to");
-        let group = string_flag(command, "group");
-        let file_path = string_flag(command, "file");
-        let mime_type = string_flag(command, "mime-type");
-        let message_type = string_flag(command, "type");
-        let secure_mode = string_flag(command, "secure");
-        let has_attachment = !file_path.trim().is_empty();
-
-        if group.trim().is_empty() && to.trim().is_empty() {
-            return Err(ExitError::new("invalid_argument", 2, "msg send requires either --to or --group.", "Usage: awiki-cli msg send --to <handle|did> --text \"Hello\" or awiki-cli msg send --group <group_did> --text \"Hello group\""));
-        }
-        if !group.trim().is_empty() && !to.trim().is_empty() {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "msg send accepts either --to or --group, but not both.",
-                "Choose direct messaging with --to or group messaging with --group.",
-            ));
-        }
-        if text.trim().is_empty() && !string_flag(command, "text-file").trim().is_empty() {
-            text = read_text_file(command)?;
-        }
-        if !has_attachment && !mime_type.trim().is_empty() {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "mime_type requires an attachment file",
-                "Use --mime-type only together with --file.",
-            ));
-        }
-        if has_attachment && changed_flag(command, "type") {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "msg send does not accept --type together with --file.",
-                "Attachment sends always use attachment manifests.",
-            ));
-        }
-        if !has_attachment && text.trim().is_empty() {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "msg send requires --text or --text-file.",
-                "Provide the message body via --text or --text-file.",
-            ));
-        }
-
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            let result = message::send(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::SendRequest {
-                    identity_name: self.globals.identity.clone(),
-                    target: to,
-                    group,
-                    text,
-                    message_type,
-                    secure_mode,
-                    file_path,
-                    mime_type,
-                    ..message::SendRequest::default()
-                },
-            )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Ensure the active identity is ready and the message service is reachable.",
-                )
-            })?;
-            return self.render_message_result("awiki-cli msg send", &resolved, result);
-        }
-
-        self.render_msg_send_plan(
-            &resolved,
-            MsgSendPlan {
-                identity: &self.globals.identity,
-                to: &to,
-                group: &group,
-                text: &text,
-                message_type: &message_type,
-                file_path: &file_path,
-                mime_type: &mime_type,
-                has_attachment,
-            },
-        )
     }
 
     fn render_msg_send_plan(
@@ -260,99 +161,35 @@ impl App {
         )
     }
 
-    pub fn run_msg_attachment_download(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        require_flags(command, &["message-id", "output"])?;
-        let with = string_flag(command, "with");
-        let group = string_flag(command, "group");
-        if with.trim().is_empty() && group.trim().is_empty() {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "attachment download requires either --with or --group",
-                "Use --with <handle|did> for direct messages or --group <group_did> for group messages.",
-            ));
-        }
-        if !with.trim().is_empty() && !group.trim().is_empty() {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "attachment download accepts either --with or --group, but not both",
-                "Choose direct attachment download with --with or group attachment download with --group.",
-            ));
-        }
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            let result = message::download_attachment(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::AttachmentDownloadRequest {
-                    identity_name: self.globals.identity.clone(),
-                    with,
-                    group,
-                    message_id: string_flag(command, "message-id"),
-                    attachment_id: string_flag(command, "attachment-id"),
-                    output_path: string_flag(command, "output"),
-                },
-            )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Make sure the message id, attachment id, and target context are correct.",
-                )
-            })?;
-            return self.render_message_result(
-                "awiki-cli msg attachment download",
-                &resolved,
-                result,
-            );
-        }
-        let mut plan = Map::new();
-        plan.insert(
-            "action".to_string(),
-            Value::String("download_attachment".to_string()),
-        );
-        plan.insert(
-            "identity".to_string(),
-            Value::String(self.globals.identity.clone()),
-        );
-        plan.insert("with".to_string(), Value::String(with.clone()));
-        plan.insert("group".to_string(), Value::String(group));
-        plan.insert(
-            "message_id".to_string(),
-            Value::String(string_flag(command, "message-id")),
-        );
-        plan.insert(
-            "attachment_id".to_string(),
-            Value::String(string_flag(command, "attachment-id")),
-        );
-        plan.insert(
-            "output".to_string(),
-            Value::String(string_flag(command, "output")),
-        );
-        plan.insert("transport".to_string(), Value::String("http".to_string()));
-        insert_completed_handle(&mut plan, "with_handle", &with, &resolved.did_domain);
-        self.render_success(
-            "awiki-cli msg attachment download",
-            &resolved,
-            json!({ "plan": plan }),
-            "Dry run: attachment download planned",
-            Vec::new(),
-        )
+    pub fn run_msg_attachment_download(&self, _command: &ParsedCommand) -> Result<(), ExitError> {
+        Err(super::unsupported::unsupported_cutover_command(
+            "msg.attachment.download",
+            "attachments",
+            "Phase 4",
+        ))
     }
 
     pub fn run_msg_inbox(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        if crate::im_core_adapter::use_im_core_mvp()
-            && string_flag(command, "with").trim().is_empty()
-            && string_flag(command, "group").trim().is_empty()
-            && !bool_flag(command, "mark-read")
-            && (self.globals.dry_run || inbox_scope_is_direct(command))
+        if !string_flag(command, "with").trim().is_empty()
+            || !string_flag(command, "group").trim().is_empty()
         {
-            return self.run_msg_inbox_im_core_mvp(command);
+            return Err(super::unsupported::unsupported_cutover_command(
+                "msg.inbox",
+                "inbox-target-filters",
+                "Phase 3",
+            ));
         }
-        self.run_msg_inbox_legacy(command)
+        if bool_flag(command, "mark-read") {
+            return Err(super::unsupported::unsupported_cutover_command(
+                "msg.inbox",
+                "inbox-mark-read-side-effect",
+                "Phase 3",
+            ));
+        }
+        self.run_msg_inbox_im_core(command)
     }
 
-    fn run_msg_inbox_im_core_mvp(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+    fn run_msg_inbox_im_core(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::im_core_adapter::messages::inbox_query(command)?;
         if !self.globals.dry_run {
@@ -368,33 +205,6 @@ impl App {
                 &client,
                 &self.globals.identity,
                 query,
-            )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Ensure the active identity is ready and the message service is reachable.",
-                )
-            })?;
-            return self.render_message_result("awiki-cli msg inbox", &resolved, result);
-        }
-        self.render_msg_inbox_plan(command, &resolved)
-    }
-
-    fn run_msg_inbox_legacy(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            let result = message::inbox(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::InboxRequest {
-                    identity_name: self.globals.identity.clone(),
-                    scope: default_string(&string_flag(command, "scope"), "all"),
-                    with: string_flag(command, "with"),
-                    group: string_flag(command, "group"),
-                    limit: int_flag(command, "limit", 20)?,
-                    unread_only: bool_flag(command, "unread"),
-                    mark_read: bool_flag(command, "mark-read"),
-                },
             )
             .map_err(|err| {
                 message_exit(
@@ -448,13 +258,10 @@ impl App {
     }
 
     pub fn run_msg_history(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        if crate::im_core_adapter::use_im_core_mvp() {
-            return self.run_msg_history_im_core_mvp(command);
-        }
-        self.run_msg_history_legacy(command)
+        self.run_msg_history_im_core(command)
     }
 
-    fn run_msg_history_im_core_mvp(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+    fn run_msg_history_im_core(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         require_flags(command, &["with"])?;
         let resolved = self.resolve_config_for_workspace()?;
         let (thread, query) =
@@ -473,32 +280,6 @@ impl App {
                 &self.globals.identity,
                 thread,
                 query,
-            )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Ensure the peer is valid and the message service is reachable.",
-                )
-            })?;
-            return self.render_message_result("awiki-cli msg history", &resolved, result);
-        }
-        self.render_msg_history_plan(command, &resolved)
-    }
-
-    fn run_msg_history_legacy(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        require_flags(command, &["with"])?;
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            let result = message::history(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::HistoryRequest {
-                    identity_name: self.globals.identity.clone(),
-                    with: string_flag(command, "with"),
-                    limit: int_flag(command, "limit", 50)?,
-                    cursor: string_flag(command, "cursor"),
-                    ..message::HistoryRequest::default()
-                },
             )
             .map_err(|err| {
                 message_exit(
@@ -558,29 +339,18 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
-            let result = if crate::im_core_adapter::use_im_core_mvp() {
-                let client = crate::im_core_adapter::build_im_client(
-                    &resolved,
-                    &manager,
-                    crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
-                )?;
-                crate::im_core_adapter::messages::mark_read_via_im_core(
-                    &resolved,
-                    &manager,
-                    &client,
-                    &self.globals.identity,
-                    command.args.clone(),
-                )
-            } else {
-                message::mark_read(
-                    &resolved,
-                    &manager,
-                    message::MarkReadRequest {
-                        identity_name: self.globals.identity.clone(),
-                        message_ids: command.args.clone(),
-                    },
-                )
-            }
+            let client = crate::im_core_adapter::build_im_client(
+                &resolved,
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            let result = crate::im_core_adapter::messages::mark_read_via_im_core(
+                &resolved,
+                &manager,
+                &client,
+                &self.globals.identity,
+                command.args.clone(),
+            )
             .map_err(|err| {
                 message_exit(
                     err,
@@ -606,237 +376,31 @@ impl App {
     }
 
     pub fn run_msg_secure_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let with = string_flag(command, "with");
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            let result = message::secure_status(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::SecureStatusRequest {
-                    identity_name: self.globals.identity.clone(),
-                    with,
-                },
-            )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Make sure the active identity exists and the peer filter is valid.",
-                )
-            })?;
-            return self.render_message_result("awiki-cli msg secure status", &resolved, result);
-        }
-        self.render_success(
-            "awiki-cli msg secure status",
-            &resolved,
-            json!({
-                "plan": {
-                    "action": "msg.secure.status",
-                    "identity": self.globals.identity,
-                    "with": with,
-                }
-            }),
-            "Dry run: secure status planned",
-            Vec::new(),
-        )
+        unsupported_secure_command(command, "msg.secure.status")
     }
 
     pub fn run_msg_secure_init(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let with = string_flag(command, "with");
-        require_flags(command, &["with"])?;
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            let result = message::secure_init(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::SecurePeerRequest {
-                    identity_name: self.globals.identity.clone(),
-                    with,
-                },
-            )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Make sure the target exists and the active identity has secure E2EE key material.",
-                )
-            })?;
-            return self.render_message_result("awiki-cli msg secure init", &resolved, result);
-        }
-        self.render_success(
-            "awiki-cli msg secure init",
-            &resolved,
-            json!({
-                "plan": {
-                    "action": "msg.secure.init",
-                    "identity": self.globals.identity,
-                    "with": with,
-                }
-            }),
-            "Dry run: secure init planned",
-            Vec::new(),
-        )
+        unsupported_secure_command(command, "msg.secure.init")
     }
 
     pub fn run_msg_secure_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let with = string_flag(command, "with");
-        require_flags(command, &["with"])?;
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            let result = message::secure_repair(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::SecurePeerRequest {
-                    identity_name: self.globals.identity.clone(),
-                    with,
-                },
-            )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Make sure the target exists and the active identity can rebuild secure state.",
-                )
-            })?;
-            return self.render_message_result("awiki-cli msg secure repair", &resolved, result);
-        }
-        self.render_success(
-            "awiki-cli msg secure repair",
-            &resolved,
-            json!({
-                "plan": {
-                    "action": "msg.secure.repair",
-                    "identity": self.globals.identity,
-                    "with": with,
-                }
-            }),
-            "Dry run: secure repair planned",
-            Vec::new(),
-        )
+        unsupported_secure_command(command, "msg.secure.repair")
     }
 
     pub fn run_msg_secure_failed(&self) -> Result<(), ExitError> {
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            let result = message::secure_failed(
-                &resolved,
-                &self.identity_manager(&resolved),
-                message::SecureStatusRequest {
-                    identity_name: self.globals.identity.clone(),
-                    ..message::SecureStatusRequest::default()
-                },
-            )
-            .map_err(|err| {
-                message_exit(
-                    err,
-                    "Make sure the active identity exists and local storage is readable.",
-                )
-            })?;
-            return self.render_message_result("awiki-cli msg secure failed", &resolved, result);
-        }
-        self.render_success(
-            "awiki-cli msg secure failed",
-            &resolved,
-            json!({
-                "plan": {
-                    "action": "msg.secure.failed",
-                    "identity": self.globals.identity,
-                }
-            }),
-            "Dry run: secure failed listing planned",
-            Vec::new(),
-        )
+        Err(super::unsupported::unsupported_cutover_command(
+            "msg.secure.failed",
+            "secure-direct",
+            "Phase 6",
+        ))
     }
 
     pub fn run_msg_secure_retry(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        self.run_msg_secure_outbox_plan(
-            command,
-            "awiki-cli msg secure retry",
-            "msg.secure.retry",
-            "Dry run: secure retry planned",
-            "msg secure retry requires one outbox id.",
-            "Usage: awiki-cli msg secure retry <OUTBOX_ID>",
-        )
+        unsupported_secure_command(command, "msg.secure.retry")
     }
 
     pub fn run_msg_secure_drop(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        self.run_msg_secure_outbox_plan(
-            command,
-            "awiki-cli msg secure drop",
-            "msg.secure.drop",
-            "Dry run: secure drop planned",
-            "msg secure drop requires one outbox id.",
-            "Usage: awiki-cli msg secure drop <OUTBOX_ID>",
-        )
-    }
-
-    fn run_msg_secure_outbox_plan(
-        &self,
-        command: &ParsedCommand,
-        command_name: &str,
-        action: &str,
-        summary: &str,
-        missing_message: &str,
-        usage: &str,
-    ) -> Result<(), ExitError> {
-        if command.args.len() != 1 {
-            return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                missing_message,
-                usage,
-            ));
-        }
-        let resolved = self.resolve_config_for_workspace()?;
-        if !self.globals.dry_run {
-            if action == "msg.secure.drop" {
-                let result = message::secure_drop(
-                    &resolved,
-                    &self.identity_manager(&resolved),
-                    message::SecureOutboxActionRequest {
-                        identity_name: self.globals.identity.clone(),
-                        outbox_id: command.args[0].clone(),
-                    },
-                )
-                .map_err(|err| {
-                    message_exit(
-                        err,
-                        "Make sure the outbox id exists for the active identity.",
-                    )
-                })?;
-                return self.render_message_result(command_name, &resolved, result);
-            }
-            if action == "msg.secure.retry" {
-                let result = message::secure_retry(
-                    &resolved,
-                    &self.identity_manager(&resolved),
-                    message::SecureOutboxActionRequest {
-                        identity_name: self.globals.identity.clone(),
-                        outbox_id: command.args[0].clone(),
-                    },
-                )
-                .map_err(|err| {
-                    message_exit(
-                        err,
-                        "Make sure the outbox id exists and the active identity can reach the target service.",
-                    )
-                })?;
-                return self.render_message_result(command_name, &resolved, result);
-            }
-            return Err(not_implemented_side_effect(
-                command_name.trim_start_matches("awiki-cli "),
-            ));
-        }
-        self.render_success(
-            command_name,
-            &resolved,
-            json!({
-                "plan": {
-                    "action": action,
-                    "identity": self.globals.identity,
-                    "outbox_id": command.args[0],
-                }
-            }),
-            summary,
-            Vec::new(),
-        )
+        unsupported_secure_command(command, "msg.secure.drop")
     }
 
     fn render_message_result(
@@ -853,6 +417,17 @@ impl App {
             result.warnings,
         )
     }
+}
+
+fn unsupported_secure_command(
+    _command: &ParsedCommand,
+    command_name: &str,
+) -> Result<(), ExitError> {
+    Err(super::unsupported::unsupported_cutover_command(
+        command_name,
+        "secure-direct",
+        "Phase 6",
+    ))
 }
 
 fn target_value(to: &str, group: &str, resolved: &Resolved) -> Value {
@@ -882,37 +457,8 @@ fn complete_bare_handle(target: &str, did_domain: &str) -> String {
     identity::complete_bare_handle(target, did_domain)
 }
 
-fn read_text_file(command: &ParsedCommand) -> Result<String, ExitError> {
-    let path = string_flag(command, "text-file");
-    fs::read_to_string(&path).map_err(|err| {
-        ExitError::new(
-            "invalid_argument",
-            2,
-            err.to_string(),
-            "Make sure --text-file points to a readable file.",
-        )
-    })
-}
-
 fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
-}
-
-fn group_secure_mode_enabled(raw: &str) -> bool {
-    matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "direct" | "secure-direct" | "on" | "true" | "group-e2ee" | "e2ee"
-    )
-}
-
-fn inbox_scope_is_direct(command: &ParsedCommand) -> bool {
-    matches!(
-        default_string(&string_flag(command, "scope"), "all")
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "direct" | "direct-only"
-    )
 }
 
 fn default_string(value: &str, fallback: &str) -> String {
@@ -946,10 +492,6 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
         .flags
         .get(name)
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-}
-
-fn changed_flag(command: &ParsedCommand, name: &str) -> bool {
-    command.changed_flags.iter().any(|flag| flag == name)
 }
 
 fn require_flags(command: &ParsedCommand, names: &[&str]) -> Result<(), ExitError> {
