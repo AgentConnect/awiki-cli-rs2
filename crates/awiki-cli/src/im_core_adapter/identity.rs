@@ -69,6 +69,12 @@ pub struct RecoverHandleBridgeRequest {
     pub legacy: identity::RecoverParams,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverLocalStateMergeResult {
+    pub store_merge_counts: BTreeMap<String, i64>,
+    pub e2ee_cleanup_counts: BTreeMap<String, i64>,
+}
+
 pub fn cli_identity_selector(identity_flag: &str) -> IdentitySelector {
     let value = identity_flag.trim();
     if value.is_empty() || value == "default" {
@@ -630,16 +636,17 @@ pub fn merge_recovered_handle_local_state_via_im_core(
     old_owner_dids: Vec<String>,
     new_owner_did: String,
     final_identity_name: String,
-) -> Result<im_core::compat::identity::RecoverLocalStateMergeResult, store::StoreError> {
-    im_core::compat::identity::merge_recovered_handle_local_state_with_bridge(
-        im_core::compat::identity::RecoverLocalStateMergeRequest {
-            old_owner_dids,
-            new_owner_did,
-            final_identity_name,
-        },
-        RecoverLocalStateStore { paths },
-    )
-    .map_err(store_error_from_im_error)
+) -> Result<RecoverLocalStateMergeResult, store::StoreError> {
+    let (store_merge_counts, e2ee_cleanup_counts) = store::merge_recovered_handle_local_state(
+        paths,
+        &old_owner_dids,
+        &new_owner_did,
+        &final_identity_name,
+    )?;
+    Ok(RecoverLocalStateMergeResult {
+        store_merge_counts,
+        e2ee_cleanup_counts,
+    })
 }
 
 fn bind_email_wait_via_im_core(
@@ -1092,10 +1099,6 @@ struct DirectoryLegacyTransport<'a> {
     resolved: &'a crate::config::Resolved,
 }
 
-struct RecoverLocalStateStore<'a> {
-    paths: &'a crate::config::Paths,
-}
-
 impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacyTransport<'_> {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> im_core::ImResult<Value> {
         let client =
@@ -1107,25 +1110,6 @@ impl im_core::compat::directory::BridgeDirectoryRpcTransport for DirectoryLegacy
         client
             .rpc_call_profile(profile, endpoint, method, params)
             .map_err(identity_error_to_im_error)
-    }
-}
-
-impl im_core::compat::identity::BridgeRecoverLocalStateStore for RecoverLocalStateStore<'_> {
-    fn merge_recovered_handle_local_state(
-        &mut self,
-        request: im_core::compat::identity::RecoverLocalStateMergeRequest,
-    ) -> im_core::ImResult<im_core::compat::identity::RecoverLocalStateMergeResult> {
-        let (store_merge_counts, e2ee_cleanup_counts) = store::merge_recovered_handle_local_state(
-            self.paths,
-            &request.old_owner_dids,
-            &request.new_owner_did,
-            &request.final_identity_name,
-        )
-        .map_err(store_error_to_im_error)?;
-        Ok(im_core::compat::identity::RecoverLocalStateMergeResult {
-            store_merge_counts,
-            e2ee_cleanup_counts,
-        })
     }
 }
 
@@ -2020,26 +2004,6 @@ fn sdk_missing_item_label(item: &im_core::identity::IdentityMissingItem) -> Stri
         im_core::identity::IdentityMissingItem::Other(value) => value.as_str(),
     }
     .to_string()
-}
-
-fn store_error_to_im_error(err: store::StoreError) -> im_core::ImError {
-    match err {
-        store::StoreError::Invalid(message) => im_core::ImError::invalid_input(None, message),
-        store::StoreError::NotFound(message) => {
-            im_core::ImError::LocalStateUnavailable { detail: message }
-        }
-        err => im_core::ImError::LocalStateUnavailable {
-            detail: err.to_string(),
-        },
-    }
-}
-
-fn store_error_from_im_error(err: im_core::ImError) -> store::StoreError {
-    match err {
-        im_core::ImError::InvalidInput { message, .. } => store::StoreError::invalid(message),
-        im_core::ImError::LocalStateUnavailable { detail } => store::StoreError::Invalid(detail),
-        err => store::StoreError::Invalid(err.to_string()),
-    }
 }
 
 fn looks_like_handle(value: &str) -> bool {
