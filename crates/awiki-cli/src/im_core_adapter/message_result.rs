@@ -1,7 +1,6 @@
 // Temporary migration-only legacy bridge exception.
 // Delete in PR C7 when group E2EE diagnostic handlers no longer share the
-// default message cutover error mapper and message/group adapters no longer
-// need to translate legacy cache-helper errors.
+// default message cutover result mapper.
 
 use std::fmt;
 
@@ -236,58 +235,6 @@ impl From<crate::identity::IdentityError> for IdentityError {
                 kind: IdentityErrorKind::Internal,
                 message,
             },
-        }
-    }
-}
-
-impl From<crate::message::MessageError> for MessageAdapterError {
-    fn from(value: crate::message::MessageError) -> Self {
-        match value {
-            crate::message::MessageError::TargetRequired => Self::TargetRequired,
-            crate::message::MessageError::GroupRequired => Self::GroupRequired,
-            crate::message::MessageError::MemberRequired => Self::MemberRequired,
-            crate::message::MessageError::GroupOwnerCannotLeave => Self::GroupOwnerCannotLeave,
-            crate::message::MessageError::TextRequired => Self::TextRequired,
-            crate::message::MessageError::FilePathRequired => Self::FilePathRequired,
-            crate::message::MessageError::MimeTypeWithoutFile => Self::MimeTypeWithoutFile,
-            crate::message::MessageError::MessageIdRequired => Self::MessageIdRequired,
-            crate::message::MessageError::OutputPathRequired => Self::OutputPathRequired,
-            crate::message::MessageError::DownloadTargetNeeded => Self::DownloadTargetNeeded,
-            crate::message::MessageError::DownloadTargetConflict => Self::DownloadTargetConflict,
-            crate::message::MessageError::AttachmentNotFound => Self::AttachmentNotFound,
-            crate::message::MessageError::AttachmentIdRequired => Self::AttachmentIdRequired,
-            crate::message::MessageError::AttachmentMessageInvalid => {
-                Self::AttachmentMessageInvalid
-            }
-            crate::message::MessageError::AttachmentSenderRequired => {
-                Self::AttachmentSenderRequired
-            }
-            crate::message::MessageError::TransportUnavailable(detail) => {
-                Self::TransportUnavailable(detail)
-            }
-            crate::message::MessageError::SecureNotSupported => Self::SecureNotSupported,
-            crate::message::MessageError::AttachmentNotSupported => Self::AttachmentNotSupported,
-            crate::message::MessageError::GroupNotSupported => Self::GroupNotSupported,
-            crate::message::MessageError::GroupE2eeSelfLeaveUnsupported => {
-                Self::GroupE2eeSelfLeaveUnsupported
-            }
-            crate::message::MessageError::MessageNotFound => Self::MessageNotFound,
-            crate::message::MessageError::IdentityRequired(message) => {
-                Self::IdentityRequired(message)
-            }
-            crate::message::MessageError::Service(error) => Self::Service(error.into()),
-            crate::message::MessageError::Identity(error) => Self::Identity(error.into()),
-            crate::message::MessageError::Internal(message) => Self::Internal(message),
-            crate::message::MessageError::InvalidAttachmentServiceEndpoint(message) => {
-                Self::InvalidAttachmentServiceEndpoint(message)
-            }
-            crate::message::MessageError::MissingMessageServiceDid => {
-                Self::MissingMessageServiceDid
-            }
-            crate::message::MessageError::MissingAttachmentServiceDid => {
-                Self::MissingAttachmentServiceDid
-            }
-            crate::message::MessageError::Json(message) => Self::Json(message),
         }
     }
 }

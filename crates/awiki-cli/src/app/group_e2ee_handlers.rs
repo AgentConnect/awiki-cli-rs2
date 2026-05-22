@@ -1,4 +1,4 @@
-use super::{msg_handlers::message_exit, App};
+use super::App;
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
 use crate::message::{
@@ -39,7 +39,7 @@ impl App {
                 },
             )
             .map_err(|err| {
-                message_exit(
+                group_e2ee_message_exit(
                     err,
                     "Install anp-mls, set AWIKI_ANP_MLS_BINARY, and ensure message-service group E2EE APIs are enabled for focused validation.",
                 )
@@ -104,7 +104,7 @@ impl App {
                 },
             )
             .map_err(|err| {
-                message_exit(
+                group_e2ee_message_exit(
                     err,
                     "Install anp-mls, set AWIKI_ANP_MLS_BINARY, pass --group when --recovery is used, and ensure message-service group E2EE APIs are enabled.",
                 )
@@ -149,7 +149,7 @@ impl App {
                 },
             )
             .map_err(|err| {
-                message_exit(
+                group_e2ee_message_exit(
                     err,
                     "Ensure message-service group E2EE test flag is enabled for focused validation; discovery remains hidden by default.",
                 )
@@ -193,7 +193,7 @@ impl App {
                 50,
             )
             .map_err(|err| {
-                message_exit(
+                group_e2ee_message_exit(
                     err,
                     "Install anp-mls, set AWIKI_ANP_MLS_BINARY, and ensure message-service group E2EE APIs are enabled for focused validation.",
                 )
@@ -266,7 +266,7 @@ impl App {
                 },
             )
             .map_err(|err| {
-                message_exit(
+                group_e2ee_message_exit(
                     err,
                     "Ensure the leave request exists, the active identity can remove members, and anp-mls/message-service group E2EE APIs are enabled.",
                 )
@@ -335,7 +335,7 @@ impl App {
                 },
             )
             .map_err(|err| {
-                message_exit(
+                group_e2ee_message_exit(
                     err,
                     "Ensure the target remains an active P4 member, has published a --recovery --group KeyPackage, and anp-mls/message-service PR-B3 APIs are enabled.",
                 )
@@ -406,7 +406,7 @@ impl App {
                 },
             )
             .map_err(|err| {
-                message_exit(
+                group_e2ee_message_exit(
                     err,
                     "Ensure the target remains active, has published an --update --group KeyPackage, the active identity is the owner, and anp-mls/message-service PR-B3 update APIs are enabled.",
                 )
@@ -474,7 +474,7 @@ impl App {
                 request,
             )
             .map_err(|err| {
-                message_exit(
+                group_e2ee_message_exit(
                     err,
                     "Removed/left rejoin requires a fresh normal KeyPackage published after removal/leave, then owner-only `group add --e2ee`; do not use recover-member for removed/left members.",
                 )
@@ -544,6 +544,161 @@ fn required_string_flag(
         ));
     }
     Ok(value)
+}
+
+fn group_e2ee_message_exit(err: message::MessageError, hint: &str) -> ExitError {
+    match err {
+        message::MessageError::TargetRequired
+        | message::MessageError::TextRequired
+        | message::MessageError::AttachmentIdRequired
+        | message::MessageError::AttachmentMessageInvalid
+        | message::MessageError::AttachmentSenderRequired
+        | message::MessageError::GroupRequired
+        | message::MessageError::MemberRequired
+        | message::MessageError::GroupOwnerCannotLeave
+        | message::MessageError::FilePathRequired
+        | message::MessageError::MimeTypeWithoutFile
+        | message::MessageError::MessageIdRequired
+        | message::MessageError::OutputPathRequired
+        | message::MessageError::DownloadTargetNeeded
+        | message::MessageError::DownloadTargetConflict
+        | message::MessageError::MissingMessageServiceDid
+        | message::MessageError::MissingAttachmentServiceDid
+        | message::MessageError::InvalidAttachmentServiceEndpoint(_)
+        | message::MessageError::Json(_) => ExitError::new(
+            "invalid_argument",
+            2,
+            err.to_string(),
+            "Check the group E2EE command arguments and try again.",
+        ),
+        message::MessageError::MessageNotFound | message::MessageError::AttachmentNotFound => {
+            ExitError::new("not_found", 5, err.to_string(), hint)
+        }
+        message::MessageError::IdentityRequired(message) => ExitError::new(
+            "identity_required",
+            3,
+            message,
+            "Complete user setup with `awiki-cli id register --handle <handle> ...` or recover an existing handle before using group E2EE diagnostic commands.",
+        ),
+        message::MessageError::SecureNotSupported => ExitError::new(
+            "unsupported_mode",
+            1,
+            err.to_string(),
+            "Secure messaging is currently supported only for direct text messaging.",
+        ),
+        message::MessageError::GroupE2eeSelfLeaveUnsupported => ExitError::new(
+            "unsupported_mode",
+            1,
+            err.to_string(),
+            "For PR-A group E2EE, ask the group owner to remove the member; self-leave requires a future epoch-advancing leave-request flow.",
+        ),
+        message::MessageError::TransportUnavailable(_) => ExitError::new(
+            "transport_unavailable",
+            1,
+            err.to_string(),
+            "Start the websocket listener/daemon or switch runtime.mode back to http.",
+        ),
+        message::MessageError::AttachmentNotSupported | message::MessageError::GroupNotSupported => {
+            ExitError::new("not_implemented", 1, err.to_string(), hint)
+        }
+        message::MessageError::Service(service_err) => group_e2ee_service_exit(service_err, hint),
+        message::MessageError::Identity(identity_err) => group_e2ee_identity_exit(identity_err),
+        message::MessageError::Internal(message) => {
+            ExitError::new("internal_error", 1, message, hint)
+        }
+    }
+}
+
+fn group_e2ee_service_exit(
+    service_err: crate::identity::wire::ServiceError,
+    hint: &str,
+) -> ExitError {
+    match () {
+        _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
+            ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
+        }
+        _ if service_err.status_code == 401 || service_err.rpc_code == -32000 => ExitError::new(
+            "auth_required",
+            3,
+            service_err.to_string(),
+            "Use an identity with a valid JWT or DID WBA auth material.",
+        ),
+        _ if service_err.rpc_code == 1401 => ExitError::new(
+            "auth_required",
+            3,
+            service_err.to_string(),
+            "Use an identity with a valid JWT or DID WBA auth material.",
+        ),
+        _ if service_err.status_code == 404
+            || service_err.rpc_code == -32002
+            || matches!(service_err.rpc_code, 6000 | 6005 | 6007 | 6012) =>
+        {
+            ExitError::new("not_found", 5, service_err.to_string(), hint)
+        }
+        _ if service_err.status_code == 409 || matches!(service_err.rpc_code, -32003 | -32004) => {
+            ExitError::new("conflict", 1, service_err.to_string(), hint)
+        }
+        _ if matches!(
+            service_err.rpc_code,
+            6006 | 6008 | 6009 | 6010 | 6011 | 6013
+        ) =>
+        {
+            ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
+        }
+        _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
+    }
+}
+
+fn group_e2ee_identity_exit(err: crate::identity::IdentityError) -> ExitError {
+    match err {
+        crate::identity::IdentityError::InvalidInput(message) => ExitError::new(
+            "invalid_argument",
+            2,
+            message,
+            "Run `awiki-cli id list` to inspect available identities.",
+        ),
+        crate::identity::IdentityError::NotFound(message)
+        | crate::identity::IdentityError::LegacyNotFound(message)
+        | crate::identity::IdentityError::NoDefaultIdentity(message) => ExitError::new(
+            "not_found",
+            5,
+            message,
+            "Run `awiki-cli id list` to inspect available identities.",
+        ),
+        crate::identity::IdentityError::Conflict(message) => ExitError::new(
+            "conflict",
+            1,
+            message,
+            "Use a different --identity value if the alias is already occupied.",
+        ),
+        crate::identity::IdentityError::AuthRequired(message) => ExitError::new(
+            "auth_required",
+            3,
+            message,
+            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
+        ),
+        crate::identity::IdentityError::Service(service_err) => {
+            group_e2ee_service_exit(service_err, "Use an identity with a valid JWT or DID WBA auth material.")
+        }
+        crate::identity::IdentityError::Io(error) => ExitError::new(
+            "internal_error",
+            1,
+            error.to_string(),
+            "Run `awiki-cli doctor` to inspect configuration and storage paths.",
+        ),
+        crate::identity::IdentityError::Json(error) => ExitError::new(
+            "internal_error",
+            1,
+            error.to_string(),
+            "Run `awiki-cli doctor` to inspect configuration and storage paths.",
+        ),
+        crate::identity::IdentityError::Internal(message) => ExitError::new(
+            "internal_error",
+            1,
+            message,
+            "Run `awiki-cli doctor` to inspect configuration and storage paths.",
+        ),
+    }
 }
 
 fn bool_flag(command: &ParsedCommand, name: &str) -> Result<bool, ExitError> {
