@@ -2,11 +2,21 @@
 
 pub use crate::internal::wire::direct::DirectPayload;
 
-use serde_json::Value;
+use serde_json::{json, Map, Value};
+
+const ATTACHMENT_MANIFEST_CONTENT_TYPE: &str = "application/anp-attachment-manifest+json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireIdentity {
     pub did: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeWireIdentity {
+    pub identity_name: String,
+    pub did: String,
+    pub did_document: Option<Value>,
+    pub key1_private_pem: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +35,25 @@ pub struct HistoryWireRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkReadWireRequest {
     pub message_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupCreateWireRequest {
+    pub name: String,
+    pub description: String,
+    pub discoverability: String,
+    pub admission_mode: String,
+    pub message_security_profile: String,
+    pub e2ee: bool,
+    pub slug: String,
+    pub goal: String,
+    pub rules: String,
+    pub message_prompt: String,
+    pub doc_url: String,
+    pub attachments_allowed: Option<bool>,
+    pub max_members: String,
+    pub member_max_messages: Option<i64>,
+    pub member_max_total_chars: Option<i64>,
 }
 
 #[doc(hidden)]
@@ -186,6 +215,186 @@ pub fn build_group_messages_rpc_params(
 }
 
 #[doc(hidden)]
+pub fn build_bridge_direct_send_rpc_params(
+    identity: &BridgeWireIdentity,
+    target_did: &str,
+    text: &str,
+    message_type: &str,
+) -> crate::ImResult<Value> {
+    let payload = crate::internal::wire::direct::build_direct_text_payload(
+        &identity.did,
+        target_did,
+        text,
+        content_type_for_bridge_message_type(message_type),
+    )?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_create_rpc_params(
+    identity: &BridgeWireIdentity,
+    service_did: &str,
+    request: GroupCreateWireRequest,
+) -> crate::ImResult<Value> {
+    if service_did.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("service_did".to_string()),
+            "message service did is required",
+        ));
+    }
+    if request.name.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("name".to_string()),
+            "group display name is required",
+        ));
+    }
+    let payload = crate::internal::wire::group::build_group_create_payload(
+        &identity.did,
+        &crate::groups::GroupCreateRequest {
+            name: request.name,
+            description: optional_trimmed(request.description),
+            discoverability: optional_trimmed(request.discoverability),
+            admission_mode: optional_trimmed(request.admission_mode),
+            message_security_profile: optional_trimmed(request.message_security_profile),
+            e2ee: request.e2ee,
+            slug: optional_trimmed(request.slug),
+            goal: optional_trimmed(request.goal),
+            rules: optional_trimmed(request.rules),
+            message_prompt: optional_trimmed(request.message_prompt),
+            doc_url: optional_trimmed(request.doc_url),
+            attachments_allowed: request.attachments_allowed,
+            max_members: optional_trimmed(request.max_members),
+            member_max_messages: request.member_max_messages,
+            member_max_total_chars: request.member_max_total_chars,
+            service_did: crate::ids::Did::parse(service_did)?,
+        },
+    )?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_get_info_rpc_params(
+    identity: &BridgeWireIdentity,
+    group_did: &str,
+    include_policy: bool,
+    include_member_list: bool,
+) -> crate::ImResult<Value> {
+    let group_did = require_group_did(group_did)?;
+    let mut body = Map::new();
+    if include_policy {
+        body.insert("include_policy".to_string(), Value::Bool(true));
+    }
+    if include_member_list {
+        body.insert("include_member_list".to_string(), Value::Bool(true));
+    }
+    Ok(json!({
+        "meta": group_base_meta(&identity.did, Some(("group", group_did))),
+        "body": body,
+    }))
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_join_rpc_params(
+    identity: &BridgeWireIdentity,
+    group_did: &str,
+    reason_text: &str,
+) -> crate::ImResult<Value> {
+    let payload = crate::internal::wire::group::build_group_join_payload(
+        &identity.did,
+        &crate::groups::GroupJoinRequest {
+            group: crate::ids::GroupRef::parse(group_did)?,
+            reason_text: optional_trimmed(reason_text),
+        },
+    )?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_add_rpc_params(
+    identity: &BridgeWireIdentity,
+    group_did: &str,
+    member_did: &str,
+    role: &str,
+    reason_text: &str,
+) -> crate::ImResult<Value> {
+    let request = group_member_mutation_request(group_did, member_did, Some(role), reason_text)?;
+    let payload =
+        crate::internal::wire::group::build_group_add_member_payload(&identity.did, &request)?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_remove_rpc_params(
+    identity: &BridgeWireIdentity,
+    group_did: &str,
+    member_did: &str,
+    reason_text: &str,
+) -> crate::ImResult<Value> {
+    let request = group_member_mutation_request(group_did, member_did, None, reason_text)?;
+    let payload =
+        crate::internal::wire::group::build_group_remove_member_payload(&identity.did, &request)?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_leave_rpc_params(
+    identity: &BridgeWireIdentity,
+    group_did: &str,
+) -> crate::ImResult<Value> {
+    let payload = crate::internal::wire::group::build_group_leave_payload(
+        &identity.did,
+        &crate::groups::GroupLeaveRequest {
+            group: crate::ids::GroupRef::parse(group_did)?,
+        },
+    )?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_update_profile_rpc_params(
+    identity: &BridgeWireIdentity,
+    group_did: &str,
+    patch: Map<String, Value>,
+) -> crate::ImResult<Value> {
+    let payload = crate::internal::wire::group::build_group_update_profile_patch_payload(
+        &identity.did,
+        group_did,
+        patch,
+    )?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_update_policy_rpc_params(
+    identity: &BridgeWireIdentity,
+    group_did: &str,
+    patch: Map<String, Value>,
+) -> crate::ImResult<Value> {
+    let payload = crate::internal::wire::group::build_group_update_policy_patch_payload(
+        &identity.did,
+        group_did,
+        patch,
+    )?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
+pub fn build_bridge_group_send_rpc_params(
+    identity: &BridgeWireIdentity,
+    group_did: &str,
+    text: &str,
+    message_type: &str,
+) -> crate::ImResult<Value> {
+    let payload = crate::internal::wire::group::build_group_send_payload(
+        &identity.did,
+        group_did,
+        text,
+        content_type_for_bridge_message_type(message_type),
+    )?;
+    signed_bridge_params(identity, payload)
+}
+
+#[doc(hidden)]
 pub fn build_inbox_rpc_params(identity: &WireIdentity, request: InboxWireRequest) -> Value {
     crate::internal::wire::inbox::build_inbox_rpc_params(
         &to_internal_identity(identity),
@@ -250,4 +459,92 @@ fn to_internal_identity(identity: &WireIdentity) -> crate::internal::wire::commo
     crate::internal::wire::common::WireIdentity {
         did: identity.did.clone(),
     }
+}
+
+fn signed_bridge_params(
+    identity: &BridgeWireIdentity,
+    payload: DirectPayload,
+) -> crate::ImResult<Value> {
+    let origin_proof = crate::internal::proof::origin::build_origin_proof(
+        &crate::internal::proof::origin::OriginProofIdentity {
+            identity_name: identity.identity_name.clone(),
+            did_document: identity.did_document.clone(),
+            key1_private_pem: identity.key1_private_pem.clone(),
+        },
+        &payload,
+    )?;
+    Ok(json!({
+        "meta": payload.meta,
+        "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
+        "body": payload.body,
+    }))
+}
+
+fn group_member_mutation_request(
+    group_did: &str,
+    member_did: &str,
+    role: Option<&str>,
+    reason_text: &str,
+) -> crate::ImResult<crate::groups::GroupMemberMutationRequest> {
+    Ok(crate::groups::GroupMemberMutationRequest {
+        group: crate::ids::GroupRef::parse(group_did)?,
+        member: crate::ids::Did::parse(member_did.trim())?,
+        role: role.and_then(optional_trimmed),
+        reason_text: optional_trimmed(reason_text),
+    })
+}
+
+fn content_type_for_bridge_message_type(message_type: &str) -> &'static str {
+    match message_type.trim().to_ascii_lowercase().as_str() {
+        "attachment_manifest" => ATTACHMENT_MANIFEST_CONTENT_TYPE,
+        "event" => "application/json",
+        _ => "text/plain",
+    }
+}
+
+fn optional_trimmed(value: impl AsRef<str>) -> Option<String> {
+    let value = value.as_ref().trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn require_group_did(group_did: &str) -> crate::ImResult<&str> {
+    let group_did = group_did.trim();
+    if group_did.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("group".to_string()),
+            "group is required",
+        ));
+    }
+    Ok(group_did)
+}
+
+fn group_base_meta(sender_did: &str, target: Option<(&str, &str)>) -> Value {
+    let mut meta = Map::new();
+    meta.insert("anp_version".to_string(), Value::String("1.0".to_string()));
+    meta.insert(
+        "profile".to_string(),
+        Value::String("anp.group.base.v1".to_string()),
+    );
+    meta.insert(
+        "security_profile".to_string(),
+        Value::String("transport-protected".to_string()),
+    );
+    meta.insert(
+        "sender_did".to_string(),
+        Value::String(sender_did.to_string()),
+    );
+    if let Some((kind, did)) = target {
+        meta.insert(
+            "target".to_string(),
+            json!({
+                "kind": kind,
+                "did": did,
+            }),
+        );
+    }
+    Value::Object(meta)
 }

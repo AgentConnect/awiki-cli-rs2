@@ -1,18 +1,10 @@
 use crate::identity::types::StoredIdentity;
-use crate::message::{
-    build_direct_send_rpc_params, build_group_add_rpc_params, build_group_create_rpc_params,
-    build_group_get_info_rpc_params, build_group_get_rpc_params, build_group_join_rpc_params,
-    build_group_leave_rpc_params, build_group_list_rpc_params, build_group_members_rpc_params,
-    build_group_messages_rpc_params, build_group_remove_rpc_params, build_group_send_rpc_params,
-    build_group_update_policy_rpc_params, build_group_update_profile_rpc_params,
-    GroupCreateRequest, GroupGetRequest, GroupInfoRequest, GroupJoinRequest, GroupLeaveRequest,
-    GroupListRequest, GroupMemberRequest, GroupMembersRequest, GroupMessagesRequest,
-};
 use crate::runtime::bridge::BridgeRequest;
 // Migration-only websocket bridge wire shape; remove when listener bridge
 // dispatch no longer builds raw message RPC calls.
 use im_core::compat::wire::{
-    self, HistoryWireRequest, InboxWireRequest, MarkReadWireRequest, WireIdentity,
+    self, BridgeWireIdentity, GroupCreateWireRequest, HistoryWireRequest, InboxWireRequest,
+    MarkReadWireRequest, WireIdentity,
 };
 use serde_json::{Map, Value};
 
@@ -198,8 +190,8 @@ pub fn build_bridge_rpc_call(
     let (method, rpc_params, mark_read_message_ids) = match request.method.as_str() {
         "direct.send" => (
             "direct.send",
-            build_direct_send_rpc_params(
-                record,
+            wire::build_bridge_direct_send_rpc_params(
+                &bridge_wire_identity(record),
                 &string_value(params.get("target")),
                 &string_value(params.get("text")),
                 &string_value(params.get("type")),
@@ -244,10 +236,10 @@ pub fn build_bridge_rpc_call(
         }
         "group.create" => (
             "group.create",
-            build_group_create_rpc_params(
-                record,
+            wire::build_bridge_group_create_rpc_params(
+                &bridge_wire_identity(record),
                 service_did,
-                GroupCreateRequest {
+                GroupCreateWireRequest {
                     name: string_value(params.get("name")),
                     description: string_value(params.get("description")),
                     discoverability: string_value(params.get("discoverability")),
@@ -261,78 +253,64 @@ pub fn build_bridge_rpc_call(
                     max_members: string_value(params.get("max_members")),
                     member_max_messages: int64_ptr_value(params.get("member_max_messages")),
                     member_max_total_chars: int64_ptr_value(params.get("member_max_total_chars")),
-                    ..GroupCreateRequest::default()
+                    message_security_profile: String::new(),
+                    e2ee: false,
                 },
             )?,
             Vec::new(),
         ),
         "group.get_info" => (
             "group.get_info",
-            build_group_get_info_rpc_params(
-                record,
-                GroupInfoRequest {
-                    group: string_value(params.get("group")),
-                    include_policy: bool_value(params.get("include_policy")),
-                    include_member_list: bool_value(params.get("include_member_list")),
-                    ..GroupInfoRequest::default()
-                },
+            wire::build_bridge_group_get_info_rpc_params(
+                &bridge_wire_identity(record),
+                &string_value(params.get("group")),
+                bool_value(params.get("include_policy")),
+                bool_value(params.get("include_member_list")),
             )?,
             Vec::new(),
         ),
         "group.join" => (
             "group.join",
-            build_group_join_rpc_params(
-                record,
-                GroupJoinRequest {
-                    group: string_value(params.get("group")),
-                    reason_text: string_value(params.get("reason_text")),
-                    ..GroupJoinRequest::default()
-                },
+            wire::build_bridge_group_join_rpc_params(
+                &bridge_wire_identity(record),
+                &string_value(params.get("group")),
+                &string_value(params.get("reason_text")),
             )?,
             Vec::new(),
         ),
         "group.add" => (
             "group.add",
-            build_group_add_rpc_params(
-                record,
-                GroupMemberRequest {
-                    group: string_value(params.get("group")),
-                    member: string_value(params.get("member")),
-                    role: string_value(params.get("role")),
-                    reason_text: string_value(params.get("reason_text")),
-                    ..GroupMemberRequest::default()
-                },
+            wire::build_bridge_group_add_rpc_params(
+                &bridge_wire_identity(record),
+                &string_value(params.get("group")),
+                &string_value(params.get("member")),
+                &string_value(params.get("role")),
+                &string_value(params.get("reason_text")),
             )?,
             Vec::new(),
         ),
         "group.remove" => (
             "group.remove",
-            build_group_remove_rpc_params(
-                record,
-                GroupMemberRequest {
-                    group: string_value(params.get("group")),
-                    member: string_value(params.get("member")),
-                    reason_text: string_value(params.get("reason_text")),
-                    ..GroupMemberRequest::default()
-                },
+            wire::build_bridge_group_remove_rpc_params(
+                &bridge_wire_identity(record),
+                &string_value(params.get("group")),
+                &string_value(params.get("member")),
+                &string_value(params.get("reason_text")),
             )?,
             Vec::new(),
         ),
         "group.leave" => (
             "group.leave",
-            build_group_leave_rpc_params(
-                record,
-                GroupLeaveRequest {
-                    group: string_value(params.get("group")),
-                    ..GroupLeaveRequest::default()
-                },
+            wire::build_bridge_group_leave_rpc_params(
+                &bridge_wire_identity(record),
+                &string_value(params.get("group")),
             )?,
             Vec::new(),
         ),
         "group.update_profile" => (
             "group.update_profile",
-            build_group_update_profile_rpc_params(
-                record,
+            wire::build_bridge_group_update_profile_rpc_params(
+                &bridge_wire_identity(record),
                 &string_value(params.get("group")),
                 map_value(params.get("patch")),
             )?,
@@ -340,8 +318,8 @@ pub fn build_bridge_rpc_call(
         ),
         "group.update_policy" => (
             "group.update_policy",
-            build_group_update_policy_rpc_params(
-                record,
+            wire::build_bridge_group_update_policy_rpc_params(
+                &bridge_wire_identity(record),
                 &string_value(params.get("group")),
                 map_value(params.get("patch")),
             )?,
@@ -349,8 +327,8 @@ pub fn build_bridge_rpc_call(
         ),
         "group.send" => (
             "group.send",
-            build_group_send_rpc_params(
-                record,
+            wire::build_bridge_group_send_rpc_params(
+                &bridge_wire_identity(record),
                 &string_value(params.get("group")),
                 &string_value(params.get("text")),
                 &string_value(params.get("type")),
@@ -359,49 +337,31 @@ pub fn build_bridge_rpc_call(
         ),
         "group.get" => (
             "group.get",
-            build_group_get_rpc_params(
-                record,
-                GroupGetRequest {
-                    group: string_value(params.get("group")),
-                    ..GroupGetRequest::default()
-                },
-            )?,
+            wire::build_group_get_rpc_params(&record.did, &string_value(params.get("group")))?,
             Vec::new(),
         ),
         "group.list" => (
             "group.list",
-            build_group_list_rpc_params(
-                record,
-                GroupListRequest {
-                    limit: int_value(params.get("limit")),
-                    ..GroupListRequest::default()
-                },
-            ),
+            wire::build_group_list_rpc_params(&record.did, int_value(params.get("limit"))),
             Vec::new(),
         ),
         "group.list_members" => (
             "group.list_members",
-            build_group_members_rpc_params(
-                record,
-                GroupMembersRequest {
-                    group: string_value(params.get("group")),
-                    limit: int_value(params.get("limit")),
-                    ..GroupMembersRequest::default()
-                },
+            wire::build_group_members_rpc_params(
+                &record.did,
+                &string_value(params.get("group")),
+                int_value(params.get("limit")),
             )?,
             Vec::new(),
         ),
         "group.list_messages" => (
             "group.list_messages",
-            build_group_messages_rpc_params(
-                record,
-                GroupMessagesRequest {
-                    group: string_value(params.get("group")),
-                    limit: int_value(params.get("limit")),
-                    cursor: string_value(params.get("cursor")),
-                    skip: int_value(params.get("skip")),
-                    ..GroupMessagesRequest::default()
-                },
+            wire::build_group_messages_rpc_params(
+                &record.did,
+                &string_value(params.get("group")),
+                int_value(params.get("limit")),
+                optional_string_value(params.get("cursor")).as_deref(),
+                int_value(params.get("skip")),
             )?,
             Vec::new(),
         ),
@@ -509,5 +469,14 @@ fn map_value(value: Option<&Value>) -> Map<String, Value> {
 fn wire_identity(record: &StoredIdentity) -> WireIdentity {
     WireIdentity {
         did: record.did.clone(),
+    }
+}
+
+fn bridge_wire_identity(record: &StoredIdentity) -> BridgeWireIdentity {
+    BridgeWireIdentity {
+        identity_name: record.identity_name.clone(),
+        did: record.did.clone(),
+        did_document: record.did_document.clone(),
+        key1_private_pem: record.key1_private_pem.clone(),
     }
 }
