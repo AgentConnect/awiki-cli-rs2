@@ -11,7 +11,10 @@ use im_core::prelude::{
 };
 use serde_json::json;
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use crate::cli::ParsedCommand;
 use crate::identity;
@@ -519,8 +522,7 @@ pub fn recover_handle_plan_via_im_core(
     params: identity::RecoverParams,
 ) -> Result<identity::CommandResult, ExitError> {
     let bridge = recover_handle_bridge_request(params, None, did_domain)?;
-    let _sdk_request = bridge.sdk;
-    identity::recover_preview(manager, did_domain, bridge.legacy).map_err(crate::app::identity_exit)
+    recover_handle_plan_command_result(manager, did_domain, bridge.sdk, bridge.legacy)
 }
 
 pub fn recover_handle_via_im_core(
@@ -1529,6 +1531,187 @@ fn register_plan_action_and_calls(
         ),
         _ => ("register_handle", vec!["did-auth.register"]),
     }
+}
+
+#[derive(Debug, Clone)]
+struct RecoverHandlePlan {
+    target_handle: String,
+    final_identity_name: String,
+    temp_identity_name: String,
+    backup_path_preview: String,
+    same_handle_candidates: Vec<identity::IdentitySummary>,
+    excluded_identities: Vec<identity::IdentitySummary>,
+}
+
+fn recover_handle_plan_command_result(
+    manager: &identity::Manager,
+    did_domain: &str,
+    _request: RecoverHandleRequest,
+    params: identity::RecoverParams,
+) -> Result<identity::CommandResult, ExitError> {
+    let plan = recover_handle_plan(manager, did_domain, &params)?;
+    let (action, remote_calls, local_writes, backup_path) = if params.otp.trim().is_empty() {
+        (
+            "send_recover_otp",
+            json!(["handle.send_otp"]),
+            Value::Null,
+            String::new(),
+        )
+    } else {
+        (
+            "recover_handle",
+            json!(["did-auth.recover_handle"]),
+            json!([
+                ".legacy-backup/recover-handle",
+                "index.json",
+                "config.yaml",
+                "identity.json",
+                "auth.json",
+                "did_document.json",
+                "key-1-private.pem",
+                "key-1-public.pem",
+                "e2ee-signing-private.pem",
+                "e2ee-agreement-private.pem",
+                "sqlite.recover_handle_merge",
+                "sqlite.e2ee_cleanup",
+            ]),
+            plan.backup_path_preview.clone(),
+        )
+    };
+    Ok(identity::CommandResult {
+        data: json!({
+            "plan": {
+                "action": action,
+                "target_handle": plan.target_handle,
+                "identity_name": plan.final_identity_name,
+                "final_identity_name": plan.final_identity_name,
+                "temp_identity_name": plan.temp_identity_name,
+                "same_handle_candidates": plan.same_handle_candidates,
+                "excluded_identities": plan.excluded_identities,
+                "backup_path": backup_path,
+                "phone": params.phone,
+                "remote_calls": remote_calls,
+                "local_writes": local_writes,
+            }
+        }),
+        summary: "Dry run: handle recovery planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+fn recover_handle_plan(
+    manager: &identity::Manager,
+    did_domain: &str,
+    params: &identity::RecoverParams,
+) -> Result<RecoverHandlePlan, ExitError> {
+    let target = identity::normalize_handle_input(&params.handle, did_domain)
+        .map_err(crate::app::identity_exit)?;
+    let existing = manager.list().map_err(crate::app::identity_exit)?;
+    let identity_base = if target.explicit_domain {
+        target.full_handle.clone()
+    } else {
+        target.local_part.clone()
+    };
+    let final_identity_name = identity::layout::sanitize_identity_name(&identity_base);
+    if final_identity_name.is_empty() {
+        return Err(crate::app::identity_exit(
+            identity::IdentityError::InvalidInput(format!(
+                "invalid input: handle {:?} cannot be used as an identity name",
+                params.handle
+            )),
+        ));
+    }
+
+    let handle_key = canonical_handle(&target.full_handle);
+    let mut same_handle_candidates = Vec::new();
+    let mut excluded_identities = Vec::new();
+    for summary in existing {
+        let full_handle = identity::default_handle_string(
+            &summary.full_handle,
+            &identity::derive_full_handle_from_did(&summary.handle, &summary.did),
+        );
+        if canonical_handle(&full_handle) == handle_key {
+            same_handle_candidates.push(summary);
+        } else {
+            excluded_identities.push(summary);
+        }
+    }
+    same_handle_candidates.sort_by(|left, right| {
+        match compare_rfc3339(&left.created_at, &right.created_at) {
+            Ordering::Equal => left.identity_name.cmp(&right.identity_name),
+            ordering => ordering,
+        }
+    });
+    for summary in &excluded_identities {
+        if summary.identity_name == final_identity_name {
+            return Err(crate::app::identity_exit(
+                identity::IdentityError::Conflict(format!(
+                    "identity conflict: identity name {final_identity_name} is already used by another handle"
+                )),
+            ));
+        }
+    }
+
+    let temp_base = format!("{final_identity_name}-recover-tmp");
+    let mut all_existing =
+        Vec::with_capacity(same_handle_candidates.len() + excluded_identities.len());
+    all_existing.extend_from_slice(&same_handle_candidates);
+    all_existing.extend_from_slice(&excluded_identities);
+    let temp_identity_name =
+        identity::store::choose_named_identity(&temp_base, &all_existing, &temp_base);
+    let backup_path_preview = recover_backup_path_preview(manager, &target.full_handle);
+
+    Ok(RecoverHandlePlan {
+        target_handle: target.full_handle,
+        final_identity_name,
+        temp_identity_name,
+        backup_path_preview,
+        same_handle_candidates,
+        excluded_identities,
+    })
+}
+
+fn recover_backup_path_preview(manager: &identity::Manager, handle: &str) -> String {
+    std::path::Path::new(manager.root_dir())
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from(manager.root_dir()))
+        .join(identity::types::LEGACY_BACKUP_DIR_NAME)
+        .join("recover-handle")
+        .join(recover_backup_preview_name(handle))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn recover_backup_preview_name(handle: &str) -> String {
+    let mut handle_part = identity::layout::sanitize_identity_name(handle);
+    if handle_part.is_empty() {
+        handle_part = "handle".to_string();
+    }
+    format!("<timestamp>-{handle_part}")
+}
+
+fn canonical_handle(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
+}
+
+fn compare_rfc3339(left: &str, right: &str) -> Ordering {
+    let left = left.trim();
+    let right = right.trim();
+    match (left.is_empty(), right.is_empty()) {
+        (true, true) => return Ordering::Equal,
+        (true, false) => return Ordering::Greater,
+        (false, true) => return Ordering::Less,
+        (false, false) => {}
+    }
+    match (
+        OffsetDateTime::parse(left, &Rfc3339),
+        OffsetDateTime::parse(right, &Rfc3339),
+    ) {
+        (Ok(left_time), Ok(right_time)) => return left_time.cmp(&right_time),
+        _ => {}
+    }
+    left.cmp(right)
 }
 
 fn pending_registration_identity_name(
