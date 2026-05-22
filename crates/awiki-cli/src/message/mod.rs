@@ -126,7 +126,7 @@ pub use secure_outbox_flush::{
 };
 pub(crate) use service::{
     auth_session, bool_value, int_value, maybe_publish_secure_prekeys, persist_history_messages,
-    persist_inbox_messages, require_active_identity,
+    persist_inbox_messages,
 };
 pub use service::{
     send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,

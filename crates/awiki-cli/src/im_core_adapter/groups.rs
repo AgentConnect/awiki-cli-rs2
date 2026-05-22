@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 use crate::config::Resolved;
 use crate::identity::Manager;
+use crate::im_core_adapter::active_identity;
 use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError, ServiceError};
 use crate::message;
 use crate::runtime;
@@ -104,7 +105,8 @@ pub fn create_group_via_im_core(
     if request.name.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
     }
-    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let record =
+        active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
     let result = client
         .groups()
         .create(group_create_request(request, &resolved.anp_service_did)?)
@@ -141,7 +143,8 @@ pub fn join_group_via_im_core(
     if request.group.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
     }
-    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let record =
+        active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
     let requested_group = request.group.clone();
     let result = client
         .groups()
@@ -182,7 +185,8 @@ pub fn leave_group_via_im_core(
     if request.e2ee {
         return Err(MessageAdapterError::GroupNotSupported);
     }
-    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let record =
+        active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
     let cached_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
     if cached_snapshot
         .as_ref()
@@ -253,7 +257,8 @@ fn mutate_group_member_via_im_core(
     if request.e2ee {
         return Err(MessageAdapterError::GroupNotSupported);
     }
-    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let record =
+        active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
     let pre_mutation_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
     if pre_mutation_snapshot
         .as_ref()
@@ -320,7 +325,8 @@ pub fn update_group_via_im_core(
             "group update requires at least one mutable field".to_string(),
         ));
     }
-    let record = message::require_active_identity(resolved, manager, &request.identity_name)?;
+    let record =
+        active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
     let cached_snapshot = message::cached_group_snapshot(resolved, &record, &request.group);
     if cached_snapshot
         .as_ref()
@@ -380,7 +386,7 @@ pub fn get_group_via_im_core(
     identity_name: &str,
     group: String,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)?;
+    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let result = client
         .groups()
@@ -409,7 +415,7 @@ pub fn list_groups_via_im_core(
     identity_name: &str,
     limit: i64,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let _record = message::require_active_identity(resolved, manager, identity_name)?;
+    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let request = GroupListRequest {
         limit: page_limit(limit, 50)?,
     };
@@ -439,7 +445,7 @@ pub fn group_members_via_im_core(
     group: String,
     limit: i64,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)?;
+    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let request = GroupMembersRequest {
         group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
         limit: page_limit(limit, 100)?,
@@ -478,7 +484,7 @@ pub fn group_messages_via_im_core(
     limit: i64,
     cursor: String,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)?;
+    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let request = GroupMessagesRequest {
         group: GroupRef::parse(&group).map_err(im_error_to_message_error)?,
         limit: page_limit(limit, 50)?,

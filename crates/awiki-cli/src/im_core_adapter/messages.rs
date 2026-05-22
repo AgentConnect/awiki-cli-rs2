@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
+use crate::im_core_adapter::active_identity;
 use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError, ServiceError};
 use crate::message;
 use crate::output::ExitError;
@@ -121,8 +122,7 @@ pub fn read_inbox_via_im_core(
     identity_name: &str,
     query: InboxQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)
-        .map_err(MessageAdapterError::from)?;
+    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
     let page = client
         .messages()
@@ -183,8 +183,7 @@ fn read_direct_history_via_im_core(
     peer: PeerRef,
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)
-        .map_err(MessageAdapterError::from)?;
+    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
     let (thread, target, target_is_handle) = resolve_history_thread(client, peer)?;
     let page = client
@@ -247,8 +246,7 @@ fn read_group_history_via_im_core(
     group: GroupRef,
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = message::require_active_identity(resolved, manager, identity_name)
-        .map_err(MessageAdapterError::from)?;
+    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let mut warnings = message::maybe_publish_secure_prekeys(resolved, manager, &record);
     let page = client
         .messages()
