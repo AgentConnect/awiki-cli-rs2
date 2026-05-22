@@ -121,8 +121,8 @@ fn recover_handle_request_builds_sdk_request() {
 }
 
 #[test]
-fn replace_did_plan_bridge_builds_sdk_plan_request() {
-    let workspace = TempDir::new("replace-did-plan-bridge").expect("workspace");
+fn replace_did_plan_command_request_builds_sdk_plan_request() {
+    let workspace = TempDir::new("replace-did-plan-command").expect("workspace");
     let paths = crate::config::Paths {
         workspace_home_dir: workspace.path().to_string_lossy().into_owned(),
         root_dir: workspace.path().to_string_lossy().into_owned(),
@@ -228,7 +228,7 @@ fn replace_did_plan_bridge_builds_sdk_plan_request() {
         })
         .expect("save identity");
 
-    let bridge = identity::replace_did_plan_bridge_request(
+    let request = identity::replace_did_plan_command_request(
         &resolved,
         &manager,
         "alice",
@@ -239,9 +239,9 @@ fn replace_did_plan_bridge_builds_sdk_plan_request() {
     )
     .unwrap();
 
-    assert_eq!(bridge.identity_name, "alice");
-    assert_eq!(bridge.sdk.identity.local_alias.as_deref(), Some("alice"));
-    assert_eq!(bridge.sdk.identity.did.as_str(), generated_did.as_str());
+    assert_eq!(request.identity_name, "alice");
+    assert_eq!(request.sdk.identity.local_alias.as_deref(), Some("alice"));
+    assert_eq!(request.sdk.identity.did.as_str(), generated_did.as_str());
     let expected_replacement_prefix = format!(
         "{}:e1_replacement_",
         generated_did
@@ -249,19 +249,19 @@ fn replace_did_plan_bridge_builds_sdk_plan_request() {
             .map(|(base, _)| base)
             .unwrap()
     );
-    assert!(bridge
+    assert!(request
         .sdk
         .planned_new_did
         .as_str()
         .starts_with(&expected_replacement_prefix));
-    assert!(bridge
+    assert!(request
         .sdk
         .backup_path_preview
         .contains(".legacy-backup/replace-did/<timestamp>"));
-    assert!(bridge.sdk.backup_path_preview.contains("-alice-"));
-    assert_eq!(bridge.sdk.is_public, Some(false));
-    assert_eq!(bridge.sdk.is_agent, Some(true));
-    assert_eq!(bridge.sdk.role.as_deref(), Some(""));
+    assert!(request.sdk.backup_path_preview.contains("-alice-"));
+    assert_eq!(request.sdk.is_public, Some(false));
+    assert_eq!(request.sdk.is_agent, Some(true));
+    assert_eq!(request.sdk.role.as_deref(), Some(""));
 }
 
 struct TempDir {

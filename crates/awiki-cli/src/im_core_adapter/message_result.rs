@@ -1,7 +1,3 @@
-// Temporary migration-only legacy bridge exception.
-// Delete in PR C7 when group E2EE diagnostic handlers no longer share the
-// default message cutover result mapper.
-
 use std::fmt;
 
 use serde_json::Value;

@@ -1,7 +1,3 @@
-// Temporary migration-only legacy bridge exception.
-// Delete in PR C7 when identity/group/profile default handlers no longer keep
-// message rendering adapters coupled to legacy cache/render helpers.
-
 use std::fs;
 
 use im_core::prelude::{

@@ -1,9 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const TEMPORARY_BRIDGE_MARKER: &str = "Temporary migration-only legacy bridge exception.";
-const DELETE_MARKER: &str = "Delete in PR";
-
 #[test]
 fn im_core_adapter_documents_thin_boundary_policy() {
     let policy = fs::read_to_string(adapter_root().join("mod.rs")).expect("adapter mod policy");
@@ -23,7 +20,7 @@ fn im_core_adapter_documents_thin_boundary_policy() {
 }
 
 #[test]
-fn legacy_bridge_exceptions_are_marked_temporary_with_cleanup_prs() {
+fn im_core_adapter_has_no_legacy_bridge_needles() {
     let offenders: Vec<_> = adapter_rs_files()
         .into_iter()
         .filter(|path| path.file_name().is_some_and(|name| name != "tests.rs"))
@@ -32,14 +29,13 @@ fn legacy_bridge_exceptions_are_marked_temporary_with_cleanup_prs() {
             let has_bridge = LEGACY_BRIDGE_NEEDLES
                 .iter()
                 .any(|needle| text.contains(needle));
-            let has_marker = text.contains(TEMPORARY_BRIDGE_MARKER) && text.contains(DELETE_MARKER);
-            (has_bridge && !has_marker).then_some(path)
+            has_bridge.then_some(path)
         })
         .collect();
 
     assert!(
         offenders.is_empty(),
-        "legacy bridge references in im_core_adapter must be temporary migration-only exceptions with cleanup PRs: {offenders:?}"
+        "legacy bridge references must not remain in im_core_adapter default cutover boundary: {offenders:?}"
     );
 }
 

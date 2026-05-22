@@ -13,7 +13,7 @@ use crate::output::ExitError;
 use crate::store;
 
 #[derive(Debug, Clone)]
-pub struct ReplaceDidPlanBridgeRequest {
+pub struct ReplaceDidPlanCommandRequest {
     pub sdk: ReplaceDidPlanRequest,
     pub identity_name: String,
 }
@@ -27,7 +27,7 @@ pub fn replace_did_plan_via_im_core(
     role: Option<&str>,
     endpoint_url: Option<&str>,
 ) -> Result<identity::CommandResult, ExitError> {
-    let bridge = replace_did_plan_bridge_request(
+    let request = replace_did_plan_command_request(
         resolved,
         manager,
         identity_name,
@@ -39,16 +39,16 @@ pub fn replace_did_plan_via_im_core(
     let client = super::build_im_client(
         resolved,
         manager,
-        IdentitySelector::LocalAlias(bridge.identity_name.clone()),
+        IdentitySelector::LocalAlias(request.identity_name.clone()),
     )?;
     let plan = client
         .identity()
-        .replace_did_plan(bridge.sdk)
+        .replace_did_plan(request.sdk)
         .map_err(|err| super::map_im_error(err, "id replace-did"))?;
     replace_did_plan_command_result(plan)
 }
 
-pub fn replace_did_plan_bridge_request(
+pub fn replace_did_plan_command_request(
     resolved: &crate::config::Resolved,
     manager: &identity::Manager,
     identity_name: &str,
@@ -56,8 +56,8 @@ pub fn replace_did_plan_bridge_request(
     is_agent: Option<bool>,
     role: Option<&str>,
     endpoint_url: Option<&str>,
-) -> Result<ReplaceDidPlanBridgeRequest, ExitError> {
-    build_replace_did_plan_bridge_request(
+) -> Result<ReplaceDidPlanCommandRequest, ExitError> {
+    build_replace_did_plan_command_request(
         resolved,
         manager,
         identity_name,
@@ -69,7 +69,7 @@ pub fn replace_did_plan_bridge_request(
     )
 }
 
-fn build_replace_did_plan_bridge_request(
+fn build_replace_did_plan_command_request(
     resolved: &crate::config::Resolved,
     manager: &identity::Manager,
     identity_name: &str,
@@ -78,7 +78,7 @@ fn build_replace_did_plan_bridge_request(
     is_agent: Option<bool>,
     role: Option<&str>,
     endpoint_url: Option<&str>,
-) -> Result<ReplaceDidPlanBridgeRequest, ExitError> {
+) -> Result<ReplaceDidPlanCommandRequest, ExitError> {
     let record = identity::service::load_identity_for_mutation(resolved, manager, identity_name)
         .map_err(crate::app::identity_exit)?;
     let planned_new_did = match planned_new_did_override {
@@ -105,7 +105,7 @@ fn build_replace_did_plan_bridge_request(
             e2ee_cleanup_counts,
         },
     };
-    Ok(ReplaceDidPlanBridgeRequest {
+    Ok(ReplaceDidPlanCommandRequest {
         sdk,
         identity_name: record.identity_name,
     })

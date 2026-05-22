@@ -1,8 +1,3 @@
-// Temporary migration-only legacy bridge exception.
-// Delete in PR C3/C7 when identity/profile/directory default handlers call
-// im-core public APIs directly and this adapter no longer converts SDK DTOs
-// back to legacy identity requests, stores, clients, or compat bridges.
-
 use im_core::prelude::{
     ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
     ContactBindingState, Did, DirectoryResolution, Handle, HandleRegistrationResult,
@@ -28,7 +23,7 @@ use crate::output::ExitError;
 use crate::store;
 
 pub use super::identity_replace_did_plan::{
-    replace_did_plan_bridge_request, replace_did_plan_via_im_core, ReplaceDidPlanBridgeRequest,
+    replace_did_plan_command_request, replace_did_plan_via_im_core, ReplaceDidPlanCommandRequest,
 };
 
 fn identity_diagnostic_raw(result: &impl IdentityDiagnosticRaw) -> Value {
@@ -52,14 +47,14 @@ impl IdentityDiagnosticRaw for im_core::identity::RecoverHandleResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct GetProfileBridgeRequest {
+pub struct GetProfileCommandRequest {
     pub self_profile: bool,
     pub handle: String,
     pub did: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolveBridgeRequest {
+pub struct ResolveCommandRequest {
     pub handle: String,
     pub did: String,
 }
@@ -899,8 +894,8 @@ fn bind_command_result(
     }
 }
 
-pub fn get_profile_request(command: &ParsedCommand) -> GetProfileBridgeRequest {
-    GetProfileBridgeRequest {
+pub fn get_profile_request(command: &ParsedCommand) -> GetProfileCommandRequest {
+    GetProfileCommandRequest {
         self_profile: command
             .flags
             .get("self")
@@ -930,7 +925,7 @@ pub fn get_public_profile_via_im_core(
     resolved: &crate::config::Resolved,
     manager: &identity::Manager,
     identity_flag: &str,
-    request: GetProfileBridgeRequest,
+    request: GetProfileCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
     let Some(client) =
         build_optional_directory_client(resolved, manager, identity_flag, "id profile get")?
@@ -976,8 +971,8 @@ pub fn get_public_profile_via_im_core(
     ))
 }
 
-pub fn resolve_request(command: &ParsedCommand) -> ResolveBridgeRequest {
-    ResolveBridgeRequest {
+pub fn resolve_request(command: &ParsedCommand) -> ResolveCommandRequest {
+    ResolveCommandRequest {
         handle: string_flag(command, "handle"),
         did: string_flag(command, "did"),
     }
@@ -987,7 +982,7 @@ pub fn resolve_identity_via_im_core(
     resolved: &crate::config::Resolved,
     manager: &identity::Manager,
     identity_flag: &str,
-    request: ResolveBridgeRequest,
+    request: ResolveCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
     let handle = request.handle.trim();
     let did = request.did.trim();
