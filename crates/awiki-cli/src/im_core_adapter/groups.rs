@@ -21,6 +21,12 @@ use crate::runtime;
 pub const GROUP_E2EE_SECURITY_PROFILE: &str = "group-e2ee";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TargetResolution {
+    did: String,
+    handle: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupCreateRequest {
     pub identity_name: String,
     pub name: String,
@@ -122,7 +128,7 @@ pub fn create_group_via_im_core(
             "source": message::group_control_source(&raw),
         }),
         summary: format!("Created group {group_did}"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -160,7 +166,7 @@ pub fn join_group_via_im_core(
             "source": message::group_control_source(&raw),
         }),
         summary: format!("Joined group {group_did}"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -209,7 +215,7 @@ pub fn leave_group_via_im_core(
             "group": request.group,
         }),
         summary: format!("Left group {}", request.group),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -293,7 +299,7 @@ fn mutate_group_member_via_im_core(
             },
         }),
         summary: format!("Updated group membership via {action}"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -363,7 +369,7 @@ pub fn update_group_via_im_core(
             "delivery": responses,
         }),
         summary: format!("Updated group {}", request.group),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -392,7 +398,7 @@ pub fn get_group_via_im_core(
             "source": message::group_control_source(&raw),
         }),
         summary: "Loaded group snapshot".to_string(),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -459,7 +465,7 @@ pub fn group_members_via_im_core(
             "source": message::group_control_source(&raw),
         }),
         summary: format!("Loaded {total} group members"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -506,7 +512,7 @@ pub fn group_messages_via_im_core(
             "source": source_with_default_for_mode(&raw, result_source_mode),
         }),
         summary: format!("Loaded {total} group messages"),
-        warnings: message::compact_warnings(warnings),
+        warnings: compact_warnings(warnings),
     })
 }
 
@@ -542,13 +548,13 @@ fn resolve_group_member_via_directory(
     resolved: &Resolved,
     client: &im_core::ImClient,
     member: &str,
-) -> Result<message::TargetResolution, MessageAdapterError> {
+) -> Result<TargetResolution, MessageAdapterError> {
     let member = member.trim();
     if member.is_empty() {
         return Err(MessageAdapterError::MemberRequired);
     }
     if member.starts_with("did:") {
-        return Ok(message::TargetResolution {
+        return Ok(TargetResolution {
             did: member.to_string(),
             handle: String::new(),
         });
@@ -558,7 +564,7 @@ fn resolve_group_member_via_directory(
         .directory()
         .lookup_handle(handle)
         .map_err(im_error_to_message_error)?;
-    Ok(message::TargetResolution {
+    Ok(TargetResolution {
         did: lookup.did.as_str().to_string(),
         handle: normalize_handle_value(lookup.handle.as_str()),
     })
@@ -589,7 +595,19 @@ fn group_policy_patch(request: &GroupUpdateRequest) -> GroupPolicyPatch {
 
 fn group_control_warnings(resolved: &Resolved, mut warnings: Vec<String>) -> Vec<String> {
     warnings.extend(message::group_control_warnings(resolved));
-    message::compact_warnings(warnings)
+    compact_warnings(warnings)
+}
+
+fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
+    let mut compact = Vec::new();
+    for warning in warnings {
+        let warning = warning.trim().to_string();
+        if warning.is_empty() || compact.iter().any(|known| known == &warning) {
+            continue;
+        }
+        compact.push(warning);
+    }
+    compact
 }
 
 fn source_with_default_for_mode(raw: &Value, mode: &str) -> String {
