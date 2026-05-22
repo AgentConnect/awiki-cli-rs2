@@ -217,17 +217,30 @@ impl<'a> IdentityRegistry<'a> {
         &self,
         selector: super::IdentitySelector,
     ) -> crate::ImResult<crate::internal::identity_runtime::ClientIdentityRuntime> {
-        let summary = self.resolve(selector)?;
+        let registry = self.load_registry()?;
+        let summary = if registry.entries.is_empty() {
+            self.resolve(selector)?
+        } else {
+            resolve_from_registry(&registry, selector)?
+        };
         let identity_root = &self.core.inner().sdk_paths().identities.identity_root_dir;
-        let alias = summary
-            .local_alias
-            .as_deref()
+        let identity_dir_name = registry
+            .find(|entry| entry.summary == summary)
+            .and_then(|entry| entry.dir_name.as_deref())
+            .or(summary.local_alias.as_deref())
             .unwrap_or_else(|| summary.id.as_str());
+        let identity_dir = identity_root.join(identity_dir_name);
         Ok(crate::internal::identity_runtime::ClientIdentityRuntime {
             summary: summary.clone(),
-            did_document_path: identity_root.join(alias).join("did.json"),
-            private_key_path: identity_root.join(alias).join("private.key"),
-            auth_state_path: identity_root.join(alias).join("auth.json"),
+            did_document_path: first_existing_path(
+                &identity_dir,
+                &["did.json", "did_document.json"],
+            ),
+            private_key_path: first_existing_path(
+                &identity_dir,
+                &["private.key", "key-1-private.pem"],
+            ),
+            auth_state_path: identity_dir.join("auth.json"),
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,
                 current_did: summary.did,
@@ -257,6 +270,14 @@ impl<'a> IdentityRegistry<'a> {
         snapshot.apply_default_flags();
         Ok(snapshot)
     }
+}
+
+fn first_existing_path(identity_dir: &Path, names: &[&str]) -> std::path::PathBuf {
+    names
+        .iter()
+        .map(|name| identity_dir.join(name))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| identity_dir.join(names[0]))
 }
 
 #[derive(Debug, Clone)]
@@ -292,9 +313,54 @@ impl RegistrySnapshot {
     }
 }
 
+fn resolve_from_registry(
+    registry: &RegistrySnapshot,
+    selector: super::IdentitySelector,
+) -> crate::ImResult<super::IdentitySummary> {
+    match selector {
+        super::IdentitySelector::Default => registry
+            .default_identity()
+            .ok_or(crate::ImError::DefaultIdentityMissing),
+        super::IdentitySelector::LocalAlias(alias) => {
+            let alias = alias.trim();
+            if alias.is_empty() {
+                return Err(crate::ImError::invalid_input(
+                    Some("identity".to_string()),
+                    "local alias must not be empty",
+                ));
+            }
+            registry
+                .find(|entry| entry.local_alias.as_deref() == Some(alias))
+                .map(|entry| entry.summary.clone())
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: alias.to_string(),
+                })
+        }
+        super::IdentitySelector::Did(did) => registry
+            .find(|entry| entry.summary.did == did)
+            .map(|entry| entry.summary.clone())
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: did.as_str().to_string(),
+            }),
+        super::IdentitySelector::Id(id) => registry
+            .find(|entry| entry.summary.id == id)
+            .map(|entry| entry.summary.clone())
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: id.as_str().to_string(),
+            }),
+        super::IdentitySelector::Handle(handle) => registry
+            .find(|entry| entry.summary.handle.as_ref() == Some(&handle))
+            .map(|entry| entry.summary.clone())
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: handle.as_str().to_string(),
+            }),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RegistryEntry {
     local_alias: Option<String>,
+    dir_name: Option<String>,
     summary: super::IdentitySummary,
 }
 
@@ -310,6 +376,8 @@ struct SdkRegistryFile {
 struct SdkIdentityRecord {
     id: String,
     did: String,
+    #[serde(default)]
+    dir_name: Option<String>,
     #[serde(default)]
     handle: Option<String>,
     #[serde(default)]
@@ -340,6 +408,8 @@ struct LegacyRegistryFile {
 struct LegacyIdentityRecord {
     #[serde(default)]
     credential_name: String,
+    #[serde(default)]
+    dir_name: String,
     #[serde(default)]
     did: String,
     #[serde(default)]
@@ -374,8 +444,14 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
             .local_alias
             .clone()
             .or_else(|| Some(record.id.clone()).filter(|value| !value.trim().is_empty()));
+        let dir_name = record
+            .dir_name
+            .clone()
+            .or_else(|| local_alias.clone())
+            .or_else(|| Some(record.id.clone()).filter(|value| !value.trim().is_empty()));
         entries.push(RegistryEntry {
             local_alias,
+            dir_name,
             summary: super::IdentitySummary {
                 id: crate::ids::IdentityId::parse(record.id)?,
                 did: crate::ids::Did::parse(record.did)?,
@@ -409,8 +485,12 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
             .unwrap_or(&alias)
             .to_string();
         let handle = first_non_empty([&record.full_handle, &record.handle, ""]);
+        let dir_name = first_non_empty([&record.dir_name, &record.unique_id, &alias])
+            .unwrap_or(&alias)
+            .to_string();
         entries.push(RegistryEntry {
             local_alias: Some(alias.clone()),
+            dir_name: Some(dir_name),
             summary: super::IdentitySummary {
                 id: crate::ids::IdentityId::parse(id)?,
                 did: crate::ids::Did::parse(record.did)?,

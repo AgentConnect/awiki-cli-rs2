@@ -4,7 +4,7 @@ use crate::config::Resolved;
 use crate::identity;
 use crate::message::{CommandResult, MessageError};
 use crate::output::ExitError;
-use im_core::prelude::MessageTarget;
+use im_core::prelude::{MessageBody, MessageKind};
 use serde_json::{json, Map, Value};
 
 struct MsgSendPlan<'a> {
@@ -38,10 +38,7 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let request =
             crate::im_core_adapter::messages::send_message_request(command, &resolved.did_domain)?;
-        let legacy_request = crate::im_core_adapter::messages::legacy_text_send_request(
-            &self.globals.identity,
-            request.clone(),
-        )?;
+        let (text, message_type) = send_text_plan_fields(&request)?;
         if self.globals.dry_run {
             return self.render_msg_send_plan(
                 &resolved,
@@ -49,8 +46,8 @@ impl App {
                     identity: &self.globals.identity,
                     to: &string_flag(command, "to"),
                     group: &string_flag(command, "group"),
-                    text: &legacy_request.text,
-                    message_type: &legacy_request.message_type,
+                    text: &text,
+                    message_type,
                     file_path: "",
                     mime_type: "",
                     has_attachment: false,
@@ -64,32 +61,14 @@ impl App {
             &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        let result = match request.target {
-            MessageTarget::Direct(_) => {
-                crate::im_core_adapter::messages::send_direct_text_via_im_core(
-                    &resolved,
-                    &manager,
-                    &client,
-                    &self.globals.identity,
-                    request,
-                )
-            }
-            MessageTarget::Group(_) => {
-                crate::im_core_adapter::messages::send_group_text_via_im_core(
-                    &resolved,
-                    &manager,
-                    &client,
-                    &self.globals.identity,
-                    request,
-                )
-            }
-        }
-        .map_err(|err| {
-            message_exit(
-                err,
-                "Ensure the active identity is ready and the message service is reachable.",
-            )
-        })?;
+        let result =
+            crate::im_core_adapter::messages::send_text_via_im_core(&resolved, &client, request)
+                .map_err(|err| {
+                    message_exit(
+                        err,
+                        "Ensure the active identity is ready and the message service is reachable.",
+                    )
+                })?;
         self.render_message_result("awiki-cli msg send", &resolved, result)
     }
 
@@ -466,6 +445,27 @@ fn default_string(value: &str, fallback: &str) -> String {
         fallback.to_string()
     } else {
         value.to_string()
+    }
+}
+
+fn send_text_plan_fields(
+    request: &im_core::prelude::SendMessageRequest,
+) -> Result<(String, &'static str), ExitError> {
+    match &request.body {
+        MessageBody::Text { text, kind } => Ok((text.clone(), message_type_for_kind(kind))),
+        MessageBody::Attachment { .. } => Err(ExitError::new(
+            "unsupported_capability",
+            2,
+            "attachments are not supported by the Phase 1 IM Core adapter.",
+            "Use the existing legacy attachment command path until attachment migration starts.",
+        )),
+    }
+}
+
+fn message_type_for_kind(kind: &MessageKind) -> &'static str {
+    match kind {
+        MessageKind::Text => "text",
+        MessageKind::Markdown => "markdown",
     }
 }
 

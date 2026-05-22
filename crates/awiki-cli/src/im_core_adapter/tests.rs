@@ -3,14 +3,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use im_core::prelude::{
-    AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody,
-    MessageDeliveryOptions, MessageKind, MessageSecurityMode, MessageTarget, SendMessageRequest,
-    ThreadRef, VerificationInput,
+    AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody, MessageKind,
+    MessageSecurityMode, MessageTarget, ThreadRef, VerificationInput,
 };
 
 use crate::cli::ParsedCommand;
 
-use super::{auth, config, error, feature_flag, identity, messages, paths, render};
+use super::{auth, config, error, identity, messages, paths, render};
 
 #[test]
 fn identity_selector_empty_uses_default() {
@@ -315,16 +314,6 @@ fn auth_scope_from_cli_accepts_phase1_scopes() {
 }
 
 #[test]
-fn env_flag_enabled_accepts_explicit_truthy_values() {
-    for value in ["1", "true", "YES", " on "] {
-        assert!(feature_flag::env_flag_enabled(value));
-    }
-    for value in ["", "0", "false", "off", "anything-else"] {
-        assert!(!feature_flag::env_flag_enabled(value));
-    }
-}
-
-#[test]
 fn build_im_core_config_from_parts_maps_fields() {
     let cfg = config::build_im_core_config_from_parts(
         "https://example.test/",
@@ -394,46 +383,6 @@ fn send_message_request_builds_direct_text_dto() {
 }
 
 #[test]
-fn legacy_direct_text_send_request_maps_sdk_dto_to_legacy_request() {
-    let command = command_with_flags([
-        ("to", "bob"),
-        ("text", "hello"),
-        ("type", "markdown"),
-        ("secure", "plain"),
-    ]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
-    let legacy = messages::legacy_text_send_request("alice", request).unwrap();
-
-    assert_eq!(legacy.identity_name, "alice");
-    assert_eq!(legacy.target, "bob.awiki.test");
-    assert_eq!(legacy.text, "hello");
-    assert_eq!(legacy.message_type, "markdown");
-    assert_eq!(legacy.secure_mode, "off");
-    assert_eq!(legacy.group, "");
-}
-
-#[test]
-fn legacy_text_send_request_maps_group_dto_to_legacy_request() {
-    let request = SendMessageRequest {
-        target: MessageTarget::Group(GroupRef::parse("did:example:group").unwrap()),
-        body: MessageBody::Text {
-            text: "hello group".to_string(),
-            kind: MessageKind::Text,
-        },
-        security: MessageSecurityMode::Plain,
-        client_message_id: None,
-        delivery: MessageDeliveryOptions::default(),
-    };
-    let legacy = messages::legacy_text_send_request("alice", request).unwrap();
-    assert_eq!(legacy.identity_name, "alice");
-    assert_eq!(legacy.target, "");
-    assert_eq!(legacy.group, "did:example:group");
-    assert_eq!(legacy.text, "hello group");
-    assert_eq!(legacy.message_type, "text");
-    assert_eq!(legacy.secure_mode, "off");
-}
-
-#[test]
 fn send_message_request_builds_group_text_dto() {
     let command = command_with_flags([("group", "did:example:group"), ("text", "hello group")]);
     let request = messages::send_message_request(&command, "awiki.test").unwrap();
@@ -441,6 +390,30 @@ fn send_message_request_builds_group_text_dto() {
         request.target,
         MessageTarget::Group(ref group) if group == &GroupRef::parse("did:example:group").unwrap()
     ));
+}
+
+#[test]
+fn send_message_request_builds_markdown_plain_direct_sdk_dto() {
+    let command = command_with_flags([
+        ("to", "bob"),
+        ("text", "hello"),
+        ("type", "markdown"),
+        ("secure", "plain"),
+    ]);
+    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+
+    assert!(matches!(
+        request.target,
+        MessageTarget::Direct(ref peer) if peer.as_str() == "bob.awiki.test"
+    ));
+    assert!(matches!(
+        request.body,
+        MessageBody::Text {
+            ref text,
+            kind: MessageKind::Markdown
+        } if text == "hello"
+    ));
+    assert_eq!(request.security, MessageSecurityMode::Plain);
 }
 
 #[test]
