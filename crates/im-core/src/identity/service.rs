@@ -74,6 +74,15 @@ impl<'a> IdentityService<'a> {
         .map(|result| result.sdk_result)
     }
 
+    pub fn bind_email_status(&self, email: String) -> crate::ImResult<super::ContactBindingResult> {
+        self.bind_email_status_with_runtime(
+            email,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+        .map(|result| result.sdk_result)
+    }
+
     pub(crate) fn bind_contact_with_runtime<P, T>(
         &self,
         request: super::ContactBindingRequest,

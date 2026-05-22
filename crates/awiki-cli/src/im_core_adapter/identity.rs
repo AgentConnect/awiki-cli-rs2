@@ -4,10 +4,11 @@
 // back to legacy identity requests, stores, clients, or compat bridges.
 
 use im_core::prelude::{
-    AuthScope, ContactBindingMethod, ContactBindingRequest, ContactBindingState, Did, Handle,
-    HandleRegistrationResult, HandleRegistrationState, IdentitySelector, InitialProfile, PeerRef,
-    ProfilePatch, RecoverGeneratedIdentity, RecoverHandleRequest, RegisterHandleRequest,
-    RegistrationMethod, SessionBundle, VerificationInput,
+    AuthScope, ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest,
+    ContactBindingResult, ContactBindingState, Did, Handle, HandleRegistrationResult,
+    HandleRegistrationState, IdentitySelector, InitialProfile, PeerRef, ProfilePatch,
+    RecoverGeneratedIdentity, RecoverHandleRequest, RegisterHandleRequest, RegistrationMethod,
+    SessionBundle, VerificationInput,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -468,24 +469,12 @@ pub fn bind_contact_via_im_core(
     let identity = identity::store::identity_summary_from_record(&record);
     let result =
         if bridge.legacy.wait && matches!(bridge.sdk.method, ContactBindingMethod::Email { .. }) {
-            bind_email_wait_via_im_core(resolved, manager, &client, &record, &identity, bridge)?
+            bind_email_wait_via_im_core(&client, &identity, bridge)?
         } else {
-            let result = im_core::compat::identity::bind_contact_with_bridge(
-                &client,
-                bridge.sdk,
-                IdentitySessionProvider {
-                    subject: client.did().clone(),
-                    resolved,
-                    manager,
-                    record: record.clone(),
-                },
-                IdentityLegacyRestTransport {
-                    resolved,
-                    manager,
-                    record,
-                },
-            )
-            .map_err(|err| super::map_im_error(err, "id bind"))?;
+            let result = client
+                .identity()
+                .bind_contact(bridge.sdk)
+                .map_err(|err| super::map_im_error(err, "id bind"))?;
             bind_command_result(&identity, result).map_err(crate::app::identity_exit)?
         };
     Ok(result)
@@ -649,10 +638,7 @@ pub fn merge_recovered_handle_local_state_via_im_core(
 }
 
 fn bind_email_wait_via_im_core(
-    resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     client: &im_core::ImClient,
-    record: &identity::types::StoredIdentity,
     identity: &identity::IdentitySummary,
     bridge: BindContactBridgeRequest,
 ) -> Result<identity::CommandResult, ExitError> {
@@ -660,53 +646,33 @@ fn bind_email_wait_via_im_core(
         ContactBindingMethod::Email { email } => email.clone(),
         _ => unreachable!("wait bridge is only used for email"),
     };
-    let mut result = im_core::compat::identity::bind_contact_with_bridge(
-        client,
-        bridge.sdk.clone(),
-        IdentitySessionProvider {
-            subject: client.did().clone(),
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-        IdentityLegacyRestTransport {
-            resolved,
-            manager,
-            record: record.clone(),
-        },
-    )
-    .map_err(|err| super::map_im_error(err, "id bind"))?;
-    if result.result.state == ContactBindingState::Completed {
+    let mut result = client
+        .identity()
+        .bind_contact(bridge.sdk.clone())
+        .map_err(|err| super::map_im_error(err, "id bind"))?;
+    if result.state == ContactBindingState::Completed {
         return bind_command_result(identity, result).map_err(crate::app::identity_exit);
     }
-    if result.result.state != ContactBindingState::Pending {
+    if result.state != ContactBindingState::Pending {
         return bind_command_result(identity, result).map_err(crate::app::identity_exit);
     }
 
     let wait_result = wait_for_email_verification_via_im_core(
-        resolved,
-        manager,
         client,
-        record,
         &email,
         bridge.legacy.verification_timeout,
         bridge.legacy.poll_interval_seconds,
     )?;
-    result.result = wait_result.result;
-    result.raw_status = wait_result.raw_status;
-    result.raw_send = wait_result.raw_send;
+    result = wait_result;
     bind_command_result(identity, result).map_err(crate::app::identity_exit)
 }
 
 fn wait_for_email_verification_via_im_core(
-    resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     client: &im_core::ImClient,
-    record: &identity::types::StoredIdentity,
     email: &str,
     timeout_secs: i64,
     poll_interval_secs: f64,
-) -> Result<im_core::compat::identity::ContactBindingBridgeResult, ExitError> {
+) -> Result<ContactBindingResult, ExitError> {
     let timeout_secs = if timeout_secs <= 0 { 300 } else { timeout_secs };
     let poll_interval_secs = if poll_interval_secs <= 0.0 {
         5.0
@@ -715,25 +681,11 @@ fn wait_for_email_verification_via_im_core(
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
     loop {
-        let result = im_core::compat::identity::bind_email_status_with_bridge(
-            client,
-            email.to_string(),
-            IdentitySessionProvider {
-                subject: client.did().clone(),
-                resolved,
-                manager,
-                record: record.clone(),
-            },
-            IdentityLegacyRestTransport {
-                resolved,
-                manager,
-                record: record.clone(),
-            },
-        )
-        .map_err(|err| super::map_im_error(err, "id bind"))?;
-        if result.result.state == ContactBindingState::Completed
-            || std::time::Instant::now() >= deadline
-        {
+        let result = client
+            .identity()
+            .bind_email_status(email.to_string())
+            .map_err(|err| super::map_im_error(err, "id bind"))?;
+        if result.state == ContactBindingState::Completed || std::time::Instant::now() >= deadline {
             return Ok(result);
         }
         std::thread::sleep(std::time::Duration::from_secs_f64(poll_interval_secs));
@@ -742,38 +694,35 @@ fn wait_for_email_verification_via_im_core(
 
 fn bind_command_result(
     identity: &identity::IdentitySummary,
-    result: im_core::compat::identity::ContactBindingBridgeResult,
+    result: ContactBindingResult,
 ) -> Result<identity::CommandResult, identity::IdentityError> {
-    match result.result.state {
+    match result.state {
         ContactBindingState::OtpSent => identity::wire::bind_phone_otp_result(
             identity,
-            &result.result.target,
-            result.raw_send.unwrap_or(Value::Null),
+            &result.target,
+            result.raw.unwrap_or(Value::Null),
         ),
         ContactBindingState::Completed
-            if matches!(
-                result.result.method,
-                im_core::identity::ContactBindingMethodKind::Phone
-            ) =>
+            if matches!(result.method, ContactBindingMethodKind::Phone) =>
         {
             identity::wire::bind_phone_completed_result(
                 identity,
-                &result.result.target,
-                result.raw_send.unwrap_or(Value::Null),
+                &result.target,
+                result.raw.unwrap_or(Value::Null),
             )
         }
         ContactBindingState::EmailSent => Ok(identity::wire::bind_email_sent_result(
             identity,
-            &result.result.target,
-            result.raw_send.unwrap_or(Value::Null),
+            &result.target,
+            result.raw.unwrap_or(Value::Null),
         )),
         ContactBindingState::Pending => Ok(identity::wire::bind_email_pending_result(
             identity,
-            &result.result.target,
+            &result.target,
         )),
         ContactBindingState::Completed => Ok(identity::wire::bind_email_completed_result(
             identity,
-            &result.result.target,
+            &result.target,
         )),
     }
 }
@@ -1049,13 +998,6 @@ struct ProfileSessionProvider<'a> {
     record: identity::types::StoredIdentity,
 }
 
-struct IdentitySessionProvider<'a> {
-    subject: Did,
-    resolved: &'a crate::config::Resolved,
-    manager: &'a identity::Manager,
-    record: identity::types::StoredIdentity,
-}
-
 impl im_core::compat::profile::BridgeProfileSessionProvider for ProfileSessionProvider<'_> {
     fn ensure_profile_session(&self) -> im_core::ImResult<SessionBundle> {
         let session = identity::service::auth_session(self.resolved, self.manager, &self.record)
@@ -1069,26 +1011,7 @@ impl im_core::compat::profile::BridgeProfileSessionProvider for ProfileSessionPr
     }
 }
 
-impl im_core::compat::identity::BridgeIdentitySessionProvider for IdentitySessionProvider<'_> {
-    fn ensure_identity_session(&self) -> im_core::ImResult<SessionBundle> {
-        let session = identity::service::auth_session(self.resolved, self.manager, &self.record)
-            .map_err(identity_error_to_im_error)?;
-        Ok(SessionBundle {
-            subject: self.subject.clone(),
-            scope: AuthScope::UserProfile,
-            expires_at: None,
-            refreshed: session.current_jwt().trim() != self.record.jwt_token.trim(),
-        })
-    }
-}
-
 struct ProfileLegacyTransport<'a> {
-    resolved: &'a crate::config::Resolved,
-    manager: &'a identity::Manager,
-    record: identity::types::StoredIdentity,
-}
-
-struct IdentityLegacyRestTransport<'a> {
     resolved: &'a crate::config::Resolved,
     manager: &'a identity::Manager,
     record: identity::types::StoredIdentity,
@@ -1130,83 +1053,6 @@ impl im_core::compat::profile::BridgeProfileAuthenticatedRpcTransport
             params,
         )
         .map_err(identity_error_to_im_error)
-    }
-}
-
-impl im_core::compat::identity::BridgeIdentityAuthenticatedRestTransport
-    for IdentityLegacyRestTransport<'_>
-{
-    fn authenticated_rest_post(
-        &mut self,
-        endpoint: &str,
-        method: &str,
-        body: Value,
-    ) -> im_core::ImResult<Value> {
-        let call = legacy_rest_call(endpoint, method, body, BTreeMap::new(), true)?;
-        let mut auth = identity::service::auth_session(self.resolved, self.manager, &self.record)
-            .map_err(identity_error_to_im_error)?;
-        let client =
-            identity::client::Client::new(self.resolved).map_err(identity_error_to_im_error)?;
-        client
-            .authenticated_rest_post(call, &mut auth)
-            .map_err(identity_error_to_im_error)
-    }
-
-    fn authenticated_rest_get(
-        &mut self,
-        endpoint: &str,
-        method: &str,
-        query: &BTreeMap<String, String>,
-    ) -> im_core::ImResult<Value> {
-        let call = legacy_rest_call(endpoint, method, Value::Null, query.clone(), true)?;
-        let auth = identity::service::auth_session(self.resolved, self.manager, &self.record)
-            .map_err(identity_error_to_im_error)?;
-        let client =
-            identity::client::Client::new(self.resolved).map_err(identity_error_to_im_error)?;
-        client
-            .rest_get_with_bearer(call, auth.current_jwt())
-            .map_err(identity_error_to_im_error)
-    }
-}
-
-fn legacy_rest_call(
-    endpoint: &str,
-    method: &str,
-    body: Value,
-    query: BTreeMap<String, String>,
-    authenticated: bool,
-) -> im_core::ImResult<identity::wire::RestCall> {
-    Ok(identity::wire::RestCall {
-        endpoint: legacy_endpoint(endpoint)?,
-        method: legacy_method(method)?,
-        profile: Profile::RpcDefault,
-        query,
-        body,
-        authenticated,
-    })
-}
-
-fn legacy_endpoint(endpoint: &str) -> im_core::ImResult<&'static str> {
-    match endpoint {
-        identity::wire::EMAIL_SEND_ENDPOINT => Ok(identity::wire::EMAIL_SEND_ENDPOINT),
-        identity::wire::EMAIL_STATUS_ENDPOINT => Ok(identity::wire::EMAIL_STATUS_ENDPOINT),
-        identity::wire::PHONE_BIND_SEND_ENDPOINT => Ok(identity::wire::PHONE_BIND_SEND_ENDPOINT),
-        identity::wire::PHONE_BIND_VERIFY_ENDPOINT => {
-            Ok(identity::wire::PHONE_BIND_VERIFY_ENDPOINT)
-        }
-        _ => Err(im_core::ImError::TransportUnavailable {
-            detail: format!("unsupported bridge REST endpoint {endpoint}"),
-        }),
-    }
-}
-
-fn legacy_method(method: &str) -> im_core::ImResult<&'static str> {
-    match method {
-        "GET" => Ok("GET"),
-        "POST" => Ok("POST"),
-        _ => Err(im_core::ImError::TransportUnavailable {
-            detail: format!("unsupported bridge REST method {method}"),
-        }),
     }
 }
 
