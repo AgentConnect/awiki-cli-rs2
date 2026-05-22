@@ -1,10 +1,8 @@
-// Temporary migration-only legacy bridge exception.
-// Delete in PR C7 when listener run/service-run use public realtime runner APIs
-// without migration-only compat queue sizing here.
-
 use im_core::prelude::{RealtimeOptions, RealtimeSubscription, ReconnectPolicy, ShutdownSignal};
 
 use crate::runtime;
+
+const LISTENER_REALTIME_EVENT_BUFFER: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListenerRunnerMode {
@@ -38,7 +36,7 @@ pub fn listener_runner_selection(host: ListenerRunHostKind) -> ListenerRunnerSel
 pub fn listener_realtime_options() -> RealtimeOptions {
     RealtimeOptions {
         reconnect: ReconnectPolicy::Disabled,
-        event_buffer: im_core::compat::realtime::LISTENER_WS_NOTIFICATION_QUEUE_CAPACITY,
+        event_buffer: LISTENER_REALTIME_EVENT_BUFFER,
         subscriptions: vec![
             RealtimeSubscription::Messages,
             RealtimeSubscription::Groups,
