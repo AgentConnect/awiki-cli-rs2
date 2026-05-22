@@ -155,6 +155,8 @@ fn test_config() -> ImCoreConfig {
         did_domain: "awiki.info".to_string(),
         user_service_endpoint: None,
         message_service_endpoint: None,
+        anp_service_endpoint: None,
+        anp_service_did: None,
         transport_policy: MessageTransportPolicy::Auto,
     }
 }

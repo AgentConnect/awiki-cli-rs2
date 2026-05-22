@@ -351,6 +351,8 @@ fn build_im_core_config_from_parts_maps_fields() {
         "awiki.test",
         Some("https://users.example.test"),
         Some("https://messages.example.test"),
+        Some("https://anp.example.test/rpc"),
+        Some("did:wba:anp.example.test"),
         "websocket",
     )
     .unwrap();
@@ -363,6 +365,14 @@ fn build_im_core_config_from_parts_maps_fields() {
     assert_eq!(
         cfg.message_service_endpoint.unwrap().as_str(),
         "https://messages.example.test"
+    );
+    assert_eq!(
+        cfg.anp_service_endpoint.unwrap().as_str(),
+        "https://anp.example.test/rpc"
+    );
+    assert_eq!(
+        cfg.anp_service_did.unwrap().as_str(),
+        "did:wba:anp.example.test"
     );
     assert_eq!(
         cfg.transport_policy,

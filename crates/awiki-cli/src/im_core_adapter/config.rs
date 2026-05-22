@@ -1,3 +1,4 @@
+use im_core::ids::Did;
 use im_core::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
 
 use crate::output::ExitError;
@@ -8,6 +9,8 @@ pub fn build_im_core_config(resolved: &crate::config::Resolved) -> Result<ImCore
         &resolved.did_domain,
         Some(&resolved.service_base_url),
         Some(&resolved.service_base_url),
+        Some(&resolved.anp_service_endpoint),
+        Some(&resolved.anp_service_did),
         &resolved.runtime_mode,
     )
 }
@@ -17,6 +20,8 @@ pub(crate) fn build_im_core_config_from_parts(
     did_domain: &str,
     user_service_endpoint: Option<&str>,
     message_service_endpoint: Option<&str>,
+    anp_service_endpoint: Option<&str>,
+    anp_service_did: Option<&str>,
     runtime_mode: &str,
 ) -> Result<ImCoreConfig, ExitError> {
     let service_base_url = parse_endpoint("service_base_url", service_base_url)?;
@@ -37,6 +42,8 @@ pub(crate) fn build_im_core_config_from_parts(
             "message_service_endpoint",
             message_service_endpoint,
         )?,
+        anp_service_endpoint: optional_endpoint("anp_service_endpoint", anp_service_endpoint)?,
+        anp_service_did: optional_did("anp_service_did", anp_service_did)?,
         transport_policy: transport_policy_from_runtime_mode(runtime_mode),
     })
 }
@@ -68,4 +75,18 @@ fn parse_endpoint(field: &'static str, value: &str) -> Result<ServiceEndpoint, E
             "Use an http:// or https:// service endpoint.",
         )
     })
+}
+
+fn optional_did(field: &'static str, value: Option<&str>) -> Result<Option<Did>, ExitError> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => Did::parse(value).map(Some).map_err(|err| {
+            ExitError::new(
+                "invalid_config",
+                2,
+                format!("invalid {field}: {err}"),
+                "Use a non-empty DID value such as did:wba:example.test.",
+            )
+        }),
+        None => Ok(None),
+    }
 }

@@ -33,6 +33,8 @@ pub struct ImCoreConfig {
     pub did_domain: String,
     pub user_service_endpoint: Option<ServiceEndpoint>,
     pub message_service_endpoint: Option<ServiceEndpoint>,
+    pub anp_service_endpoint: Option<ServiceEndpoint>,
+    pub anp_service_did: Option<crate::ids::Did>,
     pub transport_policy: MessageTransportPolicy,
 }
 
@@ -53,6 +55,8 @@ impl ImCoreConfig {
             did_domain,
             user_service_endpoint: None,
             message_service_endpoint: None,
+            anp_service_endpoint: None,
+            anp_service_did: None,
             transport_policy: MessageTransportPolicy::Auto,
         })
     }
