@@ -24,21 +24,16 @@ pub fn refresh_token_via_im_core(
     manager: &Manager,
     identity_name: &str,
 ) -> Result<identity::CommandResult, ExitError> {
+    let previous = manager
+        .load(&selected_identity_name(resolved, manager, identity_name)?)
+        .map_err(crate::app::identity_exit)?;
+    let identity_name = previous.identity_name.clone();
+    let previous_token_present = !previous.jwt_token.trim().is_empty();
     let client = super::build_im_client(
         resolved,
         manager,
-        super::cli_identity_selector(identity_name),
+        super::cli_identity_selector(&identity_name),
     )?;
-    let identity_name = client
-        .current_identity()
-        .local_alias
-        .as_deref()
-        .unwrap_or_else(|| client.current_identity().id.as_str())
-        .to_string();
-    let previous = manager
-        .load(&identity_name)
-        .map_err(crate::app::identity_exit)?;
-    let previous_token_present = !previous.jwt_token.trim().is_empty();
     client
         .auth()
         .refresh_session()
@@ -74,4 +69,14 @@ fn refresh_token_error_from_im(
         }
         err => super::map_im_error(err, context),
     }
+}
+
+fn selected_identity_name(
+    resolved: &Resolved,
+    manager: &Manager,
+    requested: &str,
+) -> Result<String, ExitError> {
+    identity::service::load_identity_for_mutation(resolved, manager, requested)
+        .map(|identity| identity.identity_name)
+        .map_err(crate::app::identity_exit)
 }

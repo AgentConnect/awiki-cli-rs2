@@ -80,7 +80,8 @@ where
     }
 
     fn resolve_handle(&mut self, handle: String) -> crate::ImResult<DirectoryResolveResult> {
-        let lookup_raw = lookup_by_handle(&mut self.transport, &handle)?;
+        let lookup_raw = lookup_by_handle(&mut self.transport, &handle)
+            .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value(&lookup_raw)?;
         let profile = match public_profile_by_did(&mut self.transport, lookup.did.as_str()) {
             Ok(profile) => Some(profile),
@@ -154,7 +155,8 @@ where
         &mut self,
         handle: crate::ids::Handle,
     ) -> crate::ImResult<crate::directory::PublicProfile> {
-        let lookup_raw = lookup_by_handle(&mut self.transport, handle.as_str())?;
+        let lookup_raw = lookup_by_handle(&mut self.transport, handle.as_str())
+            .map_err(|err| map_directory_not_found(err, handle.as_str()))?;
         let lookup = handle_lookup_from_value(&lookup_raw)?;
         self.public_profile_by_did(
             crate::directory::IdentitySubject::Handle(handle),
@@ -189,6 +191,38 @@ where
     let call =
         crate::internal::identity_wire::directory::build_handle_lookup_by_handle_rpc_call(handle)?;
     transport.rpc(call.endpoint, call.method, call.params)
+}
+
+fn map_directory_not_found(err: crate::ImError, peer: &str) -> crate::ImError {
+    if service_error_is_not_found(&err) {
+        crate::ImError::PeerNotFound {
+            peer: peer.to_string(),
+        }
+    } else {
+        err
+    }
+}
+
+fn service_error_is_not_found(err: &crate::ImError) -> bool {
+    let crate::ImError::Service {
+        status_code,
+        code,
+        message,
+    } = err
+    else {
+        return false;
+    };
+    if matches!(status_code, Some(404)) {
+        return true;
+    }
+    if code
+        .as_deref()
+        .is_some_and(|code| matches!(code, "404" | "-32004" | "not_found" | "handle_not_found"))
+    {
+        return true;
+    }
+    let normalized = message.trim().to_ascii_lowercase();
+    normalized.contains("not found") || message.contains("不存在")
 }
 
 fn lookup_by_did<T>(transport: &mut T, did: &str) -> crate::ImResult<Value>

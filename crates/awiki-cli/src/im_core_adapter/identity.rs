@@ -135,7 +135,14 @@ pub fn register_handle_request(
             wait_for_verification,
         },
         (None, None, Some(code)) => VerificationInput::Otp { code },
-        (None, None, None) => VerificationInput::AlreadyVerified,
+        (None, None, None) => {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "exactly one of phone or email is required",
+                "Pass either --phone <number> or --email <address>.",
+            ));
+        }
         (Some(_), Some(_), _) => {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -450,10 +457,13 @@ pub fn bind_contact_via_im_core(
     command: &ParsedCommand,
 ) -> Result<identity::CommandResult, ExitError> {
     let request = bind_contact_command_request(command)?;
-    let selector = cli_identity_selector(identity_flag);
-    let client = super::build_im_client(resolved, manager, selector)?;
     let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
         .map_err(crate::app::identity_exit)?;
+    let client = super::build_im_client(
+        resolved,
+        manager,
+        cli_identity_selector(&record.identity_name),
+    )?;
     let identity = identity::store::identity_summary_from_record(&record);
     let result = if request.sdk.wait_for_email_verification
         && matches!(request.sdk.method, ContactBindingMethod::Email { .. })
@@ -910,8 +920,13 @@ pub fn get_self_profile_via_im_core(
     manager: &identity::Manager,
     identity_flag: &str,
 ) -> Result<identity::CommandResult, ExitError> {
-    let selector = cli_identity_selector(identity_flag);
-    let client = super::build_im_client(resolved, manager, selector)?;
+    let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
+        .map_err(crate::app::identity_exit)?;
+    let client = super::build_im_client(
+        resolved,
+        manager,
+        cli_identity_selector(&record.identity_name),
+    )?;
     let profile = client
         .identity()
         .profile()

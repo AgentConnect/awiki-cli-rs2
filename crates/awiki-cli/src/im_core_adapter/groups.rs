@@ -357,16 +357,22 @@ pub fn get_group_via_im_core(
     identity_name: &str,
     group: String,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
+    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
     let result = client
         .groups()
         .get(group_ref)
         .map_err(im_error_to_message_error)?;
     let raw = group_diagnostic_raw(&result);
-    let snapshot = group_snapshot_to_cli_json(result.group.as_ref())
-        .or_else(|| normalize_group_snapshot(&raw))
-        .unwrap_or(Value::Null);
+    let mut snapshot = merge_group_snapshot_raw(
+        group_snapshot_to_cli_json(result.group.as_ref())
+            .or_else(|| normalize_group_snapshot(&raw))
+            .unwrap_or(Value::Null),
+        &raw,
+    );
+    if let Some(cached) = cached_group_snapshot(resolved, &record, &group) {
+        snapshot = merge_group_snapshot_missing(snapshot, &cached);
+    }
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
@@ -775,12 +781,53 @@ fn group_snapshot_to_cli_json(snapshot: Option<&GroupSnapshot>) -> Option<Value>
     }))
 }
 
+fn merge_group_snapshot_raw(mut snapshot: Value, raw: &Value) -> Value {
+    let Some(Value::Object(raw_object)) = normalize_group_snapshot(raw) else {
+        return snapshot;
+    };
+    let Some(object) = snapshot.as_object_mut() else {
+        return snapshot;
+    };
+    for (key, value) in raw_object {
+        object.entry(key).or_insert(value);
+    }
+    snapshot
+}
+
+fn merge_group_snapshot_missing(mut snapshot: Value, fallback: &Value) -> Value {
+    if snapshot.is_null() {
+        return fallback.clone();
+    }
+    let Some(object) = snapshot.as_object_mut() else {
+        return snapshot;
+    };
+    let Some(fallback_object) = fallback.as_object() else {
+        return snapshot;
+    };
+    for (key, value) in fallback_object {
+        if !value_is_present(object.get(key)) && value_is_present(Some(value)) {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    snapshot
+}
+
+fn value_is_present(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(value)) => !value.trim().is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
 fn group_summary_to_json(group: &GroupSummary) -> Value {
     json!({
         "id": group.id,
         "group_did": group.did.as_str(),
         "did": group.did.as_str(),
         "name": group.name,
+        "member_role": group.my_role,
+        "my_role": group.my_role,
         "member_status": group.membership_status,
         "membership_status": group.membership_status,
         "member_count": group.member_count,

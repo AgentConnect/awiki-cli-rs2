@@ -36,7 +36,7 @@ pub fn map_im_error(err: im_core::ImError, context: &'static str) -> ExitError {
             "auth_required",
             3,
             format!("{context}: authentication is required."),
-            "Run `awiki-cli id refresh-token` and try again.",
+            "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` and try again.",
         ),
         im_core::ImError::PermissionDenied => ExitError::new(
             "permission_denied",

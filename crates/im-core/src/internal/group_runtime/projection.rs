@@ -24,6 +24,32 @@ pub(crate) fn project_group_snapshot(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn project_group_summaries(
+    client: &crate::core::ImClient,
+    result: &crate::groups::GroupReadResult,
+) {
+    let records = group_summary_records(client, result);
+    if records.is_empty() {
+        return;
+    }
+    let Ok(connection) = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    ) else {
+        return;
+    };
+    for record in records {
+        let _ = crate::internal::local_state::groups::upsert_group(&connection, record);
+    }
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) fn project_group_summaries(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) {
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn project_group_members(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -89,6 +115,8 @@ fn group_record(
     if group_did.trim().is_empty() {
         return None;
     }
+    let last_synced_seq = i64_option(snapshot.get("group_event_seq"))
+        .or_else(|| i64_option(snapshot.get("last_synced_seq")));
     Some(crate::internal::local_state::groups::GroupRecord {
         owner_identity_id: client.current_identity().id.as_str().to_string(),
         owner_did: client.did().as_str().to_string(),
@@ -112,7 +140,7 @@ fn group_record(
         ),
         join_enabled: bool_option(snapshot.get("join_enabled")),
         member_count: i64_option(snapshot.get("member_count")),
-        last_synced_seq: i64_option(snapshot.get("group_event_seq")),
+        last_synced_seq,
         remote_created_at: string_value(snapshot.get("created_at")),
         remote_updated_at: string_value(snapshot.get("updated_at")),
         metadata: metadata_string(snapshot),
@@ -132,6 +160,44 @@ fn group_member_records(
     members
         .iter()
         .filter_map(|member| group_member_record(client, group_did, member))
+        .collect()
+}
+
+#[cfg(feature = "sqlite")]
+fn group_summary_records(
+    client: &crate::core::ImClient,
+    result: &crate::groups::GroupReadResult,
+) -> Vec<crate::internal::local_state::groups::GroupRecord> {
+    let raw = result.diagnostic_raw().cloned().unwrap_or(Value::Null);
+    if !result.groups.is_empty() {
+        return result
+            .groups
+            .iter()
+            .filter_map(|group| {
+                group_record_from_snapshot(
+                    client,
+                    serde_json::json!({
+                        "id": group.id,
+                        "group_did": group.did.as_str(),
+                        "did": group.did.as_str(),
+                        "name": group.name,
+                        "member_role": group.my_role,
+                        "my_role": group.my_role,
+                        "member_status": group.membership_status,
+                        "membership_status": group.membership_status,
+                        "member_count": group.member_count,
+                        "last_message_at": group.last_message_at,
+                    }),
+                )
+            })
+            .collect();
+    }
+    values_from_array(raw.get("groups"))
+        .into_iter()
+        .filter_map(|group| {
+            let snapshot = normalize_group_snapshot(&group).unwrap_or(group);
+            group_record_from_snapshot(client, snapshot)
+        })
         .collect()
 }
 
@@ -190,6 +256,48 @@ fn snapshot_from_result(result: &crate::groups::GroupReadResult) -> Option<Value
         "member_count": snapshot.member_count,
         "last_message_at": snapshot.last_message_at,
     }))
+}
+
+#[cfg(feature = "sqlite")]
+fn group_record_from_snapshot(
+    client: &crate::core::ImClient,
+    snapshot: Value,
+) -> Option<crate::internal::local_state::groups::GroupRecord> {
+    let group_did = string_value(snapshot.get("group_did"));
+    if group_did.trim().is_empty() {
+        return None;
+    }
+    Some(crate::internal::local_state::groups::GroupRecord {
+        owner_identity_id: client.current_identity().id.as_str().to_string(),
+        owner_did: client.did().as_str().to_string(),
+        group_id: group_storage_key(&group_did),
+        group_did,
+        name: string_value(snapshot.get("name")),
+        slug: string_value(snapshot.get("slug")),
+        description: string_value(snapshot.get("description")),
+        goal: string_value(snapshot.get("goal")),
+        rules: string_value(snapshot.get("rules")),
+        message_prompt: string_value(snapshot.get("message_prompt")),
+        doc_url: string_value(snapshot.get("doc_url")),
+        group_owner_did: string_value(snapshot.get("owner_did")),
+        my_role: default_string(
+            &string_value(snapshot.get("member_role")),
+            &string_value(snapshot.get("my_role")),
+        ),
+        membership_status: default_string(
+            &string_value(snapshot.get("member_status")),
+            &string_value(snapshot.get("membership_status")),
+        ),
+        join_enabled: bool_option(snapshot.get("join_enabled")),
+        member_count: i64_option(snapshot.get("member_count")),
+        last_synced_seq: i64_option(snapshot.get("group_event_seq")),
+        last_message_at: string_value(snapshot.get("last_message_at")),
+        remote_created_at: string_value(snapshot.get("created_at")),
+        remote_updated_at: string_value(snapshot.get("updated_at")),
+        metadata: metadata_string(snapshot),
+        credential_name: client.current_identity().id.as_str().to_string(),
+        ..crate::internal::local_state::groups::GroupRecord::default()
+    })
 }
 
 #[cfg(feature = "sqlite")]

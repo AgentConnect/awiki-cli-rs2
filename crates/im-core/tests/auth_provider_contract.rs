@@ -83,6 +83,32 @@ fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_token() {
 }
 
 #[test]
+fn file_session_provider_refreshes_jwt_from_response_authorization_header() {
+    let server = TestServer::with_authorization_header(
+        r#"{"jsonrpc":"2.0","result":{"handle":"alice"},"id":"req-1"}"#,
+        "fresh-header-token",
+    );
+    let fixture = AuthFixture::new().with_service_base_url(server.base_url());
+    fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
+    let client = fixture.client("alice");
+
+    let update = client.auth().refresh_session().unwrap();
+
+    assert_eq!(update.subject.as_str(), "did:example:alice");
+    assert!(update.refreshed);
+    let auth: Value =
+        serde_json::from_slice(&fs::read(fixture.auth_path("alice")).unwrap()).unwrap();
+    assert_eq!(auth["jwt_token"], "fresh-header-token");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        !requests[0].contains("Authorization: Bearer stale-token\r\n"),
+        "refresh must not reuse stale bearer token:\n{}",
+        requests[0]
+    );
+}
+
+#[test]
 fn file_session_provider_respects_messaging_readiness_for_message_scopes() {
     let fixture = AuthFixture::new();
     fixture.write_runtime("alice", "did:example:alice", Some("token-alice"), false);
@@ -278,6 +304,14 @@ struct TestServer {
 
 impl TestServer {
     fn new(response_body: &'static str) -> Self {
+        Self::new_inner(response_body, None)
+    }
+
+    fn with_authorization_header(response_body: &'static str, token: &'static str) -> Self {
+        Self::new_inner(response_body, Some(token))
+    }
+
+    fn new_inner(response_body: &'static str, authorization_token: Option<&'static str>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -289,8 +323,11 @@ impl TestServer {
             };
             let request = read_http_request(&mut stream);
             server_requests.lock().unwrap().push(request);
+            let authorization_header = authorization_token
+                .map(|token| format!("Authorization: Bearer {token}\r\n"))
+                .unwrap_or_default();
             let raw = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{authorization_header}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
                 response_body.len(),
                 response_body
             );

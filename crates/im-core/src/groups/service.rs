@@ -121,12 +121,14 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupListRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
-        crate::internal::group_runtime::read::GroupReadRuntime::new(
+        let result = crate::internal::group_runtime::read::GroupReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .list(request)
+        .list(request)?;
+        crate::internal::group_runtime::projection::project_group_summaries(self.client, &result);
+        Ok(result)
     }
 
     pub fn members(

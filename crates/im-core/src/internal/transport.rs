@@ -275,6 +275,8 @@ impl<'a> CoreHttpTransport<'a> {
     pub(crate) fn refresh_jwt(&mut self) -> crate::ImResult<String> {
         let endpoint = crate::internal::identity_wire::DID_AUTH_RPC_ENDPOINT;
         let url = self.rpc_url(endpoint);
+        self.auth.clear_token(&url);
+        self.jwt_token = None;
         let body = serde_json::to_vec(&crate::internal::json_rpc::build_payload(
             "get_me",
             serde_json::json!({}),
@@ -293,16 +295,18 @@ impl<'a> CoreHttpTransport<'a> {
         let token = result
             .get("access_token")
             .and_then(Value::as_str)
+            .or(self.jwt_token.as_deref())
             .map(str::trim)
             .filter(|token| !token.is_empty())
+            .map(ToOwned::to_owned)
             .ok_or(crate::ImError::AuthRequired)?;
-        self.jwt_token = Some(token.to_string());
-        persist_jwt_token(&self.client.runtime().auth_state_path, token)?;
+        self.jwt_token = Some(token.clone());
+        persist_jwt_token(&self.client.runtime().auth_state_path, &token)?;
         self.auth.update_token(
             &url,
             &BTreeMap::from([("Authorization".to_string(), format!("Bearer {token}"))]),
         );
-        Ok(token.to_string())
+        Ok(token)
     }
 
     fn capture_token(&mut self, url: &str, headers: &BTreeMap<String, String>) {

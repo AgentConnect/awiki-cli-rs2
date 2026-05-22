@@ -623,13 +623,13 @@ fn assert_identity_boundary_after_legacy_config_upgrade(args: &[&str], label: &s
     );
 
     let result = awiki_cmd(args, workspace.path());
-    assert_code(&result, 2);
+    assert_code(&result, 5);
     let result = error_json(&result);
-    assert_eq!(result["error"]["code"], "identity_required");
+    assert_eq!(result["error"]["code"], "not_found");
     assert!(result["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("build im-client: default identity is missing"));
+        .contains("identity not found: no active identity is configured"));
 
     assert!(!legacy_config.exists());
     assert_migrated_config(&workspace_home, &service_base_url, &did_domain);

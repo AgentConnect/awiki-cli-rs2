@@ -160,6 +160,7 @@ pub struct GroupSummary {
     pub id: Option<String>,
     pub did: crate::ids::GroupRef,
     pub name: Option<String>,
+    pub my_role: Option<String>,
     pub membership_status: Option<String>,
     pub member_count: Option<u32>,
     pub last_message_at: Option<String>,
@@ -206,6 +207,9 @@ fn group_summary_from_value(value: Value) -> Option<GroupSummary> {
         name: optional_string(object.get("name"))
             .or_else(|| optional_string(object.get("display_name")))
             .or_else(|| nested_string(object.get("group_profile"), "display_name")),
+        my_role: optional_string(object.get("my_role"))
+            .or_else(|| optional_string(object.get("member_role")))
+            .or_else(|| optional_string(object.get("actor_membership_role"))),
         membership_status: optional_string(object.get("membership_status"))
             .or_else(|| optional_string(object.get("member_status")))
             .or_else(|| optional_string(object.get("status"))),
