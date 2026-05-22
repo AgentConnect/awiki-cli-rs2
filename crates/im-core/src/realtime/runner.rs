@@ -12,15 +12,6 @@ pub trait RealtimeRunnerEventSink {
     fn emit(&mut self, event: super::ImEvent) -> crate::ImResult<()>;
 }
 
-#[derive(Debug, Default)]
-pub struct DiscardRealtimeRunnerEventSink;
-
-impl RealtimeRunnerEventSink for DiscardRealtimeRunnerEventSink {
-    fn emit(&mut self, _event: super::ImEvent) -> crate::ImResult<()> {
-        Ok(())
-    }
-}
-
 pub struct RealtimeRunnerOutcome {
     pub exit: super::RealtimeExit,
     pub handle: super::RealtimeHandle,
@@ -135,6 +126,9 @@ where
         }
         match transport.next_notification()? {
             Some(notification) => {
+                if notification.is_null() {
+                    continue;
+                }
                 let projection =
                     crate::internal::realtime::projection::project_notification(&notification);
                 if let Err(warning) = events.emit(projection.event) {

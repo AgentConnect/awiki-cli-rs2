@@ -1,4 +1,8 @@
 //! Migration-only realtime runtime bridge for `awiki-cli`.
+//!
+//! The remaining runner/transport traits in this module are a temporary CLI
+//! migration bridge. They should be removed once the CLI listener can host the
+//! stable public `im_core::realtime` runner API directly.
 
 #[doc(hidden)]
 pub use crate::internal::realtime::dispatch::{
@@ -47,6 +51,5 @@ pub use crate::internal::realtime::transport::{
 #[doc(hidden)]
 pub use crate::realtime::runner::{
     run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
-    DiscardRealtimeRunnerEventSink, RealtimeRunnerEventSink, RealtimeRunnerOutcome,
-    RealtimeRunnerTransport,
+    RealtimeRunnerEventSink, RealtimeRunnerOutcome, RealtimeRunnerTransport,
 };

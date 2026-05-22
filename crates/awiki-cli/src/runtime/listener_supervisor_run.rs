@@ -59,6 +59,9 @@ use crate::identity::{self, types::StoredIdentity, Manager};
 use crate::im_core_adapter::realtime::{
     self as im_core_realtime_adapter, ListenerRunHostKind, ListenerRunnerMode,
 };
+use crate::im_core_adapter::realtime_events::{
+    self as im_core_realtime_events, CliRealtimeEventSink,
+};
 use crate::message;
 use crate::runtime;
 use crate::store;
@@ -1237,7 +1240,12 @@ fn consume_notifications_with_im_core_runner(
         dispatch: super::listener_wsclient::ListenerWsPendingDispatch::default(),
         pending_rpc_responses: BTreeMap::new(),
     };
-    let mut event_sink = im_core::compat::realtime::DiscardRealtimeRunnerEventSink;
+    let mut event_sink = CliRealtimeEventSink {
+        resolved,
+        status,
+        host_notify,
+        record,
+    };
     let control = im_core::prelude::RealtimeControl::default();
     let result = im_core::compat::realtime::run_realtime_transport_with_event_sink_until_shutdown(
         im_core_realtime_adapter::listener_realtime_options(),
@@ -1339,13 +1347,17 @@ impl im_core::compat::realtime::RealtimeRunnerTransport for CliRealtimeRunnerTra
             );
             return Ok(Some(Value::Null));
         }
-        self.notification_tx
-            .send(SessionNotificationTask {
-                notification: notification.clone(),
-            })
-            .map_err(|_| im_core::ImError::TransportUnavailable {
-                detail: "websocket notification handler is closed".to_string(),
-            })?;
+        let raw_notification = Value::Object(notification.clone());
+        if im_core_realtime_events::should_legacy_handle_raw_notification_with_im_core_runner(
+            &raw_notification,
+        ) {
+            self.notification_tx
+                .send(SessionNotificationTask { notification })
+                .map_err(|_| im_core::ImError::TransportUnavailable {
+                    detail: "websocket notification handler is closed".to_string(),
+                })?;
+            return Ok(Some(Value::Null));
+        }
         Ok(Some(Value::Object(notification)))
     }
 }
