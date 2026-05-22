@@ -1169,6 +1169,12 @@ impl CliRealtimeRunnerTransport<'_> {
     }
 }
 
+impl im_core::compat::realtime::RealtimeRunnerEventSink for CliRealtimeEventSink<'_> {
+    fn emit(&mut self, event: im_core::prelude::ImEvent) -> im_core::ImResult<()> {
+        CliRealtimeEventSink::emit(self, event)
+    }
+}
+
 impl im_core::compat::realtime::RealtimeRunnerTransport for CliRealtimeRunnerTransport<'_> {
     fn connect(&mut self) -> im_core::ImResult<()> {
         Ok(())

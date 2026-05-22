@@ -1,7 +1,7 @@
 // Temporary migration-only legacy bridge exception.
-// Delete in PR C5/C7 when realtime runner event delivery uses stable im-core
-// event sink APIs and this module is only CLI-owned host-notification
-// projection, with no compat trait implementation or listener legacy loop ties.
+// Delete in PR C7 when realtime event projection no longer imports listener_*
+// internals and can be owned by a stable im-core event API. The compat runner
+// trait shim lives in the runtime listener host, not this CLI boundary adapter.
 
 use crate::runtime::host_notify::{
     DirectMessageNotificationData, GroupMessageNotificationData, GroupStateChangedNotificationData,
@@ -39,8 +39,8 @@ pub struct CliRealtimeEventSink<'a> {
     pub record: &'a StoredIdentity,
 }
 
-impl im_core::compat::realtime::RealtimeRunnerEventSink for CliRealtimeEventSink<'_> {
-    fn emit(&mut self, event: ImEvent) -> im_core::ImResult<()> {
+impl CliRealtimeEventSink<'_> {
+    pub fn emit(&mut self, event: ImEvent) -> im_core::ImResult<()> {
         if !event_requires_cli_projection(&event) {
             return Ok(());
         }
