@@ -2,7 +2,6 @@ use super::{msg_handlers::message_exit, App};
 use crate::cli::ParsedCommand;
 use crate::identity;
 use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError};
-use crate::message;
 use crate::output::ExitError;
 use serde_json::{json, Value};
 
@@ -21,13 +20,14 @@ impl App {
         let message_security_profile =
             string_flag_or(command, "message-security-profile", "transport-protected");
         let create_uses_e2ee = bool_flag(command, "e2ee")?.unwrap_or(false)
-            || message_security_profile.trim() == message::GROUP_E2EE_SECURITY_PROFILE;
+            || message_security_profile.trim()
+                == crate::im_core_adapter::groups::GROUP_E2EE_SECURITY_PROFILE;
         if create_uses_e2ee {
             return Err(unsupported_group_e2ee_command("group.create"));
         }
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
-            let request = message::GroupCreateRequest {
+            let request = crate::im_core_adapter::groups::GroupCreateRequest {
                 identity_name: self.globals.identity.clone(),
                 name,
                 description: string_flag(command, "description"),
@@ -140,7 +140,7 @@ impl App {
         )?;
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
-            let request = message::GroupJoinRequest {
+            let request = crate::im_core_adapter::groups::GroupJoinRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
                 reason_text: string_flag(command, "reason"),
@@ -212,7 +212,7 @@ impl App {
         }
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
-            let request = message::GroupMemberRequest {
+            let request = crate::im_core_adapter::groups::GroupMemberRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
                 member,
@@ -297,7 +297,7 @@ impl App {
         }
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
-            let request = message::GroupLeaveRequest {
+            let request = crate::im_core_adapter::groups::GroupLeaveRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
                 reason_text: string_flag(command, "reason"),
@@ -345,7 +345,7 @@ impl App {
         )?;
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
-            let request = message::GroupUpdateRequest {
+            let request = crate::im_core_adapter::groups::GroupUpdateRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
                 name: string_flag(command, "name"),

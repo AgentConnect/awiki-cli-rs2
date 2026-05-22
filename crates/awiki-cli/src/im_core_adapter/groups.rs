@@ -4,10 +4,11 @@
 // requests, cache projection, websocket fallback, or compat transports here.
 
 use im_core::prelude::{
-    Cursor, Did, GroupCreateRequest, GroupJoinRequest, GroupLeaveRequest, GroupListRequest,
-    GroupMemberMutationRequest, GroupMembersRequest, GroupMessagesRequest, GroupPolicyPatch,
-    GroupProfilePatch, GroupRef, GroupUpdatePolicyRequest, GroupUpdateProfileRequest, Handle,
-    PageLimit,
+    Cursor, Did, GroupCreateRequest as SdkGroupCreateRequest,
+    GroupJoinRequest as SdkGroupJoinRequest, GroupLeaveRequest as SdkGroupLeaveRequest,
+    GroupListRequest, GroupMemberMutationRequest, GroupMembersRequest, GroupMessagesRequest,
+    GroupPolicyPatch, GroupProfilePatch, GroupRef, GroupUpdatePolicyRequest,
+    GroupUpdateProfileRequest, Handle, PageLimit,
 };
 use serde_json::{json, Value};
 
@@ -17,6 +18,73 @@ use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError,
 use crate::message;
 use crate::runtime;
 
+pub const GROUP_E2EE_SECURITY_PROFILE: &str = "group-e2ee";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupCreateRequest {
+    pub identity_name: String,
+    pub name: String,
+    pub description: String,
+    pub discoverability: String,
+    pub admission_mode: String,
+    pub message_security_profile: String,
+    pub e2ee: bool,
+    pub slug: String,
+    pub goal: String,
+    pub rules: String,
+    pub message_prompt: String,
+    pub doc_url: String,
+    pub attachments_allowed: Option<bool>,
+    pub max_members: String,
+    pub member_max_messages: Option<i64>,
+    pub member_max_total_chars: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupJoinRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub reason_text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupMemberRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub role: String,
+    pub reason_text: String,
+    pub e2ee: bool,
+    pub leave_request_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupLeaveRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub reason_text: String,
+    pub e2ee: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupUpdateRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub name: String,
+    pub description: String,
+    pub discoverability: String,
+    pub admission_mode: String,
+    pub slug: String,
+    pub goal: String,
+    pub rules: String,
+    pub message_prompt: String,
+    pub doc_url: String,
+    pub attachments_allowed: Option<bool>,
+    pub max_members: String,
+    pub member_max_messages: Option<i64>,
+    pub member_max_total_chars: Option<i64>,
+}
+
 fn group_diagnostic_raw(result: &im_core::groups::GroupReadResult) -> Value {
     result.diagnostic_raw().cloned().unwrap_or(Value::Null)
 }
@@ -25,7 +93,7 @@ pub fn create_group_via_im_core(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    request: message::GroupCreateRequest,
+    request: GroupCreateRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
     if request.name.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
@@ -62,7 +130,7 @@ pub fn join_group_via_im_core(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    request: message::GroupJoinRequest,
+    request: GroupJoinRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
     if request.group.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
@@ -71,7 +139,7 @@ pub fn join_group_via_im_core(
     let requested_group = request.group.clone();
     let result = client
         .groups()
-        .join(GroupJoinRequest {
+        .join(SdkGroupJoinRequest {
             group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
             reason_text: optional_string(&request.reason_text),
         })
@@ -100,7 +168,7 @@ pub fn leave_group_via_im_core(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    request: message::GroupLeaveRequest,
+    request: GroupLeaveRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
     if request.group.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
@@ -124,7 +192,7 @@ pub fn leave_group_via_im_core(
     }
     let result = client
         .groups()
-        .leave(GroupLeaveRequest {
+        .leave(SdkGroupLeaveRequest {
             group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
         })
         .map_err(im_error_to_message_error)?;
@@ -149,7 +217,7 @@ pub fn add_group_member_via_im_core(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    request: message::GroupMemberRequest,
+    request: GroupMemberRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
     mutate_group_member_via_im_core(resolved, manager, client, request, "add")
 }
@@ -158,7 +226,7 @@ pub fn remove_group_member_via_im_core(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    request: message::GroupMemberRequest,
+    request: GroupMemberRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
     mutate_group_member_via_im_core(resolved, manager, client, request, "remove")
 }
@@ -167,7 +235,7 @@ fn mutate_group_member_via_im_core(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    request: message::GroupMemberRequest,
+    request: GroupMemberRequest,
     action: &str,
 ) -> Result<CommandResult, MessageAdapterError> {
     if request.group.trim().is_empty() {
@@ -233,7 +301,7 @@ pub fn update_group_via_im_core(
     resolved: &Resolved,
     manager: &Manager,
     client: &im_core::ImClient,
-    request: message::GroupUpdateRequest,
+    request: GroupUpdateRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
     if request.group.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
@@ -443,14 +511,14 @@ pub fn group_messages_via_im_core(
 }
 
 fn group_create_request(
-    request: message::GroupCreateRequest,
+    request: GroupCreateRequest,
     service_did: &str,
-) -> Result<GroupCreateRequest, MessageAdapterError> {
+) -> Result<SdkGroupCreateRequest, MessageAdapterError> {
     let service_did = service_did.trim();
     if service_did.is_empty() {
         return Err(MessageAdapterError::MissingMessageServiceDid);
     }
-    Ok(GroupCreateRequest {
+    Ok(SdkGroupCreateRequest {
         name: request.name,
         description: optional_string(&request.description),
         discoverability: optional_string(&request.discoverability),
@@ -496,7 +564,7 @@ fn resolve_group_member_via_directory(
     })
 }
 
-fn group_profile_patch(request: &message::GroupUpdateRequest) -> GroupProfilePatch {
+fn group_profile_patch(request: &GroupUpdateRequest) -> GroupProfilePatch {
     GroupProfilePatch {
         name: optional_string(&request.name),
         description: optional_string(&request.description),
@@ -509,7 +577,7 @@ fn group_profile_patch(request: &message::GroupUpdateRequest) -> GroupProfilePat
     }
 }
 
-fn group_policy_patch(request: &message::GroupUpdateRequest) -> GroupPolicyPatch {
+fn group_policy_patch(request: &GroupUpdateRequest) -> GroupPolicyPatch {
     GroupPolicyPatch {
         admission_mode: optional_string(&request.admission_mode),
         attachments_allowed: request.attachments_allowed,
@@ -576,23 +644,21 @@ fn group_snapshot_uses_e2ee(snapshot: &Value) -> bool {
     if snapshot.is_null() {
         return false;
     }
-    if value_string(snapshot.get("message_security_profile"))
-        == message::GROUP_E2EE_SECURITY_PROFILE
-    {
+    if value_string(snapshot.get("message_security_profile")) == GROUP_E2EE_SECURITY_PROFILE {
         return true;
     }
     if snapshot
         .get("group_policy")
         .and_then(Value::as_object)
         .map(|policy| value_string(policy.get("message_security_profile")))
-        .is_some_and(|profile| profile == message::GROUP_E2EE_SECURITY_PROFILE)
+        .is_some_and(|profile| profile == GROUP_E2EE_SECURITY_PROFILE)
     {
         return true;
     }
     decoded_metadata(snapshot)
         .as_ref()
         .map(|metadata| value_string(metadata.get("message_security_profile")))
-        .is_some_and(|profile| profile == message::GROUP_E2EE_SECURITY_PROFILE)
+        .is_some_and(|profile| profile == GROUP_E2EE_SECURITY_PROFILE)
 }
 
 fn decoded_metadata(snapshot: &Value) -> Option<Value> {
