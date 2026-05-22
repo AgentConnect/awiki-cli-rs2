@@ -158,10 +158,10 @@ where
             payload.method.as_str(),
             params,
         )?;
-        Ok(crate::groups::GroupReadResult {
+        Ok(crate::groups::GroupReadResult::from_diagnostic_raw(
             raw,
-            warnings: Vec::new(),
-        })
+            Vec::new(),
+        ))
     }
 }
 

@@ -16,6 +16,10 @@ use crate::identity::Manager;
 use crate::message::{self, MessageError};
 use crate::runtime;
 
+fn group_diagnostic_raw(result: &im_core::groups::GroupReadResult) -> Value {
+    result.diagnostic_raw().cloned().unwrap_or(Value::Null)
+}
+
 pub fn create_group_via_im_core(
     resolved: &Resolved,
     manager: &Manager,
@@ -30,7 +34,7 @@ pub fn create_group_via_im_core(
         .groups()
         .create(group_create_request(request, &resolved.anp_service_did)?)
         .map_err(im_error_to_message_error)?;
-    let raw = result.raw;
+    let raw = group_diagnostic_raw(&result);
     let group_did = message::group_did_from_result(&raw);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(message::sync_group_state(
@@ -71,7 +75,7 @@ pub fn join_group_via_im_core(
             reason_text: optional_string(&request.reason_text),
         })
         .map_err(im_error_to_message_error)?;
-    let raw = result.raw;
+    let raw = group_diagnostic_raw(&result);
     let group_did = default_string(&message::group_did_from_result(&raw), &requested_group);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(message::sync_group_state(
@@ -123,7 +127,7 @@ pub fn leave_group_via_im_core(
             group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
         })
         .map_err(im_error_to_message_error)?;
-    let raw = result.raw;
+    let raw = group_diagnostic_raw(&result);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(message::mark_cached_group_left(
         resolved,
@@ -195,7 +199,7 @@ fn mutate_group_member_via_im_core(
         client.groups().remove_member(sdk_request)
     }
     .map_err(im_error_to_message_error)?;
-    let raw = result.raw;
+    let raw = group_diagnostic_raw(&result);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(message::sync_group_state(
         resolved,
@@ -260,8 +264,8 @@ pub fn update_group_via_im_core(
                 patch: profile_patch,
             })
             .map_err(im_error_to_message_error)?;
+        responses.push(group_diagnostic_raw(&result));
         warnings.extend(result.warnings);
-        responses.push(result.raw);
     }
     if policy_patch != GroupPolicyPatch::default() {
         let result = client
@@ -271,8 +275,8 @@ pub fn update_group_via_im_core(
                 patch: policy_patch,
             })
             .map_err(im_error_to_message_error)?;
+        responses.push(group_diagnostic_raw(&result));
         warnings.extend(result.warnings);
-        responses.push(result.raw);
     }
     let mut warnings = group_control_warnings(resolved, warnings);
     warnings.extend(message::sync_group_state(
@@ -307,7 +311,7 @@ pub fn get_group_via_im_core(
         .groups()
         .get(group_ref)
         .map_err(im_error_to_message_error)?;
-    let raw = result.raw;
+    let raw = group_diagnostic_raw(&result);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(message::persist_group_snapshot(resolved, &record, &raw));
     let snapshot = message::cached_group_snapshot(resolved, &record, &group)
@@ -338,7 +342,7 @@ pub fn list_groups_via_im_core(
         .groups()
         .list(request)
         .map_err(im_error_to_message_error)?;
-    let raw = result.raw;
+    let raw = group_diagnostic_raw(&result);
     let groups = message::values_from_array(raw.get("groups"));
     let total = message::int_value(raw.get("total"), groups.len() as i64);
     Ok(message::CommandResult {
@@ -369,7 +373,7 @@ pub fn group_members_via_im_core(
         .groups()
         .members(request)
         .map_err(im_error_to_message_error)?;
-    let raw = result.raw;
+    let raw = group_diagnostic_raw(&result);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(message::persist_group_members(
         resolved, &record, &group, &raw,
@@ -409,7 +413,7 @@ pub fn group_messages_via_im_core(
         .groups()
         .messages(request)
         .map_err(im_error_to_message_error)?;
-    let mut raw = result.raw;
+    let mut raw = group_diagnostic_raw(&result);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     let result_source_mode = runtime::bridge::MODE_HTTP;
 
