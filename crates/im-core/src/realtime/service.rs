@@ -37,7 +37,7 @@ impl<'a> RealtimeService<'a> {
                 warnings: Vec::new(),
             });
         }
-        Err(crate::ImError::unsupported("realtime-runner"))
+        super::runner::run_default_until_shutdown(self.client, options, shutdown)
     }
 }
 

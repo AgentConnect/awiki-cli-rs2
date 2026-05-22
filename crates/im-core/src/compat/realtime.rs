@@ -44,3 +44,7 @@ pub use crate::internal::realtime::transport::{
     RealtimeConnectAction, RealtimeConnectSimulation, RealtimeDialOutcome, RealtimeRefreshOutcome,
     RealtimeTransport, DIAL_ERROR_BODY_LIMIT, MESSAGE_WS_ENDPOINT,
 };
+#[doc(hidden)]
+pub use crate::realtime::runner::{
+    run_realtime_transport_until_shutdown, RealtimeRunnerOutcome, RealtimeRunnerTransport,
+};

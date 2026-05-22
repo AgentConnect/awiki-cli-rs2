@@ -2,7 +2,7 @@ mod control;
 mod dto;
 mod events;
 mod handle;
-mod runner;
+pub(crate) mod runner;
 mod service;
 
 pub use self::control::{RealtimeControl, ShutdownSignal};

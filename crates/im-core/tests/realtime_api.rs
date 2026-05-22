@@ -33,7 +33,7 @@ fn realtime_options_default_is_blocking_first_and_channel_ready() {
 }
 
 #[test]
-fn realtime_connect_enters_transport_slice_and_runner_remains_reserved() {
+fn realtime_connect_and_runner_enter_transport_boundary() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
@@ -42,13 +42,16 @@ fn realtime_connect_enters_transport_slice_and_runner_remains_reserved() {
     let connect = client.realtime().connect(RealtimeOptions::default());
     assert!(matches!(connect, Err(ImError::AuthRequired)));
 
-    let run = client
+    let exit = client
         .realtime()
-        .run_until_shutdown(RealtimeOptions::default(), ShutdownSignal::pending());
-    assert!(matches!(
-        run,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "realtime-runner"
-    ));
+        .run_until_shutdown(RealtimeOptions::default(), ShutdownSignal::pending())
+        .unwrap();
+    assert_eq!(exit.reason, RealtimeExitReason::AuthFailed);
+    assert_eq!(exit.reconnect_attempts, 0);
+    assert_eq!(
+        exit.warnings,
+        vec!["authentication is required".to_string()]
+    );
 }
 
 #[test]
