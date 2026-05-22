@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use crate::cli::ParsedCommand;
 use crate::identity;
+use crate::identity::types::LEGACY_LAYOUT_HINT;
 use crate::output::ExitError;
 use crate::store;
 use crate::transportcfg::Profile;
@@ -167,11 +168,39 @@ pub fn list_identities_via_im_core(
     manager: &identity::Manager,
 ) -> Result<identity::CommandResult, ExitError> {
     let core = super::build_im_core(resolved, manager)?;
-    let _identities = core
+    let identities = core
         .identities()
         .list()
         .map_err(|err| super::map_im_error(err, "id list"))?;
-    identity::list_identities(manager).map_err(crate::app::identity_exit)
+    let summaries = cli_identity_summaries_from_sdk(&identities, manager)?;
+    let identity_count = summaries.len();
+    let current = identities
+        .iter()
+        .find(|identity| identity.is_default)
+        .map(|identity| cli_identity_summary_from_sdk(identity, &summaries));
+    let legacy = manager.scan_legacy().map_err(crate::app::identity_exit)?;
+    let mut warnings = Vec::new();
+    if legacy.has_legacy {
+        warnings.push(LEGACY_LAYOUT_HINT.to_string());
+    }
+    if current
+        .as_ref()
+        .is_some_and(|identity| !identity.user_state.ready_for_messaging)
+    {
+        warnings.push(
+            "The default identity is local-only. Register or recover a handle-backed user before using messaging."
+                .to_string(),
+        );
+    }
+    Ok(identity::CommandResult {
+        data: json!({
+            "identities": summaries,
+            "default_identity": current,
+            "legacy_scan": legacy,
+        }),
+        summary: format!("Found {identity_count} local identities"),
+        warnings,
+    })
 }
 
 pub fn current_identity_via_im_core(
@@ -179,11 +208,31 @@ pub fn current_identity_via_im_core(
     manager: &identity::Manager,
 ) -> Result<identity::CommandResult, ExitError> {
     let core = super::build_im_core(resolved, manager)?;
-    let _default_identity = core
+    let default_identity = core
         .identities()
         .default_identity()
         .map_err(|err| super::map_im_error(err, "id current"))?;
-    identity::current_identity(manager).map_err(crate::app::identity_exit)
+    let Some(default_identity) = default_identity else {
+        return Ok(identity::CommandResult {
+            data: json!({ "identity": Value::Null }),
+            summary: "No default identity is configured".to_string(),
+            warnings: Vec::new(),
+        });
+    };
+    let current = cli_identity_summary_from_sdk_with_manager(&default_identity, manager)?;
+    let mut summary = format!("Current identity is {}", current.identity_name);
+    let mut warnings = Vec::new();
+    if !current.user_state.ready_for_messaging {
+        summary = format!("Current identity {} is local-only", current.identity_name);
+        warnings.push(
+            "Register or recover a handle-backed user before using messaging commands.".to_string(),
+        );
+    }
+    Ok(identity::CommandResult {
+        data: json!({ "identity": current }),
+        summary,
+        warnings,
+    })
 }
 
 pub fn identity_status_via_im_core(
@@ -195,12 +244,38 @@ pub fn identity_status_via_im_core(
         .identities()
         .list()
         .map_err(|err| super::map_im_error(err, "id status"))?;
-    let _default_ready_for_messaging = identities
+    let summaries = cli_identity_summaries_from_sdk(&identities, manager)?;
+    let legacy = manager.scan_legacy().map_err(crate::app::identity_exit)?;
+    let active_identity = identities
         .iter()
         .find(|identity| identity.is_default)
-        .map(|identity| &identity.readiness)
-        .is_some_and(|readiness| readiness.ready_for_messaging);
-    identity::identity_status(manager).map_err(crate::app::identity_exit)
+        .map(|identity| cli_identity_summary_from_sdk(identity, &summaries));
+    let mut warnings = Vec::new();
+    if legacy.has_legacy {
+        warnings.push(LEGACY_LAYOUT_HINT.to_string());
+    }
+    let mut summary = "Identity store is ready".to_string();
+    if active_identity.is_none() {
+        summary = "No default identity is configured yet".to_string();
+    } else if active_identity
+        .as_ref()
+        .is_some_and(|identity| !identity.user_state.ready_for_messaging)
+    {
+        summary = "Default identity exists but user setup is incomplete".to_string();
+        warnings.push(
+            "Current identity is local-only. Register or recover a handle-backed user before using messaging."
+                .to_string(),
+        );
+    }
+    Ok(identity::CommandResult {
+        data: json!({
+            "active_identity": active_identity,
+            "identity_count": summaries.len(),
+            "legacy_scan": legacy,
+        }),
+        summary,
+        warnings,
+    })
 }
 
 pub fn use_identity_plan_via_im_core(identity_name: &str) -> identity::CommandResult {
@@ -213,10 +288,27 @@ pub fn use_identity_via_im_core(
     identity_name: &str,
 ) -> Result<identity::CommandResult, ExitError> {
     let core = super::build_im_core(resolved, manager)?;
-    core.identities()
+    let change = core
+        .identities()
         .plan_default_identity_change(IdentitySelector::LocalAlias(identity_name.to_string()))
         .map_err(|err| super::map_im_error(err, "id use"))?;
-    identity::switch_default_identity(manager, identity_name).map_err(crate::app::identity_exit)
+    let target_name = change
+        .next
+        .local_alias
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(identity_name);
+    let summary = manager
+        .set_default(target_name)
+        .map_err(crate::app::identity_exit)?;
+    Ok(identity::CommandResult {
+        data: json!({
+            "action": "set_default_identity",
+            "identity": summary,
+        }),
+        summary: format!("Default identity switched to {target_name}"),
+        warnings: Vec::new(),
+    })
 }
 
 pub fn bind_contact_request(command: &ParsedCommand) -> Result<ContactBindingRequest, ExitError> {
@@ -1152,6 +1244,138 @@ fn identity_error_to_im_error(err: identity::IdentityError) -> im_core::ImError 
             message: err.to_string(),
         },
     }
+}
+
+fn cli_identity_summaries_from_sdk(
+    identities: &[im_core::IdentitySummary],
+    manager: &identity::Manager,
+) -> Result<Vec<identity::IdentitySummary>, ExitError> {
+    identities
+        .iter()
+        .map(|summary| cli_identity_summary_from_sdk_with_manager(summary, manager))
+        .collect()
+}
+
+fn cli_identity_summary_from_sdk_with_manager(
+    summary: &im_core::IdentitySummary,
+    manager: &identity::Manager,
+) -> Result<identity::IdentitySummary, ExitError> {
+    let identity_name = sdk_identity_name(summary);
+    match manager.load(&identity_name) {
+        Ok(record) => {
+            let mut cli_summary = identity::store::identity_summary_from_record(&record);
+            cli_summary.is_default = summary.is_default;
+            Ok(cli_summary)
+        }
+        Err(identity::IdentityError::NotFound(_)) => Ok(cli_identity_summary_from_sdk(
+            summary,
+            &manager.list().unwrap_or_default(),
+        )),
+        Err(err) => Err(crate::app::identity_exit(err)),
+    }
+}
+
+fn cli_identity_summary_from_sdk(
+    summary: &im_core::IdentitySummary,
+    known: &[identity::IdentitySummary],
+) -> identity::IdentitySummary {
+    let identity_name = sdk_identity_name(summary);
+    if let Some(existing) = known
+        .iter()
+        .find(|identity| identity.identity_name == identity_name)
+    {
+        let mut existing = existing.clone();
+        existing.is_default = summary.is_default;
+        return existing;
+    }
+    let full_handle = summary
+        .handle
+        .as_ref()
+        .map(|handle| handle.as_str().to_string())
+        .unwrap_or_default();
+    let handle = full_handle
+        .split_once('.')
+        .map(|(local, _)| local)
+        .unwrap_or(full_handle.as_str())
+        .to_string();
+    let user_state = sdk_user_state(summary);
+    identity::IdentitySummary {
+        identity_name,
+        did: summary.did.as_str().to_string(),
+        unique_id: summary.id.as_str().to_string(),
+        display_name: summary.display_name.clone().unwrap_or_default(),
+        handle,
+        full_handle,
+        created_at: String::new(),
+        dir_name: summary.id.as_str().to_string(),
+        is_default: summary.is_default,
+        has_jwt: summary
+            .readiness
+            .missing
+            .iter()
+            .all(|item| !matches!(item, im_core::identity::IdentityMissingItem::AuthState)),
+        has_did_document: summary
+            .readiness
+            .missing
+            .iter()
+            .all(|item| !matches!(item, im_core::identity::IdentityMissingItem::DidDocument)),
+        has_key1_private: summary
+            .readiness
+            .missing
+            .iter()
+            .all(|item| !matches!(item, im_core::identity::IdentityMissingItem::PrivateKey)),
+        has_key1_public: summary.readiness.ready_for_auth,
+        has_e2ee_signing_private: summary.readiness.ready_for_messaging,
+        has_e2ee_agreement_private: summary.readiness.ready_for_messaging,
+        user_state,
+        user_id: String::new(),
+    }
+}
+
+fn sdk_identity_name(summary: &im_core::IdentitySummary) -> String {
+    summary
+        .local_alias
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| summary.id.as_str())
+        .to_string()
+}
+
+fn sdk_user_state(summary: &im_core::IdentitySummary) -> identity::UserState {
+    if !summary.readiness.ready_for_messaging {
+        let missing = summary
+            .readiness
+            .missing
+            .iter()
+            .map(sdk_missing_item_label)
+            .collect::<Vec<_>>();
+        return identity::UserState {
+            registration_state: if missing.len() <= 1 {
+                "partial_user".to_string()
+            } else {
+                "local_identity".to_string()
+            },
+            ready_for_messaging: false,
+            missing,
+        };
+    }
+    identity::UserState {
+        registration_state: "registered_user".to_string(),
+        ready_for_messaging: true,
+        missing: Vec::new(),
+    }
+}
+
+fn sdk_missing_item_label(item: &im_core::identity::IdentityMissingItem) -> String {
+    match item {
+        im_core::identity::IdentityMissingItem::DidDocument => "did_document",
+        im_core::identity::IdentityMissingItem::PrivateKey => "private_key",
+        im_core::identity::IdentityMissingItem::AuthState => "auth",
+        im_core::identity::IdentityMissingItem::Handle => "handle",
+        im_core::identity::IdentityMissingItem::MessageEndpoint => "message_endpoint",
+        im_core::identity::IdentityMissingItem::Other(value) => value.as_str(),
+    }
+    .to_string()
 }
 
 fn store_error_to_im_error(err: store::StoreError) -> im_core::ImError {
