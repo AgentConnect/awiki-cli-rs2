@@ -237,10 +237,9 @@ fn register_handle_command_result(
     }
     let phone = legacy.phone.trim();
     if !phone.is_empty() {
-        data["phone"] = json!(im_core::compat::identity::normalize_phone(phone)
-            .map_err(|err| super::map_im_error(err, "id register"))?);
+        data["phone"] = json!(normalize_registration_phone(phone)?);
     }
-    let email = im_core::compat::identity::normalize_email(&legacy.email);
+    let email = normalize_registration_email(&legacy.email);
     if !email.is_empty() {
         data["email"] = json!(email);
     }
@@ -1928,6 +1927,40 @@ fn pending_registration_identity_name(
     } else {
         handle.to_string()
     }
+}
+
+fn normalize_registration_phone(phone: &str) -> Result<String, ExitError> {
+    let phone = phone.trim();
+    if is_international_phone(phone) {
+        return Ok(phone.to_string());
+    }
+    if is_china_local_phone(phone) {
+        return Ok(format!("+86{phone}"));
+    }
+    Err(super::map_im_error(
+        im_core::ImError::invalid_input(
+            Some("phone".to_string()),
+            format!("invalid phone number {phone:?}"),
+        ),
+        "id register",
+    ))
+}
+
+fn normalize_registration_email(email: &str) -> String {
+    email.trim().to_lowercase()
+}
+
+fn is_international_phone(phone: &str) -> bool {
+    let Some(rest) = phone.strip_prefix('+') else {
+        return false;
+    };
+    let len = rest.len();
+    (7..=17).contains(&len) && rest.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_china_local_phone(phone: &str) -> bool {
+    let bytes = phone.as_bytes();
+    bytes.len() == 11 && bytes[0] == b'1' && bytes[1..].iter().all(|byte| byte.is_ascii_digit())
 }
 
 fn registration_action(state: HandleRegistrationState) -> &'static str {
