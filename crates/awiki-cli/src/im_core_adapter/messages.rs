@@ -132,8 +132,7 @@ pub fn read_inbox_via_im_core(
     let mut messages =
         message::persist_inbox_messages(resolved, manager, &record, &raw, "", &mut warnings);
     let source = source_with_default(&raw);
-    messages =
-        message::apply_inbox_filters(messages, "", query.unread_only, i64::from(query.limit.0));
+    messages = apply_inbox_filters(messages, "", query.unread_only, i64::from(query.limit.0));
     let total = messages.len();
     let data = match query.scope {
         InboxScope::DirectOnly => json!({
@@ -213,7 +212,7 @@ fn read_direct_history_via_im_core(
         &mut warnings,
     );
     let mut source = source_with_default(&raw);
-    let mut resolved_dids = message::resolved_dids_value(&raw);
+    let mut resolved_dids = resolved_dids_value(&raw);
     if target_is_handle {
         let dids = merge_handle_history_messages(
             resolved,
@@ -670,6 +669,43 @@ fn merge_handle_history_messages(
         Err(err) => warnings.push(format!("Failed to load handle history from cache: {err}")),
     }
     Some(dids)
+}
+
+fn apply_inbox_filters(
+    messages: Vec<Value>,
+    peer_did: &str,
+    unread_only: bool,
+    limit: i64,
+) -> Vec<Value> {
+    let limit = if limit <= 0 { 20 } else { limit as usize };
+    messages
+        .into_iter()
+        .filter(|message| {
+            if peer_did.trim().is_empty() {
+                true
+            } else {
+                let Some(object) = message.as_object() else {
+                    return false;
+                };
+                string_value(object.get("sender_did")) == peer_did
+                    || string_value(object.get("receiver_did")) == peer_did
+            }
+        })
+        .filter(|message| {
+            if !unread_only {
+                return true;
+            }
+            message
+                .as_object()
+                .map(|object| !bool_value(object.get("is_read")))
+                .unwrap_or(false)
+        })
+        .take(limit)
+        .collect()
+}
+
+fn resolved_dids_value(raw: &Value) -> Value {
+    raw.get("resolved_dids").cloned().unwrap_or(Value::Null)
 }
 
 fn should_prefer_direct_cache_messages(remote: &[Value], cached: &[Value]) -> bool {

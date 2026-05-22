@@ -126,8 +126,8 @@ pub use secure_outbox_flush::{
     StoreMessageOutcome,
 };
 pub(crate) use service::{
-    apply_inbox_filters, auth_session, bool_value, int_value, maybe_publish_secure_prekeys,
-    persist_history_messages, persist_inbox_messages, require_active_identity, resolved_dids_value,
+    auth_session, bool_value, int_value, maybe_publish_secure_prekeys, persist_history_messages,
+    persist_inbox_messages, require_active_identity,
 };
 pub use service::{
     send, send_secure_direct_with_sender, CommandResult, SecureDirectSendOutcome,
