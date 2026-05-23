@@ -9,6 +9,7 @@ use crate::internal::message_runtime::group::{
 use crate::internal::transport::AuthenticatedRpcTransport;
 
 use super::provider::GroupMlsProvider;
+use super::state_ref::{resolve_group_state_ref, ResolveGroupStateRef};
 
 pub(crate) struct GroupE2eeTextSender<'a, P, T, M> {
     client: &'a crate::core::ImClient,
@@ -19,7 +20,7 @@ pub(crate) struct GroupE2eeTextSender<'a, P, T, M> {
 
 pub(crate) struct GroupE2eeTextSend {
     pub request: crate::messages::SendMessageRequest,
-    pub group_state_ref: GroupStateRef,
+    pub group_state_ref: Option<GroupStateRef>,
     pub credentials: Option<GroupTextCredentials>,
 }
 
@@ -61,6 +62,27 @@ where
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
 
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials(self.client)?,
+        };
+        let group_state_ref = match input.group_state_ref {
+            Some(group_state_ref) => group_state_ref,
+            None => {
+                resolve_group_state_ref(
+                    self.client,
+                    &self.session_provider,
+                    &mut self.transport,
+                    &self.mls_provider,
+                    ResolveGroupStateRef {
+                        group: group.clone(),
+                        credentials: Some(credentials.clone()),
+                    },
+                )?
+                .group_state_ref
+            }
+        };
+
         let operation_id = input
             .request
             .delivery
@@ -97,7 +119,7 @@ where
         let encrypted = self.mls_provider.encrypt(EncryptInput {
             sender_did: self.client.did().as_str().to_owned(),
             device_id,
-            group_state_ref: input.group_state_ref,
+            group_state_ref,
             message_id: message_id.clone(),
             operation_id: operation_id.clone(),
             application_plaintext: GroupApplicationPlaintext {
@@ -111,10 +133,6 @@ where
             },
             request_id: format!("group-e2ee-encrypt-{operation_id}"),
         })?;
-        let credentials = match input.credentials {
-            Some(credentials) => credentials,
-            None => load_credentials(self.client)?,
-        };
         let params = super::wire::build_group_e2ee_send_rpc_params(
             &credentials,
             self.client.did().as_str(),
@@ -213,6 +231,7 @@ mod tests {
                     "group_state_version": "11",
                     "accepted_at": "2026-05-21T00:00:00Z"
                 }),
+                responses: Vec::new(),
             },
             StaticMlsProvider,
         );
@@ -220,11 +239,11 @@ mod tests {
         let result = sender
             .send(GroupE2eeTextSend {
                 request: group_e2ee_text_request(group_did, "secret group text"),
-                group_state_ref: GroupStateRef {
+                group_state_ref: Some(GroupStateRef {
                     group_did: group_did.to_owned(),
                     group_state_version: "10".to_owned(),
                     policy_hash: None,
-                },
+                }),
                 credentials: Some(fixture.credentials()),
             })
             .unwrap();
@@ -262,6 +281,68 @@ mod tests {
         assert!(encoded.contains("origin_proof"));
     }
 
+    #[test]
+    fn group_e2ee_text_sender_resolves_state_ref_before_encrypting() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group_did = "did:example:groups:e2ee";
+        let sender = GroupE2eeTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+                responses: vec![
+                    (
+                        "group.e2ee.head".to_owned(),
+                        json!({
+                            "group_state_ref": {
+                                "group_did": group_did,
+                                "group_state_version": "service-state-12"
+                            }
+                        }),
+                    ),
+                    (
+                        "group.e2ee.send".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "final_acceptance": true,
+                            "group_did": group_did,
+                            "message_id": "server-e2ee-message-id",
+                            "operation_id": "op-client-e2ee",
+                            "group_event_seq": "78",
+                            "group_state_version": "12",
+                            "accepted_at": "2026-05-21T00:00:00Z"
+                        }),
+                    ),
+                ],
+            },
+            ResolvingMlsProvider,
+        );
+
+        let result = sender
+            .send(GroupE2eeTextSend {
+                request: group_e2ee_text_request(group_did, "resolved group text"),
+                group_state_ref: None,
+                credentials: Some(fixture.credentials()),
+            })
+            .unwrap();
+
+        assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(78));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].method, "group.e2ee.head");
+        assert_eq!(calls[1].method, "group.e2ee.send");
+        assert_eq!(
+            calls[1].params["body"]["group_state_ref"]["group_state_version"],
+            "service-state-12"
+        );
+        let encoded = serde_json::to_string(&calls[1].params).unwrap();
+        assert!(!encoded.contains("resolved group text"));
+        assert!(!encoded.contains("application_plaintext"));
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -291,6 +372,7 @@ mod tests {
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
         response: Value,
+        responses: Vec<(String, Value)>,
     }
 
     impl AuthenticatedRpcTransport for RecordingTransport {
@@ -305,6 +387,14 @@ mod tests {
                 method: method.to_owned(),
                 params,
             });
+            if let Some((index, _)) = self
+                .responses
+                .iter()
+                .enumerate()
+                .find(|(_, (candidate, _))| candidate == method)
+            {
+                return Ok(self.responses.remove(index).1);
+            }
             Ok(self.response.clone())
         }
     }
@@ -413,6 +503,116 @@ mod tests {
 
         fn status(&self, _input: StatusInput) -> crate::ImResult<StatusOutput> {
             unreachable!("send should not read status")
+        }
+    }
+
+    struct ResolvingMlsProvider;
+
+    impl GroupMlsProvider for ResolvingMlsProvider {
+        fn encrypt(&self, input: EncryptInput) -> crate::ImResult<EncryptOutput> {
+            assert_eq!(
+                input.group_state_ref.group_state_version,
+                "service-state-12"
+            );
+            assert_eq!(
+                input.application_plaintext.text.as_deref(),
+                Some("resolved group text")
+            );
+            Ok(EncryptOutput {
+                group_cipher_object: GroupCipherObject {
+                    crypto_group_id_b64u: "Y3J5cHRvLWdyb3Vw".to_owned(),
+                    epoch: "12".to_owned(),
+                    private_message_b64u: "cmVzb2x2ZWQtY2lwaGVy".to_owned(),
+                    group_state_ref: input.group_state_ref,
+                    epoch_authenticator: Some("YXV0aGVudGljYXRvcg".to_owned()),
+                    non_cryptographic: false,
+                    artifact_mode: None,
+                },
+                authenticated_data_sha256_b64u: "YWFkLWRpZ2VzdA".to_owned(),
+            })
+        }
+
+        fn status(&self, input: StatusInput) -> crate::ImResult<StatusOutput> {
+            assert_eq!(input.agent_did.as_deref(), Some("did:example:alice"));
+            assert_eq!(input.group_did.as_deref(), Some("did:example:groups:e2ee"));
+            Ok(StatusOutput {
+                status: "active".to_owned(),
+                epoch: Some("12".to_owned()),
+                local_epoch: Some("12".to_owned()),
+                pending_commits: Vec::new(),
+                epoch_authenticator: Some("YXV0aGVudGljYXRvcg".to_owned()),
+            })
+        }
+
+        fn generate_key_package(
+            &self,
+            _input: GenerateKeyPackageInput,
+        ) -> crate::ImResult<GroupKeyPackageOutput> {
+            unreachable!("send should not generate key packages")
+        }
+
+        fn create_group_prepare(
+            &self,
+            _input: CreateGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not create groups")
+        }
+
+        fn add_member_prepare(
+            &self,
+            _input: AddMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not add members")
+        }
+
+        fn remove_member_prepare(
+            &self,
+            _input: RemoveMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not remove members")
+        }
+
+        fn update_member_prepare(
+            &self,
+            _input: UpdateMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not update members")
+        }
+
+        fn recover_member_prepare(
+            &self,
+            _input: RecoverMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not recover members")
+        }
+
+        fn finalize_commit(
+            &self,
+            _input: FinalizeCommitInput,
+        ) -> crate::ImResult<FinalizeCommitOutput> {
+            unreachable!("send should not finalize commits")
+        }
+
+        fn abort_commit(&self, _input: AbortCommitInput) -> crate::ImResult<AbortCommitOutput> {
+            unreachable!("send should not abort commits")
+        }
+
+        fn process_welcome(
+            &self,
+            _input: ProcessWelcomeInput,
+        ) -> crate::ImResult<ProcessWelcomeOutput> {
+            unreachable!("send should not process welcomes")
+        }
+
+        fn process_notice(
+            &self,
+            _input: ProcessNoticeInput,
+        ) -> crate::ImResult<ProcessNoticeOutput> {
+            unreachable!("send should not process notices")
+        }
+
+        fn decrypt(&self, _input: DecryptInput) -> crate::ImResult<DecryptOutput> {
+            unreachable!("send should not decrypt")
         }
     }
 

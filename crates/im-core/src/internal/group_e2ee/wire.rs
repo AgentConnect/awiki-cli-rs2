@@ -4,8 +4,40 @@ use crate::internal::wire::direct::DirectPayload;
 
 pub(crate) const GROUP_E2EE_PROFILE: &str = anp::group_e2ee::PROFILE;
 pub(crate) const GROUP_E2EE_SECURITY_PROFILE: &str = anp::group_e2ee::SECURITY_PROFILE;
+pub(crate) const GROUP_E2EE_TRANSPORT_SECURITY_PROFILE: &str =
+    anp::group_e2ee::TRANSPORT_SECURITY_PROFILE;
 pub(crate) const GROUP_E2EE_CIPHER_CONTENT_TYPE: &str =
     anp::group_e2ee::commands::GROUP_CIPHER_CONTENT_TYPE;
+
+pub(crate) fn build_group_e2ee_head_rpc_params(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    sender_did: &str,
+    group_did: &str,
+) -> crate::ImResult<Value> {
+    let group_did = require_non_empty("group_did", group_did)?;
+    build_signed_group_e2ee_params(
+        credentials,
+        "group.e2ee.head",
+        group_e2ee_meta(
+            sender_did,
+            "group",
+            group_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+            &format!(
+                "op-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+            None,
+        )?,
+        json!({
+            "group_did": group_did,
+            "group_state_ref": {
+                "group_did": group_did,
+            },
+        }),
+    )
+}
 
 pub(crate) fn build_group_e2ee_send_rpc_params(
     credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
