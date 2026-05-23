@@ -24,8 +24,27 @@ awiki-cli / im-core
 im-core
   -> NativeAnpMlsProvider
       -> anp::group_e2ee::operations library API
-      -> OpenMLS StorageProvider backed by im-core secure local SQLite
+      -> OpenMLS StorageProvider backed by im-core-managed sensitive local SQLite
   -> message service RPC
+```
+
+关键分层边界：
+
+```text
+im-core:
+  只调用 anp::group_e2ee::operations，不直接读写 openmls_* tables。
+  负责 SDK 编排、identity/auth、message service RPC、local projection 和 public DTO。
+
+anp::group_e2ee::operations:
+  编排 one-shot MLS 操作，不持有长期 runtime 状态。
+  所有可能推进 MLS epoch 的操作只做 prepare/finalize/abort 边界，不在 prepare 后静默推进本地 binding epoch。
+
+anp::group_e2ee::storage:
+  统一管理 OpenMLS StorageProvider + group_mls_* metadata tables。
+  负责打开/migrate/lock SQLite storage，并隐藏 openmls_* 表结构。
+
+OpenMLS:
+  继续通过 StorageProvider 管 openmls_* private state。
 ```
 
 核心决策：
@@ -35,11 +54,33 @@ im-core
 2. message service RPC 继续保留；它负责服务端分发 KeyPackage、Welcome、Commit、notice 和 cipher message，不是本地 MLS provider 的替代品。
 3. anp-mls binary 保留为 thin wrapper、compat fallback、调试工具和跨语言入口。
 4. OpenMLS 状态必须继续通过 OpenMLS StorageProvider 持久化，不能降级为普通 JSON snapshot 或业务表字段。
-5. MLS 存储建议统一进入 im-core local secure SQLite，但必须保持 OpenMLS StorageProvider 的表/删除/事务语义。
+5. MLS 存储建议统一进入 im-core-managed sensitive local SQLite，但必须保持 OpenMLS StorageProvider 的表/删除/事务语义。
 6. SDK public Interface 不暴露 anp-mls、OpenMLS、StorageProvider、KeyPackage、Welcome、Commit、MLS epoch 或 provider path。
+7. 同库同事务只能作为经过 spike 验证后的目标，不能在首个 native provider 版本默认承诺。
 ```
 
-推荐最终形态：
+这里的 sensitive local SQLite 不是承诺已经有 at-rest encryption。Phase 6 当前只承诺：
+
+```text
+1. MLS private state 是 sensitive local state。
+2. 不进入 public DTO。
+3. 不进入日志。
+4. 不进入普通 diagnostics/export。
+5. 路径由 im-core 管理。
+6. 依赖 OS/user profile 文件权限。
+```
+
+如果需要真正的本地静态加密，应另开设计：
+
+```text
+SQLCipher
+platform key wrapping
+per-identity local-state encryption key
+backup/restore key handling
+plaintext sqlite migration
+```
+
+推荐长期形态：
 
 ```text
 ImCorePaths.local_state.sqlite_path
@@ -51,7 +92,7 @@ ImCorePaths.local_state.sqlite_path
      - OpenMLS storage tables, with namespaced table names or dedicated attached schema
 ```
 
-如果 OpenMLS storage 与业务 local state 共库的锁/迁移风险过高，备选方案是：
+首个可落地版本不强制同库同事务。如果 OpenMLS storage 与业务 local state 共库的锁/迁移风险过高，允许使用 internal sibling：
 
 ```text
 ImCorePaths.local_state.sqlite_path
@@ -207,22 +248,62 @@ compat command API：
 ```rust
 pub(crate) trait GroupMlsProvider {
     fn status(&self, input: GroupMlsStatusInput) -> ImResult<GroupMlsStatusOutput>;
+
     fn generate_key_package(
         &self,
         input: GenerateGroupKeyPackageInput,
     ) -> ImResult<GroupKeyPackageOutput>;
-    fn create_group(&self, input: CreateMlsGroupInput) -> ImResult<CreateMlsGroupOutput>;
-    fn add_member(&self, input: AddMlsMemberInput) -> ImResult<AddMlsMemberOutput>;
-    fn remove_member(&self, input: RemoveMlsMemberInput) -> ImResult<RemoveMlsMemberOutput>;
-    fn prepare_update(&self, input: PrepareMlsUpdateInput) -> ImResult<PrepareMlsCommitOutput>;
+
+    fn create_group_prepare(
+        &self,
+        input: CreateMlsGroupInput,
+    ) -> ImResult<PreparedMlsCommitOutput>;
+    fn add_member_prepare(
+        &self,
+        input: AddMlsMemberInput,
+    ) -> ImResult<PreparedMlsCommitOutput>;
+    fn remove_member_prepare(
+        &self,
+        input: RemoveMlsMemberInput,
+    ) -> ImResult<PreparedMlsCommitOutput>;
+    fn update_member_prepare(
+        &self,
+        input: UpdateMlsMemberInput,
+    ) -> ImResult<PreparedMlsCommitOutput>;
+    fn recover_member_prepare(
+        &self,
+        input: RecoverMlsMemberInput,
+    ) -> ImResult<PreparedMlsCommitOutput>;
+
     fn finalize_commit(&self, input: FinalizeMlsCommitInput) -> ImResult<FinalizeMlsCommitOutput>;
     fn abort_commit(&self, input: AbortMlsCommitInput) -> ImResult<AbortMlsCommitOutput>;
+
     fn process_welcome(&self, input: ProcessMlsWelcomeInput) -> ImResult<ProcessMlsWelcomeOutput>;
     fn process_notice(&self, input: ProcessMlsNoticeInput) -> ImResult<ProcessMlsNoticeOutput>;
     fn encrypt(&self, input: GroupMlsEncryptInput) -> ImResult<GroupMlsEncryptOutput>;
     fn decrypt(&self, input: GroupMlsDecryptInput) -> ImResult<GroupMlsDecryptOutput>;
 }
 ```
+
+所有可能推进 MLS epoch 的操作都必须遵守：
+
+```text
+1. local prepare：
+   生成 commit / welcome / ratchet_tree / group_info 等 public delivery artifacts；
+   持久化 pending_commit；
+   不更新 active binding epoch 为新 epoch。
+2. service RPC：
+   im-core 把 prepared artifacts 提交给 message service。
+3. service accepted：
+   finalize/merge pending commit；
+   更新 binding epoch/status；
+   写 local projection。
+4. service rejected / network failed：
+   abort pending commit，或保留 pending/retry 状态；
+   不推进 local binding epoch。
+```
+
+当前 `anp-mls` 的 `group add-member` 和 `group create` 路径需要在 extraction 后修正为 prepare/finalize/abort 语义，不能把现有 one-shot merge 行为直接作为 native provider 长期实现。
 
 实现：
 
@@ -249,7 +330,7 @@ OpenMLS 不是无状态加密函数。它的核心对象 `MlsGroup` 会把 group
 
 ```text
 1. MLS state 必须持久化；不能只存在内存。
-2. MLS state 包含私密 key material，应视为 secure local state。
+2. MLS state 包含私密 key material，应视为 sensitive local state。
 3. OpenMLS 会为了 forward secrecy 删除旧 key material；存储层必须保留删除语义，不能通过业务 snapshot、append-only log 或透明备份把旧 key material 复活。
 4. 不能把 OpenMLS 内部表拆成 SDK public DTO。
 5. 不能把 MLS state 当作普通业务 metadata 随意同步、导出或打印。
@@ -398,10 +479,69 @@ OpenMLS StorageProvider trait
 
 ## 7. 推荐存储设计
 
-推荐采用：
+长期目标采用：
 
 ```text
 方案 C：统一到 im-core local SQLite，同库不同表。
+```
+
+但它必须经过 PR0 spike 验证后才能作为默认实现。首个可落地版本可以采用：
+
+```text
+1. same-file / two-connection：
+   im_core_local_state.sqlite 同库；
+   im-core business connection 和 openmls_sqlite_storage connection 分开；
+   不承诺同一个 Rust transaction object。
+
+2. internal sibling mls_state.sqlite：
+   <local_state_dir>/mls_state.sqlite；
+   路径由 ImCorePaths.local_state.sqlite_path 推导；
+   不进入 SDK public Interface。
+```
+
+PR0 需要验证：
+
+```text
+1. openmls_sqlite_storage 是否能安全打开 im-core local_state.sqlite。
+2. OpenMLS migrations 是否影响 im-core PRAGMA user_version / schema migration。
+3. OpenMLS storage 操作是否能接收外部 rusqlite connection 或 transaction。
+4. OpenMLS mutating operation 是否可纳入 im-core BEGIN IMMEDIATE 边界。
+5. crash after prepare / before finalize 后 pending_commit 是否可恢复或 abort。
+6. SQLite writer lock / busy_timeout 对 message cache 和 realtime projection 的影响。
+```
+
+PR0 输出必须是以下之一：
+
+```text
+A. 可同库同事务。
+B. 可同库不同 connection，但不能承诺同事务。
+C. 只能 internal sibling mls_state.sqlite。
+```
+
+当前 spike 证据记录：
+
+```text
+测试文件：../anp/rust/tests/group_e2ee_storage_spike_tests.rs
+命令：cargo test --test group_e2ee_storage_spike_tests --features mls -- --nocapture
+结果：4 passed
+```
+
+已验证事实：
+
+```text
+1. openmls_sqlite_storage 可以在 im-core-like SQLite 文件中创建 openmls_* tables。
+2. OpenMLS / anp-mls migrations 未覆盖已有 PRAGMA user_version = 13。
+3. 同文件双连接可共存，但当 im-core-like connection 持有 BEGIN IMMEDIATE 写事务时，anp-mls 另一连接无法加入同一事务，只会遇到 SQLite locked/busy。
+4. 当前 group add-member 会立即 merge pending commit 并把 binding epoch 推进到 1；不能作为 NativeAnpMlsProvider 的长期语义。
+5. 当前 group remove-member 已是 prepare 语义：prepare 返回 pending commit，local_epoch 仍停留在旧 epoch，pending_commits 可见。
+```
+
+基于当前证据，默认落地路径应按 B/C 设计：
+
+```text
+优先实现 same-file / two-connection 或 internal sibling mls_state.sqlite。
+不要在 M2/M3 承诺 OpenMLS private state 与 im-core business projection 同一个 Rust transaction 原子提交。
+同库同事务只有在后续证明 openmls_sqlite_storage 可接收外部 transaction 后才能升级。
 ```
 
 但要加几个硬约束：
@@ -425,7 +565,7 @@ ImCorePaths.local_state.sqlite_path
 
 不新增 SDK public path 字段。
 
-如实现期发现 `openmls_sqlite_storage` 无法安全和业务 local_state 共用连接或 migrations，则降级为 internal sibling path：
+如 PR0 发现 `openmls_sqlite_storage` 无法安全和业务 local_state 共用连接或 migrations，则降级为 internal sibling path：
 
 ```text
 <local_state_dir>/mls_state.sqlite
@@ -445,6 +585,8 @@ CREATE TABLE IF NOT EXISTS group_mls_operations (
     command           TEXT NOT NULL,
     input_digest      TEXT NOT NULL,
     response_json     TEXT NOT NULL,
+    redaction_version TEXT NOT NULL DEFAULT 'v1',
+    contains_sensitive INTEGER NOT NULL DEFAULT 0,
     status            TEXT NOT NULL,
     created_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -516,6 +658,34 @@ CREATE TABLE IF NOT EXISTS group_mls_pending_commits (
 
 这些表保存的是 group MLS app metadata 和 public/delivery artifacts。OpenMLS private material 仍由 `openmls_sqlite_storage` 的 `openmls_*` tables 管理。
 
+`group_mls_operations.response_json` 必须使用系统化 redaction policy。
+
+允许保存：
+
+```text
+operation_id
+command
+status
+epoch / group_state_ref
+commit / welcome / ratchet_tree / group_info 等 public delivery artifact
+group_cipher_object
+error code/category
+redacted markers
+```
+
+禁止保存：
+
+```text
+application_plaintext
+user message plaintext
+private key material
+OpenMLS private state raw rows
+unredacted decrypted payload
+raw openmls_* row dump
+```
+
+`contains_sensitive` 默认必须是 `0`。如果某个兼容路径无法证明 response 已脱敏，必须拒绝持久化或设置显式 sensitive marker 并禁止普通 diagnostics/export 读取。
+
 ### 7.3 owner / device scope
 
 当前 `anp-mls` 使用：
@@ -541,6 +711,9 @@ device_id
 3. device_id 默认 default，但必须保留多设备扩展。
 4. group_did 是业务 group identity。
 5. openmls_group_id_b64u 是 OpenMLS group id，不进入 public SDK DTO。
+6. group_mls_* 表的 owner_identity_id 必须 NOT NULL。
+7. 进入 Phase 6 前必须确认 identity runtime 能稳定提供 owner_identity_id。
+8. MLS 表不能沿用 owner_did-only 的旧兼容隔离方式。
 ```
 
 ### 7.4 lock / transaction
@@ -667,7 +840,37 @@ where
 
 这些函数每次调用显式打开 operation scope / transaction，执行后返回；不创建长期运行对象，不持有后台 worker，不保存跨调用内存状态。
 
-### 8.2 command compatibility layer
+### 8.2 compat command 到 typed operation 映射
+
+`anp-mls/v1` compatibility 必须覆盖现有 command matrix：
+
+| compat command | typed operation | epoch-changing | prepare/finalize/abort |
+| --- | --- | ---: | ---: |
+| `system version` | `system_version` | 否 | 否 |
+| `key-package generate` | `generate_key_package` | 否 | 否 |
+| `group create` | `create_group_prepare` + `finalize_commit` / `abort_commit` | 是 | 是 |
+| `group add-member` | `add_member_prepare` + `finalize_commit` / `abort_commit` | 是 | 是 |
+| `group remove-member` | `remove_member_prepare` + `finalize_commit` / `abort_commit` | 是 | 是 |
+| `group leave` | `leave_prepare` + `finalize_commit` / `abort_commit` | 是 | 是 |
+| `group update-member-prepare` | `update_member_prepare` | 是 | 是 |
+| `group update-member-finalize` | `finalize_commit` | 是 | 是 |
+| `group update-member-abort` | `abort_commit` | 是 | 是 |
+| `group recover-member-prepare` | `recover_member_prepare` | 是 | 是 |
+| `group recover-member-finalize` | `finalize_commit` | 是 | 是 |
+| `group recover-member-abort` | `abort_commit` | 是 | 是 |
+| `group commit-finalize` | `finalize_commit` | 是 | 是 |
+| `group commit-abort` | `abort_commit` | 是 | 是 |
+| `welcome process` | `process_welcome` | 是，本地加入/恢复 state | 需要事务 |
+| `commit process` | `process_notice` / `process_commit` | 是 | 需要事务 |
+| `notice process` | `process_notice` | 是 | 需要事务 |
+| `message encrypt` | `encrypt` | 否，但依赖当前 epoch | 需要状态校验 |
+| `message decrypt` | `decrypt` | 否，可能更新 replay/secret state | 需要状态校验 |
+| `group restore` | `restore_or_status_repair` | 视实现 | 单独定义 |
+| `group status` | `status` | 否 | 否 |
+
+如果某个 legacy command 现在是 one-shot 且会推进 epoch，extraction 后不能直接保持 native typed API 的 one-shot 语义；只能在 compat layer 内模拟旧 JSON command，native provider 必须使用 prepare/finalize/abort。
+
+### 8.3 command compatibility layer
 
 保留 anp-mls/v1 JSON command compatibility：
 
@@ -700,7 +903,23 @@ print JSON response
 ```toml
 [features]
 group-e2ee = ["anp/mls", "sqlite"]
+
+[dependencies]
+anp = { workspace = true, default-features = false }
 ```
+
+`anp` workspace dependency 必须继续 `default-features = false`。`im-core` 只在 `group-e2ee` feature 下启用 `anp/mls`，避免默认把 `anp` 的 `network` 或其他非必要 feature 带入 SDK / Flutter packaging。
+
+Required check：
+
+```bash
+cargo check -p im-core --no-default-features
+cargo check -p im-core --features group-e2ee
+cargo test -p im-core --features group-e2ee
+cargo check -p im-core-dart
+```
+
+移动端/Flutter packaging 需要额外确认 `anp/mls` 拉入的 OpenMLS / rusqlite / bundled SQLite 依赖在 iOS、macOS、Android 目标上可构建。
 
 内部模块：
 
@@ -714,6 +933,16 @@ crates/im-core/src/internal/group_e2ee/
   runtime.rs              # group E2EE orchestration
   transport.rs            # message service RPC transport
   projection.rs           # decrypt/send local projection
+```
+
+`awiki-cli` 迁移规则：
+
+```text
+1. awiki-cli group_e2ee_* 不再长期直接 new MlsExecProvider。
+2. awiki-cli normal command path 改为调用 im-core group E2EE send/status/repair runtime。
+3. MlsExecProvider 保留为 compat fallback、legacy command wrapper 或 tests helper。
+4. fallback 必须显式 feature/env gate，不作为默认路径。
+5. 新增 contract tests 确认 CLI 默认路径不会绕过 im-core native provider。
 ```
 
 Public API 不变：
@@ -745,7 +974,34 @@ raw_mls_provider(...)
 
 ## 10. 迁移路径
 
-### PR M1：anp MLS operations extraction
+### PR M0：storage / transaction / epoch spike
+
+目标：
+
+```text
+先验证存储和一致性边界，不做大迁移。
+```
+
+验证项：
+
+```text
+1. anp library 能否打开 im-core local_state.sqlite。
+2. openmls_sqlite_storage 是否能和 im-core 共享同一个 SQLite file。
+3. 是否能共享同一个 connection / transaction。
+4. OpenMLS migrations 是否影响 im-core PRAGMA user_version。
+5. group add-member / group create 是否能改成 pending prepare，而不是 merge immediately。
+6. crash after prepare / before finalize 的恢复行为。
+```
+
+输出：
+
+```text
+A. 可同库同事务。
+B. 可同库不同 connection，但不能同事务。
+C. 只能 internal sibling mls_state.sqlite。
+```
+
+### PR M1：anp extraction，不改变 binary 行为
 
 目标：
 
@@ -762,7 +1018,37 @@ raw_mls_provider(...)
 4. library API 有 typed errors。
 ```
 
-### PR M2：storage abstraction
+### PR M2：epoch-changing operations 统一 prepare/finalize/abort
+
+目标：
+
+```text
+把所有会推进 MLS epoch 的 operations 统一到 prepare/finalize/abort。
+```
+
+范围：
+
+```text
+group create prepare/finalize/abort
+group add-member prepare/finalize/abort
+group remove-member prepare/finalize/abort
+group leave prepare/finalize/abort
+update-member prepare/finalize/abort
+recover-member prepare/finalize/abort
+generic commit-finalize / commit-abort typed API
+```
+
+完成标准：
+
+```text
+1. prepare 不更新 active binding epoch 为新 epoch。
+2. finalize 只在 service accepted 后 merge pending commit 并更新 binding epoch。
+3. abort / pending retry 不推进 local binding epoch。
+4. 当前 add-member one-shot merge 行为不进入 NativeAnpMlsProvider。
+5. crash after prepare / before finalize 可通过 pending_commits 恢复或显式 abort。
+```
+
+### PR M3：storage abstraction
 
 目标：
 
@@ -781,12 +1067,36 @@ raw_mls_provider(...)
 4. group_mls_* metadata tables 用 owner_identity_id 隔离。
 ```
 
-### PR M3：im-core NativeAnpMlsProvider
+### PR M4：im-core provider trait + fake / exec / native skeleton
 
 目标：
 
 ```text
-im-core group-e2ee feature 下新增 NativeAnpMlsProvider。
+im-core group-e2ee feature 下新增 GroupMlsProvider trait、FakeGroupMlsProvider、ExecAnpMlsProvider compat adapter 和 NativeAnpMlsProvider skeleton。
+```
+
+完成标准：
+
+```text
+1. provider path 不进入 public API。
+2. fake provider 可覆盖 status/prepare/repair/send/decrypt tests。
+3. ExecAnpMlsProvider 只作为 compat adapter。
+4. NativeAnpMlsProvider skeleton 不接 public SDK route。
+```
+
+### PR M5：NativeAnpMlsProvider + storage adapter
+
+目标：
+
+```text
+按 PR M0 结论接入 native provider storage。
+```
+
+选择：
+
+```text
+优先：same local_state.sqlite if proven safe。
+否则：internal mls_state.sqlite sibling。
 ```
 
 完成标准：
@@ -794,11 +1104,11 @@ im-core group-e2ee feature 下新增 NativeAnpMlsProvider。
 ```text
 1. im-core 直接调用 anp library。
 2. 不 spawn anp-mls。
-3. provider path 不进入 public API。
-4. fake provider 可覆盖 status/prepare/repair/send/decrypt tests。
+3. 不在 SDK public API 暴露 MLS storage path。
+4. group_mls_* metadata owner_identity_id 隔离测试通过。
 ```
 
-### PR M4：group send/decrypt 切到 native provider
+### PR M6：group send/decrypt/status/repair 接入 im-core
 
 目标：
 
@@ -813,9 +1123,28 @@ group E2EE send/decrypt/status/repair 默认走 NativeAnpMlsProvider。
 2. group E2EE send 成功后仍通过 message service RPC 发送 cipher。
 3. local projection 不保存 application plaintext 到 MLS operation log。
 4. status DTO 不暴露 MLS epoch / KeyPackage / raw notice / OpenMLS group id。
+5. 不在 SQLite transaction 内执行网络 RPC。
+6. service accepted 后 finalize，service rejected/network failed 后 abort 或 pending retry。
 ```
 
-### PR M5：legacy data import
+### PR M7：awiki-cli 旧路径迁移
+
+目标：
+
+```text
+awiki-cli group_e2ee_* 不再默认直接 new MlsExecProvider。
+```
+
+完成标准：
+
+```text
+1. awiki-cli group send/status/repair/decrypt 默认调用 im-core group E2EE runtime。
+2. MlsExecProvider 只作为 fallback feature / test helper / legacy wrapper。
+3. CLI contract tests 覆盖默认路径和 fallback 路径。
+4. doctor/report 更新，不再要求普通 SDK 用户理解 anp-mls binary path。
+```
+
+### PR M8：legacy data import / cleanup
 
 目标：
 
