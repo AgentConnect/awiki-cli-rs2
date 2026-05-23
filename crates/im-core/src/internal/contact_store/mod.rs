@@ -2,6 +2,8 @@
 pub(crate) mod projection;
 #[cfg(feature = "sqlite")]
 pub(crate) mod records;
+#[cfg(feature = "sqlite")]
+pub(crate) mod relationships;
 
 #[cfg(feature = "sqlite")]
 pub(crate) fn open_writable(

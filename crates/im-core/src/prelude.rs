@@ -8,8 +8,9 @@ pub use crate::core::{
     PathValidationReport,
 };
 pub use crate::directory::{
-    Contact, ContactListQuery, DirectoryResolution, DirectoryService, HandleLookupResult,
-    IdentitySubject, PublicProfile, RelationStatus, SaveContactRequest,
+    Contact, ContactListQuery, DirectoryResolution, DirectoryService, FollowRequest, FollowResult,
+    HandleLookupResult, IdentitySubject, PublicProfile, RelationStatus, RelationshipListItem,
+    RelationshipListQuery, RelationshipStatus, SaveContactRequest, UnfollowRequest, UnfollowResult,
 };
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::{

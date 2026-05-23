@@ -155,9 +155,9 @@ msg secure failed/retry/drop
 runtime host-notify openclaw set-token
 runtime host-notify openclaw route add/remove
 runtime host-notify hermes set-secret
-runtime heartbeat stub
-people stub
-group code stub
+runtime heartbeat placeholder commands
+people.search placeholder command
+group code placeholder commands
 ```
 
 这些命令要么是实现细节，要么是调试入口，要么是尚未完成的占位符。它们可以被：
@@ -539,7 +539,8 @@ runtime host-notify target add ...
 | 命令族 | cutover 策略 | 原因 |
 | --- | --- | --- |
 | `runtime.heartbeat.*` | removed 或 hidden | 当前是 stub，不应展示。 |
-| `people.*` | hidden 或 unsupported | 当前多为 stub；未来应由 directory/relation service 重新设计。 |
+| `people.follow/unfollow/status/followers/following` | im-core | 已由 `DirectoryService` relationship API 支撑；`people.search` 仍 unsupported。 |
+| `people.contacts.*` | im-core | 已由 `DirectoryService::save_contact/contacts` 支撑。 |
 | `page.*` | hidden 或 unsupported | 不属于当前 im-core IM public API。 |
 | `site.*` | hidden 或 unsupported | 不属于当前 im-core IM public API。 |
 | `debug.db.handle-history` | advanced/diagnostic-only | 可保留给迁移排错，但不进默认 help。 |
@@ -865,7 +866,8 @@ msg.secure.failed/retry/drop -> hidden / diagnostic-only
 group.e2ee.*                 -> hidden / diagnostic-only
 group.code.*                 -> removed / hidden
 runtime.heartbeat.*          -> removed / hidden
-people.*                     -> hidden until real directory/relation API
+people.search                -> unsupported until search API exists
+people.follow/status/followers/following/contacts.* -> im-core directory relationship/contact API
 page.* / site.*              -> hidden / unsupported
 debug.raw.*                  -> removed / hidden
 debug.db.query               -> hidden / feature-gated
@@ -1066,7 +1068,7 @@ group e2ee pending
 group e2ee process-leave-request
 msg secure failed/retry/drop
 runtime heartbeat *
-people stubs
+people.search
 group code stubs
 page/site/mail
 provider token/secret/route internals

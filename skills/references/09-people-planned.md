@@ -1,46 +1,51 @@
-# People Planned Reference
+# People Reference
 
 ## Purpose
 
-This reference exists only to describe the current contract boundary for future people and relationship capabilities in `awiki-cli`.
+This reference describes the current people, relationship, and local-contact command boundary in `awiki-cli`.
 
-This file is a **planned appendix**, not a normal operational reference. Load it only when the user asks whether people, follower, following, or local-contact capabilities already exist.
+Load it when the user asks whether people, follower, following, or local-contact capabilities already exist.
 
 ## Current Status
 
-- Status: **planned**
-- The corresponding command handlers are not implemented in the current repository
+- Status: **partially implemented**
+- `people follow`, `people unfollow`, `people status`, `people followers`, `people following`, `people contacts list`, and `people contacts save` are implemented through `im-core` `DirectoryService`.
+- `people search` remains unsupported until a search API is designed.
 
-Do not describe these commands as working current features.
+Do not describe people search as implemented.
 
-## Future Planned Scope
+## Current Implemented Scope
 
-- people search
 - follow / unfollow
 - relationship status
 - followers / following
 - local contacts list and save
 
-## Planned Command Contracts
+## Command Contracts
 
-- `awiki-cli people search <QUERY>`
 - `awiki-cli people follow <TARGET>`
 - `awiki-cli people unfollow <TARGET>`
 - `awiki-cli people status <TARGET>`
-- `awiki-cli people followers`
-- `awiki-cli people following`
+- `awiki-cli people followers [--limit N] [--offset N] [--profile]`
+- `awiki-cli people following [--limit N] [--offset N] [--profile]`
 - `awiki-cli people contacts list`
-- `awiki-cli people contacts save --did <did> [--handle <handle>] [--reason <text>]`
+- `awiki-cli people contacts save --did <did> [--handle <handle>] [--name <name>] [--relationship <label>] [--reason <text>]`
+
+## Future Planned Scope
+
+- `awiki-cli people search <QUERY>`
+- block / unblock
+- recommendation and discovery flows
 
 ## Usage Guidance
 
 - If the user needs relationship discovery today, use `07-discovery.md`
 - If the user needs real message history or group inspection today, use `03-messaging.md` or `04-groups.md`
-- If the user asks whether `people` is available, answer that the contract is reserved but currently unimplemented
+- If the user asks whether `people` is available, answer that relationship and local-contact commands are available, while `people search` is still unsupported.
 
-## Future Confirmation Rules
+## Confirmation Rules
 
-If these commands are implemented in the future, the following commands will require explicit confirmation because they change relationship state or local-contact state:
+The following commands change relationship state or local-contact state and should be treated as side-effecting commands:
 
 - `people follow`
 - `people unfollow`

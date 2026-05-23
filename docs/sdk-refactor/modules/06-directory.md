@@ -24,6 +24,7 @@ P1 不要求：
 - relation status。
 - profile projection。
 - contact cache merge。
+- remote relationship mutation/list。
 
 ## 3. P2 职责
 
@@ -31,7 +32,9 @@ P1 不要求：
 - DID/handle lookup。
 - 联系人保存、查询、来源标注。
 - profile 读取结果到联系人模型的投影。
-- 关系状态查询和关系事件记录。
+- 本地 relation status 查询。
+- 远端 DID relationship 关注、取消关注、关系状态、粉丝列表、关注列表。
+- 关系事件记录和 best-effort contact projection。
 
 ## 4. 接口草案
 
@@ -69,15 +72,42 @@ impl DirectoryService<'_> {
 
     pub fn contacts(
         &self,
-        query: ContactQuery,
+        query: ContactListQuery,
     ) -> ImResult<Page<Contact>>;
 
     pub fn relation_status(
         &self,
         peer: PeerRef,
     ) -> ImResult<RelationStatus>;
+
+    pub fn follow(
+        &self,
+        request: FollowRequest,
+    ) -> ImResult<FollowResult>;
+
+    pub fn unfollow(
+        &self,
+        request: UnfollowRequest,
+    ) -> ImResult<UnfollowResult>;
+
+    pub fn relationship_status(
+        &self,
+        peer: PeerRef,
+    ) -> ImResult<RelationshipStatus>;
+
+    pub fn followers(
+        &self,
+        query: RelationshipListQuery,
+    ) -> ImResult<Page<RelationshipListItem>>;
+
+    pub fn following(
+        &self,
+        query: RelationshipListQuery,
+    ) -> ImResult<Page<RelationshipListItem>>;
 }
 ```
+
+`relation_status(peer)` 保持本地通讯录投影语义。`relationship_status(peer)` 走 user-service DID relationship RPC，是远端 authoritative 状态，并只把 DID、handle/profile、关系布尔值、created_at、warnings 暴露到 SDK public DTO；`from_user_id` / `to_user_id` 等服务端内部字段不得进入 public DTO。
 
 `ContactRecord`、`upsert_contact_record(owner, record, paths)` 这类 store 级对象和函数属于内部实现。
 

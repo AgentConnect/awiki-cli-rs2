@@ -69,3 +69,62 @@ pub struct SaveContactRequest {
 pub struct ContactListQuery {
     pub limit: Option<crate::ids::PageLimit>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowRequest {
+    pub peer: crate::ids::PeerRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnfollowRequest {
+    pub peer: crate::ids::PeerRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowResult {
+    pub peer: crate::ids::PeerRef,
+    pub did: crate::ids::Did,
+    pub is_friend: bool,
+    pub relation: RelationshipStatus,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnfollowResult {
+    pub peer: crate::ids::PeerRef,
+    pub did: crate::ids::Did,
+    pub ok: bool,
+    pub relation: RelationshipStatus,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipStatus {
+    pub peer: crate::ids::PeerRef,
+    pub did: crate::ids::Did,
+    pub is_following: bool,
+    pub is_follower: bool,
+    pub is_friend: bool,
+    pub is_blocked: bool,
+    pub is_blocked_by: bool,
+    pub is_contact: bool,
+    pub messaged: bool,
+    pub relationship: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RelationshipListQuery {
+    pub limit: Option<crate::ids::PageLimit>,
+    pub offset: Option<u32>,
+    pub hydrate_profiles: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationshipListItem {
+    pub did: Option<crate::ids::Did>,
+    pub handle: Option<crate::ids::Handle>,
+    pub profile: Option<crate::identity::Profile>,
+    pub created_at: Option<String>,
+    pub warnings: Vec<String>,
+}

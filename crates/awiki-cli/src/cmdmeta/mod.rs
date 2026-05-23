@@ -191,10 +191,10 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "outside current im-core cutover",
         });
     }
-    if has_command_prefix(name, "people") {
+    if name == "people.search" {
         return Some(CutoverStatus::Unsupported {
             capability: "people-directory",
-            phase: "future directory/relation API",
+            phase: "future people search API",
         });
     }
     if has_any_command_prefix(name, &["page", "site"]) {
@@ -235,6 +235,15 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "group.list",
             "group.members",
             "group.messages",
+            "people",
+            "people.follow",
+            "people.unfollow",
+            "people.status",
+            "people.followers",
+            "people.following",
+            "people.contacts",
+            "people.contacts.list",
+            "people.contacts.save",
         ],
     ) {
         return Some(CutoverStatus::ImCore);
@@ -636,14 +645,14 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "runtime.heartbeat.run-once", use_: "run-once", short: "Run heartbeat once", long: "", aliases: &[], phase: "phase7", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "people", use_: "people", short: "People, relationships, and contacts commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "people.search", use_: "search <QUERY>", short: "Search users", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
-        CommandSpec { name: "people.follow", use_: "follow <TARGET>", short: "Follow a user", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
-        CommandSpec { name: "people.unfollow", use_: "unfollow <TARGET>", short: "Unfollow a user", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
-        CommandSpec { name: "people.status", use_: "status <TARGET>", short: "Show relationship status", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
-        CommandSpec { name: "people.followers", use_: "followers", short: "List followers", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
-        CommandSpec { name: "people.following", use_: "following", short: "List following", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
-        CommandSpec { name: "people.contacts", use_: "contacts", short: "Manage local contacts", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
-        CommandSpec { name: "people.contacts.list", use_: "list", short: "List local contacts", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
-        CommandSpec { name: "people.contacts.save", use_: "save", short: "Save a local contact", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did", "string", "Contact DID", required), flag!("handle", "string", "Contact handle"), flag!("reason", "string", "Why the contact was saved")] },
+        CommandSpec { name: "people.follow", use_: "follow <TARGET>", short: "Follow a user", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "people.follow", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "people.unfollow", use_: "unfollow <TARGET>", short: "Unfollow a user", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "people.unfollow", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "people.status", use_: "status <TARGET>", short: "Show relationship status", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "people.status", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "people.followers", use_: "followers", short: "List followers", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "people.followers", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("limit", "int", "Maximum number of rows", default = "50"), flag!("offset", "int", "Pagination offset", default = "0"), flag!("profile", "bool", "Hydrate public profiles")] },
+        CommandSpec { name: "people.following", use_: "following", short: "List following", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "people.following", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("limit", "int", "Maximum number of rows", default = "50"), flag!("offset", "int", "Pagination offset", default = "0"), flag!("profile", "bool", "Hydrate public profiles")] },
+        CommandSpec { name: "people.contacts", use_: "contacts", short: "Manage local contacts", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "people.contacts.list", use_: "list", short: "List local contacts", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "people.contacts.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("limit", "int", "Maximum number of rows", default = "100")] },
+        CommandSpec { name: "people.contacts.save", use_: "save", short: "Save a local contact", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "people.contacts.save", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did", "string", "Contact DID", required), flag!("handle", "string", "Contact handle"), flag!("name", "string", "Contact display name"), flag!("relationship", "string", "Local relationship label"), flag!("reason", "string", "Why the contact was saved")] },
         CommandSpec { name: "page", use_: "page", short: "Handle-level content page commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "page.create", use_: "create", short: "Create a handle-level content page", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "page.create", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("slug", "string", "Page slug"), flag!("title", "string", "Page title"), flag!("markdown", "string", "Inline markdown body"), flag!("markdown-file", "string", "Markdown file path"), flag!("visibility", "string", "Page visibility", default = "public", choices = ["public", "draft", "unlisted"])] },
         CommandSpec { name: "page.list", use_: "list", short: "List handle-level content pages", long: "", aliases: &[], phase: "phase8", hidden: false, implemented: true, handler: "page.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
