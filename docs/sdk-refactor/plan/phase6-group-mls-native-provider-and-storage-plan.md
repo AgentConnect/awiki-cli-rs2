@@ -1349,6 +1349,55 @@ group E2EE send/decrypt/status/repair 默认走 NativeAnpMlsProvider。
 6. service accepted 后 finalize，service rejected/network failed 后 abort 或 pending retry。
 ```
 
+当前进展：
+
+```text
+awiki-cli-rs2 local commit 6bf9897
+  feat: add internal group e2ee send runtime
+
+已完成：
+1. 新增 internal/group_e2ee/runtime.rs：
+   - GroupE2eeTextSender；
+   - GroupE2eeTextSend；
+   - GroupE2eeTextSendResult。
+2. 新增 internal/group_e2ee/wire.rs：
+   - 构造 group.e2ee.send RPC params；
+   - 复用现有 origin proof；
+   - body 只包含 service delivery 需要的 cipher fields。
+3. GroupE2eeTextSender send flow：
+   - 校验 target 必须是 group；
+   - 校验 MessageSecurityMode 必须是 GroupE2ee；
+   - 确认 AuthScope::GroupMessaging session；
+   - 构造 GroupApplicationPlaintext；
+   - 调用 GroupMlsProvider::encrypt；
+   - 调用 message service group.e2ee.send；
+   - 复用普通 group send 的 SDK result mapping。
+4. group.e2ee.send body 当前只写入：
+   - crypto_group_id_b64u；
+   - epoch；
+   - private_message_b64u；
+   - group_state_ref；
+   - epoch_authenticator。
+5. 新增 unit test 验证：
+   - encrypt 先于 RPC send；
+   - RPC method 是 group.e2ee.send；
+   - request body 不包含 plaintext / application_plaintext；
+   - origin proof 存在；
+   - SDK result 可从 group service response 映射。
+
+边界：
+1. 这是 im-core internal runtime slice，不接 public SDK route。
+2. MessageSecurityMode::GroupE2ee 对 public messages().send 仍保持 reserved/unsupported。
+3. caller 仍必须提供 group_state_ref；在 group_state_ref lookup/repair 稳定前，不能把它作为默认 public send path。
+4. encrypt 不推进 MLS epoch，因此这一段不需要 prepare/finalize/abort。
+5. create/add/remove/update/recover/leave 后续接入时仍必须遵守 prepare -> service RPC -> finalize/abort。
+
+验证：
+1. cargo fmt --check
+2. cargo check -p im-core --features group-e2ee
+3. cargo test -p im-core --features group-e2ee group_e2ee_text_sender_encrypts_then_sends_cipher_without_plaintext
+```
+
 ### PR M7：awiki-cli 旧路径迁移
 
 目标：
