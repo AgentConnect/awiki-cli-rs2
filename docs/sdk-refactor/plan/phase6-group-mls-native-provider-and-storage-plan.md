@@ -1251,9 +1251,8 @@ generic commit-finalize / commit-abort typed API
 7. ImCoreSqliteGroupMlsStore 不创建 legacy agents/key_packages/group_bindings/pending_commits 业务表；兼容 JSON core 通过 operation-scope TEMP view/trigger 写入 group_mls_* tables。
 
 仍未完成：
-1. im-core crate 内部 GroupMlsProvider trait / fake / native provider skeleton。
-2. im-core identity runtime 到 ImCoreSqliteGroupMlsStore 的 owner_identity_id/owner_did/device_id wiring。
-3. group_mls_operations operation log 目前只定义 schema；native im-core path 的 operation log redaction/diagnostics 读取策略还需要在 provider 接入时完成。
+1. group_mls_operations operation log 目前只定义 schema；native im-core path 的 operation log redaction/diagnostics 读取策略还需要在 provider 接入时完成。
+2. im-core group secure send/decrypt/status/repair runtime 尚未接入 provider。
 ```
 
 ### PR M4：im-core provider trait + fake / exec / native skeleton
@@ -1271,6 +1270,40 @@ im-core group-e2ee feature 下新增 GroupMlsProvider trait、FakeGroupMlsProvid
 2. fake provider 可覆盖 status/prepare/repair/send/decrypt tests。
 3. ExecAnpMlsProvider 只作为 compat adapter。
 4. NativeAnpMlsProvider skeleton 不接 public SDK route。
+```
+
+当前进展：
+
+```text
+awiki-cli-rs2 local commit d056020
+  feat: add im-core group mls provider skeleton
+
+已完成：
+1. crates/im-core/Cargo.toml group-e2ee feature 改为 ["sqlite", "anp/mls"]。
+2. 新增 internal/group_e2ee/provider.rs：
+   - GroupMlsProvider trait；
+   - typed operation matrix 覆盖 key package、create/add/remove/update/recover prepare、finalize/abort、welcome/notice、encrypt/decrypt/status。
+3. 新增 NativeAnpMlsProvider：
+   - 直接调用 anp::group_e2ee::operations typed one-shot functions；
+   - 不 spawn anp-mls；
+   - 不暴露 provider path / OpenMLS StorageProvider。
+4. 新增 FakeGroupMlsProvider skeleton，供后续 im-core runtime tests 注入。
+5. 新增 internal/group_e2ee/storage.rs：
+   - 从 ImClient.current_identity().id/did/device_id 和 ImCorePaths.local_state.sqlite_path 构造 ImCoreSqliteGroupMlsStore；
+   - device_id 为空时使用 anp 默认 device id；
+   - sibling scoped mls_state.sqlite 仍是 internal detail。
+6. 新增 module test，验证 NativeAnpMlsProvider 可通过 client identity scope 创建/finalize group 并读取 status。
+7. group-e2ee 仍未接 public SDK route；MessageSecurityMode::GroupE2ee 仍保持 reserved/unsupported。
+
+验证：
+1. cargo check -p im-core --no-default-features
+2. cargo check -p im-core --features group-e2ee
+3. cargo test -p im-core --features group-e2ee
+4. cargo check -p im-core-dart
+5. cargo check --workspace --all-features
+
+说明：
+ExecAnpMlsProvider 未在 d056020 中实现；当前默认方向是 native provider。exec fallback 只有在 awiki-cli legacy migration 需要显式 compat feature 时再补，不能成为默认路径。
 ```
 
 ### PR M5：NativeAnpMlsProvider + storage adapter
