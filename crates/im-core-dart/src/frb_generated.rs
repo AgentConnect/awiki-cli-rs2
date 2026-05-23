@@ -1729,7 +1729,6 @@ impl SseDecode for crate::dto::group::DartCreateGroupRequest {
         let mut var_maxMembers = <Option<String>>::sse_decode(deserializer);
         let mut var_memberMaxMessages = <Option<i64>>::sse_decode(deserializer);
         let mut var_memberMaxTotalChars = <Option<i64>>::sse_decode(deserializer);
-        let mut var_serviceDid = <Option<String>>::sse_decode(deserializer);
         return crate::dto::group::DartCreateGroupRequest {
             name: var_name,
             description: var_description,
@@ -1746,7 +1745,6 @@ impl SseDecode for crate::dto::group::DartCreateGroupRequest {
             max_members: var_maxMembers,
             member_max_messages: var_memberMaxMessages,
             member_max_total_chars: var_memberMaxTotalChars,
-            service_did: var_serviceDid,
         };
     }
 }
@@ -2941,7 +2939,6 @@ impl flutter_rust_bridge::IntoDart for crate::dto::group::DartCreateGroupRequest
             self.max_members.into_into_dart().into_dart(),
             self.member_max_messages.into_into_dart().into_dart(),
             self.member_max_total_chars.into_into_dart().into_dart(),
-            self.service_did.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -3949,7 +3946,6 @@ impl SseEncode for crate::dto::group::DartCreateGroupRequest {
         <Option<String>>::sse_encode(self.max_members, serializer);
         <Option<i64>>::sse_encode(self.member_max_messages, serializer);
         <Option<i64>>::sse_encode(self.member_max_total_chars, serializer);
-        <Option<String>>::sse_encode(self.service_did, serializer);
     }
 }
 
@@ -4680,7 +4676,6 @@ mod io {
     use super::*;
     use crate::api::auth::*;
     use crate::api::client::*;
-    use crate::api::core::*;
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
@@ -4784,7 +4779,6 @@ mod web {
     use super::*;
     use crate::api::auth::*;
     use crate::api::client::*;
-    use crate::api::core::*;
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };

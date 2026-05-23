@@ -57,7 +57,7 @@ pub(crate) fn project_group_members(
 ) {
     let members = group_member_records(client, group_did, result);
     let raw_has_members = result
-        .diagnostic_raw()
+        .raw_response()
         .and_then(|raw| raw.get("members"))
         .is_some();
     if members.is_empty() && !raw_has_members {
@@ -109,7 +109,7 @@ fn group_record(
     client: &crate::core::ImClient,
     result: &crate::groups::GroupReadResult,
 ) -> Option<crate::internal::local_state::groups::GroupRecord> {
-    let raw = result.diagnostic_raw().cloned().unwrap_or(Value::Null);
+    let raw = result.raw_response().cloned().unwrap_or(Value::Null);
     let snapshot = snapshot_from_result(result).or_else(|| normalize_group_snapshot(&raw))?;
     let group_did = string_value(snapshot.get("group_did"));
     if group_did.trim().is_empty() {
@@ -155,7 +155,7 @@ fn group_member_records(
     group_did: &str,
     result: &crate::groups::GroupReadResult,
 ) -> Vec<crate::internal::local_state::groups::GroupMemberRecord> {
-    let raw = result.diagnostic_raw().cloned().unwrap_or(Value::Null);
+    let raw = result.raw_response().cloned().unwrap_or(Value::Null);
     let members = members_from_result(result, &raw);
     members
         .iter()
@@ -168,7 +168,7 @@ fn group_summary_records(
     client: &crate::core::ImClient,
     result: &crate::groups::GroupReadResult,
 ) -> Vec<crate::internal::local_state::groups::GroupRecord> {
-    let raw = result.diagnostic_raw().cloned().unwrap_or(Value::Null);
+    let raw = result.raw_response().cloned().unwrap_or(Value::Null);
     if !result.groups.is_empty() {
         return result
             .groups

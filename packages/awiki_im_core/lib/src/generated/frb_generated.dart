@@ -2211,8 +2211,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return DartCreateGroupRequest(
       name: dco_decode_String(arr[0]),
       description: dco_decode_opt_String(arr[1]),
@@ -2229,7 +2229,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       maxMembers: dco_decode_opt_String(arr[12]),
       memberMaxMessages: dco_decode_opt_box_autoadd_i_64(arr[13]),
       memberMaxTotalChars: dco_decode_opt_box_autoadd_i_64(arr[14]),
-      serviceDid: dco_decode_opt_String(arr[15]),
     );
   }
 
@@ -3205,7 +3204,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_maxMembers = sse_decode_opt_String(deserializer);
     var var_memberMaxMessages = sse_decode_opt_box_autoadd_i_64(deserializer);
     var var_memberMaxTotalChars = sse_decode_opt_box_autoadd_i_64(deserializer);
-    var var_serviceDid = sse_decode_opt_String(deserializer);
     return DartCreateGroupRequest(
       name: var_name,
       description: var_description,
@@ -3222,7 +3220,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       maxMembers: var_maxMembers,
       memberMaxMessages: var_memberMaxMessages,
       memberMaxTotalChars: var_memberMaxTotalChars,
-      serviceDid: var_serviceDid,
     );
   }
 
@@ -4452,7 +4449,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_opt_String(self.maxMembers, serializer);
     sse_encode_opt_box_autoadd_i_64(self.memberMaxMessages, serializer);
     sse_encode_opt_box_autoadd_i_64(self.memberMaxTotalChars, serializer);
-    sse_encode_opt_String(self.serviceDid, serializer);
   }
 
   @protected

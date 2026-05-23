@@ -77,7 +77,7 @@ fn reserved_message_capabilities_return_unsupported() {
     let attachment = client.messages().send(SendMessageRequest {
         target: MessageTarget::Group(GroupRef::parse("did:example:group").unwrap()),
         body: MessageBody::Attachment {
-            input: AttachmentInput::LocalFile("image.png".to_string()),
+            input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
             caption: None,
             mime_type: None,
         },

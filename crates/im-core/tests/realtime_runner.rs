@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 
-use im_core::prelude::*;
-use im_core::realtime::{
+use im_core::compat::realtime::{
     run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
     RealtimeRunnerEventSink, RealtimeRunnerTransport,
 };
+use im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[test]

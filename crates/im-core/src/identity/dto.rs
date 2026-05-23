@@ -149,29 +149,29 @@ pub struct ContactBindingResult {
     pub target: String,
     pub state: ContactBindingState,
     #[serde(skip)]
-    diagnostic_raw: Option<serde_json::Value>,
+    raw_response: Option<serde_json::Value>,
     pub warnings: Vec<String>,
 }
 
 impl ContactBindingResult {
-    pub(crate) fn with_diagnostic_raw(
+    pub(crate) fn with_raw_response(
         method: ContactBindingMethodKind,
         target: String,
         state: ContactBindingState,
-        diagnostic_raw: Option<serde_json::Value>,
+        raw_response: Option<serde_json::Value>,
         warnings: Vec<String>,
     ) -> Self {
         Self {
             method,
             target,
             state,
-            diagnostic_raw,
+            raw_response,
             warnings,
         }
     }
 
-    pub fn diagnostic_raw(&self) -> Option<&serde_json::Value> {
-        self.diagnostic_raw.as_ref()
+    pub(crate) fn raw_response(&self) -> Option<&serde_json::Value> {
+        self.raw_response.as_ref()
     }
 }
 
@@ -211,17 +211,17 @@ pub struct RecoverHandleResult {
     pub state: RecoverHandleState,
     pub recovered_identity: Option<RecoveredIdentity>,
     #[serde(skip)]
-    diagnostic_raw: Option<serde_json::Value>,
+    raw_response: Option<serde_json::Value>,
     pub warnings: Vec<String>,
 }
 
 impl RecoverHandleResult {
-    pub(crate) fn with_diagnostic_raw(
+    pub(crate) fn with_raw_response(
         handle: crate::ids::Handle,
         phone: String,
         state: RecoverHandleState,
         recovered_identity: Option<RecoveredIdentity>,
-        diagnostic_raw: Option<serde_json::Value>,
+        raw_response: Option<serde_json::Value>,
         warnings: Vec<String>,
     ) -> Self {
         Self {
@@ -229,13 +229,13 @@ impl RecoverHandleResult {
             phone,
             state,
             recovered_identity,
-            diagnostic_raw,
+            raw_response,
             warnings,
         }
     }
 
-    pub fn diagnostic_raw(&self) -> Option<&serde_json::Value> {
-        self.diagnostic_raw.as_ref()
+    pub(crate) fn raw_response(&self) -> Option<&serde_json::Value> {
+        self.raw_response.as_ref()
     }
 }
 
@@ -356,8 +356,8 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn binding_and_recover_results_keep_raw_diagnostic_only() {
-        let binding = ContactBindingResult::with_diagnostic_raw(
+    fn binding_and_recover_results_keep_raw_response_internal_only() {
+        let binding = ContactBindingResult::with_raw_response(
             ContactBindingMethodKind::Email,
             "alice@example.test".to_string(),
             ContactBindingState::EmailSent,
@@ -367,14 +367,15 @@ mod tests {
         let binding_json = serde_json::to_value(&binding).expect("serialize binding result");
         assert_eq!(
             binding
-                .diagnostic_raw()
+                .raw_response()
                 .and_then(|raw| raw.get("provider_state")),
             Some(&json!("sent"))
         );
-        assert!(binding_json.get("diagnostic_raw").is_none());
+        assert!(binding_json.get("raw_response").is_none());
+        assert!(binding_json.get("raw_response").is_none());
         assert!(binding_json.get("raw").is_none());
 
-        let recover = RecoverHandleResult::with_diagnostic_raw(
+        let recover = RecoverHandleResult::with_raw_response(
             crate::ids::Handle::parse("alice", "example.test").expect("handle"),
             "+15551234567".to_string(),
             RecoverHandleState::OtpSent,
@@ -384,10 +385,11 @@ mod tests {
         );
         let recover_json = serde_json::to_value(&recover).expect("serialize recover result");
         assert_eq!(
-            recover.diagnostic_raw().and_then(|raw| raw.get("sent")),
+            recover.raw_response().and_then(|raw| raw.get("sent")),
             Some(&json!(true))
         );
-        assert!(recover_json.get("diagnostic_raw").is_none());
+        assert!(recover_json.get("raw_response").is_none());
+        assert!(recover_json.get("raw_response").is_none());
         assert!(recover_json.get("raw").is_none());
     }
 }

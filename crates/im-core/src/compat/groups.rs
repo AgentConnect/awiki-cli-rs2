@@ -2,6 +2,11 @@
 
 use serde_json::Value;
 
+#[doc(hidden)]
+pub fn raw_response(result: &crate::groups::GroupReadResult) -> Option<&Value> {
+    result.raw_response()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GroupGetBridgeRequest {
     pub group: crate::ids::GroupRef,

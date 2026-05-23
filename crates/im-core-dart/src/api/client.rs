@@ -8,16 +8,12 @@ pub struct DartImClient {
 
 struct DartImClientState {
     inner: Option<im_core::ImClient>,
-    default_service_did: Option<String>,
 }
 
 impl DartImClient {
-    pub(crate) fn new(inner: im_core::ImClient, default_service_did: Option<String>) -> Self {
+    pub(crate) fn new(inner: im_core::ImClient) -> Self {
         Self {
-            state: Arc::new(RwLock::new(DartImClientState {
-                inner: Some(inner),
-                default_service_did,
-            })),
+            state: Arc::new(RwLock::new(DartImClientState { inner: Some(inner) })),
         }
     }
 
@@ -44,29 +40,17 @@ impl DartImClient {
         guard.inner = None;
         Ok(())
     }
-
-    pub(crate) fn default_service_did(&self) -> Result<Option<String>, DartImError> {
-        let guard = self
-            .state
-            .read()
-            .map_err(|_| DartImError::internal("client lock poisoned"))?;
-        if guard.inner.is_none() {
-            return Err(DartImError::object_closed("DartImClient"));
-        }
-        Ok(guard.default_service_did.clone())
-    }
 }
 
 pub fn core_client(
     core: Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
 ) -> Result<Arc<DartImClient>, DartImError> {
-    let default_service_did = core.default_service_did()?;
     core.with_inner(|inner| {
         let client = inner
             .client(selector.try_into()?)
             .map_err(DartImError::from)?;
-        Ok(Arc::new(DartImClient::new(client, default_service_did)))
+        Ok(Arc::new(DartImClient::new(client)))
     })
 }
 

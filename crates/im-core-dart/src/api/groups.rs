@@ -13,11 +13,10 @@ pub fn create_group(
     client: Arc<crate::api::client::DartImClient>,
     request: DartCreateGroupRequest,
 ) -> Result<DartGroupReadResult, DartImError> {
-    let default_service_did = client.default_service_did()?;
     client.with_inner(|inner| {
         inner
             .groups()
-            .create(request.into_core(default_service_did)?)
+            .create(request.into_core()?)
             .map(Into::into)
             .map_err(DartImError::from)
     })

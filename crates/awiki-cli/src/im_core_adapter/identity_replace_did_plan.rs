@@ -2,10 +2,8 @@
 // Non-dry-run execution is intentionally unsupported until im-core exposes a
 // stable public execution API that owns the local mutation boundary.
 
-use im_core::prelude::{
-    Did, Handle, IdentityId, IdentitySelector, ReplaceDidAffectedLocalState, ReplaceDidPlan,
-    ReplaceDidPlanRequest,
-};
+use im_core::identity::{ReplaceDidAffectedLocalState, ReplaceDidPlan, ReplaceDidPlanRequest};
+use im_core::prelude::{Did, Handle, IdentityId, IdentitySelector};
 use serde_json::json;
 
 use crate::identity;

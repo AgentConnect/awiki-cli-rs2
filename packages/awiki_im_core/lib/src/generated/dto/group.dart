@@ -23,7 +23,6 @@ class DartCreateGroupRequest {
   final String? maxMembers;
   final PlatformInt64? memberMaxMessages;
   final PlatformInt64? memberMaxTotalChars;
-  final String? serviceDid;
 
   const DartCreateGroupRequest({
     required this.name,
@@ -41,7 +40,6 @@ class DartCreateGroupRequest {
     this.maxMembers,
     this.memberMaxMessages,
     this.memberMaxTotalChars,
-    this.serviceDid,
   });
 
   @override
@@ -60,8 +58,7 @@ class DartCreateGroupRequest {
       attachmentsAllowed.hashCode ^
       maxMembers.hashCode ^
       memberMaxMessages.hashCode ^
-      memberMaxTotalChars.hashCode ^
-      serviceDid.hashCode;
+      memberMaxTotalChars.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -82,8 +79,7 @@ class DartCreateGroupRequest {
           attachmentsAllowed == other.attachmentsAllowed &&
           maxMembers == other.maxMembers &&
           memberMaxMessages == other.memberMaxMessages &&
-          memberMaxTotalChars == other.memberMaxTotalChars &&
-          serviceDid == other.serviceDid;
+          memberMaxTotalChars == other.memberMaxTotalChars;
 }
 
 class DartGroupMember {

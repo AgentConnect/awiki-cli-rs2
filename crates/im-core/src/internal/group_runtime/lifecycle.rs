@@ -41,9 +41,22 @@ where
         credentials: Option<GroupLifecycleCredentials>,
     ) -> crate::ImResult<crate::groups::GroupReadResult> {
         self.ensure_group_session()?;
+        let service_did = self
+            .client
+            .core_inner()
+            .sdk_config()
+            .anp_service_did
+            .as_ref()
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("anp_service_did".to_string()),
+                    "group create requires ImCoreConfig.anp_service_did",
+                )
+            })?;
         let payload = crate::internal::wire::group::build_group_create_payload(
             self.client.did().as_str(),
             &request,
+            service_did,
         )?;
         self.signed_group_rpc(payload, credentials)
     }
@@ -158,7 +171,7 @@ where
             payload.method.as_str(),
             params,
         )?;
-        Ok(crate::groups::GroupReadResult::from_diagnostic_raw(
+        Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),
         ))
@@ -230,9 +243,11 @@ mod tests {
             crate::groups::GroupCreateRequest {
                 name: "  Demo Group  ".to_string(),
                 description: Some(" group description ".to_string()),
-                discoverability: Some(" public ".to_string()),
-                admission_mode: Some(" open-join ".to_string()),
-                message_security_profile: Some("transport-protected".to_string()),
+                discoverability: Some(crate::groups::GroupDiscoverability::Public),
+                admission_mode: Some(crate::groups::GroupAdmissionMode::OpenJoin),
+                message_security_profile: Some(
+                    crate::groups::GroupMessageSecurityProfile::TransportProtected,
+                ),
                 e2ee: false,
                 slug: Some(" demo ".to_string()),
                 goal: Some("ship".to_string()),
@@ -240,10 +255,9 @@ mod tests {
                 message_prompt: Some("reply clearly".to_string()),
                 doc_url: Some("https://example.test/group".to_string()),
                 attachments_allowed: Some(true),
-                max_members: Some("500".to_string()),
+                max_members: Some(crate::groups::GroupMemberLimit::new(500).unwrap()),
                 member_max_messages: Some(25),
                 member_max_total_chars: Some(2048),
-                service_did: crate::ids::Did::parse("did:example:service").unwrap(),
             },
             Some(credentials.clone()),
         )
@@ -316,12 +330,12 @@ mod tests {
     }
 
     #[test]
-    fn group_lifecycle_create_default_policy_and_e2ee_security_profile() {
+    fn group_lifecycle_rejects_group_e2ee_create_until_phase6() {
         let fixture = Fixture::new();
         let client = fixture.client();
         let calls = Rc::new(RefCell::new(Vec::new()));
 
-        GroupLifecycleRuntime::new(
+        let error = GroupLifecycleRuntime::new(
             &client,
             ReadyGroupSessionProvider,
             RecordingTransport {
@@ -346,19 +360,65 @@ mod tests {
                 max_members: None,
                 member_max_messages: None,
                 member_max_total_chars: None,
-                service_did: crate::ids::Did::parse("did:example:service").unwrap(),
             },
             Some(fixture.credentials()),
         )
-        .unwrap();
+        .unwrap_err();
 
-        let calls = calls.borrow();
-        let policy = &calls[0].params["body"]["group_policy"];
-        assert_eq!(policy["admission_mode"], "open-join");
-        assert_eq!(policy["attachments_allowed"], true);
-        assert_eq!(policy["max_members"], "500");
-        assert_eq!(policy["message_security_profile"], "group-e2ee");
-        assert_eq!(policy["bootstrap_security_profile"], "group-e2ee");
+        assert_eq!(
+            error,
+            crate::ImError::UnsupportedCapability {
+                capability: "group-e2ee".to_string()
+            }
+        );
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn group_lifecycle_rejects_group_e2ee_security_profile_until_phase6() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let error = GroupLifecycleRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"group_did":"did:example:e2ee"}),
+            },
+        )
+        .create(
+            crate::groups::GroupCreateRequest {
+                name: "Secure Group".to_string(),
+                description: None,
+                discoverability: None,
+                admission_mode: None,
+                message_security_profile: Some(
+                    crate::groups::GroupMessageSecurityProfile::GroupE2ee,
+                ),
+                e2ee: false,
+                slug: None,
+                goal: None,
+                rules: None,
+                message_prompt: None,
+                doc_url: None,
+                attachments_allowed: None,
+                max_members: None,
+                member_max_messages: None,
+                member_max_total_chars: None,
+            },
+            Some(fixture.credentials()),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            crate::ImError::UnsupportedCapability {
+                capability: "group-e2ee".to_string()
+            }
+        );
+        assert!(calls.borrow().is_empty());
     }
 
     #[test]
@@ -382,7 +442,7 @@ mod tests {
             crate::groups::GroupMemberMutationRequest {
                 group: group.clone(),
                 member: member.clone(),
-                role: Some(" admin ".to_string()),
+                role: Some(crate::groups::GroupMemberRole::Admin),
                 reason_text: Some(" invite ".to_string()),
             },
             Some(credentials.clone()),
@@ -401,7 +461,9 @@ mod tests {
             crate::groups::GroupMemberMutationRequest {
                 group: group.clone(),
                 member,
-                role: Some("ignored".to_string()),
+                role: Some(crate::groups::GroupMemberRole::Custom(
+                    "ignored".to_string(),
+                )),
                 reason_text: Some(" cleanup ".to_string()),
             },
             Some(credentials.clone()),
@@ -441,9 +503,9 @@ mod tests {
             crate::groups::GroupUpdatePolicyRequest {
                 group,
                 patch: crate::groups::GroupPolicyPatch {
-                    admission_mode: Some(" invite-only ".to_string()),
+                    admission_mode: Some(crate::groups::GroupAdmissionMode::InviteOnly),
                     attachments_allowed: Some(false),
-                    max_members: Some(" 25 ".to_string()),
+                    max_members: Some(crate::groups::GroupMemberLimit::new(25).unwrap()),
                     member_max_messages: Some(5),
                     member_max_total_chars: Some(4096),
                 },
@@ -578,7 +640,7 @@ mod tests {
                     user_service_endpoint: None,
                     message_service_endpoint: None,
                     anp_service_endpoint: None,
-                    anp_service_did: None,
+                    anp_service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 crate::ImCorePaths {

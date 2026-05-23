@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -10,12 +10,12 @@ pub struct GroupReadResult {
     pub total: Option<u32>,
     pub source: Option<String>,
     #[serde(skip)]
-    diagnostic_raw: Option<Value>,
+    raw_response: Option<Value>,
     pub warnings: Vec<String>,
 }
 
 impl GroupReadResult {
-    pub(crate) fn from_diagnostic_raw(raw: Value, warnings: Vec<String>) -> Self {
+    pub(crate) fn from_raw_response(raw: Value, warnings: Vec<String>) -> Self {
         let group = group_snapshot_from_value(raw.get("group").unwrap_or(&raw));
         let groups = values_from_array(raw.get("groups"))
             .into_iter()
@@ -43,13 +43,13 @@ impl GroupReadResult {
             messages,
             total: u32_value(raw.get("total")),
             source: optional_string(raw.get("source")),
-            diagnostic_raw: Some(raw),
+            raw_response: Some(raw),
             warnings,
         }
     }
 
-    pub fn diagnostic_raw(&self) -> Option<&Value> {
-        self.diagnostic_raw.as_ref()
+    pub(crate) fn raw_response(&self) -> Option<&Value> {
+        self.raw_response.as_ref()
     }
 }
 
@@ -57,9 +57,9 @@ impl GroupReadResult {
 pub struct GroupCreateRequest {
     pub name: String,
     pub description: Option<String>,
-    pub discoverability: Option<String>,
-    pub admission_mode: Option<String>,
-    pub message_security_profile: Option<String>,
+    pub discoverability: Option<GroupDiscoverability>,
+    pub admission_mode: Option<GroupAdmissionMode>,
+    pub message_security_profile: Option<GroupMessageSecurityProfile>,
     pub e2ee: bool,
     pub slug: Option<String>,
     pub goal: Option<String>,
@@ -67,10 +67,9 @@ pub struct GroupCreateRequest {
     pub message_prompt: Option<String>,
     pub doc_url: Option<String>,
     pub attachments_allowed: Option<bool>,
-    pub max_members: Option<String>,
+    pub max_members: Option<GroupMemberLimit>,
     pub member_max_messages: Option<i64>,
     pub member_max_total_chars: Option<i64>,
-    pub service_did: crate::ids::Did,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,7 +87,7 @@ pub struct GroupLeaveRequest {
 pub struct GroupMemberMutationRequest {
     pub group: crate::ids::GroupRef,
     pub member: crate::ids::Did,
-    pub role: Option<String>,
+    pub role: Option<GroupMemberRole>,
     pub reason_text: Option<String>,
 }
 
@@ -96,7 +95,7 @@ pub struct GroupMemberMutationRequest {
 pub struct GroupProfilePatch {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub discoverability: Option<String>,
+    pub discoverability: Option<GroupDiscoverability>,
     pub slug: Option<String>,
     pub goal: Option<String>,
     pub rules: Option<String>,
@@ -106,11 +105,392 @@ pub struct GroupProfilePatch {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct GroupPolicyPatch {
-    pub admission_mode: Option<String>,
+    pub admission_mode: Option<GroupAdmissionMode>,
     pub attachments_allowed: Option<bool>,
-    pub max_members: Option<String>,
+    pub max_members: Option<GroupMemberLimit>,
     pub member_max_messages: Option<i64>,
     pub member_max_total_chars: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupDiscoverability {
+    Private,
+    Public,
+    Unlisted,
+    Custom(String),
+}
+
+impl GroupDiscoverability {
+    pub fn parse(input: impl Into<String>) -> crate::ImResult<Self> {
+        parse_group_token(input, "discoverability", |value| match value {
+            "private" => Self::Private,
+            "public" => Self::Public,
+            "unlisted" => Self::Unlisted,
+            custom => Self::Custom(custom.to_string()),
+        })
+    }
+
+    pub fn parse_optional(input: impl AsRef<str>) -> crate::ImResult<Option<Self>> {
+        parse_optional_group_token(input, Self::parse)
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Private => "private",
+            Self::Public => "public",
+            Self::Unlisted => "unlisted",
+            Self::Custom(value) => value.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupAdmissionMode {
+    OpenJoin,
+    InviteOnly,
+    ApprovalRequired,
+    Closed,
+    Custom(String),
+}
+
+impl GroupAdmissionMode {
+    pub fn parse(input: impl Into<String>) -> crate::ImResult<Self> {
+        parse_group_token(input, "admission_mode", |value| match value {
+            "open-join" | "open" => Self::OpenJoin,
+            "invite-only" => Self::InviteOnly,
+            "approval" | "approval-required" => Self::ApprovalRequired,
+            "closed" => Self::Closed,
+            custom => Self::Custom(custom.to_string()),
+        })
+    }
+
+    pub fn parse_optional(input: impl AsRef<str>) -> crate::ImResult<Option<Self>> {
+        parse_optional_group_token(input, Self::parse)
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::OpenJoin => "open-join",
+            Self::InviteOnly => "invite-only",
+            Self::ApprovalRequired => "approval",
+            Self::Closed => "closed",
+            Self::Custom(value) => value.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupMessageSecurityProfile {
+    TransportProtected,
+    GroupE2ee,
+    Custom(String),
+}
+
+impl GroupMessageSecurityProfile {
+    pub fn parse(input: impl Into<String>) -> crate::ImResult<Self> {
+        parse_group_token(input, "message_security_profile", |value| match value {
+            "transport-protected" => Self::TransportProtected,
+            "group-e2ee" => Self::GroupE2ee,
+            custom => Self::Custom(custom.to_string()),
+        })
+    }
+
+    pub fn parse_optional(input: impl AsRef<str>) -> crate::ImResult<Option<Self>> {
+        parse_optional_group_token(input, Self::parse)
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::TransportProtected => "transport-protected",
+            Self::GroupE2ee => "group-e2ee",
+            Self::Custom(value) => value.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupMemberRole {
+    Owner,
+    Admin,
+    Member,
+    Custom(String),
+}
+
+impl GroupMemberRole {
+    pub fn parse(input: impl Into<String>) -> crate::ImResult<Self> {
+        parse_group_token(input, "role", |value| match value {
+            "owner" => Self::Owner,
+            "admin" => Self::Admin,
+            "member" => Self::Member,
+            custom => Self::Custom(custom.to_string()),
+        })
+    }
+
+    pub fn parse_optional(input: impl AsRef<str>) -> crate::ImResult<Option<Self>> {
+        parse_optional_group_token(input, Self::parse)
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Owner => "owner",
+            Self::Admin => "admin",
+            Self::Member => "member",
+            Self::Custom(value) => value.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupMemberLimit(u32);
+
+impl GroupMemberLimit {
+    pub fn new(value: u32) -> crate::ImResult<Self> {
+        if value == 0 {
+            return Err(crate::ImError::invalid_input(
+                Some("max_members".to_string()),
+                "max_members must be greater than zero",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn parse(input: impl Into<String>) -> crate::ImResult<Self> {
+        let input = input.into();
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("max_members".to_string()),
+                "max_members must not be empty",
+            ));
+        }
+        let value = trimmed.parse::<u32>().map_err(|_| {
+            crate::ImError::invalid_input(
+                Some("max_members".to_string()),
+                "max_members must be an unsigned integer",
+            )
+        })?;
+        Self::new(value)
+    }
+
+    pub fn parse_optional(input: impl AsRef<str>) -> crate::ImResult<Option<Self>> {
+        let trimmed = input.as_ref().trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        Self::parse(trimmed.to_string()).map(Some)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    pub fn to_protocol_string(self) -> String {
+        self.0.to_string()
+    }
+}
+
+#[cfg(test)]
+mod group_domain_type_tests {
+    use super::*;
+
+    #[test]
+    fn group_policy_types_parse_known_and_custom_protocol_values() {
+        assert_eq!(
+            GroupDiscoverability::parse(" public ").unwrap(),
+            GroupDiscoverability::Public
+        );
+        assert_eq!(
+            GroupAdmissionMode::parse("approval-required").unwrap(),
+            GroupAdmissionMode::ApprovalRequired
+        );
+        assert_eq!(GroupAdmissionMode::ApprovalRequired.as_str(), "approval");
+        assert_eq!(
+            GroupMessageSecurityProfile::parse("group-e2ee").unwrap(),
+            GroupMessageSecurityProfile::GroupE2ee
+        );
+        assert_eq!(
+            GroupMemberRole::parse(" moderator ").unwrap(),
+            GroupMemberRole::Custom("moderator".to_string())
+        );
+    }
+
+    #[test]
+    fn group_member_limit_rejects_empty_zero_and_non_numeric_values() {
+        assert_eq!(GroupMemberLimit::parse(" 25 ").unwrap().as_u32(), 25);
+        assert!(GroupMemberLimit::parse("").is_err());
+        assert!(GroupMemberLimit::parse("0").is_err());
+        assert!(GroupMemberLimit::parse("many").is_err());
+    }
+
+    #[test]
+    fn group_member_limit_keeps_json_number_and_string_compatibility() {
+        let from_number: GroupMemberLimit = serde_json::from_value(serde_json::json!(12)).unwrap();
+        let from_string: GroupMemberLimit =
+            serde_json::from_value(serde_json::json!("12")).unwrap();
+
+        assert_eq!(from_number, from_string);
+        assert_eq!(
+            serde_json::to_value(from_number).unwrap(),
+            serde_json::json!(12)
+        );
+    }
+}
+
+impl Serialize for GroupDiscoverability {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupDiscoverability {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for GroupAdmissionMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupAdmissionMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for GroupMessageSecurityProfile {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupMessageSecurityProfile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for GroupMemberRole {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupMemberRole {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for GroupMemberLimit {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupMemberLimit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct GroupMemberLimitVisitor;
+
+        impl serde::de::Visitor<'_> for GroupMemberLimitVisitor {
+            type Value = GroupMemberLimit;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a positive integer or decimal string")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let value = u32::try_from(value).map_err(E::custom)?;
+                GroupMemberLimit::new(value).map_err(E::custom)
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let value = u32::try_from(value).map_err(E::custom)?;
+                GroupMemberLimit::new(value).map_err(E::custom)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                GroupMemberLimit::parse(value.to_string()).map_err(E::custom)
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                GroupMemberLimit::parse(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(GroupMemberLimitVisitor)
+    }
+}
+
+fn parse_group_token<T>(
+    input: impl Into<String>,
+    field: &'static str,
+    mapper: impl FnOnce(&str) -> T,
+) -> crate::ImResult<T> {
+    let input = input.into();
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some(field.to_string()),
+            format!("{field} must not be empty"),
+        ));
+    }
+    Ok(mapper(trimmed))
+}
+
+fn parse_optional_group_token<T>(
+    input: impl AsRef<str>,
+    parser: impl FnOnce(String) -> crate::ImResult<T>,
+) -> crate::ImResult<Option<T>> {
+    let trimmed = input.as_ref().trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    parser(trimmed.to_string()).map(Some)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,8 +724,8 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn group_result_projects_domain_fields_and_keeps_raw_diagnostic() {
-        let result = GroupReadResult::from_diagnostic_raw(
+    fn group_result_projects_domain_fields_and_keeps_raw_response() {
+        let result = GroupReadResult::from_raw_response(
             json!({
                 "group_did": "did:example:group",
                 "name": "Demo",
@@ -390,7 +770,7 @@ mod tests {
         assert_eq!(result.source.as_deref(), Some("remote_http"));
         assert_eq!(result.warnings, vec!["normalized"]);
         assert_eq!(
-            result.diagnostic_raw().and_then(|raw| raw.get("group_did")),
+            result.raw_response().and_then(|raw| raw.get("group_did")),
             Some(&json!("did:example:group"))
         );
     }

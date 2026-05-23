@@ -93,7 +93,7 @@ where
         let raw = self
             .transport
             .authenticated_rpc(MESSAGE_RPC_ENDPOINT, method, params)?;
-        Ok(crate::groups::GroupReadResult::from_diagnostic_raw(
+        Ok(crate::groups::GroupReadResult::from_raw_response(
             raw,
             Vec::new(),
         ))

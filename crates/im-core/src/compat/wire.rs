@@ -108,8 +108,9 @@ pub fn build_group_send_payload(
 pub fn build_group_create_payload(
     sender_did: &str,
     request: &crate::groups::GroupCreateRequest,
+    service_did: &crate::ids::Did,
 ) -> crate::ImResult<DirectPayload> {
-    crate::internal::wire::group::build_group_create_payload(sender_did, request)
+    crate::internal::wire::group::build_group_create_payload(sender_did, request, service_did)
 }
 
 #[doc(hidden)]
@@ -248,14 +249,21 @@ pub fn build_bridge_group_create_rpc_params(
             "group display name is required",
         ));
     }
+    let service_did = crate::ids::Did::parse(service_did)?;
     let payload = crate::internal::wire::group::build_group_create_payload(
         &identity.did,
         &crate::groups::GroupCreateRequest {
             name: request.name,
             description: optional_trimmed(request.description),
-            discoverability: optional_trimmed(request.discoverability),
-            admission_mode: optional_trimmed(request.admission_mode),
-            message_security_profile: optional_trimmed(request.message_security_profile),
+            discoverability: crate::groups::GroupDiscoverability::parse_optional(
+                request.discoverability,
+            )?,
+            admission_mode: crate::groups::GroupAdmissionMode::parse_optional(
+                request.admission_mode,
+            )?,
+            message_security_profile: crate::groups::GroupMessageSecurityProfile::parse_optional(
+                request.message_security_profile,
+            )?,
             e2ee: request.e2ee,
             slug: optional_trimmed(request.slug),
             goal: optional_trimmed(request.goal),
@@ -263,11 +271,11 @@ pub fn build_bridge_group_create_rpc_params(
             message_prompt: optional_trimmed(request.message_prompt),
             doc_url: optional_trimmed(request.doc_url),
             attachments_allowed: request.attachments_allowed,
-            max_members: optional_trimmed(request.max_members),
+            max_members: crate::groups::GroupMemberLimit::parse_optional(request.max_members)?,
             member_max_messages: request.member_max_messages,
             member_max_total_chars: request.member_max_total_chars,
-            service_did: crate::ids::Did::parse(service_did)?,
         },
+        &service_did,
     )?;
     signed_bridge_params(identity, payload)
 }
@@ -489,7 +497,10 @@ fn group_member_mutation_request(
     Ok(crate::groups::GroupMemberMutationRequest {
         group: crate::ids::GroupRef::parse(group_did)?,
         member: crate::ids::Did::parse(member_did.trim())?,
-        role: role.and_then(optional_trimmed),
+        role: match role {
+            Some(role) => crate::groups::GroupMemberRole::parse_optional(role)?,
+            None => None,
+        },
         reason_text: optional_trimmed(reason_text),
     })
 }

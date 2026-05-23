@@ -39,7 +39,7 @@ where
         let raw = self
             .transport
             .rpc(call.endpoint, call.method, call.params.clone())?;
-        let sdk_result = crate::identity::RecoverHandleResult::with_diagnostic_raw(
+        let sdk_result = crate::identity::RecoverHandleResult::with_raw_response(
             request.handle,
             phone,
             crate::identity::RecoverHandleState::OtpSent,
@@ -85,7 +85,7 @@ where
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty()),
         };
-        let sdk_result = crate::identity::RecoverHandleResult::with_diagnostic_raw(
+        let sdk_result = crate::identity::RecoverHandleResult::with_raw_response(
             request.handle,
             phone,
             crate::identity::RecoverHandleState::Recovered,

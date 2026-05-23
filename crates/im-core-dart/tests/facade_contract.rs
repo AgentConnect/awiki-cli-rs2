@@ -28,7 +28,7 @@ fn realtime_connect_is_explicitly_unsupported_until_bridge_plan_is_ready() {
 }
 
 #[test]
-fn group_create_service_did_is_required_when_no_default_exists() {
+fn group_create_bridge_request_no_longer_accepts_per_request_service_did() {
     let request = awiki_im_core::dto::group::DartCreateGroupRequest {
         name: "test".to_string(),
         description: None,
@@ -45,11 +45,10 @@ fn group_create_service_did_is_required_when_no_default_exists() {
         max_members: None,
         member_max_messages: None,
         member_max_total_chars: None,
-        service_did: None,
     };
-    let err = request
-        .into_core(None)
-        .expect_err("missing service_did must fail");
-    assert_eq!(err.code, "invalid_input");
-    assert_eq!(err.field.as_deref(), Some("service_did"));
+    let core = request
+        .into_core()
+        .expect("service DID is resolved by ImCoreConfig at create time");
+    assert_eq!(core.name, "test");
+    assert!(core.discoverability.is_none());
 }

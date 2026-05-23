@@ -174,22 +174,30 @@ impl TryFrom<DartSendTextRequest> for im_core::messages::SendMessageRequest {
 }
 
 impl DartCreateGroupRequest {
-    pub fn into_core(
-        self,
-        default_service_did: Option<String>,
-    ) -> Result<im_core::groups::GroupCreateRequest, DartImError> {
-        let service_did = self.service_did.or(default_service_did).ok_or_else(|| {
-            DartImError::invalid_input(
-                Some("service_did".to_string()),
-                "group create requires service_did or ImCoreConfig.anp_service_did",
-            )
-        })?;
+    pub fn into_core(self) -> Result<im_core::groups::GroupCreateRequest, DartImError> {
         Ok(im_core::groups::GroupCreateRequest {
             name: self.name,
             description: self.description,
-            discoverability: self.discoverability,
-            admission_mode: self.admission_mode,
-            message_security_profile: self.message_security_profile,
+            discoverability: match self.discoverability {
+                Some(value) => Some(
+                    im_core::groups::GroupDiscoverability::parse(value)
+                        .map_err(DartImError::from)?,
+                ),
+                None => None,
+            },
+            admission_mode: match self.admission_mode {
+                Some(value) => Some(
+                    im_core::groups::GroupAdmissionMode::parse(value).map_err(DartImError::from)?,
+                ),
+                None => None,
+            },
+            message_security_profile: match self.message_security_profile {
+                Some(value) => Some(
+                    im_core::groups::GroupMessageSecurityProfile::parse(value)
+                        .map_err(DartImError::from)?,
+                ),
+                None => None,
+            },
             e2ee: self.e2ee,
             slug: self.slug,
             goal: self.goal,
@@ -197,10 +205,14 @@ impl DartCreateGroupRequest {
             message_prompt: self.message_prompt,
             doc_url: self.doc_url,
             attachments_allowed: self.attachments_allowed,
-            max_members: self.max_members,
+            max_members: match self.max_members {
+                Some(value) => Some(
+                    im_core::groups::GroupMemberLimit::parse(value).map_err(DartImError::from)?,
+                ),
+                None => None,
+            },
             member_max_messages: self.member_max_messages,
             member_max_total_chars: self.member_max_total_chars,
-            service_did: im_core::ids::Did::parse(service_did).map_err(DartImError::from)?,
         })
     }
 }

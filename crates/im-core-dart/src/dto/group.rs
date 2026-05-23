@@ -46,7 +46,6 @@ pub struct DartCreateGroupRequest {
     pub max_members: Option<String>,
     pub member_max_messages: Option<i64>,
     pub member_max_total_chars: Option<i64>,
-    pub service_did: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

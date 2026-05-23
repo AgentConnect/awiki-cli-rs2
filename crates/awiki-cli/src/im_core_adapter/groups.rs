@@ -1,10 +1,13 @@
+use im_core::groups::{
+    GroupAdmissionMode, GroupDiscoverability, GroupMemberLimit, GroupMemberRole,
+    GroupMessageSecurityProfile, GroupReadResult,
+};
 use im_core::prelude::{
     Cursor, Did, GroupCreateRequest as SdkGroupCreateRequest,
     GroupJoinRequest as SdkGroupJoinRequest, GroupLeaveRequest as SdkGroupLeaveRequest,
     GroupListRequest, GroupMember, GroupMemberMutationRequest, GroupMembersRequest,
-    GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch, GroupReadResult, GroupRef,
-    GroupSnapshot, GroupSummary, GroupUpdatePolicyRequest, GroupUpdateProfileRequest, Handle,
-    Message, PageLimit,
+    GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch, GroupRef, GroupSnapshot,
+    GroupSummary, GroupUpdatePolicyRequest, GroupUpdateProfileRequest, Handle, Message, PageLimit,
 };
 use serde_json::{json, Value};
 
@@ -89,8 +92,10 @@ pub struct GroupUpdateRequest {
     pub member_max_total_chars: Option<i64>,
 }
 
-fn group_diagnostic_raw(result: &im_core::groups::GroupReadResult) -> Value {
-    result.diagnostic_raw().cloned().unwrap_or(Value::Null)
+fn group_raw_response(result: &im_core::groups::GroupReadResult) -> Value {
+    im_core::compat::groups::raw_response(result)
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 pub fn create_group_via_im_core(
@@ -106,9 +111,9 @@ pub fn create_group_via_im_core(
         active_identity::require_active_identity(resolved, manager, &request.identity_name)?;
     let result = client
         .groups()
-        .create(group_create_request(request, &resolved.anp_service_did)?)
+        .create(group_create_request(request)?)
         .map_err(im_error_to_message_error)?;
-    let raw = group_diagnostic_raw(&result);
+    let raw = group_raw_response(&result);
     let group_did = group_did_from_result(&raw);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(sync_group_state(client, &group_did, true));
@@ -147,7 +152,7 @@ pub fn join_group_via_im_core(
             reason_text: optional_string(&request.reason_text),
         })
         .map_err(im_error_to_message_error)?;
-    let raw = group_diagnostic_raw(&result);
+    let raw = group_raw_response(&result);
     let group_did = default_string(&group_did_from_result(&raw), &requested_group);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(sync_group_state(client, &group_did, true));
@@ -195,7 +200,7 @@ pub fn leave_group_via_im_core(
             group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
         })
         .map_err(im_error_to_message_error)?;
-    let raw = group_diagnostic_raw(&result);
+    let raw = group_raw_response(&result);
     let warnings = group_control_warnings(resolved, result.warnings);
     Ok(CommandResult {
         data: json!({
@@ -254,7 +259,7 @@ fn mutate_group_member_via_im_core(
     let sdk_request = GroupMemberMutationRequest {
         group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
         member: Did::parse(&member.did).map_err(im_error_to_message_error)?,
-        role: optional_string(&request.role),
+        role: GroupMemberRole::parse_optional(&request.role).map_err(im_error_to_message_error)?,
         reason_text: optional_string(&request.reason_text),
     };
     let result = if action == "add" {
@@ -263,7 +268,7 @@ fn mutate_group_member_via_im_core(
         client.groups().remove_member(sdk_request)
     }
     .map_err(im_error_to_message_error)?;
-    let raw = group_diagnostic_raw(&result);
+    let raw = group_raw_response(&result);
     let mut warnings = group_control_warnings(resolved, result.warnings);
     warnings.extend(sync_group_state(client, &request.group, true));
     let snapshot = cached_group_snapshot(resolved, &record, &request.group)
@@ -294,8 +299,8 @@ pub fn update_group_via_im_core(
     if request.group.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
     }
-    let profile_patch = group_profile_patch(&request);
-    let policy_patch = group_policy_patch(&request);
+    let profile_patch = group_profile_patch(&request)?;
+    let policy_patch = group_policy_patch(&request)?;
     if profile_patch == GroupProfilePatch::default() && policy_patch == GroupPolicyPatch::default()
     {
         return Err(MessageAdapterError::Internal(
@@ -322,7 +327,7 @@ pub fn update_group_via_im_core(
                 patch: profile_patch,
             })
             .map_err(im_error_to_message_error)?;
-        responses.push(group_diagnostic_raw(&result));
+        responses.push(group_raw_response(&result));
         warnings.extend(result.warnings);
     }
     if policy_patch != GroupPolicyPatch::default() {
@@ -333,7 +338,7 @@ pub fn update_group_via_im_core(
                 patch: policy_patch,
             })
             .map_err(im_error_to_message_error)?;
-        responses.push(group_diagnostic_raw(&result));
+        responses.push(group_raw_response(&result));
         warnings.extend(result.warnings);
     }
     let mut warnings = group_control_warnings(resolved, warnings);
@@ -363,7 +368,7 @@ pub fn get_group_via_im_core(
         .groups()
         .get(group_ref)
         .map_err(im_error_to_message_error)?;
-    let raw = group_diagnostic_raw(&result);
+    let raw = group_raw_response(&result);
     let mut snapshot = merge_group_snapshot_raw(
         group_snapshot_to_cli_json(result.group.as_ref())
             .or_else(|| normalize_group_snapshot(&raw))
@@ -398,7 +403,7 @@ pub fn list_groups_via_im_core(
         .groups()
         .list(request)
         .map_err(im_error_to_message_error)?;
-    let raw = group_diagnostic_raw(&result);
+    let raw = group_raw_response(&result);
     let groups = groups_to_cli_json(&result);
     let total = group_read_total(&result, groups.len());
     Ok(CommandResult {
@@ -429,7 +434,7 @@ pub fn group_members_via_im_core(
         .groups()
         .members(request)
         .map_err(im_error_to_message_error)?;
-    let raw = group_diagnostic_raw(&result);
+    let raw = group_raw_response(&result);
     let members = group_members_to_cli_json(&result, &raw);
     let total = group_read_total(&result, members.len());
     Ok(CommandResult {
@@ -463,7 +468,7 @@ pub fn group_messages_via_im_core(
         .groups()
         .messages(request)
         .map_err(im_error_to_message_error)?;
-    let raw = group_diagnostic_raw(&result);
+    let raw = group_raw_response(&result);
     let result_source_mode = runtime::bridge::MODE_HTTP;
 
     let messages = group_messages_to_cli_json(&result, &raw);
@@ -484,18 +489,18 @@ pub fn group_messages_via_im_core(
 
 fn group_create_request(
     request: GroupCreateRequest,
-    service_did: &str,
 ) -> Result<SdkGroupCreateRequest, MessageAdapterError> {
-    let service_did = service_did.trim();
-    if service_did.is_empty() {
-        return Err(MessageAdapterError::MissingMessageServiceDid);
-    }
     Ok(SdkGroupCreateRequest {
         name: request.name,
         description: optional_string(&request.description),
-        discoverability: optional_string(&request.discoverability),
-        admission_mode: optional_string(&request.admission_mode),
-        message_security_profile: optional_string(&request.message_security_profile),
+        discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
+            .map_err(im_error_to_message_error)?,
+        admission_mode: GroupAdmissionMode::parse_optional(&request.admission_mode)
+            .map_err(im_error_to_message_error)?,
+        message_security_profile: GroupMessageSecurityProfile::parse_optional(
+            &request.message_security_profile,
+        )
+        .map_err(im_error_to_message_error)?,
         e2ee: request.e2ee,
         slug: optional_string(&request.slug),
         goal: optional_string(&request.goal),
@@ -503,10 +508,10 @@ fn group_create_request(
         message_prompt: optional_string(&request.message_prompt),
         doc_url: optional_string(&request.doc_url),
         attachments_allowed: request.attachments_allowed,
-        max_members: optional_string(&request.max_members),
+        max_members: GroupMemberLimit::parse_optional(&request.max_members)
+            .map_err(im_error_to_message_error)?,
         member_max_messages: request.member_max_messages,
         member_max_total_chars: request.member_max_total_chars,
-        service_did: Did::parse(service_did).map_err(im_error_to_message_error)?,
     })
 }
 
@@ -536,27 +541,34 @@ fn resolve_group_member_via_directory(
     })
 }
 
-fn group_profile_patch(request: &GroupUpdateRequest) -> GroupProfilePatch {
-    GroupProfilePatch {
+fn group_profile_patch(
+    request: &GroupUpdateRequest,
+) -> Result<GroupProfilePatch, MessageAdapterError> {
+    Ok(GroupProfilePatch {
         name: optional_string(&request.name),
         description: optional_string(&request.description),
-        discoverability: optional_string(&request.discoverability),
+        discoverability: GroupDiscoverability::parse_optional(&request.discoverability)
+            .map_err(im_error_to_message_error)?,
         slug: optional_string(&request.slug),
         goal: optional_string(&request.goal),
         rules: optional_string(&request.rules),
         message_prompt: optional_string(&request.message_prompt),
         doc_url: optional_string(&request.doc_url),
-    }
+    })
 }
 
-fn group_policy_patch(request: &GroupUpdateRequest) -> GroupPolicyPatch {
-    GroupPolicyPatch {
-        admission_mode: optional_string(&request.admission_mode),
+fn group_policy_patch(
+    request: &GroupUpdateRequest,
+) -> Result<GroupPolicyPatch, MessageAdapterError> {
+    Ok(GroupPolicyPatch {
+        admission_mode: GroupAdmissionMode::parse_optional(&request.admission_mode)
+            .map_err(im_error_to_message_error)?,
         attachments_allowed: request.attachments_allowed,
-        max_members: optional_string(&request.max_members),
+        max_members: GroupMemberLimit::parse_optional(&request.max_members)
+            .map_err(im_error_to_message_error)?,
         member_max_messages: request.member_max_messages,
         member_max_total_chars: request.member_max_total_chars,
-    }
+    })
 }
 
 fn group_control_warnings(resolved: &Resolved, mut warnings: Vec<String>) -> Vec<String> {
@@ -736,8 +748,7 @@ fn groups_to_cli_json(result: &GroupReadResult) -> Vec<Value> {
     if !result.groups.is_empty() {
         return result.groups.iter().map(group_summary_to_json).collect();
     }
-    result
-        .diagnostic_raw()
+    im_core::compat::groups::raw_response(result)
         .map(|raw| values_from_array(raw.get("groups")))
         .unwrap_or_default()
 }

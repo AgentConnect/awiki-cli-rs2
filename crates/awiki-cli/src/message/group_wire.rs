@@ -333,7 +333,8 @@ fn group_member_mutation_request(
     Ok(im_core::groups::GroupMemberMutationRequest {
         group: im_core::ids::GroupRef::parse(&request.group).map_err(group_mutation_wire_error)?,
         member,
-        role: optional_trimmed(request.role),
+        role: im_core::groups::GroupMemberRole::parse_optional(request.role)
+            .map_err(group_mutation_wire_error)?,
         reason_text: optional_trimmed(request.reason_text),
     })
 }

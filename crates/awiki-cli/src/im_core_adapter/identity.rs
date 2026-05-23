@@ -1,8 +1,8 @@
+use im_core::identity::{ContactBindingMethodKind, ContactBindingResult, RecoverGeneratedIdentity};
 use im_core::prelude::{
-    ContactBindingMethod, ContactBindingMethodKind, ContactBindingRequest, ContactBindingResult,
-    ContactBindingState, Did, DirectoryResolution, Handle, HandleRegistrationResult,
-    HandleRegistrationState, IdentitySelector, IdentitySubject, InitialProfile, PeerRef,
-    ProfilePatch, RecoverGeneratedIdentity, RecoverHandleRequest, RegisterHandleRequest,
+    ContactBindingMethod, ContactBindingRequest, ContactBindingState, Did, DirectoryResolution,
+    Handle, HandleRegistrationResult, HandleRegistrationState, IdentitySelector, IdentitySubject,
+    InitialProfile, PeerRef, ProfilePatch, RecoverHandleRequest, RegisterHandleRequest,
     RegistrationMethod, VerificationInput,
 };
 use serde::Serialize;
@@ -26,23 +26,23 @@ pub use super::identity_replace_did_plan::{
     replace_did_plan_command_request, replace_did_plan_via_im_core, ReplaceDidPlanCommandRequest,
 };
 
-fn identity_diagnostic_raw(result: &impl IdentityDiagnosticRaw) -> Value {
-    result.diagnostic_raw().cloned().unwrap_or(Value::Null)
+fn identity_raw_response(result: &impl IdentityRawResponse) -> Value {
+    result.raw_response().cloned().unwrap_or(Value::Null)
 }
 
-trait IdentityDiagnosticRaw {
-    fn diagnostic_raw(&self) -> Option<&Value>;
+trait IdentityRawResponse {
+    fn raw_response(&self) -> Option<&Value>;
 }
 
-impl IdentityDiagnosticRaw for ContactBindingResult {
-    fn diagnostic_raw(&self) -> Option<&Value> {
-        ContactBindingResult::diagnostic_raw(self)
+impl IdentityRawResponse for ContactBindingResult {
+    fn raw_response(&self) -> Option<&Value> {
+        im_core::compat::identity::contact_binding_raw_response(self)
     }
 }
 
-impl IdentityDiagnosticRaw for im_core::identity::RecoverHandleResult {
-    fn diagnostic_raw(&self) -> Option<&Value> {
-        im_core::identity::RecoverHandleResult::diagnostic_raw(self)
+impl IdentityRawResponse for im_core::identity::RecoverHandleResult {
+    fn raw_response(&self) -> Option<&Value> {
+        im_core::compat::identity::recover_handle_raw_response(self)
     }
 }
 
@@ -533,7 +533,7 @@ pub fn recover_handle_via_im_core(
             .identities()
             .recover_handle(sdk_request)
             .map_err(|err| super::map_im_error(err, "id recover"))?;
-        let raw = identity_diagnostic_raw(&result);
+        let raw = identity_raw_response(&result);
         return identity::wire::recover_otp_result(
             &plan.final_identity_name,
             &plan.target_local_part,
@@ -572,7 +572,7 @@ pub fn recover_handle_via_im_core(
         .identities()
         .recover_handle(sdk_request)
         .map_err(|err| super::map_im_error(err, "id recover"))?;
-    let raw = identity_diagnostic_raw(&result);
+    let raw = identity_raw_response(&result);
     let record = manager
         .save(identity::types::SaveInput {
             identity_name: plan.temp_identity_name.clone(),
@@ -877,7 +877,7 @@ fn bind_command_result(
         ContactBindingState::OtpSent => identity::wire::bind_phone_otp_result(
             identity,
             &result.target,
-            identity_diagnostic_raw(&result),
+            identity_raw_response(&result),
         ),
         ContactBindingState::Completed
             if matches!(result.method, ContactBindingMethodKind::Phone) =>
@@ -885,13 +885,13 @@ fn bind_command_result(
             identity::wire::bind_phone_completed_result(
                 identity,
                 &result.target,
-                identity_diagnostic_raw(&result),
+                identity_raw_response(&result),
             )
         }
         ContactBindingState::EmailSent => Ok(identity::wire::bind_email_sent_result(
             identity,
             &result.target,
-            identity_diagnostic_raw(&result),
+            identity_raw_response(&result),
         )),
         ContactBindingState::Pending => Ok(identity::wire::bind_email_pending_result(
             identity,

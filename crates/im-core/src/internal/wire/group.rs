@@ -32,14 +32,17 @@ pub(crate) fn build_group_send_payload(
 pub(crate) fn build_group_create_payload(
     sender_did: &str,
     request: &crate::groups::GroupCreateRequest,
+    service_did: &crate::ids::Did,
 ) -> crate::ImResult<DirectPayload> {
+    reject_unsupported_group_e2ee(request.e2ee, request.message_security_profile.as_ref())?;
+
     let mut profile = Map::new();
     insert_required_trimmed_string(&mut profile, "display_name", &request.name, "name")?;
     insert_optional_trimmed_string(&mut profile, "description", request.description.as_deref());
     insert_optional_trimmed_string(
         &mut profile,
         "discoverability",
-        request.discoverability.as_deref(),
+        request.discoverability.as_ref().map(|value| value.as_str()),
     );
     insert_optional_trimmed_string(&mut profile, "slug", request.slug.as_deref());
     insert_optional_trimmed_string(&mut profile, "goal", request.goal.as_deref());
@@ -52,17 +55,23 @@ pub(crate) fn build_group_create_payload(
     insert_optional_trimmed_string(&mut profile, "doc_url", request.doc_url.as_deref());
 
     let mut policy = group_policy_patch(
-        request.admission_mode.as_deref(),
+        request.admission_mode.as_ref(),
         request.attachments_allowed,
-        request.max_members.as_deref(),
+        request.max_members,
         request.member_max_messages,
         request.member_max_total_chars,
     );
     if policy.is_empty() {
-        policy = group_policy_patch(Some("open-join"), Some(true), Some("500"), None, None);
+        policy.insert(
+            "admission_mode".to_string(),
+            Value::String("open-join".to_string()),
+        );
+        policy.insert("attachments_allowed".to_string(), Value::Bool(true));
+        policy.insert("max_members".to_string(), Value::String("500".to_string()));
+        enrich_group_policy_defaults(&mut policy);
     }
     if let Some(security_profile) =
-        normalized_security_profile(request.e2ee, request.message_security_profile.as_deref())
+        normalized_security_profile(request.e2ee, request.message_security_profile.as_ref())
     {
         policy.insert(
             "message_security_profile".to_string(),
@@ -79,7 +88,7 @@ pub(crate) fn build_group_create_payload(
         meta: signed_group_meta(
             sender_did,
             "service",
-            request.service_did.as_str(),
+            service_did.as_str(),
             "application/json",
             false,
         ),
@@ -120,7 +129,11 @@ pub(crate) fn build_group_add_member_payload(
         "member_did".to_string(),
         Value::String(request.member.as_str().to_string()),
     );
-    insert_optional_trimmed_string(&mut body, "role", request.role.as_deref());
+    insert_optional_trimmed_string(
+        &mut body,
+        "role",
+        request.role.as_ref().map(|role| role.as_str()),
+    );
     insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
     build_group_lifecycle_payload(
         sender_did,
@@ -180,9 +193,9 @@ pub(crate) fn build_group_update_policy_payload(
     request: &crate::groups::GroupUpdatePolicyRequest,
 ) -> crate::ImResult<DirectPayload> {
     let patch = group_policy_patch(
-        request.patch.admission_mode.as_deref(),
+        request.patch.admission_mode.as_ref(),
         request.patch.attachments_allowed,
-        request.patch.max_members.as_deref(),
+        request.patch.max_members,
         request.patch.member_max_messages,
         request.patch.member_max_total_chars,
     );
@@ -306,7 +319,7 @@ fn group_profile_patch(request: &crate::groups::GroupProfilePatch) -> Map<String
     insert_optional_trimmed_string(
         &mut patch,
         "discoverability",
-        request.discoverability.as_deref(),
+        request.discoverability.as_ref().map(|value| value.as_str()),
     );
     insert_optional_trimmed_string(&mut patch, "slug", request.slug.as_deref());
     insert_optional_trimmed_string(&mut patch, "goal", request.goal.as_deref());
@@ -353,18 +366,27 @@ fn signed_group_meta(
 }
 
 fn group_policy_patch(
-    admission_mode: Option<&str>,
+    admission_mode: Option<&crate::groups::GroupAdmissionMode>,
     attachments_allowed: Option<bool>,
-    max_members: Option<&str>,
+    max_members: Option<crate::groups::GroupMemberLimit>,
     member_max_messages: Option<i64>,
     member_max_total_chars: Option<i64>,
 ) -> Map<String, Value> {
     let mut patch = Map::new();
-    insert_optional_trimmed_string(&mut patch, "admission_mode", admission_mode);
+    insert_optional_trimmed_string(
+        &mut patch,
+        "admission_mode",
+        admission_mode.map(|value| value.as_str()),
+    );
     if let Some(value) = attachments_allowed {
         patch.insert("attachments_allowed".to_string(), Value::Bool(value));
     }
-    insert_optional_trimmed_string(&mut patch, "max_members", max_members);
+    if let Some(value) = max_members {
+        patch.insert(
+            "max_members".to_string(),
+            Value::String(value.to_protocol_string()),
+        );
+    }
     if let Some(value) = member_max_messages {
         patch.insert("member_max_messages".to_string(), json!(value));
     }
@@ -374,6 +396,11 @@ fn group_policy_patch(
     if patch.is_empty() {
         return patch;
     }
+    enrich_group_policy_defaults(&mut patch);
+    patch
+}
+
+fn enrich_group_policy_defaults(patch: &mut Map<String, Value>) {
     patch.insert(
         "message_security_profile".to_string(),
         Value::String("transport-protected".to_string()),
@@ -392,20 +419,34 @@ fn group_policy_patch(
             "update_policy": "owner",
         }),
     );
-    patch
 }
 
 fn normalized_security_profile(
-    e2ee: bool,
-    message_security_profile: Option<&str>,
+    _e2ee: bool,
+    message_security_profile: Option<&crate::groups::GroupMessageSecurityProfile>,
 ) -> Option<String> {
-    if e2ee {
-        return Some("group-e2ee".to_string());
-    }
-    match message_security_profile.map(str::trim).unwrap_or_default() {
+    match message_security_profile
+        .map(|value| value.as_str())
+        .unwrap_or_default()
+    {
         "" | "transport-protected" => None,
         value => Some(value.to_string()),
     }
+}
+
+fn reject_unsupported_group_e2ee(
+    e2ee: bool,
+    message_security_profile: Option<&crate::groups::GroupMessageSecurityProfile>,
+) -> crate::ImResult<()> {
+    if e2ee
+        || matches!(
+            message_security_profile,
+            Some(crate::groups::GroupMessageSecurityProfile::GroupE2ee)
+        )
+    {
+        return Err(crate::ImError::unsupported("group-e2ee"));
+    }
+    Ok(())
 }
 
 fn insert_required_trimmed_string(

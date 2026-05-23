@@ -910,9 +910,9 @@ extension on CreateGroupRequest {
       gen_group_dto.DartCreateGroupRequest(
         name: name,
         description: description,
-        discoverability: discoverability,
-        admissionMode: admissionMode,
-        messageSecurityProfile: messageSecurityProfile,
+        discoverability: discoverability?.value,
+        admissionMode: admissionMode?.value,
+        messageSecurityProfile: messageSecurityProfile?.value,
         e2Ee: e2ee,
         slug: slug,
         goal: goal,
@@ -920,10 +920,9 @@ extension on CreateGroupRequest {
         messagePrompt: messagePrompt,
         docUrl: docUrl,
         attachmentsAllowed: attachmentsAllowed,
-        maxMembers: maxMembers,
+        maxMembers: maxMembers?.value.toString(),
         memberMaxMessages: memberMaxMessages,
         memberMaxTotalChars: memberMaxTotalChars,
-        serviceDid: serviceDid,
       );
 }
 

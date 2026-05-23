@@ -50,6 +50,67 @@ class GroupMember {
   final String? joinedAt;
 }
 
+class GroupDiscoverability {
+  const GroupDiscoverability._(this.value);
+
+  static const private = GroupDiscoverability._('private');
+  static const public = GroupDiscoverability._('public');
+  static const unlisted = GroupDiscoverability._('unlisted');
+
+  factory GroupDiscoverability.custom(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError.value(value, 'value', 'must not be empty');
+    }
+    return GroupDiscoverability._(trimmed);
+  }
+
+  final String value;
+}
+
+class GroupAdmissionMode {
+  const GroupAdmissionMode._(this.value);
+
+  static const openJoin = GroupAdmissionMode._('open-join');
+  static const inviteOnly = GroupAdmissionMode._('invite-only');
+  static const approvalRequired = GroupAdmissionMode._('approval');
+  static const closed = GroupAdmissionMode._('closed');
+
+  factory GroupAdmissionMode.custom(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError.value(value, 'value', 'must not be empty');
+    }
+    return GroupAdmissionMode._(trimmed);
+  }
+
+  final String value;
+}
+
+class GroupMessageSecurityProfile {
+  const GroupMessageSecurityProfile._(this.value);
+
+  static const transportProtected =
+      GroupMessageSecurityProfile._('transport-protected');
+  static const groupE2ee = GroupMessageSecurityProfile._('group-e2ee');
+
+  factory GroupMessageSecurityProfile.custom(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError.value(value, 'value', 'must not be empty');
+    }
+    return GroupMessageSecurityProfile._(trimmed);
+  }
+
+  final String value;
+}
+
+class GroupMemberLimit {
+  const GroupMemberLimit(this.value);
+
+  final int value;
+}
+
 class CreateGroupRequest {
   const CreateGroupRequest({
     required this.name,
@@ -67,14 +128,13 @@ class CreateGroupRequest {
     this.maxMembers,
     this.memberMaxMessages,
     this.memberMaxTotalChars,
-    this.serviceDid,
   });
 
   final String name;
   final String? description;
-  final String? discoverability;
-  final String? admissionMode;
-  final String? messageSecurityProfile;
+  final GroupDiscoverability? discoverability;
+  final GroupAdmissionMode? admissionMode;
+  final GroupMessageSecurityProfile? messageSecurityProfile;
   final bool e2ee;
   final String? slug;
   final String? goal;
@@ -82,10 +142,9 @@ class CreateGroupRequest {
   final String? messagePrompt;
   final String? docUrl;
   final bool? attachmentsAllowed;
-  final String? maxMembers;
+  final GroupMemberLimit? maxMembers;
   final int? memberMaxMessages;
   final int? memberMaxTotalChars;
-  final String? serviceDid;
 }
 
 class GroupReadResult {

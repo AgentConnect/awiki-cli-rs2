@@ -22,7 +22,7 @@ pub enum MessageBody {
         kind: MessageKind,
     },
     Attachment {
-        input: AttachmentInput,
+        input: crate::attachments::AttachmentInput,
         caption: Option<String>,
         mime_type: Option<String>,
     },
@@ -55,16 +55,6 @@ impl Default for MessageDeliveryOptions {
             wait_for_final_acceptance: false,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AttachmentInput {
-    LocalFile(String),
-    Bytes {
-        filename: Option<String>,
-        mime_type: Option<String>,
-        bytes_len: usize,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

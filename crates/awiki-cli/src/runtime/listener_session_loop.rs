@@ -1,4 +1,4 @@
-pub use im_core::realtime::{
+pub use im_core::compat::realtime::{
     secure_prekey_retry_decision, session_loop_start_decision, ConnectedSessionAction,
     ConsumeFinishedAction, ConsumeFinishedDecision, ContextSleep, InitialSessionSignal,
     SecurePrekeyRetryDecision, SessionLoopBackoff, SessionLoopRetryDecision, SessionLoopRetryPhase,

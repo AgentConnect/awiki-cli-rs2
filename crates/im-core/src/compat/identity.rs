@@ -84,6 +84,20 @@ pub fn normalize_email(email: &str) -> String {
     crate::internal::identity_wire::normalize_email(email)
 }
 
+#[doc(hidden)]
+pub fn contact_binding_raw_response(
+    result: &crate::identity::ContactBindingResult,
+) -> Option<&serde_json::Value> {
+    result.raw_response()
+}
+
+#[doc(hidden)]
+pub fn recover_handle_raw_response(
+    result: &crate::identity::RecoverHandleResult,
+) -> Option<&serde_json::Value> {
+    result.raw_response()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContactBindingBridgeResult {
     pub result: crate::identity::ContactBindingResult,

@@ -219,13 +219,7 @@ fn binding_result(
     state: crate::identity::ContactBindingState,
     raw: Option<Value>,
 ) -> crate::identity::ContactBindingResult {
-    crate::identity::ContactBindingResult::with_diagnostic_raw(
-        method,
-        target,
-        state,
-        raw,
-        Vec::new(),
-    )
+    crate::identity::ContactBindingResult::with_raw_response(method, target, state, raw, Vec::new())
 }
 
 #[cfg(test)]
