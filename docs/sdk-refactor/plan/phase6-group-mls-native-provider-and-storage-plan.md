@@ -24,7 +24,7 @@ awiki-cli / im-core
 im-core
   -> NativeAnpMlsProvider
       -> anp::group_e2ee::operations library API
-      -> OpenMLS StorageProvider backed by im-core-managed sensitive local SQLite
+      -> OpenMLS StorageProvider backed by im-core-managed sensitive MLS SQLite
   -> message service RPC
 ```
 
@@ -265,6 +265,10 @@ pub(crate) trait GroupMlsProvider {
     fn remove_member_prepare(
         &self,
         input: RemoveMlsMemberInput,
+    ) -> ImResult<PreparedMlsCommitOutput>;
+    fn leave_prepare(
+        &self,
+        input: LeaveMlsGroupInput,
     ) -> ImResult<PreparedMlsCommitOutput>;
     fn update_member_prepare(
         &self,
@@ -809,10 +813,59 @@ pub fn generate_key_package<S>(
 where
     S: GroupMlsStore;
 
-pub fn create_group<S>(
+pub fn create_group_prepare<S>(
     ctx: &GroupMlsContext<'_, S>,
     input: CreateGroupInput,
-) -> Result<CreateGroupOutput, GroupMlsError>
+) -> Result<PreparedMlsCommitOutput, GroupMlsError>
+where
+    S: GroupMlsStore;
+
+pub fn add_member_prepare<S>(
+    ctx: &GroupMlsContext<'_, S>,
+    input: AddMemberInput,
+) -> Result<PreparedMlsCommitOutput, GroupMlsError>
+where
+    S: GroupMlsStore;
+
+pub fn remove_member_prepare<S>(
+    ctx: &GroupMlsContext<'_, S>,
+    input: RemoveMemberInput,
+) -> Result<PreparedMlsCommitOutput, GroupMlsError>
+where
+    S: GroupMlsStore;
+
+pub fn leave_prepare<S>(
+    ctx: &GroupMlsContext<'_, S>,
+    input: LeaveGroupInput,
+) -> Result<PreparedMlsCommitOutput, GroupMlsError>
+where
+    S: GroupMlsStore;
+
+pub fn update_member_prepare<S>(
+    ctx: &GroupMlsContext<'_, S>,
+    input: UpdateMemberInput,
+) -> Result<PreparedMlsCommitOutput, GroupMlsError>
+where
+    S: GroupMlsStore;
+
+pub fn recover_member_prepare<S>(
+    ctx: &GroupMlsContext<'_, S>,
+    input: RecoverMemberInput,
+) -> Result<PreparedMlsCommitOutput, GroupMlsError>
+where
+    S: GroupMlsStore;
+
+pub fn finalize_commit<S>(
+    ctx: &GroupMlsContext<'_, S>,
+    input: FinalizeCommitInput,
+) -> Result<FinalizeCommitOutput, GroupMlsError>
+where
+    S: GroupMlsStore;
+
+pub fn abort_commit<S>(
+    ctx: &GroupMlsContext<'_, S>,
+    input: AbortCommitInput,
+) -> Result<AbortCommitOutput, GroupMlsError>
 where
     S: GroupMlsStore;
 
@@ -820,6 +873,13 @@ pub fn process_welcome<S>(
     ctx: &GroupMlsContext<'_, S>,
     input: ProcessWelcomeInput,
 ) -> Result<ProcessWelcomeOutput, GroupMlsError>
+where
+    S: GroupMlsStore;
+
+pub fn process_notice<S>(
+    ctx: &GroupMlsContext<'_, S>,
+    input: ProcessNoticeInput,
+) -> Result<ProcessNoticeOutput, GroupMlsError>
 where
     S: GroupMlsStore;
 
@@ -955,8 +1015,8 @@ client.messages().send(SendMessageRequest {
 })
 
 client.secure().group(group).status()
-client.secure().group(group).prepare()
 client.secure().group(group).repair()
+client.secure().group(group).rotate_member_key()
 ```
 
 SDK 不新增：
@@ -1007,6 +1067,41 @@ C. 只能 internal sibling mls_state.sqlite。
 
 ```text
 把 src/bin/anp-mls.rs 的 real OpenMLS operations 抽到 anp::group_e2ee::operations/storage/commands。
+```
+
+当前进展：
+
+```text
+../anp/rust local commit ce77ce5
+  refactor: extract group mls command storage helpers
+
+已完成：
+1. 新增 anp::group_e2ee::commands：
+   - anp-mls/v1 API/version/command metadata；
+   - ok/error JSON envelope helper；
+   - operation-log response redaction helper。
+2. 新增 anp::group_e2ee::storage：
+   - StateLock；
+   - JsonCodec；
+   - SqliteMlsProvider；
+   - sqlite_mls_provider；
+   - init_app_schema。
+3. src/bin/anp-mls.rs 复用 commands/storage helper，binary JSON 行为保持兼容。
+
+仍未完成：
+1. real_key_package / real_group_create / real_message_encrypt / real_message_decrypt 等 real operations 仍在 bin target。
+2. commands.rs 还不是完整 anp-mls/v1 command dispatcher。
+3. typed operation input/output/error 尚未完成。
+```
+
+验证：
+
+```bash
+cd ../anp/rust
+cargo check --features mls --bin anp-mls
+cargo test --test group_e2ee_contract_tests --features mls
+cargo test --test group_e2ee_storage_spike_tests --features mls
+cargo test --test group_e2ee_real_mls_tests --features mls
 ```
 
 完成标准：
@@ -1218,8 +1313,8 @@ awiki-cli group_e2ee_* 不再默认直接 new MlsExecProvider。
 ```rust
 client.messages().send(... E2eeRequired ...)
 client.secure().group(group).status()
-client.secure().group(group).prepare()
 client.secure().group(group).repair()
+client.secure().group(group).rotate_member_key()
 ```
 
 调用方不会看到：
