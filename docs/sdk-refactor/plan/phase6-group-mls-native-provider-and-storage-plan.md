@@ -1168,8 +1168,11 @@ generic commit-finalize / commit-abort typed API
 ../anp/rust local commit 54982b6
   fix: make group add member use pending commit
 
-../anp/rust local working tree
+../anp/rust local commit 834bea6
   group create metadata prepare/finalize/abort implemented; pending create binding is not active until finalize.
+
+../anp/rust local commit 55cfb31
+  anp::group_e2ee::operations typed wrappers implemented for status, key package, create/add/remove/leave/update/recover prepare, finalize/abort, welcome/notice process, encrypt/decrypt.
 
 已完成：
 1. group add-member 不再 merge pending commit。
@@ -1180,10 +1183,11 @@ generic commit-finalize / commit-abort typed API
 6. group create prepare 写入 pending_create binding 和 pending_commits 记录，但 active binding 不可用。
 7. group create finalize 验证 OpenMLS group state 仍存在，然后把 binding 激活。
 8. group create abort 清理 pending binding 和对应 openmls group private state；随后可用新的 operation_id 重新 create。
+9. typed operation entry points 已覆盖主要 command matrix；typed output 不暴露 provider path、SQLite path、OpenMLS StorageProvider、raw openmls_group_id 字段。
 
 仍未完成：
-1. typed create_group_prepare / add_member_prepare / finalize_commit / abort_commit API。
-2. crash after prepare / before finalize 的恢复/重试策略需要进一步收敛到 typed operations。
+1. crash after prepare / before finalize 的恢复/重试策略需要进一步收敛到 typed operations。
+2. typed API 仍复用内部 JSON compatibility implementation；后续可逐步把内部实现改为原生 typed core。
 ```
 
 ### PR M3：storage abstraction
@@ -1203,6 +1207,20 @@ generic commit-finalize / commit-abort typed API
 2. ImCoreSqliteGroupMlsStore 不需要 anp-mls binary path。
 3. OpenMLS tables 仍由 openmls_sqlite_storage migrations 管理。
 4. group_mls_* metadata tables 用 owner_identity_id 隔离。
+```
+
+当前进展：
+
+```text
+已完成：
+1. 新增 GroupMlsStore trait。
+2. 新增 CompatDataDirStore，兼容 --data-dir/state.db 的 state.lock、app schema、OpenMLS provider lifecycle。
+3. typed operations 通过 GroupMlsStore 打开 one-shot operation scope；调用面不需要 anp-mls binary path。
+
+仍未完成：
+1. ImCoreSqliteGroupMlsStore。
+2. group_mls_* metadata tables owner_identity_id/device_id 隔离。
+3. im-core local_state.sqlite same-file/two-connection 或 sibling mls_state.sqlite 的最终落地选择。
 ```
 
 ### PR M4：im-core provider trait + fake / exec / native skeleton
