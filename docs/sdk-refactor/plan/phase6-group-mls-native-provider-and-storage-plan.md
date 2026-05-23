@@ -1075,6 +1075,9 @@ C. 只能 internal sibling mls_state.sqlite。
 ../anp/rust local commit ce77ce5
   refactor: extract group mls command storage helpers
 
+../anp/rust local commit ee77c58
+  refactor: extract group mls real operations
+
 已完成：
 1. 新增 anp::group_e2ee::commands：
    - anp-mls/v1 API/version/command metadata；
@@ -1087,11 +1090,25 @@ C. 只能 internal sibling mls_state.sqlite。
    - sqlite_mls_provider；
    - init_app_schema。
 3. src/bin/anp-mls.rs 复用 commands/storage helper，binary JSON 行为保持兼容。
+4. 新增 anp::group_e2ee::operations：
+   - real_key_package；
+   - real_group_create；
+   - real_group_add_member；
+   - real_group_update_member_prepare；
+   - real_group_recover_member_prepare；
+   - real_group_remove_member；
+   - real_group_leave；
+   - real_welcome_process；
+   - real_message_encrypt / real_message_decrypt；
+   - real_group_commit_finalize / real_group_commit_abort；
+   - real_commit_process；
+   - real_group_status。
+5. src/bin/anp-mls.rs 已降为约 750 行，只保留 CLI args、stdin/stdout JSON envelope、operation-id 记录、--data-dir compat wiring 和 contract-test mode。
 
 仍未完成：
-1. real_key_package / real_group_create / real_message_encrypt / real_message_decrypt 等 real operations 仍在 bin target。
-2. commands.rs 还不是完整 anp-mls/v1 command dispatcher。
-3. typed operation input/output/error 尚未完成。
+1. commands.rs 还不是完整 anp-mls/v1 command dispatcher。
+2. typed operation input/output/error 尚未完成。
+3. group create / add-member 等 epoch-changing operations 仍保留当前兼容语义，prepare/finalize/abort 统一在 PR M2 完成。
 ```
 
 验证：
