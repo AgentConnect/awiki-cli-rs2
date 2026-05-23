@@ -530,6 +530,17 @@ C. 只能 internal sibling mls_state.sqlite。
 结果：4 passed
 ```
 
+当前 M3 落地证据记录：
+
+```text
+../anp/rust local commit 8aeb96f
+  feat: add im-core scoped group mls store
+
+测试文件：../anp/rust/tests/group_e2ee_typed_operations_tests.rs
+命令：cargo test --test group_e2ee_typed_operations_tests --features mls
+结果：2 passed
+```
+
 已验证事实：
 
 ```text
@@ -548,6 +559,21 @@ C. 只能 internal sibling mls_state.sqlite。
 优先实现 same-file / two-connection 或 internal sibling mls_state.sqlite。
 不要在 M2/M3 承诺 OpenMLS private state 与 im-core business projection 同一个 Rust transaction 原子提交。
 同库同事务只有在后续证明 openmls_sqlite_storage 可接收外部 transaction 后才能升级。
+```
+
+M3 当前实现选择：
+
+```text
+internal sibling scoped mls_state.sqlite。
+
+原因：
+1. openmls_sqlite_storage 的 openmls_* tables 不带 owner_identity_id / device_id。
+2. OpenMLS group id 对同一个业务 group_did 可能在不同本地 identity/device 下相同。
+3. 如果把多个 owner/device 的 OpenMLS private state 放进同一个 SQLite 文件，仅靠 group_mls_* metadata 隔离还不够。
+4. 因此 ImCoreSqliteGroupMlsStore 先从 ImCorePaths.local_state.sqlite_path 推导：
+   <local_state_dir>/group_mls/<owner-device-scope-hash>/mls_state.sqlite
+5. sibling path 仍是 im-core/anp 内部实现细节，不进入 SDK public Interface。
+6. 每个 scoped DB 内，OpenMLS private state 继续由 openmls_sqlite_storage 管 openmls_* tables；app metadata 使用 group_mls_* tables。
 ```
 
 但要加几个硬约束：
@@ -1212,15 +1238,22 @@ generic commit-finalize / commit-abort typed API
 当前进展：
 
 ```text
+../anp/rust local commit 8aeb96f
+  feat: add im-core scoped group mls store
+
 已完成：
 1. 新增 GroupMlsStore trait。
 2. 新增 CompatDataDirStore，兼容 --data-dir/state.db 的 state.lock、app schema、OpenMLS provider lifecycle。
 3. typed operations 通过 GroupMlsStore 打开 one-shot operation scope；调用面不需要 anp-mls binary path。
+4. 新增 ImCoreSqliteGroupMlsStore，可从 im-core local_state.sqlite path 推导 internal sibling scoped mls_state.sqlite。
+5. ImCoreSqliteGroupMlsStore 创建 group_mls_operations / group_mls_agents / group_mls_key_packages / group_mls_bindings / group_mls_pending_commits。
+6. typed operations 在进入 OpenMLS 写入前校验 owner_did/device_id 是否匹配 store owner scope。
+7. ImCoreSqliteGroupMlsStore 不创建 legacy agents/key_packages/group_bindings/pending_commits 业务表；兼容 JSON core 通过 operation-scope TEMP view/trigger 写入 group_mls_* tables。
 
 仍未完成：
-1. ImCoreSqliteGroupMlsStore。
-2. group_mls_* metadata tables owner_identity_id/device_id 隔离。
-3. im-core local_state.sqlite same-file/two-connection 或 sibling mls_state.sqlite 的最终落地选择。
+1. im-core crate 内部 GroupMlsProvider trait / fake / native provider skeleton。
+2. im-core identity runtime 到 ImCoreSqliteGroupMlsStore 的 owner_identity_id/owner_did/device_id wiring。
+3. group_mls_operations operation log 目前只定义 schema；native im-core path 的 operation log redaction/diagnostics 读取策略还需要在 provider 接入时完成。
 ```
 
 ### PR M4：im-core provider trait + fake / exec / native skeleton
