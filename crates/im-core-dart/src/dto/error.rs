@@ -1,0 +1,135 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartImError {
+    pub code: String,
+    pub message: String,
+    pub field: Option<String>,
+    pub status_code: Option<u16>,
+    pub capability: Option<String>,
+}
+
+impl DartImError {
+    pub fn invalid_input(field: Option<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: "invalid_input".to_string(),
+            message: message.into(),
+            field,
+            status_code: None,
+            capability: None,
+        }
+    }
+
+    pub fn unsupported(capability: impl Into<String>) -> Self {
+        let capability = capability.into();
+        Self {
+            code: "unsupported_capability".to_string(),
+            message: format!("unsupported capability: {capability}"),
+            field: None,
+            status_code: None,
+            capability: Some(capability),
+        }
+    }
+
+    pub fn object_closed(object: impl Into<String>) -> Self {
+        let object = object.into();
+        Self {
+            code: "object_closed".to_string(),
+            message: format!("{object} has been disposed"),
+            field: None,
+            status_code: None,
+            capability: None,
+        }
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            code: "internal_error".to_string(),
+            message: message.into(),
+            field: None,
+            status_code: None,
+            capability: None,
+        }
+    }
+}
+
+impl From<im_core::ImError> for DartImError {
+    fn from(value: im_core::ImError) -> Self {
+        match value {
+            im_core::ImError::InvalidInput { field, message } => {
+                Self::invalid_input(field, message)
+            }
+            im_core::ImError::IdentityRequired => Self::simple("identity_required", value),
+            im_core::ImError::IdentityNotFound { selector } => Self::simple(
+                "identity_not_found",
+                format!("identity not found for selector {selector}"),
+            ),
+            im_core::ImError::DefaultIdentityMissing => {
+                Self::simple("default_identity_missing", value)
+            }
+            im_core::ImError::IdentityNotReady { identity, missing } => Self::simple(
+                "identity_not_ready",
+                format!("identity {identity} is not ready: {}", missing.join(", ")),
+            ),
+            im_core::ImError::AuthRequired => Self::simple("auth_required", value),
+            im_core::ImError::SessionExpired => Self::simple("session_expired", value),
+            im_core::ImError::PermissionDenied => Self::simple("permission_denied", value),
+            im_core::ImError::PeerNotFound { peer } => {
+                Self::simple("peer_not_found", format!("peer not found: {peer}"))
+            }
+            im_core::ImError::GroupNotFound { group } => {
+                Self::simple("group_not_found", format!("group not found: {group}"))
+            }
+            im_core::ImError::MessageNotFound { message_id } => Self::simple(
+                "message_not_found",
+                format!("message not found: {message_id}"),
+            ),
+            im_core::ImError::TransportUnavailable { detail } => Self::simple(
+                "transport_unavailable",
+                format!("transport unavailable: {detail}"),
+            ),
+            im_core::ImError::UnsupportedCapability { capability } => Self::unsupported(capability),
+            im_core::ImError::LocalStateUnavailable { detail } => Self::simple(
+                "local_state_unavailable",
+                format!("local state unavailable: {detail}"),
+            ),
+            im_core::ImError::PathUnavailable { path_kind, detail } => Self::simple(
+                "path_unavailable",
+                format!("{path_kind} path unavailable: {detail}"),
+            ),
+            im_core::ImError::CredentialFileUnreadable { path_kind, detail } => Self::simple(
+                "credential_file_unreadable",
+                format!("{path_kind} credential file unreadable: {detail}"),
+            ),
+            im_core::ImError::Service {
+                status_code,
+                code: _,
+                message,
+            } => Self {
+                code: "service_error".to_string(),
+                message,
+                field: None,
+                status_code,
+                capability: None,
+            },
+            im_core::ImError::Serialization { detail } => Self::simple(
+                "serialization_error",
+                format!("serialization error: {detail}"),
+            ),
+            im_core::ImError::Io { detail } => {
+                Self::simple("io_error", format!("io error: {detail}"))
+            }
+            im_core::ImError::Internal { message } => Self::simple("internal_error", message),
+        }
+    }
+}
+
+impl DartImError {
+    fn simple(code: &str, message: impl ToString) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.to_string(),
+            field: None,
+            status_code: None,
+            capability: None,
+        }
+    }
+}

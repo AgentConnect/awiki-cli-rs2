@@ -1,0 +1,30 @@
+group 'ai.awiki.awiki_im_core'
+version '0.1.0'
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.1.0'
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'ai.awiki.awiki_im_core'
+    compileSdk 35
+
+    defaultConfig {
+        minSdk 23
+    }
+}

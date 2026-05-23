@@ -1,0 +1,57 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DartIdentitySelector {
+    Default,
+    Id { id: String },
+    Did { did: String },
+    Handle { handle: String },
+    LocalAlias { alias: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartIdentitySummary {
+    pub id: String,
+    pub did: String,
+    pub handle: Option<String>,
+    pub display_name: Option<String>,
+    pub local_alias: Option<String>,
+    pub device_id: Option<String>,
+    pub is_default: bool,
+    pub ready_for_auth: bool,
+    pub ready_for_messaging: bool,
+    pub missing: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartInitialProfile {
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDefaultIdentityChange {
+    pub previous: Option<DartIdentitySummary>,
+    pub next: DartIdentitySummary,
+    pub requires_default_identity_write: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartHandleRegistrationResult {
+    pub identity: Option<DartIdentitySummary>,
+    pub handle: String,
+    pub method: String,
+    pub state: String,
+    pub default_identity_change: Option<DartDefaultIdentityChange>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartRecoverHandleResult {
+    pub handle: String,
+    pub phone: String,
+    pub state: String,
+    pub recovered_identity: Option<DartIdentitySummary>,
+    pub user_id: Option<String>,
+    pub access_token_present: bool,
+    pub warnings: Vec<String>,
+}
