@@ -107,7 +107,9 @@ where
     }
 }
 
-fn load_credentials(client: &crate::core::ImClient) -> crate::ImResult<GroupTextCredentials> {
+pub(crate) fn load_credentials(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<GroupTextCredentials> {
     let runtime = client.runtime();
     let did_document = read_optional_json(&runtime.did_document_path)?;
     let key1_private_pem = std::fs::read_to_string(&runtime.private_key_path).map_err(|err| {
@@ -141,7 +143,9 @@ fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> 
         })
 }
 
-fn group_target(target: &crate::messages::MessageTarget) -> crate::ImResult<crate::ids::GroupRef> {
+pub(crate) fn group_target(
+    target: &crate::messages::MessageTarget,
+) -> crate::ImResult<crate::ids::GroupRef> {
     let crate::messages::MessageTarget::Group(group) = target else {
         return Err(crate::ImError::unsupported("direct-send"));
     };
@@ -154,7 +158,7 @@ fn group_target(target: &crate::messages::MessageTarget) -> crate::ImResult<crat
     Ok(group.clone())
 }
 
-fn text_body(
+pub(crate) fn text_body(
     body: &crate::messages::MessageBody,
 ) -> crate::ImResult<(&str, crate::messages::MessageKind)> {
     match body {
@@ -202,7 +206,7 @@ fn fill_group_result_defaults(result: &mut GroupRpcResult, meta: &Value, group_d
     }
 }
 
-fn sdk_result_from_group_result(
+pub(crate) fn sdk_result_from_group_result(
     result: &GroupRpcResult,
     sender: crate::ids::Did,
     group: crate::ids::GroupRef,
@@ -312,14 +316,14 @@ fn delivery_state(result: &GroupRpcResult) -> crate::messages::DeliveryState {
     }
 }
 
-fn content_type_for_message_type(message_type: &str) -> &'static str {
+pub(crate) fn content_type_for_message_type(message_type: &str) -> &'static str {
     match message_type.trim().to_ascii_lowercase().as_str() {
         "markdown" => "text/markdown",
         _ => "text/plain",
     }
 }
 
-fn message_type(kind: &crate::messages::MessageKind) -> &'static str {
+pub(crate) fn message_type(kind: &crate::messages::MessageKind) -> &'static str {
     match kind {
         crate::messages::MessageKind::Text => "text",
         crate::messages::MessageKind::Markdown => "markdown",
