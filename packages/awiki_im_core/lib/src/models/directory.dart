@@ -50,3 +50,33 @@ class RelationStatus {
   final String? relationship;
   final String? displayName;
 }
+
+class RelationshipListItem {
+  const RelationshipListItem({
+    required this.did,
+    this.handle,
+    this.displayName,
+    required this.relationship,
+    this.createdAt,
+    this.warnings = const [],
+  });
+
+  final String did;
+  final String? handle;
+  final String? displayName;
+  final String relationship;
+  final String? createdAt;
+  final List<String> warnings;
+}
+
+class RelationshipPage {
+  const RelationshipPage({
+    required this.items,
+    this.nextCursor,
+    required this.hasMore,
+  });
+
+  final List<RelationshipListItem> items;
+  final String? nextCursor;
+  final bool hasMore;
+}

@@ -334,6 +334,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartRelationStatus dco_decode_dart_relation_status(dynamic raw);
 
   @protected
+  DartRelationshipListItem dco_decode_dart_relationship_list_item(dynamic raw);
+
+  @protected
+  DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw);
+
+  @protected
   DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw);
 
   @protected
@@ -378,6 +384,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartMessageMetadataAttribute>
   dco_decode_list_dart_message_metadata_attribute(dynamic raw);
+
+  @protected
+  List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
+    dynamic raw,
+  );
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -797,6 +808,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartRelationshipListItem sse_decode_dart_relationship_list_item(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartRelationshipPage sse_decode_dart_relationship_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartSendMessageResult sse_decode_dart_send_message_result(
     SseDeserializer deserializer,
   );
@@ -857,6 +878,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   List<DartMessageMetadataAttribute>
   sse_decode_list_dart_message_metadata_attribute(SseDeserializer deserializer);
+
+  @protected
+  List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
+    SseDeserializer deserializer,
+  );
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -1371,6 +1397,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_relationship_list_item(
+    DartRelationshipListItem self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_relationship_page(
+    DartRelationshipPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_send_message_result(
     DartSendMessageResult self,
     SseSerializer serializer,
@@ -1445,6 +1483,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_message_metadata_attribute(
     List<DartMessageMetadataAttribute> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_relationship_list_item(
+    List<DartRelationshipListItem> self,
     SseSerializer serializer,
   );
 

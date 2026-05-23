@@ -10,6 +10,8 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+// These functions are ignored because they are not marked as `pub`: `page_limit`, `relationship_item_to_dart`, `relationship_list`
+
 Future<DartDirectoryResolution> resolvePeer({
   required ArcDartImClient client,
   required String peer,
@@ -42,3 +44,27 @@ Future<void> unfollow({
   required String peer,
 }) =>
     RustLib.instance.api.crateApiDirectoryUnfollow(client: client, peer: peer);
+
+Future<DartRelationshipPage> listFollowers({
+  required ArcDartImClient client,
+  required int limit,
+  required int offset,
+  required bool hydrateProfiles,
+}) => RustLib.instance.api.crateApiDirectoryListFollowers(
+  client: client,
+  limit: limit,
+  offset: offset,
+  hydrateProfiles: hydrateProfiles,
+);
+
+Future<DartRelationshipPage> listFollowing({
+  required ArcDartImClient client,
+  required int limit,
+  required int offset,
+  required bool hydrateProfiles,
+}) => RustLib.instance.api.crateApiDirectoryListFollowing(
+  client: client,
+  limit: limit,
+  offset: offset,
+  hydrateProfiles: hydrateProfiles,
+);

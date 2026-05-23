@@ -324,6 +324,54 @@ class DirectoryApi {
     );
     return status._toModel();
   }
+
+  Future<void> follow(String peer) async {
+    _client._ensureNotDisposed();
+    await _mapNativeErrors(
+      () => gen_directory.follow(client: _client._inner, peer: peer),
+    );
+  }
+
+  Future<void> unfollow(String peer) async {
+    _client._ensureNotDisposed();
+    await _mapNativeErrors(
+      () => gen_directory.unfollow(client: _client._inner, peer: peer),
+    );
+  }
+
+  Future<RelationshipPage> listFollowers({
+    int limit = 100,
+    int offset = 0,
+    bool hydrateProfiles = false,
+  }) async {
+    _client._ensureNotDisposed();
+    final page = await _mapNativeErrors(
+      () => gen_directory.listFollowers(
+        client: _client._inner,
+        limit: limit,
+        offset: offset,
+        hydrateProfiles: hydrateProfiles,
+      ),
+    );
+    return page._toModel();
+  }
+
+  Future<RelationshipPage> listFollowing({
+    int limit = 100,
+    int offset = 0,
+    bool hydrateProfiles = false,
+  }) async {
+    _client._ensureNotDisposed();
+    final page = await _mapNativeErrors(
+      () => gen_directory.listFollowing(
+        client: _client._inner,
+        limit: limit,
+        offset: offset,
+        hydrateProfiles: hydrateProfiles,
+      ),
+    );
+    return page._toModel();
+  }
 }
 
 class ProfileApi {
@@ -903,6 +951,25 @@ extension on gen_directory_dto.DartRelationStatus {
     peer: peer,
     relationship: relationship,
     displayName: displayName,
+  );
+}
+
+extension on gen_directory_dto.DartRelationshipListItem {
+  RelationshipListItem _toModel() => RelationshipListItem(
+    did: did,
+    handle: handle,
+    displayName: displayName,
+    relationship: relationship,
+    createdAt: createdAt,
+    warnings: warnings,
+  );
+}
+
+extension on gen_directory_dto.DartRelationshipPage {
+  RelationshipPage _toModel() => RelationshipPage(
+    items: items.map((item) => item._toModel()).toList(),
+    nextCursor: nextCursor,
+    hasMore: hasMore,
   );
 }
 
