@@ -41,11 +41,11 @@ pub use crate::messages::{
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::{
-    ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
-    HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind,
-    MessageUpdatedEvent, RealtimeConnectionState, RealtimeControl, RealtimeEventReceiver,
-    RealtimeExit, RealtimeExitReason, RealtimeHandle, RealtimeOptions, RealtimeService,
-    RealtimeStatus, RealtimeSubscription, ReconnectPolicy, ShutdownSignal,
-    UnknownNotificationEvent,
+    AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupUpdateKind,
+    GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
+    LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind, MessageUpdatedEvent,
+    RealtimeConnectionState, RealtimeControl, RealtimeEventReceiver, RealtimeExit,
+    RealtimeExitReason, RealtimeHandle, RealtimeOptions, RealtimeService, RealtimeStatus,
+    RealtimeSubscription, ReconnectPolicy, ShutdownSignal, UnknownNotificationEvent,
 };
 pub use crate::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};

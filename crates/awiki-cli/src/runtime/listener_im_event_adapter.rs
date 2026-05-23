@@ -4,6 +4,7 @@
 
 use crate::runtime::host_notify::{
     DirectMessageNotificationData, GroupMessageNotificationData, GroupStateChangedNotificationData,
+    HostNotificationAttachmentDownloadAction, HostNotificationAttachmentSummary,
     HostNotificationData, HostNotificationEvent, HOST_NOTIFICATION_VERSION,
 };
 use crate::runtime::host_notify_sink::HostNotifySink;
@@ -21,8 +22,8 @@ use crate::runtime::listener_notification_plan::{
 use crate::store::{self, GroupRecord, MessageRecord};
 use crate::{config::Resolved, identity::types::StoredIdentity};
 use im_core::prelude::{
-    GroupUpdateKind, HostNotificationKind, ImEvent, Message, MessageBodyView, MessageDirection,
-    ThreadRef,
+    AttachmentDownloadAction, AttachmentMessageSummary, GroupUpdateKind, HostNotificationKind,
+    ImEvent, Message, MessageBodyView, MessageDirection, MessageReceivedEvent, ThreadRef,
 };
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -133,7 +134,7 @@ struct ImEventExecutor<'a, 'lookup> {
 impl ImEventExecutor<'_, '_> {
     fn handle(&mut self, event: ImEvent) {
         match event {
-            ImEvent::MessageReceived(event) => self.handle_message_received(event.message),
+            ImEvent::MessageReceived(event) => self.handle_message_received(event),
             ImEvent::GroupUpdated(event) => {
                 self.handle_group_updated(event.group.as_str(), event.update_kind)
             }
@@ -145,8 +146,20 @@ impl ImEventExecutor<'_, '_> {
         }
     }
 
-    fn handle_message_received(&mut self, message: Message) {
-        let Some(record) = message_record_from_im_message(&message, self.session) else {
+    fn handle_message_received(&mut self, event: MessageReceivedEvent) {
+        let MessageReceivedEvent {
+            message,
+            attachment_summary,
+            download_action,
+            warnings,
+        } = event;
+        let Some(record) = message_record_from_im_message(
+            &message,
+            self.session,
+            attachment_summary.as_ref(),
+            download_action.as_ref(),
+            &warnings,
+        ) else {
             self.warn("message received event missing owner, thread, or message id");
             return;
         };
@@ -177,8 +190,13 @@ impl ImEventExecutor<'_, '_> {
             self.received_at,
             &sender_handle,
             &recipient_handle,
+            attachment_summary.as_ref(),
+            download_action.as_ref(),
         );
 
+        for warning in warnings {
+            self.warn(&warning);
+        }
         self.apply_store_message(record);
         self.dispatch_host_notification(host_event);
     }
@@ -376,6 +394,9 @@ fn empty_result(route: NotificationRoute) -> NotificationExecutionResult {
 fn message_record_from_im_message(
     message: &Message,
     session: &NotificationSessionContext,
+    attachment_summary: Option<&AttachmentMessageSummary>,
+    download_action: Option<&AttachmentDownloadAction>,
+    warnings: &[String],
 ) -> Option<MessageRecord> {
     let owner_did = owner_did_for_message(message, session);
     if owner_did.is_empty() || message.id.as_str().trim().is_empty() {
@@ -425,7 +446,7 @@ fn message_record_from_im_message(
             .or_else(|| message.received_at.clone())
             .unwrap_or_else(store::now_utc),
         is_read: matches!(message.direction, MessageDirection::Outgoing),
-        metadata: message_metadata_value(message),
+        metadata: message_metadata_value(message, attachment_summary, download_action, warnings),
         credential_name: session.identity_name.clone(),
         ..MessageRecord::default()
     })
@@ -490,8 +511,69 @@ fn message_content(message: &Message) -> String {
     }
 }
 
-fn message_metadata_value(message: &Message) -> String {
-    serde_json::to_string(&message.metadata).unwrap_or_default()
+fn message_metadata_value(
+    message: &Message,
+    attachment_summary: Option<&AttachmentMessageSummary>,
+    download_action: Option<&AttachmentDownloadAction>,
+    warnings: &[String],
+) -> String {
+    let mut value = serde_json::to_value(&message.metadata).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        if let Some(summary) = attachment_summary_value(attachment_summary) {
+            object.insert("attachment_summary".to_string(), summary);
+            object.insert("has_attachments".to_string(), Value::Bool(true));
+        }
+        if let Some(action) = attachment_download_action_value(download_action) {
+            object.insert("attachment_download_action".to_string(), action);
+        }
+        if !warnings.is_empty() {
+            object.insert(
+                "attachment_warnings".to_string(),
+                Value::Array(warnings.iter().cloned().map(Value::String).collect()),
+            );
+        }
+    }
+    serde_json::to_string(&value).unwrap_or_default()
+}
+
+fn attachment_summary_value(summary: Option<&AttachmentMessageSummary>) -> Option<Value> {
+    let summary = summary?;
+    Some(json!({
+        "attachment_id": summary.attachment_id.as_deref(),
+        "filename": summary.filename.as_deref(),
+        "mime_type": summary.mime_type.as_deref(),
+        "size_bytes": summary.size_bytes,
+        "content_type": summary.content_type.as_deref(),
+    }))
+}
+
+fn attachment_download_action_value(action: Option<&AttachmentDownloadAction>) -> Option<Value> {
+    let action = action?;
+    let mut value = json!({
+        "command": "msg.attachment.download",
+        "message_id": action.message_id.as_str(),
+        "attachment_id": action.attachment_id.as_deref(),
+    });
+    if let Some(object) = value.as_object_mut() {
+        match &action.thread {
+            ThreadRef::Direct(peer) => {
+                object.insert("with".to_string(), Value::String(peer.as_str().to_string()));
+            }
+            ThreadRef::Group(group) => {
+                object.insert(
+                    "group".to_string(),
+                    Value::String(group.as_str().to_string()),
+                );
+            }
+            ThreadRef::Thread(thread) => {
+                object.insert(
+                    "thread".to_string(),
+                    Value::String(thread.as_str().to_string()),
+                );
+            }
+        }
+    }
+    Some(value)
 }
 
 fn host_notification_from_message(
@@ -499,6 +581,8 @@ fn host_notification_from_message(
     received_at: Option<OffsetDateTime>,
     sender_handle: &str,
     recipient_handle: &str,
+    attachment_summary: Option<&AttachmentMessageSummary>,
+    download_action: Option<&AttachmentDownloadAction>,
 ) -> Option<HostNotificationEvent> {
     let received_at = format_go_rfc3339(received_at.unwrap_or_else(OffsetDateTime::now_utc));
     let group_did = group_did_for_message(message);
@@ -522,13 +606,16 @@ fn host_notification_from_message(
                     .map(|peer| peer.as_str().to_string())
                     .unwrap_or_default(),
                 content_type: message_content_type(message),
-                text: text_body(message),
+                text: notification_text_body(message, attachment_summary),
                 group_event_seq: message
                     .metadata
                     .server_sequence
                     .map(|value| value.to_string())
                     .unwrap_or_default(),
                 accepted_at: message.sent_at.clone().unwrap_or_default(),
+                has_attachments: attachment_summary.is_some(),
+                attachment: host_attachment_summary(attachment_summary),
+                download_action: host_attachment_download_action(download_action),
                 ..GroupMessageNotificationData::default()
             })),
         });
@@ -557,8 +644,11 @@ fn host_notification_from_message(
                 recipient_handle: recipient_handle.to_string(),
                 recipient_did,
                 content_type: message_content_type(message),
-                text: text_body(message),
+                text: notification_text_body(message, attachment_summary),
                 created_at: message.sent_at.clone().unwrap_or_default(),
+                has_attachments: attachment_summary.is_some(),
+                attachment: host_attachment_summary(attachment_summary),
+                download_action: host_attachment_download_action(download_action),
                 ..DirectMessageNotificationData::default()
             },
         )),
@@ -639,6 +729,73 @@ fn text_body(message: &Message) -> String {
         MessageBodyView::Text { text, .. } => text.clone(),
         MessageBodyView::Unsupported { .. } => String::new(),
     }
+}
+
+fn notification_text_body(
+    message: &Message,
+    attachment_summary: Option<&AttachmentMessageSummary>,
+) -> String {
+    let text = text_body(message);
+    if !text.trim().is_empty() {
+        return text;
+    }
+    let Some(summary) = attachment_summary else {
+        return text;
+    };
+    let filename = summary
+        .filename
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mime_type = summary
+        .mime_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (filename, mime_type, summary.size_bytes) {
+        (Some(filename), Some(mime_type), Some(size)) => {
+            format!("[attachment] {filename} ({mime_type}, {size} bytes)")
+        }
+        (Some(filename), Some(mime_type), None) => format!("[attachment] {filename} ({mime_type})"),
+        (Some(filename), None, _) => format!("[attachment] {filename}"),
+        (None, Some(mime_type), _) => format!("[attachment] {mime_type}"),
+        (None, None, _) => "[attachment]".to_string(),
+    }
+}
+
+fn host_attachment_summary(
+    summary: Option<&AttachmentMessageSummary>,
+) -> Option<HostNotificationAttachmentSummary> {
+    let summary = summary?;
+    Some(HostNotificationAttachmentSummary {
+        attachment_id: summary.attachment_id.clone().unwrap_or_default(),
+        filename: summary.filename.clone().unwrap_or_default(),
+        mime_type: summary.mime_type.clone().unwrap_or_default(),
+        size_bytes: summary.size_bytes,
+        content_type: summary.content_type.clone().unwrap_or_default(),
+    })
+}
+
+fn host_attachment_download_action(
+    action: Option<&AttachmentDownloadAction>,
+) -> Option<HostNotificationAttachmentDownloadAction> {
+    let action = action?;
+    let mut host_action = HostNotificationAttachmentDownloadAction {
+        command: "msg.attachment.download".to_string(),
+        message_id: action.message_id.as_str().to_string(),
+        attachment_id: action.attachment_id.clone().unwrap_or_default(),
+        ..HostNotificationAttachmentDownloadAction::default()
+    };
+    match &action.thread {
+        ThreadRef::Direct(peer) => {
+            host_action.with = peer.as_str().to_string();
+        }
+        ThreadRef::Group(group) => {
+            host_action.group = group.as_str().to_string();
+        }
+        ThreadRef::Thread(_) => {}
+    }
+    Some(host_action)
 }
 
 fn group_update_kind_label(kind: &GroupUpdateKind) -> &'static str {

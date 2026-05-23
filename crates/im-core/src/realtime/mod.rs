@@ -11,9 +11,10 @@ pub use self::dto::{
     RealtimeSubscription, ReconnectPolicy,
 };
 pub use self::events::{
-    ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
-    HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind,
-    MessageUpdatedEvent, UnknownNotificationEvent,
+    AttachmentDownloadAction, AttachmentMessageSummary, ConnectionStateChanged, GroupUpdateKind,
+    GroupUpdatedEvent, HostNotificationEvent, HostNotificationKind, ImEvent,
+    LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind, MessageUpdatedEvent,
+    UnknownNotificationEvent,
 };
 pub use self::handle::{RealtimeEventReceiver, RealtimeHandle};
 pub use self::runner::{

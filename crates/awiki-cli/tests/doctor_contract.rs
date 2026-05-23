@@ -74,15 +74,7 @@ fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
         &["id", "create", "--name", "Alice", "--identity", "alice"],
         workspace.path(),
     ));
-    assert_success(&awiki_cmd_with_workspace(
-        &[
-            "debug",
-            "db",
-            "query",
-            "INSERT INTO contact_handle_bindings (owner_did, handle, did, first_seen_at, last_seen_at, credential_name) VALUES ('did:wba:alice.example', 'bob', 'did:wba:bob.example', '2026-04-18T09:00:00Z', '2026-04-18T09:00:00Z', 'alice')",
-        ],
-        workspace.path(),
-    ));
+    seed_contact_handle_binding(workspace.path());
 
     let output = awiki_cmd_with_workspace(&["doctor"], workspace.path());
     assert_success(&output);
@@ -202,6 +194,25 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
         .env_remove("AVIKI_FORMAT")
         .env_remove("AWIKI_ANP_MLS_BINARY");
     command
+}
+
+fn seed_contact_handle_binding(workspace: &Path) {
+    let database = workspace.join("data").join("awiki-cli.db");
+    let connection = rusqlite::Connection::open(&database).expect("open sqlite database");
+    awiki_cli::store::ensure_schema(&connection).expect("ensure schema");
+    connection
+        .execute(
+            "INSERT INTO contact_handle_bindings (owner_did, handle, did, first_seen_at, last_seen_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "did:wba:alice.example",
+                "bob",
+                "did:wba:bob.example",
+                "2026-04-18T09:00:00Z",
+                "2026-04-18T09:00:00Z",
+                "alice",
+            ],
+        )
+        .expect("seed contact handle binding");
 }
 
 fn check_names(envelope: &Value) -> Vec<&str> {
