@@ -536,8 +536,9 @@ C. 只能 internal sibling mls_state.sqlite。
 1. openmls_sqlite_storage 可以在 im-core-like SQLite 文件中创建 openmls_* tables。
 2. OpenMLS / anp-mls migrations 未覆盖已有 PRAGMA user_version = 13。
 3. 同文件双连接可共存，但当 im-core-like connection 持有 BEGIN IMMEDIATE 写事务时，anp-mls 另一连接无法加入同一事务，只会遇到 SQLite locked/busy。
-4. 当前 group add-member 会立即 merge pending commit 并把 binding epoch 推进到 1；不能作为 NativeAnpMlsProvider 的长期语义。
-5. 当前 group remove-member 已是 prepare 语义：prepare 返回 pending commit，local_epoch 仍停留在旧 epoch，pending_commits 可见。
+4. 初始 spike 曾验证旧 group add-member 会立即 merge pending commit 并把 binding epoch 推进到 1；不能作为 NativeAnpMlsProvider 的长期语义。
+5. 当前 group add-member 已在 ../anp/rust local commit 54982b6 改为 prepare 语义：prepare 返回 pending_commit_id，local_epoch 仍停留在旧 epoch，pending_commits 可见。
+6. 当前 group remove-member 已是 prepare 语义：prepare 返回 pending commit，local_epoch 仍停留在旧 epoch，pending_commits 可见。
 ```
 
 基于当前证据，默认落地路径应按 B/C 设计：
@@ -1108,7 +1109,7 @@ C. 只能 internal sibling mls_state.sqlite。
 仍未完成：
 1. commands.rs 还不是完整 anp-mls/v1 command dispatcher。
 2. typed operation input/output/error 尚未完成。
-3. group create / add-member 等 epoch-changing operations 仍保留当前兼容语义，prepare/finalize/abort 统一在 PR M2 完成。
+3. group create 仍保留当前兼容语义，prepare/finalize/abort 统一在 PR M2 完成。
 ```
 
 验证：
@@ -1158,6 +1159,25 @@ generic commit-finalize / commit-abort typed API
 3. abort / pending retry 不推进 local binding epoch。
 4. 当前 add-member one-shot merge 行为不进入 NativeAnpMlsProvider。
 5. crash after prepare / before finalize 可通过 pending_commits 恢复或显式 abort。
+```
+
+当前进展：
+
+```text
+../anp/rust local commit 54982b6
+  fix: make group add member use pending commit
+
+已完成：
+1. group add-member 不再 merge pending commit。
+2. group add-member prepare 返回 pending_commit_id / commit / welcome / ratchet_tree。
+3. group add-member prepare 不更新 binding epoch；group status local_epoch 保持旧 epoch。
+4. group commit-finalize 对 add-member pending commit 执行 merge 并推进 epoch。
+5. group commit-abort 对 add-member pending commit 清理 OpenMLS pending commit，不推进 local binding epoch。
+
+仍未完成：
+1. group create prepare/finalize/abort。
+2. typed add_member_prepare / finalize_commit / abort_commit API。
+3. crash after prepare / before finalize 的恢复/重试策略需要进一步收敛到 typed operations。
 ```
 
 ### PR M3：storage abstraction
