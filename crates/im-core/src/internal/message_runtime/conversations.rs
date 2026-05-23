@@ -73,6 +73,9 @@ fn conversation_from_record(
 type ConversationRecordLike = crate::internal::local_state::conversations::ConversationRecord;
 
 #[cfg(not(feature = "sqlite"))]
+type ConversationRecordLike = NoSqliteConversationRecord;
+
+#[cfg(not(feature = "sqlite"))]
 struct NoSqliteConversationRecord;
 
 #[cfg(feature = "sqlite")]

@@ -17,7 +17,7 @@ internal-test-helpers = []
 attachments = []
 realtime = []
 secure-direct = []
-group-e2ee = []
+group-e2ee = ["sqlite", "anp/mls"]
 provider-traits = []
 
 [dependencies]
