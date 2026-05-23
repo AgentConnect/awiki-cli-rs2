@@ -43,7 +43,7 @@ impl DartImClient {
 }
 
 pub fn core_client(
-    core: Arc<crate::api::core::DartImCore>,
+    core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
 ) -> Result<Arc<DartImClient>, DartImError> {
     core.with_inner(|inner| {
@@ -59,7 +59,7 @@ pub fn close_client(client: Arc<DartImClient>) -> Result<(), DartImError> {
 }
 
 pub fn current_identity(
-    client: Arc<DartImClient>,
+    client: &Arc<DartImClient>,
 ) -> Result<crate::dto::identity::DartIdentitySummary, DartImError> {
     client.with_inner(|inner| Ok(inner.current_identity().clone().into()))
 }

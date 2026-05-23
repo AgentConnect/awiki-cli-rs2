@@ -25,9 +25,11 @@ s = p.read_text()
 def ensure_core_import(match: re.Match[str]) -> str:
     block = match.group(0)
     indent = match.group("indent")
-    if f"{indent}use crate::api::core::*;" in block:
-        return block
-    return f"{block}{indent}use crate::api::core::*;\n"
+    if f"{indent}use crate::api::core::*;" not in block:
+        block += f"{indent}use crate::api::core::*;\n"
+    if f"{indent}use crate::api::core::DartImCore;" not in block:
+        block += f"{indent}use crate::api::core::DartImCore;\n"
+    return block
 
 s, replacements = re.subn(
     r"(?m)^(?P<indent>\s*)use crate::api::client::\*;\n"

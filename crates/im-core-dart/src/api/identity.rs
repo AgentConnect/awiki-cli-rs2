@@ -9,7 +9,7 @@ use crate::dto::{
 };
 
 pub fn list_identities(
-    core: Arc<crate::api::core::DartImCore>,
+    core: &Arc<crate::api::core::DartImCore>,
 ) -> Result<Vec<DartIdentitySummary>, DartImError> {
     core.with_inner(|inner| {
         inner
@@ -21,7 +21,7 @@ pub fn list_identities(
 }
 
 pub fn default_identity(
-    core: Arc<crate::api::core::DartImCore>,
+    core: &Arc<crate::api::core::DartImCore>,
 ) -> Result<Option<DartIdentitySummary>, DartImError> {
     core.with_inner(|inner| {
         inner
@@ -33,7 +33,7 @@ pub fn default_identity(
 }
 
 pub fn resolve_identity(
-    core: Arc<crate::api::core::DartImCore>,
+    core: &Arc<crate::api::core::DartImCore>,
     selector: DartIdentitySelector,
 ) -> Result<DartIdentitySummary, DartImError> {
     core.with_inner(|inner| {
@@ -46,7 +46,7 @@ pub fn resolve_identity(
 }
 
 pub fn register_handle_with_phone(
-    core: Arc<crate::api::core::DartImCore>,
+    core: &Arc<crate::api::core::DartImCore>,
     local_alias: Option<String>,
     requested_handle: String,
     phone: String,
@@ -73,7 +73,7 @@ pub fn register_handle_with_phone(
 }
 
 pub fn register_handle_with_email(
-    core: Arc<crate::api::core::DartImCore>,
+    core: &Arc<crate::api::core::DartImCore>,
     local_alias: Option<String>,
     requested_handle: String,
     email: String,
@@ -103,7 +103,7 @@ pub fn register_handle_with_email(
 }
 
 pub fn recover_handle(
-    core: Arc<crate::api::core::DartImCore>,
+    core: &Arc<crate::api::core::DartImCore>,
     handle: String,
     phone: String,
     otp: Option<String>,

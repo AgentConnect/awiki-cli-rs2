@@ -6,7 +6,7 @@ use crate::dto::{
 };
 
 pub fn auth_status(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartAuthStatus, DartImError> {
     client.with_inner(|inner| {
         inner
@@ -18,7 +18,7 @@ pub fn auth_status(
 }
 
 pub fn auth_login(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartSessionBundle, DartImError> {
     client.with_inner(|inner| {
         inner
@@ -30,7 +30,7 @@ pub fn auth_login(
 }
 
 pub fn auth_ensure_session(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     scope: DartAuthScope,
 ) -> Result<DartSessionBundle, DartImError> {
     client.with_inner(|inner| {
@@ -43,7 +43,7 @@ pub fn auth_ensure_session(
 }
 
 pub fn auth_refresh_session(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartSessionUpdate, DartImError> {
     client.with_inner(|inner| {
         inner

@@ -50,7 +50,7 @@ pub fn close_core(core: Arc<DartImCore>) -> Result<(), DartImError> {
     Ok(())
 }
 
-pub fn validate_paths(core: Arc<DartImCore>) -> Result<Vec<String>, DartImError> {
+pub fn validate_paths(core: &Arc<DartImCore>) -> Result<Vec<String>, DartImError> {
     core.with_inner(|inner| {
         let report = inner
             .bootstrap()

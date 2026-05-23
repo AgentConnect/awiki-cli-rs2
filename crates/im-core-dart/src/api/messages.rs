@@ -13,7 +13,7 @@ fn page_limit(limit: u32) -> Result<im_core::ids::PageLimit, DartImError> {
 }
 
 pub fn send_text(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     request: DartSendTextRequest,
 ) -> Result<DartSendMessageResult, DartImError> {
     client.with_inner(|inner| {
@@ -26,7 +26,7 @@ pub fn send_text(
 }
 
 pub fn inbox(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     limit: u32,
     cursor: Option<String>,
     unread_only: bool,
@@ -50,7 +50,7 @@ pub fn inbox(
 }
 
 pub fn history(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     thread: DartThreadRef,
     limit: u32,
     cursor: Option<String>,
@@ -72,7 +72,7 @@ pub fn history(
 }
 
 pub fn mark_read(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     message_ids: Vec<String>,
 ) -> Result<DartMarkReadResult, DartImError> {
     client.with_inner(|inner| {
@@ -90,7 +90,7 @@ pub fn mark_read(
 }
 
 pub fn conversations(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     limit: u32,
     include_groups: bool,
     include_direct: bool,
@@ -112,7 +112,7 @@ pub fn conversations(
 }
 
 pub fn retry_message(
-    _client: Arc<crate::api::client::DartImClient>,
+    _client: &Arc<crate::api::client::DartImClient>,
     _message_id: String,
 ) -> Result<DartSendMessageResult, DartImError> {
     Err(DartImError::unsupported("message-retry"))

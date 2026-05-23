@@ -10,4 +10,10 @@ Pod::Spec.new do |s|
   s.platform         = :osx, '10.14'
   s.source_files     = 'Classes/**/*'
   s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
+  s.pod_target_xcconfig = {
+    'OTHER_LDFLAGS' => '$(inherited) -force_load $(PODS_TARGET_SRCROOT)/Frameworks/AwikiImCore.xcframework/macos-arm64_x86_64/libawiki_im_core.a'
+  }
+  s.user_target_xcconfig = {
+    'OTHER_LDFLAGS' => '$(inherited) -force_load $(PODS_ROOT)/../Flutter/ephemeral/.symlinks/plugins/awiki_im_core/macos/Frameworks/AwikiImCore.xcframework/macos-arm64_x86_64/libawiki_im_core.a'
+  }
 end

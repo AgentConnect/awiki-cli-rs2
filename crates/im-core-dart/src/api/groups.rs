@@ -10,7 +10,7 @@ fn page_limit(limit: u32) -> Result<im_core::ids::PageLimit, DartImError> {
 }
 
 pub fn create_group(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     request: DartCreateGroupRequest,
 ) -> Result<DartGroupReadResult, DartImError> {
     client.with_inner(|inner| {
@@ -23,7 +23,7 @@ pub fn create_group(
 }
 
 pub fn join_group(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group_did: String,
 ) -> Result<DartGroupReadResult, DartImError> {
     client.with_inner(|inner| {
@@ -40,7 +40,7 @@ pub fn join_group(
 }
 
 pub fn get_group(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group_did: String,
 ) -> Result<DartGroupReadResult, DartImError> {
     client.with_inner(|inner| {
@@ -54,7 +54,7 @@ pub fn get_group(
 }
 
 pub fn list_groups(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     limit: u32,
 ) -> Result<DartGroupReadResult, DartImError> {
     client.with_inner(|inner| {
@@ -69,7 +69,7 @@ pub fn list_groups(
 }
 
 pub fn list_group_members(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group_did: String,
     limit: u32,
 ) -> Result<DartGroupReadResult, DartImError> {
@@ -87,7 +87,7 @@ pub fn list_group_members(
 }
 
 pub fn list_group_messages(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group_did: String,
     limit: u32,
     cursor: Option<String>,
@@ -111,7 +111,7 @@ pub fn list_group_messages(
 }
 
 pub fn leave_group(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group_did: String,
 ) -> Result<DartGroupReadResult, DartImError> {
     client.with_inner(|inner| {
@@ -125,14 +125,14 @@ pub fn leave_group(
 }
 
 pub fn get_group_join_code(
-    _client: Arc<crate::api::client::DartImClient>,
+    _client: &Arc<crate::api::client::DartImClient>,
     _group_did: String,
 ) -> Result<Option<String>, DartImError> {
     Ok(None)
 }
 
 pub fn refresh_group_join_code(
-    _client: Arc<crate::api::client::DartImClient>,
+    _client: &Arc<crate::api::client::DartImClient>,
     _group_did: String,
 ) -> Result<Option<String>, DartImError> {
     Ok(None)

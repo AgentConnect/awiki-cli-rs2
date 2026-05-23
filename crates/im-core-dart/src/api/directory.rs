@@ -6,7 +6,7 @@ use crate::dto::{
 };
 
 pub fn resolve_peer(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     peer: String,
 ) -> Result<DartDirectoryResolution, DartImError> {
     client.with_inner(|inner| {
@@ -20,7 +20,7 @@ pub fn resolve_peer(
 }
 
 pub fn lookup_handle(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     handle: String,
 ) -> Result<DartDirectoryResolution, DartImError> {
     client.with_inner(|inner| {
@@ -40,7 +40,7 @@ pub fn lookup_handle(
 }
 
 pub fn relation_status(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     peer: String,
 ) -> Result<DartRelationStatus, DartImError> {
     client.with_inner(|inner| {
@@ -54,14 +54,14 @@ pub fn relation_status(
 }
 
 pub fn follow(
-    _client: Arc<crate::api::client::DartImClient>,
+    _client: &Arc<crate::api::client::DartImClient>,
     _peer: String,
 ) -> Result<(), DartImError> {
     Err(DartImError::unsupported("relationship-remote-mutation"))
 }
 
 pub fn unfollow(
-    _client: Arc<crate::api::client::DartImClient>,
+    _client: &Arc<crate::api::client::DartImClient>,
     _peer: String,
 ) -> Result<(), DartImError> {
     Err(DartImError::unsupported("relationship-remote-mutation"))

@@ -7,7 +7,7 @@ use crate::dto::{
 };
 
 pub fn load_my_profile(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartUserProfile, DartImError> {
     client.with_inner(|inner| {
         inner
@@ -19,7 +19,7 @@ pub fn load_my_profile(
 }
 
 pub fn update_profile(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     patch: DartProfilePatch,
 ) -> Result<DartUserProfile, DartImError> {
     client.with_inner(|inner| {
@@ -32,7 +32,7 @@ pub fn update_profile(
 }
 
 pub fn load_public_profile(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     subject: DartIdentitySubject,
 ) -> Result<DartUserProfile, DartImError> {
     client.with_inner(|inner| {

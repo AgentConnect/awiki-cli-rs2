@@ -71,7 +71,7 @@ impl Drop for DartRealtimeSession {
 }
 
 pub fn realtime_capability(
-    _client: Arc<crate::api::client::DartImClient>,
+    _client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartRealtimeCapability, DartImError> {
     Ok(DartRealtimeCapability {
         status_supported: true,
@@ -82,7 +82,7 @@ pub fn realtime_capability(
 }
 
 pub fn realtime_status(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartRealtimeStatus, DartImError> {
     client.with_inner(|inner| {
         inner
@@ -93,7 +93,7 @@ pub fn realtime_status(
     })
 }
 
-pub fn realtime_connect(_client: Arc<crate::api::client::DartImClient>) -> Result<(), DartImError> {
+pub fn realtime_connect(_client: &Arc<crate::api::client::DartImClient>) -> Result<(), DartImError> {
     let session = realtime_start(
         _client,
         DartRealtimeOptions {
@@ -114,7 +114,7 @@ pub fn realtime_connect(_client: Arc<crate::api::client::DartImClient>) -> Resul
 }
 
 pub fn realtime_start(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     options: DartRealtimeOptions,
 ) -> Result<Arc<DartRealtimeSession>, DartImError> {
     let options = options.try_into()?;
@@ -128,17 +128,18 @@ pub fn realtime_stop(session: Arc<DartRealtimeSession>) -> Result<(), DartImErro
 }
 
 pub fn realtime_event_stream(
-    session: Arc<DartRealtimeSession>,
+    session: &Arc<DartRealtimeSession>,
     sink: StreamSink<DartRealtimeEvent>,
 ) -> Result<(), DartImError> {
     let receiver = session.take_event_receiver()?;
+    let session_for_worker = Arc::clone(session);
     thread::Builder::new()
         .name("im-core-dart-realtime-events".to_string())
         .spawn(move || {
             for event in receiver {
                 let event = crate::mapping::from_core::realtime_event_to_dart(event);
                 if sink.add(event).is_err() {
-                    let _ = session.stop();
+                    let _ = session_for_worker.stop();
                     break;
                 }
             }
