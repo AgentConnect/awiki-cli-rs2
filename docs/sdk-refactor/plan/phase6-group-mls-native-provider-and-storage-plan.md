@@ -1355,6 +1355,9 @@ group E2EE send/decrypt/status/repair 默认走 NativeAnpMlsProvider。
 awiki-cli-rs2 local commit 6bf9897
   feat: add internal group e2ee send runtime
 
+awiki-cli-rs2 local commit 235e1ed
+  feat: resolve group e2ee state ref internally
+
 已完成：
 1. 新增 internal/group_e2ee/runtime.rs：
    - GroupE2eeTextSender；
@@ -1384,18 +1387,39 @@ awiki-cli-rs2 local commit 6bf9897
    - request body 不包含 plaintext / application_plaintext；
    - origin proof 存在；
    - SDK result 可从 group service response 映射。
+6. 新增 internal/group_e2ee/state_ref.rs：
+   - GroupStateRefResolver；
+   - resolve_group_state_ref helper；
+   - local_group_state_ref helper。
+7. group_state_ref lookup 当前顺序：
+   - 先调用 GroupMlsProvider::status，确认本地 MLS binding 是 active；
+   - 再从 im-core local group cache 的 groups.metadata 解析 group_state_version / policy_hash；
+   - local cache 不足时 fallback 到 signed group.e2ee.head；
+   - service head 必须返回 group_state_version，否则不允许 encrypt。
+8. 新增 group.e2ee.head wire builder：
+   - 使用 anp.group.e2ee.v1 profile；
+   - 使用 transport-protected security_profile；
+   - body 只包含 group_did 和最小 group_state_ref。
+9. GroupE2eeTextSender 支持 internal auto-resolve：
+   - caller 可不传 group_state_ref；
+   - sender 会在 encrypt 前解析 group_state_ref；
+   - resolved group_state_ref 只进入 anp::group_e2ee::operations::EncryptInput 和 service cipher body，不进入 public SDK DTO。
 
 边界：
 1. 这是 im-core internal runtime slice，不接 public SDK route。
 2. MessageSecurityMode::GroupE2ee 对 public messages().send 仍保持 reserved/unsupported。
-3. caller 仍必须提供 group_state_ref；在 group_state_ref lookup/repair 稳定前，不能把它作为默认 public send path。
+3. group_state_ref 已可 internal auto-resolve，但 public route 仍需等 native provider factory、send projection 和 failure/retry 行为收敛后再打开。
 4. encrypt 不推进 MLS epoch，因此这一段不需要 prepare/finalize/abort。
 5. create/add/remove/update/recover/leave 后续接入时仍必须遵守 prepare -> service RPC -> finalize/abort。
+6. GroupStateRef / service head raw / MLS status 仍是 internal implementation detail，不进入 public SDK Interface。
 
 验证：
 1. cargo fmt --check
-2. cargo check -p im-core --features group-e2ee
+2. cargo test -p im-core --features group-e2ee
 3. cargo test -p im-core --features group-e2ee group_e2ee_text_sender_encrypts_then_sends_cipher_without_plaintext
+4. cargo test -p im-core --features group-e2ee group_e2ee_text_sender_resolves_state_ref_before_encrypting
+5. cargo test -p im-core --features group-e2ee state_ref
+6. cargo check -p im-core-dart
 ```
 
 ### PR M7：awiki-cli 旧路径迁移
