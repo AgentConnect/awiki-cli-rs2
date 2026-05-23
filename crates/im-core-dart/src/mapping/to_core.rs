@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 
 use crate::dto::{
+    attachment::{
+        DartAttachmentDestination, DartAttachmentInput, DartAttachmentSendRequest,
+        DartDownloadAttachmentRequest,
+    },
     auth::DartAuthScope,
     config::{DartImCoreConfig, DartImCorePaths, DartMessageTransportPolicy},
     directory::DartIdentitySubject,
@@ -131,6 +135,79 @@ impl TryFrom<DartThreadRef> for im_core::messages::ThreadRef {
                 .map(Self::Thread)
                 .map_err(DartImError::from),
         }
+    }
+}
+
+impl TryFrom<DartAttachmentInput> for im_core::attachments::AttachmentInput {
+    type Error = DartImError;
+
+    fn try_from(value: DartAttachmentInput) -> Result<Self, Self::Error> {
+        match value {
+            DartAttachmentInput::LocalFile { path } => Ok(Self::LocalFile(PathBuf::from(path))),
+            DartAttachmentInput::Bytes {
+                filename,
+                mime_type,
+                bytes,
+            } => Ok(Self::Bytes {
+                filename,
+                mime_type,
+                bytes,
+            }),
+        }
+    }
+}
+
+impl TryFrom<DartAttachmentDestination> for im_core::attachments::AttachmentDestination {
+    type Error = DartImError;
+
+    fn try_from(value: DartAttachmentDestination) -> Result<Self, Self::Error> {
+        match value {
+            DartAttachmentDestination::LocalFile { path } => {
+                Ok(Self::LocalFile(PathBuf::from(path)))
+            }
+            DartAttachmentDestination::Memory => Ok(Self::Memory),
+        }
+    }
+}
+
+impl DartAttachmentSendRequest {
+    pub fn into_core(
+        self,
+    ) -> Result<
+        (
+            im_core::messages::MessageTarget,
+            im_core::attachments::AttachmentSendRequest,
+        ),
+        DartImError,
+    > {
+        Ok((
+            self.target.try_into()?,
+            im_core::attachments::AttachmentSendRequest {
+                input: self.input.try_into()?,
+                caption: self.caption,
+                mime_type: self.mime_type,
+                filename: self.filename,
+                delivery: im_core::messages::MessageDeliveryOptions {
+                    idempotency_key: self.idempotency_key,
+                    wait_for_final_acceptance: self.wait_for_final_acceptance,
+                },
+            },
+        ))
+    }
+}
+
+impl TryFrom<DartDownloadAttachmentRequest> for im_core::attachments::DownloadAttachmentRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartDownloadAttachmentRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            thread: value.thread.try_into()?,
+            message_id: im_core::ids::MessageId::parse(value.message_id)
+                .map_err(DartImError::from)?,
+            attachment_id: value.attachment_id,
+            destination: value.destination.try_into()?,
+            overwrite: value.overwrite,
+        })
     }
 }
 

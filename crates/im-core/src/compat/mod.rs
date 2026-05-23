@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod directory;
 pub mod groups;
 pub mod identity;

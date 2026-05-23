@@ -34,6 +34,7 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "msg.inbox",
         "msg.history",
         "msg.mark-read",
+        "msg.attachment.download",
         "group.create",
         "group.get",
         "group.join",
@@ -99,13 +100,6 @@ fn cutover_classifier_keeps_cli_owned_host_commands() {
 
 #[test]
 fn cutover_classifier_marks_unsupported_and_internal_commands() {
-    assert_eq!(
-        cmdmeta::cutover_status("msg.attachment.download"),
-        CutoverStatus::Unsupported {
-            capability: "attachments",
-            phase: "Phase 4",
-        }
-    );
     assert_eq!(
         cmdmeta::cutover_status("msg.secure.status"),
         CutoverStatus::Unsupported {
@@ -177,10 +171,8 @@ fn schema_serializes_cutover_status_for_commands_and_children() {
     assert_eq!(msg_send["cutover"]["default_surface"], true);
 
     let attachment = schema_value("msg.attachment.download");
-    assert_eq!(attachment["cutover"]["status"], "unsupported");
-    assert_eq!(attachment["cutover"]["capability"], "attachments");
-    assert_eq!(attachment["cutover"]["required_phase"], "Phase 4");
-    assert_eq!(attachment["cutover"]["default_surface"], false);
+    assert_eq!(attachment["cutover"]["status"], "im_core");
+    assert_eq!(attachment["cutover"]["default_surface"], true);
 
     let runtime = schema_value("runtime.listener");
     let run = schema_child("runtime.listener", "runtime.listener.run");
@@ -201,6 +193,7 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "id.list",
         "msg.send",
         "msg.inbox",
+        "msg.attachment.download",
         "group.create",
         "runtime.listener.start",
         "runtime.host-notify.hermes.setup",
@@ -212,7 +205,6 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
     }
 
     for command in [
-        "msg.attachment.download",
         "msg.secure.status",
         "mail.inbox",
         "people.search",

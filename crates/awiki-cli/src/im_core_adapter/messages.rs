@@ -1,10 +1,12 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use im_core::prelude::{
-    Cursor, DeliveryState, GroupRef, Handle, HistoryQuery, InboxQuery, InboxScope, MessageBody,
-    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageId, MessageKind,
-    MessageMetadataAttribute, MessageSecurityMode, MessageTarget, Page, PageLimit, PeerRef,
-    SendMessageRequest, SendMessageResult, ThreadRef,
+    AttachmentDestination, AttachmentInput, AttachmentSendRequest, Cursor, DeliveryState,
+    DownloadAttachmentRequest, DownloadedAttachmentDestination, GroupRef, Handle, HistoryQuery,
+    InboxQuery, InboxScope, MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection,
+    MessageId, MessageKind, MessageMetadataAttribute, MessageSecurityMode, MessageTarget, Page,
+    PageLimit, PeerRef, SendMessageRequest, SendMessageResult, ThreadRef,
 };
 use serde_json::{json, Value};
 
@@ -37,6 +39,93 @@ pub fn send_message_request(
     })
 }
 
+pub fn send_attachment_request(
+    command: &ParsedCommand,
+    default_domain: &str,
+) -> Result<(MessageTarget, AttachmentSendRequest), ExitError> {
+    let target = message_target(command, default_domain)?;
+    validate_attachment_security(command, &target)?;
+    let file_path = string_flag(command, "file");
+    if file_path.trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "attachment file path is required",
+            "Use --file <path> for attachment messages.",
+        ));
+    }
+    let file_path = clean_input_file_path(&file_path);
+    if !command.globals.dry_run {
+        validate_attachment_input_path(&file_path)?;
+    }
+    let text = message_text(command, true)?;
+    Ok((
+        target,
+        AttachmentSendRequest {
+            input: AttachmentInput::LocalFile(file_path),
+            caption: Some(text).filter(|value| !value.trim().is_empty()),
+            mime_type: Some(string_flag(command, "mime-type"))
+                .filter(|value| !value.trim().is_empty()),
+            filename: None,
+            delivery: MessageDeliveryOptions::default(),
+        },
+    ))
+}
+
+pub fn download_attachment_request(
+    command: &ParsedCommand,
+    default_domain: &str,
+) -> Result<DownloadAttachmentRequest, ExitError> {
+    let with = string_flag(command, "with");
+    let group = string_flag(command, "group");
+    let thread = match (with.trim().is_empty(), group.trim().is_empty()) {
+        (false, true) => ThreadRef::Direct(parse_peer(&with, default_domain)?),
+        (true, false) => ThreadRef::Group(parse_group(&group)?),
+        (true, true) => {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "attachment download requires either --with or --group",
+                "Use --with <handle|did> for direct messages or --group <group_did>.",
+            ));
+        }
+        (false, false) => {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "attachment download accepts either --with or --group, but not both",
+                "Choose direct attachment download with --with or group download with --group.",
+            ));
+        }
+    };
+    let message_id = string_flag(command, "message-id");
+    if message_id.trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "attachment message id is required",
+            "Pass --message-id <id>.",
+        ));
+    }
+    let output = string_flag(command, "output");
+    if output.trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "attachment output path is required",
+            "Pass --output <path>.",
+        ));
+    }
+    Ok(DownloadAttachmentRequest {
+        thread,
+        message_id: MessageId::parse(message_id.trim()).map_err(im_error_to_exit_error)?,
+        attachment_id: Some(string_flag(command, "attachment-id"))
+            .filter(|value| !value.trim().is_empty()),
+        destination: AttachmentDestination::LocalFile(clean_output_path(&output)),
+        overwrite: true,
+    })
+}
+
 pub fn inbox_query(command: &ParsedCommand) -> Result<InboxQuery, ExitError> {
     Ok(InboxQuery {
         scope: inbox_scope(&string_flag(command, "scope"))?,
@@ -57,10 +146,10 @@ pub fn history_request(
         (true, false) => ThreadRef::Group(parse_group(&group)?),
         (true, true) => {
             return Err(ExitError::new(
-                "invalid_argument",
-                2,
-                "history requires either --with or --group.",
-                "Use --with <handle|did> for direct history or --group <group_did>.",
+                "internal_error",
+                1,
+                "required flag(s) \"with\" not set",
+                "",
             ));
         }
         (false, false) => {
@@ -107,6 +196,123 @@ pub fn send_text_via_im_core(
         ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread send results are not supported by the CLI renderer".to_string(),
         )),
+    }
+}
+
+pub fn send_attachment_via_im_core(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    mut target: MessageTarget,
+    request: AttachmentSendRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    let direct_target = resolve_direct_target_for_target(client, &target)?;
+    if let Some(target_resolution) = &direct_target {
+        target = MessageTarget::Direct(
+            PeerRef::parse(&target_resolution.did, "").map_err(im_error_to_message_error)?,
+        );
+    }
+    let compat = im_core::compat::attachments::send_attachment_with_details(
+        client,
+        target,
+        request,
+        direct_target.as_ref().map(|target| target.did.clone()),
+    )
+    .map_err(im_error_to_message_error)?;
+    match &compat.sdk_result.message.thread {
+        ThreadRef::Direct(_) => {
+            let target =
+                direct_target.unwrap_or_else(|| direct_target_from_result(&compat.sdk_result));
+            persist_direct_attachment_result(resolved, client, &target, &compat)
+        }
+        ThreadRef::Group(group) => {
+            persist_group_attachment_result(resolved, client, group.as_str(), &compat)
+        }
+        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
+            "thread attachment send results are not supported by the CLI renderer".to_string(),
+        )),
+    }
+}
+
+pub fn download_attachment_via_im_core(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: DownloadAttachmentRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    prepare_download_destination(&request)?;
+    let resolved_peer = resolve_direct_thread_for_sdk(client, &request.thread)?;
+    let target = download_target_value(&request.thread, resolved_peer.as_ref());
+    let compat = im_core::compat::attachments::download_attachment_with_details(
+        client,
+        request,
+        resolved_peer.as_ref().map(|target| target.did.clone()),
+    )
+    .map_err(im_error_to_message_error)?;
+    let output_path = match &compat.sdk_result.destination {
+        DownloadedAttachmentDestination::LocalFile(path) => path.clone(),
+        DownloadedAttachmentDestination::Memory(_) => {
+            return Err(MessageAdapterError::Internal(
+                "attachment download expected local-file destination".to_string(),
+            ));
+        }
+    };
+    apply_private_download_permissions(&output_path)?;
+    let output_path_string = output_path.to_string_lossy().into_owned();
+    let mut warnings = attachment_transport_warnings(resolved, true);
+    warnings.extend(compat.sdk_result.warnings);
+    Ok(CommandResult {
+        data: json!({
+            "action": "download_attachment",
+            "message_id": compat.selection.message_id,
+            "target": target,
+            "attachment": attachment_selection_value(&compat.selection),
+            "output": {
+                "path": output_path_string,
+                "size_bytes": compat.sdk_result.size_bytes.unwrap_or_default(),
+                "content_type": compat.sdk_result.mime_type.unwrap_or_default(),
+            },
+        }),
+        summary: format!("Downloaded attachment to {output_path_string}"),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+fn prepare_download_destination(
+    request: &DownloadAttachmentRequest,
+) -> Result<(), MessageAdapterError> {
+    let AttachmentDestination::LocalFile(path) = &request.destination else {
+        return Ok(());
+    };
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            MessageAdapterError::PathUnavailable(format!(
+                "create attachment output directory {}: {err}",
+                parent.display()
+            ))
+        })?;
+        set_private_dir_mode(parent)?;
+    }
+    Ok(())
+}
+
+fn download_target_value(thread: &ThreadRef, resolved_peer: Option<&TargetResolution>) -> Value {
+    match thread {
+        ThreadRef::Direct(peer) => json!({
+            "kind": "direct",
+            "did": resolved_peer
+                .map(|target| target.did.as_str())
+                .unwrap_or_else(|| peer.as_str()),
+        }),
+        ThreadRef::Group(group) => json!({
+            "kind": "group",
+            "did": group.as_str(),
+        }),
+        ThreadRef::Thread(thread) => json!({
+            "kind": "thread",
+            "did": thread.as_str(),
+        }),
     }
 }
 
@@ -294,13 +500,22 @@ fn message_target(
 fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
     let file_path = string_flag(command, "file");
     if !file_path.trim().is_empty() {
-        return Err(ExitError::new(
-            "unsupported_capability",
-            2,
-            "attachments are not supported by the Phase 1 IM Core adapter.",
-            "Use the existing legacy attachment command path until attachment migration starts.",
-        ));
+        let text = message_text(command, true)?;
+        return Ok(MessageBody::Attachment {
+            input: AttachmentInput::LocalFile(PathBuf::from(file_path.trim())),
+            caption: Some(text).filter(|value| !value.trim().is_empty()),
+            mime_type: Some(string_flag(command, "mime-type"))
+                .filter(|value| !value.trim().is_empty()),
+        });
     }
+    let text = message_text(command, false)?;
+    Ok(MessageBody::Text {
+        text,
+        kind: message_kind(&string_flag(command, "type"))?,
+    })
+}
+
+fn message_text(command: &ParsedCommand, allow_empty: bool) -> Result<String, ExitError> {
     let mut text = string_flag(command, "text");
     let text_file = string_flag(command, "text-file");
     if !text.trim().is_empty() && !text_file.trim().is_empty() {
@@ -321,7 +536,7 @@ fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
             )
         })?;
     }
-    if text.trim().is_empty() {
+    if !allow_empty && text.trim().is_empty() {
         return Err(ExitError::new(
             "invalid_argument",
             2,
@@ -329,10 +544,46 @@ fn message_body(command: &ParsedCommand) -> Result<MessageBody, ExitError> {
             "Provide a text body for Phase 1 IM Core messages.",
         ));
     }
-    Ok(MessageBody::Text {
-        text,
-        kind: message_kind(&string_flag(command, "type"))?,
-    })
+    Ok(text)
+}
+
+fn validate_attachment_security(
+    command: &ParsedCommand,
+    target: &MessageTarget,
+) -> Result<(), ExitError> {
+    match string_flag(command, "secure")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "" | "default" | "plain" | "off" | "false" => Ok(()),
+        "direct" | "secure-direct" | "on" | "true" => match target {
+            MessageTarget::Direct(_) => Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "secure attachment messages are not supported by the Phase 4 IM Core adapter.",
+                "Use --secure off for attachment messages.",
+            )),
+            MessageTarget::Group(_) => Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "group E2EE attachments are not supported by the Phase 4 IM Core adapter.",
+                "Use --secure off for attachment messages.",
+            )),
+        },
+        "group-e2ee" | "e2ee" => Err(ExitError::new(
+            "unsupported_capability",
+            2,
+            "group E2EE attachments are not supported by the Phase 4 IM Core adapter.",
+            "Use --secure off for attachment messages.",
+        )),
+        value => Err(ExitError::new(
+            "invalid_argument",
+            2,
+            format!("unsupported --secure value {value:?}."),
+            "Use --secure plain, --secure off, or leave it unset for Phase 4 attachments.",
+        )),
+    }
 }
 
 fn message_kind(raw: &str) -> Result<MessageKind, ExitError> {
@@ -409,6 +660,33 @@ fn resolve_direct_target_for_sdk(
     let MessageTarget::Direct(peer) = &request.target else {
         return Ok(None);
     };
+    resolve_direct_peer_for_sdk(client, peer)
+}
+
+fn resolve_direct_target_for_target(
+    client: &im_core::ImClient,
+    target: &MessageTarget,
+) -> Result<Option<TargetResolution>, MessageAdapterError> {
+    let MessageTarget::Direct(peer) = target else {
+        return Ok(None);
+    };
+    resolve_direct_peer_for_sdk(client, peer)
+}
+
+fn resolve_direct_thread_for_sdk(
+    client: &im_core::ImClient,
+    thread: &ThreadRef,
+) -> Result<Option<TargetResolution>, MessageAdapterError> {
+    let ThreadRef::Direct(peer) = thread else {
+        return Ok(None);
+    };
+    resolve_direct_peer_for_sdk(client, peer)
+}
+
+fn resolve_direct_peer_for_sdk(
+    client: &im_core::ImClient,
+    peer: &PeerRef,
+) -> Result<Option<TargetResolution>, MessageAdapterError> {
     if peer.as_str().starts_with("did:") {
         return Ok(Some(TargetResolution {
             did: peer.as_str().to_string(),
@@ -710,6 +988,324 @@ fn delivery_state_label(result: &SendMessageResult) -> String {
         })
 }
 
+fn manifest_from_result(result: &SendMessageResult) -> Value {
+    message_attribute(&result.message.metadata.attributes, "attachment_manifest")
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn persist_direct_attachment_result(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    target: &TargetResolution,
+    compat: &im_core::compat::attachments::AttachmentSendCompatResult,
+) -> Result<CommandResult, MessageAdapterError> {
+    let result = DirectSendResult::from_sdk_result(&compat.sdk_result, target);
+    let manifest = manifest_from_result(&compat.sdk_result);
+    let caption = manifest
+        .get("caption")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let owner_did = client.did().as_str();
+    let credential_name = client.current_identity().id.as_str();
+    let mut warnings = attachment_transport_warnings(resolved, false);
+    warnings.extend(compat.sdk_result.warnings.clone());
+    if let Ok(connection) = store::open(&resolved.paths) {
+        if store::ensure_schema(&connection).is_ok() {
+            let stored = store::store_message(
+                &connection,
+                MessageRecord {
+                    msg_id: result.message_id.clone(),
+                    owner_identity_id: credential_name.to_string(),
+                    owner_did: owner_did.to_string(),
+                    thread_id: store::make_thread_id(owner_did, &target.did, ""),
+                    direction: 1,
+                    sender_did: owner_did.to_string(),
+                    receiver_did: target.did.clone(),
+                    content_type: im_core::compat::attachments::attachment_manifest_content_type()
+                        .to_string(),
+                    content: im_core::compat::attachments::manifest_content_string(&manifest),
+                    sent_at: result.accepted_at.clone(),
+                    is_read: true,
+                    is_e2ee: false,
+                    metadata: metadata_string(json!({
+                        "delivery_state": result.delivery_state,
+                        "operation_id": result.operation_id,
+                        "target_handle": target.handle,
+                        "attachment_id": compat.slot.attachment_id,
+                        "object_uri": compat.slot.object_uri,
+                        "caption": caption,
+                    })),
+                    credential_name: credential_name.to_string(),
+                    ..MessageRecord::default()
+                },
+            );
+            if let Err(err) = stored {
+                warnings.push(format!("Failed to persist local message: {err}"));
+            }
+        }
+    }
+    Ok(CommandResult {
+        data: json!({
+            "action": "send_attachment",
+            "target": {
+                "did": target.did,
+                "handle": target.handle,
+                "kind": "direct",
+            },
+            "message": attachment_message_value(&result.message_id, &result.accepted_at, &caption),
+            "attachment": prepared_attachment_value(&compat.prepared, &compat.slot),
+            "delivery": result,
+        }),
+        summary: "Sent a direct attachment message".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+fn persist_group_attachment_result(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    group_did: &str,
+    compat: &im_core::compat::attachments::AttachmentSendCompatResult,
+) -> Result<CommandResult, MessageAdapterError> {
+    let result = GroupSendResult::from_sdk_result(&compat.sdk_result, group_did);
+    let manifest = manifest_from_result(&compat.sdk_result);
+    let caption = manifest
+        .get("caption")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let owner_did = client.did().as_str();
+    let credential_name = client.current_identity().id.as_str();
+    let mut warnings = attachment_transport_warnings(resolved, false);
+    warnings.extend(compat.sdk_result.warnings.clone());
+    let group_key = group_storage_key(group_did);
+    let message_id = group_send_message_id(group_did, &result);
+    if let Ok(connection) = store::open(&resolved.paths) {
+        if store::ensure_schema(&connection).is_ok() {
+            let stored = store::store_message(
+                &connection,
+                MessageRecord {
+                    msg_id: message_id.clone(),
+                    owner_identity_id: credential_name.to_string(),
+                    owner_did: owner_did.to_string(),
+                    thread_id: store::make_thread_id(owner_did, "", &group_key),
+                    direction: 1,
+                    sender_did: owner_did.to_string(),
+                    group_id: group_key.clone(),
+                    group_did: group_did.to_string(),
+                    content_type: im_core::compat::attachments::attachment_manifest_content_type()
+                        .to_string(),
+                    content: im_core::compat::attachments::manifest_content_string(&manifest),
+                    sent_at: result.accepted_at.clone(),
+                    is_read: true,
+                    metadata: metadata_string(json!({
+                        "delivery_state": result.delivery_state,
+                        "group_event_seq": result.group_event_seq,
+                        "group_state_version": result.group_state_version,
+                        "operation_id": result.operation_id,
+                        "attachment_id": compat.slot.attachment_id,
+                        "object_uri": compat.slot.object_uri,
+                        "caption": caption,
+                    })),
+                    credential_name: credential_name.to_string(),
+                    ..MessageRecord::default()
+                },
+            );
+            if let Err(err) = stored {
+                warnings.push(format!("Failed to persist local group message: {err}"));
+            }
+            let touched = store::touch_group_after_message(
+                &connection,
+                owner_did,
+                &group_key,
+                group_did,
+                &result.accepted_at,
+                i64_option_from_string(&result.group_event_seq),
+                credential_name,
+                &metadata_string(json!({ "group_state_version": result.group_state_version })),
+            );
+            if let Err(err) = touched {
+                warnings.push(format!("Failed to update group cache: {err}"));
+            }
+        }
+    }
+    Ok(CommandResult {
+        data: json!({
+            "action": "send_attachment",
+            "target": {
+                "kind": "group",
+                "did": group_did,
+            },
+            "message": attachment_message_value(&message_id, &result.accepted_at, &caption),
+            "attachment": prepared_attachment_value(&compat.prepared, &compat.slot),
+            "delivery": result,
+        }),
+        summary: "Sent a group attachment message".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+fn attachment_message_value(message_id: &str, sent_at: &str, caption: &str) -> Value {
+    json!({
+        "id": message_id,
+        "type": "attachment_manifest",
+        "content_type": im_core::compat::attachments::attachment_manifest_content_type(),
+        "caption": caption,
+        "secure": false,
+        "sent_at": sent_at,
+    })
+}
+
+fn prepared_attachment_value(
+    prepared: &im_core::compat::attachments::PreparedAttachment,
+    slot: &im_core::compat::attachments::AttachmentCreateSlotResult,
+) -> Value {
+    json!({
+        "attachment_id": slot.attachment_id,
+        "filename": prepared.filename,
+        "mime_type": prepared.mime_type,
+        "size": prepared.size_string,
+        "digest": {
+            "alg": "sha-256",
+            "value_b64u": prepared.digest_b64u,
+        },
+        "object_uri": slot.object_uri,
+    })
+}
+
+fn attachment_selection_value(
+    selection: &im_core::compat::attachments::AttachmentSelection,
+) -> Value {
+    json!({
+        "attachment_id": selection.attachment_id,
+        "filename": selection.filename,
+        "mime_type": selection.mime_type,
+        "size": selection.size,
+        "digest": {
+            "alg": "sha-256",
+            "value_b64u": selection.digest_b64u,
+        },
+        "object_uri": selection.object_uri,
+        "sender_did": selection.sender_did,
+        "caption": selection.caption,
+    })
+}
+
+fn clean_output_path(output_path: &str) -> PathBuf {
+    PathBuf::from(output_path.trim())
+}
+
+fn clean_input_file_path(file_path: &str) -> PathBuf {
+    PathBuf::from(file_path.trim())
+}
+
+fn validate_attachment_input_path(path: &Path) -> Result<(), ExitError> {
+    if path.as_os_str().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "attachment file path is required",
+            "Use --file <path> for attachment messages.",
+        ));
+    }
+    let metadata = std::fs::metadata(path).map_err(|err| {
+        ExitError::new(
+            "invalid_argument",
+            2,
+            format!(
+                "attachment file path is unavailable: {}: {err}",
+                path.display()
+            ),
+            "Check the attachment file path and permissions.",
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            format!(
+                "attachment file path must be a regular file: {}",
+                path.display()
+            ),
+            "Pass a readable file path with --file.",
+        ));
+    }
+    std::fs::File::open(path).map_err(|err| {
+        ExitError::new(
+            "invalid_argument",
+            2,
+            format!("attachment file is not readable: {}: {err}", path.display()),
+            "Check the attachment file path and permissions.",
+        )
+    })?;
+    Ok(())
+}
+
+fn attachment_transport_warnings(resolved: &Resolved, download: bool) -> Vec<String> {
+    attachment_transport_warnings_for_mode(&resolved.runtime_mode, download)
+}
+
+fn attachment_transport_warnings_for_mode(runtime_mode: &str, download: bool) -> Vec<String> {
+    if runtime_mode.trim() != "websocket" {
+        return Vec::new();
+    }
+    if download {
+        vec![
+            "Attachment downloads use HTTP transport even when runtime.mode is websocket."
+                .to_string(),
+        ]
+    } else {
+        vec![
+            "Attachment messages use HTTP transport even when runtime.mode is websocket."
+                .to_string(),
+        ]
+    }
+}
+
+fn apply_private_download_permissions(path: &Path) -> Result<(), MessageAdapterError> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        set_private_dir_mode(parent)?;
+    }
+    set_private_file_mode(path)
+}
+
+#[cfg(unix)]
+fn set_private_dir_mode(path: &Path) -> Result<(), MessageAdapterError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|err| {
+        MessageAdapterError::PathUnavailable(format!(
+            "set attachment output directory permissions {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_mode(_path: &Path) -> Result<(), MessageAdapterError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_mode(path: &Path) -> Result<(), MessageAdapterError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
+        MessageAdapterError::PathUnavailable(format!(
+            "set attachment output file permissions {}: {err}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(not(unix))]
+fn set_private_file_mode(_path: &Path) -> Result<(), MessageAdapterError> {
+    Ok(())
+}
+
 fn message_attribute(attributes: &[MessageMetadataAttribute], key: &str) -> Option<String> {
     attributes
         .iter()
@@ -1006,9 +1602,54 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("text") => {
             MessageAdapterError::TextRequired
         }
+        im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("filename") => {
+            MessageAdapterError::FilePathRequired
+        }
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("service_did")
+                && message == "message service did is required" =>
+        {
+            MessageAdapterError::MissingMessageServiceDid
+        }
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("service_did")
+                && message == "attachment service did is required" =>
+        {
+            MessageAdapterError::MissingAttachmentServiceDid
+        }
+        im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("sender_did") => {
+            MessageAdapterError::AttachmentSenderRequired
+        }
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("destination")
+                && message.contains("overwrite is false") =>
+        {
+            MessageAdapterError::PathUnavailable(message)
+        }
+        im_core::ImError::InvalidInput { field, message }
+            if field.as_deref() == Some("destination") =>
+        {
+            MessageAdapterError::PathUnavailable(message)
+        }
+        im_core::ImError::InvalidInput { message, .. }
+            if message == im_core::compat::attachments::ERR_ATTACHMENT_NOT_FOUND =>
+        {
+            MessageAdapterError::AttachmentNotFound
+        }
+        im_core::ImError::InvalidInput { message, .. }
+            if message == im_core::compat::attachments::ERR_ATTACHMENT_ID_REQUIRED =>
+        {
+            MessageAdapterError::AttachmentIdRequired
+        }
+        im_core::ImError::InvalidInput { message, .. }
+            if message == im_core::compat::attachments::ERR_ATTACHMENT_MESSAGE_INVALID =>
+        {
+            MessageAdapterError::AttachmentMessageInvalid
+        }
         im_core::ImError::PeerNotFound { peer } => {
             MessageAdapterError::IdentityRequired(format!("peer not found: {peer}"))
         }
+        im_core::ImError::MessageNotFound { .. } => MessageAdapterError::MessageNotFound,
         im_core::ImError::UnsupportedCapability { capability } if capability == "group-send" => {
             MessageAdapterError::GroupNotSupported
         }
@@ -1042,7 +1683,28 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         im_core::ImError::TransportUnavailable { detail } => {
             MessageAdapterError::TransportUnavailable(detail)
         }
+        im_core::ImError::PathUnavailable { path_kind, detail } => {
+            MessageAdapterError::PathUnavailable(format!("{path_kind} path unavailable: {detail}"))
+        }
+        im_core::ImError::Io { detail } => MessageAdapterError::PathUnavailable(detail),
         err => MessageAdapterError::Internal(err.to_string()),
+    }
+}
+
+fn im_error_to_exit_error(err: im_core::ImError) -> ExitError {
+    match im_error_to_message_error(err) {
+        MessageAdapterError::MessageIdRequired => ExitError::new(
+            "invalid_argument",
+            2,
+            "attachment message id is required",
+            "Pass --message-id <id>.",
+        ),
+        other => ExitError::new(
+            "invalid_argument",
+            2,
+            other.to_string(),
+            "Check the message command arguments and try again.",
+        ),
     }
 }
 
@@ -1113,4 +1775,95 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {
     command.flags.get(name).cloned().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn attachment_transport_warnings_match_legacy_websocket_contract() {
+        assert_eq!(
+            attachment_transport_warnings_for_mode("websocket", false),
+            vec!["Attachment messages use HTTP transport even when runtime.mode is websocket."]
+        );
+        assert_eq!(
+            attachment_transport_warnings_for_mode("websocket", true),
+            vec!["Attachment downloads use HTTP transport even when runtime.mode is websocket."]
+        );
+        assert!(attachment_transport_warnings_for_mode("http", false).is_empty());
+    }
+
+    #[test]
+    fn direct_attachment_download_target_uses_resolved_did() {
+        let thread = ThreadRef::Direct(PeerRef::parse("bob", "").expect("peer"));
+        let resolved = TargetResolution {
+            did: "did:wba:example:bob".to_string(),
+            handle: "bob.awiki.test".to_string(),
+        };
+
+        assert_eq!(
+            download_target_value(&thread, Some(&resolved)),
+            json!({"kind": "direct", "did": "did:wba:example:bob"})
+        );
+    }
+
+    #[test]
+    fn attachment_output_preparation_errors_map_to_cli_path_errors() {
+        let root = unique_temp_root("attachment-output-path-error");
+        std::fs::create_dir_all(&root).unwrap();
+        let parent_file = root.join("not-a-directory");
+        std::fs::write(&parent_file, b"file").unwrap();
+        let request = DownloadAttachmentRequest {
+            thread: ThreadRef::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
+            message_id: MessageId::parse("msg-1").unwrap(),
+            attachment_id: Some("att-1".to_string()),
+            destination: AttachmentDestination::LocalFile(parent_file.join("out.bin")),
+            overwrite: true,
+        };
+
+        let err = prepare_download_destination(&request).unwrap_err();
+
+        assert!(matches!(err, MessageAdapterError::PathUnavailable(message)
+            if message.contains("create attachment output directory")
+                && message.contains("not-a-directory")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn attachment_destination_errors_map_to_cli_path_errors() {
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::invalid_input(
+                Some("destination".to_string()),
+                "destination already exists and overwrite is false: out.bin",
+            )),
+            MessageAdapterError::PathUnavailable(
+                "destination already exists and overwrite is false: out.bin".to_string()
+            )
+        );
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::PathUnavailable {
+                path_kind: "attachment_output".to_string(),
+                detail: "parent is not writable".to_string(),
+            }),
+            MessageAdapterError::PathUnavailable(
+                "attachment_output path unavailable: parent is not writable".to_string()
+            )
+        );
+        assert_eq!(
+            im_error_to_message_error(im_core::ImError::Io {
+                detail: "write temp file failed".to_string(),
+            }),
+            MessageAdapterError::PathUnavailable("write temp file failed".to_string())
+        );
+    }
+
+    fn unique_temp_root(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("awiki-cli-{name}-{}-{nanos}", std::process::id()))
+    }
 }

@@ -60,6 +60,7 @@ pub enum MessageAdapterError {
     IdentityRequired(String),
     Service(ServiceError),
     Identity(IdentityError),
+    PathUnavailable(String),
     Internal(String),
     InvalidAttachmentServiceEndpoint(String),
     MissingMessageServiceDid,
@@ -154,9 +155,9 @@ impl fmt::Display for MessageAdapterError {
                 formatter.write_str("group E2EE self-leave is not cryptographically supported yet")
             }
             Self::MessageNotFound => formatter.write_str("message not found"),
-            Self::IdentityRequired(message) | Self::Internal(message) => {
-                formatter.write_str(message)
-            }
+            Self::IdentityRequired(message)
+            | Self::PathUnavailable(message)
+            | Self::Internal(message) => formatter.write_str(message),
             Self::Service(error) => write!(formatter, "{error}"),
             Self::Identity(error) => write!(formatter, "{error}"),
             Self::InvalidAttachmentServiceEndpoint(message) => {

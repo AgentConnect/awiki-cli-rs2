@@ -1,6 +1,9 @@
+pub(crate) mod attachment_runtime;
 pub(crate) mod auth;
+pub(crate) mod blob;
 pub(crate) mod contact_store;
 pub(crate) mod directory_runtime;
+pub(crate) mod discovery;
 pub(crate) mod group_runtime;
 pub(crate) mod http;
 pub(crate) mod identity_bind_runtime;

@@ -99,26 +99,6 @@ pub fn content_type_for_message_type(message_type: &str) -> &'static str {
     }
 }
 
-pub(crate) fn message_meta(sender_did: &str, service_did: &str, profile: &str) -> Value {
-    im_core::compat::wire::message_meta(sender_did, service_did, profile)
-}
-
-pub(crate) fn signed_message_meta(
-    sender_did: &str,
-    target_kind: &str,
-    target_did: &str,
-    profile: &str,
-    content_type: &str,
-) -> Value {
-    im_core::compat::wire::signed_message_meta(
-        sender_did,
-        target_kind,
-        target_did,
-        profile,
-        content_type,
-    )
-}
-
 pub(crate) fn now_rfc3339() -> String {
     im_core::compat::wire::now_rfc3339()
 }

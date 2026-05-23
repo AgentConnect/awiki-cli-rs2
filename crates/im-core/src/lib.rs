@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod auth;
 pub mod config;
 pub mod core;
@@ -17,6 +18,7 @@ pub mod compat;
 mod internal;
 
 pub use self::config::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};
+pub use crate::attachments::AttachmentService;
 pub use crate::core::{CoreBootstrap, ImClient, ImCore};
 pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::error::{ImError, ImResult};

@@ -51,6 +51,10 @@ impl ImClient {
         crate::groups::GroupService::new(self)
     }
 
+    pub fn attachments(&self) -> crate::attachments::AttachmentService<'_> {
+        crate::attachments::AttachmentService::new(self)
+    }
+
     pub fn realtime(&self) -> crate::realtime::RealtimeService<'_> {
         crate::realtime::RealtimeService::new(self)
     }

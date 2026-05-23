@@ -1,19 +1,12 @@
 use crate::identity::types::StoredIdentity;
-use crate::message::proof::{build_origin_proof, origin_auth_value};
 use crate::message::types::MessageError;
-use crate::message::wire::{message_meta, signed_message_meta};
-use crate::message::DirectPayload;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
+use serde_json::{Map, Value};
 use std::fs;
 use std::path::Path;
 
-const ATTACHMENT_MANIFEST_CONTENT_TYPE: &str = "application/anp-attachment-manifest+json";
-
 pub fn attachment_manifest_content_type() -> &'static str {
-    ATTACHMENT_MANIFEST_CONTENT_TYPE
+    im_core::compat::attachments::attachment_manifest_content_type()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -82,93 +75,21 @@ pub fn load_attachment_file(
     }
     let payload =
         fs::read(Path::new(path)).map_err(|err| MessageError::Internal(err.to_string()))?;
-    let filename = Path::new(path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_string();
-    if filename.is_empty() {
-        return Err(MessageError::Internal(format!(
-            "attachment filename could not be derived from {path:?}"
-        )));
-    }
-    let mime_type = if mime_override.trim().is_empty() {
-        detect_attachment_mime_type(&filename, &payload)
-    } else {
-        mime_override.trim().to_string()
-    };
-    let digest = Sha256::digest(&payload);
+    let prepared = im_core::compat::attachments::prepare_attachment_payload_from_path(
+        Path::new(path),
+        mime_override,
+        payload,
+    )
+    .map_err(attachment_core_error)?;
     Ok(PreparedAttachment {
         file_path: path.to_string(),
-        filename,
-        mime_type,
-        size_bytes: payload.len() as i64,
-        size_string: payload.len().to_string(),
-        digest_b64u: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest),
-        payload,
+        filename: prepared.filename,
+        mime_type: prepared.mime_type,
+        size_bytes: i64::try_from(prepared.size_bytes).unwrap_or(i64::MAX),
+        size_string: prepared.size_string,
+        digest_b64u: prepared.digest_b64u,
+        payload: prepared.payload,
     })
-}
-
-fn detect_attachment_mime_type(filename: &str, payload: &[u8]) -> String {
-    let ext = Path::new(filename)
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if let Some(mime) = mime_type_by_extension(&ext) {
-        return mime.to_string();
-    }
-    detect_attachment_content_type(payload)
-}
-
-fn mime_type_by_extension(ext: &str) -> Option<&'static str> {
-    match ext {
-        "txt" | "text" | "log" | "md" | "csv" => Some("text/plain; charset=utf-8"),
-        "json" => Some("application/json"),
-        "html" | "htm" => Some("text/html; charset=utf-8"),
-        "css" => Some("text/css; charset=utf-8"),
-        "js" | "mjs" => Some("text/javascript; charset=utf-8"),
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "pdf" => Some("application/pdf"),
-        "xml" => Some("text/xml; charset=utf-8"),
-        "zip" => Some("application/zip"),
-        "gz" => Some("application/gzip"),
-        "tar" => Some("application/x-tar"),
-        "wasm" => Some("application/wasm"),
-        _ => None,
-    }
-}
-
-fn detect_attachment_content_type(payload: &[u8]) -> String {
-    if payload.is_empty() {
-        return "application/octet-stream".to_string();
-    }
-    let sample = &payload[..payload.len().min(512)];
-    if sample.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return "image/png".to_string();
-    }
-    if sample.starts_with(b"\xff\xd8\xff") {
-        return "image/jpeg".to_string();
-    }
-    if sample.starts_with(b"GIF87a") || sample.starts_with(b"GIF89a") {
-        return "image/gif".to_string();
-    }
-    if sample.starts_with(b"%PDF-") {
-        return "application/pdf".to_string();
-    }
-    if sample.starts_with(b"PK\x03\x04") {
-        return "application/zip".to_string();
-    }
-    if sample
-        .iter()
-        .all(|byte| matches!(*byte, b'\t' | b'\n' | b'\r' | 0x20..=0x7e))
-    {
-        return "text/plain; charset=utf-8".to_string();
-    }
-    "application/octet-stream".to_string()
 }
 
 pub fn build_attachment_create_slot_rpc_params(
@@ -187,24 +108,14 @@ pub fn build_attachment_create_slot_rpc_params(
     if target_kind.trim().is_empty() || target_did.trim().is_empty() {
         return Err(MessageError::TargetRequired);
     }
-    Ok(json!({
-        "meta": message_meta(&record.did, service_did, "anp.attachment.v1"),
-        "body": {
-            "expected_size": prepared.size_string,
-            "expected_digest": {
-                "alg": "sha-256",
-                "value_b64u": prepared.digest_b64u,
-            },
-            "mime_type": prepared.mime_type,
-            "filename": prepared.filename,
-            "intended_message_security_profile": "transport-protected",
-            "intended_target": {
-                "kind": target_kind,
-                "did": target_did,
-            },
-            "object_encryption_mode": "none",
-        },
-    }))
+    im_core::compat::attachments::build_attachment_create_slot_rpc_params(
+        &record.did,
+        service_did,
+        target_kind,
+        target_did,
+        &core_prepared_attachment(prepared),
+    )
+    .map_err(attachment_core_error)
 }
 
 pub fn build_attachment_commit_object_rpc_params(
@@ -216,20 +127,13 @@ pub fn build_attachment_commit_object_rpc_params(
     if prepared.filename.trim().is_empty() || slot.attachment_id.trim().is_empty() {
         return Err(MessageError::FilePathRequired);
     }
-    Ok(json!({
-        "meta": message_meta(&record.did, service_did, "anp.attachment.v1"),
-        "body": {
-            "attachment_id": slot.attachment_id,
-            "slot_id": slot.slot_id,
-            "commit_token": slot.commit_token,
-            "size": prepared.size_string,
-            "object_encryption_mode": "none",
-            "digest": {
-                "alg": "sha-256",
-                "value_b64u": prepared.digest_b64u,
-            },
-        },
-    }))
+    im_core::compat::attachments::build_attachment_commit_object_rpc_params(
+        &record.did,
+        service_did,
+        &core_prepared_attachment(prepared),
+        &core_create_slot_result(slot),
+    )
+    .map_err(attachment_core_error)
 }
 
 pub fn build_attachment_download_ticket_rpc_params(
@@ -249,47 +153,15 @@ pub fn build_attachment_download_ticket_rpc_params(
     if sender_did.trim().is_empty() {
         return Err(MessageError::AttachmentSenderRequired);
     }
-    let mut body = Map::new();
-    body.insert(
-        "attachment_id".to_string(),
-        Value::String(selection.attachment_id.clone()),
-    );
-    body.insert(
-        "object_uri".to_string(),
-        Value::String(selection.object_uri.clone()),
-    );
-    body.insert(
-        "sender_did".to_string(),
-        Value::String(sender_did.to_string()),
-    );
-    body.insert(
-        "requester_did".to_string(),
-        Value::String(record.did.clone()),
-    );
-    body.insert(
-        "message_security_profile".to_string(),
-        Value::String("transport-protected".to_string()),
-    );
-    body.insert(
-        "message_id".to_string(),
-        Value::String(message_id.to_string()),
-    );
-    body.insert("one_time".to_string(), Value::Bool(true));
-    if !group_did.trim().is_empty() {
-        body.insert(
-            "group_did".to_string(),
-            Value::String(group_did.to_string()),
-        );
-    } else {
-        body.insert(
-            "message_target_did".to_string(),
-            Value::String(record.did.clone()),
-        );
-    }
-    Ok(json!({
-        "meta": message_meta(&record.did, service_did, "anp.attachment.v1"),
-        "body": body,
-    }))
+    im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+        &record.did,
+        service_did,
+        sender_did,
+        message_id,
+        group_did,
+        &core_attachment_selection(selection),
+    )
+    .map_err(attachment_core_error)
 }
 
 pub fn build_attachment_manifest(
@@ -297,34 +169,16 @@ pub fn build_attachment_manifest(
     slot: &AttachmentCreateSlotResult,
     caption: &str,
 ) -> Value {
-    let mut manifest = Map::new();
-    manifest.insert(
-        "attachments".to_string(),
-        json!([{
-            "attachment_id": slot.attachment_id,
-            "filename": prepared.filename,
-            "mime_type": prepared.mime_type,
-            "size": prepared.size_string,
-            "digest": {
-                "alg": "sha-256",
-                "value_b64u": prepared.digest_b64u,
-            },
-            "access_info": {
-                "object_uri": slot.object_uri,
-            },
-            "encryption_info": {
-                "mode": "none",
-            },
-        }]),
-    );
-    manifest.insert(
-        "primary_attachment_id".to_string(),
-        Value::String(slot.attachment_id.clone()),
-    );
-    if !caption.trim().is_empty() {
-        manifest.insert("caption".to_string(), Value::String(caption.to_string()));
-    }
-    Value::Object(manifest)
+    let descriptor = im_core::compat::attachments::AttachmentDescriptor {
+        attachment_id: slot.attachment_id.clone(),
+        filename: prepared.filename.clone(),
+        mime_type: prepared.mime_type.clone(),
+        size: prepared.size_string.clone(),
+        digest_b64u: prepared.digest_b64u.clone(),
+        object_uri: slot.object_uri.clone(),
+        encryption_mode: "none".to_string(),
+    };
+    im_core::compat::attachments::build_attachment_manifest(&descriptor, caption)
 }
 
 pub fn build_direct_attachment_send_rpc_params(
@@ -335,14 +189,12 @@ pub fn build_direct_attachment_send_rpc_params(
     if target_did.trim().is_empty() {
         return Err(MessageError::TargetRequired);
     }
-    build_signed_attachment_send_rpc_params(
-        record,
-        "direct.send",
-        "agent",
+    im_core::compat::attachments::build_direct_attachment_send_rpc_params(
+        &core_signing_identity(record),
         target_did,
-        "anp.direct.base.v1",
         manifest,
     )
+    .map_err(attachment_core_error)
 }
 
 pub fn build_group_attachment_send_rpc_params(
@@ -353,46 +205,16 @@ pub fn build_group_attachment_send_rpc_params(
     if group_did.trim().is_empty() {
         return Err(MessageError::GroupRequired);
     }
-    build_signed_attachment_send_rpc_params(
-        record,
-        "group.send",
-        "group",
+    im_core::compat::attachments::build_group_attachment_send_rpc_params(
+        &core_signing_identity(record),
         group_did,
-        "anp.group.base.v1",
         manifest,
     )
+    .map_err(attachment_core_error)
 }
 
 pub fn manifest_content_string(manifest: &Value) -> String {
-    serde_json::to_string(manifest).unwrap_or_default()
-}
-
-fn build_signed_attachment_send_rpc_params(
-    record: &StoredIdentity,
-    method: &str,
-    target_kind: &str,
-    target_did: &str,
-    profile: &str,
-    manifest: Value,
-) -> Result<Value, MessageError> {
-    let body = json!({ "payload": manifest });
-    let payload = DirectPayload {
-        method: method.to_string(),
-        meta: signed_message_meta(
-            &record.did,
-            target_kind,
-            target_did,
-            profile,
-            attachment_manifest_content_type(),
-        ),
-        body,
-    };
-    let origin_proof = build_origin_proof(record, &payload)?;
-    Ok(json!({
-        "meta": payload.meta,
-        "auth": origin_auth_value(&origin_proof),
-        "body": payload.body,
-    }))
+    im_core::compat::attachments::manifest_content_string(manifest)
 }
 
 pub fn find_attachment_selection(
@@ -400,53 +222,13 @@ pub fn find_attachment_selection(
     requested_message_id: &str,
     requested_attachment_id: &str,
 ) -> Result<AttachmentSelection, MessageError> {
-    for message in messages {
-        let Some(message_object) = message.as_object() else {
-            continue;
-        };
-        let view_id = string_from_value(message_object.get("id"));
-        let raw_message_id = string_from_value(message_object.get("message_id"));
-        let actual_message_id = if raw_message_id.is_empty() {
-            view_id.clone()
-        } else {
-            raw_message_id
-        };
-        if requested_message_id != view_id && requested_message_id != actual_message_id {
-            continue;
-        }
-        let content = decode_attachment_content(message_object.get("content"))?;
-        let attachments = attachments_from_content(content.get("attachments"));
-        if attachments.is_empty() {
-            return Err(MessageError::AttachmentMessageInvalid);
-        }
-        let selected = select_attachment_entry(&attachments, requested_attachment_id)?;
-        let access_info = selected
-            .get("access_info")
-            .and_then(Value::as_object)
-            .ok_or(MessageError::AttachmentMessageInvalid)?;
-        let digest = selected.get("digest").and_then(Value::as_object);
-        return Ok(AttachmentSelection {
-            message_id: actual_message_id,
-            requested_id: view_id,
-            sender_did: string_from_value(message_object.get("sender_did")),
-            attachment_id: string_from_value(selected.get("attachment_id")),
-            filename: string_from_value(selected.get("filename")),
-            mime_type: string_from_value(selected.get("mime_type")),
-            size: string_from_value(selected.get("size")),
-            digest_b64u: digest
-                .and_then(|value| value.get("value_b64u"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            object_uri: access_info
-                .get("object_uri")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            caption: string_from_value(content.get("caption")),
-        });
-    }
-    Err(MessageError::MessageNotFound)
+    im_core::compat::attachments::find_attachment_selection(
+        messages,
+        requested_message_id,
+        requested_attachment_id,
+    )
+    .map(legacy_attachment_selection)
+    .map_err(attachment_core_error)
 }
 
 pub(crate) fn find_attachment_selection_with_paging<F>(
@@ -457,73 +239,133 @@ pub(crate) fn find_attachment_selection_with_paging<F>(
 where
     F: FnMut(i64) -> Result<(Vec<Value>, bool), MessageError>,
 {
-    let mut skip = 0_i64;
-    loop {
-        let (messages, has_more) = fetch_page(skip)?;
-        match find_attachment_selection(&messages, requested_message_id, requested_attachment_id) {
-            Ok(selection) => return Ok(selection),
-            Err(MessageError::MessageNotFound) if has_more && !messages.is_empty() => {
-                skip += messages.len() as i64;
+    let mut fetch_error = None;
+    let result = im_core::compat::attachments::find_attachment_selection_with_paging(
+        |skip| match fetch_page(skip) {
+            Ok(page) => Ok(page),
+            Err(err) => {
+                fetch_error = Some(err);
+                Err(im_core::ImError::Internal {
+                    message: "attachment page fetch failed".to_string(),
+                })
             }
-            Err(MessageError::MessageNotFound) => return Err(MessageError::MessageNotFound),
-            Err(err) => return Err(err),
+        },
+        requested_message_id,
+        requested_attachment_id,
+    );
+    if let Some(err) = fetch_error {
+        return Err(err);
+    }
+    result
+        .map(legacy_attachment_selection)
+        .map_err(attachment_core_error)
+}
+
+fn legacy_attachment_selection(
+    selection: im_core::compat::attachments::AttachmentSelection,
+) -> AttachmentSelection {
+    AttachmentSelection {
+        message_id: selection.message_id,
+        requested_id: selection.requested_id,
+        sender_did: selection.sender_did,
+        attachment_id: selection.attachment_id,
+        filename: selection.filename,
+        mime_type: selection.mime_type,
+        size: selection.size,
+        digest_b64u: selection.digest_b64u,
+        object_uri: selection.object_uri,
+        caption: selection.caption,
+    }
+}
+
+fn core_prepared_attachment(
+    prepared: &PreparedAttachment,
+) -> im_core::compat::attachments::PreparedAttachment {
+    im_core::compat::attachments::PreparedAttachment {
+        filename: prepared.filename.clone(),
+        mime_type: prepared.mime_type.clone(),
+        size_bytes: u64::try_from(prepared.size_bytes).unwrap_or_default(),
+        size_string: prepared.size_string.clone(),
+        digest_b64u: prepared.digest_b64u.clone(),
+        payload: prepared.payload.clone(),
+    }
+}
+
+fn core_create_slot_result(
+    slot: &AttachmentCreateSlotResult,
+) -> im_core::compat::attachments::AttachmentCreateSlotResult {
+    im_core::compat::attachments::AttachmentCreateSlotResult {
+        attachment_id: slot.attachment_id.clone(),
+        slot_id: slot.slot_id.clone(),
+        upload_uri: slot.upload_uri.clone(),
+        upload_headers: slot.upload_headers.clone(),
+        object_uri: slot.object_uri.clone(),
+        commit_token: slot.commit_token.clone(),
+        expires_at: slot.expires_at.clone(),
+        request_service_did: slot.request_service_did.clone(),
+    }
+}
+
+fn core_attachment_selection(
+    selection: &AttachmentSelection,
+) -> im_core::compat::attachments::AttachmentSelection {
+    im_core::compat::attachments::AttachmentSelection {
+        message_id: selection.message_id.clone(),
+        requested_id: selection.requested_id.clone(),
+        sender_did: selection.sender_did.clone(),
+        attachment_id: selection.attachment_id.clone(),
+        filename: selection.filename.clone(),
+        mime_type: selection.mime_type.clone(),
+        size: selection.size.clone(),
+        digest_b64u: selection.digest_b64u.clone(),
+        object_uri: selection.object_uri.clone(),
+        caption: selection.caption.clone(),
+    }
+}
+
+fn core_signing_identity(
+    record: &StoredIdentity,
+) -> im_core::compat::attachments::AttachmentSigningIdentity {
+    im_core::compat::attachments::AttachmentSigningIdentity {
+        identity_name: record.identity_name.clone(),
+        did: record.did.clone(),
+        did_document: record.did_document.clone(),
+        key1_private_pem: record.key1_private_pem.clone(),
+    }
+}
+
+fn attachment_core_error(err: im_core::ImError) -> MessageError {
+    match err {
+        im_core::ImError::MessageNotFound { .. } => MessageError::MessageNotFound,
+        im_core::ImError::Serialization { detail } => MessageError::Json(detail),
+        im_core::ImError::InvalidInput { field, message } => {
+            if message == im_core::compat::attachments::ERR_ATTACHMENT_NOT_FOUND {
+                MessageError::AttachmentNotFound
+            } else if message == im_core::compat::attachments::ERR_ATTACHMENT_ID_REQUIRED {
+                MessageError::AttachmentIdRequired
+            } else if message == im_core::compat::attachments::ERR_ATTACHMENT_MESSAGE_INVALID {
+                MessageError::AttachmentMessageInvalid
+            } else if field.as_deref() == Some("file_path") {
+                MessageError::Internal(message)
+            } else if field.as_deref() == Some("service_did")
+                && message == "message service did is required"
+            {
+                MessageError::MissingMessageServiceDid
+            } else if field.as_deref() == Some("service_did")
+                && message == "attachment service did is required"
+            {
+                MessageError::MissingAttachmentServiceDid
+            } else if field.as_deref() == Some("sender_did") {
+                MessageError::AttachmentSenderRequired
+            } else if field.as_deref() == Some("target") || field.as_deref() == Some("target_did") {
+                MessageError::TargetRequired
+            } else if field.as_deref() == Some("group_did") {
+                MessageError::GroupRequired
+            } else {
+                MessageError::Internal(message)
+            }
         }
+        im_core::ImError::Io { detail } => MessageError::Internal(detail),
+        err => MessageError::Internal(err.to_string()),
     }
-}
-
-fn decode_attachment_content(value: Option<&Value>) -> Result<Map<String, Value>, MessageError> {
-    match value {
-        Some(Value::Object(object)) if !object.is_empty() => Ok(object.clone()),
-        Some(Value::String(text)) if !text.trim().is_empty() => {
-            let decoded: Value =
-                serde_json::from_str(text).map_err(|err| MessageError::Json(err.to_string()))?;
-            decoded
-                .as_object()
-                .filter(|object| !object.is_empty())
-                .cloned()
-                .ok_or(MessageError::AttachmentMessageInvalid)
-        }
-        _ => Err(MessageError::AttachmentMessageInvalid),
-    }
-}
-
-fn attachments_from_content(value: Option<&Value>) -> Vec<Map<String, Value>> {
-    value
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_object().cloned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn select_attachment_entry(
-    attachments: &[Map<String, Value>],
-    requested_attachment_id: &str,
-) -> Result<Map<String, Value>, MessageError> {
-    if attachments.is_empty() {
-        return Err(MessageError::AttachmentNotFound);
-    }
-    if requested_attachment_id.trim().is_empty() {
-        if attachments.len() > 1 {
-            return Err(MessageError::AttachmentIdRequired);
-        }
-        return Ok(attachments[0].clone());
-    }
-    attachments
-        .iter()
-        .find(|attachment| {
-            string_from_value(attachment.get("attachment_id")) == requested_attachment_id
-        })
-        .cloned()
-        .ok_or(MessageError::AttachmentNotFound)
-}
-
-fn string_from_value(value: Option<&Value>) -> String {
-    value
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
 }

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub use crate::attachments::AttachmentInput;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendMessageRequest {
     pub target: MessageTarget,
@@ -55,16 +57,6 @@ impl Default for MessageDeliveryOptions {
             wait_for_final_acceptance: false,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AttachmentInput {
-    LocalFile(String),
-    Bytes {
-        filename: Option<String>,
-        mime_type: Option<String>,
-        bytes_len: usize,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

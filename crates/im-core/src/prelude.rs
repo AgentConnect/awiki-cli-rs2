@@ -1,3 +1,7 @@
+pub use crate::attachments::{
+    AttachmentDestination, AttachmentInput, AttachmentSendRequest, AttachmentService,
+    DownloadAttachmentRequest, DownloadedAttachment, DownloadedAttachmentDestination,
+};
 pub use crate::auth::{AuthScope, AuthService, AuthStatus, SessionBundle, SessionUpdate};
 pub use crate::core::{
     CoreBootstrap, ImClient, ImCore, LocalStateStatus, MigrationReport, PathCheck,
@@ -29,8 +33,8 @@ pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
 };
 pub use crate::messages::{
-    AttachmentInput, Conversation, ConversationQuery, DeliveryState, HistoryQuery, InboxQuery,
-    InboxScope, MarkReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
+    Conversation, ConversationQuery, DeliveryState, HistoryQuery, InboxQuery, InboxScope,
+    MarkReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
     MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageRetryAction,
     MessageRetryPlan, MessageSecurityMode, MessageSendState, MessageSendStateKind, MessageService,
     MessageTarget, SendMessageRequest, SendMessageResult, ThreadRef,

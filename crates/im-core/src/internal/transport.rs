@@ -10,6 +10,35 @@ pub(crate) trait AuthenticatedRpcTransport {
     ) -> crate::ImResult<Value>;
 }
 
+pub(crate) trait AttachmentObjectTransport {
+    fn put_attachment_object(
+        &mut self,
+        upload_uri: &str,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> crate::ImResult<()>;
+
+    fn get_attachment_object(
+        &mut self,
+        object_uri: &str,
+        download_ticket: &str,
+    ) -> crate::ImResult<AttachmentObjectResponse>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttachmentObjectResponse {
+    pub(crate) body: Vec<u8>,
+    pub(crate) content_type: Option<String>,
+}
+
+pub(crate) trait RawJsonTransport {
+    fn get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value>;
+}
+
 pub(crate) trait RpcTransport {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
 }
@@ -77,6 +106,10 @@ impl<'a> CoreHttpTransport<'a> {
     }
 
     fn rpc_url(&self, endpoint: &str) -> String {
+        let endpoint = endpoint.trim();
+        if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            return endpoint.to_string();
+        }
         let base = if endpoint.starts_with("/im/") {
             self.client
                 .core_inner()
@@ -328,6 +361,10 @@ impl<'a> CorePlainTransport<'a> {
     }
 
     fn rpc_url(&self, endpoint: &str) -> String {
+        let endpoint = endpoint.trim();
+        if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            return endpoint.to_string();
+        }
         let base = if endpoint.starts_with("/im/") {
             self.core
                 .inner()
@@ -380,6 +417,79 @@ impl AuthenticatedRpcTransport for CoreHttpTransport<'_> {
             }
             result => result,
         }
+    }
+}
+
+impl AttachmentObjectTransport for CoreHttpTransport<'_> {
+    fn put_attachment_object(
+        &mut self,
+        upload_uri: &str,
+        headers: BTreeMap<String, String>,
+        body: Vec<u8>,
+    ) -> crate::ImResult<()> {
+        let response = self.http.execute(crate::internal::http::HttpRequest {
+            method: "PUT".to_string(),
+            url: upload_uri.to_string(),
+            headers,
+            body,
+        })?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        Ok(())
+    }
+
+    fn get_attachment_object(
+        &mut self,
+        object_uri: &str,
+        download_ticket: &str,
+    ) -> crate::ImResult<AttachmentObjectResponse> {
+        let response = self.http.execute(crate::internal::http::HttpRequest {
+            method: "GET".to_string(),
+            url: object_uri.to_string(),
+            headers: BTreeMap::from([(
+                "Authorization".to_string(),
+                format!("Bearer {}", download_ticket.trim()),
+            )]),
+            body: Vec::new(),
+        })?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        Ok(AttachmentObjectResponse {
+            content_type: response_header_value(&response.headers, "Content-Type"),
+            body: response.body,
+        })
+    }
+}
+
+impl RawJsonTransport for CoreHttpTransport<'_> {
+    fn get_json_url(
+        &mut self,
+        url: &str,
+        headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        let response = self.http.execute(crate::internal::http::HttpRequest {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            headers,
+            body: Vec::new(),
+        })?;
+        if response.status_code >= 400 {
+            return Err(service_error_from_http(
+                response.status_code,
+                &response.body,
+            ));
+        }
+        serde_json::from_slice(&response.body).map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })
     }
 }
 
@@ -497,6 +607,41 @@ impl AuthenticatedRpcTransport for UnavailableTransport {
     }
 }
 
+impl AttachmentObjectTransport for UnavailableTransport {
+    fn put_attachment_object(
+        &mut self,
+        upload_uri: &str,
+        _headers: BTreeMap<String, String>,
+        _body: Vec<u8>,
+    ) -> crate::ImResult<()> {
+        Err(crate::ImError::TransportUnavailable {
+            detail: format!("PUT transport is not configured for {upload_uri}"),
+        })
+    }
+
+    fn get_attachment_object(
+        &mut self,
+        object_uri: &str,
+        _download_ticket: &str,
+    ) -> crate::ImResult<AttachmentObjectResponse> {
+        Err(crate::ImError::TransportUnavailable {
+            detail: format!("GET transport is not configured for {object_uri}"),
+        })
+    }
+}
+
+impl RawJsonTransport for UnavailableTransport {
+    fn get_json_url(
+        &mut self,
+        url: &str,
+        _headers: BTreeMap<String, String>,
+    ) -> crate::ImResult<Value> {
+        Err(crate::ImError::TransportUnavailable {
+            detail: format!("GET transport is not configured for {url}"),
+        })
+    }
+}
+
 fn join_base_url(base: &str, endpoint: &str) -> String {
     let base = base.trim().trim_end_matches('/');
     let endpoint = endpoint.trim();
@@ -538,6 +683,14 @@ fn service_error_from_http(status_code: u16, body: &[u8]) -> crate::ImError {
         code: None,
         message: String::from_utf8_lossy(body).trim().to_string(),
     }
+}
+
+fn response_header_value(headers: &BTreeMap<String, String>, name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.clone())
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn read_jwt_token(path: &std::path::Path) -> crate::ImResult<Option<String>> {

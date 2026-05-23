@@ -16,6 +16,37 @@ fn retry_message_is_explicitly_unsupported_until_im_core_has_retry_api() {
 }
 
 #[test]
+fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
+    let request = awiki_im_core::dto::attachment::DartAttachmentSendRequest {
+        target: awiki_im_core::dto::message::DartMessageTarget::Direct {
+            peer: "did:example:bob".to_string(),
+        },
+        input: awiki_im_core::dto::attachment::DartAttachmentInput::Bytes {
+            filename: Some("note.txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            bytes: b"hello".to_vec(),
+        },
+        caption: Some("caption".to_string()),
+        mime_type: None,
+        filename: None,
+        idempotency_key: Some("idem-1".to_string()),
+        wait_for_final_acceptance: true,
+    };
+
+    let (target, request) = request.into_core().expect("attachment maps to im-core");
+    assert!(matches!(
+        target,
+        im_core::messages::MessageTarget::Direct(peer) if peer.as_str() == "did:example:bob"
+    ));
+    assert!(matches!(
+        request.input,
+        im_core::attachments::AttachmentInput::Bytes { bytes, .. } if bytes == b"hello".to_vec()
+    ));
+    assert_eq!(request.delivery.idempotency_key.as_deref(), Some("idem-1"));
+    assert!(request.delivery.wait_for_final_acceptance);
+}
+
+#[test]
 fn realtime_connect_is_explicitly_unsupported_until_bridge_plan_is_ready() {
     let capability = awiki_im_core::dto::realtime::DartRealtimeCapability {
         status_supported: true,
