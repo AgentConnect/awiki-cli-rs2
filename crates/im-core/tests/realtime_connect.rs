@@ -1,4 +1,8 @@
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use im_core::compat::realtime::{
     connect_realtime_with_transport, realtime_client_construction_plan, realtime_client_endpoints,
@@ -197,19 +201,127 @@ fn realtime_connect_with_fake_transport_refreshes_after_401_and_retries() {
 }
 
 #[test]
-fn realtime_service_connect_uses_auth_before_default_unavailable_transport() {
+fn realtime_service_connect_starts_native_transport_worker_without_exposing_websocket() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock websocket listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let request = Arc::new(Mutex::new(String::new()));
+    let server_request = Arc::clone(&request);
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept websocket dial");
+        let mut raw = Vec::new();
+        let mut byte = [0_u8; 1];
+        while raw.len() < 16 * 1024 {
+            let read = stream.read(&mut byte).expect("read handshake byte");
+            if read == 0 {
+                break;
+            }
+            raw.push(byte[0]);
+            if raw.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        *server_request.lock().expect("request lock") = String::from_utf8(raw).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+            .expect("write failure response");
+    });
+
     let fixture = RuntimeFixture::new();
     fixture.write_ready_identity("alice", Some("live-token"));
-    let client = fixture.client("alice");
+    let client = fixture.client_with_service_base_url("alice", &format!("http://{addr}"));
 
-    let error = match client.realtime().connect(RealtimeOptions::default()) {
-        Ok(_) => panic!("default transport should be unavailable in 5E tests"),
-        Err(error) => error,
-    };
+    let handle = client
+        .realtime()
+        .connect(RealtimeOptions::default())
+        .expect("connect should return event handle while worker owns native transport");
 
     assert!(matches!(
-        error,
-        ImError::TransportUnavailable { detail } if detail == "websocket transport is not configured for wss://example.test/im/ws"
+        handle.events.recv_timeout(Duration::from_secs(2)),
+        Ok(ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+            state: RealtimeConnectionState::Connecting,
+            reason: None,
+        }))
+    ));
+    let disconnected = handle
+        .events
+        .recv_timeout(Duration::from_secs(2))
+        .expect("disconnected event after mock server rejects upgrade");
+    assert!(matches!(
+        disconnected,
+        ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+            state: RealtimeConnectionState::Disconnected,
+            reason: None,
+        })
+    ));
+    handle.control.shutdown();
+    server.join().expect("mock server thread");
+    let request = request.lock().expect("request lock").clone();
+    assert!(request.starts_with("GET /im/ws HTTP/1.1\r\n"));
+    assert!(request.contains("Authorization: Bearer live-token\r\n"));
+}
+
+#[test]
+fn realtime_service_connect_reads_native_websocket_notification_into_im_event() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock websocket listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept websocket dial");
+        let request = read_handshake_request(&mut stream);
+        let key = request
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("Sec-WebSocket-Key")
+                    .then(|| value.trim().to_string())
+            })
+            .expect("websocket key header");
+        let accept = websocket_accept(&key);
+        write!(
+            stream,
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+        .expect("write upgrade response");
+        write_unmasked_text_frame(
+            &mut stream,
+            r#"{"method":"direct.incoming","params":{"meta":{"message_id":"msg-native-1","sender_did":"did:example:bob","target":{"did":"did:example:alice"},"content_type":"text/plain"},"body":{"text":"hello native ws"}}}"#,
+        );
+        stream.write_all(&[0x88, 0x00]).expect("write close frame");
+    });
+
+    let fixture = RuntimeFixture::new();
+    fixture.write_ready_identity("alice", Some("live-token"));
+    let client = fixture.client_with_service_base_url("alice", &format!("http://{addr}"));
+
+    let handle = client
+        .realtime()
+        .connect(RealtimeOptions::default())
+        .expect("native websocket session");
+
+    let events = recv_events(&handle.events, 4);
+    handle.control.shutdown();
+    server.join().expect("mock websocket server");
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+                state: RealtimeConnectionState::Connecting,
+                ..
+            }),
+            ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+                state: RealtimeConnectionState::Connected,
+                ..
+            }),
+            ImEvent::MessageReceived(MessageReceivedEvent { message }),
+            ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+                state: RealtimeConnectionState::Closed,
+                ..
+            }),
+        ] if message.id.as_str() == "msg-native-1"
+            && message.body == (MessageBodyView::Text {
+                text: "hello native ws".to_string(),
+                kind: MessageKind::Text,
+            })
     ));
 }
 
@@ -225,6 +337,129 @@ fn realtime_service_connect_requires_realtime_bearer_before_default_transport() 
     };
 
     assert_eq!(error, ImError::AuthRequired);
+}
+
+fn recv_events(receiver: &std::sync::mpsc::Receiver<ImEvent>, count: usize) -> Vec<ImEvent> {
+    (0..count)
+        .map(|_| {
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("realtime event")
+        })
+        .collect()
+}
+
+fn read_handshake_request(stream: &mut std::net::TcpStream) -> String {
+    let mut raw = Vec::new();
+    let mut byte = [0_u8; 1];
+    while raw.len() < 16 * 1024 {
+        let read = stream.read(&mut byte).expect("read handshake byte");
+        if read == 0 {
+            break;
+        }
+        raw.push(byte[0]);
+        if raw.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8(raw).expect("handshake utf8")
+}
+
+fn write_unmasked_text_frame(stream: &mut std::net::TcpStream, text: &str) {
+    let bytes = text.as_bytes();
+    if bytes.len() < 126 {
+        stream
+            .write_all(&[0x81, bytes.len() as u8])
+            .expect("write frame header");
+    } else {
+        assert!(bytes.len() <= u16::MAX as usize, "test frame too large");
+        stream.write_all(&[0x81, 126]).expect("write frame tag");
+        stream
+            .write_all(&(bytes.len() as u16).to_be_bytes())
+            .expect("write frame len");
+    }
+    stream.write_all(bytes).expect("write frame payload");
+}
+
+fn websocket_accept(key: &str) -> String {
+    const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+    let mut raw = Vec::with_capacity(key.len() + WS_GUID.len());
+    raw.extend_from_slice(key.as_bytes());
+    raw.extend_from_slice(WS_GUID.as_bytes());
+    BASE64_STANDARD.encode(sha1_digest(&raw))
+}
+
+fn sha1_digest(input: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x67452301;
+    let mut h1: u32 = 0xEFCDAB89;
+    let mut h2: u32 = 0x98BADCFE;
+    let mut h3: u32 = 0x10325476;
+    let mut h4: u32 = 0xC3D2E1F0;
+
+    let bit_len = (input.len() as u64) * 8;
+    let mut data = input.to_vec();
+    data.push(0x80);
+    while data.len() % 64 != 56 {
+        data.push(0);
+    }
+    data.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in data.chunks_exact(64) {
+        let mut w = [0_u32; 80];
+        for (idx, word) in w.iter_mut().take(16).enumerate() {
+            let offset = idx * 4;
+            *word = u32::from_be_bytes([
+                chunk[offset],
+                chunk[offset + 1],
+                chunk[offset + 2],
+                chunk[offset + 3],
+            ]);
+        }
+        for idx in 16..80 {
+            w[idx] = (w[idx - 3] ^ w[idx - 8] ^ w[idx - 14] ^ w[idx - 16]).rotate_left(1);
+        }
+
+        let mut a = h0;
+        let mut b = h1;
+        let mut c = h2;
+        let mut d = h3;
+        let mut e = h4;
+
+        for (idx, word) in w.iter().enumerate() {
+            let (f, k) = match idx {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut out = [0_u8; 20];
+    out[..4].copy_from_slice(&h0.to_be_bytes());
+    out[4..8].copy_from_slice(&h1.to_be_bytes());
+    out[8..12].copy_from_slice(&h2.to_be_bytes());
+    out[12..16].copy_from_slice(&h3.to_be_bytes());
+    out[16..20].copy_from_slice(&h4.to_be_bytes());
+    out
 }
 
 fn dial_action(token: &str) -> RealtimeConnectAction {
@@ -335,15 +570,43 @@ impl RuntimeFixture {
     }
 
     fn client(&self, alias: &str) -> ImClient {
+        self.client_with_service_base_url(alias, "https://example.test")
+    }
+
+    fn client_with_service_base_url(&self, alias: &str, service_base_url: &str) -> ImClient {
         self.core()
+            .with_service_base_url(service_base_url)
             .client(IdentitySelector::LocalAlias(alias.to_string()))
             .unwrap()
     }
 
-    fn core(&self) -> ImCore {
+    fn core(&self) -> RuntimeCoreBuilder<'_> {
+        RuntimeCoreBuilder {
+            root: &self.root,
+            service_base_url: "https://example.test",
+        }
+    }
+}
+
+struct RuntimeCoreBuilder<'a> {
+    root: &'a std::path::Path,
+    service_base_url: &'a str,
+}
+
+impl<'a> RuntimeCoreBuilder<'a> {
+    fn with_service_base_url(mut self, service_base_url: &'a str) -> Self {
+        self.service_base_url = service_base_url;
+        self
+    }
+
+    fn client(&self, selector: IdentitySelector) -> ImResult<ImClient> {
+        self.build().client(selector)
+    }
+
+    fn build(&self) -> ImCore {
         ImCore::new(
             ImCoreConfig {
-                service_base_url: ServiceEndpoint::parse("https://example.test").unwrap(),
+                service_base_url: ServiceEndpoint::parse(self.service_base_url).unwrap(),
                 did_domain: "awiki.test".to_string(),
                 user_service_endpoint: None,
                 message_service_endpoint: None,

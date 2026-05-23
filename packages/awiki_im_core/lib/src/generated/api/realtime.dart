@@ -4,10 +4,14 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../dto/error.dart';
+import '../dto/message.dart';
 import '../dto/realtime.dart';
 import '../frb_generated.dart';
 import 'auth.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+
+// These functions are ignored because they are not marked as `pub`: `new`, `stop`, `take_event_receiver`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
 Future<DartRealtimeCapability> realtimeCapability({
   required ArcDartImClient client,
@@ -18,3 +22,22 @@ Future<DartRealtimeStatus> realtimeStatus({required ArcDartImClient client}) =>
 
 Future<void> realtimeConnect({required ArcDartImClient client}) =>
     RustLib.instance.api.crateApiRealtimeRealtimeConnect(client: client);
+
+Future<ArcDartRealtimeSession> realtimeStart({
+  required ArcDartImClient client,
+  required DartRealtimeOptions options,
+}) => RustLib.instance.api.crateApiRealtimeRealtimeStart(
+  client: client,
+  options: options,
+);
+
+Future<void> realtimeStop({required ArcDartRealtimeSession session}) =>
+    RustLib.instance.api.crateApiRealtimeRealtimeStop(session: session);
+
+Stream<DartRealtimeEvent> realtimeEventStream({
+  required ArcDartRealtimeSession session,
+}) =>
+    RustLib.instance.api.crateApiRealtimeRealtimeEventStream(session: session);
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartRealtimeSession >>>
+abstract class ArcDartRealtimeSession implements RustOpaqueInterface {}

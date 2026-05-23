@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct ImClient {
     core: Arc<super::ImCoreInner>,
     identity: crate::identity::IdentitySummary,

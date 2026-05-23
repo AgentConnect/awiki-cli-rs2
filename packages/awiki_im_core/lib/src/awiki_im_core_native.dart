@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'generated/api/auth.dart' as gen_auth;
 import 'generated/api/client.dart' as gen_client;
 import 'generated/api/core.dart' as gen_core;
@@ -194,6 +196,12 @@ class AwikiImClient {
   AwikiImClient._(this._inner);
 
   final gen_auth.ArcDartImClient _inner;
+  final StreamController<RealtimeEvent> _eventsController =
+      StreamController<RealtimeEvent>.broadcast();
+  final StreamController<RealtimeConnectionState> _connectionStatesController =
+      StreamController<RealtimeConnectionState>.broadcast();
+  gen_realtime.ArcDartRealtimeSession? _realtimeSession;
+  StreamSubscription<RealtimeEvent>? _realtimeEventSubscription;
   bool _disposed = false;
 
   AuthApi get auth => AuthApi._(this);
@@ -204,9 +212,17 @@ class AwikiImClient {
   GroupApi get groups => GroupApi._(this);
   RealtimeApi get realtime => RealtimeApi._(this);
 
+  Stream<RealtimeEvent> get events => _eventsController.stream;
+
+  Stream<RealtimeConnectionState> get connectionStates =>
+      _connectionStatesController.stream;
+
   Future<void> dispose() async {
     if (_disposed) return;
+    await realtime.stop();
     await _mapNativeErrors(() => gen_client.closeClient(client: _inner));
+    await _eventsController.close();
+    await _connectionStatesController.close();
     _disposed = true;
   }
 
@@ -554,11 +570,127 @@ class RealtimeApi {
   }
 
   Future<void> connect() async {
-    _client._ensureNotDisposed();
-    await _mapNativeErrors(
-      () => gen_realtime.realtimeConnect(client: _client._inner),
-    );
+    await start();
   }
+
+  Future<RealtimeSession> start({
+    RealtimeOptions options = const RealtimeOptions(),
+  }) async {
+    _client._ensureNotDisposed();
+    await stop();
+    final session = await _mapNativeErrors(
+      () => gen_realtime.realtimeStart(
+        client: _client._inner,
+        options: options._toGen(),
+      ),
+    );
+    _client._realtimeSession = session;
+    _client._realtimeEventSubscription = gen_realtime
+        .realtimeEventStream(session: session)
+        .map((event) => event._toModel())
+        .listen(
+          _client._emitRealtimeEvent,
+          onError: _client._eventsController.addError,
+        );
+    return _NativeRealtimeSession._(_client, session);
+  }
+
+  Future<void> stop() async {
+    _client._ensureNotDisposed();
+    final session = _client._realtimeSession;
+    _client._realtimeSession = null;
+    if (session != null) {
+      await _mapNativeErrors(() => gen_realtime.realtimeStop(session: session));
+    }
+    await _client._realtimeEventSubscription?.cancel();
+    _client._realtimeEventSubscription = null;
+  }
+}
+
+class _NativeRealtimeSession implements RealtimeSession {
+  _NativeRealtimeSession._(this._client, this._session);
+
+  final AwikiImClient _client;
+  final gen_realtime.ArcDartRealtimeSession _session;
+  bool _disposed = false;
+
+  @override
+  Future<void> stop() async {
+    if (_disposed) return;
+    if (!_client._disposed && identical(_client._realtimeSession, _session)) {
+      await _client.realtime.stop();
+    } else {
+      await _mapNativeErrors(
+        () => gen_realtime.realtimeStop(session: _session),
+      );
+    }
+    _disposed = true;
+  }
+
+  @override
+  Future<void> dispose() async {
+    await stop();
+  }
+}
+
+extension on AwikiImClient {
+  void _emitRealtimeEvent(RealtimeEvent event) {
+    if (!_eventsController.isClosed) {
+      _eventsController.add(event);
+    }
+    if (event.isConnectionState && !_connectionStatesController.isClosed) {
+      _connectionStatesController.add(
+        RealtimeConnectionState(
+          state: event.state ?? 'unknown',
+          reason: event.reason,
+        ),
+      );
+    }
+  }
+}
+
+extension on RealtimeOptions {
+  gen_realtime_dto.DartRealtimeOptions _toGen() =>
+      gen_realtime_dto.DartRealtimeOptions(
+        reconnect: switch (reconnect) {
+          RealtimeReconnectMode.disabled => 'disabled',
+          RealtimeReconnectMode.fixed => 'fixed',
+          RealtimeReconnectMode.exponential => 'exponential',
+        },
+        eventBuffer: eventBuffer,
+        reconnectDelayMs: reconnectDelayMs == null
+            ? null
+            : BigInt.from(reconnectDelayMs!),
+        reconnectBaseDelayMs: reconnectBaseDelayMs == null
+            ? null
+            : BigInt.from(reconnectBaseDelayMs!),
+        reconnectMaxDelayMs: reconnectMaxDelayMs == null
+            ? null
+            : BigInt.from(reconnectMaxDelayMs!),
+        reconnectMaxAttempts: reconnectMaxAttempts,
+        subscriptions: subscriptions,
+      );
+}
+
+extension on gen_realtime_dto.DartRealtimeEvent {
+  RealtimeEvent _toModel() => RealtimeEvent(
+    kind: kind,
+    state: state,
+    reason: reason,
+    message: message?._toModel(),
+    messageId: messageId,
+    threadKind: threadKind,
+    threadId: threadId,
+    updateKind: updateKind,
+    group: group,
+    notificationId: notificationId,
+    title: title,
+    body: body,
+    source: source,
+    hostKind: hostKind,
+    contentType: contentType,
+    notificationType: notificationType,
+  );
 }
 
 extension on AwikiImCoreConfig {

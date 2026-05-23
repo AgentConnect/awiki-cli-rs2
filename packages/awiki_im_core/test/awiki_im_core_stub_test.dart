@@ -14,12 +14,24 @@ void main() {
     expect(AwikiImCore, isNotNull);
   });
 
-  test('realtime unsupported error shape is stable', () {
+  test('unsupported capability error shape is stable', () {
     const err = AwikiImCoreException(
       code: 'unsupported_capability',
       message: 'unsupported capability: realtime-runner',
       capability: 'realtime-runner',
     );
     expect(err.capability, 'realtime-runner');
+  });
+
+  test('realtime options and event models stay transport agnostic', () {
+    const options = RealtimeOptions();
+    expect(options.reconnect, RealtimeReconnectMode.disabled);
+    expect(options.subscriptions, ['messages', 'groups', 'notifications']);
+
+    const event = RealtimeEvent(
+      kind: 'connection_state_changed',
+      state: 'connected',
+    );
+    expect(event.isConnectionState, isTrue);
   });
 }

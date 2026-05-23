@@ -21,7 +21,12 @@ impl<'a> RealtimeService<'a> {
         options: super::RealtimeOptions,
     ) -> crate::ImResult<super::RealtimeHandle> {
         validate_options(&options)?;
-        crate::internal::realtime::transport::default_connect(self.client)
+        if self.client.core_inner().sdk_config().transport_policy
+            == crate::config::MessageTransportPolicy::HttpOnly
+        {
+            return Err(crate::ImError::unsupported("realtime-runner"));
+        }
+        super::runner::spawn_default(self.client.clone(), options)
     }
 
     pub fn run_until_shutdown(
@@ -35,6 +40,15 @@ impl<'a> RealtimeService<'a> {
                 reason: super::RealtimeExitReason::ShutdownRequested,
                 reconnect_attempts: 0,
                 warnings: Vec::new(),
+            });
+        }
+        if self.client.core_inner().sdk_config().transport_policy
+            == crate::config::MessageTransportPolicy::HttpOnly
+        {
+            return Ok(super::RealtimeExit {
+                reason: super::RealtimeExitReason::TransportUnavailable,
+                reconnect_attempts: 0,
+                warnings: vec!["unsupported capability: realtime-runner".to_string()],
             });
         }
         super::runner::run_default_until_shutdown(self.client, options, shutdown)

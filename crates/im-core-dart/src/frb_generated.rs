@@ -29,6 +29,7 @@
 use crate::api::auth::*;
 use crate::api::client::*;
 use crate::api::core::*;
+use crate::api::realtime::*;
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
 use flutter_rust_bridge::{Handler, IntoIntoDart};
@@ -41,7 +42,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2017672291;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 806643247;
 
 // Section: executor
 
@@ -1061,6 +1062,79 @@ fn wire__crate__api__realtime__realtime_connect_impl(
         },
     )
 }
+fn wire__crate__api__realtime__realtime_event_stream_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "realtime_event_stream",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session = <Arc<DartRealtimeSession>>::sse_decode(&mut deserializer);
+            let api_sink = <StreamSink<
+                crate::dto::realtime::DartRealtimeEvent,
+                flutter_rust_bridge::for_generated::SseCodec,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let output_ok =
+                        crate::api::realtime::realtime_event_stream(api_session, api_sink)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__realtime__realtime_start_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "realtime_start",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <Arc<DartImClient>>::sse_decode(&mut deserializer);
+            let api_options =
+                <crate::dto::realtime::DartRealtimeOptions>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let output_ok = crate::api::realtime::realtime_start(api_client, api_options)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__realtime__realtime_status_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1088,6 +1162,39 @@ fn wire__crate__api__realtime__realtime_status_impl(
             move |context| {
                 transform_result_sse::<_, crate::dto::error::DartImError>((move || {
                     let output_ok = crate::api::realtime::realtime_status(api_client)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__realtime__realtime_stop_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "realtime_stop",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session = <Arc<DartRealtimeSession>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let output_ok = crate::api::realtime::realtime_stop(api_session)?;
                     Ok(output_ok)
                 })())
             }
@@ -1583,8 +1690,19 @@ flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
     flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>
 );
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
+    flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartRealtimeSession>>
+);
 
 // Section: dart2rust
+
+impl SseDecode for flutter_rust_bridge::for_generated::anyhow::Error {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::anyhow::anyhow!("{}", inner);
+    }
+}
 
 impl SseDecode for Arc<DartImClient> {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1601,6 +1719,16 @@ impl SseDecode for Arc<DartImCore> {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <RustOpaqueMoi<
             flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImCore>>,
+        >>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
+    }
+}
+
+impl SseDecode for Arc<DartRealtimeSession> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <RustOpaqueMoi<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartRealtimeSession>>,
         >>::sse_decode(deserializer);
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
     }
@@ -1623,6 +1751,31 @@ impl SseDecode
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <usize>::sse_decode(deserializer);
         return decode_rust_opaque_moi(inner);
+    }
+}
+
+impl SseDecode
+    for RustOpaqueMoi<
+        flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartRealtimeSession>>,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <usize>::sse_decode(deserializer);
+        return decode_rust_opaque_moi(inner);
+    }
+}
+
+impl SseDecode
+    for StreamSink<
+        crate::dto::realtime::DartRealtimeEvent,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <String>::sse_decode(deserializer);
+        return StreamSink::deserialize(inner);
     }
 }
 
@@ -2250,6 +2403,68 @@ impl SseDecode for crate::dto::realtime::DartRealtimeCapability {
     }
 }
 
+impl SseDecode for crate::dto::realtime::DartRealtimeEvent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_kind = <String>::sse_decode(deserializer);
+        let mut var_state = <Option<String>>::sse_decode(deserializer);
+        let mut var_reason = <Option<String>>::sse_decode(deserializer);
+        let mut var_message = <Option<crate::dto::message::DartMessage>>::sse_decode(deserializer);
+        let mut var_messageId = <Option<String>>::sse_decode(deserializer);
+        let mut var_threadKind = <Option<String>>::sse_decode(deserializer);
+        let mut var_threadId = <Option<String>>::sse_decode(deserializer);
+        let mut var_updateKind = <Option<String>>::sse_decode(deserializer);
+        let mut var_group = <Option<String>>::sse_decode(deserializer);
+        let mut var_notificationId = <Option<String>>::sse_decode(deserializer);
+        let mut var_title = <Option<String>>::sse_decode(deserializer);
+        let mut var_body = <Option<String>>::sse_decode(deserializer);
+        let mut var_source = <Option<String>>::sse_decode(deserializer);
+        let mut var_hostKind = <Option<String>>::sse_decode(deserializer);
+        let mut var_contentType = <Option<String>>::sse_decode(deserializer);
+        let mut var_notificationType = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::realtime::DartRealtimeEvent {
+            kind: var_kind,
+            state: var_state,
+            reason: var_reason,
+            message: var_message,
+            message_id: var_messageId,
+            thread_kind: var_threadKind,
+            thread_id: var_threadId,
+            update_kind: var_updateKind,
+            group: var_group,
+            notification_id: var_notificationId,
+            title: var_title,
+            body: var_body,
+            source: var_source,
+            host_kind: var_hostKind,
+            content_type: var_contentType,
+            notification_type: var_notificationType,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::realtime::DartRealtimeOptions {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_reconnect = <String>::sse_decode(deserializer);
+        let mut var_eventBuffer = <u32>::sse_decode(deserializer);
+        let mut var_reconnectDelayMs = <Option<u64>>::sse_decode(deserializer);
+        let mut var_reconnectBaseDelayMs = <Option<u64>>::sse_decode(deserializer);
+        let mut var_reconnectMaxDelayMs = <Option<u64>>::sse_decode(deserializer);
+        let mut var_reconnectMaxAttempts = <Option<u32>>::sse_decode(deserializer);
+        let mut var_subscriptions = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::realtime::DartRealtimeOptions {
+            reconnect: var_reconnect,
+            event_buffer: var_eventBuffer,
+            reconnect_delay_ms: var_reconnectDelayMs,
+            reconnect_base_delay_ms: var_reconnectBaseDelayMs,
+            reconnect_max_delay_ms: var_reconnectMaxDelayMs,
+            reconnect_max_attempts: var_reconnectMaxAttempts,
+            subscriptions: var_subscriptions,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::realtime::DartRealtimeStatus {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2662,6 +2877,17 @@ impl SseDecode for Option<u32> {
     }
 }
 
+impl SseDecode for Option<u64> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<u64>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<Vec<String>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2684,6 +2910,13 @@ impl SseDecode for u32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         deserializer.cursor.read_u32::<NativeEndian>().unwrap()
+    }
+}
+
+impl SseDecode for u64 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_u64::<NativeEndian>().unwrap()
     }
 }
 
@@ -2748,35 +2981,43 @@ fn pde_ffi_dispatcher_primary_impl(
             wire__crate__api__realtime__realtime_capability_impl(port, ptr, rust_vec_len, data_len)
         }
         29 => wire__crate__api__realtime__realtime_connect_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__identity__recover_handle_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__groups__refresh_group_join_code_impl(
+        30 => wire__crate__api__realtime__realtime_event_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        33 => wire__crate__api__identity__register_handle_with_email_impl(
+        31 => wire__crate__api__realtime__realtime_start_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__realtime__realtime_stop_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__identity__recover_handle_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__groups__refresh_group_join_code_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        34 => wire__crate__api__identity__register_handle_with_phone_impl(
+        36 => wire__crate__api__identity__register_handle_with_email_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        35 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__identity__register_handle_with_phone_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        38 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2821,6 +3062,26 @@ impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<
 
 impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<Arc<DartImCore>>> for Arc<DartImCore> {
     fn into_into_dart(self) -> FrbWrapper<Arc<DartImCore>> {
+        self.into()
+    }
+}
+
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for FrbWrapper<Arc<DartRealtimeSession>> {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0)
+            .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for FrbWrapper<Arc<DartRealtimeSession>>
+{
+}
+
+impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<Arc<DartRealtimeSession>>>
+    for Arc<DartRealtimeSession>
+{
+    fn into_into_dart(self) -> FrbWrapper<Arc<DartRealtimeSession>> {
         self.into()
     }
 }
@@ -3604,6 +3865,67 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::realtime::DartRealtimeCapabil
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::realtime::DartRealtimeEvent {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.kind.into_into_dart().into_dart(),
+            self.state.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+            self.message_id.into_into_dart().into_dart(),
+            self.thread_kind.into_into_dart().into_dart(),
+            self.thread_id.into_into_dart().into_dart(),
+            self.update_kind.into_into_dart().into_dart(),
+            self.group.into_into_dart().into_dart(),
+            self.notification_id.into_into_dart().into_dart(),
+            self.title.into_into_dart().into_dart(),
+            self.body.into_into_dart().into_dart(),
+            self.source.into_into_dart().into_dart(),
+            self.host_kind.into_into_dart().into_dart(),
+            self.content_type.into_into_dart().into_dart(),
+            self.notification_type.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::realtime::DartRealtimeEvent
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::realtime::DartRealtimeEvent>
+    for crate::dto::realtime::DartRealtimeEvent
+{
+    fn into_into_dart(self) -> crate::dto::realtime::DartRealtimeEvent {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::realtime::DartRealtimeOptions {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.reconnect.into_into_dart().into_dart(),
+            self.event_buffer.into_into_dart().into_dart(),
+            self.reconnect_delay_ms.into_into_dart().into_dart(),
+            self.reconnect_base_delay_ms.into_into_dart().into_dart(),
+            self.reconnect_max_delay_ms.into_into_dart().into_dart(),
+            self.reconnect_max_attempts.into_into_dart().into_dart(),
+            self.subscriptions.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::realtime::DartRealtimeOptions
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::realtime::DartRealtimeOptions>
+    for crate::dto::realtime::DartRealtimeOptions
+{
+    fn into_into_dart(self) -> crate::dto::realtime::DartRealtimeOptions {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::realtime::DartRealtimeStatus {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -3827,6 +4149,13 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::profile::DartUserProfile>
     }
 }
 
+impl SseEncode for flutter_rust_bridge::for_generated::anyhow::Error {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(format!("{:?}", self), serializer);
+    }
+}
+
 impl SseEncode for Arc<DartImClient> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3838,6 +4167,18 @@ impl SseEncode for Arc<DartImCore> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImCore >>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);
+    }
+}
+
+impl SseEncode for Arc<DartRealtimeSession> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <RustOpaqueMoi<
+            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartRealtimeSession>>,
+        >>::sse_encode(
+            flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self),
+            serializer,
+        );
     }
 }
 
@@ -3860,6 +4201,31 @@ impl SseEncode
         let (ptr, size) = self.sse_encode_raw();
         <usize>::sse_encode(ptr, serializer);
         <i32>::sse_encode(size, serializer);
+    }
+}
+
+impl SseEncode
+    for RustOpaqueMoi<
+        flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartRealtimeSession>>,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        let (ptr, size) = self.sse_encode_raw();
+        <usize>::sse_encode(ptr, serializer);
+        <i32>::sse_encode(size, serializer);
+    }
+}
+
+impl SseEncode
+    for StreamSink<
+        crate::dto::realtime::DartRealtimeEvent,
+        flutter_rust_bridge::for_generated::SseCodec,
+    >
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        unimplemented!("")
     }
 }
 
@@ -4311,6 +4677,41 @@ impl SseEncode for crate::dto::realtime::DartRealtimeCapability {
     }
 }
 
+impl SseEncode for crate::dto::realtime::DartRealtimeEvent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.kind, serializer);
+        <Option<String>>::sse_encode(self.state, serializer);
+        <Option<String>>::sse_encode(self.reason, serializer);
+        <Option<crate::dto::message::DartMessage>>::sse_encode(self.message, serializer);
+        <Option<String>>::sse_encode(self.message_id, serializer);
+        <Option<String>>::sse_encode(self.thread_kind, serializer);
+        <Option<String>>::sse_encode(self.thread_id, serializer);
+        <Option<String>>::sse_encode(self.update_kind, serializer);
+        <Option<String>>::sse_encode(self.group, serializer);
+        <Option<String>>::sse_encode(self.notification_id, serializer);
+        <Option<String>>::sse_encode(self.title, serializer);
+        <Option<String>>::sse_encode(self.body, serializer);
+        <Option<String>>::sse_encode(self.source, serializer);
+        <Option<String>>::sse_encode(self.host_kind, serializer);
+        <Option<String>>::sse_encode(self.content_type, serializer);
+        <Option<String>>::sse_encode(self.notification_type, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::realtime::DartRealtimeOptions {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.reconnect, serializer);
+        <u32>::sse_encode(self.event_buffer, serializer);
+        <Option<u64>>::sse_encode(self.reconnect_delay_ms, serializer);
+        <Option<u64>>::sse_encode(self.reconnect_base_delay_ms, serializer);
+        <Option<u64>>::sse_encode(self.reconnect_max_delay_ms, serializer);
+        <Option<u32>>::sse_encode(self.reconnect_max_attempts, serializer);
+        <Vec<String>>::sse_encode(self.subscriptions, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::realtime::DartRealtimeStatus {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4620,6 +5021,16 @@ impl SseEncode for Option<u32> {
     }
 }
 
+impl SseEncode for Option<u64> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <u64>::sse_encode(value, serializer);
+        }
+    }
+}
+
 impl SseEncode for Option<Vec<String>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -4641,6 +5052,13 @@ impl SseEncode for u32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         serializer.cursor.write_u32::<NativeEndian>(self).unwrap();
+    }
+}
+
+impl SseEncode for u64 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_u64::<NativeEndian>(self).unwrap();
     }
 }
 
@@ -4676,6 +5094,8 @@ mod io {
     use super::*;
     use crate::api::auth::*;
     use crate::api::client::*;
+    use crate::api::core::*;
+    use crate::api::realtime::*;
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
@@ -4764,6 +5184,20 @@ mod io {
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImCore >>>::decrement_strong_count(ptr as _);
     }
+
+    #[no_mangle]
+    pub extern "C" fn frbgen_awiki_im_core_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartRealtimeSession >>>::increment_strong_count(ptr as _);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn frbgen_awiki_im_core_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartRealtimeSession >>>::decrement_strong_count(ptr as _);
+    }
 }
 #[cfg(not(target_family = "wasm"))]
 pub use io::*;
@@ -4779,6 +5213,8 @@ mod web {
     use super::*;
     use crate::api::auth::*;
     use crate::api::client::*;
+    use crate::api::core::*;
+    use crate::api::realtime::*;
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
@@ -4817,6 +5253,20 @@ mod web {
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImCore >>>::decrement_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartRealtimeSession >>>::increment_strong_count(ptr as _);
+    }
+
+    #[wasm_bindgen]
+    pub fn rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
+        ptr: *const std::ffi::c_void,
+    ) {
+        MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartRealtimeSession >>>::decrement_strong_count(ptr as _);
     }
 }
 #[cfg(target_family = "wasm")]

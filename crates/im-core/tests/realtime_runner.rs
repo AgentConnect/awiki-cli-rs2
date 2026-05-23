@@ -133,6 +133,79 @@ fn realtime_runner_retries_connect_until_fixed_policy_attempts_are_exhausted() {
 }
 
 #[test]
+fn realtime_runner_reconnects_after_closed_stream_when_policy_allows() {
+    let mut transport = FakeRunnerTransport {
+        connect_attempts: 0,
+        connect_results: VecDeque::from([Ok(()), Ok(())]),
+        notifications: VecDeque::from([
+            Ok(Some(json!({
+                "method": "local.notification",
+                "params": {"id": "local-before-reconnect", "title": "before"}
+            }))),
+            Ok(None),
+            Ok(Some(json!({
+                "method": "local.notification",
+                "params": {"id": "local-after-reconnect", "title": "after"}
+            }))),
+            Ok(None),
+        ]),
+        shutdown_after_notifications: None,
+    };
+
+    let outcome = run_realtime_transport_until_shutdown(
+        RealtimeOptions {
+            reconnect: ReconnectPolicy::Fixed {
+                delay_ms: 1,
+                max_attempts: Some(1),
+            },
+            ..RealtimeOptions::default()
+        },
+        ShutdownSignal::pending(),
+        RealtimeControl::default(),
+        &mut transport,
+    )
+    .expect("runner exit");
+
+    assert_eq!(outcome.exit.reason, RealtimeExitReason::ConnectionClosed);
+    assert_eq!(outcome.exit.reconnect_attempts, 1);
+    assert!(outcome.exit.warnings.is_empty());
+    assert_eq!(transport.connect_attempts, 2);
+
+    let events = outcome.handle.events.into_iter().collect::<Vec<_>>();
+    let states = events
+        .iter()
+        .filter_map(|event| match event {
+            ImEvent::ConnectionStateChanged(state) => Some(state.state.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        states,
+        vec![
+            RealtimeConnectionState::Connecting,
+            RealtimeConnectionState::Connected,
+            RealtimeConnectionState::Reconnecting,
+            RealtimeConnectionState::Connected,
+            RealtimeConnectionState::Closed,
+        ]
+    );
+    let local_ids = events
+        .into_iter()
+        .filter_map(|event| match event {
+            ImEvent::LocalNotification(event) => event.notification_id,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        local_ids,
+        vec![
+            "local-before-reconnect".to_string(),
+            "local-after-reconnect".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn realtime_runner_control_shutdown_exits_after_current_notification() {
     let control = RealtimeControl::default();
     let mut transport = FakeRunnerTransport {

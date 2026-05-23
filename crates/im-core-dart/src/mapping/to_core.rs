@@ -9,6 +9,7 @@ use crate::dto::{
     identity::DartIdentitySelector,
     message::{DartMessageSecurityMode, DartMessageTarget, DartSendTextRequest, DartThreadRef},
     profile::DartProfilePatch,
+    realtime::DartRealtimeOptions,
 };
 
 impl TryFrom<DartImCoreConfig> for im_core::ImCoreConfig {
@@ -47,6 +48,55 @@ impl From<DartMessageTransportPolicy> for im_core::MessageTransportPolicy {
             DartMessageTransportPolicy::HttpOnly => Self::HttpOnly,
             DartMessageTransportPolicy::RealtimePreferred => Self::RealtimePreferred,
         }
+    }
+}
+
+impl TryFrom<DartRealtimeOptions> for im_core::realtime::RealtimeOptions {
+    type Error = DartImError;
+
+    fn try_from(value: DartRealtimeOptions) -> Result<Self, Self::Error> {
+        let reconnect = match value.reconnect.as_str() {
+            "disabled" | "" => im_core::realtime::ReconnectPolicy::Disabled,
+            "fixed" => im_core::realtime::ReconnectPolicy::Fixed {
+                delay_ms: value.reconnect_delay_ms.unwrap_or(1000),
+                max_attempts: value.reconnect_max_attempts,
+            },
+            "exponential" => im_core::realtime::ReconnectPolicy::Exponential {
+                base_delay_ms: value.reconnect_base_delay_ms.unwrap_or(1000),
+                max_delay_ms: value.reconnect_max_delay_ms.unwrap_or(30_000),
+                max_attempts: value.reconnect_max_attempts,
+            },
+            other => {
+                return Err(DartImError::invalid_input(
+                    Some("reconnect".to_string()),
+                    format!("unsupported realtime reconnect policy: {other}"),
+                ));
+            }
+        };
+        Ok(im_core::realtime::RealtimeOptions {
+            reconnect,
+            event_buffer: value.event_buffer.max(1) as usize,
+            subscriptions: value
+                .subscriptions
+                .into_iter()
+                .map(realtime_subscription_from_string)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+fn realtime_subscription_from_string(
+    value: String,
+) -> Result<im_core::realtime::RealtimeSubscription, DartImError> {
+    match value.as_str() {
+        "messages" => Ok(im_core::realtime::RealtimeSubscription::Messages),
+        "groups" => Ok(im_core::realtime::RealtimeSubscription::Groups),
+        "notifications" => Ok(im_core::realtime::RealtimeSubscription::Notifications),
+        "host_notifications" => Ok(im_core::realtime::RealtimeSubscription::HostNotifications),
+        other => Err(DartImError::invalid_input(
+            Some("subscriptions".to_string()),
+            format!("unsupported realtime subscription: {other}"),
+        )),
     }
 }
 
@@ -241,5 +291,67 @@ impl TryFrom<DartIdentitySubject> for im_core::directory::IdentitySubject {
                 .map_err(DartImError::from),
             DartIdentitySubject::Any { value } => Ok(Self::Any(value)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use im_core::realtime::{RealtimeSubscription, ReconnectPolicy};
+
+    #[test]
+    fn realtime_options_map_reconnect_and_subscriptions_without_transport_details() {
+        let options = DartRealtimeOptions {
+            reconnect: "exponential".to_string(),
+            event_buffer: 32,
+            reconnect_delay_ms: None,
+            reconnect_base_delay_ms: Some(250),
+            reconnect_max_delay_ms: Some(5_000),
+            reconnect_max_attempts: Some(3),
+            subscriptions: vec![
+                "messages".to_string(),
+                "groups".to_string(),
+                "notifications".to_string(),
+                "host_notifications".to_string(),
+            ],
+        };
+
+        let mapped = im_core::realtime::RealtimeOptions::try_from(options).unwrap();
+        assert_eq!(
+            mapped.reconnect,
+            ReconnectPolicy::Exponential {
+                base_delay_ms: 250,
+                max_delay_ms: 5_000,
+                max_attempts: Some(3),
+            }
+        );
+        assert_eq!(mapped.event_buffer, 32);
+        assert_eq!(
+            mapped.subscriptions,
+            vec![
+                RealtimeSubscription::Messages,
+                RealtimeSubscription::Groups,
+                RealtimeSubscription::Notifications,
+                RealtimeSubscription::HostNotifications,
+            ]
+        );
+    }
+
+    #[test]
+    fn realtime_options_reject_unknown_subscription() {
+        let options = DartRealtimeOptions {
+            reconnect: "disabled".to_string(),
+            event_buffer: 1,
+            reconnect_delay_ms: None,
+            reconnect_base_delay_ms: None,
+            reconnect_max_delay_ms: None,
+            reconnect_max_attempts: None,
+            subscriptions: vec!["websocket_frames".to_string()],
+        };
+
+        let error = im_core::realtime::RealtimeOptions::try_from(options).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert_eq!(error.field.as_deref(), Some("subscriptions"));
+        assert!(error.message.contains("unsupported realtime subscription"));
     }
 }
