@@ -68,7 +68,27 @@ Phase 5 core realtime runner
 
 ---
 
-## 2. 与主方案的关系
+## 2. 当前代码基线
+
+本计划按当前仓库状态执行，而不是按早期草案假设执行。开始 Phase 4 前先确认以下事实：
+
+```text
+1. awiki-cli 的真实附件上传/下载仍在 crates/awiki-cli/src/message/attachment.rs 和 attachment_service.rs。
+2. attachment service DID document 选择逻辑在 crates/awiki-cli/src/message/service_discovery.rs。
+3. crates/im-core 还没有 attachments 模块和 ImClient::attachments()。
+4. crates/im-core/src/messages/dto.rs 已有 reserved messages::AttachmentInput：
+   LocalFile(String) / Bytes { bytes_len }。
+5. messages::MessageService::send()、direct runtime、group runtime 遇到 MessageBody::Attachment 仍返回 unsupported("attachments")。
+6. MessageBodyView 目前只有 Text / Unsupported；history/inbox 会把 attachment manifest 投影为 Unsupported。
+7. crates/im-core-dart 与 packages/awiki_im_core 目前只暴露 sendText/inbox/history/markRead/conversations/retryMessage，不暴露 attachment DTO 或 API。
+8. Flutter generated files 已入库，Rust facade 或 Dart model 变更必须同步运行 scripts/flutter/codegen.sh 或 codegen-check.sh。
+```
+
+因此 Phase 4A 的首要任务不是“新增一个完全独立的 AttachmentInput”，而是收敛现有 reserved `messages::AttachmentInput`，防止 Rust public API、Dart facade、Flutter package 出现三套附件 DTO。
+
+---
+
+## 3. 与主方案的关系
 
 `docs/sdk-refactor/modules/09-attachments.md` 已经定义附件模块职责：
 
@@ -101,7 +121,7 @@ select_for_download 是 attachments::selection internal helper 或 compat/diagno
 
 ---
 
-## 3. 进入条件
+## 4. 进入条件
 
 开始 Phase 4 前，建议满足：
 
@@ -121,16 +141,18 @@ select_for_download 是 attachments::selection internal helper 或 compat/diagno
 cargo test -p im-core
 cargo test -p awiki-cli --test msg_contract
 cargo test -p awiki-cli --test message_contract
-rg "ParsedCommand|ExitError|GlobalOptions|config::Resolved|identity::Manager|awiki_cli" crates/im-core/src crates/im-core/tests
+grep -R "ParsedCommand\\|ExitError\\|GlobalOptions\\|config::Resolved\\|identity::Manager\\|awiki_cli" -n crates/im-core/src crates/im-core/tests
 ```
 
 如果本地没有 attachment-specific contract test，应在 Phase 4A 或 4B 增加 `im-core` attachment unit/contract tests，并保留现有 `awiki-cli` message tests。
 
 ---
 
-## 4. Phase 4 canonical AttachmentInput
+## 5. Phase 4 canonical AttachmentInput
 
 P1 的 `MessageBody::Attachment` 只是 reserved shape。若 P1 中存在 reserved `AttachmentInput`，它不是稳定 canonical DTO。
+
+当前代码已经存在 `im_core::messages::AttachmentInput`，并且它从 `messages::mod` 和 `prelude` re-export。这个类型只能作为 Phase 4A 的迁移输入，不能继续扩展为长期 canonical DTO。
 
 Phase 4 正式引入 canonical 类型：
 
@@ -148,15 +170,16 @@ pub enum AttachmentInput {
 Phase 4 后必须满足：
 
 ```text
-1. MessageBody::Attachment 复用 attachments::AttachmentInput。
-2. 不再维护独立的 messages::AttachmentInput。
-3. P1 reserved LocalFile(String) / Bytes { bytes_len } 若存在，需通过 type alias / re-export / migration adapter 收敛。
+1. MessageBody::Attachment 复用 attachments::AttachmentInput，或 messages::AttachmentInput 明确 type alias 到 attachments::AttachmentInput。
+2. 不再维护独立实现的 messages::AttachmentInput。
+3. 当前 LocalFile(String) / Bytes { bytes_len } 必须迁到 LocalFile(PathBuf) / Bytes { bytes: Vec<u8> }，或保留 deprecated compat adapter 且不进入新 API。
 4. canonical AttachmentInput 不携带 CLI flag 名，不携带 workspace 发现逻辑。
+5. Dart facade 不暴露 bytes_len-only 的发送输入；需要 bytes 时使用 Vec<u8>/Uint8List 语义，需要 path 时使用显式 local path 字符串再映射为 PathBuf。
 ```
 
 ---
 
-## 5. 目标目录和 API 形态
+## 6. 目标目录和 API 形态
 
 建议新增：
 
@@ -185,6 +208,15 @@ crates/im-core/src/internal/blob/
 
 crates/im-core/src/compat/
   attachments.rs
+
+crates/im-core-dart/src/api/
+  attachments.rs
+
+crates/im-core-dart/src/dto/
+  attachment.rs
+
+packages/awiki_im_core/lib/src/models/
+  attachment.dart
 ```
 
 `lib.rs` / `prelude.rs` 在 Phase 4 才加入默认 public service：
@@ -286,9 +318,24 @@ SQLite connection
 select_for_download as default service method
 ```
 
+Dart / Flutter API 形态：
+
+```text
+Rust facade:
+  api::attachments::send_attachment(client, DartAttachmentSendRequest)
+  api::attachments::download_attachment(client, DartDownloadAttachmentRequest)
+
+Flutter package:
+  AwikiImClient.attachments
+  AttachmentApi.send(...)
+  AttachmentApi.download(...)
+```
+
+Flutter public API 可以使用 app-friendly 字段名，但语义必须贴近 im-core DTO，不引入 awiki-me 专用 `ChatMessage` / `ConversationSummary` 映射。Web stub 继续抛 `UnsupportedError` 或明确 unsupported。
+
 ---
 
-## 6. 文件写入职责合同
+## 7. 文件写入职责合同
 
 Phase 4 的 `AttachmentDestination::LocalFile(PathBuf)` 允许 SDK 执行受控写入，但写入策略由 CLI/App 决定。
 
@@ -319,7 +366,7 @@ atomic rename 到目标文件
 
 ---
 
-## 7. 通用边界规则
+## 8. 通用边界规则
 
 `im-core` 不能直接使用：
 
@@ -372,7 +419,43 @@ SendMessageResult / DownloadedAttachment normalize
 
 ---
 
-## 8. Compat 与 internal trait 规则
+## 9. Dart / Flutter bridge 规则
+
+Phase 4 修改 `im-core` public attachment API 时，必须同步维护 Dart/Flutter 层：
+
+```text
+1. crates/im-core-dart/src/api/mod.rs 增加 attachments module。
+2. crates/im-core-dart/src/dto/mod.rs 增加 attachment DTO。
+3. crates/im-core-dart/src/mapping/to_core.rs / from_core.rs 增加 attachment request/result 映射。
+4. packages/awiki_im_core/lib/src/awiki_im_core_native.dart 增加 AttachmentApi，并在 AwikiImClient 上暴露 getter。
+5. packages/awiki_im_core/lib/src/models/attachment.dart 增加手写 public Dart model。
+6. packages/awiki_im_core/lib/awiki_im_core.dart 确认导出新 model。
+7. generated bindings 更新后必须提交 crates/im-core-dart/src/frb_generated.rs 和 packages/awiki_im_core/lib/src/generated/**。
+```
+
+Dart bridge 不做：
+
+```text
+1. 不把 upload slot / commit / ticket 暴露给 Dart。
+2. 不暴露 raw serde_json::Value 或 RPC body。
+3. 不让 Dart DTO 依赖 CLI flag 名。
+4. 不把 retry_message 从 attachment result 反推发送请求。
+5. 不把 attachment manifest 当作 Flutter UI message model 强行解释；UI enrichment 放 Phase 5'。
+```
+
+最低验收：
+
+```bash
+cargo test -p im-core-dart --locked
+scripts/flutter/codegen-check.sh
+cd packages/awiki_im_core && dart analyze
+```
+
+如果当前机器没有 Flutter/Dart toolchain，在 PR 说明里明确跳过原因，并至少运行 `cargo test -p im-core-dart --locked`。
+
+---
+
+## 10. Compat 与 internal trait 规则
 
 Phase 4 可能需要 internal trait：
 
@@ -405,14 +488,14 @@ compat-only
 
 ---
 
-## 9. 测试分层规则
+## 11. 测试分层规则
 
-### 9.1 Required：Codex Goal / 单 PR 必跑
+### 11.1 Required：Codex Goal / 单 PR 必跑
 
 ```text
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
-rg import fence
+grep -R "ParsedCommand\\|ExitError\\|GlobalOptions\\|config::Resolved\\|identity::Manager\\|awiki_cli" -n crates/im-core/src crates/im-core/tests
 ```
 
 待新增 attachment contract tests：
@@ -424,15 +507,18 @@ cargo test -p awiki-cli --test msg_attachment_contract
 
 如果这些 test target 尚不存在，不要在 Codex Goal 中把它们当作当前已存在测试执行。
 
-### 9.2 Optional integration：合并前或本地补跑
+### 11.2 Optional integration：合并前或本地补跑
 
 ```text
 cargo test -p awiki-cli --test message_contract
 cargo test -p awiki-cli --test group_contract
 cargo test -p awiki-cli --test store_messages_contract
+cargo test -p im-core-dart --locked
+scripts/flutter/codegen-check.sh
+cd packages/awiki_im_core && dart analyze && flutter test
 ```
 
-### 9.3 Manual / live / system：不由默认 Codex Goal 执行
+### 11.3 Manual / live / system：不由默认 Codex Goal 执行
 
 当前仓库已有 live/system target：
 
@@ -454,13 +540,13 @@ awiki-cli msg attachment download ...
 
 ---
 
-## 10. PR 4A：Attachment DTO / Service skeleton
+## 12. PR 4A：Attachment DTO / Service skeleton
 
-### 10.1 目标
+### 12.1 目标
 
 建立 Phase 4 public API 形态，不迁真实上传/下载。
 
-### 10.2 改动范围
+### 12.2 改动范围
 
 ```text
 crates/im-core/src/attachments/mod.rs
@@ -470,28 +556,34 @@ crates/im-core/src/core/client.rs
 crates/im-core/src/lib.rs
 crates/im-core/src/prelude.rs
 crates/im-core/tests/attachment_api.rs
+crates/im-core-dart/src/dto/attachment.rs
+crates/im-core-dart/src/api/attachments.rs
+packages/awiki_im_core/lib/src/models/attachment.dart
 ```
 
-### 10.3 执行步骤
+### 12.3 执行步骤
 
 ```text
 1. 新增 AttachmentService。
 2. 在 ImClient 上新增 attachments()。
 3. 新增 canonical AttachmentInput / AttachmentSendRequest / DownloadAttachmentRequest / DownloadedAttachment DTO。
-4. MessageBody::Attachment 复用 canonical AttachmentInput。
+4. 收敛现有 messages::AttachmentInput：改为 re-export/type alias，或提供 deprecated adapter；不能继续保留独立 DTO。
 5. send/download 先返回 UnsupportedCapability 或明确 stub。
 6. 不改 awiki-cli handler。
-7. 增加 DTO 构造、UnsupportedCapability、public API boundary 测试。
+7. 增加 Dart facade / Flutter model skeleton；API 可以先返回 unsupported，但 generated binding 必须一致。
+8. 增加 DTO 构造、UnsupportedCapability、public API boundary 测试。
 ```
 
-### 10.4 Required 验收
+### 12.4 Required 验收
 
 ```bash
 cargo test -p im-core attachments
-rg "ParsedCommand|ExitError|config::Resolved|identity::Manager|awiki_cli" crates/im-core/src crates/im-core/tests
+grep -R "ParsedCommand\\|ExitError\\|config::Resolved\\|identity::Manager\\|awiki_cli" -n crates/im-core/src crates/im-core/tests
+cargo test -p im-core-dart --locked
+scripts/flutter/codegen-check.sh
 ```
 
-### 10.5 完成标准
+### 12.5 完成标准
 
 ```text
 1. AttachmentService public API 可编译。
@@ -499,17 +591,18 @@ rg "ParsedCommand|ExitError|config::Resolved|identity::Manager|awiki_cli" crates
 3. 没有真实上传/下载行为。
 4. 未暴露 CLI 类型或 raw wire payload。
 5. select_for_download 未进入 default public service。
+6. Dart/Flutter generated files 与 Rust facade 同步。
 ```
 
 ---
 
-## 11. PR 4B：manifest / digest / selection 纯逻辑迁移
+## 13. PR 4B：manifest / digest / selection 纯逻辑迁移
 
-### 11.1 目标
+### 13.1 目标
 
 把附件 manifest、digest、选择逻辑迁入 `im-core`，不接远端上传/下载。
 
-### 11.2 源和目标
+### 13.2 源和目标
 
 源：
 
@@ -526,7 +619,7 @@ crates/im-core/src/internal/attachment_runtime/digest.rs
 crates/im-core/src/compat/attachments.rs
 ```
 
-### 11.3 迁移范围
+### 13.3 迁移范围
 
 可迁移：
 
@@ -551,7 +644,7 @@ MessageError 构造
 CLI warning / summary 文案
 ```
 
-### 11.4 执行方式
+### 13.4 执行方式
 
 ```text
 1. im-core 内定义 Manifest / AttachmentDescriptor / AttachmentSelection DTO。
@@ -561,14 +654,16 @@ CLI warning / summary 文案
 5. 复制 manifest/selection 相关测试到 im-core。
 ```
 
-### 11.5 Required 验收
+### 13.5 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
+cargo test -p im-core-dart --locked
+scripts/flutter/codegen-check.sh
 ```
 
-### 11.6 完成标准
+### 13.6 完成标准
 
 ```text
 1. manifest/digest/selection 逻辑由 im-core 覆盖测试。
@@ -579,18 +674,19 @@ cargo test -p awiki-cli --test msg_contract
 
 ---
 
-## 12. PR 4C：attachment service discovery / endpoint selection
+## 14. PR 4C：attachment service discovery / endpoint selection
 
-### 12.1 目标
+### 14.1 目标
 
 把 attachment service endpoint discovery 和选择规则迁入 `im-core`。
 
-### 12.2 源和目标
+### 14.2 源和目标
 
 源：
 
 ```text
-crates/awiki-cli/src/message/service_discovery.rs
+crates/awiki-cli/src/message/service_discovery.rs                 # DID document service selection
+crates/awiki-cli/src/message/attachment_service.rs                 # download-time DID resolution fallback
 ```
 
 目标：
@@ -600,13 +696,14 @@ crates/im-core/src/internal/discovery/attachment.rs
 crates/im-core/src/compat/attachments.rs
 ```
 
-### 12.3 范围
+### 14.3 范围
 
 支持：
 
 ```text
 select attachment service from DID document
-fallback to ImCoreConfig message_service_endpoint / service_base_url
+download-time sender DID document resolution and local identity fallback
+fallback to ImCoreConfig message_service_endpoint / service_base_url only if it preserves current CLI behavior
 capability requirement check
 invalid endpoint error mapping
 ```
@@ -620,30 +717,30 @@ secure attachment service capability
 新增 attachment_service_endpoint public config 字段，除非同步更新 public-api / Interface / modules 文档
 ```
 
-### 12.4 Required 验收
+### 14.4 Required 验收
 
 ```bash
 cargo test -p im-core attachment_discovery
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 12.5 完成标准
+### 14.5 完成标准
 
 ```text
 1. attachment endpoint selection 可由 im-core 完成。
 2. awiki-cli 原 service_discovery wrapper 兼容。
-3. discovery 不读取 CLI config。
+3. discovery 不读取 CLI config::Resolved 或 identity::Manager；需要 fallback 时通过 im-core config/runtime DTO 显式传入。
 ```
 
 ---
 
-## 13. PR 4D：upload slot / commit / attachment send wire builder
+## 15. PR 4D：upload slot / commit / attachment send wire builder
 
-### 13.1 目标
+### 15.1 目标
 
 迁移附件上传相关 wire builder，但不接真实文件读取和远端上传。
 
-### 13.2 源和目标
+### 15.2 源和目标
 
 源：
 
@@ -658,7 +755,7 @@ crates/im-core/src/internal/wire/attachment.rs
 crates/im-core/src/compat/attachments.rs
 ```
 
-### 13.3 迁移范围
+### 15.3 迁移范围
 
 可迁移：
 
@@ -682,14 +779,14 @@ direct/group text send general flow
 secure attachment
 ```
 
-### 13.4 Required 验收
+### 15.4 Required 验收
 
 ```bash
 cargo test -p im-core attachment_wire
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 13.5 完成标准
+### 15.5 完成标准
 
 ```text
 1. slot/commit/ticket/send wire shape 由 im-core 覆盖测试。
@@ -699,13 +796,13 @@ cargo test -p awiki-cli --test msg_contract
 
 ---
 
-## 14. PR 4E：Attachment upload runtime
+## 16. PR 4E：Attachment upload runtime
 
-### 14.1 目标
+### 16.1 目标
 
 实现 `AttachmentService::send()` 的上传主链路，但先保留 legacy fallback。
 
-### 14.2 调用链
+### 16.2 调用链
 
 ```text
 AttachmentService::send
@@ -724,7 +821,7 @@ AttachmentService::send
   -> best-effort local persist
 ```
 
-### 14.3 目标文件
+### 16.3 目标文件
 
 ```text
 crates/im-core/src/attachments/service.rs
@@ -733,9 +830,13 @@ crates/im-core/src/internal/blob/source.rs
 crates/im-core/src/internal/transport.rs
 crates/im-core/src/compat/attachments.rs
 crates/awiki-cli/src/im_core_adapter/messages.rs
+crates/im-core-dart/src/api/attachments.rs
+crates/im-core-dart/src/dto/attachment.rs
+packages/awiki_im_core/lib/src/awiki_im_core_native.dart
+packages/awiki_im_core/lib/src/models/attachment.dart
 ```
 
-### 14.4 风险控制
+### 16.4 风险控制
 
 ```text
 1. LocalFile path 已由 CLI adapter 校验。
@@ -744,16 +845,19 @@ crates/awiki-cli/src/im_core_adapter/messages.rs
 4. 上传失败返回 ImError::Service / TransportUnavailable。
 5. local persist 失败只产生 warning，不阻断发送。
 6. attachment secure mode 返回 UnsupportedCapability。
+7. Dart send path 要么传 LocalFile 显式路径，要么传 bytes；不要只传 bytes_len。
 ```
 
-### 14.5 Required 验收
+### 16.5 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
+cargo test -p im-core-dart --locked
+scripts/flutter/codegen-check.sh
 ```
 
-### 14.6 Manual / live / system
+### 16.6 Manual / live / system
 
 ```bash
 cargo test -p awiki-cli --test attachment_live_contract
@@ -761,28 +865,30 @@ awiki-cli msg send --to <peer> --file <path> --text "caption"
 awiki-cli msg send --group <group> --file <path> --text "caption"
 ```
 
-### 14.7 完成标准
+### 16.7 完成标准
 
 ```text
 1. AttachmentInput::Bytes 可完整跑 upload unit/contract test。
 2. LocalFile 路径由 CLI adapter 传入，im-core 不发现 workspace。
 3. direct/group attachment message 可经 im-core 主链路发送。
 4. legacy fallback 可回退。
+5. Dart/Flutter AttachmentApi.send 与 Rust AttachmentService::send 语义一致，Web stub 不误报支持。
 ```
 
 ---
 
-## 15. PR 4F：Attachment download selection / ticket / memory destination
+## 17. PR 4F：Attachment download selection / ticket / memory destination
 
-### 15.1 目标
+### 17.1 目标
 
 实现附件下载定位、ticket 获取和 memory destination，不先接 CLI 文件写入。
 
-### 15.2 调用链
+### 17.2 调用链
 
 ```text
 AttachmentService::download
-  -> locate message by thread/message_id
+  -> locate raw message by thread/message_id
+  -> parse attachment manifest from raw history/list response
   -> select attachment by attachment_id or first attachment
   -> ensure_session
   -> build download ticket request
@@ -790,23 +896,29 @@ AttachmentService::download
   -> if Memory: return Vec<u8>
 ```
 
-### 15.3 目标文件
+注意：当前 `MessageBodyView` 只有 `Text` / `Unsupported`，`MessageReadRuntime` 会把 attachment manifest 投影为 unsupported。Phase 4F 不能只依赖 public `Message` DTO 定位附件；必须使用 raw read result 或新增 internal attachment projection。如果要把附件正文暴露进 public `MessageBodyView`，必须同步更新 Dart `DartMessageBodyView`、Flutter `MessageBodyView`、generated bindings 和 Phase 5' enrichment 文档。
+
+### 17.3 目标文件
 
 ```text
 crates/im-core/src/attachments/service.rs
 crates/im-core/src/attachments/selection.rs
 crates/im-core/src/internal/attachment_runtime/download.rs
 crates/im-core/src/internal/blob/sink.rs
+crates/im-core-dart/src/api/attachments.rs
+packages/awiki_im_core/lib/src/models/attachment.dart
 ```
 
-### 15.4 Required 验收
+### 17.4 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
+cargo test -p im-core-dart --locked
+scripts/flutter/codegen-check.sh
 ```
 
-### 15.5 完成标准
+### 17.5 完成标准
 
 ```text
 1. AttachmentDestination::Memory 可通过 unit test 验证。
@@ -814,17 +926,18 @@ cargo test -p awiki-cli --test msg_contract
 3. multiple attachments 选择规则与 legacy 一致。
 4. select_for_download 仍不是 public service method。
 5. 未做 LocalFile atomic write 时不改 CLI download handler 默认路径。
+6. Dart/Flutter download memory result 使用 Uint8List/List<int> 语义，不暴露 raw ticket。
 ```
 
 ---
 
-## 16. PR 4G：LocalFile destination / temp file / controlled atomic write
+## 18. PR 4G：LocalFile destination / temp file / controlled atomic write
 
-### 16.1 目标
+### 18.1 目标
 
 实现 `AttachmentDestination::LocalFile`，支持 temp file 和 atomic rename。
 
-### 16.2 职责合同
+### 18.2 职责合同
 
 CLI 决定：
 
@@ -847,7 +960,7 @@ failure cleanup
 overwrite=false enforcement
 ```
 
-### 16.3 范围
+### 18.3 范围
 
 支持：
 
@@ -869,37 +982,40 @@ human-readable path errors
 permission UX
 ```
 
-### 16.4 Required 验收
+### 18.4 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
 ```
 
-### 16.5 Manual / live / system
+### 18.5 Manual / live / system
 
 ```bash
 awiki-cli msg attachment download --message-id <id> --output <path>
 ```
 
-### 16.6 完成标准
+如本 PR 同时暴露 Flutter `AttachmentDestination.localFile`，还需在 native package 层验证 destination path、overwrite flag 和返回 path 映射；Web stub 仍不能执行本地文件写入。
+
+### 18.6 完成标准
 
 ```text
 1. LocalFile write 使用 controlled atomic strategy。
 2. download 失败不留下破损目标文件。
 3. output overwrite 行为和 CLI policy 一致。
 4. im-core 不自行发现 workspace，不自行改变权限策略。
+5. Flutter local-file destination 只把调用方显式传入 path 传给 Rust，不自行推导 app document/cache 目录。
 ```
 
 ---
 
-## 17. PR 4H：CLI attachment handler 切换与 compat 清理
+## 19. PR 4H：CLI attachment handler 切换与 compat 清理
 
-### 17.1 目标
+### 19.1 目标
 
 让 `msg send --file` 和 `msg attachment download` 可以通过 `im-core` 路径执行，同时保留 fallback。
 
-### 17.2 范围
+### 19.2 范围
 
 ```text
 msg send --to --file
@@ -907,16 +1023,19 @@ msg send --group --file
 msg attachment download
 dry-run plan 仍由 CLI 渲染
 legacy fallback 保留一个阶段
+Dart/Flutter AttachmentApi 默认走 im-core，不经过 awiki-cli fallback
 ```
 
-### 17.3 Required 验收
+### 19.3 Required 验收
 
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_contract
+cargo test -p im-core-dart --locked
+scripts/flutter/codegen-check.sh
 ```
 
-### 17.4 Manual / live / system
+### 19.4 Manual / live / system
 
 ```bash
 cargo test -p awiki-cli --test attachment_live_contract
@@ -924,18 +1043,19 @@ awiki-cli msg send --to <peer> --file <path>
 awiki-cli msg attachment download --message-id <id> --output <path>
 ```
 
-### 17.5 完成标准
+### 19.5 完成标准
 
 ```text
 1. CLI handler 不再直接拼 attachment wire params。
 2. CLI 仍负责 input/output path policy。
 3. legacy attachment_service wrapper 可逐步收敛。
 4. secure/group E2EE attachment 未被误动。
+5. Dart/Flutter attachment API 不依赖 CLI adapter，不暴露 legacy fallback 细节。
 ```
 
 ---
 
-## 18. 错误映射规则
+## 20. 错误映射规则
 
 `im-core` 返回：
 
@@ -973,7 +1093,7 @@ PathUnavailable / Io -> ExitError path/permission hint
 
 ---
 
-## 19. 回滚策略
+## 21. 回滚策略
 
 ```text
 1. im-core 新实现先落地。
@@ -994,7 +1114,7 @@ PathUnavailable / Io -> ExitError path/permission hint
 
 ---
 
-## 20. 明确不做事项
+## 22. 明确不做事项
 
 Phase 4 不做：
 
@@ -1009,11 +1129,13 @@ Phase 4 不做：
 8. 不让 im-core 读取 CLI config 或发现 workspace。
 9. 不把 select_for_download 暴露为默认 public service method。
 10. 不回补 realtime attachment notification enrichment；该工作进入 Phase 5' follow-up。
+11. 不把 Dart/Flutter attachment API 设计成 awiki-me 专用 UI/cache adapter。
+12. 不手改 generated binding 文件；通过 flutter_rust_bridge codegen 更新。
 ```
 
 ---
 
-## 21. 方案核心
+## 23. 方案核心
 
 Phase 4 的核心是：
 
