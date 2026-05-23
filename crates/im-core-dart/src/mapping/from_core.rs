@@ -1,4 +1,5 @@
 use crate::dto::{
+    attachment::{DartDownloadedAttachment, DartDownloadedAttachmentDestination},
     auth::{DartAuthScope, DartAuthStatus, DartSessionBundle, DartSessionUpdate},
     directory::{DartDirectoryResolution, DartRelationStatus},
     group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
@@ -363,6 +364,36 @@ impl From<im_core::messages::SendMessageResult> for DartSendMessageResult {
             message: value.message.into(),
             delivery_state: delivery_state_to_string(value.delivery),
             warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::attachments::DownloadedAttachment> for DartDownloadedAttachment {
+    fn from(value: im_core::attachments::DownloadedAttachment) -> Self {
+        Self {
+            attachment_id: value.attachment_id,
+            filename: value.filename,
+            mime_type: value.mime_type,
+            size_bytes: value.size_bytes,
+            destination: value.destination.into(),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::attachments::DownloadedAttachmentDestination>
+    for DartDownloadedAttachmentDestination
+{
+    fn from(value: im_core::attachments::DownloadedAttachmentDestination) -> Self {
+        match value {
+            im_core::attachments::DownloadedAttachmentDestination::LocalFile(path) => {
+                Self::LocalFile {
+                    path: path.display().to_string(),
+                }
+            }
+            im_core::attachments::DownloadedAttachmentDestination::Memory(bytes) => {
+                Self::Memory { bytes }
+            }
         }
     }
 }

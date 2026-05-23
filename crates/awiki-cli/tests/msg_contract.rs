@@ -142,10 +142,27 @@ fn msg_dry_run_plans_match_go_contracts() {
         ],
         workspace.path(),
     );
-    assert_code(&attachment_send, 2);
-    let attachment_send = error_json(&attachment_send);
-    assert_eq!(attachment_send["error"]["code"], "unsupported_capability");
-    assert_contains(&attachment_send["error"]["message"], "attachments");
+    assert_success(&attachment_send);
+    let attachment_send = success_json(&attachment_send);
+    assert_eq!(attachment_send["summary"], "Dry run: message send planned");
+    assert_eq!(attachment_send["data"]["plan"]["action"], "attachment.send");
+    assert_eq!(
+        attachment_send["data"]["plan"]["target"],
+        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+    );
+    assert_eq!(
+        attachment_send["data"]["plan"]["message_type"],
+        "attachment_manifest"
+    );
+    assert_eq!(attachment_send["data"]["plan"]["transport"], "http");
+    assert_eq!(
+        attachment_send["data"]["plan"]["attachment"],
+        json!({
+            "path": "/tmp/demo.txt",
+            "mime_type": "",
+            "caption": "caption",
+        })
+    );
 
     let group = success_json(&awiki_cmd(
         &[
@@ -186,14 +203,18 @@ fn msg_dry_run_plans_match_go_contracts() {
         ],
         workspace.path(),
     );
-    assert_code(&download, 2);
-    let download = error_json(&download);
-    assert_eq!(download["error"]["code"], "unsupported_capability");
+    assert_success(&download);
+    let download = success_json(&download);
+    assert_eq!(download["summary"], "Dry run: attachment download planned");
+    assert_eq!(download["data"]["plan"]["action"], "attachment.download");
     assert_eq!(
-        download["error"]["details"]["command"],
-        "msg.attachment.download"
+        download["data"]["plan"]["target"],
+        json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
     );
-    assert_eq!(download["error"]["details"]["capability"], "attachments");
+    assert_eq!(download["data"]["plan"]["message_id"], "msg-1");
+    assert_eq!(download["data"]["plan"]["attachment_id"], "att-1");
+    assert_eq!(download["data"]["plan"]["output_path"], "out.bin");
+    assert_eq!(download["data"]["plan"]["overwrite"], true);
 
     let inbox = success_json(&awiki_cmd(
         &[
@@ -354,7 +375,7 @@ fn msg_send_default_cutover_dry_run_routes_direct_and_group_text() {
 }
 
 #[test]
-fn msg_send_default_cutover_rejects_attachment_and_secure_direct() {
+fn msg_send_default_cutover_supports_attachment_dry_run_and_rejects_secure_direct() {
     let workspace = TempDir::new().expect("workspace");
 
     let attachment = awiki_cmd(
@@ -373,10 +394,13 @@ fn msg_send_default_cutover_rejects_attachment_and_secure_direct() {
         ],
         workspace.path(),
     );
-    assert_code(&attachment, 2);
-    let attachment = error_json(&attachment);
-    assert_eq!(attachment["error"]["code"], "unsupported_capability");
-    assert_contains(&attachment["error"]["message"], "attachments");
+    assert_success(&attachment);
+    let attachment = success_json(&attachment);
+    assert_eq!(attachment["data"]["plan"]["action"], "attachment.send");
+    assert_eq!(
+        attachment["data"]["plan"]["attachment"]["path"],
+        "/tmp/demo.txt"
+    );
 
     let secure = awiki_cmd(
         &[
@@ -669,12 +693,11 @@ fn msg_validation_errors_match_go_handler_boundary() {
     );
     assert_code(&download_missing_target, 2);
     let envelope = error_json(&download_missing_target);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(
-        envelope["error"]["details"]["command"],
-        "msg.attachment.download"
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "attachment download requires either --with or --group",
     );
-    assert_eq!(envelope["error"]["details"]["capability"], "attachments");
 
     let download_target_conflict = awiki_cmd(
         &[
@@ -694,12 +717,11 @@ fn msg_validation_errors_match_go_handler_boundary() {
     );
     assert_code(&download_target_conflict, 2);
     let envelope = error_json(&download_target_conflict);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(
-        envelope["error"]["details"]["command"],
-        "msg.attachment.download"
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "attachment download accepts either --with or --group",
     );
-    assert_eq!(envelope["error"]["details"]["capability"], "attachments");
 }
 
 #[test]
@@ -728,7 +750,7 @@ fn msg_unsupported_secure_mode_errors_match_cutover_boundary() {
     assert_code(&secure_attachment, 2);
     let envelope = error_json(&secure_attachment);
     assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_contains(&envelope["error"]["message"], "attachments");
+    assert_contains(&envelope["error"]["message"], "secure attachment");
 }
 
 #[test]
@@ -750,12 +772,11 @@ fn msg_required_flag_errors_match_go_cobra_boundary() {
     );
     assert_code(&attachment, 2);
     let envelope = error_json(&attachment);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(
-        envelope["error"]["details"]["command"],
-        "msg.attachment.download"
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "attachment download requires either --with or --group",
     );
-    assert_eq!(envelope["error"]["details"]["capability"], "attachments");
 
     let init = awiki_cmd(&["--dry-run", "msg", "secure", "init"], workspace.path());
     assert_code(&init, 2);

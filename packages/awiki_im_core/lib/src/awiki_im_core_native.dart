@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'generated/api/auth.dart' as gen_auth;
+import 'generated/api/attachments.dart' as gen_attachments;
 import 'generated/api/client.dart' as gen_client;
 import 'generated/api/core.dart' as gen_core;
 import 'generated/api/directory.dart' as gen_directory;
@@ -10,6 +12,7 @@ import 'generated/api/messages.dart' as gen_messages;
 import 'generated/api/profile.dart' as gen_profile;
 import 'generated/api/realtime.dart' as gen_realtime;
 import 'generated/dto/auth.dart' as gen_auth_dto;
+import 'generated/dto/attachment.dart' as gen_attachment;
 import 'generated/dto/config.dart' as gen_config;
 import 'generated/dto/directory.dart' as gen_directory_dto;
 import 'generated/dto/error.dart' as gen_error;
@@ -20,6 +23,7 @@ import 'generated/dto/profile.dart' as gen_profile_dto;
 import 'generated/dto/realtime.dart' as gen_realtime_dto;
 import 'generated/frb_generated.dart' as gen;
 import 'models/auth.dart';
+import 'models/attachment.dart';
 import 'models/config.dart';
 import 'models/directory.dart';
 import 'models/error.dart';
@@ -195,7 +199,7 @@ class AwikiImCore {
 class AwikiImClient {
   AwikiImClient._(this._inner);
 
-  final gen_auth.ArcDartImClient _inner;
+  final gen_attachments.ArcDartImClient _inner;
   final StreamController<RealtimeEvent> _eventsController =
       StreamController<RealtimeEvent>.broadcast();
   final StreamController<RealtimeConnectionState> _connectionStatesController =
@@ -209,6 +213,7 @@ class AwikiImClient {
   DirectoryApi get directory => DirectoryApi._(this);
   ProfileApi get profile => ProfileApi._(this);
   MessageApi get messages => MessageApi._(this);
+  AttachmentApi get attachments => AttachmentApi._(this);
   GroupApi get groups => GroupApi._(this);
   RealtimeApi get realtime => RealtimeApi._(this);
 
@@ -441,6 +446,36 @@ class MessageApi {
       () => gen_messages.retryMessage(
         client: _client._inner,
         messageId: messageId,
+      ),
+    );
+    return result._toModel();
+  }
+}
+
+class AttachmentApi {
+  AttachmentApi._(this._client);
+
+  final AwikiImClient _client;
+
+  Future<SendMessageResult> send(AttachmentSendRequest request) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_attachments.sendAttachment(
+        client: _client._inner,
+        request: request._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<DownloadedAttachment> download(
+    DownloadAttachmentRequest request,
+  ) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_attachments.downloadAttachment(
+        client: _client._inner,
+        request: request._toGen(),
       ),
     );
     return result._toModel();
@@ -939,6 +974,72 @@ extension on SendTextRequest {
     clientMessageId: clientMessageId,
     idempotencyKey: idempotencyKey,
     waitForFinalAcceptance: waitForFinalAcceptance,
+  );
+}
+
+extension on AttachmentInput {
+  gen_attachment.DartAttachmentInput _toGen() => switch (this) {
+    LocalFileAttachmentInput(:final path) =>
+      gen_attachment.DartAttachmentInput.localFile(path: path),
+    BytesAttachmentInput(:final filename, :final mimeType, :final bytes) =>
+      gen_attachment.DartAttachmentInput.bytes(
+        filename: filename,
+        mimeType: mimeType,
+        bytes: Uint8List.fromList(bytes),
+      ),
+  };
+}
+
+extension on AttachmentSendRequest {
+  gen_attachment.DartAttachmentSendRequest _toGen() =>
+      gen_attachment.DartAttachmentSendRequest(
+        target: target._toGen(),
+        input: input._toGen(),
+        caption: caption,
+        mimeType: mimeType,
+        filename: filename,
+        idempotencyKey: idempotencyKey,
+        waitForFinalAcceptance: waitForFinalAcceptance,
+      );
+}
+
+extension on AttachmentDestination {
+  gen_attachment.DartAttachmentDestination _toGen() => switch (this) {
+    LocalFileAttachmentDestination(:final path) =>
+      gen_attachment.DartAttachmentDestination.localFile(path: path),
+    MemoryAttachmentDestination() =>
+      const gen_attachment.DartAttachmentDestination.memory(),
+  };
+}
+
+extension on DownloadAttachmentRequest {
+  gen_attachment.DartDownloadAttachmentRequest _toGen() =>
+      gen_attachment.DartDownloadAttachmentRequest(
+        thread: thread._toGen(),
+        messageId: messageId,
+        attachmentId: attachmentId,
+        destination: destination._toGen(),
+        overwrite: overwrite,
+      );
+}
+
+extension on gen_attachment.DartDownloadedAttachmentDestination {
+  DownloadedAttachmentDestination _toModel() => switch (this) {
+    gen_attachment.DartDownloadedAttachmentDestination_LocalFile(:final path) =>
+      DownloadedAttachmentLocalFile(path),
+    gen_attachment.DartDownloadedAttachmentDestination_Memory(:final bytes) =>
+      DownloadedAttachmentMemory(bytes),
+  };
+}
+
+extension on gen_attachment.DartDownloadedAttachment {
+  DownloadedAttachment _toModel() => DownloadedAttachment(
+    attachmentId: attachmentId,
+    filename: filename,
+    mimeType: mimeType,
+    sizeBytes: sizeBytes?.toInt(),
+    destination: destination._toModel(),
+    warnings: warnings,
   );
 }
 

@@ -6,6 +6,7 @@
 import '../dto/auth.dart';
 import '../dto/error.dart';
 import '../frb_generated.dart';
+import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 Future<DartAuthStatus> authStatus({required ArcDartImClient client}) =>
@@ -25,6 +26,3 @@ Future<DartSessionBundle> authEnsureSession({
 Future<DartSessionUpdate> authRefreshSession({
   required ArcDartImClient client,
 }) => RustLib.instance.api.crateApiAuthAuthRefreshSession(client: client);
-
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImClient >>>
-abstract class ArcDartImClient implements RustOpaqueInterface {}

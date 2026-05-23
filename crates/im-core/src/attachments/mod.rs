@@ -1,4 +1,6 @@
 mod dto;
+pub(crate) mod manifest;
+pub(crate) mod selection;
 mod service;
 
 pub use self::dto::{

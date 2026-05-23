@@ -6,6 +6,30 @@
 
 ---
 
+
+## 0. 约束
+  请先阅读并遵守这些文档：
+  - docs/sdk-refactor/implementation-playbook.md 的 “Phase 1H：App sandbox path fixture”
+  - docs/sdk-refactor/README.md
+  - docs/sdk-refactor/architecture.md
+  - docs/sdk-refactor/public-api.md
+  - docs/sdk-refactor/im-core-cli-boundary.md
+  - docs/sdk-refactor/Interface/README.md
+  - docs/sdk-refactor/Interface/01-crate-layout.md
+  - docs/sdk-refactor/Interface/02-core-interface.md
+  - docs/sdk-refactor/Interface/03-identity-auth-interface.md
+  - docs/sdk-refactor/Interface/05-cli-adapter-interface.md
+  - docs/sdk-refactor/Interface/06-implementation-map.md
+  - docs/sdk-refactor/Interface/07-phase1-acceptance.md
+  - docs/sdk-refactor/modules/01-core.md
+  - docs/sdk-refactor/modules/02-identity.md
+  - docs/sdk-refactor/modules/03-auth.md
+  - docs/sdk-refactor/modules/04-local-state.md
+  - docs/sdk-refactor/modules/07-messages.md
+  - docs/sdk-refactor/modules/08-groups.md
+
+  不用进行系统测试，只用进行单元测试即可，系统测试统一做
+
 ## 1. 总体结论
 
 Phase 4 不采用整体模块迁移，也不把现有 `message/attachment*` 一次性整体搬进 `im-core`。

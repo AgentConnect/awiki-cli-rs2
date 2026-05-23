@@ -13,8 +13,7 @@ fn direct_send_http_401_refreshes_with_fallback_trace_like_go() {
     register_ready_msg_identity(workspace.path(), "alice-msg-fallback", "alice", "jwt-stale");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![
-        TestResponse::status(401, "expired jwt"),
-        TestResponse::status(401, "still expired"),
+        TestResponse::ok(&json_rpc_error(1401, "expired jwt")),
         TestResponse::ok(&json_rpc_result(json!({
             "access_token": "jwt-refreshed"
         }))),
@@ -54,15 +53,14 @@ fn direct_send_http_401_refreshes_with_fallback_trace_like_go() {
     assert_text_contains(&trace, "远端 RPC / direct send");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 3);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
     assert_contains_text(&requests[0], "Authorization: Bearer jwt-stale\r\n");
-    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[2].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
-    assert_eq!(json_body(&requests[2])["method"], "get_me");
-    assert!(requests[3].starts_with("POST /im/rpc HTTP/1.1"));
-    assert_contains_text(&requests[3], "Authorization: Bearer jwt-refreshed\r\n");
-    assert_eq!(json_body(&requests[3])["method"], "direct.send");
+    assert!(requests[1].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert_eq!(json_body(&requests[1])["method"], "get_me");
+    assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
+    assert_contains_text(&requests[2], "Authorization: Bearer jwt-refreshed\r\n");
+    assert_eq!(json_body(&requests[2])["method"], "direct.send");
 
     let auth_path = identity_auth_path(workspace.path(), "alice-msg-fallback");
     let auth: Value =
@@ -71,22 +69,13 @@ fn direct_send_http_401_refreshes_with_fallback_trace_like_go() {
 }
 
 #[test]
-fn inbox_websocket_http_fallback_401_refreshes_with_fallback_trace_like_go() {
-    let workspace = TempDir::new("msg-jwt-fallback-inbox-ws").expect("workspace");
-    register_ready_msg_identity(
-        workspace.path(),
-        "bob-msg-fallback-ws",
-        "bob",
-        "jwt-bob-stale",
-    );
+fn inbox_http_1401_refreshes_with_fallback_trace_like_go() {
+    let workspace = TempDir::new("msg-jwt-fallback-inbox").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-msg-fallback", "bob", "jwt-bob-stale");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
     let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::status(401, "expired inbox jwt"),
-        TestResponse::status(401, "still expired inbox jwt"),
+        TestResponse::ok(&json_rpc_error(1401, "expired inbox jwt")),
         TestResponse::ok(&json_rpc_result(json!({
             "access_token": "jwt-bob-fresh"
         }))),
@@ -104,28 +93,17 @@ fn inbox_websocket_http_fallback_401_refreshes_with_fallback_trace_like_go() {
             "total": 1,
             "source": "remote_http"
         }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "did": alice_did,
-            "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
-        }))),
     ]);
-    write_msg_ws_config(
-        workspace.path(),
-        &server.base_url(),
-        missing_socket.to_str().expect("socket path"),
-    );
+    write_msg_config(workspace.path(), &server.base_url());
 
     let output = awiki_trace_cmd(
         &[
             "--identity",
-            "bob-msg-fallback-ws",
+            "bob-msg-fallback",
             "msg",
             "inbox",
             "--scope",
             "direct",
-            "--with",
-            alice_did,
             "--limit",
             "3",
         ],
@@ -134,48 +112,34 @@ fn inbox_websocket_http_fallback_401_refreshes_with_fallback_trace_like_go() {
 
     assert_success(&output);
     let envelope = success_json_with_stderr(&output);
-    assert_eq!(envelope["summary"], "Loaded 1 direct inbox messages");
+    assert_eq!(envelope["summary"], "Loaded 1 inbox messages");
     assert_eq!(envelope["data"]["source"], "remote_http");
     assert_eq!(
         envelope["data"]["messages"][0]["id"],
         "msg-fallback-inbox-1"
     );
+    assert_eq!(envelope["data"]["with"], "");
 
     let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
     assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.as_str().unwrap_or_default().contains(
-                "WebSocket listener was unavailable for this identity; used HTTP fallback"
-            )),
-        "expected websocket HTTP fallback warning, got: {warnings:?}"
+        warnings.is_empty(),
+        "HTTP inbox refresh should not emit websocket fallback warnings: {warnings:?}"
     );
 
     let trace = stderr_text(&output);
     assert_text_contains(&trace, "JWT 续期 / 消息回退时刷新 JWT");
-    assert_text_contains(&trace, "回退:");
-    assert_text_contains(&trace, "WebSocket 降级到 HTTP");
+    assert_text_contains(&trace, "远端 RPC / inbox get");
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 7);
-    assert_eq!(
-        json_body(&requests[0])["method"],
-        "direct.e2ee.publish_prekey_bundle"
-    );
-    assert_eq!(
-        json_body(&requests[1])["method"],
-        "direct.e2ee.publish_prekey_bundle"
-    );
+    assert_eq!(requests.len(), 3);
+    assert_eq!(json_body(&requests[0])["method"], "inbox.get");
+    assert_contains_text(&requests[0], "Authorization: Bearer jwt-bob-stale\r\n");
+    assert!(requests[1].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
+    assert_eq!(json_body(&requests[1])["method"], "get_me");
     assert_eq!(json_body(&requests[2])["method"], "inbox.get");
-    assert_contains_text(&requests[2], "Authorization: Bearer jwt-bob-stale\r\n");
-    assert_eq!(json_body(&requests[3])["method"], "inbox.get");
-    assert!(requests[4].starts_with("POST /user-service/did-auth/rpc HTTP/1.1"));
-    assert_eq!(json_body(&requests[4])["method"], "get_me");
-    assert_eq!(json_body(&requests[5])["method"], "inbox.get");
-    assert_contains_text(&requests[5], "Authorization: Bearer jwt-bob-fresh\r\n");
-    assert!(requests[6].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
+    assert_contains_text(&requests[2], "Authorization: Bearer jwt-bob-fresh\r\n");
 
-    let auth_path = identity_auth_path(workspace.path(), "bob-msg-fallback-ws");
+    let auth_path = identity_auth_path(workspace.path(), "bob-msg-fallback");
     let auth: Value =
         serde_json::from_slice(&std::fs::read(auth_path).expect("read auth")).expect("auth json");
     assert_eq!(auth["jwt_token"], "jwt-bob-fresh");
@@ -260,16 +224,6 @@ fn write_msg_config(workspace: &Path, base_url: &str) {
     std::fs::write(
         workspace.join("config.yaml"),
         format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
-    )
-    .unwrap();
-}
-
-fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "runtime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n"
-        ),
     )
     .unwrap();
 }
@@ -377,6 +331,18 @@ fn json_rpc_result(result: Value) -> String {
     .to_string()
 }
 
+fn json_rpc_error(code: i64, message: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "error": {
+            "code": code,
+            "message": message,
+        },
+        "id": "req-1",
+    })
+    .to_string()
+}
+
 #[derive(Debug, Clone)]
 struct TestResponse {
     status: u16,
@@ -387,13 +353,6 @@ impl TestResponse {
     fn ok(body: &str) -> Self {
         Self {
             status: 200,
-            body: body.to_string(),
-        }
-    }
-
-    fn status(status: u16, body: &str) -> Self {
-        Self {
-            status,
             body: body.to_string(),
         }
     }

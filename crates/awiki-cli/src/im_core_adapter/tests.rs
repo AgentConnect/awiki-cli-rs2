@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use im_core::prelude::{
-    AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody, MessageKind,
-    MessageSecurityMode, MessageTarget, ThreadRef, VerificationInput,
+    AttachmentInput, AuthScope, GroupRef, IdentitySelector, ImError, InboxScope, MessageBody,
+    MessageKind, MessageSecurityMode, MessageTarget, ThreadRef, VerificationInput,
 };
 
 use crate::cli::ParsedCommand;
@@ -492,10 +492,23 @@ fn inbox_query_builds_scope_limit_cursor_and_unread_flag() {
 }
 
 #[test]
-fn send_message_request_rejects_attachments_without_legacy_send() {
+fn send_message_request_builds_attachment_sdk_dto() {
     let command = command_with_flags([("to", "bob"), ("text", "caption"), ("file", "a.png")]);
-    let err = messages::send_message_request(&command, "awiki.test").unwrap_err();
-    assert_eq!(err.detail.code, "unsupported_capability");
+    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+
+    assert!(matches!(
+        request.target,
+        MessageTarget::Direct(ref peer) if peer.as_str() == "bob.awiki.test"
+    ));
+    assert!(matches!(
+        request.body,
+        MessageBody::Attachment {
+            input: AttachmentInput::LocalFile(ref path),
+            ref caption,
+            mime_type: None,
+        } if path == Path::new("a.png") && caption.as_deref() == Some("caption")
+    ));
+    assert_eq!(request.security, MessageSecurityMode::DefaultPlain);
 }
 
 #[test]

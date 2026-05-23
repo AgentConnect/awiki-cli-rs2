@@ -74,15 +74,7 @@ fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
         &["id", "create", "--name", "Alice", "--identity", "alice"],
         workspace.path(),
     ));
-    assert_success(&awiki_cmd_with_workspace(
-        &[
-            "debug",
-            "db",
-            "query",
-            "INSERT INTO contact_handle_bindings (owner_did, handle, did, first_seen_at, last_seen_at, credential_name) VALUES ('did:wba:alice.example', 'bob', 'did:wba:bob.example', '2026-04-18T09:00:00Z', '2026-04-18T09:00:00Z', 'alice')",
-        ],
-        workspace.path(),
-    ));
+    seed_contact_handle_binding(workspace.path());
 
     let output = awiki_cmd_with_workspace(&["doctor"], workspace.path());
     assert_success(&output);
@@ -262,6 +254,28 @@ fn write_fake_anp_mls(path: &Path, response: &str) {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
             .expect("chmod fake anp-mls");
     }
+}
+
+fn seed_contact_handle_binding(workspace: &Path) {
+    let database_file = workspace.join("data").join("awiki-cli.db");
+    let connection = rusqlite::Connection::open(&database_file).expect("open test database");
+    connection
+        .execute(
+            r#"
+INSERT INTO contact_handle_bindings (
+    owner_did, handle, did, first_seen_at, last_seen_at, credential_name
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+"#,
+            rusqlite::params![
+                "did:wba:alice.example",
+                "bob",
+                "did:wba:bob.example",
+                "2026-04-18T09:00:00Z",
+                "2026-04-18T09:00:00Z",
+                "alice",
+            ],
+        )
+        .expect("insert contact handle binding fixture");
 }
 
 struct TempDir {

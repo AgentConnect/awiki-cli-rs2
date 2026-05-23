@@ -6,6 +6,7 @@
 //! `prelude`, do not mirror it into Dart facade models, and do not rely on it
 //! for semver-stable application code.
 
+pub mod attachments;
 pub mod directory;
 pub mod groups;
 pub mod identity;

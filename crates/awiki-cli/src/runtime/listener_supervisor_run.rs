@@ -1111,7 +1111,7 @@ fn consume_notifications_with_im_core_runner(
         record,
     };
     let control = im_core::prelude::RealtimeControl::default();
-    let result = im_core::compat::realtime::run_realtime_transport_with_event_sink_until_shutdown(
+    let result = im_core::realtime::run_realtime_transport_with_event_sink_until_shutdown(
         im_core_realtime_adapter::listener_realtime_options(),
         sdk_shutdown.clone(),
         control,
@@ -1150,13 +1150,13 @@ impl CliRealtimeRunnerTransport<'_> {
     }
 }
 
-impl im_core::compat::realtime::RealtimeRunnerEventSink for CliRealtimeEventSink<'_> {
+impl im_core::realtime::RealtimeRunnerEventSink for CliRealtimeEventSink<'_> {
     fn emit(&mut self, event: im_core::prelude::ImEvent) -> im_core::ImResult<()> {
         CliRealtimeEventSink::emit(self, event)
     }
 }
 
-impl im_core::compat::realtime::RealtimeRunnerTransport for CliRealtimeRunnerTransport<'_> {
+impl im_core::realtime::RealtimeRunnerTransport for CliRealtimeRunnerTransport<'_> {
     fn connect(&mut self) -> im_core::ImResult<()> {
         Ok(())
     }

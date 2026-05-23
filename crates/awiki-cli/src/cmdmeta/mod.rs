@@ -167,12 +167,6 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "outside current im-core cutover",
         });
     }
-    if has_command_prefix(name, "msg.attachment") {
-        return Some(CutoverStatus::Unsupported {
-            capability: "attachments",
-            phase: "Phase 4",
-        });
-    }
     if has_command_prefix(name, "msg.secure") {
         return Some(CutoverStatus::Unsupported {
             capability: "secure-direct",
@@ -220,6 +214,8 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "id.profile.get",
             "id.profile.set",
             "msg",
+            "msg.attachment",
+            "msg.attachment.download",
             "msg.send",
             "msg.inbox",
             "msg.history",

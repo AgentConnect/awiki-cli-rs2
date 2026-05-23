@@ -1,6 +1,13 @@
-use std::path::PathBuf;
+use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use im_core::prelude::*;
+use serde_json::json;
+use serde_json::Value;
 
 #[test]
 fn attachments_public_api_accepts_canonical_inputs() {
@@ -28,42 +35,25 @@ fn attachments_public_api_accepts_canonical_inputs() {
 }
 
 #[test]
-fn attachments_service_send_and_download_are_explicitly_unsupported() {
-    let core = test_core();
-    let client = core
-        .client(IdentitySelector::LocalAlias("alice".to_string()))
-        .unwrap();
-    let peer = PeerRef::parse("bob", "awiki.info").unwrap();
+fn attachments_input_is_the_canonical_message_body_input() {
+    let input = AttachmentInput::Bytes {
+        filename: Some("note.txt".to_string()),
+        mime_type: Some("text/plain".to_string()),
+        bytes: b"hello attachment".to_vec(),
+    };
 
-    let send = client.attachments().send(
-        MessageTarget::Direct(peer.clone()),
-        AttachmentSendRequest {
-            input: AttachmentInput::Bytes {
-                filename: Some("note.txt".to_string()),
-                mime_type: Some("text/plain".to_string()),
-                bytes: b"hello".to_vec(),
-            },
-            caption: Some("hello".to_string()),
-            mime_type: None,
-            filename: None,
-            delivery: MessageDeliveryOptions::default(),
-        },
-    );
-    assert!(matches!(
-        send,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "attachments"
-    ));
+    let body = MessageBody::Attachment {
+        input: input.clone(),
+        caption: Some("caption".to_string()),
+        mime_type: Some("text/plain".to_string()),
+    };
 
-    let download = client.attachments().download(DownloadAttachmentRequest {
-        thread: ThreadRef::Direct(peer),
-        message_id: MessageId::parse("msg-1").unwrap(),
-        attachment_id: Some("att-1".to_string()),
-        destination: AttachmentDestination::Memory,
-        overwrite: false,
-    });
     assert!(matches!(
-        download,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "attachments"
+        body,
+        MessageBody::Attachment {
+            input: AttachmentInput::Bytes { bytes, .. },
+            ..
+        } if bytes == b"hello attachment".to_vec()
     ));
 }
 
@@ -89,38 +79,1024 @@ fn message_body_attachments_reuse_canonical_attachment_input() {
     }
 }
 
-fn test_core() -> ImCore {
-    ImCore::new(test_config(), test_paths()).unwrap()
+#[test]
+fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
+    let core = test_core();
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let send = client.attachments().send(
+        MessageTarget::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
+        AttachmentSendRequest {
+            input: AttachmentInput::Bytes {
+                filename: Some("image.png".to_string()),
+                mime_type: Some("image/png".to_string()),
+                bytes: b"png".to_vec(),
+            },
+            caption: Some("caption".to_string()),
+            mime_type: Some("image/png".to_string()),
+            filename: None,
+            delivery: MessageDeliveryOptions::default(),
+        },
+    );
+    assert!(matches!(
+        send,
+        Err(ImError::InvalidInput { field: Some(field), message })
+            if field == "service_did" && message == "message service did is required"
+    ));
+
+    let download = client.attachments().download(DownloadAttachmentRequest {
+        thread: ThreadRef::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
+        message_id: MessageId::parse("msg-1").unwrap(),
+        attachment_id: Some("att-1".to_string()),
+        destination: AttachmentDestination::Memory,
+        overwrite: false,
+    });
+    assert!(matches!(download, Err(ImError::AuthRequired)));
 }
 
-fn test_config() -> ImCoreConfig {
+#[test]
+fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(handle_lookup_result()),
+        ExpectedHttp::rpc_result(json!({
+            "attachment_id": "att-1",
+            "slot_id": "slot-1",
+            "upload_uri": "__BASE__/objects/slot-1",
+            "upload_headers": {
+                "X-Upload-Token": "token-1",
+                "Ignored-Number": 7
+            },
+            "object_uri": "__BASE__/objects/att-1",
+            "commit_token": "commit-token-1",
+            "expires_at": "2026-05-23T01:00:00Z"
+        })),
+        ExpectedHttp::json(json!({})),
+        ExpectedHttp::rpc_result(json!({
+            "committed": true,
+            "attachment_id": "att-1",
+            "object_uri": "__BASE__/objects/att-1",
+            "committed_at": "2026-05-23T00:00:01Z"
+        })),
+        ExpectedHttp::rpc_result(json!({
+            "accepted": true,
+            "message_id": "msg-attachment-send-1",
+            "operation_id": "op-attachment-send-1",
+            "target_did": "did:example:bob",
+            "accepted_at": "2026-05-23T00:00:02Z",
+            "delivery_state": "accepted"
+        })),
+    ]);
+    let core = test_core_with_base_url_ready_identity_and_service_did(
+        server.base_url(),
+        "did:example:message-service",
+    );
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let result = client
+        .attachments()
+        .send(
+            MessageTarget::Direct(PeerRef::parse("bob.awiki.info", "").unwrap()),
+            AttachmentSendRequest {
+                input: AttachmentInput::Bytes {
+                    filename: Some("input.txt".to_string()),
+                    mime_type: Some("text/plain".to_string()),
+                    bytes: b"hello".to_vec(),
+                },
+                caption: Some("caption".to_string()),
+                mime_type: Some("application/custom".to_string()),
+                filename: Some("override.bin".to_string()),
+                delivery: MessageDeliveryOptions::default(),
+            },
+        )
+        .expect("public attachment send should resolve handle and run upload");
+
+    assert_eq!(result.message.id.as_str(), "msg-attachment-send-1");
+    assert_eq!(
+        result.message.receiver.as_ref().unwrap().as_str(),
+        "bob.awiki.info"
+    );
+    assert!(matches!(result.delivery, DeliveryState::Accepted));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].rpc_method().as_deref(), Some("lookup"));
+    assert_eq!(requests[0].params(), json!({ "handle": "bob.awiki.info" }));
+
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].path, "/im/rpc");
+    assert_eq!(
+        requests[1].rpc_method().as_deref(),
+        Some("attachment.create_slot")
+    );
+    assert_eq!(
+        requests[1].params()["meta"]["target"],
+        json!({ "kind": "service", "did": "did:example:message-service" })
+    );
+    assert_eq!(requests[1].params()["body"]["filename"], "override.bin");
+    assert_eq!(
+        requests[1].params()["body"]["mime_type"],
+        "application/custom"
+    );
+    assert_eq!(
+        requests[1].params()["body"]["intended_target"],
+        json!({ "kind": "agent", "did": "did:example:bob" })
+    );
+
+    assert_eq!(requests[2].method, "PUT");
+    assert_eq!(requests[2].path, "/objects/slot-1");
+    assert_eq!(requests[2].body, b"hello".to_vec());
+
+    assert_eq!(requests[3].method, "POST");
+    assert_eq!(requests[3].path, "/im/rpc");
+    assert_eq!(
+        requests[3].rpc_method().as_deref(),
+        Some("attachment.commit_object")
+    );
+    assert_eq!(requests[3].params()["body"]["attachment_id"], "att-1");
+    assert_eq!(requests[3].params()["body"]["slot_id"], "slot-1");
+
+    assert_eq!(requests[4].method, "POST");
+    assert_eq!(requests[4].path, "/im/rpc");
+    assert_eq!(requests[4].rpc_method().as_deref(), Some("direct.send"));
+    assert_eq!(
+        requests[4].params()["meta"]["target"],
+        json!({ "kind": "agent", "did": "did:example:bob" })
+    );
+    assert_eq!(
+        requests[4].params()["meta"]["content_type"],
+        im_core::compat::attachments::attachment_manifest_content_type()
+    );
+    assert_eq!(
+        requests[4].params()["body"]["payload"]["primary_attachment_id"],
+        "att-1"
+    );
+    assert_eq!(
+        requests[4].params()["body"]["payload"]["caption"],
+        "caption"
+    );
+}
+
+#[test]
+fn attachments_service_download_resolves_direct_handle_before_history_lookup() {
+    let server = AttachmentServiceTestServer::spawn(vec![
+        ExpectedHttp::rpc_result(handle_lookup_result()),
+        ExpectedHttp::rpc_result(json!({
+            "messages": [{
+                "id": "msg-attachment-1",
+                "message_id": "msg-attachment-1",
+                "sender_did": "did:key:z6mk-bob",
+                "content": {
+                    "attachments": [{
+                        "attachment_id": "att-1",
+                        "filename": "report.txt",
+                        "mime_type": "text/plain",
+                        "size": "16",
+                        "digest": { "alg": "sha-256", "value_b64u": "digest-1" },
+                        "access_info": { "object_uri": "__BASE__/objects/att-1" }
+                    }],
+                    "primary_attachment_id": "att-1",
+                    "caption": "report"
+                }
+            }],
+            "has_more": false
+        })),
+    ]);
+    let core = test_core_with_base_url_and_ready_identity(server.base_url());
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let err = client
+        .attachments()
+        .download(DownloadAttachmentRequest {
+            thread: ThreadRef::Direct(PeerRef::parse("bob.awiki.info", "").unwrap()),
+            message_id: MessageId::parse("msg-attachment-1").unwrap(),
+            attachment_id: Some("att-1".to_string()),
+            destination: AttachmentDestination::Memory,
+            overwrite: false,
+        })
+        .expect_err("unsupported sender DID should stop after resolved history lookup");
+    assert!(matches!(
+        err,
+        ImError::InvalidInput { field: Some(field), message }
+            if field == "did" && message.contains("unsupported DID method")
+    ));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    assert_eq!(requests[0].rpc_method().as_deref(), Some("lookup"));
+    assert_eq!(requests[0].params(), json!({ "handle": "bob.awiki.info" }));
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].path, "/im/rpc");
+    assert_eq!(
+        requests[1].rpc_method().as_deref(),
+        Some("direct.get_history")
+    );
+    assert_eq!(requests[1].params()["body"]["peer_did"], "did:example:bob");
+}
+
+#[test]
+fn attachments_dto_supports_explicit_local_file_destination() {
+    let request = DownloadAttachmentRequest {
+        thread: ThreadRef::Group(GroupRef::parse("did:example:group").unwrap()),
+        message_id: MessageId::parse("msg-1").unwrap(),
+        attachment_id: None,
+        destination: AttachmentDestination::LocalFile(PathBuf::from("/tmp/output.bin")),
+        overwrite: true,
+    };
+
+    assert!(matches!(
+        request.destination,
+        AttachmentDestination::LocalFile(path) if path == PathBuf::from("/tmp/output.bin")
+    ));
+    assert!(request.overwrite);
+}
+
+#[test]
+fn attachments_manifest_and_content_type_match_wire_contract() {
+    let prepared = im_core::compat::attachments::PreparedAttachment {
+        filename: "hello.txt".to_string(),
+        mime_type: "text/plain".to_string(),
+        size_string: "5".to_string(),
+        digest_b64u: "digest".to_string(),
+        ..im_core::compat::attachments::PreparedAttachment::default()
+    };
+    let descriptor = im_core::compat::attachments::AttachmentDescriptor::from_prepared(
+        &prepared,
+        "att-1",
+        "http://127.0.0.1:8080/objects/obj-1",
+    );
+
+    let manifest = im_core::compat::attachments::build_attachment_manifest(&descriptor, "hello");
+
+    assert_eq!(
+        im_core::compat::attachments::attachment_manifest_content_type(),
+        "application/anp-attachment-manifest+json"
+    );
+    assert_eq!(manifest["primary_attachment_id"], "att-1");
+    assert_eq!(manifest["caption"], "hello");
+    assert_eq!(
+        manifest["attachments"][0]["digest"],
+        json!({ "alg": "sha-256", "value_b64u": "digest" })
+    );
+    assert_eq!(
+        manifest["attachments"][0]["access_info"]["object_uri"],
+        "http://127.0.0.1:8080/objects/obj-1"
+    );
+    assert!(
+        im_core::compat::attachments::manifest_content_string(&manifest)
+            .contains("\"primary_attachment_id\":\"att-1\"")
+    );
+}
+
+#[test]
+fn attachments_prepare_payload_normalizes_digest_filename_and_mime_type() {
+    let prepared = im_core::compat::attachments::prepare_attachment_payload(
+        "hello.txt",
+        "",
+        b"hello".to_vec(),
+    )
+    .expect("prepared attachment");
+
+    assert_eq!(prepared.filename, "hello.txt");
+    assert_eq!(prepared.mime_type, "text/plain; charset=utf-8");
+    assert_eq!(prepared.size_bytes, 5);
+    assert_eq!(prepared.size_string, "5");
+    assert_eq!(
+        prepared.digest_b64u,
+        "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+    );
+    assert_eq!(prepared.payload, b"hello".to_vec());
+
+    let overridden = im_core::compat::attachments::prepare_attachment_payload(
+        "payload.bin",
+        "application/custom",
+        b"\x89PNG\r\n\x1a\n".to_vec(),
+    )
+    .expect("prepared with mime override");
+    assert_eq!(overridden.mime_type, "application/custom");
+
+    let detected_png = im_core::compat::attachments::prepare_attachment_payload(
+        "payload.bin",
+        "",
+        b"\x89PNG\r\n\x1a\n".to_vec(),
+    )
+    .expect("prepared png");
+    assert_eq!(detected_png.mime_type, "image/png");
+}
+
+#[test]
+fn attachments_selection_matches_visible_or_raw_message_id() {
+    let messages = vec![json!({
+        "id": "did:wba:awiki.ai:groups:test:e1_group:7",
+        "message_id": "msg-raw-1",
+        "sender_did": "did:wba:awiki.ai:user:alice:e1",
+        "content": {
+            "attachments": [{
+                "attachment_id": "att-1",
+                "filename": "hello.txt",
+                "mime_type": "text/plain",
+                "size": "5",
+                "digest": { "alg": "sha-256", "value_b64u": "digest" },
+                "access_info": { "object_uri": "http://127.0.0.1:8080/objects/obj-1" }
+            }],
+            "primary_attachment_id": "att-1",
+            "caption": "hello"
+        }
+    })];
+
+    let by_visible_id = im_core::compat::attachments::find_attachment_selection(
+        &messages,
+        "did:wba:awiki.ai:groups:test:e1_group:7",
+        "",
+    )
+    .expect("selection by visible id");
+    assert_eq!(by_visible_id.message_id, "msg-raw-1");
+    assert_eq!(
+        by_visible_id.requested_id,
+        "did:wba:awiki.ai:groups:test:e1_group:7"
+    );
+    assert_eq!(by_visible_id.attachment_id, "att-1");
+    assert_eq!(by_visible_id.sender_did, "did:wba:awiki.ai:user:alice:e1");
+    assert_eq!(by_visible_id.caption, "hello");
+
+    let by_raw_id =
+        im_core::compat::attachments::find_attachment_selection(&messages, "msg-raw-1", "att-1")
+            .expect("selection by raw id");
+    assert_eq!(by_raw_id.object_uri, "http://127.0.0.1:8080/objects/obj-1");
+    assert_eq!(by_raw_id.digest_b64u, "digest");
+}
+
+#[test]
+fn attachments_selection_requires_id_for_multiple_attachments() {
+    let messages = vec![json!({
+        "id": "msg-1",
+        "sender_did": "did:wba:awiki.ai:user:alice:e1",
+        "content": {
+            "attachments": [
+                {
+                    "attachment_id": "att-1",
+                    "access_info": { "object_uri": "http://example.test/1" }
+                },
+                {
+                    "attachment_id": "att-2",
+                    "access_info": { "object_uri": "http://example.test/2" }
+                }
+            ]
+        }
+    })];
+
+    let err = im_core::compat::attachments::find_attachment_selection(&messages, "msg-1", "")
+        .expect_err("missing attachment id should fail");
+
+    assert!(matches!(
+        err,
+        ImError::InvalidInput { field: Some(field), message }
+            if field == "attachment_id"
+                && message == im_core::compat::attachments::ERR_ATTACHMENT_ID_REQUIRED
+    ));
+}
+
+#[test]
+fn attachments_selection_with_paging_advances_until_match() {
+    let mut requested_skips = Vec::new();
+    let selection = im_core::compat::attachments::find_attachment_selection_with_paging(
+        |skip| {
+            requested_skips.push(skip);
+            if skip == 0 {
+                Ok((vec![json!({ "id": "other", "content": {} })], true))
+            } else {
+                Ok((
+                    vec![json!({
+                        "id": "msg-2",
+                        "sender_did": "did:wba:awiki.ai:user:alice:e1",
+                        "content": serde_json::to_string(&json!({
+                            "attachments": [{
+                                "attachment_id": "att-2",
+                                "filename": "two.bin",
+                                "access_info": { "object_uri": "http://example.test/2" }
+                            }]
+                        }))
+                        .unwrap()
+                    })],
+                    false,
+                ))
+            }
+        },
+        "msg-2",
+        "att-2",
+    )
+    .expect("paged selection");
+
+    assert_eq!(requested_skips, vec![0, 1]);
+    assert_eq!(selection.attachment_id, "att-2");
+    assert_eq!(selection.filename, "two.bin");
+    assert_eq!(selection.object_uri, "http://example.test/2");
+}
+
+#[test]
+fn attachment_discovery_selects_lowest_priority_compatible_service() {
+    let document = json!({
+        "service": [
+            {
+                "id": "#direct",
+                "type": "ANPMessageService",
+                "serviceEndpoint": "https://example.com/direct/rpc",
+                "serviceDid": "did:wba:example.com",
+                "profiles": ["anp.direct.base.v1"],
+                "securityProfiles": ["transport-protected"],
+                "priority": 1
+            },
+            {
+                "id": "#secondary",
+                "type": "ANPMessageService",
+                "serviceEndpoint": "https://example.com/secondary/rpc",
+                "serviceDid": "did:wba:example.com",
+                "profiles": ["anp.attachment.v1"],
+                "securityProfiles": ["transport-protected"],
+                "priority": 9
+            },
+            {
+                "id": "#primary",
+                "type": "ANPMessageService",
+                "serviceEndpoint": "https://example.com/primary/rpc",
+                "serviceDid": "did:wba:example.com",
+                "profiles": ["anp.attachment.v1"],
+                "securityProfiles": ["transport-protected"],
+                "priority": "2"
+            }
+        ]
+    });
+
+    let service = im_core::compat::attachments::select_attachment_rpc_service_from_document(
+        "did:wba:example.com:user:alice:e1",
+        &document,
+    )
+    .expect("service");
+
+    assert_eq!(service.rpc_endpoint, "https://example.com/primary/rpc");
+    assert_eq!(service.service_did, "did:wba:example.com");
+    assert_eq!(service.sender_did, "did:wba:example.com:user:alice:e1");
+}
+
+#[test]
+fn attachment_discovery_requires_attachment_profile_and_transport_security() {
+    let document = json!({
+        "service": [
+            {
+                "id": "#direct-only",
+                "type": "ANPMessageService",
+                "serviceEndpoint": "https://example.com/direct/rpc",
+                "serviceDid": "did:wba:example.com",
+                "profiles": ["anp.direct.base.v1"],
+                "securityProfiles": ["transport-protected"],
+                "priority": 1
+            },
+            {
+                "id": "#wrong-security",
+                "type": "ANPMessageService",
+                "serviceEndpoint": "https://example.com/attachment/rpc",
+                "serviceDid": "did:wba:example.com",
+                "profiles": ["anp.attachment.v1"],
+                "securityProfiles": ["secure-channel"],
+                "priority": 2
+            }
+        ]
+    });
+
+    let err = im_core::compat::attachments::select_attachment_rpc_service_from_document(
+        "did:wba:example.com:user:alice:e1",
+        &document,
+    )
+    .expect_err("missing compatible attachment service should fail");
+
+    assert!(matches!(
+        err,
+        ImError::InvalidInput { field: Some(field), message }
+            if field == "did_document"
+                && message.contains("does not expose a compatible ANPMessageService")
+    ));
+}
+
+#[test]
+fn attachment_discovery_rejects_endpoint_without_http_scheme() {
+    let document = json!({
+        "service": [{
+            "id": "#attachment",
+            "type": "ANPMessageService",
+            "serviceEndpoint": "example.com/attachment/rpc",
+            "serviceDid": "did:wba:example.com",
+            "profiles": ["anp.attachment.v1"],
+            "security_profiles": ["transport-protected"]
+        }]
+    });
+
+    let err = im_core::compat::attachments::select_attachment_rpc_service_from_document(
+        "did:wba:example.com:user:alice:e1",
+        &document,
+    )
+    .expect_err("invalid endpoint should fail");
+
+    assert!(matches!(
+        err,
+        ImError::InvalidInput { field: Some(field), message }
+            if field == "service_endpoint"
+                && message == "attachment service endpoint is invalid: missing protocol scheme"
+    ));
+}
+
+#[test]
+fn attachment_wire_slot_commit_ticket_and_manifest_send_match_contracts() {
+    let prepared = im_core::compat::attachments::PreparedAttachment {
+        filename: "hello.txt".to_string(),
+        mime_type: "text/plain".to_string(),
+        size_string: "5".to_string(),
+        digest_b64u: "digest".to_string(),
+        ..im_core::compat::attachments::PreparedAttachment::default()
+    };
+
+    let create_slot = im_core::compat::attachments::build_attachment_create_slot_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai:services:message:e1",
+        "agent",
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        &prepared,
+    )
+    .expect("create-slot params");
+    assert_eq!(create_slot["meta"]["profile"], "anp.attachment.v1");
+    assert_eq!(
+        create_slot["meta"]["target"],
+        json!({ "kind": "service", "did": "did:wba:awiki.ai:services:message:e1" })
+    );
+    assert_eq!(create_slot["body"]["expected_size"], "5");
+    assert_eq!(
+        create_slot["body"]["expected_digest"]["value_b64u"],
+        "digest"
+    );
+    assert_eq!(
+        create_slot["body"]["intended_target"],
+        json!({ "kind": "agent", "did": "did:wba:awiki.ai:user:bob:e1_bob" })
+    );
+    assert_eq!(create_slot.get("auth"), None);
+
+    let slot = im_core::compat::attachments::AttachmentCreateSlotResult {
+        attachment_id: "att-1".to_string(),
+        slot_id: "slot-1".to_string(),
+        commit_token: "commit-token".to_string(),
+        object_uri: "http://127.0.0.1:8080/objects/obj-1".to_string(),
+        ..im_core::compat::attachments::AttachmentCreateSlotResult::default()
+    };
+    let commit = im_core::compat::attachments::build_attachment_commit_object_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai:services:message:e1",
+        &prepared,
+        &slot,
+    )
+    .expect("commit params");
+    assert_eq!(commit["body"]["attachment_id"], "att-1");
+    assert_eq!(commit["body"]["slot_id"], "slot-1");
+    assert_eq!(commit["body"]["commit_token"], "commit-token");
+    assert_eq!(commit["body"]["size"], "5");
+    assert_eq!(commit["body"]["digest"]["value_b64u"], "digest");
+
+    let selection = im_core::compat::attachments::AttachmentSelection {
+        attachment_id: "att-1".to_string(),
+        object_uri: "http://127.0.0.1:8080/objects/obj-1".to_string(),
+        ..im_core::compat::attachments::AttachmentSelection::default()
+    };
+    let ticket = im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai",
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        "msg-1",
+        "",
+        &selection,
+    )
+    .expect("ticket params");
+    assert_eq!(
+        ticket["body"]["sender_did"],
+        "did:wba:awiki.ai:user:bob:e1_bob"
+    );
+    assert_eq!(
+        ticket["body"]["requester_did"],
+        "did:wba:awiki.ai:user:alice:e1_alice"
+    );
+    assert_eq!(
+        ticket["body"]["message_target_did"],
+        "did:wba:awiki.ai:user:alice:e1_alice"
+    );
+    assert_eq!(ticket.get("auth"), None);
+
+    let identity = generated_attachment_wire_identity();
+    let manifest = json!({
+        "attachments": [{
+            "attachment_id": "att-1",
+            "filename": "hello.txt",
+        }],
+        "primary_attachment_id": "att-1"
+    });
+    let direct = im_core::compat::attachments::build_direct_attachment_send_rpc_params(
+        &identity,
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        manifest.clone(),
+    )
+    .expect("direct attachment params");
+    assert_eq!(direct["meta"]["profile"], "anp.direct.base.v1");
+    assert_eq!(
+        direct["meta"]["target"],
+        json!({ "kind": "agent", "did": "did:wba:awiki.ai:user:bob:e1_bob" })
+    );
+    assert_eq!(
+        direct["meta"]["content_type"],
+        im_core::compat::attachments::attachment_manifest_content_type()
+    );
+    assert_eq!(direct["body"]["payload"], manifest);
+    assert_eq!(
+        direct["auth"]["scheme"],
+        im_core::compat::proof::ORIGIN_PROOF_SCHEME
+    );
+
+    let group = im_core::compat::attachments::build_group_attachment_send_rpc_params(
+        &identity,
+        "did:wba:awiki.ai:groups:test:e1_group",
+        direct["body"]["payload"].clone(),
+    )
+    .expect("group attachment params");
+    assert_eq!(group["meta"]["profile"], "anp.group.base.v1");
+    assert_eq!(
+        group["meta"]["target"],
+        json!({ "kind": "group", "did": "did:wba:awiki.ai:groups:test:e1_group" })
+    );
+    assert_eq!(
+        group["meta"]["content_type"],
+        im_core::compat::attachments::attachment_manifest_content_type()
+    );
+    assert_eq!(
+        group["auth"]["scheme"],
+        im_core::compat::proof::ORIGIN_PROOF_SCHEME
+    );
+}
+
+#[test]
+fn attachment_wire_maps_validation_to_core_errors() {
+    let prepared = im_core::compat::attachments::PreparedAttachment::default();
+    let err = im_core::compat::attachments::build_attachment_create_slot_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai:services:message:e1",
+        "agent",
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        &prepared,
+    )
+    .expect_err("empty prepared attachment should fail");
+
+    assert!(matches!(
+        err,
+        ImError::InvalidInput { field: Some(field), message }
+            if field == "file_path" && message == "attachment file path is required"
+    ));
+
+    let selection = im_core::compat::attachments::AttachmentSelection::default();
+    let err = im_core::compat::attachments::build_attachment_download_ticket_rpc_params(
+        "did:wba:awiki.ai:user:alice:e1_alice",
+        "did:wba:awiki.ai",
+        "did:wba:awiki.ai:user:bob:e1_bob",
+        "msg-1",
+        "",
+        &selection,
+    )
+    .expect_err("missing attachment id should fail");
+
+    assert!(matches!(
+        err,
+        ImError::InvalidInput { field: Some(field), message }
+            if field == "attachment_id"
+                && message == im_core::compat::attachments::ERR_ATTACHMENT_NOT_FOUND
+    ));
+}
+
+fn test_core() -> ImCore {
+    ImCore::new(
+        test_config_with_base_url("https://example.test"),
+        test_paths(),
+    )
+    .unwrap()
+}
+
+fn test_core_with_base_url_and_ready_identity(base_url: &str) -> ImCore {
+    test_core_with_base_url_ready_identity_and_service_did(base_url, "")
+}
+
+fn test_core_with_base_url_ready_identity_and_service_did(
+    base_url: &str,
+    service_did: &str,
+) -> ImCore {
+    let paths = test_paths();
+    write_ready_identity(&paths.identities.identity_root_dir, "alice");
+    fs::write(
+        paths
+            .identities
+            .default_identity_path
+            .as_ref()
+            .expect("default identity path"),
+        "alice\n",
+    )
+    .unwrap();
+    fs::write(
+        &paths.identities.registry_path,
+        r#"{
+          "default_identity": "alice",
+          "identities": [{
+            "id": "alice-id",
+            "did": "did:example:alice",
+            "handle": "alice.awiki.info",
+            "display_name": "Alice",
+            "local_alias": "alice",
+            "ready_for_auth": true,
+            "ready_for_messaging": true,
+            "missing": []
+          }]
+        }"#,
+    )
+    .unwrap();
+    let mut config = test_config_with_base_url(base_url);
+    config.anp_service_did =
+        (!service_did.trim().is_empty()).then(|| Did::parse(service_did).unwrap());
+    ImCore::new(config, paths).unwrap()
+}
+
+fn write_ready_identity(identities: &Path, alias: &str) {
+    let identity_dir = identities.join(alias);
+    fs::create_dir_all(&identity_dir).unwrap();
+    let bundle = anp::authentication::create_did_wba_document(
+        "awiki.info",
+        anp::authentication::DidDocumentOptions {
+            path_segments: vec!["user".to_string()],
+            domain: Some("awiki.info".to_string()),
+            challenge: Some(format!("attachment-api-{alias}")),
+            ..anp::authentication::DidDocumentOptions::default()
+        },
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("did.json"),
+        serde_json::to_vec_pretty(&bundle.did_document).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("private.key"),
+        bundle.private_key_pem("key-1").unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        identity_dir.join("auth.json"),
+        format!(r#"{{"jwt_token":"test-token-for-{alias}"}}"#),
+    )
+    .unwrap();
+}
+
+fn generated_attachment_wire_identity() -> im_core::compat::attachments::AttachmentSigningIdentity {
+    use anp::authentication::{create_did_wba_document, DidDocumentOptions};
+
+    let bundle = create_did_wba_document(
+        "awiki.ai",
+        DidDocumentOptions {
+            path_segments: vec!["user".to_string()],
+            domain: Some("awiki.ai".to_string()),
+            challenge: Some("attachment-wire-test".to_string()),
+            ..DidDocumentOptions::default()
+        },
+    )
+    .expect("generated did document");
+    let key1_private_pem = bundle
+        .private_key_pem("key-1")
+        .expect("key-1 private pem")
+        .to_string();
+    im_core::compat::attachments::AttachmentSigningIdentity {
+        identity_name: "alice".to_string(),
+        did: bundle.did().expect("generated did").to_string(),
+        did_document: Some(bundle.did_document),
+        key1_private_pem,
+    }
+}
+
+fn test_config_with_base_url(base_url: &str) -> ImCoreConfig {
     ImCoreConfig {
-        service_base_url: ServiceEndpoint::parse("https://example.test").unwrap(),
+        service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
         did_domain: "awiki.info".to_string(),
         user_service_endpoint: None,
         message_service_endpoint: None,
         anp_service_endpoint: None,
         anp_service_did: None,
-        transport_policy: MessageTransportPolicy::HttpOnly,
+        transport_policy: MessageTransportPolicy::Auto,
     }
 }
 
 fn test_paths() -> ImCorePaths {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/im-core-tests/attachment-api")
-        .join(format!("{:?}", std::thread::current().id()));
+    let root = unique_temp_root();
     ImCorePaths {
         identities: IdentityRegistryPaths {
-            identity_root_dir: base.join("identities"),
-            registry_path: base.join("identities").join("registry.json"),
-            default_identity_path: Some(base.join("identities").join("default")),
+            identity_root_dir: root.join("identities"),
+            registry_path: root.join("identities").join("registry.json"),
+            default_identity_path: Some(root.join("identities").join("default")),
         },
         local_state: LocalStatePaths {
-            sqlite_path: base.join("local").join("im.sqlite"),
+            sqlite_path: root.join("local").join("im.sqlite"),
         },
         runtime: RuntimePaths {
-            cache_dir: base.join("cache"),
-            temp_dir: base.join("tmp"),
+            cache_dir: root.join("cache"),
+            temp_dir: root.join("tmp"),
         },
     }
+}
+
+fn unique_temp_root() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "im-core-attachment-api-{}-{nanos}",
+        std::process::id()
+    ))
+}
+
+fn handle_lookup_result() -> Value {
+    json!({
+        "handle": "bob",
+        "full_handle": "bob.awiki.info",
+        "did": "did:example:bob",
+        "domain": "awiki.info",
+        "status": "active",
+    })
+}
+
+struct AttachmentServiceTestServer {
+    base_url: String,
+    handle: thread::JoinHandle<Vec<CapturedHttp>>,
+}
+
+impl AttachmentServiceTestServer {
+    fn spawn(responses: Vec<ExpectedHttp>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let handle_base_url = base_url.clone();
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut captured = Vec::new();
+            for response in responses {
+                let mut stream = accept_before_deadline(&listener, deadline);
+                let request = read_http_request(&mut stream);
+                write_http_response(&mut stream, response.replace_base(&handle_base_url));
+                captured.push(request);
+            }
+            captured
+        });
+        Self { base_url, handle }
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn join(self) -> Vec<CapturedHttp> {
+        self.handle.join().unwrap()
+    }
+}
+
+struct ExpectedHttp {
+    status_code: u16,
+    content_type: String,
+    body: Vec<u8>,
+}
+
+impl ExpectedHttp {
+    fn json(body: Value) -> Self {
+        Self {
+            status_code: 200,
+            content_type: "application/json".to_string(),
+            body: body.to_string().into_bytes(),
+        }
+    }
+
+    fn rpc_result(result: Value) -> Self {
+        Self::json(json!({
+            "jsonrpc": "2.0",
+            "id": "req-1",
+            "result": result,
+        }))
+    }
+
+    fn replace_base(mut self, base_url: &str) -> Self {
+        let body = String::from_utf8(self.body.clone())
+            .ok()
+            .map(|body| body.replace("__BASE__", base_url).as_bytes().to_vec());
+        if let Some(body) = body {
+            self.body = body;
+        }
+        self
+    }
+}
+
+#[derive(Debug)]
+struct CapturedHttp {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+impl CapturedHttp {
+    fn json_body(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap_or(Value::Null)
+    }
+
+    fn rpc_method(&self) -> Option<String> {
+        self.json_body()
+            .get("method")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    }
+
+    fn params(&self) -> Value {
+        self.json_body()
+            .get("params")
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+}
+
+fn accept_before_deadline(listener: &TcpListener, deadline: Instant) -> TcpStream {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "timed out waiting for request");
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => panic!("accept request: {err}"),
+        }
+    }
+}
+
+fn read_http_request(stream: &mut TcpStream) -> CapturedHttp {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let count = stream.read(&mut buffer).unwrap();
+        assert!(count > 0, "request closed before headers");
+        raw.extend_from_slice(&buffer[..count]);
+        if let Some(index) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index;
+        }
+    };
+    let headers_text = std::str::from_utf8(&raw[..header_end]).unwrap();
+    let mut lines = headers_text.lines();
+    let request_line = lines.next().unwrap();
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap().to_string();
+    let path = request_parts.next().unwrap().to_string();
+    let headers = lines
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    while raw.len() < body_start + content_length {
+        let count = stream.read(&mut buffer).unwrap();
+        assert!(count > 0, "request closed before body");
+        raw.extend_from_slice(&buffer[..count]);
+    }
+    CapturedHttp {
+        method,
+        path,
+        body: raw[body_start..body_start + content_length].to_vec(),
+    }
+}
+
+fn write_http_response(stream: &mut TcpStream, response: ExpectedHttp) {
+    write!(
+        stream,
+        "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        response.status_code,
+        response.content_type,
+        response.body.len()
+    )
+    .unwrap();
+    stream.write_all(&response.body).unwrap();
 }

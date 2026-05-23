@@ -27,17 +27,16 @@ def ensure_core_import(match: re.Match[str]) -> str:
     indent = match.group("indent")
     if f"{indent}use crate::api::core::*;" in block:
         return block
-    return block + f"{indent}use crate::api::core::*;\n"
+    return f"{block}{indent}use crate::api::core::*;\n"
 
 s, replacements = re.subn(
-    r"(?m)^(?P<indent>\s*)use crate::api::auth::\*;\n"
-    r"(?P=indent)use crate::api::client::\*;\n"
+    r"(?m)^(?P<indent>\s*)use crate::api::client::\*;\n"
     r"(?:(?P=indent)use crate::api::core::\*;\n)?",
     ensure_core_import,
     s,
 )
 if replacements == 0:
-    raise RuntimeError("FRB generated imports no longer contain the auth/client import marker")
+    raise RuntimeError("FRB generated imports no longer contain the client import marker")
 
 s = s.replace('#[unsafe(no_mangle)]', '#[no_mangle]')
 io_boilerplate = '''    pub trait NewWithNullPtr {

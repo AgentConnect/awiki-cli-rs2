@@ -23,13 +23,14 @@ fn replace_did_migrates_legacy_config_json_before_active_identity_boundary_like_
     );
 
     let replace = awiki_cmd(&["id", "replace-did"], workspace.path());
-    assert_code(&replace, 5);
+    assert_code(&replace, 2);
     let replace = error_json(&replace);
-    assert_eq!(replace["error"]["code"], "not_found");
-    assert!(replace["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("identity not found: no active identity is configured"));
+    assert_eq!(replace["error"]["code"], "unsupported_capability");
+    assert_eq!(
+        replace["error"]["details"]["capability"],
+        "replace-did execution"
+    );
+    assert_eq!(replace["error"]["details"]["command"], "id.replace-did");
 
     assert!(!legacy_config.exists());
     assert_migrated_config(

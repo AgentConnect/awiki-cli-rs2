@@ -33,16 +33,18 @@ pub use crate::ids::{
 pub use crate::messages::{
     Conversation, ConversationQuery, DeliveryState, HistoryQuery, InboxQuery, InboxScope,
     MarkReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
-    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageSecurityMode,
-    MessageService, MessageTarget, SendMessageRequest, SendMessageResult, ThreadRef,
+    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageRetryAction,
+    MessageRetryPlan, MessageSecurityMode, MessageSendState, MessageSendStateKind, MessageService,
+    MessageTarget, SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::{
+    run_realtime_transport_until_shutdown, run_realtime_transport_with_event_sink_until_shutdown,
     ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
     HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent, MessageUpdateKind,
     MessageUpdatedEvent, RealtimeConnectionState, RealtimeControl, RealtimeEventReceiver,
-    RealtimeExit, RealtimeExitReason, RealtimeHandle, RealtimeOptions, RealtimeService,
-    RealtimeStatus, RealtimeSubscription, ReconnectPolicy, ShutdownSignal,
-    UnknownNotificationEvent,
+    RealtimeExit, RealtimeExitReason, RealtimeHandle, RealtimeOptions, RealtimeRunnerEventSink,
+    RealtimeRunnerOutcome, RealtimeRunnerTransport, RealtimeService, RealtimeStatus,
+    RealtimeSubscription, ReconnectPolicy, ShutdownSignal, UnknownNotificationEvent,
 };
 pub use crate::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};

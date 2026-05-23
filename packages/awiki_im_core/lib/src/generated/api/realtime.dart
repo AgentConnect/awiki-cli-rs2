@@ -7,7 +7,7 @@ import '../dto/error.dart';
 import '../dto/message.dart';
 import '../dto/realtime.dart';
 import '../frb_generated.dart';
-import 'auth.dart';
+import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `new`, `stop`, `take_event_receiver`
