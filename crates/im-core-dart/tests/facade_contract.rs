@@ -16,15 +16,16 @@ fn retry_message_is_explicitly_unsupported_until_im_core_has_retry_api() {
 }
 
 #[test]
-fn realtime_connect_is_explicitly_unsupported_until_bridge_plan_is_ready() {
+fn realtime_runner_capability_is_exposed_after_bridge_plan_lands() {
     let capability = awiki_im_core::dto::realtime::DartRealtimeCapability {
         status_supported: true,
-        connect_supported: false,
-        runner_exposed: false,
-        reason: Some("Dart SDK v0.1 does not expose realtime runner yet".to_string()),
+        connect_supported: true,
+        runner_exposed: true,
+        reason: None,
     };
-    assert!(!capability.connect_supported);
-    assert!(!capability.runner_exposed);
+    assert!(capability.connect_supported);
+    assert!(capability.runner_exposed);
+    assert!(capability.reason.is_none());
 }
 
 #[test]

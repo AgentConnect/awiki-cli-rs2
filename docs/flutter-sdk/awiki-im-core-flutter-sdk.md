@@ -51,7 +51,28 @@ The SDK exposes `registerHandleWithPhone`, `registerHandleWithEmail`, and `recov
 
 ## Realtime ownership
 
-v0.1 exposes capability/status shape only. Realtime connect/session/events are deferred; `connect()` returns `unsupported_capability("realtime-runner")`. WebSocket remains an `im-core` internal transport concern. Transport details such as WebSocket URLs, raw frames, ping/pong, request IDs, and dispatch queues are internal to `im-core` and must not become Dart public API. Future realtime work should expose high-level sessions/events only.
+The native SDK exposes realtime as a high-level session and event stream:
+
+```dart
+final capability = await client.realtime.capability();
+if (capability.runnerExposed) {
+  final session = await client.realtime.start();
+  final eventsSub = client.events.listen((event) {
+    // MessageReceived / GroupUpdated / HostNotification / connection state, etc.
+  });
+  final stateSub = client.connectionStates.listen((state) {
+    // connected / reconnecting / closed, without transport details.
+  });
+
+  await session.stop();
+  await eventsSub.cancel();
+  await stateSub.cancel();
+}
+```
+
+WebSocket remains an `im-core` internal transport concern. Transport details such as WebSocket URLs, raw frames, ping/pong, request IDs, bearer headers, and dispatch queues are internal to `im-core` and must not become Dart public API. App code should configure only `AwikiImCoreConfig.transportPolicy` and consume `client.events` / `client.connectionStates`.
+
+Flutter Web still receives a stub and does not support native realtime.
 
 ## Codegen
 

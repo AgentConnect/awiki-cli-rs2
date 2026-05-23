@@ -7,3 +7,4 @@ pub(crate) mod reconnect;
 pub(crate) mod session_loop;
 pub(crate) mod shutdown;
 pub(crate) mod transport;
+pub(crate) mod ws_transport;

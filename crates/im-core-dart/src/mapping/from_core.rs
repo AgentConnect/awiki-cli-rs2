@@ -12,7 +12,7 @@ use crate::dto::{
         DartMessageMetadataAttribute, DartMessagePage, DartSendMessageResult,
     },
     profile::DartUserProfile,
-    realtime::DartRealtimeStatus,
+    realtime::{DartRealtimeEvent, DartRealtimeStatus},
 };
 
 impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
@@ -460,7 +460,121 @@ impl From<im_core::realtime::RealtimeStatus> for DartRealtimeStatus {
     }
 }
 
-fn realtime_state_to_string(value: im_core::realtime::RealtimeConnectionState) -> String {
+pub(crate) fn realtime_event_to_dart(value: im_core::realtime::ImEvent) -> DartRealtimeEvent {
+    use im_core::realtime::{GroupUpdateKind, HostNotificationKind, ImEvent, MessageUpdateKind};
+
+    let empty = || DartRealtimeEvent {
+        kind: String::new(),
+        state: None,
+        reason: None,
+        message: None,
+        message_id: None,
+        thread_kind: None,
+        thread_id: None,
+        update_kind: None,
+        group: None,
+        notification_id: None,
+        title: None,
+        body: None,
+        source: None,
+        host_kind: None,
+        content_type: None,
+        notification_type: None,
+    };
+
+    match value {
+        ImEvent::ConnectionStateChanged(event) => {
+            let mut out = empty();
+            out.kind = "connection_state_changed".to_string();
+            out.state = Some(realtime_state_to_string(event.state));
+            out.reason = event.reason;
+            out
+        }
+        ImEvent::MessageReceived(event) => {
+            let mut out = empty();
+            out.kind = "message_received".to_string();
+            out.message = Some(event.message.into());
+            out
+        }
+        ImEvent::MessageUpdated(event) => {
+            let (thread_kind, thread_id) = thread_ref_parts(event.thread);
+            let mut out = empty();
+            out.kind = "message_updated".to_string();
+            out.message_id = Some(event.message_id.as_str().to_string());
+            out.thread_kind = Some(thread_kind);
+            out.thread_id = Some(thread_id);
+            out.update_kind = Some(
+                match event.update_kind {
+                    MessageUpdateKind::Read => "read",
+                    MessageUpdateKind::DeliveryStateChanged => "delivery_state_changed",
+                    MessageUpdateKind::Unknown => "unknown",
+                }
+                .to_string(),
+            );
+            out
+        }
+        ImEvent::GroupUpdated(event) => {
+            let mut out = empty();
+            out.kind = "group_updated".to_string();
+            out.group = Some(event.group.as_str().to_string());
+            out.update_kind = Some(
+                match event.update_kind {
+                    GroupUpdateKind::Created => "created",
+                    GroupUpdateKind::Updated => "updated",
+                    GroupUpdateKind::MemberAdded => "member_added",
+                    GroupUpdateKind::MemberRemoved => "member_removed",
+                    GroupUpdateKind::MessageAdded => "message_added",
+                    GroupUpdateKind::Unknown => "unknown",
+                }
+                .to_string(),
+            );
+            out
+        }
+        ImEvent::LocalNotification(event) => {
+            let mut out = empty();
+            out.kind = "local_notification".to_string();
+            out.notification_id = event.notification_id;
+            out.title = event.title;
+            out.body = event.body;
+            out.source = event.source;
+            out
+        }
+        ImEvent::HostNotification(event) => {
+            let mut out = empty();
+            out.kind = "host_notification".to_string();
+            out.host_kind = Some(
+                match event.event_type {
+                    HostNotificationKind::DirectMessage => "direct_message",
+                    HostNotificationKind::GroupMessage => "group_message",
+                    HostNotificationKind::GroupState => "group_state",
+                    HostNotificationKind::Mail => "mail",
+                    HostNotificationKind::Unknown => "unknown",
+                }
+                .to_string(),
+            );
+            out.title = event.title;
+            out.body = event.body;
+            if let Some(thread) = event.thread {
+                let (thread_kind, thread_id) = thread_ref_parts(thread);
+                out.thread_kind = Some(thread_kind);
+                out.thread_id = Some(thread_id);
+            }
+            out
+        }
+        ImEvent::UnknownNotification(event) => {
+            let mut out = empty();
+            out.kind = "unknown_notification".to_string();
+            out.reason = Some(event.reason);
+            out.content_type = event.content_type;
+            out.notification_type = event.notification_type;
+            out
+        }
+    }
+}
+
+pub(crate) fn realtime_state_to_string(
+    value: im_core::realtime::RealtimeConnectionState,
+) -> String {
     match value {
         im_core::realtime::RealtimeConnectionState::Disconnected => "disconnected".to_string(),
         im_core::realtime::RealtimeConnectionState::Connecting => "connecting".to_string(),
@@ -478,5 +592,115 @@ fn realtime_subscription_to_string(value: im_core::realtime::RealtimeSubscriptio
         im_core::realtime::RealtimeSubscription::HostNotifications => {
             "host_notifications".to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::realtime_event_to_dart;
+    use im_core::{
+        ids::{GroupRef, MessageId, PeerRef, ThreadId},
+        messages::{
+            Message, MessageBodyView, MessageDirection, MessageKind, MessageMetadata, ThreadRef,
+        },
+        realtime::{
+            ConnectionStateChanged, GroupUpdateKind, GroupUpdatedEvent, HostNotificationEvent,
+            HostNotificationKind, ImEvent, LocalNotificationEvent, MessageReceivedEvent,
+            MessageUpdateKind, MessageUpdatedEvent, RealtimeConnectionState,
+            UnknownNotificationEvent,
+        },
+    };
+
+    #[test]
+    fn realtime_event_mapping_preserves_connection_and_message_events() {
+        let event =
+            realtime_event_to_dart(ImEvent::ConnectionStateChanged(ConnectionStateChanged {
+                state: RealtimeConnectionState::Connected,
+                reason: Some("ready".to_string()),
+            }));
+        assert_eq!(event.kind, "connection_state_changed");
+        assert_eq!(event.state.as_deref(), Some("connected"));
+        assert_eq!(event.reason.as_deref(), Some("ready"));
+
+        let event = realtime_event_to_dart(ImEvent::MessageReceived(MessageReceivedEvent {
+            message: Message {
+                id: MessageId::parse("msg-dart-map-1").unwrap(),
+                thread: ThreadRef::Direct(PeerRef::parse("did:example:alice", "").unwrap()),
+                direction: MessageDirection::Incoming,
+                sender: PeerRef::parse("did:example:bob", "").unwrap(),
+                receiver: Some(PeerRef::parse("did:example:alice", "").unwrap()),
+                group: None,
+                body: MessageBodyView::Text {
+                    text: "hello".to_string(),
+                    kind: MessageKind::Text,
+                },
+                sent_at: None,
+                received_at: None,
+                metadata: MessageMetadata::default(),
+            },
+        }));
+        assert_eq!(event.kind, "message_received");
+        let message = event.message.expect("message payload");
+        assert_eq!(message.id, "msg-dart-map-1");
+        assert_eq!(message.thread_kind, "direct");
+        assert_eq!(message.body.text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn realtime_event_mapping_preserves_group_host_local_and_unknown_events() {
+        let group = realtime_event_to_dart(ImEvent::GroupUpdated(GroupUpdatedEvent {
+            group: GroupRef::parse("did:example:group").unwrap(),
+            update_kind: GroupUpdateKind::MessageAdded,
+        }));
+        assert_eq!(group.kind, "group_updated");
+        assert_eq!(group.group.as_deref(), Some("did:example:group"));
+        assert_eq!(group.update_kind.as_deref(), Some("message_added"));
+
+        let message_update = realtime_event_to_dart(ImEvent::MessageUpdated(MessageUpdatedEvent {
+            message_id: MessageId::parse("msg-dart-map-2").unwrap(),
+            thread: ThreadRef::Thread(ThreadId::parse("thread-1").unwrap()),
+            update_kind: MessageUpdateKind::DeliveryStateChanged,
+        }));
+        assert_eq!(message_update.kind, "message_updated");
+        assert_eq!(message_update.message_id.as_deref(), Some("msg-dart-map-2"));
+        assert_eq!(message_update.thread_kind.as_deref(), Some("thread"));
+        assert_eq!(message_update.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(
+            message_update.update_kind.as_deref(),
+            Some("delivery_state_changed")
+        );
+
+        let local = realtime_event_to_dart(ImEvent::LocalNotification(LocalNotificationEvent {
+            notification_id: Some("local-1".to_string()),
+            title: Some("Title".to_string()),
+            body: Some("Body".to_string()),
+            source: Some("sdk".to_string()),
+        }));
+        assert_eq!(local.kind, "local_notification");
+        assert_eq!(local.notification_id.as_deref(), Some("local-1"));
+        assert_eq!(local.source.as_deref(), Some("sdk"));
+
+        let host = realtime_event_to_dart(ImEvent::HostNotification(HostNotificationEvent {
+            event_type: HostNotificationKind::GroupState,
+            title: Some("Host".to_string()),
+            body: None,
+            thread: Some(ThreadRef::Group(
+                GroupRef::parse("did:example:group").unwrap(),
+            )),
+        }));
+        assert_eq!(host.kind, "host_notification");
+        assert_eq!(host.host_kind.as_deref(), Some("group_state"));
+        assert_eq!(host.thread_kind.as_deref(), Some("group"));
+
+        let unknown =
+            realtime_event_to_dart(ImEvent::UnknownNotification(UnknownNotificationEvent {
+                content_type: Some("application/json".to_string()),
+                notification_type: Some("custom.event".to_string()),
+                reason: "unsupported notification".to_string(),
+            }));
+        assert_eq!(unknown.kind, "unknown_notification");
+        assert_eq!(unknown.content_type.as_deref(), Some("application/json"));
+        assert_eq!(unknown.notification_type.as_deref(), Some("custom.event"));
+        assert_eq!(unknown.reason.as_deref(), Some("unsupported notification"));
     }
 }

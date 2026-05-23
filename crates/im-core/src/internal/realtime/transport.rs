@@ -59,18 +59,6 @@ pub trait RealtimeAuthProvider {
     ) -> crate::ImResult<RealtimeRefreshOutcome>;
 }
 
-pub(crate) struct UnavailableRealtimeTransport;
-
-impl RealtimeTransport for UnavailableRealtimeTransport {
-    fn dial_bearer(&mut self, websocket_url: &str, _bearer_token: &str) -> RealtimeDialOutcome {
-        RealtimeDialOutcome::Failed {
-            status_code: None,
-            error: format!("websocket transport is not configured for {websocket_url}"),
-            response_body: None,
-        }
-    }
-}
-
 pub(crate) struct FileRealtimeAuthProvider<'a> {
     client: &'a crate::core::ImClient,
 }
@@ -228,16 +216,63 @@ fn connect_error(
     Err(crate::ImError::TransportUnavailable { detail: error })
 }
 
-pub(crate) fn default_connect(
+pub(crate) fn require_realtime_auth_token(client: &crate::core::ImClient) -> crate::ImResult<()> {
+    read_auth_token(&client.runtime().auth_state_path)?
+        .map(|_| ())
+        .ok_or(crate::ImError::AuthRequired)
+}
+
+pub(crate) fn connect_native_websocket_session(
     client: &crate::core::ImClient,
-) -> crate::ImResult<crate::realtime::RealtimeHandle> {
+) -> crate::ImResult<super::ws_transport::WsTransport> {
     let service_base_url = client.core_inner().sdk_config().service_base_url.as_str();
     let endpoints = realtime_client_endpoints(service_base_url)?;
     let current_jwt =
         read_auth_token(&client.runtime().auth_state_path)?.ok_or(crate::ImError::AuthRequired)?;
-    let mut transport = UnavailableRealtimeTransport;
+    connect_native_websocket_session_with_token(client, &endpoints, current_jwt.trim())
+}
+
+fn connect_native_websocket_session_with_token(
+    client: &crate::core::ImClient,
+    endpoints: &RealtimeClientEndpoints,
+    current_jwt: &str,
+) -> crate::ImResult<super::ws_transport::WsTransport> {
+    let current_jwt = current_jwt.trim();
+    if !current_jwt.is_empty() {
+        match super::ws_transport::WsTransport::connect(&endpoints.websocket_url, current_jwt) {
+            Ok(transport) => return Ok(transport),
+            Err(err) if err.status_code == Some(401) => {}
+            Err(err) => {
+                return Err(crate::ImError::TransportUnavailable {
+                    detail: err.message,
+                });
+            }
+        }
+    }
+
     let mut auth = FileRealtimeAuthProvider::new(client);
-    connect_realtime_with_transport(&endpoints, &current_jwt, &mut transport, &mut auth)
+    let refreshed_token = match auth.refresh_realtime_bearer(&endpoints.did_auth_url)? {
+        RealtimeRefreshOutcome::Refreshed { current_jwt } => current_jwt.trim().to_string(),
+        RealtimeRefreshOutcome::Failed { error } => {
+            let error = if current_jwt.is_empty() {
+                error
+            } else {
+                format!("refresh websocket session JWT: {error}")
+            };
+            return Err(crate::ImError::TransportUnavailable { detail: error });
+        }
+    };
+    if refreshed_token.is_empty() {
+        return Err(crate::ImError::TransportUnavailable {
+            detail: "did-auth did not return a websocket bearer token".to_string(),
+        });
+    }
+
+    super::ws_transport::WsTransport::connect(&endpoints.websocket_url, &refreshed_token).map_err(
+        |err| crate::ImError::TransportUnavailable {
+            detail: err.message,
+        },
+    )
 }
 
 pub fn bearer_authorization_header(token: &str) -> String {
@@ -396,10 +431,7 @@ fn handle_with_initial_events(
         }
     }
     drop(sender);
-    crate::realtime::RealtimeHandle {
-        events: receiver,
-        control: crate::realtime::RealtimeControl::default(),
-    }
+    crate::realtime::RealtimeHandle::new(receiver, crate::realtime::RealtimeControl::default())
 }
 
 fn read_auth_token(path: &std::path::Path) -> crate::ImResult<Option<String>> {

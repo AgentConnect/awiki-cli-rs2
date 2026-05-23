@@ -17,10 +17,24 @@ flutter_rust_bridge_codegen generate \
 
 python3 - <<'PY'
 from pathlib import Path
+import re
 p = Path("crates/im-core-dart/src/frb_generated.rs")
 s = p.read_text()
-s = s.replace('use crate::api::client::*;\nuse flutter_rust_bridge', 'use crate::api::client::*;\nuse crate::api::core::*;\nuse flutter_rust_bridge')
-s = s.replace('use crate::api::client::*;\n    use flutter_rust_bridge', 'use crate::api::client::*;\n    use crate::api::core::*;\n    use flutter_rust_bridge')
+
+def ensure_core_import(match: re.Match[str]) -> str:
+    block = match.group(0)
+    indent = match.group("indent")
+    if f"{indent}use crate::api::core::*;" in block:
+        return block
+    return block + f"{indent}use crate::api::core::*;\n"
+
+s = re.sub(
+    r"(?m)^(?P<indent>\s*)use crate::api::auth::\*;\n"
+    r"(?P=indent)use crate::api::client::\*;\n"
+    r"(?:(?P=indent)use crate::api::core::\*;\n)?",
+    ensure_core_import,
+    s,
+)
 s = s.replace('#[unsafe(no_mangle)]', '#[no_mangle]')
 io_boilerplate = '''    pub trait NewWithNullPtr {
         fn new_with_null_ptr() -> Self;
@@ -91,3 +105,5 @@ for path in [Path("crates/im-core-dart/src/frb_generated.rs"), *Path("packages/a
     text = path.read_text()
     path.write_text("\n".join(line.rstrip() for line in text.splitlines()) + "\n")
 PY
+
+rustfmt "crates/im-core-dart/src/frb_generated.rs"
