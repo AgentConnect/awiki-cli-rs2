@@ -369,10 +369,17 @@ impl DirectoryService<'_> {
     pub fn lookup_handle(&self, handle: Handle) -> ImResult<ResolvedIdentity>;
     pub fn public_profile(&self, subject: IdentitySubject) -> ImResult<PublicProfile>;
     pub fn save_contact(&self, request: SaveContactRequest) -> ImResult<Contact>;
-    pub fn contacts(&self, query: ContactQuery) -> ImResult<Page<Contact>>;
+    pub fn contacts(&self, query: ContactListQuery) -> ImResult<Page<Contact>>;
     pub fn relation_status(&self, peer: PeerRef) -> ImResult<RelationStatus>;
+    pub fn follow(&self, request: FollowRequest) -> ImResult<FollowResult>;
+    pub fn unfollow(&self, request: UnfollowRequest) -> ImResult<UnfollowResult>;
+    pub fn relationship_status(&self, peer: PeerRef) -> ImResult<RelationshipStatus>;
+    pub fn followers(&self, query: RelationshipListQuery) -> ImResult<Page<RelationshipListItem>>;
+    pub fn following(&self, query: RelationshipListQuery) -> ImResult<Page<RelationshipListItem>>;
 }
 ```
+
+`relation_status(peer)` 是本地 contact projection 查询；`relationship_status(peer)` 是远端 DID relationship authoritative 查询，并合并本地 `is_contact` / `messaged` / `relationship` 投影。Relationship DTO 不暴露 user-service 内部 `from_user_id` / `to_user_id`。
 
 P1 的 `messages().send(Direct)` 可以内部做最小目标解析，但不需要对外暴露完整 `DirectoryService`。
 

@@ -448,9 +448,10 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
     );
 
     let contacts = schema_for(&["people", "contacts"]);
-    assert_eq!(schema_command(&contacts)["implemented"], false);
+    assert_eq!(schema_command(&contacts)["implemented"], true);
     let contacts_save = schema_child(&contacts, "people.contacts.save");
-    assert_go_stub_schema(contacts_save, "people.contacts.save", "phase8");
+    assert_eq!(contacts_save["implemented"], true);
+    assert_eq!(contacts_save["handler"], "people.contacts.save");
     assert_eq!(schema_flag(contacts_save, "did")["required"], true);
 
     let raw = schema_for(&["debug", "raw"]);
@@ -478,21 +479,7 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
             &["people", "search", "alice"][..],
             "people.search",
             "people-directory",
-            "future directory/relation API",
-        ),
-        (
-            &[
-                "people",
-                "contacts",
-                "save",
-                "--did",
-                "did:example:alice",
-                "--handle",
-                "alice",
-            ][..],
-            "people.contacts.save",
-            "people-directory",
-            "future directory/relation API",
+            "future people search API",
         ),
         (
             &["debug", "raw", "rpc"][..],
@@ -871,6 +858,40 @@ fn debug_db_query_returns_stable_unsupported_capability() {
     assert!(
         !workspace.path().join("data").join("awiki-cli.db").exists(),
         "unsupported debug db query must not create the local SQLite store"
+    );
+}
+
+#[test]
+fn people_contacts_save_dry_run_uses_im_core_handler() {
+    let workspace = TempDir::new().expect("temp workspace");
+
+    let output = awiki_cmd_with_workspace(
+        &[
+            "--dry-run",
+            "people",
+            "contacts",
+            "save",
+            "--did",
+            "did:example:alice",
+            "--handle",
+            "alice",
+            "--reason",
+            "migration smoke",
+        ],
+        workspace.path().to_str().unwrap(),
+    );
+    assert_success(&output);
+    let envelope = success_json(&output);
+
+    assert_eq!(envelope["command"], "awiki-cli people contacts save");
+    assert_eq!(envelope["meta"]["dry_run"], true);
+    assert_eq!(envelope["data"]["plan"]["action"], "contacts.save");
+    assert_eq!(envelope["data"]["plan"]["did"], "did:example:alice");
+    assert_eq!(envelope["data"]["plan"]["handle"], "alice.awiki.ai");
+    assert_eq!(envelope["data"]["plan"]["note"], "migration smoke");
+    assert_ne!(
+        envelope["error"]["code"], "unsupported_capability",
+        "people.contacts.save should route through the im-core handler"
     );
 }
 

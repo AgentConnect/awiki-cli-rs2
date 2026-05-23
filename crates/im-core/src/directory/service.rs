@@ -112,14 +112,21 @@ impl<'a> DirectoryService<'a> {
         request: super::SaveContactRequest,
     ) -> crate::ImResult<super::Contact> {
         validate_save_contact(&request)?;
-        let did = contact_did_from_request(&request)?;
+        let (did, handle) = contact_target_from_request(self, &request)?;
+        let mut request = request;
+        if request.did.is_none() {
+            request.did = Some(did.clone());
+        }
+        if request.handle.is_none() {
+            request.handle = handle;
+        }
         #[cfg(feature = "sqlite")]
         {
             let mut connection = crate::internal::contact_store::open_writable(self.client)?;
             let record = crate::internal::contact_store::projection::record_from_save_request(
                 self.client,
                 &request,
-                did,
+                did.clone(),
             );
             crate::internal::contact_store::records::upsert_contact(&mut connection, record)?;
             let record = crate::internal::contact_store::records::get_contact_by_did(
@@ -222,9 +229,171 @@ impl<'a> DirectoryService<'a> {
         self.client.did()
     }
 
+    pub fn follow(&self, request: super::FollowRequest) -> crate::ImResult<super::FollowResult> {
+        validate_peer(request.peer.as_str())?;
+        self.follow_with_runtime(
+            request,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+    }
+
+    pub(crate) fn follow_with_runtime<P, T>(
+        &self,
+        request: super::FollowRequest,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<super::FollowResult>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRpcTransport
+            + crate::internal::transport::RpcTransport,
+    {
+        crate::internal::relationship_runtime::RelationshipRuntime::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .follow(request)
+    }
+
+    pub fn unfollow(
+        &self,
+        request: super::UnfollowRequest,
+    ) -> crate::ImResult<super::UnfollowResult> {
+        validate_peer(request.peer.as_str())?;
+        self.unfollow_with_runtime(
+            request,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+    }
+
+    pub(crate) fn unfollow_with_runtime<P, T>(
+        &self,
+        request: super::UnfollowRequest,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<super::UnfollowResult>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRpcTransport
+            + crate::internal::transport::RpcTransport,
+    {
+        crate::internal::relationship_runtime::RelationshipRuntime::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .unfollow(request)
+    }
+
+    pub fn relationship_status(
+        &self,
+        peer: crate::ids::PeerRef,
+    ) -> crate::ImResult<super::RelationshipStatus> {
+        validate_peer(peer.as_str())?;
+        self.relationship_status_with_runtime(
+            peer,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+    }
+
+    pub(crate) fn relationship_status_with_runtime<P, T>(
+        &self,
+        peer: crate::ids::PeerRef,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<super::RelationshipStatus>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRpcTransport
+            + crate::internal::transport::RpcTransport,
+    {
+        crate::internal::relationship_runtime::RelationshipRuntime::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .relationship_status(peer)
+    }
+
+    pub fn followers(
+        &self,
+        query: super::RelationshipListQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::RelationshipListItem>> {
+        validate_relationship_list_query(&query)?;
+        self.followers_with_runtime(
+            query,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+    }
+
+    pub(crate) fn followers_with_runtime<P, T>(
+        &self,
+        query: super::RelationshipListQuery,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<crate::ids::Page<super::RelationshipListItem>>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRpcTransport
+            + crate::internal::transport::RpcTransport,
+    {
+        crate::internal::relationship_runtime::RelationshipRuntime::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .followers(query)
+    }
+
+    pub fn following(
+        &self,
+        query: super::RelationshipListQuery,
+    ) -> crate::ImResult<crate::ids::Page<super::RelationshipListItem>> {
+        validate_relationship_list_query(&query)?;
+        self.following_with_runtime(
+            query,
+            crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
+        )
+    }
+
+    pub(crate) fn following_with_runtime<P, T>(
+        &self,
+        query: super::RelationshipListQuery,
+        session_provider: P,
+        transport: T,
+    ) -> crate::ImResult<crate::ids::Page<super::RelationshipListItem>>
+    where
+        P: crate::internal::auth::session::SessionProvider,
+        T: crate::internal::transport::AuthenticatedRpcTransport
+            + crate::internal::transport::RpcTransport,
+    {
+        crate::internal::relationship_runtime::RelationshipRuntime::new(
+            self.client,
+            session_provider,
+            transport,
+        )
+        .following(query)
+    }
+
     fn owner_identity_id(&self) -> &str {
         self.client.current_identity().id.as_str()
     }
+}
+
+fn validate_peer(peer: &str) -> crate::ImResult<()> {
+    if peer.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("peer".to_string()),
+            "peer must not be empty",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_identity_subject(subject: &super::IdentitySubject) -> crate::ImResult<()> {
@@ -262,17 +431,27 @@ fn validate_save_contact(request: &super::SaveContactRequest) -> crate::ImResult
     Ok(())
 }
 
-fn contact_did_from_request(
+fn contact_target_from_request(
+    service: &DirectoryService<'_>,
     request: &super::SaveContactRequest,
-) -> crate::ImResult<crate::ids::Did> {
+) -> crate::ImResult<(crate::ids::Did, Option<crate::ids::Handle>)> {
     if let Some(did) = &request.did {
-        return Ok(did.clone());
+        return Ok((did.clone(), request.handle.clone()));
     }
     if request.peer.as_str().starts_with("did:") {
-        return crate::ids::Did::parse(request.peer.as_str());
+        return crate::ids::Did::parse(request.peer.as_str())
+            .map(|did| (did, request.handle.clone()));
     }
-    Err(crate::ImError::invalid_input(
-        Some("did".to_string()),
-        "contact DID is required when peer is a handle",
-    ))
+    let resolved = service.resolve_peer(request.peer.clone())?;
+    Ok((resolved.did, request.handle.clone().or(resolved.handle)))
+}
+
+fn validate_relationship_list_query(query: &super::RelationshipListQuery) -> crate::ImResult<()> {
+    if query.limit.is_some_and(|limit| limit.0 == 0) {
+        return Err(crate::ImError::invalid_input(
+            Some("limit".to_string()),
+            "limit must be greater than zero",
+        ));
+    }
+    Ok(())
 }

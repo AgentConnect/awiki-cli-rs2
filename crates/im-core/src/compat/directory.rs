@@ -3,6 +3,8 @@ use serde_json::Value;
 
 pub const HANDLE_RPC_ENDPOINT: &str = crate::internal::identity_wire::HANDLE_RPC_ENDPOINT;
 pub const DID_PROFILE_RPC_ENDPOINT: &str = crate::internal::identity_wire::DID_PROFILE_RPC_ENDPOINT;
+pub const DID_RELATIONSHIPS_RPC_ENDPOINT: &str =
+    crate::internal::identity_wire::DID_RELATIONSHIPS_RPC_ENDPOINT;
 
 pub fn build_handle_lookup_by_did_rpc_call(did: &str) -> crate::ImResult<RpcCall> {
     crate::internal::identity_wire::directory::build_handle_lookup_by_did_rpc_call(did)
@@ -22,6 +24,26 @@ pub fn build_public_profile_rpc_call(did: &str) -> crate::ImResult<RpcCall> {
 
 pub fn build_send_otp_rpc_call(phone: &str) -> crate::ImResult<RpcCall> {
     crate::internal::identity_wire::directory::build_send_otp_rpc_call(phone)
+}
+
+pub fn build_follow_rpc_call(target_did: &str) -> crate::ImResult<RpcCall> {
+    crate::internal::identity_wire::relationships::build_follow_rpc_call(target_did)
+}
+
+pub fn build_unfollow_rpc_call(target_did: &str) -> crate::ImResult<RpcCall> {
+    crate::internal::identity_wire::relationships::build_unfollow_rpc_call(target_did)
+}
+
+pub fn build_relationship_status_rpc_call(target_did: &str) -> crate::ImResult<RpcCall> {
+    crate::internal::identity_wire::relationships::build_relationship_status_rpc_call(target_did)
+}
+
+pub fn build_followers_rpc_call(limit: u32, offset: u32) -> crate::ImResult<RpcCall> {
+    crate::internal::identity_wire::relationships::build_followers_rpc_call(limit, offset)
+}
+
+pub fn build_following_rpc_call(limit: u32, offset: u32) -> crate::ImResult<RpcCall> {
+    crate::internal::identity_wire::relationships::build_following_rpc_call(limit, offset)
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -9,6 +9,10 @@ fn identity_wire_endpoint_constants_match_go_client() {
     );
     assert_eq!(directory::HANDLE_RPC_ENDPOINT, "/user-service/handle/rpc");
     assert_eq!(
+        directory::DID_RELATIONSHIPS_RPC_ENDPOINT,
+        "/user-service/did/relationships/rpc"
+    );
+    assert_eq!(
         identity::DID_PROFILE_RPC_ENDPOINT,
         "/user-service/did/profile/rpc"
     );
@@ -28,6 +32,64 @@ fn identity_wire_endpoint_constants_match_go_client() {
         identity::PHONE_BIND_VERIFY_ENDPOINT,
         "/user-service/auth/phone-bind-verify"
     );
+}
+
+#[test]
+fn identity_relationship_rpc_builders_match_go_methods_profiles_and_params() {
+    let did = " did:wba:tenant.example:user:bob:e1 ";
+    let follow = directory::build_follow_rpc_call(did).unwrap();
+    assert_eq!(follow.endpoint, directory::DID_RELATIONSHIPS_RPC_ENDPOINT);
+    assert_eq!(follow.method, "follow");
+    assert_eq!(follow.profile, directory::TransportProfile::RpcDefault);
+    assert_eq!(
+        follow.params,
+        json!({ "target_did": "did:wba:tenant.example:user:bob:e1" })
+    );
+
+    let unfollow = directory::build_unfollow_rpc_call(did).unwrap();
+    assert_eq!(unfollow.endpoint, directory::DID_RELATIONSHIPS_RPC_ENDPOINT);
+    assert_eq!(unfollow.method, "unfollow");
+    assert_eq!(unfollow.profile, directory::TransportProfile::RpcDefault);
+    assert_eq!(
+        unfollow.params,
+        json!({ "target_did": "did:wba:tenant.example:user:bob:e1" })
+    );
+
+    let status = directory::build_relationship_status_rpc_call(did).unwrap();
+    assert_eq!(status.endpoint, directory::DID_RELATIONSHIPS_RPC_ENDPOINT);
+    assert_eq!(status.method, "get_status");
+    assert_eq!(status.profile, directory::TransportProfile::RpcDefault);
+    assert_eq!(
+        status.params,
+        json!({ "target_did": "did:wba:tenant.example:user:bob:e1" })
+    );
+
+    let followers = directory::build_followers_rpc_call(25, 10).unwrap();
+    assert_eq!(
+        followers.endpoint,
+        directory::DID_RELATIONSHIPS_RPC_ENDPOINT
+    );
+    assert_eq!(followers.method, "get_followers");
+    assert_eq!(followers.profile, directory::TransportProfile::RpcReadHeavy);
+    assert_eq!(followers.params, json!({ "limit": 25, "offset": 10 }));
+
+    let following = directory::build_following_rpc_call(50, 0).unwrap();
+    assert_eq!(
+        following.endpoint,
+        directory::DID_RELATIONSHIPS_RPC_ENDPOINT
+    );
+    assert_eq!(following.method, "get_following");
+    assert_eq!(following.profile, directory::TransportProfile::RpcReadHeavy);
+    assert_eq!(following.params, json!({ "limit": 50, "offset": 0 }));
+
+    assert!(matches!(
+        directory::build_follow_rpc_call(" "),
+        Err(im_core::ImError::InvalidInput { field: Some(field), .. }) if field == "target_did"
+    ));
+    assert!(matches!(
+        directory::build_followers_rpc_call(0, 0),
+        Err(im_core::ImError::InvalidInput { field: Some(field), .. }) if field == "limit"
+    ));
 }
 
 #[test]

@@ -43,6 +43,26 @@ pub(crate) struct ContactHandleBindingRecord {
     pub(crate) credential_name: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct RelationshipEventRecord {
+    pub(crate) event_id: String,
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) target_did: String,
+    pub(crate) target_handle: String,
+    pub(crate) event_type: String,
+    pub(crate) source_type: String,
+    pub(crate) source_name: String,
+    pub(crate) source_group_id: String,
+    pub(crate) reason: String,
+    pub(crate) score: Option<f64>,
+    pub(crate) status: String,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+    pub(crate) metadata: String,
+    pub(crate) credential_name: String,
+}
+
 pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
     connection
         .execute_batch(
@@ -108,6 +128,34 @@ CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_handle
     ON contact_handle_bindings(owner_did, handle, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_handle
     ON contact_handle_bindings(owner_identity_id, handle, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS relationship_events (
+    event_id         TEXT PRIMARY KEY,
+    owner_identity_id TEXT,
+    owner_did        TEXT NOT NULL DEFAULT '',
+    target_did       TEXT NOT NULL,
+    target_handle    TEXT,
+    event_type       TEXT NOT NULL,
+    source_type      TEXT,
+    source_name      TEXT,
+    source_group_id  TEXT,
+    reason           TEXT,
+    score            REAL,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    metadata         TEXT,
+    credential_name  TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_identity_target_time
+    ON relationship_events(owner_identity_id, target_did, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_identity_status_time
+    ON relationship_events(owner_identity_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_target_time
+    ON relationship_events(owner_did, target_did, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_status_time
+    ON relationship_events(owner_did, status, created_at DESC);
 "#,
         )
         .map_err(super::local_state_unavailable)?;
@@ -123,6 +171,18 @@ CREATE INDEX IF NOT EXISTS idx_contact_handle_bindings_owner_identity_handle
         "contact_handle_bindings",
         "owner_identity_id",
         "TEXT",
+    )?;
+    ensure_column(
+        connection,
+        "relationship_events",
+        "owner_identity_id",
+        "TEXT",
+    )?;
+    ensure_column(
+        connection,
+        "relationship_events",
+        "credential_name",
+        "TEXT NOT NULL DEFAULT ''",
     )?;
     backfill_contact_handle_bindings(connection)?;
     Ok(())
@@ -648,6 +708,80 @@ pub(crate) fn upsert_contact(
         .commit()
         .map_err(super::local_state_unavailable)?;
     Ok(())
+}
+
+pub(crate) fn append_relationship_event(
+    connection: &Connection,
+    record: RelationshipEventRecord,
+) -> crate::ImResult<String> {
+    if record.target_did.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("target_did".to_string()),
+            "target did is required",
+        ));
+    }
+    if record.event_type.trim().is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("event_type".to_string()),
+            "event type is required",
+        ));
+    }
+    ensure_schema(connection)?;
+    let now = now_utc();
+    let owner_identity_id = normalize_owner_identity_id(&default_string(
+        record.owner_identity_id.clone(),
+        &record.credential_name,
+    ));
+    let owner_did = normalize_owner_did(&record.owner_did);
+    let event_id = default_string(
+        record.event_id.clone(),
+        &relationship_event_id(&record, &now),
+    );
+    let created_at = default_string(record.created_at.clone(), &now);
+    let updated_at = default_string(record.updated_at.clone(), &created_at);
+    connection
+        .execute(
+            r#"
+INSERT INTO relationship_events
+    (event_id, owner_identity_id, owner_did, target_did, target_handle, event_type, source_type, source_name,
+     source_group_id, reason, score, status, created_at, updated_at, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+ON CONFLICT(event_id) DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, relationship_events.owner_identity_id),
+    owner_did = excluded.owner_did,
+    target_did = excluded.target_did,
+    target_handle = excluded.target_handle,
+    event_type = excluded.event_type,
+    source_type = excluded.source_type,
+    source_name = excluded.source_name,
+    source_group_id = excluded.source_group_id,
+    reason = excluded.reason,
+    score = excluded.score,
+    status = excluded.status,
+    updated_at = excluded.updated_at,
+    metadata = excluded.metadata,
+    credential_name = COALESCE(excluded.credential_name, relationship_events.credential_name)"#,
+            params![
+                event_id.as_str(),
+                normalize_optional_string(&owner_identity_id),
+                owner_did.as_str(),
+                record.target_did.trim(),
+                normalize_optional_string(&record.target_handle),
+                record.event_type.trim(),
+                normalize_optional_string(&record.source_type),
+                normalize_optional_string(&record.source_name),
+                normalize_optional_string(&record.source_group_id),
+                normalize_optional_string(&record.reason),
+                record.score,
+                default_string(record.status.clone(), "applied"),
+                created_at.as_str(),
+                updated_at.as_str(),
+                normalize_metadata(&record.metadata),
+                normalize_optional_string(&record.credential_name),
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(event_id)
 }
 
 pub(crate) fn contact_to_dto(record: &ContactRecord) -> crate::ImResult<crate::directory::Contact> {
@@ -1231,6 +1365,18 @@ fn default_string(value: String, fallback: &str) -> String {
     } else {
         value
     }
+}
+
+fn relationship_event_id(record: &RelationshipEventRecord, now: &str) -> String {
+    let nanos = OffsetDateTime::now_utc().unix_timestamp_nanos();
+    format!(
+        "{}:{}:{}:{}:{}",
+        record.owner_did.trim(),
+        record.target_did.trim(),
+        record.event_type.trim(),
+        now,
+        nanos
+    )
 }
 
 fn optional_string(value: &str) -> Option<String> {

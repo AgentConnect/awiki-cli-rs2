@@ -769,9 +769,41 @@ pub struct DartRelationStatus {
     pub relationship: Option<String>,
     pub display_name: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub struct DartRelationshipStatus {
+    pub peer: String,
+    pub did: String,
+    pub is_following: bool,
+    pub is_follower: bool,
+    pub is_friend: bool,
+    pub is_contact: bool,
+    pub messaged: bool,
+    pub relationship: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DartRelationshipListItem {
+    pub did: Option<String>,
+    pub handle: Option<String>,
+    pub profile: Option<DartUserProfile>,
+    pub created_at: Option<String>,
+    pub warnings: Vec<String>,
+}
 ```
 
-Remote relationship mutation APIs，如 `follow`、`unfollow`、`list_followers`、`list_following`，如果 `im-core` 尚无 public API，则首版不要伪造实现。
+Remote relationship APIs 现在可绑定到 Rust `im-core` `DirectoryService`：
+
+```text
+follow -> client.inner.directory().follow(...)
+unfollow -> client.inner.directory().unfollow(...)
+relationship_status -> client.inner.directory().relationship_status(...)
+list_followers -> client.inner.directory().followers(...)
+list_following -> client.inner.directory().following(...)
+```
+
+Flutter/Dart facade 仍不得重新实现 HTTP RPC，也不得暴露 user-service 内部 `from_user_id` / `to_user_id` 字段。
 
 #### 4.7 realtime DTO
 
@@ -1200,21 +1232,25 @@ load_public_profile -> client.inner.directory().public_profile(...)
 resolve_peer(client, peer)
 lookup_handle(client, handle)
 relation_status(client, peer)
+follow(client, peer)
+unfollow(client, peer)
+relationship_status(client, peer)
+list_followers(client, query)
+list_following(client, query)
 ```
-
-不实现 remote mutation fallback：
 
 ```text
-follow
-unfollow
-list_followers
-list_following
+follow -> client.inner.directory().follow(...)
+unfollow -> client.inner.directory().unfollow(...)
+relationship_status -> client.inner.directory().relationship_status(...)
+list_followers -> client.inner.directory().followers(...)
+list_following -> client.inner.directory().following(...)
 ```
 
-如果为了未来 Dart wrapper API 兼容保留函数名，必须返回：
+如果某个具体 Dart facade 切片尚未绑定上述 Rust API，临时 unsupported 必须只标注 facade 缺口，例如：
 
 ```rust
-Err(DartImError::unsupported("relationship-remote-mutation"))
+Err(DartImError::unsupported("relationship-facade-binding"))
 ```
 
 不要在 `im-core-dart` 中重新写 HTTP RPC。
@@ -1997,9 +2033,9 @@ void main() {
 ```rust
 #[test]
 fn dart_error_unsupported_has_stable_code() {
-    let err = im_core_dart::dto::error::DartImError::unsupported("relationship-remote-mutation");
+    let err = im_core_dart::dto::error::DartImError::unsupported("relationship-facade-binding");
     assert_eq!(err.code, "unsupported_capability");
-    assert_eq!(err.capability.as_deref(), Some("relationship-remote-mutation"));
+    assert_eq!(err.capability.as_deref(), Some("relationship-facade-binding"));
 }
 
 #[test]

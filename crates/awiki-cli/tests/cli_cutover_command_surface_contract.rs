@@ -44,6 +44,13 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "group.list",
         "group.members",
         "group.messages",
+        "people.follow",
+        "people.unfollow",
+        "people.status",
+        "people.followers",
+        "people.following",
+        "people.contacts.list",
+        "people.contacts.save",
     ] {
         assert_eq!(
             cmdmeta::cutover_status(command),
@@ -124,7 +131,7 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
         cmdmeta::cutover_status("people.search"),
         CutoverStatus::Unsupported {
             capability: "people-directory",
-            phase: "future directory/relation API",
+            phase: "future people search API",
         }
     );
     assert_eq!(
@@ -202,6 +209,8 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "msg.send",
         "msg.inbox",
         "group.create",
+        "people.follow",
+        "people.contacts.list",
         "runtime.listener.start",
         "runtime.host-notify.hermes.setup",
     ] {
@@ -276,7 +285,7 @@ fn unsupported_cutover_stub_commands_do_not_enter_legacy_stub_boundary() {
             &["people", "search", "alice"][..],
             "people.search",
             "people-directory",
-            "future directory/relation API",
+            "future people search API",
         ),
         (
             &["debug", "raw", "rpc"][..],

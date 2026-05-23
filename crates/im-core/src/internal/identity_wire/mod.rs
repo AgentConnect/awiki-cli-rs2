@@ -2,6 +2,7 @@ pub(crate) mod bind;
 pub(crate) mod directory;
 pub(crate) mod profile;
 pub(crate) mod recovery;
+pub(crate) mod relationships;
 pub(crate) mod replace_did;
 
 use serde_json::{json, Value};
@@ -13,6 +14,7 @@ pub(crate) const JSON_RPC_ID: &str = "req-1";
 pub(crate) const DID_AUTH_RPC_ENDPOINT: &str = "/user-service/did-auth/rpc";
 pub(crate) const HANDLE_RPC_ENDPOINT: &str = "/user-service/handle/rpc";
 pub(crate) const DID_PROFILE_RPC_ENDPOINT: &str = "/user-service/did/profile/rpc";
+pub(crate) const DID_RELATIONSHIPS_RPC_ENDPOINT: &str = "/user-service/did/relationships/rpc";
 pub(crate) const EMAIL_SEND_ENDPOINT: &str = "/user-service/auth/email-send";
 pub(crate) const EMAIL_STATUS_ENDPOINT: &str = "/user-service/auth/email-status";
 pub(crate) const PHONE_BIND_SEND_ENDPOINT: &str = "/user-service/auth/phone-bind-send";
