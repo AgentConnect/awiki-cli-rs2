@@ -1293,7 +1293,7 @@ awiki-cli-rs2 local commit d056020
    - device_id 为空时使用 anp 默认 device id；
    - sibling scoped mls_state.sqlite 仍是 internal detail。
 6. 新增 module test，验证 NativeAnpMlsProvider 可通过 client identity scope 创建/finalize group 并读取 status。
-7. group-e2ee 仍未接 public SDK route；MessageSecurityMode::GroupE2ee 仍保持 reserved/unsupported。
+7. M4 截止时 group-e2ee 尚未接 public SDK route；后续 M6 已打开 group target 的 public send route。
 
 验证：
 1. cargo check -p im-core --no-default-features
@@ -1358,6 +1358,9 @@ awiki-cli-rs2 local commit 6bf9897
 awiki-cli-rs2 local commit 235e1ed
   feat: resolve group e2ee state ref internally
 
+awiki-cli-rs2 local commit c5934fd
+  feat: route public group e2ee sends through native provider
+
 已完成：
 1. 新增 internal/group_e2ee/runtime.rs：
    - GroupE2eeTextSender；
@@ -1404,14 +1407,26 @@ awiki-cli-rs2 local commit 235e1ed
    - caller 可不传 group_state_ref；
    - sender 会在 encrypt 前解析 group_state_ref；
    - resolved group_state_ref 只进入 anp::group_e2ee::operations::EncryptInput 和 service cipher body，不进入 public SDK DTO。
+10. public client.messages().send 已在 group-e2ee feature 下接入：
+    - MessageTarget::Group + MessageSecurityMode::GroupE2ee 走 NativeAnpMlsProvider；
+    - MessageTarget::Direct + MessageSecurityMode::GroupE2ee 仍返回 UnsupportedCapability；
+    - 未启用 group-e2ee feature 时，GroupE2ee 仍返回 UnsupportedCapability；
+    - 不新增 public DTO，不新增 storage/provider/path 参数。
+11. 新增 public route unit test 验证：
+    - public send 先调用 group.e2ee.head 解析 group_state_ref；
+    - 后续 group.e2ee.send 只发送 cipher wire；
+    - send request 不包含 plaintext / application_plaintext；
+    - send request 不包含 provider / StorageProvider / mls_state.sqlite / openmls_group_id_b64u；
+    - SDK result 仍由 message service response 映射。
 
 边界：
-1. 这是 im-core internal runtime slice，不接 public SDK route。
-2. MessageSecurityMode::GroupE2ee 对 public messages().send 仍保持 reserved/unsupported。
-3. group_state_ref 已可 internal auto-resolve，但 public route 仍需等 native provider factory、send projection 和 failure/retry 行为收敛后再打开。
+1. public route 只打开 group send，不打开 direct GroupE2ee。
+2. public route 只消费现有 MessageSecurityMode::GroupE2ee，不暴露 provider/path/OpenMLS/StorageProvider。
+3. group_state_ref 已可 internal auto-resolve，但仍只存在于 internal runtime、anp encrypt input 和 service cipher body。
 4. encrypt 不推进 MLS epoch，因此这一段不需要 prepare/finalize/abort。
 5. create/add/remove/update/recover/leave 后续接入时仍必须遵守 prepare -> service RPC -> finalize/abort。
 6. GroupStateRef / service head raw / MLS status 仍是 internal implementation detail，不进入 public SDK Interface。
+7. 发送成功后的本地 message cache projection、failure/retry policy 和 decrypt/status/repair 仍待后续 slice 完成。
 
 验证：
 1. cargo fmt --check
@@ -1420,6 +1435,7 @@ awiki-cli-rs2 local commit 235e1ed
 4. cargo test -p im-core --features group-e2ee group_e2ee_text_sender_resolves_state_ref_before_encrypting
 5. cargo test -p im-core --features group-e2ee state_ref
 6. cargo check -p im-core-dart
+7. cargo check -p im-core --no-default-features
 ```
 
 ### PR M7：awiki-cli 旧路径迁移
@@ -1506,12 +1522,16 @@ awiki-cli group_e2ee_* 不再默认直接 new MlsExecProvider。
 
 ## 12. 与 SDK Interface 的关系
 
-这个方案不改变 SDK public interface。
+这个方案不增加新的 SDK public interface。
 
 调用方仍然只看到：
 
 ```rust
-client.messages().send(... E2eeRequired ...)
+client.messages().send(SendMessageRequest {
+    target: MessageTarget::Group(group),
+    security: MessageSecurityMode::GroupE2ee,
+    ..
+})
 client.secure().group(group).status()
 client.secure().group(group).repair()
 client.secure().group(group).rotate_member_key()
