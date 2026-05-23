@@ -60,6 +60,10 @@ pub struct DirectMessageNotificationData {
     pub preview: String,
     #[serde(skip_serializing_if = "is_false")]
     pub has_attachments: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<HostNotificationAttachmentSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_action: Option<HostNotificationAttachmentDownloadAction>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +92,12 @@ pub struct GroupMessageNotificationData {
     pub group_event_seq: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub accepted_at: String,
+    #[serde(skip_serializing_if = "is_false")]
+    pub has_attachments: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<HostNotificationAttachmentSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_action: Option<HostNotificationAttachmentDownloadAction>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +122,32 @@ pub struct GroupStateChangedNotificationData {
     pub group_event_seq: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub changed_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostNotificationAttachmentSummary {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub attachment_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub filename: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub mime_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostNotificationAttachmentDownloadAction {
+    pub command: String,
+    pub message_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub attachment_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub with: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub group: String,
 }
 
 pub fn normalize_host_notification(

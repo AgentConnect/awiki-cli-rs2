@@ -669,6 +669,9 @@ mod tests {
                 received_at: None,
                 metadata: MessageMetadata::default(),
             },
+            attachment_summary: None,
+            download_action: None,
+            warnings: Vec::new(),
         }));
         assert_eq!(event.kind, "message_received");
         let message = event.message.expect("message payload");

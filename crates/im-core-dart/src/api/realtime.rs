@@ -93,7 +93,9 @@ pub fn realtime_status(
     })
 }
 
-pub fn realtime_connect(_client: &Arc<crate::api::client::DartImClient>) -> Result<(), DartImError> {
+pub fn realtime_connect(
+    _client: &Arc<crate::api::client::DartImClient>,
+) -> Result<(), DartImError> {
     let session = realtime_start(
         _client,
         DartRealtimeOptions {

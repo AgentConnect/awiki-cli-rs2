@@ -55,7 +55,7 @@ fn realtime_runner_connects_projects_notification_and_exits_on_closed_stream() {
                 state: RealtimeConnectionState::Connected,
                 reason: None,
             }),
-            ImEvent::MessageReceived(MessageReceivedEvent { message }),
+            ImEvent::MessageReceived(MessageReceivedEvent { message, .. }),
             ImEvent::ConnectionStateChanged(ConnectionStateChanged {
                 state: RealtimeConnectionState::Closed,
                 reason: None,

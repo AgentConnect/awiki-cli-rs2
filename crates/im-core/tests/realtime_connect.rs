@@ -312,7 +312,7 @@ fn realtime_service_connect_reads_native_websocket_notification_into_im_event() 
                 state: RealtimeConnectionState::Connected,
                 ..
             }),
-            ImEvent::MessageReceived(MessageReceivedEvent { message }),
+            ImEvent::MessageReceived(MessageReceivedEvent { message, .. }),
             ImEvent::ConnectionStateChanged(ConnectionStateChanged {
                 state: RealtimeConnectionState::Closed,
                 ..

@@ -52,15 +52,39 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
 
     let content_type = fallback_string(string_from_object(meta, "content_type"), "text/plain");
     let text = direct_text(body);
-    let message = Message {
-        id: parse_message_id(
-            &fallback_string(
-                string_from_object(meta, "message_id"),
-                &fallback_string(string_from_object(meta, "operation_id"), "unknown-direct"),
-            ),
-            "unknown-direct",
+    let message_id = parse_message_id(
+        &fallback_string(
+            string_from_object(meta, "message_id"),
+            &fallback_string(string_from_object(meta, "operation_id"), "unknown-direct"),
         ),
-        thread: ThreadRef::Direct(parse_peer(&sender)),
+        "unknown-direct",
+    );
+    let thread = ThreadRef::Direct(parse_peer(&sender));
+    let attachment_projection =
+        crate::internal::realtime::attachment_projection::project_attachment(
+            &content_type,
+            body,
+            &thread,
+            &message_id,
+        );
+    let mut metadata = message_metadata(
+        meta,
+        None,
+        Some(content_type.clone()),
+        [("notification_method", "direct.incoming")],
+    );
+    if let Some(attachment) = attachment_projection.as_ref() {
+        if let Some(summary) = attachment.summary.as_ref() {
+            metadata.attributes.extend(
+                crate::internal::realtime::attachment_projection::attachment_summary_attributes(
+                    summary,
+                ),
+            );
+        }
+    }
+    let message = Message {
+        id: message_id,
+        thread,
         direction: MessageDirection::Incoming,
         sender: parse_peer(&sender),
         receiver: Some(parse_peer(&receiver)),
@@ -68,16 +92,11 @@ fn project_direct_incoming(notification: &Value) -> NotificationProjection {
         body: message_body_view(&content_type, text),
         sent_at: none_if_empty(string_from_object(meta, "created_at")),
         received_at: None,
-        metadata: message_metadata(
-            meta,
-            None,
-            Some(content_type.clone()),
-            [("notification_method", "direct.incoming")],
-        ),
+        metadata,
     };
     NotificationProjection {
         route: NotificationProjectionRoute::DirectIncoming,
-        event: ImEvent::MessageReceived(MessageReceivedEvent { message }),
+        event: message_received_event(message, attachment_projection),
     }
 }
 
@@ -105,9 +124,33 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
         string_from_object(meta, "message_id"),
         &fallback_group_message_id(&group_did, body, meta, notification),
     );
+    let message_id = parse_message_id(&message_id, "unknown-group-message");
+    let thread = ThreadRef::Group(parse_group(&group_did));
+    let attachment_projection =
+        crate::internal::realtime::attachment_projection::project_attachment(
+            &content_type,
+            body,
+            &thread,
+            &message_id,
+        );
+    let mut metadata = message_metadata(
+        meta,
+        group_seq,
+        Some(content_type.clone()),
+        [("notification_method", "group.incoming")],
+    );
+    if let Some(attachment) = attachment_projection.as_ref() {
+        if let Some(summary) = attachment.summary.as_ref() {
+            metadata.attributes.extend(
+                crate::internal::realtime::attachment_projection::attachment_summary_attributes(
+                    summary,
+                ),
+            );
+        }
+    }
     let message = Message {
-        id: parse_message_id(&message_id, "unknown-group-message"),
-        thread: ThreadRef::Group(parse_group(&group_did)),
+        id: message_id,
+        thread,
         direction: if sender == receiver {
             MessageDirection::Outgoing
         } else {
@@ -122,16 +165,11 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
             &string_from_object(meta, "created_at"),
         )),
         received_at: None,
-        metadata: message_metadata(
-            meta,
-            group_seq,
-            Some(content_type.clone()),
-            [("notification_method", "group.incoming")],
-        ),
+        metadata,
     };
     NotificationProjection {
         route: NotificationProjectionRoute::GroupIncoming,
-        event: ImEvent::MessageReceived(MessageReceivedEvent { message }),
+        event: message_received_event(message, attachment_projection),
     }
 }
 
@@ -200,6 +238,30 @@ fn unknown_notification(
             reason: reason.to_string(),
         }),
     }
+}
+
+fn message_received_event(
+    message: Message,
+    attachment_projection: Option<
+        crate::internal::realtime::attachment_projection::AttachmentProjection,
+    >,
+) -> ImEvent {
+    let (attachment_summary, download_action, warnings) =
+        if let Some(attachment) = attachment_projection {
+            (
+                attachment.summary,
+                attachment.download_action,
+                attachment.warnings,
+            )
+        } else {
+            (None, None, Vec::new())
+        };
+    ImEvent::MessageReceived(MessageReceivedEvent {
+        message,
+        attachment_summary,
+        download_action,
+        warnings,
+    })
 }
 
 fn direct_text(body: Option<&Map<String, Value>>) -> String {
