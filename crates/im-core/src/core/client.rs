@@ -55,6 +55,10 @@ impl ImClient {
         crate::realtime::RealtimeService::new(self)
     }
 
+    pub fn secure(&self) -> crate::secure::SecureService<'_> {
+        crate::secure::SecureService::new(self)
+    }
+
     pub(crate) fn runtime(&self) -> &crate::internal::identity_runtime::ClientIdentityRuntime {
         &self.runtime
     }

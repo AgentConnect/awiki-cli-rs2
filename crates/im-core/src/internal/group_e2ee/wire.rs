@@ -6,8 +6,7 @@ pub(crate) const GROUP_E2EE_PROFILE: &str = anp::group_e2ee::PROFILE;
 pub(crate) const GROUP_E2EE_SECURITY_PROFILE: &str = anp::group_e2ee::SECURITY_PROFILE;
 pub(crate) const GROUP_E2EE_TRANSPORT_SECURITY_PROFILE: &str =
     anp::group_e2ee::TRANSPORT_SECURITY_PROFILE;
-pub(crate) const GROUP_E2EE_CIPHER_CONTENT_TYPE: &str =
-    anp::group_e2ee::commands::GROUP_CIPHER_CONTENT_TYPE;
+pub(crate) const GROUP_E2EE_CIPHER_CONTENT_TYPE: &str = anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE;
 
 pub(crate) fn build_group_e2ee_head_rpc_params(
     credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
@@ -60,6 +59,51 @@ pub(crate) fn build_group_e2ee_send_rpc_params(
             Some(message_id),
         )?,
         Value::Object(group_cipher_body(cipher)?),
+    )
+}
+
+pub(crate) fn build_group_e2ee_notice_rpc_params(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    sender_did: &str,
+    group_did: &str,
+    limit: i64,
+    mark_delivered: bool,
+    notice_ids: &[String],
+) -> crate::ImResult<serde_json::Value> {
+    let group_did = require_non_empty("group_did", group_did)?;
+    let limit = limit.clamp(1, 100);
+    let mut body = serde_json::Map::from_iter([
+        ("limit".to_owned(), serde_json::json!(limit)),
+        ("group_did".to_owned(), serde_json::json!(group_did)),
+    ]);
+    if mark_delivered {
+        body.insert("mark_delivered".to_owned(), serde_json::Value::Bool(true));
+    }
+    let ids = notice_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| serde_json::Value::String(value.to_owned()))
+        .collect::<Vec<_>>();
+    if !ids.is_empty() {
+        body.insert("notice_ids".to_owned(), serde_json::Value::Array(ids));
+    }
+    build_signed_group_e2ee_params(
+        credentials,
+        "group.e2ee.notice",
+        group_e2ee_meta(
+            sender_did,
+            "agent",
+            sender_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+            &format!(
+                "op-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+            None,
+        )?,
+        serde_json::Value::Object(body),
     )
 }
 

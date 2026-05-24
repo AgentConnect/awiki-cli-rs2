@@ -1,14 +1,15 @@
 use serde_json::Value;
 
 use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::transport::{AuthenticatedRpcTransport, RpcTransport};
 
 pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
-pub(crate) struct MessageReadRuntime<'a, P, T> {
+pub(crate) struct MessageReadRuntime<'a, P, T, R> {
     client: &'a crate::core::ImClient,
     session_provider: P,
     transport: T,
+    directory_transport: R,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,20 +30,23 @@ pub(crate) struct ReadPageResult {
     pub raw: Value,
 }
 
-impl<'a, P, T> MessageReadRuntime<'a, P, T>
+impl<'a, P, T, R> MessageReadRuntime<'a, P, T, R>
 where
     P: SessionProvider,
     T: AuthenticatedRpcTransport,
+    R: RpcTransport,
 {
     pub(crate) fn new(
         client: &'a crate::core::ImClient,
         session_provider: P,
         transport: T,
+        directory_transport: R,
     ) -> Self {
         Self {
             client,
             session_provider,
             transport,
+            directory_transport,
         }
     }
 
@@ -56,9 +60,10 @@ where
             },
             crate::internal::wire::inbox::InboxWireRequest { limit },
         );
-        let raw = self
-            .transport
-            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
+        let mut raw =
+            self.transport
+                .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
+        project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
         let page = page_from_raw(&raw, input.query.limit)?;
         Ok(ReadPageResult { page, raw })
     }
@@ -80,11 +85,16 @@ where
                         skip: 0,
                     },
                 )?;
-                let raw = self.transport.authenticated_rpc(
+                let mut raw = self.transport.authenticated_rpc(
                     MESSAGE_RPC_ENDPOINT,
                     "direct.get_history",
                     params,
                 )?;
+                project_secure_direct_messages(
+                    self.client,
+                    &mut raw,
+                    &mut self.directory_transport,
+                );
                 let page = page_from_raw(&raw, input.query.limit)?;
                 Ok(ReadPageResult { page, raw })
             }
@@ -98,11 +108,12 @@ where
                     input.query.cursor.as_ref().map(crate::ids::Cursor::as_str),
                     0,
                 )?;
-                let raw = self.transport.authenticated_rpc(
+                let mut raw = self.transport.authenticated_rpc(
                     MESSAGE_RPC_ENDPOINT,
                     "group.list_messages",
                     params,
                 )?;
+                project_group_e2ee_messages(self.client, &mut raw);
                 let page = page_from_raw_with_group(&raw, input.query.limit, Some(&group))?;
                 Ok(ReadPageResult { page, raw })
             }
@@ -185,6 +196,70 @@ fn page_from_raw_with_group(
         has_more,
     })
 }
+
+fn project_secure_direct_messages(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl RpcTransport,
+) {
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, raw, directory_transport);
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+            return;
+        };
+        let mut message_values = std::mem::take(messages);
+        let warnings =
+            crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
+                client,
+                &mut message_values,
+                directory_transport,
+                crate::internal::secure_direct::incoming::DirectDecryptMode::ReadOnly,
+            );
+        let filtered =
+            crate::internal::secure_direct::incoming::filter_displayable_direct_e2ee_messages(
+                message_values,
+            );
+        *messages = filtered;
+        append_secure_direct_warnings(raw, warnings);
+    }
+}
+
+fn append_secure_direct_warnings(raw: &mut Value, warnings: Vec<String>) {
+    if warnings.is_empty() {
+        return;
+    }
+    let Some(object) = raw.as_object_mut() else {
+        return;
+    };
+    let entry = object
+        .entry("warnings")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Value::Array(items) = entry {
+        items.extend(warnings.into_iter().map(Value::String));
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut message_values = std::mem::take(messages);
+    let warnings =
+        crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client(
+            client,
+            &mut message_values,
+        );
+    *messages = message_values;
+    append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value) {}
 
 fn message_from_value(
     value: &Value,
@@ -372,7 +447,7 @@ fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 mod tests {
     use super::*;
     use crate::internal::auth::session::SessionProvider;
-    use crate::internal::transport::AuthenticatedRpcTransport;
+    use crate::internal::transport::{AuthenticatedRpcTransport, RpcTransport};
     use serde_json::{json, Value};
     use std::cell::RefCell;
     use std::fs;
@@ -402,6 +477,7 @@ mod tests {
                     "has_more": false
                 }),
             },
+            NoopDirectoryTransport,
         );
 
         let result = runtime
@@ -449,6 +525,7 @@ mod tests {
                     }]
                 }),
             },
+            NoopDirectoryTransport,
         );
 
         let result = runtime
@@ -500,6 +577,7 @@ mod tests {
                     }]
                 }),
             },
+            NoopDirectoryTransport,
         );
 
         let result = runtime
@@ -546,6 +624,7 @@ mod tests {
                     "has_more": false
                 }),
             },
+            NoopDirectoryTransport,
         );
 
         let result = runtime
@@ -580,6 +659,134 @@ mod tests {
         assert_eq!(calls[0].params["body"]["group_did"], "did:example:group");
         assert_eq!(calls[0].params["body"]["limit"], 5);
         assert_eq!(calls[0].params["body"]["since_seq"], "42");
+    }
+
+    #[test]
+    fn direct_e2ee_projection_helper_returns_plaintext_and_filters_controls() {
+        let messages = vec![
+            json!({
+                "id": "msg-secure",
+                "sender_did": "did:example:bob",
+                "receiver_did": "did:example:alice",
+                "content_type": "application/anp-direct-cipher+json",
+                "server_seq": 2,
+                "content": {
+                    "session_id": "session-1",
+                    "ratchet_header": {"dh_pub_b64u": "dh", "pn": "0", "n": "1"},
+                    "ciphertext_b64u": "CIPHER"
+                }
+            }),
+            json!({
+                "id": "ack-session-1",
+                "sender_did": "did:example:bob",
+                "receiver_did": "did:example:alice",
+                "content_type": "application/anp-direct-cipher+json",
+                "server_seq": 3,
+                "content": {
+                    "session_id": "session-1",
+                    "ratchet_header": {"dh_pub_b64u": "dh", "pn": "0", "n": "2"},
+                    "ciphertext_b64u": "ACK-CIPHER"
+                }
+            }),
+        ];
+
+        let (projected, warnings) =
+            crate::internal::secure_direct::incoming::project_direct_e2ee_message_values_with_processor(
+                messages,
+                |notification| {
+                    let message_id = notification
+                        .get("meta")
+                        .and_then(Value::as_object)
+                        .and_then(|meta| meta.get("message_id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let plaintext = if message_id.starts_with("ack-") {
+                        json!({
+                            "application_content_type": "application/json",
+                            "payload": {
+                                "system_type": crate::internal::secure_direct::control::SECURE_ACK_SYSTEM_TYPE,
+                                "session_id": "session-1",
+                                "acked_message_id": "msg-secure"
+                            }
+                        })
+                    } else {
+                        json!({
+                            "application_content_type": "text/plain",
+                            "text": "decrypted direct text"
+                        })
+                    };
+                    Ok(serde_json::Map::from_iter([
+                        ("state".to_owned(), json!("decrypted")),
+                        ("plaintext".to_owned(), plaintext),
+                    ]))
+                },
+            );
+
+        assert!(warnings.is_empty());
+        assert_eq!(projected.len(), 1);
+        let page = page_from_raw(
+            &json!({
+                "messages": projected,
+                "has_more": false
+            }),
+            crate::ids::PageLimit(20),
+        )
+        .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            page.items[0].body,
+            crate::messages::MessageBodyView::Text {
+                text: "decrypted direct text".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            }
+        );
+        assert!(!serde_json::to_string(&page).unwrap().contains("CIPHER"));
+    }
+
+    #[test]
+    fn direct_e2ee_projection_helper_redacts_failed_ciphertext() {
+        let messages = vec![json!({
+            "id": "msg-secure-failed",
+            "sender_did": "did:example:bob",
+            "receiver_did": "did:example:alice",
+            "content_type": "application/anp-direct-cipher+json",
+            "server_seq": 1,
+            "content": {
+                "session_id": "session-1",
+                "ratchet_header": {"dh_pub_b64u": "dh", "pn": "0", "n": "1"},
+                "ciphertext_b64u": "FAILED-CIPHER"
+            }
+        })];
+
+        let (projected, warnings) =
+            crate::internal::secure_direct::incoming::project_direct_e2ee_message_values_with_processor(
+                messages,
+                |_notification| {
+                    Err(crate::ImError::Serialization {
+                        detail: "decrypt failed".to_owned(),
+                    })
+                },
+            );
+
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0]["content"], Value::Null);
+        let page = page_from_raw(
+            &json!({
+                "messages": projected,
+                "has_more": false
+            }),
+            crate::ids::PageLimit(20),
+        )
+        .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert!(matches!(
+            page.items[0].body,
+            crate::messages::MessageBodyView::Unsupported { .. }
+        ));
+        assert!(!serde_json::to_string(&page)
+            .unwrap()
+            .contains("FAILED-CIPHER"));
     }
 
     #[derive(Clone)]
@@ -659,6 +866,21 @@ mod tests {
         endpoint: String,
         method: String,
         params: Value,
+    }
+
+    struct NoopDirectoryTransport;
+
+    impl RpcTransport for NoopDirectoryTransport {
+        fn rpc(
+            &mut self,
+            _endpoint: &str,
+            _method: &str,
+            _params: Value,
+        ) -> crate::ImResult<Value> {
+            Err(crate::ImError::PeerNotFound {
+                peer: "noop-directory".to_owned(),
+            })
+        }
     }
 
     struct Fixture {

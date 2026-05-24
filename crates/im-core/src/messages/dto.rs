@@ -38,9 +38,12 @@ pub enum MessageKind {
 pub enum MessageSecurityMode {
     DefaultPlain,
     Plain,
+    E2eeRequired,
     SecureDirect,
     GroupE2ee,
 }
+
+pub type MessageSecurityPolicy = MessageSecurityMode;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageDeliveryOptions {

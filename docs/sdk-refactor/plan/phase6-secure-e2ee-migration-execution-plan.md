@@ -61,7 +61,7 @@ Phase 6 的核心交付：
 4. secure outbox failed/retry/drop/flush 进入 im-core internal runtime。
 5. inbox/history/realtime 能做 incoming decrypt projection。
 6. group E2EE status/repair/MLS notice processing 进入 im-core internal runtime。
-7. 附件 E2EE public interface 统一走 `messages().send(... Attachment ..., E2eeRequired)` 和 `attachments().download()`；Phase 6 可先定义接口边界，完整加密传输可按后续 PR 落地。
+7. 附件 E2EE 当前不支持发送；`Attachment + E2eeRequired` 必须 fail-closed 返回 `UnsupportedCapability("secure-attachments")`，不能回退 plaintext attachment。
 8. awiki-cli 通过 adapter/compat 渐进切换，legacy fallback 保留至少一个阶段。
 ```
 
@@ -83,7 +83,7 @@ client.messages().send(SendMessageRequest {
 })
 ```
 
-目标 SDK 语义是“这条 direct/group/attachment 消息必须 E2EE”，而不是“调用 SecureDirect 或 GroupE2ee 这套底层实现”。advanced diagnostics 可以通过 feature-gated API 或 non-prelude API 暴露，但不把 low-level crypto 操作暴露给普通调用方。
+目标 SDK 语义是“这条 direct/group 文本消息必须 E2EE”，而不是“调用 SecureDirect 或 GroupE2ee 这套底层实现”。附件 E2EE 不属于 Phase 6 可发送能力，只保留明确的 unsupported 边界。advanced diagnostics 可以通过 feature-gated API 或 non-prelude API 暴露，但不把 low-level crypto 操作暴露给普通调用方。
 
 ---
 
@@ -177,6 +177,8 @@ crates/awiki-cli/src/message/group_e2ee_update.rs
 
 `group_e2ee_provider.rs` 通过 `anp-mls` 外部 binary 执行 status、key-package、create/add/remove/recover/update、welcome/commit process、encrypt/decrypt 等 MLS 操作，并使用 `AWIKI_ANP_MLS_BINARY` 环境变量定位 binary。
 
+`../anp/rust` 已经完成 MLS API 化后，新的 im-core 路径不应继续复用这个 subprocess/RPC provider。Phase 6 的 `NativeAnpMlsProvider` 应直接调用 `anp::group_e2ee::operations`，并通过 `anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore` 管理 owner/device scoped MLS state。历史 `MlsExecProvider` 只能作为待清理的旧 awiki-cli 路径存在，不能进入新的 im-core group E2EE runtime。
+
 `group_e2ee_status.rs` 已经有 status、pending notice、local MLS status、service head、diagnosis、recovery artifact 等逻辑，是 group diagnostics 的主要迁移源。
 
 `group_e2ee_transport.rs` 封装了 `group.e2ee.head`、`group.e2ee.notice`、`group.e2ee.send`、`group.e2ee.add/remove/recover/update` 等 authenticated RPC 调用。
@@ -194,7 +196,6 @@ Phase 6 做：
 ```text
 client.messages().send(... E2eeRequired direct text ...)
 client.messages().send(... E2eeRequired group text ...)
-client.messages().send(... E2eeRequired attachment ...) 的接口形态
 client.secure().direct(peer).status()
 client.secure().direct(peer).prepare()
 client.secure().direct(peer).repair()
@@ -226,7 +227,7 @@ Phase 6 不做：
 不引入 Phase 7 provider traits 作为 public stable API
 不迁移完整 group lifecycle
 不迁移 service manager / daemon / systemd / launchd / Windows service
-不单独暴露 secure attachment crypto API；附件 E2EE 通过 `messages().send(... Attachment ..., E2eeRequired)` 和 `attachments().download()` 表达
+不实现 E2EE 附件发送；`Attachment + E2eeRequired` 只返回 `UnsupportedCapability("secure-attachments")`
 不把 CLI output / ParsedCommand / ExitError 带进 im-core
 ```
 
@@ -500,13 +501,6 @@ pub enum MessageSecurityState {
     QueuedPendingPeerConfirmation,
     FailedClosed,
 }
-
-pub struct AttachmentSecurityReceipt {
-    pub encrypted_at_rest_remote: bool,
-    pub decrypted_locally: bool,
-    pub verified: bool,
-    pub warnings: Vec<String>,
-}
 ```
 
 原则：
@@ -517,6 +511,7 @@ pub struct AttachmentSecurityReceipt {
 3. DTO 不暴露 direct session id、ratchet counter、skipped-key count、MLS epoch、commit/proposal/welcome 等底层状态。
 4. DTO 不以 serde_json::Value 作为主要 public 字段。
 5. compat 可以临时返回 legacy JSON，但不进入 prelude。
+6. Phase 6 不新增 AttachmentSecurityReceipt 或 secure attachment DTO；附件 E2EE 后续单独设计。
 ```
 
 ---
@@ -534,7 +529,7 @@ Group + Default -> 按 group security profile；E2EE group 必须走 E2EE 或 fa
 Group + Plaintext -> 显式普通 group send；如果 group policy 要求 E2EE，则 fail-closed
 Group + E2eeRequired -> group E2EE send
 
-Attachment + E2eeRequired -> secure attachment flow；未实现时返回 UnsupportedCapability("secure-attachments")
+Attachment + E2eeRequired -> 不支持，返回 UnsupportedCapability("secure-attachments")，不得回退 plaintext attachment
 ```
 
 迁移期兼容映射：
@@ -633,17 +628,58 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_one_time_prekeys (
 
 ### 7.2 group MLS path
 
-群组 E2EE 存储策略本轮先不调整。当前 legacy `MlsExecProvider` 的 MLS data dir 由 `Resolved` 推导；后续确认 group 长期方案后，再决定是否迁入 SQLite、继续使用 provider data dir，或引入新的 local secure store。
+群组 E2EE 存储策略需要对接 `../anp/rust` 已完成的 native MLS API 化结果。`anp-mls` 不再作为长期 binary / stdin JSON command surface；Phase 6 的 group E2EE 新路径应直接调用：
 
-如果后续迁入 `im-core`，路径边界应保持：
+```rust
+anp::group_e2ee::operations
+anp::group_e2ee::storage::{GroupMlsStore, ImCoreSqliteGroupMlsStore}
+```
+
+这里的 `anp-mls` 对接指“承接前面从 `src/bin/anp-mls.rs` 抽出的 real OpenMLS library API”，不是在 im-core 中继续调用 `anp-mls` binary。如果前置 anp 改造只完成了 library extraction，但还缺 im-core 所需的 typed operation、store constructor、owner/device scope 参数、error mapping 或 redaction helper，这些缺口都在 Phase 6 内收口。
+
+本计划中的落点：该对接放在 **PR 6H：group E2EE wire / transport / MLS provider internal 边界** 完成。原因是 6I 的 status、6J 的 repair / notice processing、6K 的 send flow 都依赖同一个 MLS provider 边界；如果 6H 没有完成 native anp MLS API 对接，后续阶段会被迫重新引入 binary/RPC 兼容层。
+
+因此 6H 的交付不是“先留一个 provider stub”，而是形成一个后续阶段可以直接消费的 `NativeAnpMlsProvider`：
 
 ```text
-1. im-core internal MlsExecProvider 使用 explicit data_dir。
-2. awiki-cli adapter 把原 workspace_home_dir/mls 映射进去，以保持兼容。
-3. App 可通过 ImCorePaths.runtime.cache_dir 或后续 SecureRuntimePaths 提供数据目录。
-4. MLS binary path 不进入普通 public API。
-5. CLI 可以继续用 AWIKI_ANP_MLS_BINARY 作为宿主级配置。
-6. Phase 7 再考虑公开 MlsProvider trait。
+1. im-core 能通过 internal GroupMlsProvider 调用 anp::group_e2ee::operations。
+2. im-core 能通过 anp::group_e2ee::storage 构造 owner/device scoped MLS store。
+3. 如果前面 anp-mls API 化仍缺 typed operation、store adapter 或 error mapping，统一在 6H 内补齐。
+4. 6I/6J/6K 只能消费 6H 形成的 provider，不再新增 anp-mls binary、stdin JSON command、RPC provider 或 command envelope adapter。
+```
+
+6H handoff checklist：
+
+```text
+1. anp::group_e2ee::operations 暴露 im-core provider 所需的 typed API，而不是 JSON command envelope。
+2. anp::group_e2ee::storage 暴露 im-core 可构造的 owner/device scoped store，不要求 im-core 知道 OpenMLS table schema。
+3. anp side 继续负责 OpenMLS StorageProvider、schema migration、pending commit metadata 和 operation redaction。
+4. im-core side 只封装 NativeAnpMlsProvider，把 owner_identity_id / owner_did / device_id / local_state path 传给 anp。
+5. 6H 结束后，6I/6J/6K 只做 status、repair/notice、send 编排，不再补 anp 连接方式。
+```
+
+internal contract：
+
+```text
+1. im-core 不直接读写 OpenMLS state，也不直接读写 openmls_* tables。
+2. im-core internal GroupMlsProvider 只暴露 status / prepare / finalize / abort / encrypt / decrypt / process welcome / process notice 等 SDK 编排所需能力。
+3. NativeAnpMlsProvider 是默认实现，内部调用 anp::group_e2ee::operations，不 spawn anp-mls。
+4. anp::group_e2ee::storage 负责 OpenMLS StorageProvider + group_mls_* metadata tables；im-core 只负责传入 owner_identity_id / owner_did / device_id / local_state path。
+5. provider path / SQLite path / OpenMLS provider / data_dir 不进入 `client.secure().group()` public DTO。
+6. KeyPackage、Welcome、Commit、MLS epoch、pending_commit_id 只能作为 internal/service artifact 或 diagnostics-redacted 信息，不进入普通 SDK public API。
+7. 所有会推进 MLS epoch 的本地操作必须走 prepare -> message service RPC -> finalize/abort；prepare 成功但服务端提交失败时不能推进本地 binding epoch。
+8. Phase 7 如需公开 provider trait，需要另开 public provider 设计；Phase 6 的 GroupMlsProvider 保持 `pub(crate)` internal。
+9. 如果前置 `../anp/rust` MLS API 化仍有未完成项，统一在 PR 6H 补齐 `anp::group_e2ee::operations` / `storage` typed API；后续 6I/6J/6K 只能消费该 API，不能重新适配 `anp-mls` binary、stdin JSON command 或 RPC provider。
+```
+
+存储落地策略：
+
+```text
+首选：ImCoreSqliteGroupMlsStore 从 ImCorePaths.local_state.sqlite_path 推导 owner/device scoped sibling mls_state.sqlite。
+约束：同库同事务只有在后续 spike 证明 OpenMLS SQLite storage 可安全共享 transaction 后再推进。
+禁止：新 im-core group E2EE runtime 继续依赖 AWIKI_ANP_MLS_BINARY 或 anp-mls binary path。
+允许：awiki-cli legacy group_e2ee_* 在切换完成前短期保留旧 binary 路径；该路径属于待清理历史路径，不作为 Phase 6 新能力的 fallback，也不能被新 im-core runtime 调用。
+执行位置：该 native store 的首次对接放在 PR 6H；6I/6J/6K 只基于 6H 形成的 GroupMlsProvider 做 status / repair / send，不再改变 anp 连接方式。
 ```
 
 ### 7.3 compat 规则
@@ -1170,7 +1206,7 @@ crates/awiki-cli/src/im_core_adapter/secure.rs
 
 ```text
 Direct + E2eeRequired + Text -> secure direct send
-Direct + E2eeRequired + Attachment -> secure attachment flow；未实现时 UnsupportedCapability("secure-attachments")
+Direct + E2eeRequired + Attachment -> 不支持，UnsupportedCapability("secure-attachments")
 Group + E2eeRequired -> 由 group E2EE route 处理，不进入 direct route
 旧 SecureDirect + Group target -> InvalidInput
 Secure send success -> DeliveryState::Accepted 或 Sent
@@ -1302,7 +1338,21 @@ cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
 
 #### 目标
 
-迁移 group E2EE wire builder、authenticated transport 和 MLS provider internal boundary，但不接 group `messages().send(... E2eeRequired ...)` route。
+迁移 group E2EE wire builder、authenticated transport 和 MLS provider internal boundary，并在这一阶段完成 im-core 对 `../anp/rust` native MLS API 的直接对接；但不接 group `messages().send(... E2eeRequired ...)` route。
+
+这个阶段是承接前置 `anp-mls` API 化工作的最合适位置：status、repair、notice processing 和 send 都依赖同一个 internal provider 边界。如果 6H 仍保留 binary/RPC provider，后续 6I/6J/6K 会继续把旧链路带进 im-core。
+
+因此 6H 也是 native MLS 对接的收口阶段：如果 `../anp/rust` 只完成了部分 library extraction，或者 typed operation / store API 与 im-core 需要的 provider matrix 不完全匹配，应在本阶段同步补齐 anp 侧 API。6I/6J/6K 不再新增 `anp-mls` 兼容层，也不再通过 subprocess/RPC 间接调用 MLS。
+
+本阶段新增明确决策：
+
+```text
+1. 6H 先完成 anp MLS native API acceptance，再迁移依赖该 provider 的 im-core group runtime 入口。
+2. `../anp/rust` 的未完成对接项属于 6H 范围；实现时可以在同一 PR/同一任务链中先改 anp，再改 im-core adapter。
+3. 6H 结束时，`NativeAnpMlsProvider` 必须是真实 anp library adapter，不是留给 6I/6J/6K 补的占位实现。
+4. 后续 6I/6J/6K 不允许为了赶功能而回退到 `anp-mls` binary、stdin JSON command、stdout/stderr 解析或 RPC subprocess。
+5. 如果 6H 发现前置 anp API 仍不能表达某个 MLS 操作，应优先补 `../anp/rust` 的 `group_e2ee::operations/storage`，而不是在 im-core 里访问 OpenMLS provider、复刻 command dispatcher 或保留 binary fallback。
+```
 
 #### 源和目标
 
@@ -1320,6 +1370,8 @@ crates/awiki-cli/src/message/group_e2ee_provider.rs
 crates/im-core/src/internal/group_e2ee/wire.rs
 crates/im-core/src/internal/group_e2ee/transport.rs
 crates/im-core/src/internal/group_e2ee/provider.rs
+crates/im-core/src/internal/group_e2ee/native_provider.rs
+crates/im-core/src/internal/group_e2ee/storage.rs
 crates/im-core/src/compat/secure.rs
 ```
 
@@ -1333,9 +1385,33 @@ build_group_e2ee_get_key_package_rpc_params
 build_group_e2ee_recover_member_rpc_params
 GROUP_E2EE_CIPHER_CONTENT_TYPE
 GroupE2eeTransport internal RPC boundary
-MlsExecProvider internal wrapper
-fake MlsProvider for tests
+GroupMlsProvider internal trait
+NativeAnpMlsProvider direct library adapter
+ImCoreSqliteGroupMlsStore owner/device-scoped store construction
+fake GroupMlsProvider for tests
+legacy MlsExecProvider cleanup note only; not a Phase 6 im-core provider or fallback
 ```
+
+Native provider 必须覆盖 `anp::group_e2ee::operations` 的 typed operation matrix：
+
+```text
+generate_key_package
+create_group_prepare
+add_member_prepare
+remove_member_prepare
+leave_prepare
+update_member_prepare
+recover_member_prepare
+finalize_commit
+abort_commit
+status
+process_welcome
+process_notice
+encrypt
+decrypt
+```
+
+如果上面的 operation 在 `../anp/rust` 中尚不存在、仍然只存在于历史 binary command path，6H 必须先把它抽成 library API，再接入 NativeAnpMlsProvider。不要在 im-core 中复刻 OpenMLS 细节，也不要把历史 command envelope 搬进 SDK runtime。
 
 #### 不支持范围
 
@@ -1344,16 +1420,35 @@ group E2EE public KeyPackage API
 group lifecycle public migration
 group e2ee send route
 notice repair execution
-real anp-mls live test by default
+real MLS live/service test by default
+OpenMLS table access from im-core
+anp-mls binary path / stdin JSON command compatibility in new im-core runtime
 ```
 
 #### MlsProvider 规则
 
 ```text
-1. MlsProvider 是 internal trait，不是 Phase 7 public provider。
-2. MlsExecProvider 可以存在于 internal/group_e2ee/provider.rs。
-3. binary path 由 adapter/config 注入或 CLI env 决定，不进入 ordinary public API。
-4. provider stdout/stderr 不直接暴露给普通 SDK result。
+1. GroupMlsProvider 是 im-core internal trait，不是 Phase 7 public provider。
+2. NativeAnpMlsProvider 是新 im-core runtime 的默认实现，直接调用 anp::group_e2ee::operations。
+3. NativeAnpMlsProvider 通过 anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore 打开 owner/device-scoped MLS state。
+4. im-core 只传 owner_identity_id / owner_did / device_id / local_state sqlite path，不传 binary path。
+5. im-core 不读取 OpenMLS private tables，不把 OpenMLS StorageProvider 暴露到 SDK Interface。
+6. MlsExecProvider 只能留在 awiki-cli legacy/compat 侧，不能作为新 im-core runtime 的 provider。
+7. provider error 需要映射到 ImError/SecureProblem，不把 stdout/stderr、SQLite path 或 OpenMLS raw error 直接暴露给普通 SDK result。
+8. anp side 的 OpenMLS provider、SQLite schema migration、pending commit 表和 metadata 表继续由 anp::group_e2ee::storage 管理；im-core 不为绕过 API 而直接操作这些表。
+```
+
+#### PR 6H 内部顺序
+
+```text
+6H-0. anp MLS native API acceptance：在 ../anp/rust 确认 anp::group_e2ee::operations/storage 是唯一 MLS library surface，且不需要 anp-mls binary。
+6H-1. 对齐 anp native API：确认 operations/storage 覆盖 provider matrix；缺失的 typed operation、store adapter、owner/device scoped constructor、error type 或 redaction helper 先在 ../anp/rust 补齐。
+6H-2. 引入 im-core internal GroupMlsProvider trait 和 fake provider，先用 typed DTO 固定 SDK 编排边界。
+6H-3. 实现 NativeAnpMlsProvider，直接调用 anp::group_e2ee::operations，并使用 ImCoreSqliteGroupMlsStore 构造 owner/device-scoped store。
+6H-4. 迁移 wire/transport builder，保持 message service RPC 只负责分发 commit/welcome/cipher/notice。
+6H-5. 用 temp local_state 和 anp typed operations 做最小 native provider 验证；如果失败，修 anp API 或 storage adapter，不回退到 anp-mls binary。
+6H-6. 移除新 im-core runtime 对 legacy MlsExecProvider / command envelope 的依赖；awiki-cli legacy 旧路径只作为后续 compat cleanup 的清理对象，不作为新 runtime fallback。
+6H-7. 做 boundary grep：im-core group E2EE 新路径不能出现 AWIKI_ANP_MLS_BINARY、anp-mls command、stdin/stdout JSON command envelope、MlsExecProvider 或 anp::group_e2ee::commands。
 ```
 
 #### Required 验收
@@ -1361,6 +1456,7 @@ real anp-mls live test by default
 ```bash
 cargo test -p im-core group_e2ee_wire
 cargo test -p im-core group_e2ee_provider
+cargo test -p im-core --features group-e2ee group_e2ee_native_provider
 cargo test -p awiki-cli --test group_contract
 ```
 
@@ -1370,7 +1466,12 @@ cargo test -p awiki-cli --test group_contract
 1. group E2EE wire shape 由 im-core 覆盖测试。
 2. awiki-cli 原 group_e2ee_wire 可 wrapper。
 3. provider 可 fake 测试。
-4. KeyPackage / MLS binary path 不进入 public API。
+4. NativeAnpMlsProvider 可用 temp local_state + anp typed operations 创建/finalize group 并读取 status。
+5. create/add/remove/update/recover/leave 等 epoch-changing 本地操作只 prepare，不在 service RPC 前推进 local binding epoch。
+6. KeyPackage / Welcome / Commit / MLS epoch / pending_commit_id 不进入普通 public DTO。
+7. anp-mls binary path 不进入 public API，且新 im-core runtime 不 spawn anp-mls。
+8. `crates/im-core/src/internal/group_e2ee` 不引用 `anp::group_e2ee::commands`、`AWIKI_ANP_MLS_BINARY`、`MlsExecProvider` 或 `anp-mls` command envelope。
+9. 6I/6J/6K 可以只依赖 GroupMlsProvider 完成 status / repair / send，不需要再修改 anp 连接方式。
 ```
 
 ---
@@ -1581,7 +1682,7 @@ crates/awiki-cli/src/im_core_adapter/messages.rs
 
 ```text
 Group + E2eeRequired + Text -> group E2EE send
-Group + E2eeRequired + Attachment -> secure attachment flow；未实现时 UnsupportedCapability("secure-attachments")
+Group + E2eeRequired + Attachment -> 不支持，UnsupportedCapability("secure-attachments")
 Direct + E2eeRequired -> direct E2EE route，不进入 group route
 旧 GroupE2ee + Direct target -> InvalidInput
 Missing local MLS state -> fail-closed
@@ -1780,7 +1881,7 @@ group-e2ee
 1. direct E2EE session/prekey 的长期 runtime store 是 im-core local SQLite；不回滚到 p5-* 文件目录作为新写入目标。
 2. 如果 SQLite direct store 出问题，可临时关闭 AWIKI_USE_IM_CORE_SECURE 回到 awiki-cli legacy direct secure path。
 3. secure outbox 暂时保留 e2ee_outbox.plaintext 明文字段，不删除 legacy e2ee_outbox 字段。
-4. group MLS data dir 本轮不改；后续 group 方案单独确认。
+4. group MLS 的新 im-core runtime 使用 anp native store；如需回滚，关闭新 group E2EE runtime 或回滚 adapter 接入，不让新 im-core runtime 重新依赖 anp-mls binary。
 5. compat wrapper 至少保留一个阶段。
 ```
 
@@ -1797,7 +1898,7 @@ Phase 6 不做：
 4. 不暴露 ciphertext send/process API。
 5. 不迁移 systemd / launchd / Windows service manager。
 6. 不迁移 OpenClaw / Hermes host notification delivery。
-7. 不单独暴露 secure attachment crypto API；附件 E2EE 通过 messages/attachments 高层接口表达。
+7. 不实现 E2EE 附件发送；后续设计完成前，`Attachment + E2eeRequired` 一律 fail-closed。
 8. 不把 MLS provider trait 作为 Phase 6 public provider。
 9. 不把 anp-mls binary path 放进 prelude 或普通 API。
 10. 不让 im-core 依赖 awiki-cli。
@@ -1820,7 +1921,7 @@ Phase 6 完成后应满足：
 6. direct inbox/history/realtime incoming decrypt projection 可用。
 7. group E2EE status/repair/MLS notice processing 可用，public DTO 不暴露 MLS epoch / KeyPackage / raw notice。
 8. group E2EE send fail-closed，不回退 plaintext。
-9. im-core 不暴露 ciphertext/prekey/KeyPackage/MLS binary path。
+9. im-core 不暴露 ciphertext/prekey/KeyPackage/MLS binary path，也不 spawn anp-mls。
 10. awiki-cli legacy secure path 可 fallback。
 11. awiki-cli 现有 secure/group/message/store contract tests 继续通过。
 12. boundary grep 不出现 CLI 类型引用。
@@ -1838,7 +1939,7 @@ PR 6D：direct status / prepare / repair
 PR 6E：secure outbox store / planner / failed-retry-drop
 PR 6F：direct E2EE send flow 接入 MessageService::send
 PR 6G：direct incoming decrypt projection
-PR 6H：group E2EE wire / transport / MLS provider internal 边界
+PR 6H：group E2EE wire / transport / MLS provider internal 边界（含 anp MLS native API 对接收口）
 PR 6I：group E2EE status
 PR 6J：group E2EE repair / MLS notice processing
 PR 6K：group E2EE send flow 接入 MessageService::send

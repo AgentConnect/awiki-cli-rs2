@@ -1,6 +1,7 @@
 use anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore;
 
 use super::native_provider::NativeAnpMlsProvider;
+use super::DEFAULT_GROUP_MLS_DEVICE_ID;
 
 pub(crate) fn native_provider_for_client(
     client: &crate::core::ImClient,
@@ -10,7 +11,7 @@ pub(crate) fn native_provider_for_client(
         .device_id
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or(anp::group_e2ee::commands::DEVICE_ID_DEFAULT);
+        .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID);
     let store = ImCoreSqliteGroupMlsStore::from_local_state_sqlite_path(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
         identity.id.as_str(),
@@ -45,7 +46,7 @@ mod tests {
         let create = provider
             .create_group_prepare(CreateGroupInput {
                 creator_did: client.did().as_str().to_owned(),
-                device_id: anp::group_e2ee::commands::DEVICE_ID_DEFAULT.to_owned(),
+                device_id: DEFAULT_GROUP_MLS_DEVICE_ID.to_owned(),
                 group_did: group_did.to_owned(),
                 operation_id: "op-im-core-native-create".to_owned(),
                 request_id: "req-im-core-native-create".to_owned(),
@@ -66,7 +67,7 @@ mod tests {
         let status = provider
             .status(StatusInput {
                 request_id: "req-im-core-native-status".to_owned(),
-                device_id: anp::group_e2ee::commands::DEVICE_ID_DEFAULT.to_owned(),
+                device_id: DEFAULT_GROUP_MLS_DEVICE_ID.to_owned(),
                 agent_did: Some(client.did().as_str().to_owned()),
                 group_did: Some(group_did.to_owned()),
             })

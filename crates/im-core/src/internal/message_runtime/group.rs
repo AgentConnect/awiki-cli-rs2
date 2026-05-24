@@ -179,6 +179,9 @@ fn validate_plain_security(security: &crate::messages::MessageSecurityMode) -> c
     match security {
         crate::messages::MessageSecurityMode::DefaultPlain
         | crate::messages::MessageSecurityMode::Plain => Ok(()),
+        crate::messages::MessageSecurityMode::E2eeRequired => {
+            Err(crate::ImError::unsupported("group-e2ee"))
+        }
         crate::messages::MessageSecurityMode::SecureDirect => {
             Err(crate::ImError::unsupported("secure-direct"))
         }

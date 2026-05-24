@@ -7,6 +7,7 @@ use crate::internal::message_runtime::group::{load_credentials, GroupTextCredent
 use crate::internal::transport::AuthenticatedRpcTransport;
 
 use super::provider::GroupMlsProvider;
+use super::DEFAULT_GROUP_MLS_DEVICE_ID;
 
 pub(crate) struct GroupStateRefResolver<'a, P, T, M> {
     client: &'a crate::core::ImClient,
@@ -282,7 +283,7 @@ fn device_id_for_client(client: &crate::core::ImClient) -> String {
         .device_id
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or(anp::group_e2ee::commands::DEVICE_ID_DEFAULT)
+        .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID)
         .to_owned()
 }
 
@@ -296,7 +297,7 @@ mod tests {
     use anp::group_e2ee::operations::{
         AbortCommitInput, AbortCommitOutput, AddMemberInput, CreateGroupInput, DecryptInput,
         DecryptOutput, EncryptInput, EncryptOutput, FinalizeCommitInput, FinalizeCommitOutput,
-        GenerateKeyPackageInput, GroupKeyPackageOutput, PreparedMlsCommitOutput,
+        GenerateKeyPackageInput, GroupKeyPackageOutput, LeaveGroupInput, PreparedMlsCommitOutput,
         ProcessNoticeInput, ProcessNoticeOutput, ProcessWelcomeInput, ProcessWelcomeOutput,
         RecoverMemberInput, RemoveMemberInput, StatusInput, StatusOutput, UpdateMemberInput,
     };
@@ -531,6 +532,13 @@ mod tests {
             unreachable!("resolver should not remove members")
         }
 
+        fn leave_prepare(
+            &self,
+            _input: LeaveGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("resolver should not leave groups")
+        }
+
         fn update_member_prepare(
             &self,
             _input: UpdateMemberInput,
@@ -618,6 +626,13 @@ mod tests {
             _input: RemoveMemberInput,
         ) -> crate::ImResult<PreparedMlsCommitOutput> {
             unreachable!("resolver should not remove members")
+        }
+
+        fn leave_prepare(
+            &self,
+            _input: LeaveGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("resolver should not leave groups")
         }
 
         fn update_member_prepare(

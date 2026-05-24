@@ -13,7 +13,12 @@ impl<'a> MessageService<'a> {
     ) -> crate::ImResult<super::SendMessageResult> {
         validate_body(&request.body)?;
         validate_send_mode(&request.target, &request.security)?;
+        validate_attachment_security(&request.body, &request.security)?;
         match (&request.target, &request.security) {
+            (
+                super::MessageTarget::Direct(_),
+                super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect,
+            ) => self.send_direct_e2ee(request),
             (super::MessageTarget::Direct(_), _) => {
                 crate::internal::message_runtime::direct::DirectTextSender::new(
                     self.client,
@@ -27,9 +32,10 @@ impl<'a> MessageService<'a> {
                 })
                 .map(|result| result.sdk_result)
             }
-            (super::MessageTarget::Group(_), super::MessageSecurityMode::GroupE2ee) => {
-                self.send_group_e2ee(request)
-            }
+            (
+                super::MessageTarget::Group(_),
+                super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::GroupE2ee,
+            ) => self.send_group_e2ee(request),
             (super::MessageTarget::Group(_), _) => {
                 crate::internal::message_runtime::group::GroupTextSender::new(
                     self.client,
@@ -42,6 +48,31 @@ impl<'a> MessageService<'a> {
                 })
                 .map(|result| result.sdk_result)
             }
+        }
+    }
+
+    fn send_direct_e2ee(
+        &self,
+        request: super::SendMessageRequest,
+    ) -> crate::ImResult<super::SendMessageResult> {
+        #[cfg(feature = "sqlite")]
+        {
+            crate::internal::secure_direct::send::DirectSecureTextSender::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+            )
+            .send(crate::internal::secure_direct::send::DirectSecureTextSend {
+                request,
+                resolved_target_did: None,
+            })
+            .map(|result| result.sdk_result)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("secure-direct"))
         }
     }
 
@@ -82,6 +113,7 @@ impl<'a> MessageService<'a> {
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .inbox(crate::internal::message_runtime::read::InboxRead { query })
         .map(|result| result.page)
@@ -95,6 +127,7 @@ impl<'a> MessageService<'a> {
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
+            crate::internal::transport::CoreHttpTransport::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .history(crate::internal::message_runtime::read::HistoryRead {
@@ -135,12 +168,17 @@ fn validate_send_mode(
 ) -> crate::ImResult<()> {
     match (target, security) {
         (_, super::MessageSecurityMode::DefaultPlain | super::MessageSecurityMode::Plain) => Ok(()),
-        (_, super::MessageSecurityMode::SecureDirect) => {
+        (
+            super::MessageTarget::Direct(_),
+            super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect,
+        ) => Ok(()),
+        (super::MessageTarget::Group(_), super::MessageSecurityMode::SecureDirect) => {
             Err(crate::ImError::unsupported("secure-direct"))
         }
-        (super::MessageTarget::Group(_), super::MessageSecurityMode::GroupE2ee) => {
-            validate_group_e2ee_security()
-        }
+        (
+            super::MessageTarget::Group(_),
+            super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::GroupE2ee,
+        ) => validate_group_e2ee_security(),
         (super::MessageTarget::Direct(_), super::MessageSecurityMode::GroupE2ee) => {
             Err(crate::ImError::unsupported("group-e2ee"))
         }
@@ -156,7 +194,22 @@ fn validate_body(body: &super::MessageBody) -> crate::ImResult<()> {
             ))
         }
         super::MessageBody::Text { .. } => Ok(()),
-        super::MessageBody::Attachment { .. } => Err(crate::ImError::unsupported("attachments")),
+        super::MessageBody::Attachment { .. } => Ok(()),
+    }
+}
+
+fn validate_attachment_security(
+    body: &super::MessageBody,
+    security: &super::MessageSecurityMode,
+) -> crate::ImResult<()> {
+    if !matches!(body, super::MessageBody::Attachment { .. }) {
+        return Ok(());
+    }
+    match security {
+        super::MessageSecurityMode::E2eeRequired => {
+            Err(crate::ImError::unsupported("secure-attachments"))
+        }
+        _ => Err(crate::ImError::unsupported("attachments")),
     }
 }
 
@@ -225,7 +278,7 @@ mod group_e2ee_public_send_tests {
                     text: "public group secret".to_owned(),
                     kind: crate::messages::MessageKind::Text,
                 },
-                security: crate::messages::MessageSecurityMode::GroupE2ee,
+                security: crate::messages::MessageSecurityPolicy::E2eeRequired,
                 client_message_id: Some(
                     crate::ids::MessageId::parse("msg-public-group-e2ee").unwrap(),
                 ),
@@ -251,7 +304,7 @@ mod group_e2ee_public_send_tests {
         );
         assert_eq!(
             requests[1].params["meta"]["content_type"],
-            anp::group_e2ee::commands::GROUP_CIPHER_CONTENT_TYPE
+            anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
         );
         assert_eq!(
             requests[1].params["body"]["group_state_ref"]["group_state_version"],
@@ -312,7 +365,7 @@ mod group_e2ee_public_send_tests {
         let prepared = provider
             .create_group_prepare(CreateGroupInput {
                 creator_did: client.did().as_str().to_owned(),
-                device_id: anp::group_e2ee::commands::DEVICE_ID_DEFAULT.to_owned(),
+                device_id: crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID.to_owned(),
                 group_did: group_did.to_owned(),
                 operation_id: "op-public-group-e2ee-create".to_owned(),
                 request_id: "req-public-group-e2ee-create".to_owned(),
@@ -385,7 +438,7 @@ mod group_e2ee_public_send_tests {
                     "id": "alice-id",
                     "did": did,
                     "local_alias": alias,
-                    "device_id": anp::group_e2ee::commands::DEVICE_ID_DEFAULT,
+                    "device_id": crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID,
                     "ready_for_auth": true,
                     "ready_for_messaging": true,
                     "missing": []

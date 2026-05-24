@@ -22,4 +22,45 @@ void main() {
     );
     expect(err.capability, 'realtime-runner');
   });
+
+  test('secure e2ee API shape is stable', () {
+    const request = SendTextRequest(
+      target: MessageTarget.direct('did:example:bob'),
+      text: 'hello',
+      security: MessageSecurityMode.e2eeRequired,
+    );
+    expect(request.security, MessageSecurityMode.e2eeRequired);
+
+    const direct = DirectSecureStatus(
+      peer: 'did:example:bob',
+      state: DirectSecureState.ready,
+      canSendSecure: true,
+      pendingOutboxCount: 0,
+    );
+    expect(direct.canSendSecure, isTrue);
+
+    const group = GroupSecureStatus(
+      group: 'did:example:group',
+      state: GroupSecureState.ready,
+      canSendSecure: true,
+      localReadiness: GroupSecureLocalReadiness(
+        hasLocalState: true,
+        hasActiveMembership: true,
+      ),
+      pendingWork: GroupSecurePendingWork(
+        pendingNotices: 0,
+        pendingCommits: 0,
+      ),
+    );
+    expect(group.pendingWork.pendingNotices, 0);
+
+    const outbox = SecureOutboxEntry(
+      id: 'outbox-1',
+      target: MessageTarget.direct('did:example:bob'),
+      messageKind: 'text',
+      status: SecureOutboxStatus.failed,
+      attemptCount: 1,
+    );
+    expect(outbox.status, SecureOutboxStatus.failed);
+  });
 }

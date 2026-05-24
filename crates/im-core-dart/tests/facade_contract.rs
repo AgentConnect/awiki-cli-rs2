@@ -16,6 +16,40 @@ fn retry_message_is_explicitly_unsupported_until_im_core_has_retry_api() {
 }
 
 #[test]
+fn dart_message_security_exposes_target_independent_e2ee_required() {
+    let mode = awiki_im_core::dto::message::DartMessageSecurityMode::E2eeRequired;
+    let mapped: im_core::messages::MessageSecurityMode = mode.into();
+    assert!(matches!(
+        mapped,
+        im_core::messages::MessageSecurityMode::E2eeRequired
+    ));
+}
+
+#[test]
+fn secure_outbox_entry_does_not_expose_plaintext_or_crypto_material() {
+    let entry = awiki_im_core::dto::secure::DartSecureOutboxEntry {
+        id: "outbox-1".to_string(),
+        target: awiki_im_core::dto::message::DartMessageTarget::Direct {
+            peer: "did:example:bob".to_string(),
+        },
+        message_kind: "text".to_string(),
+        status: awiki_im_core::dto::secure::DartSecureOutboxStatus::Failed,
+        attempt_count: 2,
+        last_error: Some(awiki_im_core::dto::secure::DartSecureProblem {
+            code: awiki_im_core::dto::secure::DartSecureProblemCode::PeerKeysUnavailable,
+            message: "peer keys unavailable".to_string(),
+            retryable: true,
+        }),
+        created_at: Some("2026-05-24T00:00:00Z".to_string()),
+        updated_at: Some("2026-05-24T00:01:00Z".to_string()),
+    };
+
+    assert_eq!(entry.id, "outbox-1");
+    assert_eq!(entry.message_kind, "text");
+    assert_eq!(entry.attempt_count, 2);
+}
+
+#[test]
 fn realtime_connect_is_explicitly_unsupported_until_bridge_plan_is_ready() {
     let capability = awiki_im_core::dto::realtime::DartRealtimeCapability {
         status_supported: true,

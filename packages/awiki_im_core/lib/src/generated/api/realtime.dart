@@ -9,12 +9,11 @@ import '../frb_generated.dart';
 import 'auth.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<DartRealtimeCapability> realtimeCapability({
-  required ArcDartImClient client,
-}) => RustLib.instance.api.crateApiRealtimeRealtimeCapability(client: client);
 
-Future<DartRealtimeStatus> realtimeStatus({required ArcDartImClient client}) =>
-    RustLib.instance.api.crateApiRealtimeRealtimeStatus(client: client);
 
-Future<void> realtimeConnect({required ArcDartImClient client}) =>
-    RustLib.instance.api.crateApiRealtimeRealtimeConnect(client: client);
+
+            Future<DartRealtimeCapability>  realtimeCapability({required ArcDartImClient client }) => RustLib.instance.api.crateApiRealtimeRealtimeCapability(client: client);
+
+Future<DartRealtimeStatus>  realtimeStatus({required ArcDartImClient client }) => RustLib.instance.api.crateApiRealtimeRealtimeStatus(client: client);
+
+Future<void>  realtimeConnect({required ArcDartImClient client }) => RustLib.instance.api.crateApiRealtimeRealtimeConnect(client: client);

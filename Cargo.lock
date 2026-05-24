@@ -1265,6 +1265,7 @@ name = "im-core"
 version = "0.1.0"
 dependencies = [
  "anp",
+ "base64",
  "rand 0.8.6",
  "rusqlite",
  "rustls",

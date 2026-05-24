@@ -51,6 +51,14 @@ impl LocalStateStore for rusqlite::Connection {
     fn current_schema_version(&self) -> crate::ImResult<i64> {
         schema::current_schema_version(self)
     }
+
+    fn store_message(&mut self, record: messages::MessageRecord) -> crate::ImResult<()> {
+        messages::upsert_message(self, &record)
+    }
+
+    fn store_messages(&mut self, records: &[messages::MessageRecord]) -> crate::ImResult<()> {
+        messages::upsert_messages(self, records)
+    }
 }
 
 #[cfg(feature = "sqlite")]

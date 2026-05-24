@@ -23,6 +23,81 @@ pub(crate) struct MessageRecord {
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn upsert_message(
+    connection: &rusqlite::Connection,
+    record: &MessageRecord,
+) -> crate::ImResult<()> {
+    crate::internal::local_state::schema::ensure_schema(connection)?;
+    let msg_id = required("msg_id", &record.msg_id)?;
+    let owner_did = required("owner_did", &record.owner_did)?;
+    let thread_id = required("thread_id", &record.thread_id)?;
+    let stored_at = default_string(&record.stored_at, &now_utc_like());
+    connection
+        .execute(
+            r#"
+INSERT INTO messages
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did,
+     group_id, group_did, content_type, content, title, server_seq, sent_at, stored_at,
+     is_e2ee, is_read, sender_name, metadata, credential_name)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+ON CONFLICT(msg_id, owner_did) DO UPDATE SET
+    owner_identity_id = COALESCE(excluded.owner_identity_id, messages.owner_identity_id),
+    thread_id = excluded.thread_id,
+    direction = excluded.direction,
+    sender_did = excluded.sender_did,
+    receiver_did = excluded.receiver_did,
+    group_id = excluded.group_id,
+    group_did = excluded.group_did,
+    content_type = excluded.content_type,
+    content = excluded.content,
+    title = excluded.title,
+    server_seq = COALESCE(excluded.server_seq, messages.server_seq),
+    sent_at = excluded.sent_at,
+    stored_at = excluded.stored_at,
+    is_e2ee = excluded.is_e2ee,
+    is_read = excluded.is_read,
+    sender_name = excluded.sender_name,
+    metadata = excluded.metadata,
+    credential_name = excluded.credential_name"#,
+            rusqlite::params![
+                msg_id,
+                nullable_text(&record.owner_identity_id),
+                owner_did,
+                thread_id,
+                record.direction,
+                nullable_text(&record.sender_did),
+                nullable_text(&record.receiver_did),
+                nullable_text(&record.group_id),
+                nullable_text(&record.group_did),
+                default_string(&record.content_type, "text/plain"),
+                nullable_text(&record.content),
+                nullable_text(&record.title),
+                record.server_seq,
+                nullable_text(&record.sent_at),
+                stored_at,
+                record.is_e2ee,
+                record.is_read,
+                nullable_text(&record.sender_name),
+                nullable_text(&record.metadata),
+                record.credential_name.trim(),
+            ],
+        )
+        .map_err(super::local_state_unavailable)?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn upsert_messages(
+    connection: &rusqlite::Connection,
+    records: &[MessageRecord],
+) -> crate::ImResult<()> {
+    for record in records {
+        upsert_message(connection, record)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MarkReadClassification {
     pub(crate) direct_ids: Vec<String>,
@@ -248,6 +323,41 @@ fn owner_predicate() -> &'static str {
     "(owner_identity_id = ? OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?))"
 }
 
+#[cfg(feature = "sqlite")]
+fn required(field: &str, value: &str) -> crate::ImResult<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some(field.to_owned()),
+            format!("{field} must not be empty"),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+#[cfg(feature = "sqlite")]
+fn nullable_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+#[cfg(feature = "sqlite")]
+fn default_string(value: &str, fallback: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        fallback.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn now_utc_like() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
@@ -381,6 +491,71 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
         assert_eq!(read_by_msg_id(&db, "stable"), 1);
         assert_eq!(read_by_msg_id(&db, "legacy"), 1);
         assert_eq!(read_by_msg_id(&db, "other"), 0);
+    }
+
+    #[test]
+    fn local_state_messages_upsert_stores_owner_identity_and_replaces_existing() {
+        let db = Connection::open_in_memory().unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-1".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                thread_id: "dm:alice:bob".to_owned(),
+                direction: 1,
+                sender_did: "did:example:alice".to_owned(),
+                receiver_did: "did:example:bob".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "first".to_owned(),
+                stored_at: "2026-05-24T00:00:00Z".to_owned(),
+                is_e2ee: true,
+                is_read: true,
+                credential_name: "alice".to_owned(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-1".to_owned(),
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                thread_id: "dm:alice:bob".to_owned(),
+                direction: 1,
+                sender_did: "did:example:alice".to_owned(),
+                receiver_did: "did:example:bob".to_owned(),
+                content_type: "text/plain".to_owned(),
+                content: "second".to_owned(),
+                stored_at: "2026-05-24T00:00:01Z".to_owned(),
+                is_e2ee: true,
+                is_read: true,
+                credential_name: "alice".to_owned(),
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        let row = db
+            .query_row(
+                "SELECT owner_identity_id, content, stored_at, is_e2ee FROM messages WHERE msg_id = 'msg-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(row.0, "alice-id");
+        assert_eq!(row.1, "second");
+        assert_eq!(row.2, "2026-05-24T00:00:01Z");
+        assert_eq!(row.3, 1);
     }
 
     fn is_read(db: &Connection, owner: &str) -> i64 {

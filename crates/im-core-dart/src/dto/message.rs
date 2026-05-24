@@ -15,6 +15,7 @@ pub enum DartThreadRef {
 pub enum DartMessageSecurityMode {
     DefaultPlain,
     Plain,
+    E2eeRequired,
     SecureDirect,
     GroupE2ee,
 }

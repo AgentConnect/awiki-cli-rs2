@@ -3,9 +3,9 @@ use std::cell::RefCell;
 use anp::group_e2ee::operations::{
     AbortCommitInput, AbortCommitOutput, AddMemberInput, CreateGroupInput, DecryptInput,
     DecryptOutput, EncryptInput, EncryptOutput, FinalizeCommitInput, FinalizeCommitOutput,
-    GenerateKeyPackageInput, GroupKeyPackageOutput, PreparedMlsCommitOutput, ProcessNoticeInput,
-    ProcessNoticeOutput, ProcessWelcomeInput, ProcessWelcomeOutput, RecoverMemberInput,
-    RemoveMemberInput, StatusInput, StatusOutput, UpdateMemberInput,
+    GenerateKeyPackageInput, GroupKeyPackageOutput, LeaveGroupInput, PreparedMlsCommitOutput,
+    ProcessNoticeInput, ProcessNoticeOutput, ProcessWelcomeInput, ProcessWelcomeOutput,
+    RecoverMemberInput, RemoveMemberInput, StatusInput, StatusOutput, UpdateMemberInput,
 };
 
 use super::provider::GroupMlsProvider;
@@ -16,6 +16,7 @@ pub(crate) enum FakeGroupMlsCall {
     CreateGroupPrepare,
     AddMemberPrepare,
     RemoveMemberPrepare,
+    LeavePrepare,
     UpdateMemberPrepare,
     RecoverMemberPrepare,
     FinalizeCommit,
@@ -70,6 +71,10 @@ impl GroupMlsProvider for FakeGroupMlsProvider {
         _input: RemoveMemberInput,
     ) -> crate::ImResult<PreparedMlsCommitOutput> {
         self.record_unsupported(FakeGroupMlsCall::RemoveMemberPrepare)
+    }
+
+    fn leave_prepare(&self, _input: LeaveGroupInput) -> crate::ImResult<PreparedMlsCommitOutput> {
+        self.record_unsupported(FakeGroupMlsCall::LeavePrepare)
     }
 
     fn update_member_prepare(

@@ -9,16 +9,13 @@ import '../frb_generated.dart';
 import 'client.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `default_service_did`, `with_inner`
+
+            // These functions are ignored because they are not marked as `pub`: `default_service_did`, `with_inner`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `DartImCoreState`
 
-Future<ArcDartImCore> openCore({
-  required DartImCoreConfig config,
-  required DartImCorePaths paths,
-}) => RustLib.instance.api.crateApiCoreOpenCore(config: config, paths: paths);
 
-Future<void> closeCore({required ArcDartImCore core}) =>
-    RustLib.instance.api.crateApiCoreCloseCore(core: core);
+            Future<ArcDartImCore>  openCore({required DartImCoreConfig config , required DartImCorePaths paths }) => RustLib.instance.api.crateApiCoreOpenCore(config: config, paths: paths);
 
-Future<List<String>> validatePaths({required ArcDartImCore core}) =>
-    RustLib.instance.api.crateApiCoreValidatePaths(core: core);
+Future<void>  closeCore({required ArcDartImCore core }) => RustLib.instance.api.crateApiCoreCloseCore(core: core);
+
+Future<List<String>>  validatePaths({required ArcDartImCore core }) => RustLib.instance.api.crateApiCoreValidatePaths(core: core);

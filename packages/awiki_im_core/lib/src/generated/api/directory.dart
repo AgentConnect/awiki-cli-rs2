@@ -10,35 +10,15 @@ import '../frb_generated.dart';
 import 'auth.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<DartDirectoryResolution> resolvePeer({
-  required ArcDartImClient client,
-  required String peer,
-}) => RustLib.instance.api.crateApiDirectoryResolvePeer(
-  client: client,
-  peer: peer,
-);
 
-Future<DartDirectoryResolution> lookupHandle({
-  required ArcDartImClient client,
-  required String handle,
-}) => RustLib.instance.api.crateApiDirectoryLookupHandle(
-  client: client,
-  handle: handle,
-);
 
-Future<DartRelationStatus> relationStatus({
-  required ArcDartImClient client,
-  required String peer,
-}) => RustLib.instance.api.crateApiDirectoryRelationStatus(
-  client: client,
-  peer: peer,
-);
 
-Future<void> follow({required ArcDartImClient client, required String peer}) =>
-    RustLib.instance.api.crateApiDirectoryFollow(client: client, peer: peer);
+            Future<DartDirectoryResolution>  resolvePeer({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiDirectoryResolvePeer(client: client, peer: peer);
 
-Future<void> unfollow({
-  required ArcDartImClient client,
-  required String peer,
-}) =>
-    RustLib.instance.api.crateApiDirectoryUnfollow(client: client, peer: peer);
+Future<DartDirectoryResolution>  lookupHandle({required ArcDartImClient client , required String handle }) => RustLib.instance.api.crateApiDirectoryLookupHandle(client: client, handle: handle);
+
+Future<DartRelationStatus>  relationStatus({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiDirectoryRelationStatus(client: client, peer: peer);
+
+Future<void>  follow({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiDirectoryFollow(client: client, peer: peer);
+
+Future<void>  unfollow({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiDirectoryUnfollow(client: client, peer: peer);

@@ -9,66 +9,18 @@ import '../frb_generated.dart';
 import 'auth.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `page_limit`
 
-Future<DartSendMessageResult> sendText({
-  required ArcDartImClient client,
-  required DartSendTextRequest request,
-}) => RustLib.instance.api.crateApiMessagesSendText(
-  client: client,
-  request: request,
-);
+            // These functions are ignored because they are not marked as `pub`: `page_limit`
 
-Future<DartMessagePage> inbox({
-  required ArcDartImClient client,
-  required int limit,
-  String? cursor,
-  required bool unreadOnly,
-}) => RustLib.instance.api.crateApiMessagesInbox(
-  client: client,
-  limit: limit,
-  cursor: cursor,
-  unreadOnly: unreadOnly,
-);
 
-Future<DartMessagePage> history({
-  required ArcDartImClient client,
-  required DartThreadRef thread,
-  required int limit,
-  String? cursor,
-}) => RustLib.instance.api.crateApiMessagesHistory(
-  client: client,
-  thread: thread,
-  limit: limit,
-  cursor: cursor,
-);
+            Future<DartSendMessageResult>  sendText({required ArcDartImClient client , required DartSendTextRequest request }) => RustLib.instance.api.crateApiMessagesSendText(client: client, request: request);
 
-Future<DartMarkReadResult> markRead({
-  required ArcDartImClient client,
-  required List<String> messageIds,
-}) => RustLib.instance.api.crateApiMessagesMarkRead(
-  client: client,
-  messageIds: messageIds,
-);
+Future<DartMessagePage>  inbox({required ArcDartImClient client , required int limit , String? cursor , required bool unreadOnly }) => RustLib.instance.api.crateApiMessagesInbox(client: client, limit: limit, cursor: cursor, unreadOnly: unreadOnly);
 
-Future<DartConversationPage> conversations({
-  required ArcDartImClient client,
-  required int limit,
-  required bool includeGroups,
-  required bool includeDirect,
-  required bool unreadOnly,
-}) => RustLib.instance.api.crateApiMessagesConversations(
-  client: client,
-  limit: limit,
-  includeGroups: includeGroups,
-  includeDirect: includeDirect,
-  unreadOnly: unreadOnly,
-);
+Future<DartMessagePage>  history({required ArcDartImClient client , required DartThreadRef thread , required int limit , String? cursor }) => RustLib.instance.api.crateApiMessagesHistory(client: client, thread: thread, limit: limit, cursor: cursor);
 
-Future<DartSendMessageResult> retryMessage({
-  required ArcDartImClient client,
-  required String messageId,
-}) => RustLib.instance.api.crateApiMessagesRetryMessage(
-  client: client,
-  messageId: messageId,
-);
+Future<DartMarkReadResult>  markRead({required ArcDartImClient client , required List<String> messageIds }) => RustLib.instance.api.crateApiMessagesMarkRead(client: client, messageIds: messageIds);
+
+Future<DartConversationPage>  conversations({required ArcDartImClient client , required int limit , required bool includeGroups , required bool includeDirect , required bool unreadOnly }) => RustLib.instance.api.crateApiMessagesConversations(client: client, limit: limit, includeGroups: includeGroups, includeDirect: includeDirect, unreadOnly: unreadOnly);
+
+Future<DartSendMessageResult>  retryMessage({required ArcDartImClient client , required String messageId }) => RustLib.instance.api.crateApiMessagesRetryMessage(client: client, messageId: messageId);

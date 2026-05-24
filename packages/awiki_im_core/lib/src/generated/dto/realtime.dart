@@ -6,68 +6,60 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-class DartRealtimeCapability {
-  final bool statusSupported;
-  final bool connectSupported;
-  final bool runnerExposed;
-  final String? reason;
 
-  const DartRealtimeCapability({
-    required this.statusSupported,
-    required this.connectSupported,
-    required this.runnerExposed,
-    this.reason,
-  });
 
-  @override
-  int get hashCode =>
-      statusSupported.hashCode ^
-      connectSupported.hashCode ^
-      runnerExposed.hashCode ^
-      reason.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRealtimeCapability &&
-          runtimeType == other.runtimeType &&
-          statusSupported == other.statusSupported &&
-          connectSupported == other.connectSupported &&
-          runnerExposed == other.runnerExposed &&
-          reason == other.reason;
-}
 
-class DartRealtimeStatus {
-  final bool connected;
-  final String state;
-  final List<String> subscriptions;
-  final String? lastError;
-  final List<String> warnings;
 
-  const DartRealtimeStatus({
-    required this.connected,
-    required this.state,
-    required this.subscriptions,
-    this.lastError,
-    required this.warnings,
-  });
+            class DartRealtimeCapability  {
+                final bool statusSupported;
+final bool connectSupported;
+final bool runnerExposed;
+final String? reason;
 
-  @override
-  int get hashCode =>
-      connected.hashCode ^
-      state.hashCode ^
-      subscriptions.hashCode ^
-      lastError.hashCode ^
-      warnings.hashCode;
+                const DartRealtimeCapability({required this.statusSupported ,required this.connectSupported ,required this.runnerExposed ,this.reason ,});
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRealtimeStatus &&
-          runtimeType == other.runtimeType &&
-          connected == other.connected &&
-          state == other.state &&
-          subscriptions == other.subscriptions &&
-          lastError == other.lastError &&
-          warnings == other.warnings;
-}
+
+
+
+
+        @override
+        int get hashCode => statusSupported.hashCode^connectSupported.hashCode^runnerExposed.hashCode^reason.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRealtimeCapability &&
+                runtimeType == other.runtimeType
+                && statusSupported == other.statusSupported&& connectSupported == other.connectSupported&& runnerExposed == other.runnerExposed&& reason == other.reason;
+
+            }
+
+class DartRealtimeStatus  {
+                final bool connected;
+final String state;
+final List<String> subscriptions;
+final String? lastError;
+final List<String> warnings;
+
+                const DartRealtimeStatus({required this.connected ,required this.state ,required this.subscriptions ,this.lastError ,required this.warnings ,});
+
+
+
+
+
+        @override
+        int get hashCode => connected.hashCode^state.hashCode^subscriptions.hashCode^lastError.hashCode^warnings.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRealtimeStatus &&
+                runtimeType == other.runtimeType
+                && connected == other.connected&& state == other.state&& subscriptions == other.subscriptions&& lastError == other.lastError&& warnings == other.warnings;
+
+            }

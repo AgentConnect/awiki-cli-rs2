@@ -10,80 +10,24 @@ import '../frb_generated.dart';
 import 'auth.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `page_limit`
 
-Future<DartGroupReadResult> createGroup({
-  required ArcDartImClient client,
-  required DartCreateGroupRequest request,
-}) => RustLib.instance.api.crateApiGroupsCreateGroup(
-  client: client,
-  request: request,
-);
+            // These functions are ignored because they are not marked as `pub`: `page_limit`
 
-Future<DartGroupReadResult> joinGroup({
-  required ArcDartImClient client,
-  required String groupDid,
-}) => RustLib.instance.api.crateApiGroupsJoinGroup(
-  client: client,
-  groupDid: groupDid,
-);
 
-Future<DartGroupReadResult> getGroup({
-  required ArcDartImClient client,
-  required String groupDid,
-}) => RustLib.instance.api.crateApiGroupsGetGroup(
-  client: client,
-  groupDid: groupDid,
-);
+            Future<DartGroupReadResult>  createGroup({required ArcDartImClient client , required DartCreateGroupRequest request }) => RustLib.instance.api.crateApiGroupsCreateGroup(client: client, request: request);
 
-Future<DartGroupReadResult> listGroups({
-  required ArcDartImClient client,
-  required int limit,
-}) =>
-    RustLib.instance.api.crateApiGroupsListGroups(client: client, limit: limit);
+Future<DartGroupReadResult>  joinGroup({required ArcDartImClient client , required String groupDid }) => RustLib.instance.api.crateApiGroupsJoinGroup(client: client, groupDid: groupDid);
 
-Future<DartGroupReadResult> listGroupMembers({
-  required ArcDartImClient client,
-  required String groupDid,
-  required int limit,
-}) => RustLib.instance.api.crateApiGroupsListGroupMembers(
-  client: client,
-  groupDid: groupDid,
-  limit: limit,
-);
+Future<DartGroupReadResult>  getGroup({required ArcDartImClient client , required String groupDid }) => RustLib.instance.api.crateApiGroupsGetGroup(client: client, groupDid: groupDid);
 
-Future<DartGroupReadResult> listGroupMessages({
-  required ArcDartImClient client,
-  required String groupDid,
-  required int limit,
-  String? cursor,
-}) => RustLib.instance.api.crateApiGroupsListGroupMessages(
-  client: client,
-  groupDid: groupDid,
-  limit: limit,
-  cursor: cursor,
-);
+Future<DartGroupReadResult>  listGroups({required ArcDartImClient client , required int limit }) => RustLib.instance.api.crateApiGroupsListGroups(client: client, limit: limit);
 
-Future<DartGroupReadResult> leaveGroup({
-  required ArcDartImClient client,
-  required String groupDid,
-}) => RustLib.instance.api.crateApiGroupsLeaveGroup(
-  client: client,
-  groupDid: groupDid,
-);
+Future<DartGroupReadResult>  listGroupMembers({required ArcDartImClient client , required String groupDid , required int limit }) => RustLib.instance.api.crateApiGroupsListGroupMembers(client: client, groupDid: groupDid, limit: limit);
 
-Future<String?> getGroupJoinCode({
-  required ArcDartImClient client,
-  required String groupDid,
-}) => RustLib.instance.api.crateApiGroupsGetGroupJoinCode(
-  client: client,
-  groupDid: groupDid,
-);
+Future<DartGroupReadResult>  listGroupMessages({required ArcDartImClient client , required String groupDid , required int limit , String? cursor }) => RustLib.instance.api.crateApiGroupsListGroupMessages(client: client, groupDid: groupDid, limit: limit, cursor: cursor);
 
-Future<String?> refreshGroupJoinCode({
-  required ArcDartImClient client,
-  required String groupDid,
-}) => RustLib.instance.api.crateApiGroupsRefreshGroupJoinCode(
-  client: client,
-  groupDid: groupDid,
-);
+Future<DartGroupReadResult>  leaveGroup({required ArcDartImClient client , required String groupDid }) => RustLib.instance.api.crateApiGroupsLeaveGroup(client: client, groupDid: groupDid);
+
+Future<String?>  getGroupJoinCode({required ArcDartImClient client , required String groupDid }) => RustLib.instance.api.crateApiGroupsGetGroupJoinCode(client: client, groupDid: groupDid);
+
+Future<String?>  refreshGroupJoinCode({required ArcDartImClient client , required String groupDid }) => RustLib.instance.api.crateApiGroupsRefreshGroupJoinCode(client: client, groupDid: groupDid);

@@ -383,6 +383,20 @@ impl AuthenticatedRpcTransport for CoreHttpTransport<'_> {
     }
 }
 
+impl<T> AuthenticatedRpcTransport for &mut T
+where
+    T: AuthenticatedRpcTransport + ?Sized,
+{
+    fn authenticated_rpc(
+        &mut self,
+        endpoint: &str,
+        method: &str,
+        params: Value,
+    ) -> crate::ImResult<Value> {
+        (**self).authenticated_rpc(endpoint, method, params)
+    }
+}
+
 impl RpcTransport for CoreHttpTransport<'_> {
     fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
         self.plain_rpc(endpoint, method, params)

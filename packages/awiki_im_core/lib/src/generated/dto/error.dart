@@ -6,37 +6,34 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-class DartImError implements FrbException {
-  final String code;
-  final String message;
-  final String? field;
-  final int? statusCode;
-  final String? capability;
 
-  const DartImError({
-    required this.code,
-    required this.message,
-    this.field,
-    this.statusCode,
-    this.capability,
-  });
 
-  @override
-  int get hashCode =>
-      code.hashCode ^
-      message.hashCode ^
-      field.hashCode ^
-      statusCode.hashCode ^
-      capability.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartImError &&
-          runtimeType == other.runtimeType &&
-          code == other.code &&
-          message == other.message &&
-          field == other.field &&
-          statusCode == other.statusCode &&
-          capability == other.capability;
-}
+
+
+            class DartImError implements FrbException {
+                final String code;
+final String message;
+final String? field;
+final int? statusCode;
+final String? capability;
+
+                const DartImError({required this.code ,required this.message ,this.field ,this.statusCode ,this.capability ,});
+
+
+
+
+
+        @override
+        int get hashCode => code.hashCode^message.hashCode^field.hashCode^statusCode.hashCode^capability.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartImError &&
+                runtimeType == other.runtimeType
+                && code == other.code&& message == other.message&& field == other.field&& statusCode == other.statusCode&& capability == other.capability;
+
+            }

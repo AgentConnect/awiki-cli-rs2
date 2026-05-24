@@ -91,6 +91,10 @@ pub trait BridgeAuthenticatedRpcTransport {
     ) -> crate::ImResult<Value>;
 }
 
+pub trait BridgeRpcTransport {
+    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value>;
+}
+
 #[doc(hidden)]
 pub fn send_direct_text_with_bridge<P, T>(
     client: &crate::core::ImClient,
@@ -136,11 +140,12 @@ pub fn read_inbox_with_bridge<P, T>(
 ) -> crate::ImResult<ReadBridgeResult>
 where
     P: BridgeSessionProvider,
-    T: BridgeAuthenticatedRpcTransport,
+    T: BridgeAuthenticatedRpcTransport + BridgeRpcTransport + Clone,
 {
     let result = crate::internal::message_runtime::read::MessageReadRuntime::new(
         client,
         CompatSessionProvider(session_provider),
+        CompatTransport(transport.clone()),
         CompatTransport(transport),
     )
     .inbox(crate::internal::message_runtime::read::InboxRead {
@@ -161,11 +166,12 @@ pub fn read_history_with_bridge<P, T>(
 ) -> crate::ImResult<ReadBridgeResult>
 where
     P: BridgeSessionProvider,
-    T: BridgeAuthenticatedRpcTransport,
+    T: BridgeAuthenticatedRpcTransport + BridgeRpcTransport + Clone,
 {
     let result = crate::internal::message_runtime::read::MessageReadRuntime::new(
         client,
         CompatSessionProvider(session_provider),
+        CompatTransport(transport.clone()),
         CompatTransport(transport),
     )
     .history(crate::internal::message_runtime::read::HistoryRead {
@@ -311,5 +317,14 @@ where
         params: Value,
     ) -> crate::ImResult<Value> {
         self.0.authenticated_rpc(endpoint, method, params)
+    }
+}
+
+impl<T> crate::internal::transport::RpcTransport for CompatTransport<T>
+where
+    T: BridgeRpcTransport,
+{
+    fn rpc(&mut self, endpoint: &str, method: &str, params: Value) -> crate::ImResult<Value> {
+        self.0.rpc(endpoint, method, params)
     }
 }

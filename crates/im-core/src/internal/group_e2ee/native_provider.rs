@@ -1,9 +1,9 @@
 use anp::group_e2ee::operations::{
     self, AbortCommitInput, AbortCommitOutput, AddMemberInput, CreateGroupInput, DecryptInput,
     DecryptOutput, EncryptInput, EncryptOutput, FinalizeCommitInput, FinalizeCommitOutput,
-    GenerateKeyPackageInput, GroupKeyPackageOutput, PreparedMlsCommitOutput, ProcessNoticeInput,
-    ProcessNoticeOutput, ProcessWelcomeInput, ProcessWelcomeOutput, RecoverMemberInput,
-    RemoveMemberInput, StatusInput, StatusOutput, UpdateMemberInput,
+    GenerateKeyPackageInput, GroupKeyPackageOutput, LeaveGroupInput, PreparedMlsCommitOutput,
+    ProcessNoticeInput, ProcessNoticeOutput, ProcessWelcomeInput, ProcessWelcomeOutput,
+    RecoverMemberInput, RemoveMemberInput, StatusInput, StatusOutput, UpdateMemberInput,
 };
 use anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore;
 
@@ -47,6 +47,10 @@ impl GroupMlsProvider for NativeAnpMlsProvider {
         input: RemoveMemberInput,
     ) -> crate::ImResult<PreparedMlsCommitOutput> {
         operations::remove_member_prepare(&self.store, input).map_err(map_group_mls_error)
+    }
+
+    fn leave_prepare(&self, input: LeaveGroupInput) -> crate::ImResult<PreparedMlsCommitOutput> {
+        operations::leave_prepare(&self.store, input).map_err(map_group_mls_error)
     }
 
     fn update_member_prepare(

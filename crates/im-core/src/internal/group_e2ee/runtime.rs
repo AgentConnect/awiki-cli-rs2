@@ -10,6 +10,7 @@ use crate::internal::transport::AuthenticatedRpcTransport;
 
 use super::provider::GroupMlsProvider;
 use super::state_ref::{resolve_group_state_ref, ResolveGroupStateRef};
+use super::DEFAULT_GROUP_MLS_DEVICE_ID;
 
 pub(crate) struct GroupE2eeTextSender<'a, P, T, M> {
     client: &'a crate::core::ImClient,
@@ -30,6 +31,16 @@ pub(crate) struct GroupE2eeTextSendResult {
     pub operation_id: String,
     pub message_id: String,
     pub raw: serde_json::Value,
+}
+
+struct GroupE2eePreparedTextSend {
+    group: crate::ids::GroupRef,
+    text: String,
+    kind: crate::messages::MessageKind,
+    operation_id: String,
+    message_id: String,
+    credentials: GroupTextCredentials,
+    group_state_ref: Option<GroupStateRef>,
 }
 
 impl<'a, P, T, M> GroupE2eeTextSender<'a, P, T, M>
@@ -66,23 +77,6 @@ where
             Some(credentials) => credentials,
             None => load_credentials(self.client)?,
         };
-        let group_state_ref = match input.group_state_ref {
-            Some(group_state_ref) => group_state_ref,
-            None => {
-                resolve_group_state_ref(
-                    self.client,
-                    &self.session_provider,
-                    &mut self.transport,
-                    &self.mls_provider,
-                    ResolveGroupStateRef {
-                        group: group.clone(),
-                        credentials: Some(credentials.clone()),
-                    },
-                )?
-                .group_state_ref
-            }
-        };
-
         let operation_id = input
             .request
             .delivery
@@ -107,39 +101,90 @@ where
                     crate::internal::wire::common::generate_operation_id()
                 )
             });
+        let prepared = GroupE2eePreparedTextSend {
+            group,
+            text: text.to_owned(),
+            kind,
+            operation_id,
+            message_id,
+            credentials,
+            group_state_ref: input.group_state_ref,
+        };
+        self.send_prepared(&prepared, false).or_else(|err| {
+            if !is_group_e2ee_epoch_mismatch(&err) {
+                return Err(err);
+            }
+            let retry = self.repair_for_epoch_mismatch(&prepared.group, &prepared.credentials)?;
+            let retry_prepared = GroupE2eePreparedTextSend {
+                group_state_ref: None,
+                ..prepared
+            };
+            let mut result = self.send_prepared(&retry_prepared, true)?;
+            let mut warnings = retry.warnings;
+            warnings.extend(result.sdk_result.warnings);
+            result.sdk_result.warnings = compact_warnings(warnings);
+            Ok(result)
+        })
+    }
+
+    fn send_prepared(
+        &mut self,
+        input: &GroupE2eePreparedTextSend,
+        retry: bool,
+    ) -> crate::ImResult<GroupE2eeTextSendResult> {
+        let group_state_ref = match input.group_state_ref.clone() {
+            Some(group_state_ref) => group_state_ref,
+            None => {
+                resolve_group_state_ref(
+                    self.client,
+                    &self.session_provider,
+                    &mut self.transport,
+                    &self.mls_provider,
+                    ResolveGroupStateRef {
+                        group: input.group.clone(),
+                        credentials: Some(input.credentials.clone()),
+                    },
+                )?
+                .group_state_ref
+            }
+        };
         let device_id = self
             .client
             .current_identity()
             .device_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or(anp::group_e2ee::commands::DEVICE_ID_DEFAULT)
+            .unwrap_or(DEFAULT_GROUP_MLS_DEVICE_ID)
             .to_owned();
-        let content_type = content_type_for_message_type(message_type(&kind));
+        let content_type = content_type_for_message_type(message_type(&input.kind));
         let encrypted = self.mls_provider.encrypt(EncryptInput {
             sender_did: self.client.did().as_str().to_owned(),
             device_id,
             group_state_ref,
-            message_id: message_id.clone(),
-            operation_id: operation_id.clone(),
+            message_id: input.message_id.clone(),
+            operation_id: input.operation_id.clone(),
             application_plaintext: GroupApplicationPlaintext {
                 application_content_type: content_type.to_owned(),
-                thread_id: Some(group.as_str().to_owned()),
+                thread_id: Some(input.group.as_str().to_owned()),
                 reply_to_message_id: None,
                 annotations: Default::default(),
-                text: Some(text.to_owned()),
+                text: Some(input.text.clone()),
                 payload: None,
                 payload_b64u: None,
             },
-            request_id: format!("group-e2ee-encrypt-{operation_id}"),
+            request_id: if retry {
+                format!("group-e2ee-encrypt-retry-{}", input.operation_id)
+            } else {
+                format!("group-e2ee-encrypt-{}", input.operation_id)
+            },
         })?;
         let params = super::wire::build_group_e2ee_send_rpc_params(
-            &credentials,
+            &input.credentials,
             self.client.did().as_str(),
-            group.as_str(),
+            input.group.as_str(),
             &encrypted.group_cipher_object,
-            &operation_id,
-            &message_id,
+            &input.operation_id,
+            &input.message_id,
         )?;
         let raw = self.transport.authenticated_rpc(
             crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
@@ -151,27 +196,66 @@ where
                 detail: err.to_string(),
             })?;
         if result.group_did.trim().is_empty() {
-            result.group_did = group.as_str().to_owned();
+            result.group_did = input.group.as_str().to_owned();
         }
         if result.message_id.trim().is_empty() {
-            result.message_id = message_id.clone();
+            result.message_id = input.message_id.clone();
         }
         if result.operation_id.trim().is_empty() {
-            result.operation_id = operation_id.clone();
+            result.operation_id = input.operation_id.clone();
         }
-        let sdk_result = sdk_result_from_group_result(
+        let mut sdk_result = sdk_result_from_group_result(
             &result,
             self.client.did().clone(),
-            group.clone(),
-            text,
-            kind,
+            input.group.clone(),
+            &input.text,
+            input.kind.clone(),
         )?;
+        if let Err(err) =
+            crate::internal::message_runtime::local_projection::persist_group_e2ee_outgoing(
+                self.client,
+                input.group.as_str(),
+                &input.text,
+                &input.kind,
+                &sdk_result,
+            )
+        {
+            sdk_result
+                .warnings
+                .push(format!("Failed to persist local group E2EE message: {err}"));
+        }
         Ok(GroupE2eeTextSendResult {
             sdk_result,
-            group_did: group.as_str().to_owned(),
-            operation_id,
-            message_id,
+            group_did: input.group.as_str().to_owned(),
+            operation_id: input.operation_id.clone(),
+            message_id: input.message_id.clone(),
             raw,
+        })
+    }
+
+    fn repair_for_epoch_mismatch(
+        &mut self,
+        group: &crate::ids::GroupRef,
+        credentials: &GroupTextCredentials,
+    ) -> crate::ImResult<super::repair::GroupE2eeRepairResult> {
+        let repair = super::repair::GroupE2eeRepairRuntime::new(
+            self.client,
+            &self.session_provider,
+            &mut self.transport,
+            &self.mls_provider,
+        )
+        .repair(super::repair::GroupE2eeRepairInput {
+            group: group.clone(),
+            credentials: Some(credentials.clone()),
+            notice_limit: 50,
+        })?;
+        let mut warnings = repair.warnings.clone();
+        warnings.push(
+            "group E2EE send saw stale epoch; repaired local notices and retried once".to_owned(),
+        );
+        Ok(super::repair::GroupE2eeRepairResult {
+            warnings: compact_warnings(warnings),
+            ..repair
         })
     }
 }
@@ -180,7 +264,8 @@ fn validate_group_e2ee_security(
     security: &crate::messages::MessageSecurityMode,
 ) -> crate::ImResult<()> {
     match security {
-        crate::messages::MessageSecurityMode::GroupE2ee => Ok(()),
+        crate::messages::MessageSecurityMode::E2eeRequired
+        | crate::messages::MessageSecurityMode::GroupE2ee => Ok(()),
         crate::messages::MessageSecurityMode::DefaultPlain
         | crate::messages::MessageSecurityMode::Plain => {
             Err(crate::ImError::unsupported("plain-group-e2ee-runtime"))
@@ -189,6 +274,24 @@ fn validate_group_e2ee_security(
             Err(crate::ImError::unsupported("secure-direct"))
         }
     }
+}
+
+fn is_group_e2ee_epoch_mismatch(err: &crate::ImError) -> bool {
+    err.to_string()
+        .to_ascii_lowercase()
+        .contains("epoch mismatch")
+}
+
+fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
+    let mut compact = Vec::new();
+    for warning in warnings {
+        let warning = warning.trim().to_owned();
+        if warning.is_empty() || compact.iter().any(|known| known == &warning) {
+            continue;
+        }
+        compact.push(warning);
+    }
+    compact
 }
 
 #[cfg(test)]
@@ -201,7 +304,7 @@ mod tests {
     use anp::group_e2ee::operations::{
         AbortCommitInput, AbortCommitOutput, AddMemberInput, CreateGroupInput, DecryptInput,
         DecryptOutput, EncryptInput, EncryptOutput, FinalizeCommitInput, FinalizeCommitOutput,
-        GenerateKeyPackageInput, GroupKeyPackageOutput, PreparedMlsCommitOutput,
+        GenerateKeyPackageInput, GroupKeyPackageOutput, LeaveGroupInput, PreparedMlsCommitOutput,
         ProcessNoticeInput, ProcessNoticeOutput, ProcessWelcomeInput, ProcessWelcomeOutput,
         RecoverMemberInput, RemoveMemberInput, StatusInput, StatusOutput, UpdateMemberInput,
     };
@@ -268,7 +371,7 @@ mod tests {
         assert_eq!(call.params["meta"]["security_profile"], "group-e2ee");
         assert_eq!(
             call.params["meta"]["content_type"],
-            anp::group_e2ee::commands::GROUP_CIPHER_CONTENT_TYPE
+            anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
         );
         assert_eq!(call.params["meta"]["operation_id"], "op-client-e2ee");
         assert_eq!(
@@ -279,6 +382,52 @@ mod tests {
         assert!(!encoded.contains("secret group text"));
         assert!(!encoded.contains("application_plaintext"));
         assert!(encoded.contains("origin_proof"));
+
+        let stored = rusqlite::Connection::open(fixture.root.join("local").join("im.sqlite"))
+            .unwrap()
+            .query_row(
+                r#"
+SELECT thread_id, group_did, content, is_e2ee, server_seq, metadata
+FROM messages
+WHERE owner_did = ?1 AND msg_id = ?2"#,
+                rusqlite::params![client.did().as_str(), "did:example:groups:e2ee:77"],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.0, "group:did:example:groups:e2ee");
+        assert_eq!(stored.1, group_did);
+        assert_eq!(stored.2, "secret group text");
+        assert_eq!(stored.3, 1);
+        assert_eq!(stored.4, 77);
+        let metadata: Value = serde_json::from_str(&stored.5).unwrap();
+        assert_eq!(metadata["security"], "group-e2ee");
+        assert_eq!(metadata["contains_sensitive"], false);
+        assert_eq!(metadata["group_event_seq"], "77");
+        let metadata_text = stored.5;
+        for forbidden in [
+            "private_message_b64u",
+            "crypto_group_id",
+            "epoch_authenticator",
+            "OpenMLS",
+            "KeyPackage",
+            "commit_b64u",
+            "welcome_b64u",
+            "cipher",
+        ] {
+            assert!(
+                !metadata_text.contains(forbidden),
+                "metadata leaked {forbidden}: {metadata_text}"
+            );
+        }
     }
 
     #[test]
@@ -343,6 +492,147 @@ mod tests {
         assert!(!encoded.contains("application_plaintext"));
     }
 
+    #[test]
+    fn group_e2ee_text_sender_repairs_epoch_mismatch_and_retries_once() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group_did = "did:example:groups:e2ee";
+        let provider = RepairingMlsProvider::new();
+        let processed = Rc::clone(&provider.processed_notices);
+        let sender = GroupE2eeTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({}),
+                responses: vec![
+                    (
+                        "group.e2ee.head".to_owned(),
+                        json!({
+                            "group_state_ref": {
+                                "group_did": group_did,
+                                "group_state_version": "service-state-stale"
+                            },
+                            "epoch": "1"
+                        }),
+                    ),
+                    (
+                        "group.e2ee.send".to_owned(),
+                        json_rpc_service_error("group.e2ee.send epoch mismatch"),
+                    ),
+                    (
+                        "group.e2ee.head".to_owned(),
+                        json!({
+                            "group_state_ref": {
+                                "group_did": group_did,
+                                "group_state_version": "service-state-current"
+                            },
+                            "epoch": "2"
+                        }),
+                    ),
+                    (
+                        "group.e2ee.notice".to_owned(),
+                        json!({
+                            "notices": [{
+                                "notice_id": "notice-commit-2",
+                                "notice_type": "commit-delivery",
+                                "group_did": group_did,
+                                "recipient_did": "did:example:alice",
+                                "device_id": DEFAULT_GROUP_MLS_DEVICE_ID,
+                                "commit_b64u": "COMMIT",
+                                "from_epoch": "1",
+                                "to_epoch": "2",
+                                "group_state_version": "service-state-current"
+                            }]
+                        }),
+                    ),
+                    (
+                        "group.e2ee.notice".to_owned(),
+                        json!({
+                            "notices": []
+                        }),
+                    ),
+                    (
+                        "group.e2ee.head".to_owned(),
+                        json!({
+                            "group_state_ref": {
+                                "group_did": group_did,
+                                "group_state_version": "service-state-current"
+                            },
+                            "epoch": "2"
+                        }),
+                    ),
+                    (
+                        "group.e2ee.notice".to_owned(),
+                        json!({
+                            "notices": []
+                        }),
+                    ),
+                    (
+                        "group.e2ee.send".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "final_acceptance": true,
+                            "group_did": group_did,
+                            "message_id": "server-e2ee-message-id",
+                            "operation_id": "op-client-e2ee",
+                            "group_event_seq": "79",
+                            "group_state_version": "2",
+                            "accepted_at": "2026-05-21T00:00:00Z"
+                        }),
+                    ),
+                ],
+            },
+            provider,
+        );
+
+        let result = sender
+            .send(GroupE2eeTextSend {
+                request: group_e2ee_text_request(group_did, "retry group text"),
+                group_state_ref: None,
+                credentials: Some(fixture.credentials()),
+            })
+            .unwrap();
+
+        assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(79));
+        assert!(result
+            .sdk_result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("retried once")));
+        assert_eq!(processed.borrow().as_slice(), ["did:example:groups:e2ee:1"]);
+        let calls = calls.borrow();
+        let methods = calls
+            .iter()
+            .map(|call| call.method.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            vec![
+                "group.e2ee.head",
+                "group.e2ee.send",
+                "group.e2ee.head",
+                "group.e2ee.notice",
+                "group.e2ee.notice",
+                "group.e2ee.head",
+                "group.e2ee.notice",
+                "group.e2ee.send"
+            ]
+        );
+        assert_eq!(
+            calls[1].params["body"]["group_state_ref"]["group_state_version"],
+            "service-state-stale"
+        );
+        assert_eq!(
+            calls[7].params["body"]["group_state_ref"]["group_state_version"],
+            "service-state-current"
+        );
+        let encoded_retry = serde_json::to_string(&calls[7].params).unwrap();
+        assert!(!encoded_retry.contains("retry group text"));
+        assert!(!encoded_retry.contains("application_plaintext"));
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -393,7 +683,19 @@ mod tests {
                 .enumerate()
                 .find(|(_, (candidate, _))| candidate == method)
             {
-                return Ok(self.responses.remove(index).1);
+                let value = self.responses.remove(index).1;
+                if let Some(error) = value.get("error").and_then(Value::as_object) {
+                    return Err(crate::ImError::Service {
+                        status_code: None,
+                        code: error.get("code").and_then(Value::as_str).map(str::to_owned),
+                        message: error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("service error")
+                            .to_owned(),
+                    });
+                }
+                return Ok(value);
             }
             Ok(self.response.clone())
         }
@@ -456,6 +758,13 @@ mod tests {
             _input: RemoveMemberInput,
         ) -> crate::ImResult<PreparedMlsCommitOutput> {
             unreachable!("send should not remove members")
+        }
+
+        fn leave_prepare(
+            &self,
+            _input: LeaveGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not leave groups")
         }
 
         fn update_member_prepare(
@@ -572,6 +881,13 @@ mod tests {
             unreachable!("send should not remove members")
         }
 
+        fn leave_prepare(
+            &self,
+            _input: LeaveGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not leave groups")
+        }
+
         fn update_member_prepare(
             &self,
             _input: UpdateMemberInput,
@@ -614,6 +930,160 @@ mod tests {
         fn decrypt(&self, _input: DecryptInput) -> crate::ImResult<DecryptOutput> {
             unreachable!("send should not decrypt")
         }
+    }
+
+    #[derive(Clone)]
+    struct RepairingMlsProvider {
+        status: Rc<RefCell<StatusOutput>>,
+        processed_notices: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl RepairingMlsProvider {
+        fn new() -> Self {
+            Self {
+                status: Rc::new(RefCell::new(StatusOutput {
+                    status: "active".to_owned(),
+                    epoch: Some("1".to_owned()),
+                    local_epoch: Some("1".to_owned()),
+                    pending_commits: Vec::new(),
+                    epoch_authenticator: None,
+                })),
+                processed_notices: Rc::new(RefCell::new(Vec::new())),
+            }
+        }
+    }
+
+    impl GroupMlsProvider for RepairingMlsProvider {
+        fn encrypt(&self, input: EncryptInput) -> crate::ImResult<EncryptOutput> {
+            assert_eq!(
+                input.application_plaintext.text.as_deref(),
+                Some("retry group text")
+            );
+            Ok(EncryptOutput {
+                group_cipher_object: GroupCipherObject {
+                    crypto_group_id_b64u: "Y3J5cHRvLWdyb3Vw".to_owned(),
+                    epoch: self
+                        .status
+                        .borrow()
+                        .local_epoch
+                        .clone()
+                        .unwrap_or_else(|| "1".to_owned()),
+                    private_message_b64u: "cmV0cnktY2lwaGVy".to_owned(),
+                    group_state_ref: input.group_state_ref,
+                    epoch_authenticator: Some("YXV0aGVudGljYXRvcg".to_owned()),
+                    non_cryptographic: false,
+                    artifact_mode: None,
+                },
+                authenticated_data_sha256_b64u: "YWFkLWRpZ2VzdA".to_owned(),
+            })
+        }
+
+        fn status(&self, _input: StatusInput) -> crate::ImResult<StatusOutput> {
+            Ok(self.status.borrow().clone())
+        }
+
+        fn process_notice(
+            &self,
+            input: ProcessNoticeInput,
+        ) -> crate::ImResult<ProcessNoticeOutput> {
+            self.processed_notices
+                .borrow_mut()
+                .push(format!("{}:{}", input.group_did, input.from_epoch));
+            let mut status = self.status.borrow_mut();
+            status.epoch = Some("2".to_owned());
+            status.local_epoch = Some("2".to_owned());
+            Ok(ProcessNoticeOutput {
+                crypto_group_id_b64u: "crypto".to_owned(),
+                status: "active".to_owned(),
+                self_removed: false,
+                from_epoch: input.from_epoch,
+                epoch: "2".to_owned(),
+                epoch_authenticator: None,
+                ratchet_tree_b64u: None,
+                subject_did: "did:example:bob".to_owned(),
+                subject_status: "active".to_owned(),
+            })
+        }
+
+        fn generate_key_package(
+            &self,
+            _input: GenerateKeyPackageInput,
+        ) -> crate::ImResult<GroupKeyPackageOutput> {
+            unreachable!("send should not generate key packages")
+        }
+
+        fn create_group_prepare(
+            &self,
+            _input: CreateGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not create groups")
+        }
+
+        fn add_member_prepare(
+            &self,
+            _input: AddMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not add members")
+        }
+
+        fn remove_member_prepare(
+            &self,
+            _input: RemoveMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not remove members")
+        }
+
+        fn leave_prepare(
+            &self,
+            _input: LeaveGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not leave groups")
+        }
+
+        fn update_member_prepare(
+            &self,
+            _input: UpdateMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not update members")
+        }
+
+        fn recover_member_prepare(
+            &self,
+            _input: RecoverMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("send should not recover members")
+        }
+
+        fn finalize_commit(
+            &self,
+            _input: FinalizeCommitInput,
+        ) -> crate::ImResult<FinalizeCommitOutput> {
+            unreachable!("send should not finalize commits in this retry test")
+        }
+
+        fn abort_commit(&self, _input: AbortCommitInput) -> crate::ImResult<AbortCommitOutput> {
+            unreachable!("send should not abort commits")
+        }
+
+        fn process_welcome(
+            &self,
+            _input: ProcessWelcomeInput,
+        ) -> crate::ImResult<ProcessWelcomeOutput> {
+            unreachable!("retry test should process commit notices only")
+        }
+
+        fn decrypt(&self, _input: DecryptInput) -> crate::ImResult<DecryptOutput> {
+            unreachable!("send should not decrypt")
+        }
+    }
+
+    fn json_rpc_service_error(message: &str) -> Value {
+        json!({
+            "error": {
+                "code": "epoch_mismatch",
+                "message": message
+            }
+        })
     }
 
     struct Fixture {

@@ -53,6 +53,7 @@ pub enum MessageAdapterError {
     AttachmentSenderRequired,
     TransportUnavailable(String),
     SecureNotSupported,
+    SecureAttachmentNotSupported,
     AttachmentNotSupported,
     GroupNotSupported,
     GroupE2eeSelfLeaveUnsupported,
@@ -143,6 +144,9 @@ impl fmt::Display for MessageAdapterError {
             }
             Self::SecureNotSupported => {
                 formatter.write_str("secure messaging is not supported for this command yet")
+            }
+            Self::SecureAttachmentNotSupported => {
+                formatter.write_str("E2EE attachments are not supported yet")
             }
             Self::AttachmentNotSupported => {
                 formatter.write_str("attachment messaging is not supported for this command yet")
