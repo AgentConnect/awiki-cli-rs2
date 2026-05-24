@@ -80,3 +80,66 @@ class DartRelationStatus {
           relationship == other.relationship &&
           displayName == other.displayName;
 }
+
+class DartRelationshipListItem {
+  final String did;
+  final String? handle;
+  final String? displayName;
+  final String relationship;
+  final String? createdAt;
+  final List<String> warnings;
+
+  const DartRelationshipListItem({
+    required this.did,
+    this.handle,
+    this.displayName,
+    required this.relationship,
+    this.createdAt,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      did.hashCode ^
+      handle.hashCode ^
+      displayName.hashCode ^
+      relationship.hashCode ^
+      createdAt.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRelationshipListItem &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          handle == other.handle &&
+          displayName == other.displayName &&
+          relationship == other.relationship &&
+          createdAt == other.createdAt &&
+          warnings == other.warnings;
+}
+
+class DartRelationshipPage {
+  final List<DartRelationshipListItem> items;
+  final String? nextCursor;
+  final bool hasMore;
+
+  const DartRelationshipPage({
+    required this.items,
+    this.nextCursor,
+    required this.hasMore,
+  });
+
+  @override
+  int get hashCode => items.hashCode ^ nextCursor.hashCode ^ hasMore.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartRelationshipPage &&
+          runtimeType == other.runtimeType &&
+          items == other.items &&
+          nextCursor == other.nextCursor &&
+          hasMore == other.hasMore;
+}
