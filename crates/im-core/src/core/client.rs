@@ -60,6 +60,10 @@ impl ImClient {
         crate::realtime::RealtimeService::new(self)
     }
 
+    pub fn email(&self) -> crate::email::EmailService<'_> {
+        crate::email::EmailService::new(self)
+    }
+
     pub(crate) fn runtime(&self) -> &crate::internal::identity_runtime::ClientIdentityRuntime {
         &self.runtime
     }

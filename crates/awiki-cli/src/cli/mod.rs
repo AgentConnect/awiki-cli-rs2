@@ -406,11 +406,7 @@ fn default_cutover_boundary_error(command: &str) -> Option<ExitError> {
 }
 
 fn is_default_cutover_blocked_domain(command: &str) -> bool {
-    command == "mail"
-        || command
-            .strip_prefix("mail.")
-            .is_some_and(|suffix| !suffix.is_empty())
-        || command == "page"
+    command == "page"
         || command
             .strip_prefix("page.")
             .is_some_and(|suffix| !suffix.is_empty())

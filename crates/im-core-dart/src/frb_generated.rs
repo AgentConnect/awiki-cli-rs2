@@ -43,7 +43,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1070999815;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1905830567;
 
 // Section: executor
 
@@ -51,6 +51,57 @@ flutter_rust_bridge::frb_generated_default_handler!();
 
 // Section: wire_funcs
 
+fn wire__crate__api__email__account_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "account",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let mut api_client_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_client,
+                                0,
+                                false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_client_guard = Some(api_client.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_client_guard = api_client_guard.unwrap();
+                    let output_ok = crate::api::email::account(&*api_client_guard)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__auth__auth_ensure_session_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -627,6 +678,63 @@ fn wire__crate__api__attachments__download_attachment_impl(
         },
     )
 }
+fn wire__crate__api__email__download_attachment_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "download_attachment",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_message_id = <String>::sse_decode(&mut deserializer);
+            let api_attachment_index = <u32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let mut api_client_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_client,
+                                0,
+                                false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_client_guard = Some(api_client.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_client_guard = api_client_guard.unwrap();
+                    let output_ok = crate::api::email::download_attachment(
+                        &*api_client_guard,
+                        api_message_id,
+                        api_attachment_index,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__directory__follow_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -839,6 +947,67 @@ fn wire__crate__api__messages__history_impl(
                         api_thread,
                         api_limit,
                         api_cursor,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__email__inbox_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "inbox",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_folder = <String>::sse_decode(&mut deserializer);
+            let api_limit = <u32>::sse_decode(&mut deserializer);
+            let api_offset = <u32>::sse_decode(&mut deserializer);
+            let api_unread_only = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let mut api_client_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_client,
+                                0,
+                                false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_client_guard = Some(api_client.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_client_guard = api_client_guard.unwrap();
+                    let output_ok = crate::api::email::inbox(
+                        &*api_client_guard,
+                        api_folder,
+                        api_limit,
+                        api_offset,
+                        api_unread_only,
                     )?;
                     Ok(output_ok)
                 })())
@@ -1386,6 +1555,63 @@ fn wire__crate__api__directory__lookup_handle_impl(
         },
     )
 }
+fn wire__crate__api__email__mark_read_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "mark_read",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_message_ids = <Vec<String>>::sse_decode(&mut deserializer);
+            let api_is_read = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let mut api_client_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_client,
+                                0,
+                                false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_client_guard = Some(api_client.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_client_guard = api_client_guard.unwrap();
+                    let output_ok = crate::api::email::mark_read(
+                        &*api_client_guard,
+                        api_message_ids,
+                        api_is_read,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__messages__mark_read_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1439,6 +1665,59 @@ fn wire__crate__api__messages__mark_read_impl(
         },
     )
 }
+fn wire__crate__api__email__notifications_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "notifications",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_limit = <u32>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let mut api_client_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_client,
+                                0,
+                                false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_client_guard = Some(api_client.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_client_guard = api_client_guard.unwrap();
+                    let output_ok =
+                        crate::api::email::notifications(&*api_client_guard, api_limit)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__core__open_core_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1467,6 +1746,58 @@ fn wire__crate__api__core__open_core_impl(
             move |context| {
                 transform_result_sse::<_, crate::dto::error::DartImError>((move || {
                     let output_ok = crate::api::core::open_core(api_config, api_paths)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__email__read_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "read",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_message_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let mut api_client_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_client,
+                                0,
+                                false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_client_guard = Some(api_client.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_client_guard = api_client_guard.unwrap();
+                    let output_ok = crate::api::email::read(&*api_client_guard, api_message_id)?;
                     Ok(output_ok)
                 })())
             }
@@ -2224,6 +2555,59 @@ fn wire__crate__api__messages__retry_message_impl(
         },
     )
 }
+fn wire__crate__api__email__send_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "send",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_client = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc<DartImClient>>,
+            >>::sse_decode(&mut deserializer);
+            let api_request =
+                <crate::dto::email::DartSendEmailRequest>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::dto::error::DartImError>((move || {
+                    let mut api_client_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_client,
+                                0,
+                                false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_client_guard = Some(api_client.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_client_guard = api_client_guard.unwrap();
+                    let output_ok = crate::api::email::send(&*api_client_guard, api_request)?;
+                    Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 fn wire__crate__api__attachments__send_attachment_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -2892,6 +3276,189 @@ impl SseDecode for crate::dto::attachment::DartDownloadedAttachmentDestination {
     }
 }
 
+impl SseDecode for crate::dto::email::DartEmailAccount {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_mailboxAddress = <Option<String>>::sse_decode(deserializer);
+        let mut var_displayName = <Option<String>>::sse_decode(deserializer);
+        let mut var_status = <Option<String>>::sse_decode(deserializer);
+        let mut var_attributes =
+            <Vec<crate::dto::email::DartEmailAttribute>>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailAccount {
+            mailbox_address: var_mailboxAddress,
+            display_name: var_displayName,
+            status: var_status,
+            attributes: var_attributes,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailAttachmentContent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_messageId = <String>::sse_decode(deserializer);
+        let mut var_attachmentIndex = <u32>::sse_decode(deserializer);
+        let mut var_filename = <String>::sse_decode(deserializer);
+        let mut var_contentType = <String>::sse_decode(deserializer);
+        let mut var_size = <Option<u64>>::sse_decode(deserializer);
+        let mut var_bytes = <Vec<u8>>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailAttachmentContent {
+            message_id: var_messageId,
+            attachment_index: var_attachmentIndex,
+            filename: var_filename,
+            content_type: var_contentType,
+            size: var_size,
+            bytes: var_bytes,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailAttachmentMetadata {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_index = <u32>::sse_decode(deserializer);
+        let mut var_filename = <Option<String>>::sse_decode(deserializer);
+        let mut var_contentType = <Option<String>>::sse_decode(deserializer);
+        let mut var_size = <Option<u64>>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailAttachmentMetadata {
+            index: var_index,
+            filename: var_filename,
+            content_type: var_contentType,
+            size: var_size,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailAttribute {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_key = <String>::sse_decode(deserializer);
+        let mut var_value = <String>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailAttribute {
+            key: var_key,
+            value: var_value,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailMarkReadResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_updated = <u32>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailMarkReadResult {
+            updated: var_updated,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailMessage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_summary =
+            <crate::dto::email::DartEmailMessageSummary>::sse_decode(deserializer);
+        let mut var_bodyText = <Option<String>>::sse_decode(deserializer);
+        let mut var_bodyHtml = <Option<String>>::sse_decode(deserializer);
+        let mut var_attachments =
+            <Vec<crate::dto::email::DartEmailAttachmentMetadata>>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailMessage {
+            summary: var_summary,
+            body_text: var_bodyText,
+            body_html: var_bodyHtml,
+            attachments: var_attachments,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailMessageSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_folder = <Option<String>>::sse_decode(deserializer);
+        let mut var_from = <Vec<String>>::sse_decode(deserializer);
+        let mut var_to = <Vec<String>>::sse_decode(deserializer);
+        let mut var_cc = <Vec<String>>::sse_decode(deserializer);
+        let mut var_subject = <String>::sse_decode(deserializer);
+        let mut var_preview = <Option<String>>::sse_decode(deserializer);
+        let mut var_receivedAt = <Option<String>>::sse_decode(deserializer);
+        let mut var_sentAt = <Option<String>>::sse_decode(deserializer);
+        let mut var_unread = <bool>::sse_decode(deserializer);
+        let mut var_hasAttachments = <bool>::sse_decode(deserializer);
+        let mut var_attachmentCount = <Option<u32>>::sse_decode(deserializer);
+        let mut var_attributes =
+            <Vec<crate::dto::email::DartEmailAttribute>>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailMessageSummary {
+            id: var_id,
+            folder: var_folder,
+            from: var_from,
+            to: var_to,
+            cc: var_cc,
+            subject: var_subject,
+            preview: var_preview,
+            received_at: var_receivedAt,
+            sent_at: var_sentAt,
+            unread: var_unread,
+            has_attachments: var_hasAttachments,
+            attachment_count: var_attachmentCount,
+            attributes: var_attributes,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailMessageSummaryPage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_items =
+            <Vec<crate::dto::email::DartEmailMessageSummary>>::sse_decode(deserializer);
+        let mut var_nextCursor = <Option<String>>::sse_decode(deserializer);
+        let mut var_hasMore = <bool>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailMessageSummaryPage {
+            items: var_items,
+            next_cursor: var_nextCursor,
+            has_more: var_hasMore,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailNotification {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_mailboxAddress = <Option<String>>::sse_decode(deserializer);
+        let mut var_fromAddr = <Option<String>>::sse_decode(deserializer);
+        let mut var_subject = <String>::sse_decode(deserializer);
+        let mut var_preview = <Option<String>>::sse_decode(deserializer);
+        let mut var_hasAttachments = <bool>::sse_decode(deserializer);
+        let mut var_receivedAt = <Option<String>>::sse_decode(deserializer);
+        let mut var_attributes =
+            <Vec<crate::dto::email::DartEmailAttribute>>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailNotification {
+            id: var_id,
+            mailbox_address: var_mailboxAddress,
+            from_addr: var_fromAddr,
+            subject: var_subject,
+            preview: var_preview,
+            has_attachments: var_hasAttachments,
+            received_at: var_receivedAt,
+            attributes: var_attributes,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartEmailNotificationPage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_items =
+            <Vec<crate::dto::email::DartEmailNotification>>::sse_decode(deserializer);
+        let mut var_nextCursor = <Option<String>>::sse_decode(deserializer);
+        let mut var_hasMore = <bool>::sse_decode(deserializer);
+        return crate::dto::email::DartEmailNotificationPage {
+            items: var_items,
+            next_cursor: var_nextCursor,
+            has_more: var_hasMore,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::group::DartGroupMember {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3089,6 +3656,7 @@ impl SseDecode for crate::dto::config::DartImCoreConfig {
         let mut var_didDomain = <String>::sse_decode(deserializer);
         let mut var_userServiceEndpoint = <Option<String>>::sse_decode(deserializer);
         let mut var_messageServiceEndpoint = <Option<String>>::sse_decode(deserializer);
+        let mut var_mailServiceEndpoint = <Option<String>>::sse_decode(deserializer);
         let mut var_anpServiceEndpoint = <Option<String>>::sse_decode(deserializer);
         let mut var_anpServiceDid = <Option<String>>::sse_decode(deserializer);
         let mut var_transportPolicy =
@@ -3098,6 +3666,7 @@ impl SseDecode for crate::dto::config::DartImCoreConfig {
             did_domain: var_didDomain,
             user_service_endpoint: var_userServiceEndpoint,
             message_service_endpoint: var_messageServiceEndpoint,
+            mail_service_endpoint: var_mailServiceEndpoint,
             anp_service_endpoint: var_anpServiceEndpoint,
             anp_service_did: var_anpServiceDid,
             transport_policy: var_transportPolicy,
@@ -3474,6 +4043,38 @@ impl SseDecode for crate::dto::directory::DartRelationStatus {
     }
 }
 
+impl SseDecode for crate::dto::email::DartSendEmailRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_to = <Vec<String>>::sse_decode(deserializer);
+        let mut var_cc = <Vec<String>>::sse_decode(deserializer);
+        let mut var_subject = <String>::sse_decode(deserializer);
+        let mut var_bodyText = <String>::sse_decode(deserializer);
+        let mut var_bodyHtml = <Option<String>>::sse_decode(deserializer);
+        return crate::dto::email::DartSendEmailRequest {
+            to: var_to,
+            cc: var_cc,
+            subject: var_subject,
+            body_text: var_bodyText,
+            body_html: var_bodyHtml,
+        };
+    }
+}
+
+impl SseDecode for crate::dto::email::DartSendEmailResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_accepted = <bool>::sse_decode(deserializer);
+        let mut var_messageId = <Option<String>>::sse_decode(deserializer);
+        let mut var_warnings = <Vec<String>>::sse_decode(deserializer);
+        return crate::dto::email::DartSendEmailResult {
+            accepted: var_accepted,
+            message_id: var_messageId,
+            warnings: var_warnings,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::message::DartSendMessageResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3626,6 +4227,60 @@ impl SseDecode for Vec<crate::dto::message::DartConversation> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::dto::message::DartConversation>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::email::DartEmailAttachmentMetadata> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::dto::email::DartEmailAttachmentMetadata>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::email::DartEmailAttribute> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::dto::email::DartEmailAttribute>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::email::DartEmailMessageSummary> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::dto::email::DartEmailMessageSummary>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::dto::email::DartEmailNotification> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::dto::email::DartEmailNotification>::sse_decode(
                 deserializer,
             ));
         }
@@ -3902,85 +4557,92 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        1 => wire__crate__api__auth__auth_ensure_session_impl(port, ptr, rust_vec_len, data_len),
-        2 => wire__crate__api__auth__auth_login_impl(port, ptr, rust_vec_len, data_len),
-        3 => wire__crate__api__auth__auth_refresh_session_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__auth__auth_status_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__client__close_client_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__core__close_core_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__messages__conversations_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__client__core_client_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__groups__create_group_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__client__current_identity_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__identity__default_identity_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__attachments__download_attachment_impl(
+        1 => wire__crate__api__email__account_impl(port, ptr, rust_vec_len, data_len),
+        2 => wire__crate__api__auth__auth_ensure_session_impl(port, ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__auth__auth_login_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__auth__auth_refresh_session_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__auth__auth_status_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__client__close_client_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__core__close_core_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__messages__conversations_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__client__core_client_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__groups__create_group_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__client__current_identity_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__identity__default_identity_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__attachments__download_attachment_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        13 => wire__crate__api__directory__follow_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__groups__get_group_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__groups__get_group_join_code_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__messages__history_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__messages__inbox_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__groups__join_group_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__groups__leave_group_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__groups__list_group_members_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__groups__list_group_messages_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__groups__list_groups_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__identity__list_identities_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__profile__load_my_profile_impl(port, ptr, rust_vec_len, data_len),
-        25 => {
+        14 => wire__crate__api__email__download_attachment_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__directory__follow_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__groups__get_group_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__groups__get_group_join_code_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__messages__history_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__email__inbox_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__messages__inbox_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__groups__join_group_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__groups__leave_group_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__groups__list_group_members_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__groups__list_group_messages_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__groups__list_groups_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__identity__list_identities_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__profile__load_my_profile_impl(port, ptr, rust_vec_len, data_len),
+        28 => {
             wire__crate__api__profile__load_public_profile_impl(port, ptr, rust_vec_len, data_len)
         }
-        26 => wire__crate__api__directory__lookup_handle_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__messages__mark_read_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__core__open_core_impl(port, ptr, rust_vec_len, data_len),
-        29 => {
+        29 => wire__crate__api__directory__lookup_handle_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__email__mark_read_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__messages__mark_read_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__email__notifications_impl(port, ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__core__open_core_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__email__read_impl(port, ptr, rust_vec_len, data_len),
+        35 => {
             wire__crate__api__realtime__realtime_capability_impl(port, ptr, rust_vec_len, data_len)
         }
-        30 => wire__crate__api__realtime__realtime_connect_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__realtime__realtime_event_stream_impl(
+        36 => wire__crate__api__realtime__realtime_connect_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__realtime__realtime_event_stream_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        32 => wire__crate__api__realtime__realtime_start_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__realtime__realtime_stop_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__identity__recover_handle_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__groups__refresh_group_join_code_impl(
+        38 => wire__crate__api__realtime__realtime_start_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__realtime__realtime_status_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__realtime__realtime_stop_impl(port, ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__identity__recover_handle_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__groups__refresh_group_join_code_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        37 => wire__crate__api__identity__register_handle_with_email_impl(
+        43 => wire__crate__api__identity__register_handle_with_email_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        38 => wire__crate__api__identity__register_handle_with_phone_impl(
+        44 => wire__crate__api__identity__register_handle_with_phone_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        39 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
-        43 => {
+        45 => wire__crate__api__directory__relation_status_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__identity__resolve_identity_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__directory__resolve_peer_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__messages__retry_message_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__email__send_impl(port, ptr, rust_vec_len, data_len),
+        50 => {
             wire__crate__api__attachments__send_attachment_impl(port, ptr, rust_vec_len, data_len)
         }
-        44 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
-        47 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__messages__send_text_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__crate__api__directory__unfollow_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__unsupported__unsupported_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__profile__update_profile_impl(port, ptr, rust_vec_len, data_len),
+        55 => wire__crate__api__core__validate_paths_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -4392,6 +5054,241 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::attachment::DartDownloadedAtt
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailAccount {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.mailbox_address.into_into_dart().into_dart(),
+            self.display_name.into_into_dart().into_dart(),
+            self.status.into_into_dart().into_dart(),
+            self.attributes.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailAccount
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailAccount>
+    for crate::dto::email::DartEmailAccount
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailAccount {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailAttachmentContent {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.message_id.into_into_dart().into_dart(),
+            self.attachment_index.into_into_dart().into_dart(),
+            self.filename.into_into_dart().into_dart(),
+            self.content_type.into_into_dart().into_dart(),
+            self.size.into_into_dart().into_dart(),
+            self.bytes.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailAttachmentContent
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailAttachmentContent>
+    for crate::dto::email::DartEmailAttachmentContent
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailAttachmentContent {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailAttachmentMetadata {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.index.into_into_dart().into_dart(),
+            self.filename.into_into_dart().into_dart(),
+            self.content_type.into_into_dart().into_dart(),
+            self.size.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailAttachmentMetadata
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailAttachmentMetadata>
+    for crate::dto::email::DartEmailAttachmentMetadata
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailAttachmentMetadata {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailAttribute {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.key.into_into_dart().into_dart(),
+            self.value.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailAttribute
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailAttribute>
+    for crate::dto::email::DartEmailAttribute
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailAttribute {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailMarkReadResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.updated.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailMarkReadResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailMarkReadResult>
+    for crate::dto::email::DartEmailMarkReadResult
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailMarkReadResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailMessage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.summary.into_into_dart().into_dart(),
+            self.body_text.into_into_dart().into_dart(),
+            self.body_html.into_into_dart().into_dart(),
+            self.attachments.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailMessage
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailMessage>
+    for crate::dto::email::DartEmailMessage
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailMessage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailMessageSummary {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.folder.into_into_dart().into_dart(),
+            self.from.into_into_dart().into_dart(),
+            self.to.into_into_dart().into_dart(),
+            self.cc.into_into_dart().into_dart(),
+            self.subject.into_into_dart().into_dart(),
+            self.preview.into_into_dart().into_dart(),
+            self.received_at.into_into_dart().into_dart(),
+            self.sent_at.into_into_dart().into_dart(),
+            self.unread.into_into_dart().into_dart(),
+            self.has_attachments.into_into_dart().into_dart(),
+            self.attachment_count.into_into_dart().into_dart(),
+            self.attributes.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailMessageSummary
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailMessageSummary>
+    for crate::dto::email::DartEmailMessageSummary
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailMessageSummary {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailMessageSummaryPage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.items.into_into_dart().into_dart(),
+            self.next_cursor.into_into_dart().into_dart(),
+            self.has_more.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailMessageSummaryPage
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailMessageSummaryPage>
+    for crate::dto::email::DartEmailMessageSummaryPage
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailMessageSummaryPage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailNotification {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.mailbox_address.into_into_dart().into_dart(),
+            self.from_addr.into_into_dart().into_dart(),
+            self.subject.into_into_dart().into_dart(),
+            self.preview.into_into_dart().into_dart(),
+            self.has_attachments.into_into_dart().into_dart(),
+            self.received_at.into_into_dart().into_dart(),
+            self.attributes.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailNotification
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailNotification>
+    for crate::dto::email::DartEmailNotification
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailNotification {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartEmailNotificationPage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.items.into_into_dart().into_dart(),
+            self.next_cursor.into_into_dart().into_dart(),
+            self.has_more.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartEmailNotificationPage
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartEmailNotificationPage>
+    for crate::dto::email::DartEmailNotificationPage
+{
+    fn into_into_dart(self) -> crate::dto::email::DartEmailNotificationPage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::group::DartGroupMember {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -4619,6 +5516,7 @@ impl flutter_rust_bridge::IntoDart for crate::dto::config::DartImCoreConfig {
             self.did_domain.into_into_dart().into_dart(),
             self.user_service_endpoint.into_into_dart().into_dart(),
             self.message_service_endpoint.into_into_dart().into_dart(),
+            self.mail_service_endpoint.into_into_dart().into_dart(),
             self.anp_service_endpoint.into_into_dart().into_dart(),
             self.anp_service_did.into_into_dart().into_dart(),
             self.transport_policy.into_into_dart().into_dart(),
@@ -5125,6 +6023,52 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::directory::DartRelationStatus
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartSendEmailRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.to.into_into_dart().into_dart(),
+            self.cc.into_into_dart().into_dart(),
+            self.subject.into_into_dart().into_dart(),
+            self.body_text.into_into_dart().into_dart(),
+            self.body_html.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartSendEmailRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartSendEmailRequest>
+    for crate::dto::email::DartSendEmailRequest
+{
+    fn into_into_dart(self) -> crate::dto::email::DartSendEmailRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::email::DartSendEmailResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.accepted.into_into_dart().into_dart(),
+            self.message_id.into_into_dart().into_dart(),
+            self.warnings.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::email::DartSendEmailResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::email::DartSendEmailResult>
+    for crate::dto::email::DartSendEmailResult
+{
+    fn into_into_dart(self) -> crate::dto::email::DartSendEmailResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::message::DartSendMessageResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -5567,6 +6511,117 @@ impl SseEncode for crate::dto::attachment::DartDownloadedAttachmentDestination {
     }
 }
 
+impl SseEncode for crate::dto::email::DartEmailAccount {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.mailbox_address, serializer);
+        <Option<String>>::sse_encode(self.display_name, serializer);
+        <Option<String>>::sse_encode(self.status, serializer);
+        <Vec<crate::dto::email::DartEmailAttribute>>::sse_encode(self.attributes, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailAttachmentContent {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.message_id, serializer);
+        <u32>::sse_encode(self.attachment_index, serializer);
+        <String>::sse_encode(self.filename, serializer);
+        <String>::sse_encode(self.content_type, serializer);
+        <Option<u64>>::sse_encode(self.size, serializer);
+        <Vec<u8>>::sse_encode(self.bytes, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailAttachmentMetadata {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.index, serializer);
+        <Option<String>>::sse_encode(self.filename, serializer);
+        <Option<String>>::sse_encode(self.content_type, serializer);
+        <Option<u64>>::sse_encode(self.size, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailAttribute {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.key, serializer);
+        <String>::sse_encode(self.value, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailMarkReadResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.updated, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailMessage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::email::DartEmailMessageSummary>::sse_encode(self.summary, serializer);
+        <Option<String>>::sse_encode(self.body_text, serializer);
+        <Option<String>>::sse_encode(self.body_html, serializer);
+        <Vec<crate::dto::email::DartEmailAttachmentMetadata>>::sse_encode(
+            self.attachments,
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailMessageSummary {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <Option<String>>::sse_encode(self.folder, serializer);
+        <Vec<String>>::sse_encode(self.from, serializer);
+        <Vec<String>>::sse_encode(self.to, serializer);
+        <Vec<String>>::sse_encode(self.cc, serializer);
+        <String>::sse_encode(self.subject, serializer);
+        <Option<String>>::sse_encode(self.preview, serializer);
+        <Option<String>>::sse_encode(self.received_at, serializer);
+        <Option<String>>::sse_encode(self.sent_at, serializer);
+        <bool>::sse_encode(self.unread, serializer);
+        <bool>::sse_encode(self.has_attachments, serializer);
+        <Option<u32>>::sse_encode(self.attachment_count, serializer);
+        <Vec<crate::dto::email::DartEmailAttribute>>::sse_encode(self.attributes, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailMessageSummaryPage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::dto::email::DartEmailMessageSummary>>::sse_encode(self.items, serializer);
+        <Option<String>>::sse_encode(self.next_cursor, serializer);
+        <bool>::sse_encode(self.has_more, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailNotification {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <Option<String>>::sse_encode(self.mailbox_address, serializer);
+        <Option<String>>::sse_encode(self.from_addr, serializer);
+        <String>::sse_encode(self.subject, serializer);
+        <Option<String>>::sse_encode(self.preview, serializer);
+        <bool>::sse_encode(self.has_attachments, serializer);
+        <Option<String>>::sse_encode(self.received_at, serializer);
+        <Vec<crate::dto::email::DartEmailAttribute>>::sse_encode(self.attributes, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartEmailNotificationPage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<crate::dto::email::DartEmailNotification>>::sse_encode(self.items, serializer);
+        <Option<String>>::sse_encode(self.next_cursor, serializer);
+        <bool>::sse_encode(self.has_more, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::group::DartGroupMember {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -5708,6 +6763,7 @@ impl SseEncode for crate::dto::config::DartImCoreConfig {
         <String>::sse_encode(self.did_domain, serializer);
         <Option<String>>::sse_encode(self.user_service_endpoint, serializer);
         <Option<String>>::sse_encode(self.message_service_endpoint, serializer);
+        <Option<String>>::sse_encode(self.mail_service_endpoint, serializer);
         <Option<String>>::sse_encode(self.anp_service_endpoint, serializer);
         <Option<String>>::sse_encode(self.anp_service_did, serializer);
         <crate::dto::config::DartMessageTransportPolicy>::sse_encode(
@@ -5979,6 +7035,26 @@ impl SseEncode for crate::dto::directory::DartRelationStatus {
     }
 }
 
+impl SseEncode for crate::dto::email::DartSendEmailRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<String>>::sse_encode(self.to, serializer);
+        <Vec<String>>::sse_encode(self.cc, serializer);
+        <String>::sse_encode(self.subject, serializer);
+        <String>::sse_encode(self.body_text, serializer);
+        <Option<String>>::sse_encode(self.body_html, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::email::DartSendEmailResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.accepted, serializer);
+        <Option<String>>::sse_encode(self.message_id, serializer);
+        <Vec<String>>::sse_encode(self.warnings, serializer);
+    }
+}
+
 impl SseEncode for crate::dto::message::DartSendMessageResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -6088,6 +7164,46 @@ impl SseEncode for Vec<crate::dto::message::DartConversation> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::dto::message::DartConversation>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::email::DartEmailAttachmentMetadata> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::email::DartEmailAttachmentMetadata>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::email::DartEmailAttribute> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::email::DartEmailAttribute>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::email::DartEmailMessageSummary> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::email::DartEmailMessageSummary>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::dto::email::DartEmailNotification> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::dto::email::DartEmailNotification>::sse_encode(item, serializer);
         }
     }
 }

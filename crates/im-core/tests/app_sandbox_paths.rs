@@ -153,6 +153,7 @@ mod app_sandbox_paths {
                 did_domain: "awiki.test".to_string(),
                 user_service_endpoint: None,
                 message_service_endpoint: None,
+                mail_service_endpoint: None,
                 anp_service_endpoint: None,
                 anp_service_did: None,
                 transport_policy: MessageTransportPolicy::HttpOnly,

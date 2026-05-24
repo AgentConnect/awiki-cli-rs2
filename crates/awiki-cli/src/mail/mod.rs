@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 mod client;
 mod service;
 mod types;

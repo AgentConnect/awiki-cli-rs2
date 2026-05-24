@@ -2,6 +2,12 @@ use crate::dto::{
     attachment::{DartDownloadedAttachment, DartDownloadedAttachmentDestination},
     auth::{DartAuthScope, DartAuthStatus, DartSessionBundle, DartSessionUpdate},
     directory::{DartDirectoryResolution, DartRelationStatus},
+    email::{
+        DartEmailAccount, DartEmailAttachmentContent, DartEmailAttachmentMetadata,
+        DartEmailAttribute, DartEmailMarkReadResult, DartEmailMessage, DartEmailMessageSummary,
+        DartEmailMessageSummaryPage, DartEmailNotification, DartEmailNotificationPage,
+        DartSendEmailResult,
+    },
     group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
     identity::{
         DartDefaultIdentityChange, DartHandleRegistrationResult, DartIdentitySummary,
@@ -34,6 +40,150 @@ impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
                 .into_iter()
                 .map(identity_missing_item_to_string)
                 .collect(),
+        }
+    }
+}
+
+impl From<im_core::email::EmailAttribute> for DartEmailAttribute {
+    fn from(value: im_core::email::EmailAttribute) -> Self {
+        Self {
+            key: value.key,
+            value: value.value,
+        }
+    }
+}
+
+impl From<im_core::email::EmailAccount> for DartEmailAccount {
+    fn from(value: im_core::email::EmailAccount) -> Self {
+        Self {
+            mailbox_address: value
+                .mailbox_address
+                .map(|address| address.as_str().to_string()),
+            display_name: value.display_name,
+            status: value.status,
+            attributes: value.attributes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::email::EmailMessageSummary> for DartEmailMessageSummary {
+    fn from(value: im_core::email::EmailMessageSummary) -> Self {
+        Self {
+            id: value.id.as_str().to_string(),
+            folder: value.folder.map(|folder| folder.as_str().to_string()),
+            from: value
+                .from
+                .into_iter()
+                .map(|address| address.as_str().to_string())
+                .collect(),
+            to: value
+                .to
+                .into_iter()
+                .map(|address| address.as_str().to_string())
+                .collect(),
+            cc: value
+                .cc
+                .into_iter()
+                .map(|address| address.as_str().to_string())
+                .collect(),
+            subject: value.subject,
+            preview: value.preview,
+            received_at: value.received_at,
+            sent_at: value.sent_at,
+            unread: value.unread,
+            has_attachments: value.has_attachments,
+            attachment_count: value.attachment_count,
+            attributes: value.attributes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::ids::Page<im_core::email::EmailMessageSummary>> for DartEmailMessageSummaryPage {
+    fn from(value: im_core::ids::Page<im_core::email::EmailMessageSummary>) -> Self {
+        Self {
+            items: value.items.into_iter().map(Into::into).collect(),
+            next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_string()),
+            has_more: value.has_more,
+        }
+    }
+}
+
+impl From<im_core::email::EmailAttachmentMetadata> for DartEmailAttachmentMetadata {
+    fn from(value: im_core::email::EmailAttachmentMetadata) -> Self {
+        Self {
+            index: value.index,
+            filename: value.filename,
+            content_type: value.content_type,
+            size: value.size,
+        }
+    }
+}
+
+impl From<im_core::email::EmailMessage> for DartEmailMessage {
+    fn from(value: im_core::email::EmailMessage) -> Self {
+        Self {
+            summary: value.summary.into(),
+            body_text: value.body_text,
+            body_html: value.body_html,
+            attachments: value.attachments.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::email::EmailAttachmentContent> for DartEmailAttachmentContent {
+    fn from(value: im_core::email::EmailAttachmentContent) -> Self {
+        Self {
+            message_id: value.message_id.as_str().to_string(),
+            attachment_index: value.attachment_index,
+            filename: value.filename,
+            content_type: value.content_type,
+            size: value.size,
+            bytes: value.bytes,
+        }
+    }
+}
+
+impl From<im_core::email::EmailMarkReadResult> for DartEmailMarkReadResult {
+    fn from(value: im_core::email::EmailMarkReadResult) -> Self {
+        Self {
+            updated: value.updated,
+        }
+    }
+}
+
+impl From<im_core::email::SendEmailResult> for DartSendEmailResult {
+    fn from(value: im_core::email::SendEmailResult) -> Self {
+        Self {
+            accepted: value.accepted,
+            message_id: value.message_id.map(|id| id.as_str().to_string()),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::email::EmailNotification> for DartEmailNotification {
+    fn from(value: im_core::email::EmailNotification) -> Self {
+        Self {
+            id: value.id.as_str().to_string(),
+            mailbox_address: value
+                .mailbox_address
+                .map(|address| address.as_str().to_string()),
+            from_addr: value.from_addr,
+            subject: value.subject,
+            preview: value.preview,
+            has_attachments: value.has_attachments,
+            received_at: value.received_at,
+            attributes: value.attributes.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<im_core::ids::Page<im_core::email::EmailNotification>> for DartEmailNotificationPage {
+    fn from(value: im_core::ids::Page<im_core::email::EmailNotification>) -> Self {
+        Self {
+            items: value.items.into_iter().map(Into::into).collect(),
+            next_cursor: value.next_cursor.map(|cursor| cursor.as_str().to_string()),
+            has_more: value.has_more,
         }
     }
 }

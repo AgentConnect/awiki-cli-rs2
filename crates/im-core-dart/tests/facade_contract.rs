@@ -47,6 +47,45 @@ fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
 }
 
 #[test]
+fn config_maps_mail_service_endpoint_into_im_core() {
+    let config = awiki_im_core::dto::config::DartImCoreConfig {
+        service_base_url: "https://awiki.ai".to_string(),
+        did_domain: "awiki.ai".to_string(),
+        user_service_endpoint: None,
+        message_service_endpoint: None,
+        mail_service_endpoint: Some("https://mail.awiki.ai".to_string()),
+        anp_service_endpoint: None,
+        anp_service_did: None,
+        transport_policy: awiki_im_core::dto::config::DartMessageTransportPolicy::Auto,
+    };
+
+    let core: im_core::ImCoreConfig = config
+        .try_into()
+        .expect("mail endpoint maps into ImCoreConfig");
+    assert_eq!(
+        core.mail_service_endpoint.unwrap().as_str(),
+        "https://mail.awiki.ai"
+    );
+}
+
+#[test]
+fn email_send_bridge_request_maps_to_typed_core_addresses() {
+    let request = awiki_im_core::dto::email::DartSendEmailRequest {
+        to: vec!["bob@awiki.ai".to_string()],
+        cc: vec!["copy@awiki.ai".to_string()],
+        subject: "Hello".to_string(),
+        body_text: "Body".to_string(),
+        body_html: Some("<p>Body</p>".to_string()),
+    };
+
+    let core: im_core::email::SendEmailRequest =
+        request.try_into().expect("email request maps to im-core");
+    assert_eq!(core.to[0].as_str(), "bob@awiki.ai");
+    assert_eq!(core.cc[0].as_str(), "copy@awiki.ai");
+    assert_eq!(core.body_html.as_deref(), Some("<p>Body</p>"));
+}
+
+#[test]
 fn realtime_runner_capability_is_exposed_after_bridge_plan_lands() {
     let capability = awiki_im_core::dto::realtime::DartRealtimeCapability {
         status_supported: true,

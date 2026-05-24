@@ -8,6 +8,7 @@ import 'api/auth.dart';
 import 'api/client.dart';
 import 'api/core.dart';
 import 'api/directory.dart';
+import 'api/email.dart';
 import 'api/groups.dart';
 import 'api/identity.dart';
 import 'api/messages.dart';
@@ -20,6 +21,7 @@ import 'dto/attachment.dart';
 import 'dto/auth.dart';
 import 'dto/config.dart';
 import 'dto/directory.dart';
+import 'dto/email.dart';
 import 'dto/error.dart';
 import 'dto/group.dart';
 import 'dto/identity.dart';
@@ -84,7 +86,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -1070999815;
+  int get rustContentHash => -1905830567;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -96,6 +98,10 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
 }
 
 abstract class RustLibApi extends BaseApi {
+  Future<DartEmailAccount> crateApiEmailAccount({
+    required ArcDartImClient client,
+  });
+
   Future<DartSessionBundle> crateApiAuthAuthEnsureSession({
     required ArcDartImClient client,
     required DartAuthScope scope,
@@ -148,6 +154,12 @@ abstract class RustLibApi extends BaseApi {
     required DartDownloadAttachmentRequest request,
   });
 
+  Future<DartEmailAttachmentContent> crateApiEmailDownloadAttachment({
+    required ArcDartImClient client,
+    required String messageId,
+    required int attachmentIndex,
+  });
+
   Future<void> crateApiDirectoryFollow({
     required ArcDartImClient client,
     required String peer,
@@ -168,6 +180,14 @@ abstract class RustLibApi extends BaseApi {
     required DartThreadRef thread,
     required int limit,
     String? cursor,
+  });
+
+  Future<DartEmailMessageSummaryPage> crateApiEmailInbox({
+    required ArcDartImClient client,
+    required String folder,
+    required int limit,
+    required int offset,
+    required bool unreadOnly,
   });
 
   Future<DartMessagePage> crateApiMessagesInbox({
@@ -223,14 +243,30 @@ abstract class RustLibApi extends BaseApi {
     required String handle,
   });
 
+  Future<DartEmailMarkReadResult> crateApiEmailMarkRead({
+    required ArcDartImClient client,
+    required List<String> messageIds,
+    required bool isRead,
+  });
+
   Future<DartMarkReadResult> crateApiMessagesMarkRead({
     required ArcDartImClient client,
     required List<String> messageIds,
   });
 
+  Future<DartEmailNotificationPage> crateApiEmailNotifications({
+    required ArcDartImClient client,
+    required int limit,
+  });
+
   Future<ArcDartImCore> crateApiCoreOpenCore({
     required DartImCoreConfig config,
     required DartImCorePaths paths,
+  });
+
+  Future<DartEmailMessage> crateApiEmailRead({
+    required ArcDartImClient client,
+    required String messageId,
   });
 
   Future<DartRealtimeCapability> crateApiRealtimeRealtimeCapability({
@@ -312,6 +348,11 @@ abstract class RustLibApi extends BaseApi {
     required String messageId,
   });
 
+  Future<DartSendEmailResult> crateApiEmailSend({
+    required ArcDartImClient client,
+    required DartSendEmailRequest request,
+  });
+
   Future<DartSendMessageResult> crateApiAttachmentsSendAttachment({
     required ArcDartImClient client,
     required DartAttachmentSendRequest request,
@@ -373,6 +414,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   });
 
   @override
+  Future<DartEmailAccount> crateApiEmailAccount({
+    required ArcDartImClient client,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 1,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_email_account,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiEmailAccountConstMeta,
+        argValues: [client],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiEmailAccountConstMeta =>
+      const TaskConstMeta(debugName: "account", argNames: ["client"]);
+
+  @override
   Future<DartSessionBundle> crateApiAuthAuthEnsureSession({
     required ArcDartImClient client,
     required DartAuthScope scope,
@@ -389,7 +463,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 1,
+            funcId: 2,
             port: port_,
           );
         },
@@ -425,7 +499,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 2,
+            funcId: 3,
             port: port_,
           );
         },
@@ -458,7 +532,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 4,
             port: port_,
           );
         },
@@ -494,7 +568,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 5,
             port: port_,
           );
         },
@@ -525,7 +599,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 6,
             port: port_,
           );
         },
@@ -556,7 +630,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 7,
             port: port_,
           );
         },
@@ -597,7 +671,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 8,
             port: port_,
           );
         },
@@ -641,7 +715,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 9,
             port: port_,
           );
         },
@@ -679,7 +753,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 9,
+            funcId: 10,
             port: port_,
           );
         },
@@ -714,7 +788,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 10,
+            funcId: 11,
             port: port_,
           );
         },
@@ -747,7 +821,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 11,
+            funcId: 12,
             port: port_,
           );
         },
@@ -785,7 +859,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 12,
+            funcId: 13,
             port: port_,
           );
         },
@@ -807,6 +881,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DartEmailAttachmentContent> crateApiEmailDownloadAttachment({
+    required ArcDartImClient client,
+    required String messageId,
+    required int attachmentIndex,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_String(messageId, serializer);
+          sse_encode_u_32(attachmentIndex, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 14,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_email_attachment_content,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiEmailDownloadAttachmentConstMeta,
+        argValues: [client, messageId, attachmentIndex],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiEmailDownloadAttachmentConstMeta =>
+      const TaskConstMeta(
+        debugName: "download_attachment",
+        argNames: ["client", "messageId", "attachmentIndex"],
+      );
+
+  @override
   Future<void> crateApiDirectoryFollow({
     required ArcDartImClient client,
     required String peer,
@@ -823,7 +937,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 13,
+            funcId: 15,
             port: port_,
           );
         },
@@ -858,7 +972,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 14,
+            funcId: 16,
             port: port_,
           );
         },
@@ -895,7 +1009,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 17,
             port: port_,
           );
         },
@@ -937,7 +1051,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 18,
             port: port_,
           );
         },
@@ -955,6 +1069,49 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiMessagesHistoryConstMeta => const TaskConstMeta(
     debugName: "history",
     argNames: ["client", "thread", "limit", "cursor"],
+  );
+
+  @override
+  Future<DartEmailMessageSummaryPage> crateApiEmailInbox({
+    required ArcDartImClient client,
+    required String folder,
+    required int limit,
+    required int offset,
+    required bool unreadOnly,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_String(folder, serializer);
+          sse_encode_u_32(limit, serializer);
+          sse_encode_u_32(offset, serializer);
+          sse_encode_bool(unreadOnly, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 19,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_email_message_summary_page,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiEmailInboxConstMeta,
+        argValues: [client, folder, limit, offset, unreadOnly],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiEmailInboxConstMeta => const TaskConstMeta(
+    debugName: "inbox",
+    argNames: ["client", "folder", "limit", "offset", "unreadOnly"],
   );
 
   @override
@@ -978,7 +1135,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 20,
             port: port_,
           );
         },
@@ -1015,7 +1172,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 21,
             port: port_,
           );
         },
@@ -1052,7 +1209,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 22,
             port: port_,
           );
         },
@@ -1091,7 +1248,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 23,
             port: port_,
           );
         },
@@ -1133,7 +1290,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 24,
             port: port_,
           );
         },
@@ -1171,7 +1328,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 25,
             port: port_,
           );
         },
@@ -1206,7 +1363,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 26,
             port: port_,
           );
         },
@@ -1239,7 +1396,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 24,
+            funcId: 27,
             port: port_,
           );
         },
@@ -1274,7 +1431,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 25,
+            funcId: 28,
             port: port_,
           );
         },
@@ -1312,7 +1469,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1334,6 +1491,45 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DartEmailMarkReadResult> crateApiEmailMarkRead({
+    required ArcDartImClient client,
+    required List<String> messageIds,
+    required bool isRead,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_list_String(messageIds, serializer);
+          sse_encode_bool(isRead, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 30,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_email_mark_read_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiEmailMarkReadConstMeta,
+        argValues: [client, messageIds, isRead],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiEmailMarkReadConstMeta => const TaskConstMeta(
+    debugName: "mark_read",
+    argNames: ["client", "messageIds", "isRead"],
+  );
+
+  @override
   Future<DartMarkReadResult> crateApiMessagesMarkRead({
     required ArcDartImClient client,
     required List<String> messageIds,
@@ -1350,7 +1546,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1371,6 +1567,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<DartEmailNotificationPage> crateApiEmailNotifications({
+    required ArcDartImClient client,
+    required int limit,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_u_32(limit, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 32,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_email_notification_page,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiEmailNotificationsConstMeta,
+        argValues: [client, limit],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiEmailNotificationsConstMeta => const TaskConstMeta(
+    debugName: "notifications",
+    argNames: ["client", "limit"],
+  );
+
+  @override
   Future<ArcDartImCore> crateApiCoreOpenCore({
     required DartImCoreConfig config,
     required DartImCorePaths paths,
@@ -1384,7 +1617,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1406,6 +1639,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<DartEmailMessage> crateApiEmailRead({
+    required ArcDartImClient client,
+    required String messageId,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_String(messageId, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 34,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_email_message,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiEmailReadConstMeta,
+        argValues: [client, messageId],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiEmailReadConstMeta =>
+      const TaskConstMeta(debugName: "read", argNames: ["client", "messageId"]);
+
+  @override
   Future<DartRealtimeCapability> crateApiRealtimeRealtimeCapability({
     required ArcDartImClient client,
   }) {
@@ -1420,7 +1688,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1456,7 +1724,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 36,
             port: port_,
           );
         },
@@ -1492,7 +1760,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 31,
+              funcId: 37,
               port: port_,
             );
           },
@@ -1532,7 +1800,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 38,
             port: port_,
           );
         },
@@ -1569,7 +1837,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 39,
             port: port_,
           );
         },
@@ -1602,7 +1870,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 40,
             port: port_,
           );
         },
@@ -1641,7 +1909,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 41,
             port: port_,
           );
         },
@@ -1679,7 +1947,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 42,
             port: port_,
           );
         },
@@ -1729,7 +1997,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 43,
             port: port_,
           );
         },
@@ -1797,7 +2065,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 44,
             port: port_,
           );
         },
@@ -1853,7 +2121,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 45,
             port: port_,
           );
         },
@@ -1891,7 +2159,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 46,
             port: port_,
           );
         },
@@ -1929,7 +2197,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 47,
             port: port_,
           );
         },
@@ -1967,7 +2235,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 48,
             port: port_,
           );
         },
@@ -1989,6 +2257,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<DartSendEmailResult> crateApiEmailSend({
+    required ArcDartImClient client,
+    required DartSendEmailRequest request,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
+            client,
+            serializer,
+          );
+          sse_encode_box_autoadd_dart_send_email_request(request, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 49,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_dart_send_email_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        ),
+        constMeta: kCrateApiEmailSendConstMeta,
+        argValues: [client, request],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiEmailSendConstMeta =>
+      const TaskConstMeta(debugName: "send", argNames: ["client", "request"]);
+
+  @override
   Future<DartSendMessageResult> crateApiAttachmentsSendAttachment({
     required ArcDartImClient client,
     required DartAttachmentSendRequest request,
@@ -2008,7 +2311,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 50,
             port: port_,
           );
         },
@@ -2046,7 +2349,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 51,
             port: port_,
           );
         },
@@ -2083,7 +2386,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 52,
             port: port_,
           );
         },
@@ -2111,7 +2414,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 46,
+            funcId: 53,
             port: port_,
           );
         },
@@ -2146,7 +2449,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 47,
+            funcId: 54,
             port: port_,
           );
         },
@@ -2182,7 +2485,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 48,
+            funcId: 55,
             port: port_,
           );
         },
@@ -2442,6 +2745,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSendEmailRequest dco_decode_box_autoadd_dart_send_email_request(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_dart_send_email_request(raw);
+  }
+
+  @protected
   DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(
     dynamic raw,
   ) {
@@ -2698,6 +3009,160 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartEmailAccount dco_decode_dart_email_account(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartEmailAccount(
+      mailboxAddress: dco_decode_opt_String(arr[0]),
+      displayName: dco_decode_opt_String(arr[1]),
+      status: dco_decode_opt_String(arr[2]),
+      attributes: dco_decode_list_dart_email_attribute(arr[3]),
+    );
+  }
+
+  @protected
+  DartEmailAttachmentContent dco_decode_dart_email_attachment_content(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return DartEmailAttachmentContent(
+      messageId: dco_decode_String(arr[0]),
+      attachmentIndex: dco_decode_u_32(arr[1]),
+      filename: dco_decode_String(arr[2]),
+      contentType: dco_decode_String(arr[3]),
+      size: dco_decode_opt_box_autoadd_u_64(arr[4]),
+      bytes: dco_decode_list_prim_u_8_strict(arr[5]),
+    );
+  }
+
+  @protected
+  DartEmailAttachmentMetadata dco_decode_dart_email_attachment_metadata(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartEmailAttachmentMetadata(
+      index: dco_decode_u_32(arr[0]),
+      filename: dco_decode_opt_String(arr[1]),
+      contentType: dco_decode_opt_String(arr[2]),
+      size: dco_decode_opt_box_autoadd_u_64(arr[3]),
+    );
+  }
+
+  @protected
+  DartEmailAttribute dco_decode_dart_email_attribute(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return DartEmailAttribute(
+      key: dco_decode_String(arr[0]),
+      value: dco_decode_String(arr[1]),
+    );
+  }
+
+  @protected
+  DartEmailMarkReadResult dco_decode_dart_email_mark_read_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 1)
+      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+    return DartEmailMarkReadResult(updated: dco_decode_u_32(arr[0]));
+  }
+
+  @protected
+  DartEmailMessage dco_decode_dart_email_message(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return DartEmailMessage(
+      summary: dco_decode_dart_email_message_summary(arr[0]),
+      bodyText: dco_decode_opt_String(arr[1]),
+      bodyHtml: dco_decode_opt_String(arr[2]),
+      attachments: dco_decode_list_dart_email_attachment_metadata(arr[3]),
+    );
+  }
+
+  @protected
+  DartEmailMessageSummary dco_decode_dart_email_message_summary(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 13)
+      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    return DartEmailMessageSummary(
+      id: dco_decode_String(arr[0]),
+      folder: dco_decode_opt_String(arr[1]),
+      from: dco_decode_list_String(arr[2]),
+      to: dco_decode_list_String(arr[3]),
+      cc: dco_decode_list_String(arr[4]),
+      subject: dco_decode_String(arr[5]),
+      preview: dco_decode_opt_String(arr[6]),
+      receivedAt: dco_decode_opt_String(arr[7]),
+      sentAt: dco_decode_opt_String(arr[8]),
+      unread: dco_decode_bool(arr[9]),
+      hasAttachments: dco_decode_bool(arr[10]),
+      attachmentCount: dco_decode_opt_box_autoadd_u_32(arr[11]),
+      attributes: dco_decode_list_dart_email_attribute(arr[12]),
+    );
+  }
+
+  @protected
+  DartEmailMessageSummaryPage dco_decode_dart_email_message_summary_page(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return DartEmailMessageSummaryPage(
+      items: dco_decode_list_dart_email_message_summary(arr[0]),
+      nextCursor: dco_decode_opt_String(arr[1]),
+      hasMore: dco_decode_bool(arr[2]),
+    );
+  }
+
+  @protected
+  DartEmailNotification dco_decode_dart_email_notification(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return DartEmailNotification(
+      id: dco_decode_String(arr[0]),
+      mailboxAddress: dco_decode_opt_String(arr[1]),
+      fromAddr: dco_decode_opt_String(arr[2]),
+      subject: dco_decode_String(arr[3]),
+      preview: dco_decode_opt_String(arr[4]),
+      hasAttachments: dco_decode_bool(arr[5]),
+      receivedAt: dco_decode_opt_String(arr[6]),
+      attributes: dco_decode_list_dart_email_attribute(arr[7]),
+    );
+  }
+
+  @protected
+  DartEmailNotificationPage dco_decode_dart_email_notification_page(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return DartEmailNotificationPage(
+      items: dco_decode_list_dart_email_notification(arr[0]),
+      nextCursor: dco_decode_opt_String(arr[1]),
+      hasMore: dco_decode_bool(arr[2]),
+    );
+  }
+
+  @protected
   DartGroupMember dco_decode_dart_group_member(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -2842,16 +3307,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return DartImCoreConfig(
       serviceBaseUrl: dco_decode_String(arr[0]),
       didDomain: dco_decode_String(arr[1]),
       userServiceEndpoint: dco_decode_opt_String(arr[2]),
       messageServiceEndpoint: dco_decode_opt_String(arr[3]),
-      anpServiceEndpoint: dco_decode_opt_String(arr[4]),
-      anpServiceDid: dco_decode_opt_String(arr[5]),
-      transportPolicy: dco_decode_dart_message_transport_policy(arr[6]),
+      mailServiceEndpoint: dco_decode_opt_String(arr[4]),
+      anpServiceEndpoint: dco_decode_opt_String(arr[5]),
+      anpServiceDid: dco_decode_opt_String(arr[6]),
+      transportPolicy: dco_decode_dart_message_transport_policy(arr[7]),
     );
   }
 
@@ -3142,6 +3608,34 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSendEmailRequest dco_decode_dart_send_email_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return DartSendEmailRequest(
+      to: dco_decode_list_String(arr[0]),
+      cc: dco_decode_list_String(arr[1]),
+      subject: dco_decode_String(arr[2]),
+      bodyText: dco_decode_String(arr[3]),
+      bodyHtml: dco_decode_opt_String(arr[4]),
+    );
+  }
+
+  @protected
+  DartSendEmailResult dco_decode_dart_send_email_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return DartSendEmailResult(
+      accepted: dco_decode_bool(arr[0]),
+      messageId: dco_decode_opt_String(arr[1]),
+      warnings: dco_decode_list_String(arr[2]),
+    );
+  }
+
+  @protected
   DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -3254,6 +3748,41 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<DartConversation> dco_decode_list_dart_conversation(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_dart_conversation).toList();
+  }
+
+  @protected
+  List<DartEmailAttachmentMetadata>
+  dco_decode_list_dart_email_attachment_metadata(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_dart_email_attachment_metadata)
+        .toList();
+  }
+
+  @protected
+  List<DartEmailAttribute> dco_decode_list_dart_email_attribute(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_dart_email_attribute).toList();
+  }
+
+  @protected
+  List<DartEmailMessageSummary> dco_decode_list_dart_email_message_summary(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_dart_email_message_summary)
+        .toList();
+  }
+
+  @protected
+  List<DartEmailNotification> dco_decode_list_dart_email_notification(
+    dynamic raw,
+  ) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>)
+        .map(dco_decode_dart_email_notification)
+        .toList();
   }
 
   @protected
@@ -3669,6 +4198,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSendEmailRequest sse_decode_box_autoadd_dart_send_email_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_dart_send_email_request(deserializer));
+  }
+
+  @protected
   DartSendTextRequest sse_decode_box_autoadd_dart_send_text_request(
     SseDeserializer deserializer,
   ) {
@@ -3986,6 +4523,185 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartEmailAccount sse_decode_dart_email_account(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_mailboxAddress = sse_decode_opt_String(deserializer);
+    var var_displayName = sse_decode_opt_String(deserializer);
+    var var_status = sse_decode_opt_String(deserializer);
+    var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
+    return DartEmailAccount(
+      mailboxAddress: var_mailboxAddress,
+      displayName: var_displayName,
+      status: var_status,
+      attributes: var_attributes,
+    );
+  }
+
+  @protected
+  DartEmailAttachmentContent sse_decode_dart_email_attachment_content(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_messageId = sse_decode_String(deserializer);
+    var var_attachmentIndex = sse_decode_u_32(deserializer);
+    var var_filename = sse_decode_String(deserializer);
+    var var_contentType = sse_decode_String(deserializer);
+    var var_size = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
+    return DartEmailAttachmentContent(
+      messageId: var_messageId,
+      attachmentIndex: var_attachmentIndex,
+      filename: var_filename,
+      contentType: var_contentType,
+      size: var_size,
+      bytes: var_bytes,
+    );
+  }
+
+  @protected
+  DartEmailAttachmentMetadata sse_decode_dart_email_attachment_metadata(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_index = sse_decode_u_32(deserializer);
+    var var_filename = sse_decode_opt_String(deserializer);
+    var var_contentType = sse_decode_opt_String(deserializer);
+    var var_size = sse_decode_opt_box_autoadd_u_64(deserializer);
+    return DartEmailAttachmentMetadata(
+      index: var_index,
+      filename: var_filename,
+      contentType: var_contentType,
+      size: var_size,
+    );
+  }
+
+  @protected
+  DartEmailAttribute sse_decode_dart_email_attribute(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_key = sse_decode_String(deserializer);
+    var var_value = sse_decode_String(deserializer);
+    return DartEmailAttribute(key: var_key, value: var_value);
+  }
+
+  @protected
+  DartEmailMarkReadResult sse_decode_dart_email_mark_read_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_updated = sse_decode_u_32(deserializer);
+    return DartEmailMarkReadResult(updated: var_updated);
+  }
+
+  @protected
+  DartEmailMessage sse_decode_dart_email_message(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_summary = sse_decode_dart_email_message_summary(deserializer);
+    var var_bodyText = sse_decode_opt_String(deserializer);
+    var var_bodyHtml = sse_decode_opt_String(deserializer);
+    var var_attachments = sse_decode_list_dart_email_attachment_metadata(
+      deserializer,
+    );
+    return DartEmailMessage(
+      summary: var_summary,
+      bodyText: var_bodyText,
+      bodyHtml: var_bodyHtml,
+      attachments: var_attachments,
+    );
+  }
+
+  @protected
+  DartEmailMessageSummary sse_decode_dart_email_message_summary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_folder = sse_decode_opt_String(deserializer);
+    var var_from = sse_decode_list_String(deserializer);
+    var var_to = sse_decode_list_String(deserializer);
+    var var_cc = sse_decode_list_String(deserializer);
+    var var_subject = sse_decode_String(deserializer);
+    var var_preview = sse_decode_opt_String(deserializer);
+    var var_receivedAt = sse_decode_opt_String(deserializer);
+    var var_sentAt = sse_decode_opt_String(deserializer);
+    var var_unread = sse_decode_bool(deserializer);
+    var var_hasAttachments = sse_decode_bool(deserializer);
+    var var_attachmentCount = sse_decode_opt_box_autoadd_u_32(deserializer);
+    var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
+    return DartEmailMessageSummary(
+      id: var_id,
+      folder: var_folder,
+      from: var_from,
+      to: var_to,
+      cc: var_cc,
+      subject: var_subject,
+      preview: var_preview,
+      receivedAt: var_receivedAt,
+      sentAt: var_sentAt,
+      unread: var_unread,
+      hasAttachments: var_hasAttachments,
+      attachmentCount: var_attachmentCount,
+      attributes: var_attributes,
+    );
+  }
+
+  @protected
+  DartEmailMessageSummaryPage sse_decode_dart_email_message_summary_page(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_items = sse_decode_list_dart_email_message_summary(deserializer);
+    var var_nextCursor = sse_decode_opt_String(deserializer);
+    var var_hasMore = sse_decode_bool(deserializer);
+    return DartEmailMessageSummaryPage(
+      items: var_items,
+      nextCursor: var_nextCursor,
+      hasMore: var_hasMore,
+    );
+  }
+
+  @protected
+  DartEmailNotification sse_decode_dart_email_notification(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_mailboxAddress = sse_decode_opt_String(deserializer);
+    var var_fromAddr = sse_decode_opt_String(deserializer);
+    var var_subject = sse_decode_String(deserializer);
+    var var_preview = sse_decode_opt_String(deserializer);
+    var var_hasAttachments = sse_decode_bool(deserializer);
+    var var_receivedAt = sse_decode_opt_String(deserializer);
+    var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
+    return DartEmailNotification(
+      id: var_id,
+      mailboxAddress: var_mailboxAddress,
+      fromAddr: var_fromAddr,
+      subject: var_subject,
+      preview: var_preview,
+      hasAttachments: var_hasAttachments,
+      receivedAt: var_receivedAt,
+      attributes: var_attributes,
+    );
+  }
+
+  @protected
+  DartEmailNotificationPage sse_decode_dart_email_notification_page(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_items = sse_decode_list_dart_email_notification(deserializer);
+    var var_nextCursor = sse_decode_opt_String(deserializer);
+    var var_hasMore = sse_decode_bool(deserializer);
+    return DartEmailNotificationPage(
+      items: var_items,
+      nextCursor: var_nextCursor,
+      hasMore: var_hasMore,
+    );
+  }
+
+  @protected
   DartGroupMember sse_decode_dart_group_member(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_did = sse_decode_opt_String(deserializer);
@@ -4182,6 +4898,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_didDomain = sse_decode_String(deserializer);
     var var_userServiceEndpoint = sse_decode_opt_String(deserializer);
     var var_messageServiceEndpoint = sse_decode_opt_String(deserializer);
+    var var_mailServiceEndpoint = sse_decode_opt_String(deserializer);
     var var_anpServiceEndpoint = sse_decode_opt_String(deserializer);
     var var_anpServiceDid = sse_decode_opt_String(deserializer);
     var var_transportPolicy = sse_decode_dart_message_transport_policy(
@@ -4192,6 +4909,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       didDomain: var_didDomain,
       userServiceEndpoint: var_userServiceEndpoint,
       messageServiceEndpoint: var_messageServiceEndpoint,
+      mailServiceEndpoint: var_mailServiceEndpoint,
       anpServiceEndpoint: var_anpServiceEndpoint,
       anpServiceDid: var_anpServiceDid,
       transportPolicy: var_transportPolicy,
@@ -4561,6 +5279,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  DartSendEmailRequest sse_decode_dart_send_email_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_to = sse_decode_list_String(deserializer);
+    var var_cc = sse_decode_list_String(deserializer);
+    var var_subject = sse_decode_String(deserializer);
+    var var_bodyText = sse_decode_String(deserializer);
+    var var_bodyHtml = sse_decode_opt_String(deserializer);
+    return DartSendEmailRequest(
+      to: var_to,
+      cc: var_cc,
+      subject: var_subject,
+      bodyText: var_bodyText,
+      bodyHtml: var_bodyHtml,
+    );
+  }
+
+  @protected
+  DartSendEmailResult sse_decode_dart_send_email_result(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_accepted = sse_decode_bool(deserializer);
+    var var_messageId = sse_decode_opt_String(deserializer);
+    var var_warnings = sse_decode_list_String(deserializer);
+    return DartSendEmailResult(
+      accepted: var_accepted,
+      messageId: var_messageId,
+      warnings: var_warnings,
+    );
+  }
+
+  @protected
   DartSendMessageResult sse_decode_dart_send_message_result(
     SseDeserializer deserializer,
   ) {
@@ -4709,6 +5461,61 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <DartConversation>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_dart_conversation(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartEmailAttachmentMetadata>
+  sse_decode_list_dart_email_attachment_metadata(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartEmailAttachmentMetadata>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_dart_email_attachment_metadata(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartEmailAttribute> sse_decode_list_dart_email_attribute(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartEmailAttribute>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_dart_email_attribute(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartEmailMessageSummary> sse_decode_list_dart_email_message_summary(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartEmailMessageSummary>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_dart_email_message_summary(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<DartEmailNotification> sse_decode_list_dart_email_notification(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <DartEmailNotification>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_dart_email_notification(deserializer));
     }
     return ans_;
   }
@@ -5257,6 +6064,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_dart_send_email_request(
+    DartSendEmailRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_send_email_request(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_dart_send_text_request(
     DartSendTextRequest self,
     SseSerializer serializer,
@@ -5506,6 +6322,137 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_email_account(
+    DartEmailAccount self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_opt_String(self.mailboxAddress, serializer);
+    sse_encode_opt_String(self.displayName, serializer);
+    sse_encode_opt_String(self.status, serializer);
+    sse_encode_list_dart_email_attribute(self.attributes, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_email_attachment_content(
+    DartEmailAttachmentContent self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.messageId, serializer);
+    sse_encode_u_32(self.attachmentIndex, serializer);
+    sse_encode_String(self.filename, serializer);
+    sse_encode_String(self.contentType, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.size, serializer);
+    sse_encode_list_prim_u_8_strict(self.bytes, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_email_attachment_metadata(
+    DartEmailAttachmentMetadata self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.index, serializer);
+    sse_encode_opt_String(self.filename, serializer);
+    sse_encode_opt_String(self.contentType, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.size, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_email_attribute(
+    DartEmailAttribute self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.key, serializer);
+    sse_encode_String(self.value, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_email_mark_read_result(
+    DartEmailMarkReadResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.updated, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_email_message(
+    DartEmailMessage self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_dart_email_message_summary(self.summary, serializer);
+    sse_encode_opt_String(self.bodyText, serializer);
+    sse_encode_opt_String(self.bodyHtml, serializer);
+    sse_encode_list_dart_email_attachment_metadata(
+      self.attachments,
+      serializer,
+    );
+  }
+
+  @protected
+  void sse_encode_dart_email_message_summary(
+    DartEmailMessageSummary self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_opt_String(self.folder, serializer);
+    sse_encode_list_String(self.from, serializer);
+    sse_encode_list_String(self.to, serializer);
+    sse_encode_list_String(self.cc, serializer);
+    sse_encode_String(self.subject, serializer);
+    sse_encode_opt_String(self.preview, serializer);
+    sse_encode_opt_String(self.receivedAt, serializer);
+    sse_encode_opt_String(self.sentAt, serializer);
+    sse_encode_bool(self.unread, serializer);
+    sse_encode_bool(self.hasAttachments, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.attachmentCount, serializer);
+    sse_encode_list_dart_email_attribute(self.attributes, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_email_message_summary_page(
+    DartEmailMessageSummaryPage self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_dart_email_message_summary(self.items, serializer);
+    sse_encode_opt_String(self.nextCursor, serializer);
+    sse_encode_bool(self.hasMore, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_email_notification(
+    DartEmailNotification self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_opt_String(self.mailboxAddress, serializer);
+    sse_encode_opt_String(self.fromAddr, serializer);
+    sse_encode_String(self.subject, serializer);
+    sse_encode_opt_String(self.preview, serializer);
+    sse_encode_bool(self.hasAttachments, serializer);
+    sse_encode_opt_String(self.receivedAt, serializer);
+    sse_encode_list_dart_email_attribute(self.attributes, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_email_notification_page(
+    DartEmailNotificationPage self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_dart_email_notification(self.items, serializer);
+    sse_encode_opt_String(self.nextCursor, serializer);
+    sse_encode_bool(self.hasMore, serializer);
+  }
+
+  @protected
   void sse_encode_dart_group_member(
     DartGroupMember self,
     SseSerializer serializer,
@@ -5651,6 +6598,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.didDomain, serializer);
     sse_encode_opt_String(self.userServiceEndpoint, serializer);
     sse_encode_opt_String(self.messageServiceEndpoint, serializer);
+    sse_encode_opt_String(self.mailServiceEndpoint, serializer);
     sse_encode_opt_String(self.anpServiceEndpoint, serializer);
     sse_encode_opt_String(self.anpServiceDid, serializer);
     sse_encode_dart_message_transport_policy(self.transportPolicy, serializer);
@@ -5917,6 +6865,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_dart_send_email_request(
+    DartSendEmailRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_String(self.to, serializer);
+    sse_encode_list_String(self.cc, serializer);
+    sse_encode_String(self.subject, serializer);
+    sse_encode_String(self.bodyText, serializer);
+    sse_encode_opt_String(self.bodyHtml, serializer);
+  }
+
+  @protected
+  void sse_encode_dart_send_email_result(
+    DartSendEmailResult self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.accepted, serializer);
+    sse_encode_opt_String(self.messageId, serializer);
+    sse_encode_list_String(self.warnings, serializer);
+  }
+
+  @protected
   void sse_encode_dart_send_message_result(
     DartSendMessageResult self,
     SseSerializer serializer,
@@ -6031,6 +7003,54 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_dart_conversation(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_email_attachment_metadata(
+    List<DartEmailAttachmentMetadata> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_email_attachment_metadata(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_email_attribute(
+    List<DartEmailAttribute> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_email_attribute(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_email_message_summary(
+    List<DartEmailMessageSummary> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_email_message_summary(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_dart_email_notification(
+    List<DartEmailNotification> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_dart_email_notification(item, serializer);
     }
   }
 

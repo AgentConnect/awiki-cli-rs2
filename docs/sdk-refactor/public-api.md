@@ -24,6 +24,7 @@ SDK public API 不表达底层实现：
 ```text
 P1      第一阶段必须实现，目标是让 SDK 主链路跑起来
 P2+     后续阶段实现，但提前明确接口形态
+Email  独立 Email / Mail 迁移阶段，详见 Interface/08-email-interface.md
 internal 只能在 im-core 内部出现
 ```
 
@@ -45,6 +46,7 @@ pub struct ImCoreConfig {
     pub did_domain: String,
     pub user_service_endpoint: Option<Url>,
     pub message_service_endpoint: Option<Url>,
+    pub mail_service_endpoint: Option<Url>, // Email
     pub transport_policy: MessageTransportPolicy,
 }
 
@@ -95,10 +97,13 @@ impl ImClient {
     pub fn attachments(&self) -> AttachmentService<'_>; // P4+
     pub fn realtime(&self) -> RealtimeService<'_>;      // P5+
     pub fn secure(&self) -> SecureDiagnosticsService<'_>; // P6+
+    pub fn email(&self) -> EmailService<'_>;             // Email
 }
 ```
 
 `ClientIdentityRuntime`、`ActorContext`、`LoadedIdentity`、`IdentityRuntimePaths` 都是 `pub(crate)`。
+
+Email / Mail 不属于 Phase 1 IM MVP，但独立 Email 阶段已定义并打开默认命令面。接口形态见 `docs/sdk-refactor/Interface/08-email-interface.md`，执行顺序见 `docs/sdk-refactor/plan/email-migration-execution-plan.md`。CLI `mail.*` 默认通过 `client.email()` 执行，不回退到 legacy mail implementation；CLI 仍负责 dry-run、输出 envelope 和附件文件写入。
 
 ## 4. 错误类型
 

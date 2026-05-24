@@ -131,6 +131,22 @@ pub fn current_schema_version(connection: &rusqlite::Connection) -> crate::ImRes
 }
 
 #[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn list_email_notifications_for_test(
+    sqlite_path: &std::path::Path,
+    owner_identity_id: &str,
+    owner_did: &str,
+    limit: crate::ids::PageLimit,
+) -> crate::ImResult<crate::ids::Page<crate::email::EmailNotification>> {
+    crate::internal::local_state::email::list_mail_notifications(
+        sqlite_path,
+        owner_identity_id,
+        owner_did,
+        limit,
+    )
+}
+
+#[cfg(feature = "sqlite")]
 impl From<MessageRecord> for crate::internal::local_state::messages::MessageRecord {
     fn from(record: MessageRecord) -> Self {
         Self {

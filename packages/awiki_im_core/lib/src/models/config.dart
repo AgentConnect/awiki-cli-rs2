@@ -6,6 +6,7 @@ class AwikiImCoreConfig {
     required this.didDomain,
     this.userServiceEndpoint,
     this.messageServiceEndpoint,
+    this.mailServiceEndpoint,
     this.anpServiceEndpoint,
     this.anpServiceDid,
     this.transportPolicy = MessageTransportPolicy.auto,
@@ -15,6 +16,7 @@ class AwikiImCoreConfig {
   final String didDomain;
   final String? userServiceEndpoint;
   final String? messageServiceEndpoint;
+  final String? mailServiceEndpoint;
   final String? anpServiceEndpoint;
   final String? anpServiceDid;
   final MessageTransportPolicy transportPolicy;

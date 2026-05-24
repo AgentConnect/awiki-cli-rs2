@@ -173,12 +173,6 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "Phase 6",
         });
     }
-    if has_command_prefix(name, "mail") {
-        return Some(CutoverStatus::Unsupported {
-            capability: "mail",
-            phase: "outside current im-core cutover",
-        });
-    }
     if has_command_prefix(name, "runtime.heartbeat") {
         return Some(CutoverStatus::Unsupported {
             capability: "runtime-heartbeat",
@@ -220,6 +214,15 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "msg.inbox",
             "msg.history",
             "msg.mark-read",
+            "mail",
+            "mail.account",
+            "mail.attachment",
+            "mail.attachment.download",
+            "mail.inbox",
+            "mail.mark-read",
+            "mail.notify",
+            "mail.read",
+            "mail.send",
             "group",
             "group.create",
             "group.get",

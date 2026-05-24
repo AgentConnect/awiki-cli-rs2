@@ -22,23 +22,54 @@ import re
 p = Path("crates/im-core-dart/src/frb_generated.rs")
 s = p.read_text()
 
-def ensure_core_import(match: re.Match[str]) -> str:
-    block = match.group(0)
+# FRB can emit adjacent imports on the same line when rustfmt fails on its
+# temporary `#[unsafe(no_mangle)]` output. Normalize those first so the import
+# patch below remains stable across generated API additions.
+s = s.replace(";use ", ";\nuse ")
+
+CANONICAL_API_IMPORTS = [
+    "use crate::api::attachments::*;",
+    "use crate::api::client::*;",
+    "use crate::api::core::DartImCore;",
+    "use crate::api::core::*;",
+    "use crate::api::realtime::*;",
+]
+API_IMPORT_RE = re.compile(
+    r"^use crate::api::(?:attachments::\*|client::\*|core::(?:DartImCore|\*)|realtime::\*);$"
+)
+
+def normalize_import_section(match: re.Match[str]) -> str:
     indent = match.group("indent")
-    if f"{indent}use crate::api::core::*;" not in block:
-        block += f"{indent}use crate::api::core::*;\n"
-    if f"{indent}use crate::api::core::DartImCore;" not in block:
-        block += f"{indent}use crate::api::core::DartImCore;\n"
-    return block
+    body = match.group("body")
+    saw_super = False
+    remaining_lines = []
+
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == "use super::*;":
+            saw_super = True
+            continue
+        if API_IMPORT_RE.match(stripped):
+            continue
+        remaining_lines.append(line.rstrip())
+
+    normalized_lines = []
+    if saw_super:
+        normalized_lines.append(f"{indent}use super::*;")
+    normalized_lines.extend(f"{indent}{import_line}" for import_line in CANONICAL_API_IMPORTS)
+    normalized_lines.extend(remaining_lines)
+
+    return match.group("header") + "\n" + "\n".join(normalized_lines) + "\n\n"
 
 s, replacements = re.subn(
-    r"(?m)^(?P<indent>\s*)use crate::api::client::\*;\n"
-    r"(?:(?P=indent)use crate::api::core::\*;\n)?",
-    ensure_core_import,
+    r"(?ms)^(?P<header>(?P<indent>[ \t]*)// Section: imports\n)(?P<body>.*?)(?=^[ \t]*// Section: boilerplate\n)",
+    normalize_import_section,
     s,
 )
 if replacements == 0:
-    raise RuntimeError("FRB generated imports no longer contain the client import marker")
+    raise RuntimeError("FRB generated import sections were not found")
 
 s = s.replace('#[unsafe(no_mangle)]', '#[no_mangle]')
 io_boilerplate = '''    pub trait NewWithNullPtr {

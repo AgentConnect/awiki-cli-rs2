@@ -4,21 +4,17 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn mail_schema_remains_exactly_queryable_but_outside_default_cutover_surface() {
+fn mail_schema_is_on_default_im_core_surface() {
     let workspace = TempDir::new().expect("workspace");
     let output = awiki_cmd(&["schema", "mail"], workspace.path());
     assert_success(&output);
     let envelope = success_json(&output);
 
     assert_eq!(envelope["data"]["command"]["name"], "mail");
-    assert_eq!(
-        envelope["data"]["command"]["cutover"]["status"],
-        "unsupported"
-    );
-    assert_eq!(envelope["data"]["command"]["cutover"]["capability"], "mail");
+    assert_eq!(envelope["data"]["command"]["cutover"]["status"], "im_core");
     assert_eq!(
         envelope["data"]["command"]["cutover"]["default_surface"],
-        false
+        true
     );
 
     let children: Vec<_> = envelope["data"]["children"]
@@ -44,30 +40,70 @@ fn mail_schema_remains_exactly_queryable_but_outside_default_cutover_surface() {
 }
 
 #[test]
-fn mail_commands_return_cutover_unsupported_instead_of_legacy_plans() {
+fn mail_dry_run_commands_plan_im_core_email_calls_without_side_effects() {
     let workspace = TempDir::new().expect("workspace");
+    let attachment_path = workspace.path().join("planned").join("attachment.txt");
+    let attachment_path_string = attachment_path.to_string_lossy().into_owned();
 
-    for (args, command) in [
-        (&["mail", "inbox"][..], "mail.inbox"),
-        (&["--dry-run", "mail", "notify"][..], "mail.notify"),
-        (&["mail", "read", "--id", "msg-1"][..], "mail.read"),
-        (&["mail", "mark-read", "msg-1"][..], "mail.mark-read"),
-        (&["mail", "account"][..], "mail.account"),
+    for (args, command, action) in [
         (
             &[
+                "--dry-run",
+                "mail",
+                "inbox",
+                "--folder",
+                "archive",
+                "--limit",
+                "2",
+                "--offset",
+                "1",
+                "--unread",
+            ][..],
+            "awiki-cli mail inbox",
+            "mail.getInbox",
+        ),
+        (
+            &["--dry-run", "mail", "notify", "--limit", "3"][..],
+            "awiki-cli mail notify",
+            "mail.notifications",
+        ),
+        (
+            &["--dry-run", "mail", "read", "--id", "msg-1"][..],
+            "awiki-cli mail read",
+            "mail.getMessage",
+        ),
+        (
+            &["--dry-run", "mail", "mark-read", "msg-1"][..],
+            "awiki-cli mail mark-read",
+            "mail.markRead",
+        ),
+        (
+            &["--dry-run", "mail", "account"][..],
+            "awiki-cli mail account",
+            "mail.getMailbox",
+        ),
+        (
+            &[
+                "--dry-run",
                 "mail",
                 "send",
                 "--to",
                 "bob@example.com",
+                "--cc",
+                "copy@example.com",
                 "--subject",
                 "Hello",
                 "--body",
                 "Body",
+                "--html",
+                "<p>Body</p>",
             ][..],
+            "awiki-cli mail send",
             "mail.send",
         ),
         (
             &[
+                "--dry-run",
                 "mail",
                 "attachment",
                 "download",
@@ -75,13 +111,25 @@ fn mail_commands_return_cutover_unsupported_instead_of_legacy_plans() {
                 "msg-1",
                 "--attachment-index",
                 "0",
+                "--output",
+                &attachment_path_string,
             ][..],
-            "mail.attachment.download",
+            "awiki-cli mail attachment download",
+            "mail.getAttachment",
         ),
     ] {
         let output = awiki_cmd(args, workspace.path());
-        assert_cutover_unsupported(&output, command, "mail");
+        assert_success(&output);
+        let envelope = success_json(&output);
+        assert_eq!(envelope["command"], command);
+        assert_eq!(envelope["meta"]["dry_run"], true);
+        assert_eq!(envelope["data"]["plan"]["action"], action);
     }
+
+    assert!(
+        !attachment_path.exists(),
+        "dry-run mail attachment download must not write output files"
+    );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -120,35 +168,6 @@ fn success_json(output: &Output) -> Value {
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true);
     envelope
-}
-
-fn assert_cutover_unsupported(output: &Output, command: &str, capability: &str) {
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "stdout should be empty: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let envelope: Value =
-        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
-    assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], capability);
-    assert_eq!(
-        envelope["error"]["details"]["required_phase"],
-        "outside current im-core cutover"
-    );
-    assert_eq!(
-        envelope["error"]["details"]["cutover_status"],
-        "unsupported"
-    );
 }
 
 struct TempDir {

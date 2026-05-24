@@ -3,6 +3,7 @@ pub mod auth;
 pub mod client;
 pub mod core;
 pub mod directory;
+pub mod email;
 pub mod groups;
 pub mod identity;
 pub mod messages;

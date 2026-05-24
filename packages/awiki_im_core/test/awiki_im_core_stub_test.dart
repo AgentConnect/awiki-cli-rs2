@@ -6,8 +6,10 @@ void main() {
     const config = AwikiImCoreConfig(
       serviceBaseUrl: 'https://awiki.ai',
       didDomain: 'awiki.ai',
+      mailServiceEndpoint: 'https://mail.awiki.ai',
     );
     expect(config.serviceBaseUrl, 'https://awiki.ai');
+    expect(config.mailServiceEndpoint, 'https://mail.awiki.ai');
   });
 
   test('web/native API exposes disposable core type', () {
@@ -33,5 +35,27 @@ void main() {
       state: 'connected',
     );
     expect(event.isConnectionState, isTrue);
+  });
+
+  test('email models can be constructed without CLI-only fields', () {
+    const request = SendEmailRequest(
+      to: ['bob@awiki.ai'],
+      subject: 'Hello',
+      bodyText: 'Body',
+    );
+    expect(request.to, ['bob@awiki.ai']);
+
+    const page = EmailMessageSummaryPage(
+      items: [
+        EmailMessageSummary(
+          id: 'mail-1',
+          subject: 'Hello',
+          unread: true,
+          hasAttachments: false,
+        ),
+      ],
+      hasMore: false,
+    );
+    expect(page.items.single.id, 'mail-1');
   });
 }

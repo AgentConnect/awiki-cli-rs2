@@ -35,6 +35,15 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "msg.history",
         "msg.mark-read",
         "msg.attachment.download",
+        "mail",
+        "mail.account",
+        "mail.attachment",
+        "mail.attachment.download",
+        "mail.inbox",
+        "mail.mark-read",
+        "mail.notify",
+        "mail.read",
+        "mail.send",
         "group.create",
         "group.get",
         "group.join",
@@ -112,13 +121,6 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
         CutoverStatus::Unsupported {
             capability: "secure-direct",
             phase: "Phase 6",
-        }
-    );
-    assert_eq!(
-        cmdmeta::cutover_status("mail.inbox"),
-        CutoverStatus::Unsupported {
-            capability: "mail",
-            phase: "outside current im-core cutover",
         }
     );
     assert_eq!(
@@ -201,6 +203,8 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "msg.send",
         "msg.inbox",
         "msg.attachment.download",
+        "mail.inbox",
+        "mail.attachment.download",
         "group.create",
         "people.follow",
         "people.contacts.list",
@@ -215,7 +219,6 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
 
     for command in [
         "msg.secure.status",
-        "mail.inbox",
         "people.search",
         "page.list",
         "site.page.list",
@@ -307,8 +310,6 @@ fn unsupported_cutover_stub_commands_do_not_enter_legacy_stub_boundary() {
 #[test]
 fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
     for (args, command, capability) in [
-        (&["mail", "inbox"][..], "mail.inbox", "mail"),
-        (&["--dry-run", "mail", "notify"][..], "mail.notify", "mail"),
         (&["page", "list"][..], "page.list", "page-site"),
         (
             &["--dry-run", "page", "create", "--slug", "hello"][..],

@@ -8,6 +8,7 @@
 
 pub mod attachments;
 pub mod directory;
+pub mod email;
 pub mod groups;
 pub mod identity;
 pub mod local_state;

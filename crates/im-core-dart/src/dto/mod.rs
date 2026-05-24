@@ -2,6 +2,7 @@ pub mod attachment;
 pub mod auth;
 pub mod config;
 pub mod directory;
+pub mod email;
 pub mod error;
 pub mod group;
 pub mod identity;

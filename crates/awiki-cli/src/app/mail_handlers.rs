@@ -1,9 +1,7 @@
-use super::{identity_exit, App};
+use super::App;
 use crate::cli::ParsedCommand;
-use crate::mail::{self, CommandResult, MailError};
+use crate::im_core_adapter::email::{self, CommandResult};
 use crate::output::ExitError;
-use base64::Engine;
-use serde_json::{json, Value};
 use std::io::Write;
 use std::path::Path;
 #[cfg(unix)]
@@ -21,25 +19,21 @@ impl App {
         let offset = int_flag(command, "offset", 0)?;
         let unread_only = bool_flag(command, "unread");
         let result = if self.globals.dry_run {
-            mail::inbox_plan(&self.globals.identity, &folder, limit, offset, unread_only)
+            email::inbox_plan(&self.globals.identity, &folder, limit, offset, unread_only)
         } else {
-            mail::inbox(
+            let query = email::inbox_query(command)?;
+            let manager = self.identity_manager(&resolved);
+            let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &self.identity_manager(&resolved),
-                mail::InboxRequest {
-                    identity_name: self.globals.identity.clone(),
-                    folder,
-                    limit,
-                    offset,
-                    unread_only,
-                },
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            email::render_inbox(
+                client
+                    .email()
+                    .inbox(query)
+                    .map_err(|err| crate::im_core_adapter::map_im_error(err, "mail inbox"))?,
             )
-            .map_err(|err| {
-                mail_exit(
-                    err,
-                    "Ensure the active identity is valid and mail service is reachable.",
-                )
-            })?
         };
         self.render_mail_result("awiki-cli mail inbox", &resolved, result)
     }
@@ -56,22 +50,21 @@ impl App {
             ));
         }
         let result = if self.globals.dry_run {
-            mail::read_plan(&self.globals.identity, &message_id)
+            email::read_plan(&self.globals.identity, &message_id)
         } else {
-            mail::read(
+            let id = email::read_id(command)?;
+            let manager = self.identity_manager(&resolved);
+            let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &self.identity_manager(&resolved),
-                mail::ReadRequest {
-                    identity_name: self.globals.identity.clone(),
-                    message_id: message_id.clone(),
-                },
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            email::render_read(
+                client
+                    .email()
+                    .read(id)
+                    .map_err(|err| crate::im_core_adapter::map_im_error(err, "mail read"))?,
             )
-            .map_err(|err| {
-                mail_exit(
-                    err,
-                    "Ensure the message id is valid and mail service is reachable.",
-                )
-            })?
         };
         self.render_mail_result("awiki-cli mail read", &resolved, result)
     }
@@ -87,23 +80,21 @@ impl App {
             ));
         }
         let result = if self.globals.dry_run {
-            mail::mark_read_plan(&self.globals.identity, &command.args)
+            email::mark_read_plan(&self.globals.identity, &command.args)
         } else {
-            mail::mark_read(
+            let request = email::mark_read_request(command)?;
+            let manager = self.identity_manager(&resolved);
+            let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &self.identity_manager(&resolved),
-                mail::MarkReadRequest {
-                    identity_name: self.globals.identity.clone(),
-                    message_ids: command.args.clone(),
-                    is_read: true,
-                },
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            email::render_mark_read(
+                client
+                    .email()
+                    .mark_read(request)
+                    .map_err(|err| crate::im_core_adapter::map_im_error(err, "mail mark-read"))?,
             )
-            .map_err(|err| {
-                mail_exit(
-                    err,
-                    "Ensure the message ids are valid and mail service is reachable.",
-                )
-            })?
         };
         self.render_mail_result("awiki-cli mail mark-read", &resolved, result)
     }
@@ -111,16 +102,20 @@ impl App {
     pub fn run_mail_account(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let result = if self.globals.dry_run {
-            mail::account_plan(&self.globals.identity)
+            email::account_plan(&self.globals.identity)
         } else {
-            mail::account(
+            let manager = self.identity_manager(&resolved);
+            let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &self.identity_manager(&resolved),
-                mail::AccountRequest {
-                    identity_name: self.globals.identity.clone(),
-                },
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            email::render_account(
+                client
+                    .email()
+                    .account()
+                    .map_err(|err| crate::im_core_adapter::map_im_error(err, "mail account"))?,
             )
-            .map_err(|err| mail_exit(err, "Ensure the mail service is reachable."))?
         };
         self.render_mail_result("awiki-cli mail account", &resolved, result)
     }
@@ -132,8 +127,8 @@ impl App {
         let subject = command.flags.get("subject").cloned().unwrap_or_default();
         let body = command.flags.get("body").cloned().unwrap_or_default();
         let html = command.flags.get("html").cloned().unwrap_or_default();
-        let to = mail::split_mail_list(&to_raw);
-        let cc = mail::split_mail_list(&cc_raw);
+        let to = email::split_mail_list(&to_raw);
+        let cc = email::split_mail_list(&cc_raw);
         if to.is_empty() {
             return Err(ExitError::new(
                 "invalid_argument",
@@ -159,26 +154,21 @@ impl App {
             ));
         }
         let result = if self.globals.dry_run {
-            mail::send_plan(&self.globals.identity, &to, &cc, &subject, &html)
+            email::send_plan(&self.globals.identity, &to, &cc, &subject, &html)
         } else {
-            mail::send(
+            let request = email::send_request(command)?;
+            let manager = self.identity_manager(&resolved);
+            let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &self.identity_manager(&resolved),
-                mail::SendRequest {
-                    identity_name: self.globals.identity.clone(),
-                    to,
-                    cc,
-                    subject,
-                    body_text: body,
-                    body_html: html,
-                },
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            email::render_send(
+                client
+                    .email()
+                    .send(request)
+                    .map_err(|err| crate::im_core_adapter::map_im_error(err, "mail send"))?,
             )
-            .map_err(|err| {
-                mail_exit(
-                    err,
-                    "Ensure the mail service is reachable and the active identity is valid.",
-                )
-            })?
         };
         self.render_mail_result("awiki-cli mail send", &resolved, result)
     }
@@ -208,7 +198,7 @@ impl App {
             return self.render_mail_result(
                 "awiki-cli mail attachment download",
                 &resolved,
-                mail::attachment_download_plan(
+                email::attachment_download_plan(
                     &self.globals.identity,
                     &message_id,
                     attachment_index,
@@ -216,21 +206,17 @@ impl App {
                 ),
             );
         }
-        let result = mail::attachment(
+        let request = email::attachment_request(command)?;
+        let manager = self.identity_manager(&resolved);
+        let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &self.identity_manager(&resolved),
-            mail::AttachmentRequest {
-                identity_name: self.globals.identity.clone(),
-                message_id: message_id.clone(),
-                attachment_index,
-            },
-        )
-        .map_err(|err| {
-            mail_exit(
-                err,
-                "Ensure the message id is valid and mail service is reachable.",
-            )
-        })?;
+            &manager,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+        )?;
+        let result = client
+            .email()
+            .download_attachment(request)
+            .map_err(|err| crate::im_core_adapter::map_im_error(err, "mail attachment download"))?;
         self.render_attachment_download_result(
             &resolved,
             &message_id,
@@ -244,20 +230,21 @@ impl App {
         let resolved = self.resolve_config()?;
         let limit = int_flag(command, "limit", 20)?;
         let result = if self.globals.dry_run {
-            mail::notifications_plan(&self.globals.identity, limit)
+            email::notifications_plan(&self.globals.identity, limit)
         } else {
-            mail::notifications(
+            let query = email::notification_query(command)?;
+            let manager = self.identity_manager(&resolved);
+            let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &self.identity_manager(&resolved),
-                &self.globals.identity,
-                limit,
+                &manager,
+                crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            email::render_notifications(
+                client
+                    .email()
+                    .notifications(query)
+                    .map_err(|err| crate::im_core_adapter::map_im_error(err, "mail notify"))?,
             )
-            .map_err(|err| {
-                mail_exit(
-                    err,
-                    "Ensure the runtime listener is running in websocket mode and has received notifications.",
-                )
-            })?
         };
         self.render_mail_result("awiki-cli mail notify", &resolved, result)
     }
@@ -280,37 +267,16 @@ impl App {
     fn render_attachment_download_result(
         &self,
         resolved: &crate::config::Resolved,
-        message_id: &str,
+        _message_id: &str,
         attachment_index: i64,
         output_path: &str,
-        result: CommandResult,
+        content: im_core::email::EmailAttachmentContent,
     ) -> Result<(), ExitError> {
-        let filename = string_value(result.data.get("filename"))
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| format!("attachment_{attachment_index}"));
-        let content_base64 = string_value(result.data.get("content_base64")).unwrap_or_default();
-        let content_type = string_value(result.data.get("content_type"))
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "application/octet-stream".to_string());
-        let size = result.data.get("size").cloned().unwrap_or(Value::Null);
-        if content_base64.is_empty() {
-            return Err(ExitError::new(
-                "internal_error",
-                1,
-                "attachment content is empty",
-                "Try fetching the attachment again or verify the mail service response.",
-            ));
-        }
-        let content = base64::engine::general_purpose::STANDARD
-            .decode(content_base64.as_bytes())
-            .map_err(|err| {
-                ExitError::new(
-                    "internal_error",
-                    1,
-                    format!("attachment base64 decode failed: {err}"),
-                    "Ensure the mail service response is valid.",
-                )
-            })?;
+        let filename = if content.filename.trim().is_empty() {
+            format!("attachment_{attachment_index}")
+        } else {
+            content.filename.clone()
+        };
         let final_path = if output_path.trim().is_empty() {
             filename.clone()
         } else {
@@ -328,7 +294,7 @@ impl App {
                 })?;
             }
         }
-        write_attachment_file(Path::new(&final_path), &content).map_err(|err| {
+        write_attachment_file(Path::new(&final_path), &content.bytes).map_err(|err| {
             ExitError::new(
                 "internal_error",
                 1,
@@ -336,19 +302,13 @@ impl App {
                 "Check write permissions for the output file.",
             )
         })?;
+        let (data, summary, warnings) = email::render_attachment_saved(&content, &final_path);
         self.render_success(
             "awiki-cli mail attachment download",
             resolved,
-            json!({
-                "message_id": message_id,
-                "attachment_index": attachment_index,
-                "filename": filename,
-                "content_type": content_type,
-                "size": size,
-                "path": final_path,
-            }),
-            &format!("Attachment saved to {final_path}"),
-            result.warnings,
+            data,
+            &summary,
+            warnings,
         )
     }
 }
@@ -402,57 +362,4 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> bool {
         .flags
         .get(name)
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-}
-
-fn mail_exit(err: MailError, hint: &str) -> ExitError {
-    match err {
-        MailError::MessageIdRequired
-        | MailError::RecipientRequired
-        | MailError::SubjectRequired
-        | MailError::BodyRequired
-        | MailError::AttachmentIndexZero => ExitError::new(
-            "invalid_argument",
-            2,
-            err.to_string(),
-            "Check the mail command arguments and try again.",
-        ),
-        MailError::IdentityRequired(message) => ExitError::new(
-            "identity_required",
-            3,
-            message,
-            "Complete user setup with `awiki-cli id register --handle <handle> ...` or recover an existing handle before using `awiki-cli mail` commands.",
-        ),
-        MailError::Service(service_err) => match () {
-            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
-                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
-            }
-            _ if service_err.status_code == 401 || service_err.rpc_code == -32000 => {
-                ExitError::new(
-                    "auth_required",
-                    3,
-                    service_err.to_string(),
-                    "Use an identity with a valid JWT or DID WBA auth material.",
-                )
-            }
-            _ if service_err.status_code == 404 || service_err.rpc_code == -32002 => {
-                ExitError::new("not_found", 5, service_err.to_string(), hint)
-            }
-            _ if service_err.status_code == 409
-                || matches!(service_err.rpc_code, -32003 | -32004) =>
-            {
-                ExitError::new("conflict", 1, service_err.to_string(), hint)
-            }
-            _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
-        },
-        MailError::Identity(err) => identity_exit(err),
-        MailError::Store(err) => super::store_exit(
-            err,
-            "Ensure the runtime listener is running in websocket mode and has received notifications.",
-        ),
-        MailError::Internal(message) => ExitError::new("internal_error", 1, message, hint),
-    }
-}
-
-fn string_value(value: Option<&Value>) -> Option<String> {
-    value.and_then(Value::as_str).map(ToOwned::to_owned)
 }

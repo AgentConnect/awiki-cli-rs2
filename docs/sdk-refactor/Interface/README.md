@@ -59,6 +59,7 @@ async API
 | `05-cli-adapter-interface.md` | CLI 到 SDK 的 adapter 函数、handler 目标形态、错误映射。 |
 | `06-implementation-map.md` | 现有 CLI 模块到 P1 SDK 接口的迁移映射和 public/internal 规则。 |
 | `07-phase1-acceptance.md` | P1 验收测试、fixture、边界检查和完成标准。 |
+| `08-email-interface.md` | Email / Mail 迁移阶段的 SDK service、DTO、wire contract、CLI adapter 和 Dart facade 边界。 |
 
 ## 4. 使用方式
 
@@ -72,6 +73,8 @@ async API
 5. 按 05-cli-adapter-interface.md 增加 CLI adapter。
 6. 用 07-phase1-acceptance.md 做验收。
 ```
+
+Email / Mail 不属于 Phase 1 MVP。独立 Email 阶段按 `08-email-interface.md` 和 `../plan/email-migration-execution-plan.md` 迁入 SDK；CLI 默认命令面打开后，`mail.*` 必须走 `im-core::email`，不能回退到 legacy mail implementation。
 
 ## 5. 兼容原则
 
