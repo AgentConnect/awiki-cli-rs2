@@ -1,4 +1,4 @@
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalSecureAckDeliveryAction {
@@ -73,21 +73,4 @@ fn fallback_string(value: &str, fallback: &str) -> String {
     } else {
         value.to_string()
     }
-}
-
-pub fn build_secure_ack_payload(session_id: &str, acked_message_id: &str) -> Map<String, Value> {
-    Map::from_iter([
-        (
-            "system_type".to_string(),
-            Value::String("awiki.direct.secure_ack.v1".to_string()),
-        ),
-        (
-            "session_id".to_string(),
-            Value::String(session_id.trim().to_string()),
-        ),
-        (
-            "acked_message_id".to_string(),
-            Value::String(acked_message_id.trim().to_string()),
-        ),
-    ])
 }

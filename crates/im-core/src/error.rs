@@ -147,3 +147,12 @@ impl From<std::io::Error> for ImError {
         }
     }
 }
+
+#[cfg(feature = "sqlite")]
+impl From<rusqlite::Error> for ImError {
+    fn from(value: rusqlite::Error) -> Self {
+        Self::LocalStateUnavailable {
+            detail: value.to_string(),
+        }
+    }
+}

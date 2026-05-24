@@ -22,7 +22,7 @@ pub fn verification_method_id_from_document(did_document: &Value) -> Option<Stri
 #[doc(hidden)]
 pub fn build_origin_proof(
     identity: &OriginProofIdentity,
-    payload: &crate::compat::wire::DirectPayload,
+    payload: &crate::realtime::wire::DirectPayload,
 ) -> crate::ImResult<Rfc9421OriginProof> {
     crate::internal::proof::origin::build_origin_proof(
         &crate::internal::proof::origin::OriginProofIdentity {

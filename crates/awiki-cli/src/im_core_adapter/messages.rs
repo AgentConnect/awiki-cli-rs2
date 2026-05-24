@@ -2,11 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use im_core::prelude::{
-    AttachmentDestination, AttachmentInput, AttachmentSendRequest, Cursor, DeliveryState,
-    DownloadAttachmentRequest, DownloadedAttachmentDestination, GroupRef, Handle, HistoryQuery,
-    InboxQuery, InboxScope, MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection,
-    MessageId, MessageKind, MessageMetadataAttribute, MessageSecurityMode, MessageTarget, Page,
-    PageLimit, PeerRef, SendMessageRequest, SendMessageResult, ThreadRef,
+    AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
+    AttachmentSendResult, Cursor, DeliveryState, DownloadAttachmentRequest,
+    DownloadedAttachmentDestination, GroupRef, Handle, HistoryQuery, InboxQuery, InboxScope,
+    MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageId, MessageKind,
+    MessageMetadataAttribute, MessagePage, MessageSecurityMode, MessageTarget, PageLimit, PeerRef,
+    SendMessageRequest, SendMessageResult, ThreadRef, UploadedAttachment,
 };
 use serde_json::{json, Value};
 
@@ -15,7 +16,6 @@ use crate::config::Resolved;
 use crate::im_core_adapter::active_identity;
 use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError, ServiceError};
 use crate::output::ExitError;
-use crate::store::{self, MessageRecord};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TargetResolution {
@@ -171,13 +171,13 @@ pub fn history_request(
 }
 
 pub fn send_text_via_im_core(
-    resolved: &Resolved,
+    _resolved: &Resolved,
     manager: &crate::identity::Manager,
     identity_name: &str,
-    client: &im_core::ImClient,
+    _client: &im_core::ImClient,
     mut request: SendMessageRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let direct_target = resolve_direct_target_for_sdk(client, &request)?;
+    let direct_target = resolve_direct_target_for_sdk(_client, &request)?;
     if let Some(target) = &direct_target {
         request.target = MessageTarget::Direct(
             PeerRef::parse(&target.did, "").map_err(im_error_to_message_error)?,
@@ -185,7 +185,7 @@ pub fn send_text_via_im_core(
     }
     let before_jwt = stored_jwt_token(manager, identity_name);
     let mut rpc_phase = crate::traceutil::rpc_phase(sdk_send_trace_operation(&request));
-    let result = client.messages().send(request).map_err(|err| {
+    let result = _client.messages().send(request).map_err(|err| {
         rpc_phase.finish();
         im_error_to_message_error(err)
     })?;
@@ -194,11 +194,9 @@ pub fn send_text_via_im_core(
     match &result.message.thread {
         ThreadRef::Direct(_) => {
             let target = direct_target.unwrap_or_else(|| direct_target_from_result(&result));
-            persist_send_result(resolved, client, &target, &result)
+            render_send_result(&target, &result)
         }
-        ThreadRef::Group(group) => {
-            persist_group_send_result(resolved, client, group.as_str(), &result)
-        }
+        ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result),
         ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread send results are not supported by the CLI renderer".to_string(),
         )),
@@ -207,31 +205,28 @@ pub fn send_text_via_im_core(
 
 pub fn send_attachment_via_im_core(
     resolved: &Resolved,
-    client: &im_core::ImClient,
+    _client: &im_core::ImClient,
     mut target: MessageTarget,
     request: AttachmentSendRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let direct_target = resolve_direct_target_for_target(client, &target)?;
+    let direct_target = resolve_direct_target_for_target(_client, &target)?;
     if let Some(target_resolution) = &direct_target {
         target = MessageTarget::Direct(
             PeerRef::parse(&target_resolution.did, "").map_err(im_error_to_message_error)?,
         );
     }
-    let compat = im_core::compat::attachments::send_attachment_with_details(
-        client,
-        target,
-        request,
-        direct_target.as_ref().map(|target| target.did.clone()),
-    )
-    .map_err(im_error_to_message_error)?;
-    match &compat.sdk_result.message.thread {
+    let result = _client
+        .attachments()
+        .send(target, request)
+        .map_err(im_error_to_message_error)?;
+    match &result.message.message.thread {
         ThreadRef::Direct(_) => {
             let target =
-                direct_target.unwrap_or_else(|| direct_target_from_result(&compat.sdk_result));
-            persist_direct_attachment_result(resolved, client, &target, &compat)
+                direct_target.unwrap_or_else(|| direct_target_from_result(&result.message));
+            render_direct_attachment_result(resolved, &target, &result)
         }
         ThreadRef::Group(group) => {
-            persist_group_attachment_result(resolved, client, group.as_str(), &compat)
+            render_group_attachment_result(resolved, group.as_str(), &result)
         }
         ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread attachment send results are not supported by the CLI renderer".to_string(),
@@ -247,13 +242,11 @@ pub fn download_attachment_via_im_core(
     prepare_download_destination(&request)?;
     let resolved_peer = resolve_direct_thread_for_sdk(client, &request.thread)?;
     let target = download_target_value(&request.thread, resolved_peer.as_ref());
-    let compat = im_core::compat::attachments::download_attachment_with_details(
-        client,
-        request,
-        resolved_peer.as_ref().map(|target| target.did.clone()),
-    )
-    .map_err(im_error_to_message_error)?;
-    let output_path = match &compat.sdk_result.destination {
+    let downloaded = client
+        .attachments()
+        .download(request)
+        .map_err(im_error_to_message_error)?;
+    let output_path = match &downloaded.destination {
         DownloadedAttachmentDestination::LocalFile(path) => path.clone(),
         DownloadedAttachmentDestination::Memory(_) => {
             return Err(MessageAdapterError::Internal(
@@ -264,17 +257,20 @@ pub fn download_attachment_via_im_core(
     apply_private_download_permissions(&output_path)?;
     let output_path_string = output_path.to_string_lossy().into_owned();
     let mut warnings = attachment_transport_warnings(resolved, true);
-    warnings.extend(compat.sdk_result.warnings);
+    warnings.extend(downloaded.warnings);
+    let selection = downloaded
+        .selection
+        .ok_or(MessageAdapterError::AttachmentMessageInvalid)?;
     Ok(CommandResult {
         data: json!({
             "action": "download_attachment",
-            "message_id": compat.selection.message_id,
+            "message_id": selection.message_id,
             "target": target,
-            "attachment": attachment_selection_value(&compat.selection),
+            "attachment": attachment_selection_value(&selection),
             "output": {
                 "path": output_path_string,
-                "size_bytes": compat.sdk_result.size_bytes.unwrap_or_default(),
-                "content_type": compat.sdk_result.mime_type.unwrap_or_default(),
+                "size_bytes": downloaded.size_bytes.unwrap_or_default(),
+                "content_type": downloaded.mime_type.unwrap_or_default(),
             },
         }),
         summary: format!("Downloaded attachment to {output_path_string}"),
@@ -332,13 +328,16 @@ pub fn read_inbox_via_im_core(
     let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let before_jwt = stored_jwt_token(manager, identity_name);
     let mut rpc_phase = crate::traceutil::rpc_phase("inbox.get");
-    let page = client.messages().inbox(query.clone()).map_err(|err| {
-        rpc_phase.finish();
-        im_error_to_message_error(err)
-    })?;
+    let page = client
+        .messages()
+        .inbox_with_metadata(query.clone())
+        .map_err(|err| {
+            rpc_phase.finish();
+            im_error_to_message_error(err)
+        })?;
     rpc_phase.finish();
     mark_sdk_jwt_refresh_if_changed(manager, identity_name, before_jwt.as_deref());
-    let raw = read_page_to_cli_raw(&page, source_default());
+    let raw = message_page_to_cli_raw(&page);
     let mut messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
     messages = apply_inbox_filters(messages, "", query.unread_only, i64::from(query.limit.0));
@@ -392,23 +391,17 @@ fn read_direct_history_via_im_core(
     peer: PeerRef,
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let record = active_identity::require_active_identity(resolved, manager, identity_name)?;
-    let (thread, target, target_is_handle) = resolve_history_thread(client, peer)?;
+    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
+    let target_is_handle = !peer.as_str().trim().starts_with("did:");
     let page = client
         .messages()
-        .history(thread, query.clone())
+        .history_with_metadata(ThreadRef::Direct(peer.clone()), query.clone())
         .map_err(im_error_to_message_error)?;
-    let raw = read_page_to_cli_raw(&page, source_default());
+    let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
-    let mut resolved_dids = resolved_dids_value(&raw);
-    if target_is_handle {
-        if let Ok(dids) =
-            peer_dids_for_handle_from_store(resolved, &record.did, &target.handle, &target.did)
-        {
-            resolved_dids = json!(dids);
-        }
-    }
+    let resolved_dids = resolved_dids_value(&raw);
+    let target = history_target_from_page(&peer, &resolved_dids, target_is_handle);
     let total = messages.len();
     Ok(CommandResult {
         data: json!({
@@ -434,9 +427,9 @@ fn read_group_history_via_im_core(
     let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
     let page = client
         .messages()
-        .history(ThreadRef::Group(group.clone()), query.clone())
+        .history_with_metadata(ThreadRef::Group(group.clone()), query.clone())
         .map_err(im_error_to_message_error)?;
-    let raw = read_page_to_cli_raw(&page, source_default());
+    let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
     let total = messages.len();
@@ -697,40 +690,15 @@ fn resolve_direct_peer_for_sdk(
     }))
 }
 
-fn resolve_history_thread(
-    client: &im_core::ImClient,
-    peer: PeerRef,
-) -> Result<(ThreadRef, TargetResolution, bool), MessageAdapterError> {
-    let original = peer.as_str().trim().to_string();
-    let target_is_handle = !original.is_empty() && !original.starts_with("did:");
-    let target = if target_is_handle {
-        let handle = Handle::parse(&original, "").map_err(im_error_to_message_error)?;
-        let lookup = client
-            .directory()
-            .lookup_handle(handle)
-            .map_err(im_error_to_message_error)?;
-        TargetResolution {
-            did: lookup.did.as_str().to_string(),
-            handle: lookup.handle.as_str().to_string(),
-        }
-    } else {
-        TargetResolution {
-            did: original,
-            handle: String::new(),
-        }
-    };
-    let thread =
-        ThreadRef::Direct(PeerRef::parse(&target.did, "").map_err(im_error_to_message_error)?);
-    Ok((thread, target, target_is_handle))
-}
-
-fn read_page_to_cli_raw(page: &Page<im_core::prelude::Message>, source: &str) -> Value {
+fn message_page_to_cli_raw(page: &MessagePage) -> Value {
     json!({
         "messages": page.items.iter().map(message_to_cli_json).collect::<Vec<_>>(),
         "total": page.items.len(),
-        "source": source,
+        "source": page.source.as_deref().unwrap_or(source_default()),
         "next_cursor": page.next_cursor.as_ref().map(|cursor| cursor.as_str().to_string()),
         "has_more": page.has_more,
+        "resolved_dids": page.resolved_dids.iter().map(|did| did.as_str()).collect::<Vec<_>>(),
+        "warnings": page.warnings,
     })
 }
 
@@ -869,56 +837,24 @@ fn peer_handle_or_did(target: &TargetResolution) -> String {
     }
 }
 
-fn peer_dids_for_handle_from_store(
-    resolved: &Resolved,
-    owner_did: &str,
-    handle: &str,
-    current_did: &str,
-) -> Result<Vec<String>, MessageAdapterError> {
-    let handle = normalize_handle_value(handle);
-    if handle.is_empty() {
-        return Ok(merge_peer_dids(current_did, &[]));
+fn history_target_from_page(
+    peer: &PeerRef,
+    resolved_dids: &Value,
+    target_is_handle: bool,
+) -> TargetResolution {
+    let did = resolved_dids
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| peer.as_str())
+        .to_string();
+    TargetResolution {
+        did,
+        handle: target_is_handle
+            .then(|| peer.as_str().to_string())
+            .unwrap_or_default(),
     }
-    let connection = store::open(&resolved.paths)
-        .map_err(|err| MessageAdapterError::Internal(format!("open local message store: {err}")))?;
-    store::ensure_schema(&connection).map_err(|err| {
-        MessageAdapterError::Internal(format!("ensure local message store schema: {err}"))
-    })?;
-    let dids = store::list_dids_by_handle(&connection, owner_did, &handle).map_err(|err| {
-        MessageAdapterError::Internal(format!("list contact DIDs by handle: {err}"))
-    })?;
-    Ok(merge_peer_dids(current_did, &dids))
-}
-
-fn normalize_handle_value(value: &str) -> String {
-    let value = value.trim().to_ascii_lowercase();
-    if value.is_empty() {
-        return String::new();
-    }
-    let value = value.trim_start_matches("wba://");
-    match value.find('.') {
-        Some(index) if index > 0 => value[..index].to_string(),
-        _ => value.to_string(),
-    }
-}
-
-fn merge_peer_dids(current: &str, historical: &[String]) -> Vec<String> {
-    let mut seen = Vec::with_capacity(historical.len() + 1);
-    let mut result = Vec::with_capacity(historical.len() + 1);
-    let current = current.trim();
-    if !current.is_empty() {
-        seen.push(current.to_string());
-        result.push(current.to_string());
-    }
-    for did in historical {
-        let did = did.trim();
-        if did.is_empty() || seen.iter().any(|known| known == did) {
-            continue;
-        }
-        seen.push(did.to_string());
-        result.push(did.to_string());
-    }
-    result
 }
 
 fn apply_inbox_filters(
@@ -1017,64 +953,20 @@ fn delivery_state_label(result: &SendMessageResult) -> String {
         })
 }
 
-fn manifest_from_result(result: &SendMessageResult) -> Value {
-    message_attribute(&result.message.metadata.attributes, "attachment_manifest")
-        .and_then(|value| serde_json::from_str(&value).ok())
-        .unwrap_or(Value::Null)
-}
-
-fn persist_direct_attachment_result(
+fn render_direct_attachment_result(
     resolved: &Resolved,
-    client: &im_core::ImClient,
     target: &TargetResolution,
-    compat: &im_core::compat::attachments::AttachmentSendCompatResult,
+    attachment_result: &AttachmentSendResult,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let result = DirectSendResult::from_sdk_result(&compat.sdk_result, target);
-    let manifest = manifest_from_result(&compat.sdk_result);
+    let result = DirectSendResult::from_sdk_result(&attachment_result.message, target);
+    let manifest = &attachment_result.manifest;
     let caption = manifest
         .get("caption")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let owner_did = client.did().as_str();
-    let credential_name = client.current_identity().id.as_str();
     let mut warnings = attachment_transport_warnings(resolved, false);
-    warnings.extend(compat.sdk_result.warnings.clone());
-    if let Ok(connection) = store::open(&resolved.paths) {
-        if store::ensure_schema(&connection).is_ok() {
-            let stored = store::store_message(
-                &connection,
-                MessageRecord {
-                    msg_id: result.message_id.clone(),
-                    owner_identity_id: credential_name.to_string(),
-                    owner_did: owner_did.to_string(),
-                    thread_id: store::make_thread_id(owner_did, &target.did, ""),
-                    direction: 1,
-                    sender_did: owner_did.to_string(),
-                    receiver_did: target.did.clone(),
-                    content_type: im_core::compat::attachments::attachment_manifest_content_type()
-                        .to_string(),
-                    content: im_core::compat::attachments::manifest_content_string(&manifest),
-                    sent_at: result.accepted_at.clone(),
-                    is_read: true,
-                    is_e2ee: false,
-                    metadata: metadata_string(json!({
-                        "delivery_state": result.delivery_state,
-                        "operation_id": result.operation_id,
-                        "target_handle": target.handle,
-                        "attachment_id": compat.slot.attachment_id,
-                        "object_uri": compat.slot.object_uri,
-                        "caption": caption,
-                    })),
-                    credential_name: credential_name.to_string(),
-                    ..MessageRecord::default()
-                },
-            );
-            if let Err(err) = stored {
-                warnings.push(format!("Failed to persist local message: {err}"));
-            }
-        }
-    }
+    warnings.extend(attachment_result.message.warnings.clone());
     Ok(CommandResult {
         data: json!({
             "action": "send_attachment",
@@ -1084,7 +976,7 @@ fn persist_direct_attachment_result(
                 "kind": "direct",
             },
             "message": attachment_message_value(&result.message_id, &result.accepted_at, &caption),
-            "attachment": prepared_attachment_value(&compat.prepared, &compat.slot),
+            "attachment": uploaded_attachment_value(&attachment_result.attachment),
             "delivery": result,
         }),
         summary: "Sent a direct attachment message".to_string(),
@@ -1092,74 +984,21 @@ fn persist_direct_attachment_result(
     })
 }
 
-fn persist_group_attachment_result(
+fn render_group_attachment_result(
     resolved: &Resolved,
-    client: &im_core::ImClient,
     group_did: &str,
-    compat: &im_core::compat::attachments::AttachmentSendCompatResult,
+    attachment_result: &AttachmentSendResult,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let result = GroupSendResult::from_sdk_result(&compat.sdk_result, group_did);
-    let manifest = manifest_from_result(&compat.sdk_result);
+    let result = GroupSendResult::from_sdk_result(&attachment_result.message, group_did);
+    let manifest = &attachment_result.manifest;
     let caption = manifest
         .get("caption")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let owner_did = client.did().as_str();
-    let credential_name = client.current_identity().id.as_str();
     let mut warnings = attachment_transport_warnings(resolved, false);
-    warnings.extend(compat.sdk_result.warnings.clone());
-    let group_key = group_storage_key(group_did);
+    warnings.extend(attachment_result.message.warnings.clone());
     let message_id = group_send_message_id(group_did, &result);
-    if let Ok(connection) = store::open(&resolved.paths) {
-        if store::ensure_schema(&connection).is_ok() {
-            let stored = store::store_message(
-                &connection,
-                MessageRecord {
-                    msg_id: message_id.clone(),
-                    owner_identity_id: credential_name.to_string(),
-                    owner_did: owner_did.to_string(),
-                    thread_id: store::make_thread_id(owner_did, "", &group_key),
-                    direction: 1,
-                    sender_did: owner_did.to_string(),
-                    group_id: group_key.clone(),
-                    group_did: group_did.to_string(),
-                    content_type: im_core::compat::attachments::attachment_manifest_content_type()
-                        .to_string(),
-                    content: im_core::compat::attachments::manifest_content_string(&manifest),
-                    sent_at: result.accepted_at.clone(),
-                    is_read: true,
-                    metadata: metadata_string(json!({
-                        "delivery_state": result.delivery_state,
-                        "group_event_seq": result.group_event_seq,
-                        "group_state_version": result.group_state_version,
-                        "operation_id": result.operation_id,
-                        "attachment_id": compat.slot.attachment_id,
-                        "object_uri": compat.slot.object_uri,
-                        "caption": caption,
-                    })),
-                    credential_name: credential_name.to_string(),
-                    ..MessageRecord::default()
-                },
-            );
-            if let Err(err) = stored {
-                warnings.push(format!("Failed to persist local group message: {err}"));
-            }
-            let touched = store::touch_group_after_message(
-                &connection,
-                owner_did,
-                &group_key,
-                group_did,
-                &result.accepted_at,
-                i64_option_from_string(&result.group_event_seq),
-                credential_name,
-                &metadata_string(json!({ "group_state_version": result.group_state_version })),
-            );
-            if let Err(err) = touched {
-                warnings.push(format!("Failed to update group cache: {err}"));
-            }
-        }
-    }
     Ok(CommandResult {
         data: json!({
             "action": "send_attachment",
@@ -1168,7 +1007,7 @@ fn persist_group_attachment_result(
                 "did": group_did,
             },
             "message": attachment_message_value(&message_id, &result.accepted_at, &caption),
-            "attachment": prepared_attachment_value(&compat.prepared, &compat.slot),
+            "attachment": uploaded_attachment_value(&attachment_result.attachment),
             "delivery": result,
         }),
         summary: "Sent a group attachment message".to_string(),
@@ -1180,33 +1019,28 @@ fn attachment_message_value(message_id: &str, sent_at: &str, caption: &str) -> V
     json!({
         "id": message_id,
         "type": "attachment_manifest",
-        "content_type": im_core::compat::attachments::attachment_manifest_content_type(),
+        "content_type": im_core::attachments::attachment_manifest_content_type(),
         "caption": caption,
         "secure": false,
         "sent_at": sent_at,
     })
 }
 
-fn prepared_attachment_value(
-    prepared: &im_core::compat::attachments::PreparedAttachment,
-    slot: &im_core::compat::attachments::AttachmentCreateSlotResult,
-) -> Value {
+fn uploaded_attachment_value(attachment: &UploadedAttachment) -> Value {
     json!({
-        "attachment_id": slot.attachment_id,
-        "filename": prepared.filename,
-        "mime_type": prepared.mime_type,
-        "size": prepared.size_string,
+        "attachment_id": attachment.attachment_id,
+        "filename": attachment.filename,
+        "mime_type": attachment.mime_type,
+        "size": attachment.size,
         "digest": {
             "alg": "sha-256",
-            "value_b64u": prepared.digest_b64u,
+            "value_b64u": attachment.digest_b64u,
         },
-        "object_uri": slot.object_uri,
+        "object_uri": attachment.object_uri,
     })
 }
 
-fn attachment_selection_value(
-    selection: &im_core::compat::attachments::AttachmentSelection,
-) -> Value {
+fn attachment_selection_value(selection: &AttachmentSelection) -> Value {
     json!({
         "attachment_id": selection.attachment_id,
         "filename": selection.filename,
@@ -1436,48 +1270,13 @@ impl GroupSendResult {
     }
 }
 
-fn persist_send_result(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
+fn render_send_result(
     target: &TargetResolution,
     sdk_result: &SendMessageResult,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = DirectSendResult::from_sdk_result(sdk_result, target);
-    let (text, message_type) = message_text_and_type(&sdk_result.message.body)?;
-    let owner_did = client.did().as_str();
-    let credential_name = client.current_identity().id.as_str();
-    let mut warnings = sdk_result.warnings.clone();
-    if let Ok(connection) = store::open(&resolved.paths) {
-        if store::ensure_schema(&connection).is_ok() {
-            let stored = store::store_message(
-                &connection,
-                MessageRecord {
-                    msg_id: result.message_id.clone(),
-                    owner_identity_id: credential_name.to_string(),
-                    owner_did: owner_did.to_string(),
-                    thread_id: store::make_thread_id(owner_did, &target.did, ""),
-                    direction: 1,
-                    sender_did: owner_did.to_string(),
-                    receiver_did: target.did.clone(),
-                    content_type: content_type_for_message_type(message_type).to_string(),
-                    content: text.to_string(),
-                    sent_at: result.accepted_at.clone(),
-                    is_read: true,
-                    is_e2ee: false,
-                    metadata: metadata_string(json!({
-                        "delivery_state": result.delivery_state,
-                        "operation_id": result.operation_id,
-                        "target_handle": target.handle,
-                    })),
-                    credential_name: credential_name.to_string(),
-                    ..MessageRecord::default()
-                },
-            );
-            if let Err(err) = stored {
-                warnings.push(format!("Failed to persist local message: {err}"));
-            }
-        }
-    }
+    let (_text, message_type) = message_text_and_type(&sdk_result.message.body)?;
+    let warnings = sdk_result.warnings.clone();
     Ok(CommandResult {
         data: json!({
             "action": "send_message",
@@ -1499,64 +1298,13 @@ fn persist_send_result(
     })
 }
 
-fn persist_group_send_result(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
+fn render_group_send_result(
     group_did: &str,
     sdk_result: &SendMessageResult,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = GroupSendResult::from_sdk_result(sdk_result, group_did);
-    let (text, message_type) = message_text_and_type(&sdk_result.message.body)?;
-    let owner_did = client.did().as_str();
-    let credential_name = client.current_identity().id.as_str();
-    let mut warnings = sdk_result.warnings.clone();
-    let group_key = group_storage_key(group_did);
-    if let Ok(connection) = store::open(&resolved.paths) {
-        if store::ensure_schema(&connection).is_ok() {
-            let message_id = group_send_message_id(group_did, &result);
-            let stored = store::store_message(
-                &connection,
-                MessageRecord {
-                    msg_id: message_id,
-                    owner_identity_id: credential_name.to_string(),
-                    owner_did: owner_did.to_string(),
-                    thread_id: store::make_thread_id(owner_did, "", &group_key),
-                    direction: 1,
-                    sender_did: owner_did.to_string(),
-                    group_id: group_key.clone(),
-                    group_did: group_did.to_string(),
-                    content_type: content_type_for_message_type(message_type).to_string(),
-                    content: text.to_string(),
-                    sent_at: result.accepted_at.clone(),
-                    is_read: true,
-                    metadata: metadata_string(json!({
-                        "delivery_state": result.delivery_state,
-                        "group_event_seq": result.group_event_seq,
-                        "group_state_version": result.group_state_version,
-                        "operation_id": result.operation_id,
-                    })),
-                    credential_name: credential_name.to_string(),
-                    ..MessageRecord::default()
-                },
-            );
-            if let Err(err) = stored {
-                warnings.push(format!("Failed to persist local group message: {err}"));
-            }
-            let touched = store::touch_group_after_message(
-                &connection,
-                owner_did,
-                &group_key,
-                group_did,
-                &result.accepted_at,
-                i64_option_from_string(&result.group_event_seq),
-                credential_name,
-                &metadata_string(json!({ "group_state_version": result.group_state_version })),
-            );
-            if let Err(err) = touched {
-                warnings.push(format!("Failed to update group cache: {err}"));
-            }
-        }
-    }
+    let (_text, message_type) = message_text_and_type(&sdk_result.message.body)?;
+    let warnings = sdk_result.warnings.clone();
     Ok(CommandResult {
         data: json!({
             "action": "send_message",
@@ -1607,25 +1355,6 @@ fn group_send_message_id(group_did: &str, result: &GroupSendResult) -> String {
     format!("{}:local", group_did.trim())
 }
 
-fn group_storage_key(group_did: &str) -> String {
-    group_did.trim().to_string()
-}
-
-fn i64_option_from_string(value: &str) -> Option<i64> {
-    value.trim().parse().ok()
-}
-
-fn content_type_for_message_type(message_type: &str) -> &'static str {
-    match message_type.trim().to_ascii_lowercase().as_str() {
-        "markdown" => "text/markdown",
-        _ => "text/plain",
-    }
-}
-
-fn metadata_string(value: Value) -> String {
-    serde_json::to_string(&value).unwrap_or_default()
-}
-
 fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
     match err {
         im_core::ImError::InvalidInput { field, .. } if field.as_deref() == Some("text") => {
@@ -1661,17 +1390,17 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             MessageAdapterError::PathUnavailable(message)
         }
         im_core::ImError::InvalidInput { message, .. }
-            if message == im_core::compat::attachments::ERR_ATTACHMENT_NOT_FOUND =>
+            if message == im_core::attachments::ERR_ATTACHMENT_NOT_FOUND =>
         {
             MessageAdapterError::AttachmentNotFound
         }
         im_core::ImError::InvalidInput { message, .. }
-            if message == im_core::compat::attachments::ERR_ATTACHMENT_ID_REQUIRED =>
+            if message == im_core::attachments::ERR_ATTACHMENT_ID_REQUIRED =>
         {
             MessageAdapterError::AttachmentIdRequired
         }
         im_core::ImError::InvalidInput { message, .. }
-            if message == im_core::compat::attachments::ERR_ATTACHMENT_MESSAGE_INVALID =>
+            if message == im_core::attachments::ERR_ATTACHMENT_MESSAGE_INVALID =>
         {
             MessageAdapterError::AttachmentMessageInvalid
         }

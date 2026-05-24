@@ -1,7 +1,7 @@
 use awiki_cli::config::Paths;
 use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
-use awiki_cli::message::new_secure_e2ee_client_for_record;
 use awiki_cli::store::{self, E2EEOutboxRecord};
+use rusqlite::types::ValueRef;
 use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -66,22 +66,12 @@ fn msg_send_live_posts_direct_rpc_and_persists_outbound_row_like_go() {
         "anp-rfc9421-origin-proof-v1"
     );
 
-    let query = awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            format!(
-                "SELECT msg_id, direction, content, is_read FROM messages WHERE msg_id = '{message_id}'"
-            ),
-        ],
+    let rows = query_rows(
         workspace.path(),
+        &format!(
+            "SELECT msg_id, direction, content, is_read FROM messages WHERE msg_id = '{message_id}'"
+        ),
     );
-    assert_success(&query);
-    let rows = success_json(&query)["data"]["rows"]
-        .as_array()
-        .cloned()
-        .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["content"], "hello direct");
     assert_eq!(rows[0]["direction"], 1);
@@ -89,38 +79,13 @@ fn msg_send_live_posts_direct_rpc_and_persists_outbound_row_like_go() {
 }
 
 #[test]
-fn msg_send_secure_on_live_posts_e2ee_rpc_and_persists_secure_row_like_go() {
+fn msg_send_secure_on_is_stable_unsupported_without_secure_direct_legacy_path() {
     let workspace = TempDir::new("msg-live-secure-send").expect("workspace");
     write_msg_config(workspace.path(), "https://placeholder.invalid");
     let manager = Manager::new(test_paths(workspace.path()));
-    let alice = register_generated_msg_identity(&manager, "alice-secure", "alice", "jwt-alice");
+    register_generated_msg_identity(&manager, "alice-secure", "alice", "jwt-alice");
     let bob = register_generated_msg_identity(&manager, "bob-secure", "bob", "jwt-bob");
-    let mut bob_seed = new_secure_e2ee_client_for_record(
-        Some(&manager),
-        Some(&bob),
-        Box::new(|method, _params| {
-            assert_eq!(method, "direct.e2ee.publish_prekey_bundle");
-            Ok(Map::new())
-        }),
-    )
-    .expect("construct bob seed client");
-    let bob_bundle = bob_seed
-        .ensure_fresh_prekey_bundle()
-        .expect("seed bob prekey bundle");
-    let bob_opk = first_one_time_prekey(&manager, "bob-secure");
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "prekey_bundle": bob_bundle,
-            "one_time_prekey": bob_opk,
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "accepted": true,
-            "accepted_at": "2026-04-07T01:02:03Z",
-            "delivery_state": "accepted"
-        }))),
-    ]);
+    let server = TestServer::new(vec![]);
     write_msg_config(workspace.path(), &server.base_url());
 
     let output = awiki_cmd(
@@ -139,80 +104,18 @@ fn msg_send_secure_on_live_posts_e2ee_rpc_and_persists_secure_row_like_go() {
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Sent a direct text message");
-    assert_eq!(envelope["data"]["action"], "send_message");
-    assert_eq!(envelope["data"]["target"]["did"], bob.did);
-    assert_eq!(envelope["data"]["message"]["secure"], true);
-    let message_id = envelope["data"]["message"]["id"]
-        .as_str()
-        .expect("message id");
-    assert!(message_id.starts_with("msg-"));
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 4);
-    let bodies = requests
-        .iter()
-        .map(|request| serde_json::from_str::<Value>(request_body(request)).expect("json body"))
-        .collect::<Vec<_>>();
-    assert_eq!(bodies[0]["method"], "direct.e2ee.publish_prekey_bundle");
-    assert_eq!(bodies[1]["method"], "direct.e2ee.publish_prekey_bundle");
-    assert_eq!(bodies[2]["method"], "direct.e2ee.get_prekey_bundle");
-    assert_eq!(bodies[2]["params"]["body"]["target_did"], bob.did);
-    assert_eq!(bodies[3]["method"], "direct.send");
-    assert_eq!(bodies[3]["params"]["meta"]["sender_did"], alice.did);
-    assert_eq!(bodies[3]["params"]["meta"]["target"]["did"], bob.did);
-    assert_eq!(
-        bodies[3]["params"]["meta"]["content_type"],
-        "application/anp-direct-init+json"
-    );
-    assert_eq!(bodies[3]["params"]["meta"]["message_id"], message_id);
-    assert_eq!(bodies[3]["params"]["meta"]["operation_id"], message_id);
-    assert_eq!(bodies[3]["params"].get("auth"), None);
-
-    let rows = query_rows(
-        workspace.path(),
-        &format!("SELECT msg_id, content, is_e2ee FROM messages WHERE msg_id = '{message_id}'"),
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["content"], "hello secure live");
-    assert_eq!(rows[0]["is_e2ee"], 1);
+    assert_secure_direct_unsupported(&output, "msg.send");
+    assert_eq!(server.requests().len(), 0);
 }
 
 #[test]
-fn msg_secure_init_live_posts_manual_init_and_creates_pending_session_like_go() {
+fn msg_secure_init_is_stable_unsupported_without_secure_direct_legacy_path() {
     let workspace = TempDir::new("msg-live-secure-init").expect("workspace");
     write_msg_config(workspace.path(), "https://placeholder.invalid");
     let manager = Manager::new(test_paths(workspace.path()));
-    let alice = register_generated_msg_identity(&manager, "alice-init", "alice", "jwt-alice");
+    register_generated_msg_identity(&manager, "alice-init", "alice", "jwt-alice");
     let bob = register_generated_msg_identity(&manager, "bob-init", "bob", "jwt-bob");
-    let mut bob_seed = new_secure_e2ee_client_for_record(
-        Some(&manager),
-        Some(&bob),
-        Box::new(|method, _params| {
-            assert_eq!(method, "direct.e2ee.publish_prekey_bundle");
-            Ok(Map::new())
-        }),
-    )
-    .expect("construct bob seed client");
-    let bob_bundle = bob_seed
-        .ensure_fresh_prekey_bundle()
-        .expect("seed bob prekey bundle");
-    let bob_opk = first_one_time_prekey(&manager, "bob-init");
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "prekey_bundle": bob_bundle,
-            "one_time_prekey": bob_opk,
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "accepted": true,
-            "accepted_at": "2026-05-16T01:02:03Z",
-            "delivery_state": "accepted"
-        }))),
-    ]);
+    let server = TestServer::new(vec![]);
     write_msg_config(workspace.path(), &server.base_url());
 
     let output = awiki_cmd(
@@ -228,60 +131,12 @@ fn msg_secure_init_live_posts_manual_init_and_creates_pending_session_like_go() 
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        format!("Initialized secure session with {}", bob.did)
-    );
-    assert_eq!(envelope["data"]["initialized"], true);
-    assert_eq!(envelope["data"]["target"]["did"], bob.did);
-    assert_eq!(envelope["data"]["session"]["peer_did"], bob.did);
-    assert_eq!(
-        envelope["data"]["session"]["status"],
-        "pending-confirmation"
-    );
-    assert_eq!(envelope["data"]["session"]["is_initiator"], true);
-    let message_id = envelope["data"]["delivery"]["message_id"]
-        .as_str()
-        .expect("delivery message id");
-    assert!(message_id.starts_with("secure-init-"));
-    assert_eq!(envelope["data"]["delivery"]["operation_id"], message_id);
-    assert_eq!(envelope["data"]["delivery"]["target_did"], bob.did);
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 4);
-    let bodies = requests
-        .iter()
-        .map(|request| serde_json::from_str::<Value>(request_body(request)).expect("json body"))
-        .collect::<Vec<_>>();
-    assert_eq!(bodies[0]["method"], "direct.e2ee.publish_prekey_bundle");
-    assert_eq!(bodies[1]["method"], "direct.e2ee.publish_prekey_bundle");
-    assert_eq!(bodies[2]["method"], "direct.e2ee.get_prekey_bundle");
-    assert_eq!(bodies[2]["params"]["body"]["target_did"], bob.did);
-    assert_eq!(bodies[3]["method"], "direct.send");
-    assert_eq!(bodies[3]["params"]["meta"]["sender_did"], alice.did);
-    assert_eq!(bodies[3]["params"]["meta"]["target"]["did"], bob.did);
-    assert_eq!(
-        bodies[3]["params"]["meta"]["content_type"],
-        "application/anp-direct-init+json"
-    );
-    assert_eq!(bodies[3]["params"]["meta"]["message_id"], message_id);
-    assert_eq!(bodies[3]["params"]["meta"]["operation_id"], message_id);
-    assert_eq!(bodies[3]["params"].get("auth"), None);
-
-    let paths = manager
-        .paths_for_identity("alice-init")
-        .expect("alice identity paths");
-    let sessions = std::fs::read_dir(Path::new(&paths.identity_dir).join("p5-e2ee-sessions"))
-        .expect("read session root")
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-    assert_eq!(sessions.len(), 1);
+    assert_secure_direct_unsupported(&output, "msg.secure.init");
+    assert_eq!(server.requests().len(), 0);
 }
 
 #[test]
-fn msg_secure_retry_live_posts_cipher_rpc_and_marks_outbox_sent_like_go() {
+fn msg_secure_retry_is_stable_unsupported_without_secure_direct_legacy_path() {
     let workspace = TempDir::new("msg-live-secure-retry").expect("workspace");
     write_msg_config(workspace.path(), "https://placeholder.invalid");
     let manager = Manager::new(test_paths(workspace.path()));
@@ -298,13 +153,7 @@ fn msg_secure_retry_live_posts_cipher_rpc_and_marks_outbox_sent_like_go() {
         "2026-05-16T00:00:00Z",
         "alice-retry",
     );
-    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
-        "accepted": true,
-        "message_id": "msg-retry-live-1",
-        "operation_id": "retry-live-1",
-        "accepted_at": "2026-05-16T01:02:03Z",
-        "delivery_state": "accepted"
-    })))]);
+    let server = TestServer::new(vec![]);
     write_msg_config(workspace.path(), &server.base_url());
 
     let output = awiki_cmd(
@@ -319,45 +168,8 @@ fn msg_secure_retry_live_posts_cipher_rpc_and_marks_outbox_sent_like_go() {
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        "Retried secure outbox record retry-live-1"
-    );
-    assert_eq!(envelope["data"]["outbox_id"], "retry-live-1");
-    assert_eq!(envelope["data"]["record"]["local_status"], "sent");
-    assert_eq!(
-        envelope["data"]["record"]["sent_msg_id"],
-        "msg-retry-live-1"
-    );
-    assert_eq!(
-        envelope["data"]["record"]["session_id"],
-        "session-retry-live"
-    );
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 1);
-    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("json body");
-    assert_eq!(body["method"], "direct.send");
-    assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
-    assert_eq!(body["params"]["meta"]["target"]["did"], bob.did);
-    assert_eq!(
-        body["params"]["meta"]["content_type"],
-        "application/anp-direct-cipher+json"
-    );
-    assert_eq!(body["params"]["meta"]["message_id"], "retry-live-1");
-    assert_eq!(body["params"]["meta"]["operation_id"], "retry-live-1");
-    assert_eq!(body["params"].get("auth"), None);
-
-    let rows = query_rows(
-        workspace.path(),
-        "SELECT msg_id, content, is_e2ee, credential_name FROM messages WHERE msg_id = 'msg-retry-live-1'",
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["content"], "hello retry live");
-    assert_eq!(rows[0]["is_e2ee"], 1);
-    assert_eq!(rows[0]["credential_name"], "alice-retry");
+    assert_secure_direct_unsupported(&output, "msg.secure.retry");
+    assert_eq!(server.requests().len(), 0);
 }
 
 #[test]
@@ -377,20 +189,11 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         "is_read": false,
     });
     let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [message.clone()],
             "total": 1,
             "source": "remote_http"
         }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "did": alice_did,
-            "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
         TestResponse::ok(&json_rpc_result(json!({
             "messages": [message.clone()],
             "total": 1,
@@ -400,7 +203,7 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     ]);
     write_msg_config(workspace.path(), &server.base_url());
 
-    let inbox = awiki_cmd(
+    let unsupported_inbox_filter = awiki_cmd(
         &[
             "--identity",
             "bob-msg",
@@ -414,9 +217,20 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
         ],
         workspace.path(),
     );
+    assert_unsupported_capability(
+        &unsupported_inbox_filter,
+        "msg.inbox",
+        "inbox-target-filters",
+        "Phase 3",
+    );
+
+    let inbox = awiki_cmd(
+        &["--identity", "bob-msg", "msg", "inbox", "--scope", "direct"],
+        workspace.path(),
+    );
     assert_success(&inbox);
     let inbox_json = success_json(&inbox);
-    assert_eq!(inbox_json["summary"], "Loaded 1 direct inbox messages");
+    assert_eq!(inbox_json["summary"], "Loaded 1 inbox messages");
     assert_eq!(inbox_json["data"]["messages"][0]["id"], "msg-direct-1");
     assert_eq!(inbox_json["data"]["messages"][0]["content"], "hello bob");
 
@@ -448,14 +262,12 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(mark_json["data"]["message_ids"], json!(["msg-direct-1"]));
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 3);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
+    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
     assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[3].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
-    assert!(requests[6].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[7].starts_with("POST /im/rpc HTTP/1.1"));
 
-    let inbox_body: Value = serde_json::from_str(request_body(&requests[2])).expect("inbox body");
+    let inbox_body: Value = serde_json::from_str(request_body(&requests[0])).expect("inbox body");
     assert_eq!(inbox_body["method"], "inbox.get");
     assert_eq!(
         inbox_body["params"]["meta"]["profile"],
@@ -465,44 +277,17 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     assert_eq!(inbox_body["params"]["body"].get("peer_did"), None);
 
     let history_body: Value =
-        serde_json::from_str(request_body(&requests[6])).expect("history body");
+        serde_json::from_str(request_body(&requests[1])).expect("history body");
     assert_eq!(history_body["method"], "direct.get_history");
     assert_eq!(history_body["params"]["body"]["peer_did"], alice_did);
     assert_eq!(history_body["params"]["body"]["limit"], 5);
 
-    let mark_body: Value = serde_json::from_str(request_body(&requests[7])).expect("mark body");
+    let mark_body: Value = serde_json::from_str(request_body(&requests[2])).expect("mark body");
     assert_eq!(mark_body["method"], "inbox.mark_read");
     assert_eq!(
         mark_body["params"]["body"]["message_ids"],
         json!(["msg-direct-1"])
     );
-
-    let query = awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            "SELECT msg_id, direction, content, is_read FROM messages WHERE msg_id = 'msg-direct-1'".to_string(),
-        ],
-        workspace.path(),
-    );
-    assert_success(&query);
-    let rows = success_json(&query)["data"]["rows"]
-        .as_array()
-        .cloned()
-        .unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["direction"], 0);
-    assert_eq!(rows[0]["content"], "hello bob");
-    assert_eq!(rows[0]["is_read"], 1);
-
-    let contacts = query_rows(
-        workspace.path(),
-        "SELECT did, handle, messaged FROM contacts WHERE did = 'did:wba:awiki.ai:alice:e1_alice'",
-    );
-    assert_eq!(contacts.len(), 1);
-    assert_eq!(contacts[0]["handle"], "alice");
-    assert_eq!(contacts[0]["messaged"], 1);
 }
 
 #[test]
@@ -538,8 +323,6 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
         "is_read": false,
     });
     let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
         TestResponse::ok(&json_rpc_result(json!({
             "did": alice_new,
             "handle": "alice.awiki.ai",
@@ -568,10 +351,9 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     );
     assert_success(&history);
     let envelope = success_json(&history);
-    assert_eq!(envelope["summary"], "Loaded 2 direct history messages");
-    assert_eq!(envelope["data"]["source"], "remote_http+handle_history");
+    assert_eq!(envelope["summary"], "Loaded 1 direct history messages");
+    assert_eq!(envelope["data"]["source"], "remote_http");
     assert_eq!(envelope["data"]["messages"][0]["msg_id"], "msg-new");
-    assert_eq!(envelope["data"]["messages"][1]["msg_id"], "msg-old");
     assert_eq!(
         envelope["data"]["resolved_dids"],
         json!([alice_new, alice_old])
@@ -581,10 +363,9 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
         workspace.path(),
         "SELECT did, is_current FROM contact_handle_bindings WHERE handle = 'alice' ORDER BY is_current DESC, last_seen_at DESC",
     );
-    assert_eq!(bindings.len(), 2);
-    assert_eq!(bindings[0]["did"], alice_new);
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0]["did"], alice_old);
     assert_eq!(bindings[0]["is_current"], 1);
-    assert_eq!(bindings[1]["did"], alice_old);
 }
 
 #[test]
@@ -630,8 +411,6 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
         "is_read": false,
     });
     let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
         TestResponse::ok(&json_rpc_result(json!({
             "did": alice_new,
             "handle": "alice.awiki.ai",
@@ -664,9 +443,8 @@ fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_ca
         .cloned()
         .unwrap();
 
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["msg_id"], "msg-new");
-    assert_eq!(messages[1]["msg_id"], "msg-plain");
     assert!(!messages.iter().any(|message| {
         message["msg_id"] == "msg-wire"
             || message["content_type"] == "application/anp-direct-cipher+json"
@@ -681,6 +459,7 @@ fn register_ready_msg_identity(
 ) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -794,28 +573,6 @@ fn test_paths(workspace: &Path) -> Paths {
         legacy_credentials_dir: path_string(&workspace.join("legacy-credentials")),
         legacy_data_dir: path_string(&workspace.join("legacy-data")),
     }
-}
-
-fn first_one_time_prekey(
-    manager: &Manager,
-    identity_name: &str,
-) -> awiki_cli::anpsdk::OneTimePrekey {
-    let paths = manager
-        .paths_for_identity(identity_name)
-        .expect("identity paths");
-    let mut prekeys = std::fs::read_dir(Path::new(&paths.identity_dir).join("p5-one-time-prekeys"))
-        .expect("read one-time prekey root")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
-        .map(|path| {
-            serde_json::from_slice(&std::fs::read(&path).expect("read one-time prekey json"))
-                .expect("parse one-time prekey json")
-        })
-        .collect::<Vec<_>>();
-    prekeys
-        .sort_by(|left: &awiki_cli::anpsdk::OneTimePrekey, right| left.key_id.cmp(&right.key_id));
-    prekeys.into_iter().next().expect("at least one OPK")
 }
 
 fn seed_established_secure_session(
@@ -935,6 +692,47 @@ fn success_json(output: &Output) -> Value {
     envelope
 }
 
+fn error_json(output: &Output) -> Value {
+    assert!(
+        !output.status.success(),
+        "command should fail\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stderr).expect("error JSON")
+}
+
+fn assert_secure_direct_unsupported(output: &Output, command: &str) {
+    assert_unsupported_capability(output, command, "secure-direct", "Phase 6");
+}
+
+fn assert_unsupported_capability(
+    output: &Output,
+    command: &str,
+    capability: &str,
+    required_phase: &str,
+) {
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = error_json(output);
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], capability);
+    assert_eq!(
+        envelope["error"]["details"]["required_phase"],
+        required_phase
+    );
+    assert_eq!(
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
+    );
+}
+
 fn request_body(raw: &str) -> &str {
     raw.split("\r\n\r\n").nth(1).unwrap_or_default()
 }
@@ -951,20 +749,25 @@ fn assert_contains_text(haystack: &str, needle: &str) {
 }
 
 fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
-    let query = awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            sql.to_string(),
-        ],
-        workspace,
-    );
-    assert_success(&query);
-    success_json(&query)["data"]["rows"]
-        .as_array()
-        .cloned()
-        .unwrap()
+    let connection = rusqlite::Connection::open(test_paths(workspace).database_file)
+        .expect("open test database");
+    let mut statement = connection.prepare(sql).expect("prepare test query");
+    let names = statement
+        .column_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    statement
+        .query_map([], |row| {
+            let mut object = Map::new();
+            for (index, name) in names.iter().enumerate() {
+                object.insert(name.clone(), sqlite_value_to_json(row.get_ref(index)?));
+            }
+            Ok(Value::Object(object))
+        })
+        .expect("run test query")
+        .map(|row| row.expect("read test row"))
+        .collect()
 }
 
 fn seed_contact(workspace: &Path, owner_did: &str, peer_did: &str, handle: &str, seen_at: &str) {
@@ -1018,15 +821,23 @@ fn seed_direct_message_with_type(
 }
 
 fn execute_sql(workspace: &Path, statement: String) {
-    assert_success(&awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            statement,
-        ],
-        workspace,
-    ));
+    let connection = rusqlite::Connection::open(test_paths(workspace).database_file)
+        .expect("open test database");
+    connection
+        .execute_batch(&statement)
+        .expect("execute test sql");
+}
+
+fn sqlite_value_to_json(value: ValueRef<'_>) -> Value {
+    match value {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(value) => json!(value),
+        ValueRef::Real(value) => json!(value),
+        ValueRef::Text(value) => Value::String(String::from_utf8_lossy(value).into_owned()),
+        ValueRef::Blob(value) => {
+            Value::Array(value.iter().copied().map(|byte| json!(byte)).collect())
+        }
+    }
 }
 
 fn json_rpc_result(result: Value) -> String {

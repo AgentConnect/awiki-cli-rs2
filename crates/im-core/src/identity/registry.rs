@@ -165,11 +165,26 @@ impl IdentityRegistry<'_> {
         request: super::RecoverHandleRequest,
     ) -> crate::ImResult<super::RecoverHandleResult> {
         crate::internal::identity_recovery_runtime::validate_request(&request)?;
-        crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new(
+        crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new_with_core(
+            self.core,
             crate::internal::transport::CorePlainTransport::new(self.core),
         )
         .recover_handle(request)
         .map(|result| result.sdk_result)
+    }
+
+    pub fn recover_handle_plan(
+        &self,
+        request: super::RecoverHandlePlanRequest,
+    ) -> crate::ImResult<super::RecoverHandlePlan> {
+        let phone = crate::internal::identity_wire::normalize_phone(&request.phone)?;
+        let plan = crate::internal::identity_recovery_local::plan_recover_handle(
+            &self.core.inner().sdk_paths().identities,
+            &request.handle,
+            request.raw_handle.as_deref(),
+            &self.core.inner().sdk_config().did_domain,
+        )?;
+        Ok(plan.public_plan(&phone, request.otp.as_deref()))
     }
 
     pub fn plan_default_identity_change(

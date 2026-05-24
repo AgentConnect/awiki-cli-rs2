@@ -493,49 +493,37 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
         assert_stdout_empty(&output);
         let envelope = error_json(&output);
 
-        assert_eq!(envelope["error"]["code"], "unsupported_capability");
-        assert_eq!(envelope["error"]["details"]["command"], command);
-        assert_eq!(envelope["error"]["details"]["capability"], capability);
-        assert_eq!(
-            envelope["error"]["details"]["required_phase"],
-            required_phase
-        );
-        assert_eq!(
-            envelope["error"]["details"]["cutover_status"],
-            "unsupported"
-        );
+        if command == "debug.raw.rpc" {
+            assert_eq!(envelope["error"]["code"], "removed_command");
+            assert_eq!(envelope["error"]["details"]["command"], command);
+        } else {
+            assert_eq!(envelope["error"]["code"], "unsupported_capability");
+            assert_eq!(envelope["error"]["details"]["command"], command);
+            assert_eq!(envelope["error"]["details"]["capability"], capability);
+            assert_eq!(
+                envelope["error"]["details"]["required_phase"],
+                required_phase
+            );
+            assert_eq!(
+                envelope["error"]["details"]["cutover_status"],
+                "unsupported"
+            );
+        }
     }
 
-    for (args, name, phase, command_path) in [
-        (
-            &["group", "code", "get", "--group", "did:group"][..],
-            "group.code.get",
-            "PHASE5",
-            "awiki-cli group code get",
-        ),
-        (
-            &["debug", "logs", "--follow"][..],
-            "debug.logs",
-            "PHASE7",
-            "awiki-cli debug logs",
-        ),
-    ] {
-        let output = awiki_cmd(args);
-        assert_code(&output, 1);
-        assert_stdout_empty(&output);
-        let envelope = error_json(&output);
+    let output = awiki_cmd(&["debug", "logs", "--follow"]);
+    assert_code(&output, 2);
+    assert_stdout_empty(&output);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "diagnostic_gate_required");
+    assert_eq!(envelope["error"]["details"]["command"], "debug.logs");
 
-        assert_eq!(envelope["error"]["code"], "internal_error");
-        assert_contains(
-            &envelope["error"]["message"],
-            &format!("{command_path} is not implemented yet."),
-        );
-        assert_contains(&envelope["error"]["hint"], &format!("planned for {phase}"));
-        assert_contains(
-            &envelope["error"]["hint"],
-            &format!("awiki-cli schema {name}"),
-        );
-    }
+    let group_code = awiki_cmd(&["group", "code", "get", "--group", "did:group"]);
+    assert_code(&group_code, 2);
+    assert_stdout_empty(&group_code);
+    let envelope = error_json(&group_code);
+    assert_eq!(envelope["error"]["code"], "removed_command");
+    assert_eq!(envelope["error"]["details"]["command"], "group.code.get");
 }
 
 #[test]
@@ -837,7 +825,7 @@ fn debug_db_query_returns_stable_unsupported_capability() {
     let workspace = TempDir::new().expect("temp workspace");
 
     let output = awiki_cmd_with_workspace(
-        &["debug", "db", "query", "SELECT 1 AS value"],
+        &["--diagnostic", "debug", "db", "query", "SELECT 1 AS value"],
         workspace.path().to_str().unwrap(),
     );
     assert_code(&output, 2);
@@ -900,7 +888,7 @@ fn debug_db_import_v1_supports_dry_run_and_missing_path_errors() {
     let workspace = TempDir::new().expect("temp workspace");
 
     let dry_run = awiki_cmd_with_workspace(
-        &["debug", "db", "import-v1", "--dry-run"],
+        &["--migration", "debug", "db", "import-v1", "--dry-run"],
         workspace.path().to_str().unwrap(),
     );
     assert_success(&dry_run);
@@ -911,6 +899,7 @@ fn debug_db_import_v1_supports_dry_run_and_missing_path_errors() {
     let missing = workspace.path().join("missing-legacy-root");
     let missing = awiki_cmd_with_workspace(
         &[
+            "--migration",
             "debug",
             "db",
             "import-v1",

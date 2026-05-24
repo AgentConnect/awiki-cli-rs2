@@ -6,6 +6,6 @@ pub use dto::{
     GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit, GroupMemberMutationRequest,
     GroupMemberRole, GroupMembersRequest, GroupMessageSecurityProfile, GroupMessagesRequest,
     GroupPolicyPatch, GroupProfilePatch, GroupReadResult, GroupSnapshot, GroupSummary,
-    GroupUpdatePolicyRequest, GroupUpdateProfileRequest,
+    GroupUpdatePolicyRequest, GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };
 pub use service::GroupService;

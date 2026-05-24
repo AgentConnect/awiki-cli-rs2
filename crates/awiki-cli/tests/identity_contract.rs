@@ -254,6 +254,7 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
 
     let alice = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -272,7 +273,15 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
     assert!(alice["data"]["identity"].get("user_id").is_none());
 
     let bob = awiki_cmd(
-        &["id", "create", "--name", "Bob Example", "--identity", "bob"],
+        &[
+            "--migration",
+            "id",
+            "create",
+            "--name",
+            "Bob Example",
+            "--identity",
+            "bob",
+        ],
         workspace.path(),
     );
     assert_success(&bob);
@@ -355,7 +364,7 @@ fn identity_create_validates_name_before_workspace_upgrade_like_go() {
         }),
     );
 
-    let create = awiki_cmd(&["id", "create"], workspace.path());
+    let create = awiki_cmd(&["--migration", "id", "create"], workspace.path());
     assert_code(&create, 2);
     let create = error_json(&create);
     assert_eq!(create["error"]["code"], "invalid_argument");
@@ -396,6 +405,7 @@ fn identity_create_migrates_legacy_config_json_before_create_like_go() {
 
     let create = success_json(&awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -642,6 +652,7 @@ fn identity_dry_run_and_validation_contracts_match_go() {
     let workspace = TempDir::new().expect("workspace");
     let create = success_json(&awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--dry-run",
@@ -814,6 +825,7 @@ fn identity_dry_run_and_validation_contracts_match_go() {
 
     let replace = success_json(&awiki_cmd(
         &[
+            "--diagnostic",
             "--identity",
             "alice",
             "id",
@@ -967,7 +979,7 @@ fn identity_import_v1_flat_legacy_contract() {
     .unwrap();
 
     let imported = success_json(&awiki_cmd_with_home(
-        &["id", "import-v1", "--name", "legacy-flat"],
+        &["--migration", "id", "import-v1", "--name", "legacy-flat"],
         workspace.path(),
         &home,
     ));
@@ -1027,7 +1039,7 @@ fn identity_import_v1_migrates_legacy_config_json_before_import_like_go() {
     .unwrap();
 
     let imported = success_json(&awiki_cmd_with_home(
-        &["id", "import-v1", "--name", "legacy-flat"],
+        &["--migration", "id", "import-v1", "--name", "legacy-flat"],
         workspace.path(),
         &home,
     ));

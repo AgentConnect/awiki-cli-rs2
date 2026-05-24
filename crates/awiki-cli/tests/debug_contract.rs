@@ -2,13 +2,17 @@ use rusqlite::Connection;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn debug_db_handle_history_requires_exactly_one_handle() {
     let workspace = TempDir::new().expect("temp workspace");
 
-    let missing = awiki_cmd_with_workspace(&["debug", "db", "handle-history"], workspace.path());
+    let missing = awiki_cmd_with_workspace(
+        &["--diagnostic", "debug", "db", "handle-history"],
+        workspace.path(),
+    );
     assert_code(&missing, 2);
     let envelope = error_json(&missing);
     assert_eq!(envelope["error"]["code"], "invalid_argument");
@@ -22,7 +26,14 @@ fn debug_db_handle_history_requires_exactly_one_handle() {
     );
 
     let extra = awiki_cmd_with_workspace(
-        &["debug", "db", "handle-history", "alice", "bob"],
+        &[
+            "--diagnostic",
+            "debug",
+            "db",
+            "handle-history",
+            "alice",
+            "bob",
+        ],
         workspace.path(),
     );
     assert_code(&extra, 2);
@@ -39,8 +50,10 @@ fn debug_db_handle_history_rejects_blank_normalized_handle() {
     let workspace = TempDir::new().expect("temp workspace");
     assert_success(&awiki_cmd_with_workspace(&["init"], workspace.path()));
 
-    let output =
-        awiki_cmd_with_workspace(&["debug", "db", "handle-history", "   "], workspace.path());
+    let output = awiki_cmd_with_workspace(
+        &["--diagnostic", "debug", "db", "handle-history", "   "],
+        workspace.path(),
+    );
     assert_code(&output, 2);
     let envelope = error_json(&output);
 
@@ -59,7 +72,13 @@ fn debug_db_handle_history_normalizes_handle_and_aggregates_rows_by_owner() {
     seed_handle_history(workspace.path());
 
     let output = awiki_cmd_with_workspace(
-        &["debug", "db", "handle-history", "  wba://ALICE.awiki.ai  "],
+        &[
+            "--diagnostic",
+            "debug",
+            "db",
+            "handle-history",
+            "  wba://ALICE.awiki.ai  ",
+        ],
         workspace.path(),
     );
     assert_success(&output);
@@ -118,7 +137,13 @@ fn debug_db_handle_history_returns_not_found_for_unknown_normalized_handle() {
     seed_handle_history(workspace.path());
 
     let output = awiki_cmd_with_workspace(
-        &["debug", "db", "handle-history", "wba://MISSING.example.com"],
+        &[
+            "--diagnostic",
+            "debug",
+            "db",
+            "handle-history",
+            "wba://MISSING.example.com",
+        ],
         workspace.path(),
     );
     assert_code(&output, 5);
@@ -356,14 +381,17 @@ struct TempDir {
     path: PathBuf,
 }
 
+static NEXT_TEMP_DIR_ID: AtomicU64 = AtomicU64::new(0);
+
 impl TempDir {
     fn new() -> std::io::Result<Self> {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
+        let id = NEXT_TEMP_DIR_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "awiki-cli-rs2-debug-test-{}-{nanos}",
+            "awiki-cli-rs2-debug-test-{}-{nanos}-{id}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path)?;

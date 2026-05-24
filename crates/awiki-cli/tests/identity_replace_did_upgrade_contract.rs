@@ -25,20 +25,17 @@ fn replace_did_migrates_legacy_config_json_before_active_identity_boundary_like_
     let replace = awiki_cmd(&["id", "replace-did"], workspace.path());
     assert_code(&replace, 2);
     let replace = error_json(&replace);
-    assert_eq!(replace["error"]["code"], "unsupported_capability");
-    assert_eq!(
-        replace["error"]["details"]["capability"],
-        "replace-did execution"
-    );
+    assert_eq!(replace["error"]["code"], "diagnostic_gate_required");
     assert_eq!(replace["error"]["details"]["command"], "id.replace-did");
 
-    assert!(!legacy_config.exists());
-    assert_migrated_config(
-        &workspace_home,
-        "https://legacy-id-replace-did.example",
-        "legacy-id-replace-did.example",
+    assert!(
+        legacy_config.exists(),
+        "policy gate must run before workspace migration side effects"
     );
-    assert_workspace_upgrade_meta(&workspace_home, &legacy_text);
+    assert_eq!(
+        std::fs::read_to_string(&legacy_config).expect("legacy config should remain"),
+        legacy_text
+    );
     assert_no_runtime_state(&workspace_home);
 }
 

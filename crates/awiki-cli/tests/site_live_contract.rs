@@ -80,6 +80,7 @@ fn site_page_live_command_is_blocked_before_legacy_site_rpc() {
 fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, jwt_token: &str) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",

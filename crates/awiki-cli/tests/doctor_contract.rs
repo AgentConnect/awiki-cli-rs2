@@ -71,7 +71,15 @@ fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
     let workspace = TempDir::new().expect("temp workspace");
     assert_success(&awiki_cmd_with_workspace(&["init"], workspace.path()));
     assert_success(&awiki_cmd_with_workspace(
-        &["id", "create", "--name", "Alice", "--identity", "alice"],
+        &[
+            "--migration",
+            "id",
+            "create",
+            "--name",
+            "Alice",
+            "--identity",
+            "alice",
+        ],
         workspace.path(),
     ));
     seed_contact_handle_binding(workspace.path());

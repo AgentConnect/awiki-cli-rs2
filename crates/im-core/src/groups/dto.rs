@@ -48,8 +48,31 @@ impl GroupReadResult {
         }
     }
 
+    pub fn response_json(&self) -> Option<&Value> {
+        self.raw_response.as_ref()
+    }
+
     pub(crate) fn raw_response(&self) -> Option<&Value> {
         self.raw_response.as_ref()
+    }
+
+    pub(crate) fn merge_group_snapshot_from(&mut self, other: &Self) {
+        if other.group.is_some() {
+            self.group = other.group.clone();
+        }
+        self.warnings.extend(other.warnings.iter().cloned());
+    }
+
+    pub(crate) fn merge_group_members_from(&mut self, other: &Self) {
+        self.members = other.members.clone();
+        if other.total.is_some() {
+            self.total = other.total;
+        }
+        self.warnings.extend(other.warnings.iter().cloned());
+    }
+
+    pub(crate) fn push_warning(&mut self, warning: impl Into<String>) {
+        self.warnings.push(warning.into());
     }
 }
 
@@ -503,6 +526,20 @@ pub struct GroupUpdateProfileRequest {
 pub struct GroupUpdatePolicyRequest {
     pub group: crate::ids::GroupRef,
     pub patch: GroupPolicyPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupUpdateRequest {
+    pub group: crate::ids::GroupRef,
+    pub profile_patch: GroupProfilePatch,
+    pub policy_patch: GroupPolicyPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupUpdateResult {
+    pub deliveries: Vec<GroupReadResult>,
+    pub refreshed: Option<GroupReadResult>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

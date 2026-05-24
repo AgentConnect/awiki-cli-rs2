@@ -2,8 +2,7 @@ use awiki_cli::runtime::host_notify::{HostNotificationData, HostNotificationEven
 use awiki_cli::runtime::host_notify_sink::HostNotifySink;
 use awiki_cli::runtime::listener::{HostNotifyStatus, Status};
 use awiki_cli::runtime::listener_im_event_adapter::{
-    handle_im_event, should_legacy_handle_raw_notification_with_im_core_runner,
-    IM_EVENT_UNKNOWN_WARNING_PREFIX,
+    handle_im_event, IM_EVENT_UNKNOWN_WARNING_PREFIX,
 };
 use awiki_cli::runtime::listener_notification_plan::{
     NotificationRoute, NotificationSessionContext,
@@ -418,13 +417,13 @@ fn im_core_runner_legacy_raw_filter_keeps_only_secure_direct_on_legacy_path() {
         }
     });
 
-    assert!(should_legacy_handle_raw_notification_with_im_core_runner(
+    assert!(im_core::realtime::is_direct_secure_wire_notification(
         &secure
     ));
-    assert!(!should_legacy_handle_raw_notification_with_im_core_runner(
+    assert!(!im_core::realtime::is_direct_secure_wire_notification(
         &plain
     ));
-    assert!(!should_legacy_handle_raw_notification_with_im_core_runner(
+    assert!(!im_core::realtime::is_direct_secure_wire_notification(
         &group
     ));
 }

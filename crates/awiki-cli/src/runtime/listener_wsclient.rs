@@ -2,7 +2,7 @@ use crate::config::Resolved;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{Map, Value};
 
-pub use im_core::compat::realtime::{
+pub use im_core::realtime::{
     build_ws_rpc_request, classify_incoming_message, int64_from_value, next_ws_rpc_request_id,
     pending_failure_response, request_id_from_value, IncomingWsMessage, ListenerWsDispatchOutcome,
     ListenerWsPendingDispatch, RealtimeConnectAction as ListenerWsConnectAction,
@@ -29,9 +29,8 @@ pub struct ListenerWsClientConstructionPlan {
 pub fn listener_ws_client_endpoints(
     resolved: &Resolved,
 ) -> anyhow::Result<ListenerWsClientEndpoints> {
-    let endpoints =
-        im_core::compat::realtime::realtime_client_endpoints(&resolved.service_base_url)
-            .map_err(anyhow::Error::msg)?;
+    let endpoints = im_core::realtime::realtime_client_endpoints(&resolved.service_base_url)
+        .map_err(anyhow::Error::msg)?;
     Ok(ListenerWsClientEndpoints {
         request_url: endpoints.request_url,
         did_auth_url: endpoints.did_auth_url,
@@ -42,9 +41,8 @@ pub fn listener_ws_client_endpoints(
 pub fn listener_ws_client_construction_plan(
     resolved: &Resolved,
 ) -> anyhow::Result<ListenerWsClientConstructionPlan> {
-    let plan =
-        im_core::compat::realtime::realtime_client_construction_plan(&resolved.service_base_url)
-            .map_err(anyhow::Error::msg)?;
+    let plan = im_core::realtime::realtime_client_construction_plan(&resolved.service_base_url)
+        .map_err(anyhow::Error::msg)?;
     let endpoints = plan.endpoints;
     Ok(ListenerWsClientConstructionPlan {
         endpoints: ListenerWsClientEndpoints {
@@ -57,14 +55,14 @@ pub fn listener_ws_client_construction_plan(
 }
 
 pub fn bearer_authorization_header(token: &str) -> String {
-    im_core::compat::realtime::bearer_authorization_header(token)
+    im_core::realtime::bearer_authorization_header(token)
 }
 
 pub fn validate_refresh_bearer_preconditions(
     has_auth_session: bool,
     did_auth_url: &str,
 ) -> anyhow::Result<()> {
-    im_core::compat::realtime::validate_refresh_bearer_preconditions(has_auth_session, did_auth_url)
+    im_core::realtime::validate_refresh_bearer_preconditions(has_auth_session, did_auth_url)
         .map_err(anyhow::Error::msg)
 }
 
@@ -73,11 +71,11 @@ pub fn simulate_listener_ws_connect(
     dial_bearer: impl FnMut(&str) -> ListenerWsDialOutcome,
     refresh_bearer: impl FnMut() -> ListenerWsRefreshOutcome,
 ) -> ListenerWsConnectSimulation {
-    im_core::compat::realtime::simulate_realtime_connect(current_jwt, dial_bearer, refresh_bearer)
+    im_core::realtime::simulate_realtime_connect(current_jwt, dial_bearer, refresh_bearer)
 }
 
 pub fn decode_ws_rpc_result(response: &Map<String, Value>) -> anyhow::Result<Map<String, Value>> {
-    im_core::compat::realtime::decode_ws_rpc_result(response).map_err(anyhow::Error::msg)
+    im_core::realtime::decode_ws_rpc_result(response).map_err(anyhow::Error::msg)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +111,7 @@ pub fn format_dial_error_message(
     error: Option<&str>,
     response_body: Option<&[u8]>,
 ) -> Option<String> {
-    im_core::compat::realtime::format_dial_error_message(error, response_body)
+    im_core::realtime::format_dial_error_message(error, response_body)
 }
 
 pub fn host_for_url(raw: &str) -> String {

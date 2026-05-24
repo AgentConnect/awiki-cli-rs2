@@ -99,7 +99,7 @@ impl<'a> CoreHttpTransport<'a> {
         }
         Self {
             client,
-            http: crate::internal::http::HttpClient::new(),
+            http: crate::internal::http::HttpClient::from_config(client.core_inner().sdk_config()),
             auth,
             jwt_token,
         }
@@ -358,7 +358,7 @@ impl<'a> CorePlainTransport<'a> {
     pub(crate) fn new(core: &'a crate::core::ImCore) -> Self {
         Self {
             core,
-            http: crate::internal::http::HttpClient::new(),
+            http: crate::internal::http::HttpClient::from_config(core.inner().sdk_config()),
         }
     }
 

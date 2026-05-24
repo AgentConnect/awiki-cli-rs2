@@ -1,4 +1,3 @@
-use super::listener_secure_ack_delivery::build_secure_ack_payload;
 use super::listener_secure_notifications::{
     is_direct_secure_incoming_notification, plaintext_body_to_notification_body,
 };
@@ -99,7 +98,7 @@ pub fn normalize_direct_secure_notification_plan(
     let (sender_did, message_id, original_content_type, original_body) =
         apply_decrypted_plaintext(&mut normalized, plaintext);
 
-    if is_secure_ack_plaintext(plaintext) {
+    if im_core::secure::is_secure_ack_plaintext(plaintext) {
         actions.push(NormalizeDirectSecureAction::FlushQueuedSecureOutbox {
             peer_did: sender_did,
         });
@@ -107,7 +106,7 @@ pub fn normalize_direct_secure_notification_plan(
         return normalized_plan(normalized, actions);
     }
 
-    if is_secure_init_plaintext(plaintext) {
+    if im_core::secure::is_secure_init_plaintext(plaintext) {
         set_method(&mut normalized, "direct.secure.init");
     }
 
@@ -229,28 +228,10 @@ fn send_secure_ack_action(
 ) -> NormalizeDirectSecureAction {
     NormalizeDirectSecureAction::SendSecureAckJson {
         recipient_did: peer_did.to_string(),
-        payload: build_secure_ack_payload(session_id, message_id),
+        payload: im_core::secure::build_secure_ack_payload(session_id, message_id),
         message_id: ack_message_id.to_string(),
         request_id: ack_message_id.to_string(),
     }
-}
-
-fn is_secure_ack_plaintext(plaintext: &Map<String, Value>) -> bool {
-    is_secure_control_plaintext(plaintext, "awiki.direct.secure_ack.v1")
-}
-
-fn is_secure_init_plaintext(plaintext: &Map<String, Value>) -> bool {
-    is_secure_control_plaintext(plaintext, "awiki.direct.secure_init.v1")
-}
-
-fn is_secure_control_plaintext(plaintext: &Map<String, Value>, system_type: &str) -> bool {
-    if string_value(plaintext.get("application_content_type")) != "application/json" {
-        return false;
-    }
-    let Some(payload) = plaintext.get("payload").and_then(Value::as_object) else {
-        return false;
-    };
-    string_value(payload.get("system_type")) == system_type
 }
 
 fn set_method(notification: &mut Value, method: &str) {

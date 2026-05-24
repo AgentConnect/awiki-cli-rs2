@@ -19,14 +19,14 @@ use crate::runtime::listener_notification_plan::{
     IncomingContactSyncRequest, NotificationRoute, NotificationSessionContext,
     SecureNotificationEffect,
 };
-use crate::store::{self, GroupRecord, MessageRecord};
+use crate::store::{self, GroupRecord};
 use crate::{config::Resolved, identity::types::StoredIdentity};
 use im_core::prelude::{
     AttachmentDownloadAction, AttachmentMessageSummary, GroupUpdateKind, HostNotificationKind,
-    ImEvent, Message, MessageBodyView, MessageDirection, MessageReceivedEvent, ThreadRef,
+    ImEvent, Message, MessageBodyView, MessageReceivedEvent, ThreadRef,
 };
 use rusqlite::Connection;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::sync::{Arc, Mutex};
 use time::OffsetDateTime;
 
@@ -105,12 +105,6 @@ pub fn handle_im_event(
     executor.finish()
 }
 
-pub fn should_legacy_handle_raw_notification_with_im_core_runner(notification: &Value) -> bool {
-    crate::runtime::listener_secure_notifications::is_direct_secure_incoming_notification(
-        notification,
-    )
-}
-
 fn event_requires_cli_projection(event: &ImEvent) -> bool {
     matches!(
         event,
@@ -153,9 +147,13 @@ impl ImEventExecutor<'_, '_> {
             download_action,
             warnings,
         } = event;
-        let Some(record) = message_record_from_im_message(
+        let Some(projection) = im_core::realtime::plan_realtime_message_local_projection(
+            &im_core::realtime::RealtimeMessageLocalProjectionContext {
+                owner_identity_id: self.session.identity_name.clone(),
+                owner_did: self.session.did.clone(),
+                credential_name: self.session.identity_name.clone(),
+            },
             &message,
-            self.session,
             attachment_summary.as_ref(),
             download_action.as_ref(),
             &warnings,
@@ -163,22 +161,23 @@ impl ImEventExecutor<'_, '_> {
             self.warn("message received event missing owner, thread, or message id");
             return;
         };
-        self.result.route = if record.group_did.trim().is_empty() {
+        self.result.route = if projection.group_did().trim().is_empty() {
             NotificationRoute::DirectIncoming
         } else {
             NotificationRoute::GroupIncoming
         };
 
-        let sender_handle = if !record.sender_did.trim().is_empty() {
+        let sender_did = projection.sender_did().to_string();
+        let sender_handle = if !sender_did.trim().is_empty() {
             let request = IncomingContactSyncRequest {
                 owner_did: self.session.did.trim().to_string(),
-                sender_did: record.sender_did.clone(),
-                source_type: if record.group_did.trim().is_empty() {
+                sender_did: sender_did.clone(),
+                source_type: if projection.group_did().trim().is_empty() {
                     "direct.incoming".to_string()
                 } else {
                     "group.incoming".to_string()
                 },
-                source_group_id: record.group_did.clone(),
+                source_group_id: projection.group_did().to_string(),
             };
             self.apply_sync_incoming_contact(&request)
         } else {
@@ -197,7 +196,7 @@ impl ImEventExecutor<'_, '_> {
         for warning in warnings {
             self.warn(&warning);
         }
-        self.apply_store_message(record);
+        self.apply_realtime_message_local_projection(projection);
         self.dispatch_host_notification(host_event);
     }
 
@@ -288,9 +287,15 @@ impl ImEventExecutor<'_, '_> {
         }
     }
 
-    fn apply_store_message(&mut self, record: MessageRecord) {
-        let msg_id = record.msg_id.clone();
-        match store::store_message(self.connection, record) {
+    fn apply_realtime_message_local_projection(
+        &mut self,
+        projection: im_core::realtime::RealtimeMessageLocalProjection,
+    ) {
+        let msg_id = projection.msg_id().to_string();
+        match im_core::realtime::apply_realtime_message_local_projection(
+            self.connection,
+            projection,
+        ) {
             Ok(()) => self
                 .result
                 .applied_effects
@@ -391,77 +396,6 @@ fn empty_result(route: NotificationRoute) -> NotificationExecutionResult {
     }
 }
 
-fn message_record_from_im_message(
-    message: &Message,
-    session: &NotificationSessionContext,
-    attachment_summary: Option<&AttachmentMessageSummary>,
-    download_action: Option<&AttachmentDownloadAction>,
-    warnings: &[String],
-) -> Option<MessageRecord> {
-    let owner_did = owner_did_for_message(message, session);
-    if owner_did.is_empty() || message.id.as_str().trim().is_empty() {
-        return None;
-    }
-    let sender_did = message.sender.as_str().trim().to_string();
-    let receiver_did = message
-        .receiver
-        .as_ref()
-        .map(|peer| peer.as_str().trim().to_string())
-        .unwrap_or_default();
-    let group_did = group_did_for_message(message);
-    let peer_did = if sender_did == owner_did {
-        receiver_did.as_str()
-    } else {
-        sender_did.as_str()
-    };
-    let has_thread_peer = !peer_did.trim().is_empty();
-    let thread_id = match &message.thread {
-        ThreadRef::Group(group) => store::make_thread_id(&owner_did, "", group.as_str()),
-        ThreadRef::Direct(peer) => store::make_thread_id(&owner_did, peer.as_str(), ""),
-        ThreadRef::Thread(thread) => thread.as_str().to_string(),
-    };
-    if thread_id.trim().is_empty() {
-        return None;
-    }
-
-    if group_did.trim().is_empty() && !has_thread_peer {
-        return None;
-    }
-
-    Some(MessageRecord {
-        msg_id: message.id.as_str().to_string(),
-        owner_did,
-        thread_id,
-        direction: direction_value(&message.direction),
-        sender_did,
-        receiver_did,
-        group_id: group_did.clone(),
-        group_did,
-        content_type: message_content_type(message),
-        content: message_content(message),
-        server_seq: message.metadata.server_sequence,
-        sent_at: message
-            .sent_at
-            .clone()
-            .or_else(|| message.received_at.clone())
-            .unwrap_or_else(store::now_utc),
-        is_read: matches!(message.direction, MessageDirection::Outgoing),
-        metadata: message_metadata_value(message, attachment_summary, download_action, warnings),
-        credential_name: session.identity_name.clone(),
-        ..MessageRecord::default()
-    })
-}
-
-fn owner_did_for_message(message: &Message, session: &NotificationSessionContext) -> String {
-    if let Some(receiver) = message.receiver.as_ref() {
-        let receiver = receiver.as_str().trim();
-        if !receiver.is_empty() {
-            return receiver.to_string();
-        }
-    }
-    session.did.trim().to_string()
-}
-
 fn group_did_for_message(message: &Message) -> String {
     message
         .group
@@ -472,13 +406,6 @@ fn group_did_for_message(message: &Message) -> String {
             _ => None,
         })
         .unwrap_or_default()
-}
-
-fn direction_value(direction: &MessageDirection) -> i64 {
-    match direction {
-        MessageDirection::Outgoing => 1,
-        MessageDirection::Incoming | MessageDirection::Unknown => 0,
-    }
 }
 
 fn message_content_type(message: &Message) -> String {
@@ -498,82 +425,6 @@ fn message_content_type(message: &Message) -> String {
                 .unwrap_or("application/octet-stream")
                 .to_string(),
         })
-}
-
-fn message_content(message: &Message) -> String {
-    match &message.body {
-        MessageBodyView::Text { text, .. } => text.clone(),
-        MessageBodyView::Unsupported { content_type } => json!({
-            "unsupported": true,
-            "content_type": content_type,
-        })
-        .to_string(),
-    }
-}
-
-fn message_metadata_value(
-    message: &Message,
-    attachment_summary: Option<&AttachmentMessageSummary>,
-    download_action: Option<&AttachmentDownloadAction>,
-    warnings: &[String],
-) -> String {
-    let mut value = serde_json::to_value(&message.metadata).unwrap_or_else(|_| json!({}));
-    if let Some(object) = value.as_object_mut() {
-        if let Some(summary) = attachment_summary_value(attachment_summary) {
-            object.insert("attachment_summary".to_string(), summary);
-            object.insert("has_attachments".to_string(), Value::Bool(true));
-        }
-        if let Some(action) = attachment_download_action_value(download_action) {
-            object.insert("attachment_download_action".to_string(), action);
-        }
-        if !warnings.is_empty() {
-            object.insert(
-                "attachment_warnings".to_string(),
-                Value::Array(warnings.iter().cloned().map(Value::String).collect()),
-            );
-        }
-    }
-    serde_json::to_string(&value).unwrap_or_default()
-}
-
-fn attachment_summary_value(summary: Option<&AttachmentMessageSummary>) -> Option<Value> {
-    let summary = summary?;
-    Some(json!({
-        "attachment_id": summary.attachment_id.as_deref(),
-        "filename": summary.filename.as_deref(),
-        "mime_type": summary.mime_type.as_deref(),
-        "size_bytes": summary.size_bytes,
-        "content_type": summary.content_type.as_deref(),
-    }))
-}
-
-fn attachment_download_action_value(action: Option<&AttachmentDownloadAction>) -> Option<Value> {
-    let action = action?;
-    let mut value = json!({
-        "command": "msg.attachment.download",
-        "message_id": action.message_id.as_str(),
-        "attachment_id": action.attachment_id.as_deref(),
-    });
-    if let Some(object) = value.as_object_mut() {
-        match &action.thread {
-            ThreadRef::Direct(peer) => {
-                object.insert("with".to_string(), Value::String(peer.as_str().to_string()));
-            }
-            ThreadRef::Group(group) => {
-                object.insert(
-                    "group".to_string(),
-                    Value::String(group.as_str().to_string()),
-                );
-            }
-            ThreadRef::Thread(thread) => {
-                object.insert(
-                    "thread".to_string(),
-                    Value::String(thread.as_str().to_string()),
-                );
-            }
-        }
-    }
-    Some(value)
 }
 
 fn host_notification_from_message(

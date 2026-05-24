@@ -1,6 +1,7 @@
 #[cfg(feature = "sqlite")]
 pub(crate) mod client;
 pub(crate) mod control;
+pub(crate) mod file_runtime;
 #[cfg(feature = "sqlite")]
 pub(crate) mod incoming;
 #[cfg(feature = "sqlite")]

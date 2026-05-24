@@ -44,6 +44,16 @@ impl App {
         }
         let request =
             crate::im_core_adapter::messages::send_message_request(command, &resolved.did_domain)?;
+        if matches!(
+            request.security,
+            im_core::prelude::MessageSecurityMode::E2eeRequired
+        ) {
+            return Err(super::unsupported::unsupported_cutover_command(
+                "msg.send",
+                "secure-direct",
+                "Phase 6",
+            ));
+        }
         let (text, message_type) = send_text_plan_fields(&request)?;
         if self.globals.dry_run {
             return self.render_msg_send_plan(
@@ -120,12 +130,6 @@ impl App {
         let result = crate::im_core_adapter::messages::send_attachment_via_im_core(
             resolved, &client, target, request,
         )
-        .or_else(|err| {
-            if !should_fallback_attachment_send(&err) {
-                return Err(err);
-            }
-            legacy_attachment_send(resolved, &manager, command)
-        })
         .map_err(|err| {
             message_exit(
                 err,
@@ -222,12 +226,6 @@ impl App {
         let result = crate::im_core_adapter::messages::download_attachment_via_im_core(
             &resolved, &client, request,
         )
-        .or_else(|err| {
-            if !should_fallback_attachment_download(&err) {
-                return Err(err);
-            }
-            legacy_attachment_download(&resolved, &manager, command)
-        })
         .map_err(|err| {
             message_exit(
                 err,
@@ -568,135 +566,6 @@ fn unsupported_secure_command(
         "secure-direct",
         "Phase 6",
     ))
-}
-
-fn should_fallback_attachment_send(err: &MessageAdapterError) -> bool {
-    matches!(
-        err,
-        MessageAdapterError::AttachmentNotSupported | MessageAdapterError::GroupNotSupported
-    )
-}
-
-fn should_fallback_attachment_download(err: &MessageAdapterError) -> bool {
-    matches!(err, MessageAdapterError::AttachmentNotSupported)
-}
-
-fn legacy_attachment_send(
-    resolved: &Resolved,
-    manager: &crate::identity::Manager,
-    command: &ParsedCommand,
-) -> Result<CommandResult, MessageAdapterError> {
-    crate::message::send(resolved, manager, legacy_send_request(command))
-        .map(legacy_command_result)
-        .map_err(message_error_to_adapter)
-}
-
-fn legacy_attachment_download(
-    resolved: &Resolved,
-    manager: &crate::identity::Manager,
-    command: &ParsedCommand,
-) -> Result<CommandResult, MessageAdapterError> {
-    crate::message::download_attachment(resolved, manager, legacy_download_request(command))
-        .map(legacy_command_result)
-        .map_err(message_error_to_adapter)
-}
-
-fn legacy_command_result(result: crate::message::CommandResult) -> CommandResult {
-    CommandResult {
-        data: result.data,
-        summary: result.summary,
-        warnings: result.warnings,
-    }
-}
-
-fn legacy_send_request(command: &ParsedCommand) -> crate::message::SendRequest {
-    crate::message::SendRequest {
-        identity_name: command.globals.identity.clone(),
-        target: string_flag(command, "to"),
-        group: string_flag(command, "group"),
-        text: string_flag(command, "text"),
-        message_type: string_flag(command, "type"),
-        secure_mode: string_flag(command, "secure"),
-        file_path: string_flag(command, "file"),
-        mime_type: string_flag(command, "mime-type"),
-    }
-}
-
-fn legacy_download_request(command: &ParsedCommand) -> crate::message::AttachmentDownloadRequest {
-    crate::message::AttachmentDownloadRequest {
-        identity_name: command.globals.identity.clone(),
-        with: string_flag(command, "with"),
-        group: string_flag(command, "group"),
-        message_id: string_flag(command, "message-id"),
-        attachment_id: string_flag(command, "attachment-id"),
-        output_path: string_flag(command, "output"),
-    }
-}
-
-fn message_error_to_adapter(err: crate::message::MessageError) -> MessageAdapterError {
-    match err {
-        crate::message::MessageError::TargetRequired => MessageAdapterError::TargetRequired,
-        crate::message::MessageError::GroupRequired => MessageAdapterError::GroupRequired,
-        crate::message::MessageError::MemberRequired => MessageAdapterError::MemberRequired,
-        crate::message::MessageError::GroupOwnerCannotLeave => {
-            MessageAdapterError::GroupOwnerCannotLeave
-        }
-        crate::message::MessageError::TextRequired => MessageAdapterError::TextRequired,
-        crate::message::MessageError::FilePathRequired => MessageAdapterError::FilePathRequired,
-        crate::message::MessageError::MimeTypeWithoutFile => {
-            MessageAdapterError::MimeTypeWithoutFile
-        }
-        crate::message::MessageError::MessageIdRequired => MessageAdapterError::MessageIdRequired,
-        crate::message::MessageError::OutputPathRequired => MessageAdapterError::OutputPathRequired,
-        crate::message::MessageError::DownloadTargetNeeded => {
-            MessageAdapterError::DownloadTargetNeeded
-        }
-        crate::message::MessageError::DownloadTargetConflict => {
-            MessageAdapterError::DownloadTargetConflict
-        }
-        crate::message::MessageError::AttachmentNotFound => MessageAdapterError::AttachmentNotFound,
-        crate::message::MessageError::AttachmentIdRequired => {
-            MessageAdapterError::AttachmentIdRequired
-        }
-        crate::message::MessageError::AttachmentMessageInvalid => {
-            MessageAdapterError::AttachmentMessageInvalid
-        }
-        crate::message::MessageError::AttachmentSenderRequired => {
-            MessageAdapterError::AttachmentSenderRequired
-        }
-        crate::message::MessageError::TransportUnavailable(detail) => {
-            MessageAdapterError::TransportUnavailable(detail)
-        }
-        crate::message::MessageError::SecureNotSupported => MessageAdapterError::SecureNotSupported,
-        crate::message::MessageError::AttachmentNotSupported => {
-            MessageAdapterError::AttachmentNotSupported
-        }
-        crate::message::MessageError::GroupNotSupported => MessageAdapterError::GroupNotSupported,
-        crate::message::MessageError::GroupE2eeSelfLeaveUnsupported => {
-            MessageAdapterError::GroupE2eeSelfLeaveUnsupported
-        }
-        crate::message::MessageError::MessageNotFound => MessageAdapterError::MessageNotFound,
-        crate::message::MessageError::IdentityRequired(message) => {
-            MessageAdapterError::IdentityRequired(message)
-        }
-        crate::message::MessageError::Service(service) => {
-            MessageAdapterError::Service(service.into())
-        }
-        crate::message::MessageError::Identity(identity) => {
-            MessageAdapterError::Identity(identity.into())
-        }
-        crate::message::MessageError::Internal(message) => MessageAdapterError::Internal(message),
-        crate::message::MessageError::InvalidAttachmentServiceEndpoint(message) => {
-            MessageAdapterError::InvalidAttachmentServiceEndpoint(message)
-        }
-        crate::message::MessageError::MissingMessageServiceDid => {
-            MessageAdapterError::MissingMessageServiceDid
-        }
-        crate::message::MessageError::MissingAttachmentServiceDid => {
-            MessageAdapterError::MissingAttachmentServiceDid
-        }
-        crate::message::MessageError::Json(message) => MessageAdapterError::Json(message),
-    }
 }
 
 fn target_value(to: &str, group: &str, resolved: &Resolved) -> Value {

@@ -153,6 +153,7 @@ fn register_ready_msg_identity(
 ) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",

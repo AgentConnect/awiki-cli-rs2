@@ -90,6 +90,26 @@ pub struct Message {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessagePage {
+    pub items: Vec<Message>,
+    pub next_cursor: Option<crate::ids::Cursor>,
+    pub has_more: bool,
+    pub source: Option<String>,
+    pub resolved_dids: Vec<crate::ids::Did>,
+    pub warnings: Vec<String>,
+}
+
+impl MessagePage {
+    pub fn into_page(self) -> crate::ids::Page<Message> {
+        crate::ids::Page {
+            items: self.items,
+            next_cursor: self.next_cursor,
+            has_more: self.has_more,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageDirection {
     Outgoing,
     Incoming,

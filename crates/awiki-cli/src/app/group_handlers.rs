@@ -51,7 +51,7 @@ impl App {
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::groups::create_group_via_im_core(
-                &resolved, &manager, &client, request,
+                &resolved, &client, request,
             )
             .map_err(|err| group_cutover_exit(err, "group.create"))?;
             return self.render_group_result("awiki-cli group create", &resolved, result);
@@ -104,14 +104,9 @@ impl App {
                 &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            let result = crate::im_core_adapter::groups::get_group_via_im_core(
-                &resolved,
-                &manager,
-                &client,
-                &self.globals.identity,
-                group,
-            )
-            .map_err(|err| group_cutover_exit(err, "group.get"))?;
+            let result =
+                crate::im_core_adapter::groups::get_group_via_im_core(&resolved, &client, group)
+                    .map_err(|err| group_cutover_exit(err, "group.get"))?;
             return self.render_group_result("awiki-cli group get", &resolved, result);
         }
         self.render_success(
@@ -150,10 +145,9 @@ impl App {
                 &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            let result = crate::im_core_adapter::groups::join_group_via_im_core(
-                &resolved, &manager, &client, request,
-            )
-            .map_err(|err| group_cutover_exit(err, "group.join"))?;
+            let result =
+                crate::im_core_adapter::groups::join_group_via_im_core(&resolved, &client, request)
+                    .map_err(|err| group_cutover_exit(err, "group.join"))?;
             return self.render_group_result("awiki-cli group join", &resolved, result);
         }
         self.render_success(
@@ -232,11 +226,11 @@ impl App {
             )?;
             let mut result = if public_action == "add" {
                 crate::im_core_adapter::groups::add_group_member_via_im_core(
-                    &resolved, &manager, &client, request,
+                    &resolved, &client, request,
                 )
             } else {
                 crate::im_core_adapter::groups::remove_group_member_via_im_core(
-                    &resolved, &manager, &client, request,
+                    &resolved, &client, request,
                 )
             }
             .map_err(|err| group_membership_cutover_exit(err, command_id))?;
@@ -309,7 +303,7 @@ impl App {
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::groups::leave_group_via_im_core(
-                &resolved, &manager, &client, request,
+                &resolved, &client, request,
             )
             .map_err(|err| group_cutover_exit(err, "group.leave"))?;
             return self.render_group_result("awiki-cli group leave", &resolved, result);
@@ -368,7 +362,7 @@ impl App {
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::groups::update_group_via_im_core(
-                &resolved, &manager, &client, request,
+                &resolved, &client, request,
             )
             .map_err(|err| group_cutover_exit(err, "group.update"))?;
             return self.render_group_result("awiki-cli group update", &resolved, result);
@@ -415,14 +409,9 @@ impl App {
                 &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            let result = crate::im_core_adapter::groups::list_groups_via_im_core(
-                &resolved,
-                &manager,
-                &client,
-                &self.globals.identity,
-                limit,
-            )
-            .map_err(|err| group_cutover_exit(err, "group.list"))?;
+            let result =
+                crate::im_core_adapter::groups::list_groups_via_im_core(&resolved, &client, limit)
+                    .map_err(|err| group_cutover_exit(err, "group.list"))?;
             return self.render_group_result("awiki-cli group list", &resolved, result);
         }
         self.render_success(
@@ -461,12 +450,7 @@ impl App {
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::groups::group_members_via_im_core(
-                &resolved,
-                &manager,
-                &client,
-                &self.globals.identity,
-                group,
-                limit,
+                &resolved, &client, group, limit,
             )
             .map_err(|err| group_cutover_exit(err, "group.members"))?;
             return self.render_group_result("awiki-cli group members", &resolved, result);
@@ -509,13 +493,7 @@ impl App {
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::groups::group_messages_via_im_core(
-                &resolved,
-                &manager,
-                &client,
-                &self.globals.identity,
-                group,
-                limit,
-                cursor,
+                &resolved, &client, group, limit, cursor,
             )
             .map_err(|err| group_cutover_exit(err, "group.messages"))?;
             return self.render_group_result("awiki-cli group messages", &resolved, result);

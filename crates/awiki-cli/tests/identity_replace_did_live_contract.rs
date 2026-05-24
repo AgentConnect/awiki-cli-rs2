@@ -14,16 +14,8 @@ fn identity_replace_did_live_execution_returns_cutover_unsupported() {
 
     assert_code(&output, 2);
     let envelope = error_json(&output);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["code"], "diagnostic_gate_required");
     assert_eq!(envelope["error"]["details"]["command"], "id.replace-did");
-    assert_eq!(
-        envelope["error"]["details"]["capability"],
-        "replace-did execution"
-    );
-    assert_eq!(
-        envelope["error"]["details"]["required_phase"],
-        "stable im-core identity replace-did execution API"
-    );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

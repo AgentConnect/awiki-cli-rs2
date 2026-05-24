@@ -59,31 +59,34 @@ fn schema_command_list_preserves_go_catalog_order_for_drift_prone_groups() {
     assert_subsequence(
         &names,
         &[
-            "runtime.mode.set",
             "runtime.listener",
             "runtime.listener.status",
-            "runtime.listener.install",
-            "runtime.listener.start",
-            "runtime.listener.stop",
-            "runtime.listener.restart",
-            "runtime.listener.uninstall",
-            "runtime.listener.config",
-            "runtime.listener.config.show",
-            "runtime.listener.config.set",
             "runtime.listener.enable",
             "runtime.listener.disable",
             "runtime.host-notify",
-            "runtime.host-notify.config",
-            "runtime.host-notify.config.show",
-            "runtime.host-notify.config.set",
             "runtime.host-notify.enable",
             "runtime.host-notify.disable",
-            "runtime.host-notify.hermes",
-            "runtime.host-notify.hermes.guide",
-            "runtime.host-notify.hermes.status",
-            "runtime.host-notify.hermes.setup",
         ],
     );
+}
+
+#[test]
+fn schema_audience_views_expose_non_default_surfaces() {
+    let operator = success_json(&awiki_cmd(&["schema", "--audience", "operator"]));
+    let operator_names = schema_names(&operator);
+    assert!(operator_names.contains(&"runtime.listener.start"));
+    assert!(operator_names.contains(&"runtime.host-notify.hermes.setup"));
+    assert!(!operator_names.contains(&"msg.send"));
+
+    let diagnostic = success_json(&awiki_cmd(&["schema", "--audience", "diagnostic"]));
+    let diagnostic_names = schema_names(&diagnostic);
+    assert!(diagnostic_names.contains(&"debug.db.handle-history"));
+    assert!(diagnostic_names.contains(&"runtime.host-notify.hermes.set-secret"));
+
+    let all = success_json(&awiki_cmd(&["schema", "--all"]));
+    let all_names = schema_names(&all);
+    assert!(all_names.contains(&"runtime.listener.service-run"));
+    assert!(all_names.contains(&"debug.raw.rpc"));
 }
 
 #[test]
@@ -310,6 +313,15 @@ fn schema_for(path: &[&str]) -> Value {
 
 fn schema_command(schema: &Value) -> &Value {
     &schema["data"]["command"]
+}
+
+fn schema_names(schema: &Value) -> Vec<&str> {
+    schema["data"]["commands"]
+        .as_array()
+        .expect("data.commands should be an array")
+        .iter()
+        .map(|command| command["name"].as_str().expect("schema name"))
+        .collect()
 }
 
 fn schema_flag<'a>(command: &'a Value, name: &str) -> &'a Value {

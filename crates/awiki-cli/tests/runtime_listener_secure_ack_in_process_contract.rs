@@ -114,9 +114,7 @@ fn encrypted_ack_notification_matches_go_shape_and_payload() {
     assert_eq!(message_id, "ack-sess-1");
     assert_eq!(
         payload,
-        &awiki_cli::runtime::listener_secure_ack_delivery::build_secure_ack_payload(
-            " sess-1 ", " msg-1\n"
-        )
+        &im_core::secure::build_secure_ack_payload(" sess-1 ", " msg-1\n")
     );
 
     let LocalSecureAckInProcessAction::ProcessIncoming { notification } = &plan.actions[6] else {

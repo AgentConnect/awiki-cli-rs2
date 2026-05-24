@@ -646,6 +646,7 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
 
     let replace = success_json(&awiki_cmd_with_env(
         &[
+            "--diagnostic",
             "--identity",
             "alice",
             "id",

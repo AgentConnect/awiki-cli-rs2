@@ -51,6 +51,12 @@ where
             Some(("dry-run", _)) => {
                 globals.dry_run = true;
             }
+            Some(("diagnostic", _)) => {
+                globals.diagnostic = true;
+            }
+            Some(("migration", _)) => {
+                globals.migration = true;
+            }
             Some(("verbose", _)) => {
                 globals.verbose = true;
             }
@@ -85,9 +91,7 @@ where
 }
 
 pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
-    if let Some(err) = default_cutover_boundary_error(&command.name) {
-        return Err(err);
-    }
+    enforce_command_policy(command)?;
 
     match command.name.as_str() {
         "status" => app.run_status(),
@@ -97,7 +101,7 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "config.set" => app.run_config_set(command),
         "doctor" => app.run_doctor(),
         "docs" => app.run_docs(&command.args),
-        "schema" => app.run_schema(&command.args),
+        "schema" => app.run_schema(command),
         "init" => app.run_init(),
         "completion.bash" => app.run_completion("bash"),
         "completion.zsh" => app.run_completion("zsh"),
@@ -386,36 +390,108 @@ fn is_go_stub_command(command: &str) -> bool {
     cmdmeta::lookup(command).is_some_and(|spec| spec.handler == "stub")
 }
 
-fn default_cutover_boundary_error(command: &str) -> Option<ExitError> {
-    if !is_default_cutover_blocked_domain(command) {
-        return None;
-    }
-    match cmdmeta::cutover_status(command) {
-        cmdmeta::CutoverStatus::Unsupported { capability, phase } => Some(
-            crate::app::unsupported::unsupported_cutover_command(command, capability, phase),
-        ),
-        cmdmeta::CutoverStatus::Removed if command == "debug.raw.rpc" => {
-            Some(crate::app::unsupported::unsupported_cutover_command(
-                command,
-                "raw-rpc",
-                "outside current im-core cutover",
-            ))
+fn enforce_command_policy(command: &ParsedCommand) -> Result<(), ExitError> {
+    match cmdmeta::direct_invocation_policy(&command.name) {
+        cmdmeta::DirectInvocationPolicy::Allow => Ok(()),
+        cmdmeta::DirectInvocationPolicy::AllowWithWarning => Ok(()),
+        cmdmeta::DirectInvocationPolicy::RequireDiagnosticGate => {
+            if command.globals.diagnostic
+                || std::env::var("AWIKI_CLI_ENABLE_DIAGNOSTIC").ok().as_deref() == Some("1")
+            {
+                Ok(())
+            } else {
+                Err(diagnostic_gate_required(&command.name))
+            }
         }
-        _ => None,
+        cmdmeta::DirectInvocationPolicy::RequireMigrationGate => {
+            if command.globals.migration
+                || std::env::var("AWIKI_CLI_ENABLE_MIGRATION").ok().as_deref() == Some("1")
+            {
+                Ok(())
+            } else {
+                Err(migration_gate_required(&command.name))
+            }
+        }
+        cmdmeta::DirectInvocationPolicy::RequireInternalServiceGate => {
+            if std::env::var("AWIKI_CLI_INTERNAL_ENTRY").ok().as_deref() == Some("1") {
+                Ok(())
+            } else {
+                Err(internal_command(&command.name))
+            }
+        }
+        cmdmeta::DirectInvocationPolicy::StableUnsupported { capability, phase } => Err(
+            crate::app::unsupported::unsupported_cutover_command(&command.name, capability, phase),
+        ),
+        cmdmeta::DirectInvocationPolicy::Removed { replacement } => {
+            Err(removed_command(&command.name, replacement))
+        }
+        cmdmeta::DirectInvocationPolicy::DeprecatedAlias { replacement, .. } => {
+            Err(removed_command(&command.name, Some(replacement)))
+        }
     }
 }
 
-fn is_default_cutover_blocked_domain(command: &str) -> bool {
-    command == "page"
-        || command
-            .strip_prefix("page.")
-            .is_some_and(|suffix| !suffix.is_empty())
-        || command == "site"
-        || command
-            .strip_prefix("site.")
-            .is_some_and(|suffix| !suffix.is_empty())
-        || command == "debug.db.query"
-        || command == "debug.raw.rpc"
+fn diagnostic_gate_required(command: &str) -> ExitError {
+    let mut err = ExitError::new(
+        "diagnostic_gate_required",
+        2,
+        format!("{command} is a diagnostic command."),
+        "Re-run with --diagnostic or inspect schema --audience diagnostic.",
+    );
+    err.detail.details = serde_json::json!({
+        "command": command,
+        "audience": "diagnostic",
+        "required_gate": "--diagnostic",
+    });
+    err
+}
+
+fn migration_gate_required(command: &str) -> ExitError {
+    let mut err = ExitError::new(
+        "migration_gate_required",
+        2,
+        format!("{command} is a migration-only command."),
+        "Re-run with --migration or inspect schema --audience migration.",
+    );
+    err.detail.details = serde_json::json!({
+        "command": command,
+        "audience": "migration",
+        "required_gate": "--migration",
+    });
+    err
+}
+
+fn internal_command(command: &str) -> ExitError {
+    let mut err = ExitError::new(
+        "internal_command",
+        2,
+        format!("{command} is an internal service entry."),
+        "Use the high-level runtime command, or let the service manager launch this entry.",
+    );
+    err.detail.details = serde_json::json!({
+        "command": command,
+        "audience": "internal",
+        "required_gate": "AWIKI_CLI_INTERNAL_ENTRY=1",
+    });
+    err
+}
+
+fn removed_command(command: &str, replacement: Option<&str>) -> ExitError {
+    let mut err = ExitError::new(
+        "removed_command",
+        2,
+        format!("{command} is removed from the im-core CLI cutover path."),
+        replacement
+            .map(|value| format!("Use `{value}` instead."))
+            .unwrap_or_else(|| {
+                "Use high-level im-core commands instead of raw/internal commands.".to_string()
+            }),
+    );
+    err.detail.details = serde_json::json!({
+        "command": command,
+        "replacement": replacement,
+    });
+    err
 }
 
 fn go_stub_error(command: &str) -> ExitError {

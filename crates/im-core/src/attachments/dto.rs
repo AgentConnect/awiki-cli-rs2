@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentSendRequest {
@@ -9,6 +10,26 @@ pub struct AttachmentSendRequest {
     pub mime_type: Option<String>,
     pub filename: Option<String>,
     pub delivery: crate::messages::MessageDeliveryOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttachmentSendResult {
+    pub message: crate::messages::SendMessageResult,
+    pub target_kind: String,
+    pub target_did: String,
+    pub attachment: UploadedAttachment,
+    pub manifest: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadedAttachment {
+    pub attachment_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub size: String,
+    pub digest_b64u: String,
+    pub object_uri: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +64,7 @@ pub struct DownloadedAttachment {
     pub mime_type: Option<String>,
     pub size_bytes: Option<u64>,
     pub destination: DownloadedAttachmentDestination,
+    pub selection: Option<crate::attachments::AttachmentSelection>,
     pub warnings: Vec<String>,
 }
 
@@ -50,4 +72,26 @@ pub struct DownloadedAttachment {
 pub enum DownloadedAttachmentDestination {
     LocalFile(PathBuf),
     Memory(Vec<u8>),
+}
+
+impl AttachmentSendResult {
+    pub(crate) fn from_upload_result(
+        result: crate::internal::attachment_runtime::upload::AttachmentUploadResult,
+    ) -> Self {
+        Self {
+            message: result.sdk_result,
+            target_kind: result.target_kind.to_string(),
+            target_did: result.target_did,
+            attachment: UploadedAttachment {
+                attachment_id: result.slot.attachment_id,
+                filename: result.prepared.filename,
+                mime_type: result.prepared.mime_type,
+                size_bytes: result.prepared.size_bytes,
+                size: result.prepared.size_string,
+                digest_b64u: result.prepared.digest_b64u,
+                object_uri: result.slot.object_uri,
+            },
+            manifest: result.manifest,
+        }
+    }
 }

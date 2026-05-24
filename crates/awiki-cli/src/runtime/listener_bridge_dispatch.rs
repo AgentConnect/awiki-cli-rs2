@@ -1,8 +1,6 @@
 use crate::identity::types::StoredIdentity;
 use crate::runtime::bridge::BridgeRequest;
-// Migration-only websocket bridge wire shape; remove when listener bridge
-// dispatch no longer builds raw message RPC calls.
-use im_core::compat::wire::{
+use im_core::realtime::wire::{
     self, BridgeWireIdentity, GroupCreateWireRequest, HistoryWireRequest, InboxWireRequest,
     MarkReadWireRequest, WireIdentity,
 };

@@ -1,26 +1,18 @@
-use im_core::identity::{ContactBindingMethodKind, ContactBindingResult, RecoverGeneratedIdentity};
+use im_core::identity::{ContactBindingMethodKind, ContactBindingResult};
 use im_core::prelude::{
     ContactBindingMethod, ContactBindingRequest, ContactBindingState, Did, DirectoryResolution,
     Handle, HandleRegistrationResult, HandleRegistrationState, IdentitySelector, IdentitySubject,
-    InitialProfile, PeerRef, ProfilePatch, RecoverHandleRequest, RegisterHandleRequest,
-    RegistrationMethod, VerificationInput,
+    InitialProfile, PeerRef, ProfilePatch, RecoverHandleLocalFinalizeRequest,
+    RecoverHandlePlanRequest, RecoverHandleRequest, RegisterHandleRequest, RegistrationMethod,
+    VerificationInput,
 };
-use serde::Serialize;
 use serde_json::json;
-use serde_json::{Map, Value};
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use time::format_description::well_known::Rfc3339;
-use time::OffsetDateTime;
+use serde_json::Value;
 
 use crate::cli::ParsedCommand;
-use crate::config;
 use crate::identity;
-use crate::identity::types::{StoredIdentity, LEGACY_LAYOUT_HINT};
+use crate::identity::types::LEGACY_LAYOUT_HINT;
 use crate::output::ExitError;
-use crate::store;
 
 pub use super::identity_replace_did_plan::{
     replace_did_plan_command_request, replace_did_plan_via_im_core, ReplaceDidPlanCommandRequest,
@@ -36,13 +28,13 @@ trait IdentityRawResponse {
 
 impl IdentityRawResponse for ContactBindingResult {
     fn raw_response(&self) -> Option<&Value> {
-        im_core::compat::identity::contact_binding_raw_response(self)
+        self.response_json()
     }
 }
 
 impl IdentityRawResponse for im_core::identity::RecoverHandleResult {
     fn raw_response(&self) -> Option<&Value> {
-        im_core::compat::identity::recover_handle_raw_response(self)
+        self.response_json()
     }
 }
 
@@ -79,15 +71,6 @@ pub struct RecoverHandleCommandRequest {
     pub phone: String,
     pub otp: String,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecoverLocalStateMergeResult {
-    pub store_merge_counts: BTreeMap<String, i64>,
-    pub e2ee_cleanup_counts: BTreeMap<String, i64>,
-}
-
-const RECOVER_REPAIR_HINT: &str =
-    "Inspect the returned backup path and temporary identity, then repair the local workspace state before retrying.";
 
 pub fn cli_identity_selector(identity_flag: &str) -> IdentitySelector {
     let value = identity_flag.trim();
@@ -483,24 +466,83 @@ pub fn recover_handle_request(
     handle: String,
     phone: String,
     otp: Option<String>,
-    generated_identity: Option<RecoverGeneratedIdentity>,
+    local_finalize: Option<RecoverHandleLocalFinalizeRequest>,
     default_domain: &str,
 ) -> Result<RecoverHandleRequest, ExitError> {
     Ok(RecoverHandleRequest {
-        handle: Handle::parse(handle, default_domain)
+        handle: Handle::parse(&handle, default_domain)
             .map_err(|err| super::map_im_error(err, "id recover"))?,
+        raw_handle: Some(handle),
         phone,
         otp,
-        generated_identity,
+        generated_identity: None,
+        local_finalize,
+    })
+}
+
+fn recover_handle_command_result(
+    result: im_core::identity::RecoverHandleResult,
+    plan: &im_core::identity::RecoverHandlePlan,
+) -> Result<identity::CommandResult, identity::IdentityError> {
+    let raw = identity_raw_response(&result);
+    if result.state == im_core::identity::RecoverHandleState::OtpSent {
+        let full_handle = plan.target_handle.clone();
+        let handle = full_handle
+            .split_once('.')
+            .map(|(local, _)| local.to_string())
+            .unwrap_or_else(|| full_handle.clone());
+        return identity::wire::recover_otp_result(
+            &plan.final_identity_name,
+            &handle,
+            &full_handle,
+            &result.phone,
+            raw,
+        );
+    }
+    let Some(local) = result.local_recovery.as_ref() else {
+        return Err(identity::IdentityError::Internal(
+            "recover_handle result is missing local recovery summary".to_string(),
+        ));
+    };
+    Ok(identity::CommandResult {
+        data: json!({
+            "action": "recover_handle",
+            "identity": local.identity,
+            "backup_path": local.backup_path,
+            "archived_identities": local.archived_identities,
+            "archived_dids": local.archived_dids,
+            "full_handle": local.full_handle,
+            "final_identity_name": local.final_identity_name,
+            "store_merge_counts": local.store_merge_counts,
+            "e2ee_cleanup_counts": local.e2ee_cleanup_counts,
+            "result": raw,
+        }),
+        summary: format!("Handle {} recovered successfully", local.full_handle),
+        warnings: result.warnings,
     })
 }
 
 pub fn recover_handle_plan_via_im_core(
+    resolved: &crate::config::Resolved,
     manager: &identity::Manager,
-    did_domain: &str,
     request: RecoverHandleCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    recover_handle_plan_command_result(manager, did_domain, &request)
+    let core = super::build_im_core(resolved, manager)?;
+    let plan = core
+        .identities()
+        .recover_handle_plan(RecoverHandlePlanRequest {
+            handle: Handle::parse(request.handle.clone(), &resolved.did_domain)
+                .map_err(|err| super::map_im_error(err, "id recover"))?,
+            raw_handle: Some(request.handle.clone()),
+            phone: request.phone.clone(),
+            otp: trimmed_optional(&request.otp),
+        })
+        .map_err(|err| super::map_im_error(err, "id recover"))?;
+    Ok(identity::CommandResult {
+        data: json!({ "plan": plan }),
+        summary: "Dry run: handle recovery planned".to_string(),
+        warnings: Vec::new(),
+    })
 }
 
 pub fn recover_handle_via_im_core(
@@ -518,97 +560,33 @@ pub fn recover_handle_via_im_core(
         ));
     }
 
-    let plan = recover_handle_plan(manager, &resolved.did_domain, &request)?;
-
-    if otp.is_empty() {
-        let core = super::build_im_core(resolved, manager)?;
-        let sdk_request = recover_handle_request(
-            request.handle.clone(),
-            request.phone.clone(),
-            trimmed_optional(&request.otp),
-            None,
-            &resolved.did_domain,
-        )?;
-        let result = core
-            .identities()
-            .recover_handle(sdk_request)
-            .map_err(|err| super::map_im_error(err, "id recover"))?;
-        let raw = identity_raw_response(&result);
-        return identity::wire::recover_otp_result(
-            &plan.final_identity_name,
-            &plan.target_local_part,
-            &plan.target_handle,
-            &phone,
-            raw,
-        )
-        .map_err(crate::app::identity_exit);
-    }
-
     let core = super::build_im_core(resolved, manager)?;
-    let generated = identity::generate_identity_with_path_segments(
-        &plan.effective_domain,
-        [plan.target_local_part.as_str()],
-        &resolved.anp_service_endpoint,
-        &resolved.anp_service_did,
-    )
-    .map_err(crate::app::identity_exit)?;
-    let sdk_generated = RecoverGeneratedIdentity {
-        did: Did::parse(&generated.did).map_err(|err| super::map_im_error(err, "id recover"))?,
-        unique_id: generated.unique_id.clone(),
-        did_document: generated.did_document.clone(),
-    };
+    let plan = core
+        .identities()
+        .recover_handle_plan(RecoverHandlePlanRequest {
+            handle: Handle::parse(request.handle.clone(), &resolved.did_domain)
+                .map_err(|err| super::map_im_error(err, "id recover"))?,
+            raw_handle: Some(request.handle.clone()),
+            phone: request.phone.clone(),
+            otp: None,
+        })
+        .map_err(|err| super::map_im_error(err, "id recover"))?;
     let sdk_request = recover_handle_request(
         request.handle.clone(),
         request.phone.clone(),
         trimmed_optional(&request.otp),
-        Some(sdk_generated),
+        (!otp.is_empty()).then(|| RecoverHandleLocalFinalizeRequest {
+            raw_handle: Some(request.handle.clone()),
+            active_identity_name: Some(resolved.active_identity.clone()),
+            config_file_path: Some(std::path::PathBuf::from(&resolved.paths.config_file)),
+        }),
         &resolved.did_domain,
     )?;
-    let active_before = recover_active_before(&resolved.paths.config_file)?;
-    let backup =
-        recover_handle_backup(manager, &plan, &active_before, &resolved.paths.config_file)?;
-
     let result = core
         .identities()
         .recover_handle(sdk_request)
         .map_err(|err| super::map_im_error(err, "id recover"))?;
-    let raw = identity_raw_response(&result);
-    let record = manager
-        .save(identity::types::SaveInput {
-            identity_name: plan.temp_identity_name.clone(),
-            did: string_value(&raw, "did", &generated.did),
-            unique_id: generated.unique_id,
-            user_id: string_value(&raw, "user_id", ""),
-            display_name: plan.target_local_part.clone(),
-            handle: default_string_value(&raw, "handle", &plan.target_local_part),
-            full_handle: default_string_value(&raw, "full_handle", &plan.target_handle),
-            jwt_token: string_value(&raw, "access_token", ""),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            ..identity::types::SaveInput::default()
-        })
-        .map_err(crate::app::identity_exit)?;
-    let summary = identity::store::identity_summary_from_record(&record);
-    Ok(identity::CommandResult {
-        data: json!({
-            "action": "recover_handle",
-            "identity": summary,
-            "backup_path": backup.backup_path,
-            "archived_identities": plan.archived_identity_names(),
-            "archived_dids": plan.archived_dids(),
-            "old_dids": plan.old_owner_dids_in_merge_order(),
-            "full_handle": plan.target_handle,
-            "final_identity_name": plan.final_identity_name,
-            "temp_identity_name": plan.temp_identity_name,
-            "active_before": active_before,
-            "result": raw,
-        }),
-        summary: format!("Handle {} recovered successfully", plan.target_handle),
-        warnings: Vec::new(),
-    })
+    recover_handle_command_result(result, &plan).map_err(crate::app::identity_exit)
 }
 
 pub fn recover_handle_command_via_im_core(
@@ -619,125 +597,12 @@ pub fn recover_handle_command_via_im_core(
     identity_changed: bool,
 ) -> Result<identity::CommandResult, ExitError> {
     let mut result = if dry_run {
-        recover_handle_plan_via_im_core(manager, &resolved.did_domain, request)
+        recover_handle_plan_via_im_core(resolved, manager, request)
     } else {
         recover_handle_via_im_core(resolved, manager, request)
     }?;
-    if result.data.get("action").and_then(Value::as_str) != Some("recover_handle") {
-        append_recover_identity_warning(&mut result, identity_changed);
-        return Ok(result);
-    }
-    finalize_recovered_handle_result_via_im_core(resolved, manager, result, identity_changed)
-}
-
-pub fn merge_recovered_handle_local_state_via_im_core(
-    paths: &crate::config::Paths,
-    old_owner_dids: Vec<String>,
-    new_owner_did: String,
-    final_identity_name: String,
-) -> Result<RecoverLocalStateMergeResult, store::StoreError> {
-    let (store_merge_counts, e2ee_cleanup_counts) = store::merge_recovered_handle_local_state(
-        paths,
-        &old_owner_dids,
-        &new_owner_did,
-        &final_identity_name,
-    )?;
-    Ok(RecoverLocalStateMergeResult {
-        store_merge_counts,
-        e2ee_cleanup_counts,
-    })
-}
-
-fn finalize_recovered_handle_result_via_im_core(
-    resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
-    mut result: identity::CommandResult,
-    identity_changed: bool,
-) -> Result<identity::CommandResult, ExitError> {
-    let final_identity_name = string_from_data(&result.data, "final_identity_name");
-    let temp_identity_name = string_from_data(&result.data, "temp_identity_name");
-    let backup_path = string_from_data(&result.data, "backup_path");
-    let active_before = string_from_data(&result.data, "active_before");
-    let old_dids = string_slice_from_data(&result.data, "old_dids");
-    let archived_identities = string_slice_from_data(&result.data, "archived_identities");
-    let new_did = result
-        .data
-        .get("identity")
-        .and_then(|value| value.get("did"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-
-    let merge_result = merge_recovered_handle_local_state_via_im_core(
-        &resolved.paths,
-        old_dids,
-        new_did.clone(),
-        final_identity_name.clone(),
-    )
-    .map_err(|err| recover_store_exit(err, &backup_path, &temp_identity_name, &new_did))?;
-    let (store_merge_counts, e2ee_cleanup_counts) = (
-        merge_result.store_merge_counts,
-        merge_result.e2ee_cleanup_counts,
-    );
-
-    let promoted = identity::finalize_recovered_handle(
-        manager,
-        identity::RecoverFinalizeRequest {
-            final_identity_name: &final_identity_name,
-            temp_identity_name: &temp_identity_name,
-            archived_identity_names: &archived_identities,
-            active_before: &active_before,
-            backup_path: &backup_path,
-            new_did: &new_did,
-            config_paths: Some(&resolved.paths),
-        },
-    )
-    .map_err(recover_finalize_exit)?;
-
-    if let Some(object) = result.data.as_object_mut() {
-        let identity = recovered_identity_value(manager, &promoted.identity);
-        object.insert("identity".to_string(), identity);
-        object.insert(
-            "store_merge_counts".to_string(),
-            serde_json::to_value(store_merge_counts).unwrap_or_else(|_| json!({})),
-        );
-        object.insert(
-            "e2ee_cleanup_counts".to_string(),
-            serde_json::to_value(e2ee_cleanup_counts).unwrap_or_else(|_| json!({})),
-        );
-        object.remove("temp_identity_name");
-        object.remove("active_before");
-        object.remove("old_dids");
-    }
-    if !archived_identities.is_empty() {
-        result.warnings.push(format!(
-            "Archived {} same-handle local identities; they were removed from the live index, while their original directories and the recover backup were kept.",
-            archived_identities.len()
-        ));
-    }
     append_recover_identity_warning(&mut result, identity_changed);
     Ok(result)
-}
-
-fn recovered_identity_value(manager: &identity::Manager, promoted: &StoredIdentity) -> Value {
-    manager
-        .list()
-        .ok()
-        .and_then(|items| {
-            items
-                .into_iter()
-                .find(|summary| summary.identity_name == promoted.identity_name)
-        })
-        .map(|summary| serde_json::to_value(summary).unwrap_or_else(|_| json!({})))
-        .unwrap_or_else(|| {
-            json!({
-                "identity_name": promoted.identity_name,
-                "did": promoted.did,
-                "handle": promoted.handle,
-                "full_handle": promoted.full_handle,
-                "created_at": promoted.created_at,
-            })
-        })
 }
 
 fn append_recover_identity_warning(result: &mut identity::CommandResult, identity_changed: bool) {
@@ -746,72 +611,6 @@ fn append_recover_identity_warning(result: &mut identity::CommandResult, identit
             .warnings
             .push(identity::recover_identity_ignored_warning().to_string());
     }
-}
-
-fn recover_store_exit(
-    err: store::StoreError,
-    backup_path: &str,
-    temp_identity_name: &str,
-    new_did: &str,
-) -> ExitError {
-    let mut exit = recover_store_base_exit(err);
-    exit.detail.code = "internal_error".to_string();
-    exit.exit_code = 1;
-    exit.detail.message = format!(
-        "merge recovered handle local state: {}",
-        exit.detail.message
-    );
-    exit.detail.details = recover_error_details(backup_path, temp_identity_name, new_did);
-    exit
-}
-
-fn recover_store_base_exit(err: store::StoreError) -> ExitError {
-    match err {
-        store::StoreError::LegacyDatabaseNotFound | store::StoreError::NotFound(_) => {
-            ExitError::new("not_found", 5, err.to_string(), RECOVER_REPAIR_HINT)
-        }
-        store::StoreError::UnsafeSql(_) | store::StoreError::UnsupportedLegacySchema(_) => {
-            ExitError::new("invalid_argument", 2, err.to_string(), RECOVER_REPAIR_HINT)
-        }
-        store::StoreError::Invalid(_) | store::StoreError::Sqlite(_) | store::StoreError::Io(_) => {
-            ExitError::new("internal_error", 1, err.to_string(), RECOVER_REPAIR_HINT)
-        }
-    }
-}
-
-fn recover_finalize_exit(err: identity::RecoverFinalizeError) -> ExitError {
-    let details = recover_error_details(&err.backup_path, &err.temp_identity_name, &err.new_did);
-    let mut exit = ExitError::new("internal_error", 1, err.to_string(), RECOVER_REPAIR_HINT);
-    exit.detail.details = details;
-    exit
-}
-
-fn recover_error_details(backup_path: &str, temp_identity_name: &str, new_did: &str) -> Value {
-    json!({
-        "backup_path": backup_path,
-        "temp_identity_name": temp_identity_name,
-        "new_did": new_did,
-    })
-}
-
-fn string_from_data(data: &Value, key: &str) -> String {
-    data.get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn string_slice_from_data(data: &Value, key: &str) -> Vec<String> {
-    data.get(key)
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn bind_email_wait_via_im_core(
@@ -931,9 +730,9 @@ pub fn get_self_profile_via_im_core(
         .identity()
         .profile()
         .map_err(|err| super::map_im_error(err, "id profile get"))?;
-    Ok(identity::wire::profile_self_result(legacy_profile_value(
-        &profile,
-    )))
+    Ok(identity::wire::profile_self_result(
+        profile.to_wire_profile_value(),
+    ))
 }
 
 pub fn get_public_profile_via_im_core(
@@ -969,7 +768,7 @@ pub fn get_public_profile_via_im_core(
         subject.insert("did".to_string(), Value::String(did));
         return Ok(identity::wire::profile_public_result(
             Value::Object(subject),
-            legacy_profile_value(&result.profile),
+            result.profile.to_wire_profile_value(),
         ));
     }
     if !profile_did.trim().is_empty() {
@@ -982,7 +781,7 @@ pub fn get_public_profile_via_im_core(
         .map_err(|err| super::map_im_error(err, "id profile get"))?;
     Ok(identity::wire::profile_public_result(
         Value::Object(subject),
-        legacy_profile_value(&result.profile),
+        result.profile.to_wire_profile_value(),
     ))
 }
 
@@ -1087,7 +886,7 @@ pub fn set_profile_via_im_core(
     Ok(identity::wire::profile_update_result(
         &identity,
         changed_fields,
-        legacy_profile_value(&profile),
+        profile.to_wire_profile_value(),
     ))
 }
 
@@ -1148,56 +947,6 @@ fn changed_fields_from_profile_patch(patch: &ProfilePatch) -> Vec<String> {
     fields
 }
 
-fn legacy_profile_value(profile: &im_core::identity::Profile) -> Value {
-    let mut value = Map::new();
-    value.insert(
-        "did".to_string(),
-        Value::String(profile.subject.as_str().to_string()),
-    );
-    if let Some(handle) = profile.handle.as_ref() {
-        value.insert(
-            "handle".to_string(),
-            Value::String(handle.as_str().to_string()),
-        );
-    }
-    if let Some(display_name) = profile.display_name.as_ref() {
-        value.insert("nick_name".to_string(), Value::String(display_name.clone()));
-    }
-    if let Some(bio) = profile.bio.as_ref() {
-        value.insert("bio".to_string(), Value::String(bio.clone()));
-    }
-    if !profile.tags.is_empty() {
-        value.insert("tags".to_string(), json!(profile.tags));
-    }
-    if let Some(markdown) = profile.markdown.as_ref() {
-        value.insert("profile_md".to_string(), Value::String(markdown.clone()));
-    }
-    if let Some(avatar_url) = profile.avatar_url.as_ref() {
-        value.insert("avatar_url".to_string(), Value::String(avatar_url.clone()));
-    }
-    if let Some(updated_at) = profile.updated_at.as_ref() {
-        value.insert("updated_at".to_string(), Value::String(updated_at.clone()));
-    }
-    if !profile.metadata.is_empty() {
-        value.insert(
-            "metadata".to_string(),
-            Value::Object(
-                profile
-                    .metadata
-                    .iter()
-                    .map(|attribute| {
-                        (
-                            attribute.key.clone(),
-                            Value::String(attribute.value.clone()),
-                        )
-                    })
-                    .collect(),
-            ),
-        );
-    }
-    Value::Object(value)
-}
-
 fn resolve_command_result_from_sdk(resolution: DirectoryResolution) -> identity::CommandResult {
     let resolve = Some(json!({ "did": resolution.did.as_str() }));
     let lookup = resolution.handle.as_ref().map(|handle| {
@@ -1207,7 +956,10 @@ fn resolve_command_result_from_sdk(resolution: DirectoryResolution) -> identity:
             "full_handle": handle.as_str(),
         })
     });
-    let public_profile = resolution.profile.as_ref().map(legacy_profile_value);
+    let public_profile = resolution
+        .profile
+        .as_ref()
+        .map(im_core::identity::Profile::to_wire_profile_value);
     identity::wire::resolve_result(resolve, lookup, public_profile, resolution.warnings)
 }
 
@@ -1482,421 +1234,6 @@ fn registration_email(verification: &VerificationInput) -> Option<&str> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct RecoverHandlePlan {
-    target_handle: String,
-    target_local_part: String,
-    effective_domain: String,
-    final_identity_name: String,
-    temp_identity_name: String,
-    backup_path_preview: String,
-    same_handle_candidates: Vec<identity::IdentitySummary>,
-    excluded_identities: Vec<identity::IdentitySummary>,
-}
-
-#[derive(Debug, Clone)]
-struct RecoverHandleBackup {
-    backup_path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct RecoverHandleBackupManifest {
-    reason: String,
-    created_at: String,
-    handle: String,
-    archived_identity_names: Vec<String>,
-    archived_dids: Vec<String>,
-    archived_dir_names: Vec<String>,
-    default_before: String,
-    active_before: String,
-    planned_final_identity: String,
-    planned_temp_identity: String,
-}
-
-impl RecoverHandlePlan {
-    fn archived_identity_names(&self) -> Vec<String> {
-        self.same_handle_candidates
-            .iter()
-            .map(|summary| summary.identity_name.clone())
-            .collect()
-    }
-
-    fn archived_dids(&self) -> Vec<String> {
-        self.same_handle_candidates
-            .iter()
-            .filter_map(|summary| {
-                let did = summary.did.trim();
-                (!did.is_empty()).then(|| did.to_string())
-            })
-            .collect()
-    }
-
-    fn old_owner_dids_in_merge_order(&self) -> Vec<String> {
-        let mut dids = Vec::with_capacity(self.same_handle_candidates.len());
-        for summary in &self.same_handle_candidates {
-            let did = summary.did.trim();
-            if did.is_empty() || dids.iter().any(|seen| seen == did) {
-                continue;
-            }
-            dids.push(did.to_string());
-        }
-        dids
-    }
-}
-
-fn recover_handle_plan_command_result(
-    manager: &identity::Manager,
-    did_domain: &str,
-    request: &RecoverHandleCommandRequest,
-) -> Result<identity::CommandResult, ExitError> {
-    let plan = recover_handle_plan(manager, did_domain, request)?;
-    let (action, remote_calls, local_writes, backup_path) = if request.otp.trim().is_empty() {
-        (
-            "send_recover_otp",
-            json!(["handle.send_otp"]),
-            Value::Null,
-            String::new(),
-        )
-    } else {
-        (
-            "recover_handle",
-            json!(["did-auth.recover_handle"]),
-            json!([
-                ".legacy-backup/recover-handle",
-                "index.json",
-                "config.yaml",
-                "identity.json",
-                "auth.json",
-                "did_document.json",
-                "key-1-private.pem",
-                "key-1-public.pem",
-                "e2ee-signing-private.pem",
-                "e2ee-agreement-private.pem",
-                "sqlite.recover_handle_merge",
-                "sqlite.e2ee_cleanup",
-            ]),
-            plan.backup_path_preview.clone(),
-        )
-    };
-    Ok(identity::CommandResult {
-        data: json!({
-            "plan": {
-                "action": action,
-                "target_handle": plan.target_handle,
-                "identity_name": plan.final_identity_name,
-                "final_identity_name": plan.final_identity_name,
-                "temp_identity_name": plan.temp_identity_name,
-                "same_handle_candidates": plan.same_handle_candidates,
-                "excluded_identities": plan.excluded_identities,
-                "backup_path": backup_path,
-                "phone": request.phone,
-                "remote_calls": remote_calls,
-                "local_writes": local_writes,
-            }
-        }),
-        summary: "Dry run: handle recovery planned".to_string(),
-        warnings: Vec::new(),
-    })
-}
-
-fn recover_handle_plan(
-    manager: &identity::Manager,
-    did_domain: &str,
-    request: &RecoverHandleCommandRequest,
-) -> Result<RecoverHandlePlan, ExitError> {
-    let target = identity::normalize_handle_input(&request.handle, did_domain)
-        .map_err(crate::app::identity_exit)?;
-    let existing = manager.list().map_err(crate::app::identity_exit)?;
-    let identity_base = if target.explicit_domain {
-        target.full_handle.clone()
-    } else {
-        target.local_part.clone()
-    };
-    let final_identity_name = identity::layout::sanitize_identity_name(&identity_base);
-    if final_identity_name.is_empty() {
-        return Err(crate::app::identity_exit(
-            identity::IdentityError::InvalidInput(format!(
-                "invalid input: handle {:?} cannot be used as an identity name",
-                request.handle
-            )),
-        ));
-    }
-
-    let handle_key = canonical_handle(&target.full_handle);
-    let mut same_handle_candidates = Vec::new();
-    let mut excluded_identities = Vec::new();
-    for summary in existing {
-        let full_handle = identity::default_handle_string(
-            &summary.full_handle,
-            &identity::derive_full_handle_from_did(&summary.handle, &summary.did),
-        );
-        if canonical_handle(&full_handle) == handle_key {
-            same_handle_candidates.push(summary);
-        } else {
-            excluded_identities.push(summary);
-        }
-    }
-    same_handle_candidates.sort_by(|left, right| {
-        match compare_rfc3339(&left.created_at, &right.created_at) {
-            Ordering::Equal => left.identity_name.cmp(&right.identity_name),
-            ordering => ordering,
-        }
-    });
-    for summary in &excluded_identities {
-        if summary.identity_name == final_identity_name {
-            return Err(crate::app::identity_exit(
-                identity::IdentityError::Conflict(format!(
-                    "identity conflict: identity name {final_identity_name} is already used by another handle"
-                )),
-            ));
-        }
-    }
-
-    let temp_base = format!("{final_identity_name}-recover-tmp");
-    let mut all_existing =
-        Vec::with_capacity(same_handle_candidates.len() + excluded_identities.len());
-    all_existing.extend_from_slice(&same_handle_candidates);
-    all_existing.extend_from_slice(&excluded_identities);
-    let temp_identity_name =
-        identity::store::choose_named_identity(&temp_base, &all_existing, &temp_base);
-    let backup_path_preview = recover_backup_path_preview(manager, &target.full_handle);
-
-    Ok(RecoverHandlePlan {
-        target_handle: target.full_handle,
-        target_local_part: target.local_part,
-        effective_domain: target.effective_domain,
-        final_identity_name,
-        temp_identity_name,
-        backup_path_preview,
-        same_handle_candidates,
-        excluded_identities,
-    })
-}
-
-fn recover_backup_path_preview(manager: &identity::Manager, handle: &str) -> String {
-    recover_backup_root(manager)
-        .join("recover-handle")
-        .join(recover_backup_preview_name(handle))
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn recover_active_before(config_file: &str) -> Result<String, ExitError> {
-    if config_file.trim().is_empty() {
-        return Ok(String::new());
-    }
-    let (file_config, _, error) = config::read_file_config(config_file);
-    if !error.is_empty() {
-        return Err(crate::app::identity_exit(
-            identity::IdentityError::Internal(format!(
-                "read config before handle recover: {error}"
-            )),
-        ));
-    }
-    Ok(file_config.identity.active.trim().to_string())
-}
-
-fn recover_handle_backup(
-    manager: &identity::Manager,
-    plan: &RecoverHandlePlan,
-    active_before: &str,
-    config_file: &str,
-) -> Result<RecoverHandleBackup, ExitError> {
-    if plan.target_handle.trim().is_empty() {
-        return Err(crate::app::identity_exit(
-            identity::IdentityError::InvalidInput("invalid input: handle is required".to_string()),
-        ));
-    }
-    manager.ensure_root().map_err(crate::app::identity_exit)?;
-    let index = manager.load_index().map_err(crate::app::identity_exit)?;
-    let created_at = OffsetDateTime::now_utc();
-    let backup_root = recover_backup_root(manager).join("recover-handle");
-    let backup_dir = recover_unique_backup_dir(
-        backup_root.join(recover_backup_dir_name(created_at, &plan.target_handle)),
-    );
-    identity::layout::ensure_dir(&backup_dir).map_err(|err| {
-        crate::app::identity_exit(identity::IdentityError::Internal(format!(
-            "create recover backup directory: {err}"
-        )))
-    })?;
-
-    identity::layout::write_secure_json(
-        &backup_dir.join("index.before.json").to_string_lossy(),
-        &index,
-    )
-    .map_err(|err| {
-        crate::app::identity_exit(identity::IdentityError::Internal(format!(
-            "write recover backup index snapshot: {err}"
-        )))
-    })?;
-    let config_file = config_file.trim();
-    if !config_file.is_empty() {
-        match fs::read(config_file) {
-            Ok(raw) => {
-                identity::layout::write_secure_text(
-                    &backup_dir.join("config.before.yaml").to_string_lossy(),
-                    &String::from_utf8_lossy(&raw),
-                )
-                .map_err(|err| {
-                    crate::app::identity_exit(identity::IdentityError::Internal(format!(
-                        "write recover backup config snapshot: {err}"
-                    )))
-                })?;
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(crate::app::identity_exit(
-                    identity::IdentityError::Internal(format!(
-                        "read config before recover backup: {err}"
-                    )),
-                ));
-            }
-        }
-    }
-
-    let mut archived_identity_names = Vec::with_capacity(plan.same_handle_candidates.len());
-    let mut archived_dids = Vec::with_capacity(plan.same_handle_candidates.len());
-    let mut archived_dir_names = Vec::with_capacity(plan.same_handle_candidates.len());
-    for (idx, summary) in plan.same_handle_candidates.iter().enumerate() {
-        archived_identity_names.push(summary.identity_name.clone());
-        archived_dids.push(summary.did.clone());
-        archived_dir_names.push(summary.dir_name.clone());
-        let source = PathBuf::from(manager.build_paths(&summary.dir_name).identity_dir);
-        let metadata = match fs::metadata(&source) {
-            Ok(metadata) => metadata,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => {
-                return Err(crate::app::identity_exit(
-                    identity::IdentityError::Internal(format!(
-                        "stat identity directory before recover backup: {err}"
-                    )),
-                ));
-            }
-        };
-        if !metadata.is_dir() {
-            return Err(crate::app::identity_exit(
-                identity::IdentityError::InvalidInput(format!(
-                    "invalid input: identity path is not a directory: {}",
-                    source.to_string_lossy()
-                )),
-            ));
-        }
-        let mut target_name = format!(
-            "{:02}-{}",
-            idx + 1,
-            identity::layout::sanitize_component(&summary.identity_name)
-        );
-        if target_name.trim().is_empty() {
-            target_name = format!(
-                "{:02}-{}",
-                idx + 1,
-                identity::layout::sanitize_component(&summary.dir_name)
-            );
-        }
-        identity::layout::copy_dir(&source, &backup_dir.join("identities").join(target_name))
-            .map_err(|err| {
-                crate::app::identity_exit(identity::IdentityError::Internal(format!(
-                    "backup identity directory before recover: {err}"
-                )))
-            })?;
-    }
-
-    let manifest = RecoverHandleBackupManifest {
-        reason: "recover_handle".to_string(),
-        created_at: created_at
-            .format(&Rfc3339)
-            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string()),
-        handle: plan.target_handle.clone(),
-        archived_identity_names,
-        archived_dids,
-        archived_dir_names,
-        default_before: index.default_credential_name,
-        active_before: active_before.trim().to_string(),
-        planned_final_identity: plan.final_identity_name.clone(),
-        planned_temp_identity: plan.temp_identity_name.clone(),
-    };
-    identity::layout::write_secure_json(
-        &backup_dir.join("backup_manifest.json").to_string_lossy(),
-        &manifest,
-    )
-    .map_err(|err| {
-        crate::app::identity_exit(identity::IdentityError::Internal(format!(
-            "write recover backup manifest: {err}"
-        )))
-    })?;
-    Ok(RecoverHandleBackup {
-        backup_path: backup_dir.to_string_lossy().into_owned(),
-    })
-}
-
-fn recover_backup_root(manager: &identity::Manager) -> PathBuf {
-    Path::new(manager.root_dir())
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(manager.root_dir()))
-        .join(identity::types::LEGACY_BACKUP_DIR_NAME)
-}
-
-fn recover_backup_preview_name(handle: &str) -> String {
-    let mut handle_part = identity::layout::sanitize_identity_name(handle);
-    if handle_part.is_empty() {
-        handle_part = "handle".to_string();
-    }
-    format!("<timestamp>-{handle_part}")
-}
-
-fn recover_backup_dir_name(created_at: OffsetDateTime, handle: &str) -> String {
-    let mut handle_part = identity::layout::sanitize_identity_name(handle);
-    if handle_part.is_empty() {
-        handle_part = "handle".to_string();
-    }
-    let timestamp = created_at
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-        .replace(':', "-");
-    format!("{timestamp}-{handle_part}")
-}
-
-fn recover_unique_backup_dir(base: PathBuf) -> PathBuf {
-    if !base.exists() {
-        return base;
-    }
-    for idx in 2..1000 {
-        let candidate = PathBuf::from(format!("{}-{idx}", base.to_string_lossy()));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    PathBuf::from(format!(
-        "{}-{}",
-        base.to_string_lossy(),
-        OffsetDateTime::now_utc().unix_timestamp()
-    ))
-}
-
-fn canonical_handle(raw: &str) -> String {
-    raw.trim().to_ascii_lowercase()
-}
-
-fn compare_rfc3339(left: &str, right: &str) -> Ordering {
-    let left = left.trim();
-    let right = right.trim();
-    match (left.is_empty(), right.is_empty()) {
-        (true, true) => return Ordering::Equal,
-        (true, false) => return Ordering::Greater,
-        (false, true) => return Ordering::Less,
-        (false, false) => {}
-    }
-    match (
-        OffsetDateTime::parse(left, &Rfc3339),
-        OffsetDateTime::parse(right, &Rfc3339),
-    ) {
-        (Ok(left_time), Ok(right_time)) => return left_time.cmp(&right_time),
-        _ => {}
-    }
-    left.cmp(right)
-}
-
 fn pending_registration_identity_name(
     request: &RegisterHandleRequest,
     handle: &str,
@@ -2041,23 +1378,5 @@ fn trimmed_optional(value: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
-    }
-}
-
-fn string_value(result: &Value, key: &str, fallback: &str) -> String {
-    result
-        .get(key)
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| fallback.to_string())
-}
-
-fn default_string_value(result: &Value, key: &str, fallback: &str) -> String {
-    let value = string_value(result, key, "");
-    if value.trim().is_empty() {
-        fallback.to_string()
-    } else {
-        value
     }
 }

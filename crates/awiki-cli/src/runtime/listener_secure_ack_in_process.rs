@@ -1,5 +1,4 @@
 use super::listener_json_helpers::struct_to_map;
-use super::listener_secure_ack_delivery::build_secure_ack_payload;
 use crate::identity::types::StoredIdentity;
 use serde_json::{json, Map, Value};
 
@@ -249,7 +248,7 @@ pub fn deliver_local_secure_ack_in_process_plan(
         );
     }
 
-    let payload = build_secure_ack_payload(session_id, replied_message_id);
+    let payload = im_core::secure::build_secure_ack_payload(session_id, replied_message_id);
     actions.push(LocalSecureAckInProcessAction::EncryptFollowUp {
         sender_did: sender_record.did.clone(),
         recipient_did: recipient_did.to_string(),

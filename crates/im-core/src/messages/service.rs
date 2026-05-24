@@ -20,24 +20,42 @@ impl<'a> MessageService<'a> {
                 super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect,
             ) => self.send_direct_e2ee(request),
             (super::MessageTarget::Direct(_), _) => {
-                crate::internal::message_runtime::direct::DirectTextSender::new(
+                let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
                     crate::internal::transport::CoreHttpTransport::new(self.client),
                 )
-                .send(crate::internal::message_runtime::direct::DirectTextSend {
-                    request,
-                    resolved_target_did: None,
-                    credentials: None,
-                })
-                .map(|result| result.sdk_result)
+                .send(
+                    crate::internal::message_runtime::direct::DirectTextSend {
+                        request,
+                        resolved_target_did: None,
+                        credentials: None,
+                    },
+                )?;
+                #[cfg(feature = "sqlite")]
+                if let Err(err) =
+                    crate::internal::message_runtime::local_projection::persist_direct_outgoing(
+                        self.client,
+                        &result.target_did,
+                        direct_handle_from_result(&result.sdk_result).as_deref(),
+                        &result.text,
+                        &message_kind_from_result(&result.sdk_result)?,
+                        &result.sdk_result,
+                    )
+                {
+                    result
+                        .sdk_result
+                        .warnings
+                        .push(format!("Failed to persist local message: {err}"));
+                }
+                Ok(result.sdk_result)
             }
             (
                 super::MessageTarget::Group(_),
                 super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::GroupE2ee,
             ) => self.send_group_e2ee(request),
             (super::MessageTarget::Group(_), _) => {
-                crate::internal::message_runtime::group::GroupTextSender::new(
+                let mut result = crate::internal::message_runtime::group::GroupTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
                     crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -45,8 +63,23 @@ impl<'a> MessageService<'a> {
                 .send(crate::internal::message_runtime::group::GroupTextSend {
                     request,
                     credentials: None,
-                })
-                .map(|result| result.sdk_result)
+                })?;
+                #[cfg(feature = "sqlite")]
+                if let Err(err) =
+                    crate::internal::message_runtime::local_projection::persist_group_outgoing(
+                        self.client,
+                        &result.group_did,
+                        &result.text,
+                        &message_kind_from_result(&result.sdk_result)?,
+                        &result.sdk_result,
+                    )
+                {
+                    result
+                        .sdk_result
+                        .warnings
+                        .push(format!("Failed to persist local group message: {err}"));
+                }
+                Ok(result.sdk_result)
             }
         }
     }
@@ -109,6 +142,14 @@ impl<'a> MessageService<'a> {
         &self,
         query: super::InboxQuery,
     ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.inbox_with_metadata(query)
+            .map(super::MessagePage::into_page)
+    }
+
+    pub fn inbox_with_metadata(
+        &self,
+        query: super::InboxQuery,
+    ) -> crate::ImResult<super::MessagePage> {
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -116,7 +157,7 @@ impl<'a> MessageService<'a> {
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
         .inbox(crate::internal::message_runtime::read::InboxRead { query })
-        .map(|result| result.page)
+        .map(message_page_from_read_result)?
     }
 
     pub fn history(
@@ -124,6 +165,16 @@ impl<'a> MessageService<'a> {
         thread: super::ThreadRef,
         query: super::HistoryQuery,
     ) -> crate::ImResult<crate::ids::Page<super::Message>> {
+        self.history_with_metadata(thread, query)
+            .map(super::MessagePage::into_page)
+    }
+
+    pub fn history_with_metadata(
+        &self,
+        thread: super::ThreadRef,
+        query: super::HistoryQuery,
+    ) -> crate::ImResult<super::MessagePage> {
+        let (thread, resolved_did, handle_peer) = resolve_history_thread(self.client, thread)?;
         crate::internal::message_runtime::read::MessageReadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -133,9 +184,34 @@ impl<'a> MessageService<'a> {
         .history(crate::internal::message_runtime::read::HistoryRead {
             thread,
             query,
-            resolved_peer_did: None,
+            resolved_peer_did: resolved_did.clone(),
         })
-        .map(|result| result.page)
+        .map(|result| {
+            let mut page = message_page_from_read_result(result)?;
+            #[cfg(feature = "sqlite")]
+            if let Some((handle, current_did)) = handle_peer.as_ref() {
+                if let Ok(dids) =
+                    crate::internal::message_runtime::local_projection::peer_dids_for_handle(
+                        self.client,
+                        handle,
+                        current_did,
+                    )
+                {
+                    page.resolved_dids = dids
+                        .into_iter()
+                        .filter_map(|did| crate::ids::Did::parse(did).ok())
+                        .collect();
+                }
+            }
+            if page.resolved_dids.is_empty() {
+                if let Some(did) = resolved_did {
+                    if let Ok(did) = crate::ids::Did::parse(did) {
+                        page.resolved_dids.push(did);
+                    }
+                }
+            }
+            Ok(page)
+        })?
     }
 
     pub fn mark_read(
@@ -221,6 +297,91 @@ fn validate_group_e2ee_security() -> crate::ImResult<()> {
 #[cfg(not(feature = "group-e2ee"))]
 fn validate_group_e2ee_security() -> crate::ImResult<()> {
     Err(crate::ImError::unsupported("group-e2ee"))
+}
+
+fn message_kind_from_result(
+    result: &super::SendMessageResult,
+) -> crate::ImResult<super::MessageKind> {
+    match &result.message.body {
+        super::MessageBodyView::Text { kind, .. } => Ok(kind.clone()),
+        super::MessageBodyView::Unsupported { content_type } => {
+            Err(crate::ImError::unsupported(format!(
+                "message-projection-body:{}",
+                content_type.as_deref().unwrap_or("unknown")
+            )))
+        }
+    }
+}
+
+fn direct_handle_from_result(result: &super::SendMessageResult) -> Option<String> {
+    match &result.message.thread {
+        super::ThreadRef::Direct(peer) if !peer.as_str().starts_with("did:") => {
+            Some(peer.as_str().to_owned())
+        }
+        _ => None,
+    }
+}
+
+fn resolve_history_thread(
+    client: &crate::core::ImClient,
+    thread: super::ThreadRef,
+) -> crate::ImResult<(super::ThreadRef, Option<String>, Option<(String, String)>)> {
+    let super::ThreadRef::Direct(peer) = thread else {
+        return Ok((thread, None, None));
+    };
+    if peer.as_str().starts_with("did:") {
+        return Ok((
+            super::ThreadRef::Direct(peer.clone()),
+            Some(peer.as_str().to_owned()),
+            None,
+        ));
+    }
+    let handle = crate::ids::Handle::parse(peer.as_str(), "")?;
+    let lookup = client.directory().lookup_handle(handle)?;
+    let did = lookup.did.as_str().to_owned();
+    Ok((
+        super::ThreadRef::Direct(crate::ids::PeerRef::parse(&did, "")?),
+        Some(did.clone()),
+        Some((lookup.handle.as_str().to_owned(), did)),
+    ))
+}
+
+fn message_page_from_read_result(
+    result: crate::internal::message_runtime::read::ReadPageResult,
+) -> crate::ImResult<super::MessagePage> {
+    let source = result
+        .raw
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let resolved_dids = result
+        .raw
+        .get("resolved_dids")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .filter_map(|did| crate::ids::Did::parse(did).ok())
+        .collect();
+    let warnings = result
+        .raw
+        .get("warnings")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .map(ToOwned::to_owned)
+        .collect();
+    Ok(super::MessagePage {
+        items: result.page.items,
+        next_cursor: result.page.next_cursor,
+        has_more: result.page.has_more,
+        source,
+        resolved_dids,
+        warnings,
+    })
 }
 
 #[cfg(all(test, feature = "group-e2ee"))]
@@ -400,9 +561,11 @@ mod group_e2ee_public_send_tests {
                 service_base_url: crate::ServiceEndpoint::parse(base_url).unwrap(),
                 did_domain: "awiki.test".to_owned(),
                 user_service_endpoint: None,
+                mail_service_endpoint: None,
                 message_service_endpoint: None,
                 anp_service_endpoint: None,
                 anp_service_did: None,
+                ca_bundle: None,
                 transport_policy: crate::MessageTransportPolicy::HttpOnly,
             }
         }

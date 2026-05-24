@@ -256,10 +256,7 @@ fn secure_init_wire_with_network_ack_success_delivers_local_ack_result() {
         plan.actions[3],
         NormalizeDirectSecureAction::SendSecureAckJson {
             recipient_did: "did:bob".to_string(),
-            payload: awiki_cli::runtime::listener_secure_ack_delivery::build_secure_ack_payload(
-                "sess-1",
-                "msg-init-1"
-            ),
+            payload: im_core::secure::build_secure_ack_payload("sess-1", "msg-init-1"),
             message_id: "ack-sess-1".to_string(),
             request_id: "ack-sess-1".to_string(),
         }

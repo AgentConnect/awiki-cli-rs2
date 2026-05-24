@@ -156,6 +156,7 @@ mod app_sandbox_paths {
                 mail_service_endpoint: None,
                 anp_service_endpoint: None,
                 anp_service_did: None,
+                ca_bundle: None,
                 transport_policy: MessageTransportPolicy::HttpOnly,
             }
         }

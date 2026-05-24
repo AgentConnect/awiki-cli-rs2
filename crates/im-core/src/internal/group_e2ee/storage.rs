@@ -89,9 +89,11 @@ mod tests {
             service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
             did_domain: "awiki.info".to_owned(),
             user_service_endpoint: None,
+            mail_service_endpoint: None,
             message_service_endpoint: None,
             anp_service_endpoint: None,
             anp_service_did: None,
+            ca_bundle: None,
             transport_policy: crate::MessageTransportPolicy::Auto,
         }
     }

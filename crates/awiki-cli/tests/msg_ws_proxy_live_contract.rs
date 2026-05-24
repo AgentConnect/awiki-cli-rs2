@@ -1,88 +1,49 @@
 #![cfg(unix)]
 
-use awiki_cli::runtime::bridge::{self, BridgeRequest};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_send_direct_websocket_mode_uses_local_bridge_like_go() {
-    let workspace = TempDir::new("msg-ws-proxy-direct-send").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "alice-ws", "alice", "jwt-alice");
+fn msg_send_direct_websocket_mode_reports_http_failure_without_bridge_fallback() {
+    let workspace = TempDir::new("msg-ws-proxy-direct-send-failure").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "alice-ws-failure", "alice", "jwt-alice");
     let target_did = "did:wba:awiki.ai:bob:e1_bob";
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
-    let (_bridge, bridge_requests) = spawn_bridge_server(
-        &socket_path,
-        json!({
-            "accepted": true,
-            "message_id": "msg-bridge-direct-1",
-            "operation_id": "op-bridge-direct-1",
-            "target_did": target_did,
-            "accepted_at": "2026-05-16T01:02:03Z",
-            "delivery_state": "accepted",
-            "source": "local_ws_cache"
-        }),
-    );
+    let missing_socket = workspace.path().join("runtime").join("missing.sock");
     write_msg_ws_config(
         workspace.path(),
-        "https://placeholder.invalid",
-        socket_path.to_str().expect("socket path"),
+        &closed_local_url(),
+        missing_socket.to_str().expect("socket path"),
     );
 
     let output = awiki_cmd(
         &[
             "--identity",
-            "alice-ws",
+            "alice-ws-failure",
             "msg",
             "send",
             "--to",
             target_did,
             "--text",
-            "hello over local bridge",
+            "http failure should not try local bridge",
             "--type",
             "text",
         ],
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Sent a direct text message");
-    assert_eq!(envelope["data"]["action"], "send_message");
-    assert_eq!(envelope["data"]["target"]["did"], target_did);
-    assert_eq!(envelope["data"]["message"]["id"], "msg-bridge-direct-1");
-    assert_eq!(envelope["data"]["message"]["type"], "text");
-    assert_eq!(envelope["data"]["message"]["secure"], false);
-    assert_eq!(
-        envelope["data"]["delivery"]["message_id"],
-        "msg-bridge-direct-1"
-    );
-    assert_eq!(
-        envelope["data"]["delivery"]["operation_id"],
-        "op-bridge-direct-1"
-    );
-    assert!(envelope["data"].get("source").is_none());
-    assert_no_websocket_http_fallback_warning(&envelope);
-
-    let request = bridge_requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("bridge direct.send request");
-    assert_eq!(request.method, "direct.send");
-    assert_eq!(request.identity_name, "alice-ws");
-    assert_eq!(request.params["target"], target_did);
-    assert_eq!(request.params["text"], "hello over local bridge");
-    assert_eq!(request.params["type"], "text");
+    assert_transport_unavailable_without_bridge_fallback(&output);
 }
 
 #[test]
-fn msg_send_direct_websocket_mode_falls_back_to_http_without_warning_like_go() {
-    let workspace = TempDir::new("msg-ws-proxy-direct-send-fallback").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "alice-ws-fallback", "alice", "jwt-alice");
+fn msg_send_direct_websocket_mode_uses_im_core_http_without_warning() {
+    let workspace = TempDir::new("msg-ws-proxy-direct-send-http").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "alice-ws-http", "alice", "jwt-alice");
     let target_did = "did:wba:awiki.ai:bob:e1_bob";
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
@@ -104,13 +65,13 @@ fn msg_send_direct_websocket_mode_falls_back_to_http_without_warning_like_go() {
     let output = awiki_cmd(
         &[
             "--identity",
-            "alice-ws-fallback",
+            "alice-ws-http",
             "msg",
             "send",
             "--to",
             target_did,
             "--text",
-            "hello over HTTP fallback",
+            "hello over HTTP",
             "--type",
             "text",
         ],
@@ -147,77 +108,11 @@ fn msg_send_direct_websocket_mode_falls_back_to_http_without_warning_like_go() {
         body["params"]["meta"]["target"],
         json!({"kind": "agent", "did": target_did})
     );
-    assert_eq!(
-        body["params"]["body"],
-        json!({"text": "hello over HTTP fallback"})
-    );
+    assert_eq!(body["params"]["body"], json!({"text": "hello over HTTP"}));
     assert_eq!(
         body["params"]["auth"]["scheme"],
         "anp-rfc9421-origin-proof-v1"
     );
-}
-
-fn spawn_bridge_server(
-    socket_path: &Path,
-    result: Value,
-) -> (thread::JoinHandle<()>, mpsc::Receiver<BridgeRequest>) {
-    let listener =
-        bridge::listen_bridge(socket_path.to_str().expect("socket path")).expect("listen bridge");
-    listener
-        .set_nonblocking(true)
-        .expect("set bridge listener nonblocking");
-    let (requests_tx, requests_rx) = mpsc::channel();
-    let response_line = json!({ "ok": true, "result": result }).to_string() + "\n";
-
-    let handle = thread::spawn(move || loop {
-        let Ok((mut conn, _)) = accept_unix_connection(&listener) else {
-            return;
-        };
-        conn.set_read_timeout(Some(Duration::from_secs(2)))
-            .expect("set bridge read timeout");
-        let mut request_line = String::new();
-        let Ok(read) = BufReader::new(conn.try_clone().expect("clone bridge client"))
-            .read_line(&mut request_line)
-        else {
-            return;
-        };
-        if read == 0 || request_line.trim().is_empty() {
-            continue;
-        }
-
-        let request: BridgeRequest =
-            serde_json::from_str(request_line.trim_end()).expect("decode bridge request");
-        requests_tx.send(request).expect("send bridge request");
-        conn.write_all(response_line.as_bytes())
-            .expect("write bridge response");
-        break;
-    });
-
-    (handle, requests_rx)
-}
-
-fn accept_unix_connection(
-    listener: &std::os::unix::net::UnixListener,
-) -> std::io::Result<(
-    std::os::unix::net::UnixStream,
-    std::os::unix::net::SocketAddr,
-)> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match listener.accept() {
-            Ok(accepted) => return Ok(accepted),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "timed out accepting bridge test connection",
-                    ));
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Err(err),
-        }
-    }
 }
 
 fn register_ready_msg_identity(
@@ -228,6 +123,7 @@ fn register_ready_msg_identity(
 ) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -293,6 +189,13 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
     .unwrap();
 }
 
+fn closed_local_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind closed local url");
+    let address = listener.local_addr().expect("local addr");
+    drop(listener);
+    format!("http://{address}")
+}
+
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
@@ -328,6 +231,34 @@ fn success_json(output: &Output) -> Value {
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true);
     envelope
+}
+
+fn failure_json(output: &Output) -> Value {
+    assert!(
+        !output.status.success(),
+        "expected failure; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope")
+}
+
+fn assert_transport_unavailable_without_bridge_fallback(output: &Output) {
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = failure_json(output);
+    assert_eq!(envelope["error"]["code"], "transport_unavailable");
+    let message = envelope["error"]["message"].as_str().expect("message");
+    assert_contains_text(message, "message transport is unavailable");
+    assert!(
+        !message.contains("local websocket bridge request failed"),
+        "legacy bridge fallback should not be used, got: {message}"
+    );
 }
 
 fn assert_no_websocket_http_fallback_warning(envelope: &Value) {

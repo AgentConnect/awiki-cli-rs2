@@ -197,6 +197,15 @@ pub fn create_identity(
     })
 }
 
+pub fn create_migration_identity(
+    resolved: &Resolved,
+    manager: &Manager,
+    display_name: &str,
+    identity_name: &str,
+) -> Result<CommandResult, IdentityError> {
+    create_identity(resolved, manager, display_name, identity_name)
+}
+
 pub fn register_plan(
     manager: &Manager,
     did_domain: &str,
@@ -1019,6 +1028,14 @@ pub fn import_v1(manager: &Manager, name: &str, all: bool) -> Result<CommandResu
         summary: "Legacy identity import completed".to_string(),
         warnings: Vec::new(),
     })
+}
+
+pub fn import_v1_migration(
+    manager: &Manager,
+    name: &str,
+    all: bool,
+) -> Result<CommandResult, IdentityError> {
+    import_v1(manager, name, all)
 }
 
 fn string_value(result: &Value, key: &str, fallback: &str) -> String {

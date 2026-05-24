@@ -86,6 +86,32 @@ pub(crate) fn project_group_members(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn project_group_messages(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    result: &crate::groups::GroupReadResult,
+) {
+    let records = group_message_records(client, group_did, result);
+    if records.is_empty() {
+        return;
+    }
+    let Ok(connection) = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    ) else {
+        return;
+    };
+    let _ = crate::internal::local_state::messages::upsert_messages(&connection, &records);
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) fn project_group_messages(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) {
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn project_group_left(client: &crate::core::ImClient, group_did: &str) {
     let Ok(mut connection) = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
@@ -238,6 +264,62 @@ fn group_member_record(
         credential_name: client.current_identity().id.as_str().to_string(),
         ..crate::internal::local_state::groups::GroupMemberRecord::default()
     })
+}
+
+#[cfg(feature = "sqlite")]
+fn group_message_records(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    result: &crate::groups::GroupReadResult,
+) -> Vec<crate::internal::local_state::messages::MessageRecord> {
+    result
+        .messages
+        .items
+        .iter()
+        .map(|message| group_message_record(client, group_did, message))
+        .collect()
+}
+
+#[cfg(feature = "sqlite")]
+fn group_message_record(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    message: &crate::messages::Message,
+) -> crate::internal::local_state::messages::MessageRecord {
+    let group_did = message
+        .group
+        .as_ref()
+        .map(crate::ids::GroupRef::as_str)
+        .unwrap_or(group_did);
+    crate::internal::local_state::messages::MessageRecord {
+        msg_id: message.id.as_str().to_string(),
+        owner_identity_id: client.current_identity().id.as_str().to_string(),
+        owner_did: client.did().as_str().to_string(),
+        thread_id: group_thread_id(group_did),
+        direction: match message.direction {
+            crate::messages::MessageDirection::Outgoing => 1,
+            crate::messages::MessageDirection::Incoming => 0,
+            crate::messages::MessageDirection::Unknown => -1,
+        },
+        sender_did: message.sender.as_str().to_string(),
+        receiver_did: message
+            .receiver
+            .as_ref()
+            .map(crate::ids::PeerRef::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        group_id: group_storage_key(group_did),
+        group_did: group_did.trim().to_string(),
+        content_type: message_content_type(message),
+        content: message_content(message),
+        server_seq: message.metadata.server_sequence,
+        sent_at: message.sent_at.clone().unwrap_or_default(),
+        is_e2ee: false,
+        is_read: false,
+        metadata: message_metadata_string(message),
+        credential_name: client.current_identity().id.as_str().to_string(),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -429,6 +511,72 @@ fn group_did_from_result(raw: &Value) -> String {
 #[cfg(feature = "sqlite")]
 fn group_storage_key(group_did: &str) -> String {
     group_did.trim().to_string()
+}
+
+#[cfg(feature = "sqlite")]
+fn group_thread_id(group_did: &str) -> String {
+    let value = group_did.trim();
+    if value.is_empty() {
+        "group:unknown".to_string()
+    } else {
+        format!("group:{value}")
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn message_content(message: &crate::messages::Message) -> String {
+    match &message.body {
+        crate::messages::MessageBodyView::Text { text, .. } => text.clone(),
+        crate::messages::MessageBodyView::Unsupported { .. } => String::new(),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn message_content_type(message: &crate::messages::Message) -> String {
+    message
+        .metadata
+        .content_type
+        .clone()
+        .unwrap_or_else(|| match &message.body {
+            crate::messages::MessageBodyView::Text {
+                kind: crate::messages::MessageKind::Markdown,
+                ..
+            } => "text/markdown".to_string(),
+            crate::messages::MessageBodyView::Text { .. } => "text/plain".to_string(),
+            crate::messages::MessageBodyView::Unsupported { content_type } => content_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_string()),
+        })
+}
+
+#[cfg(feature = "sqlite")]
+fn message_metadata_string(message: &crate::messages::Message) -> String {
+    let mut metadata = serde_json::Map::new();
+    insert_string(
+        &mut metadata,
+        "operation_id",
+        message.metadata.operation_id.as_deref(),
+    );
+    insert_string(
+        &mut metadata,
+        "delivery_state",
+        message.metadata.delivery_state.as_deref(),
+    );
+    if let Some(server_sequence) = message.metadata.server_sequence {
+        metadata.insert(
+            "server_seq".to_string(),
+            Value::Number(serde_json::Number::from(server_sequence)),
+        );
+    }
+    Value::Object(metadata).to_string()
+}
+
+#[cfg(feature = "sqlite")]
+fn insert_string(object: &mut serde_json::Map<String, Value>, key: &str, value: Option<&str>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    object.insert(key.to_string(), Value::String(value.to_string()));
 }
 
 #[cfg(feature = "sqlite")]

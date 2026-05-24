@@ -115,9 +115,11 @@ fn recover_handle_request_builds_sdk_request() {
     .unwrap();
 
     assert_eq!(request.handle.as_str(), "alice.awiki.test");
+    assert_eq!(request.raw_handle.as_deref(), Some("Alice"));
     assert_eq!(request.phone, "13800138000");
     assert_eq!(request.otp.as_deref(), Some("12 34 56"));
     assert!(request.generated_identity.is_none());
+    assert!(request.local_finalize.is_none());
 }
 
 #[test]
@@ -203,19 +205,18 @@ fn replace_did_plan_command_request_builds_sdk_plan_request() {
         sources: BTreeMap::new(),
     };
     let manager = crate::identity::Manager::new(paths);
-    let generated = crate::identity::generate_identity_with_path_segments(
+    let generated = crate::identity::generate_identity(
         "awiki.test",
-        ["alice", "e1_old"],
-        "https://example.test/anp-im/rpc",
+        "https://example.test/agent",
         "did:wba:example.test",
     )
-    .expect("generate identity");
-    let generated_did = generated.did.clone();
+    .expect("generate identity fixture");
+    let generated_did = "did:wba:awiki.test:alice:e1_old".to_string();
     manager
         .save(crate::identity::types::SaveInput {
             identity_name: "alice".to_string(),
-            did: generated.did,
-            unique_id: generated.unique_id,
+            did: generated_did.clone(),
+            unique_id: "e1_old".to_string(),
             display_name: "Alice".to_string(),
             handle: "alice".to_string(),
             full_handle: "alice.awiki.test".to_string(),
@@ -348,6 +349,7 @@ fn build_im_core_config_from_parts_maps_fields() {
         Some("https://mail.example.test"),
         Some("https://anp.example.test/rpc"),
         Some("did:wba:anp.example.test"),
+        Some("/tmp/awiki-ca.pem"),
         "websocket",
     )
     .unwrap();
@@ -373,6 +375,7 @@ fn build_im_core_config_from_parts_maps_fields() {
         cfg.anp_service_did.unwrap().as_str(),
         "did:wba:anp.example.test"
     );
+    assert_eq!(cfg.ca_bundle.as_deref(), Some("/tmp/awiki-ca.pem"));
     assert_eq!(
         cfg.transport_policy,
         im_core::MessageTransportPolicy::RealtimePreferred

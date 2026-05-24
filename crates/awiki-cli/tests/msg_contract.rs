@@ -102,7 +102,15 @@ fn msg_dry_run_plans_match_go_contracts() {
     assert_code(&secure_direct, 2);
     let secure_direct = error_json(&secure_direct);
     assert_eq!(secure_direct["error"]["code"], "unsupported_capability");
-    assert_contains(&secure_direct["error"]["message"], "secure direct");
+    assert_eq!(secure_direct["error"]["details"]["command"], "msg.send");
+    assert_eq!(
+        secure_direct["error"]["details"]["capability"],
+        "secure-direct"
+    );
+    assert_eq!(
+        secure_direct["error"]["details"]["required_phase"],
+        "Phase 6"
+    );
 
     let secure_direct_equals = awiki_cmd(
         &[
@@ -421,7 +429,9 @@ fn msg_send_default_cutover_supports_attachment_dry_run_and_rejects_secure_direc
     assert_code(&secure, 2);
     let secure = error_json(&secure);
     assert_eq!(secure["error"]["code"], "unsupported_capability");
-    assert_contains(&secure["error"]["message"], "secure direct");
+    assert_eq!(secure["error"]["details"]["command"], "msg.send");
+    assert_eq!(secure["error"]["details"]["capability"], "secure-direct");
+    assert_eq!(secure["error"]["details"]["required_phase"], "Phase 6");
 }
 
 #[test]

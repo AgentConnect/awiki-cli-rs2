@@ -1,4 +1,4 @@
-use im_core::compat::realtime::{
+use im_core::realtime::{
     consume_notifications_step, secure_prekey_retry_decision, session_loop_start_decision,
     shutdown_decision, ConnectedSessionAction, ConsumeFinishedAction, ConsumeFinishedDecision,
     ConsumeNotificationsAction, ConsumeNotificationsDecision, ConsumeNotificationsEvent,

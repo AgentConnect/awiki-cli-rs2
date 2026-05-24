@@ -284,7 +284,11 @@ fn hermes_bridge_service_run_validates_bridge_config_before_deferred_boundary() 
         &["runtime", "host-notify", "hermes", "bridge", "service-run"][..],
         &["runtime", "host-notify", "webhook", "bridge", "service-run"],
     ] {
-        let output = awiki_cmd(command, workspace.path(), &[]);
+        let output = awiki_cmd(
+            command,
+            workspace.path(),
+            &[("AWIKI_CLI_INTERNAL_ENTRY", "1")],
+        );
         assert_code(&output, 1);
         let envelope = error_json(&output);
 
@@ -347,6 +351,7 @@ exec /bin/sleep 30
         workspace.path(),
         &[
             ("AWIKI_HOST_NOTIFY_HERMES_SECRET", "notify-secret"),
+            ("AWIKI_CLI_INTERNAL_ENTRY", "1"),
             ("PATH", path_env.as_str()),
             ("AWIKI_HERMES_TEST_MARKER", marker_env.as_str()),
         ],

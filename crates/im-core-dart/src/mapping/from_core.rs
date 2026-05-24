@@ -538,6 +538,12 @@ impl From<im_core::messages::SendMessageResult> for DartSendMessageResult {
     }
 }
 
+impl From<im_core::attachments::AttachmentSendResult> for DartSendMessageResult {
+    fn from(value: im_core::attachments::AttachmentSendResult) -> Self {
+        value.message.into()
+    }
+}
+
 impl From<im_core::attachments::DownloadedAttachment> for DartDownloadedAttachment {
     fn from(value: im_core::attachments::DownloadedAttachment) -> Self {
         Self {

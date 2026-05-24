@@ -1,5 +1,5 @@
-use im_core::compat::realtime::{project_notification, NotificationProjectionRoute};
 use im_core::prelude::*;
+use im_core::realtime::{project_notification, NotificationProjectionRoute};
 use serde_json::json;
 
 #[test]

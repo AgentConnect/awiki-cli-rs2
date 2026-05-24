@@ -136,6 +136,7 @@ fn register_ready_mail_identity(
 ) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",

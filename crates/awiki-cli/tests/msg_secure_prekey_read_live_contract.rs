@@ -10,48 +10,9 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_inbox_and_history_live_publish_secure_prekeys_before_direct_reads_like_go() {
-    let workspace = TempDir::new("msg-secure-prekey-read").expect("workspace");
-    let manager = Manager::new(test_paths(workspace.path()));
-    let bob = register_generated_msg_identity(&manager, "bob-secure-read", "bob", "jwt-bob");
+fn msg_inbox_target_filter_is_unsupported_before_legacy_secure_prekey_side_effects() {
+    let workspace = TempDir::new("msg-secure-prekey-inbox-filter").expect("workspace");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    let message = json!({
-        "id": "msg-secure-prekey-read-1",
-        "type": "text",
-        "sender_did": alice_did,
-        "receiver_did": bob.did,
-        "content_type": "text/plain",
-        "content": "hello bob",
-        "sent_at": "2026-04-07T01:02:03Z",
-        "is_read": false,
-    });
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "messages": [message.clone()],
-            "total": 1,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "did": alice_did,
-            "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "messages": [message],
-            "total": 1,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "did": alice_did,
-            "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
-        }))),
-    ]);
-    write_msg_config(workspace.path(), &server.base_url());
 
     let inbox = awiki_cmd(
         &[
@@ -68,20 +29,36 @@ fn msg_inbox_and_history_live_publish_secure_prekeys_before_direct_reads_like_go
         ],
         workspace.path(),
     );
-    assert_success(&inbox);
-    let inbox_json = success_json(&inbox);
-    assert_eq!(inbox_json["summary"], "Loaded 1 direct inbox messages");
-    assert_eq!(
-        inbox_json["data"]["messages"][0]["id"],
-        "msg-secure-prekey-read-1"
-    );
-    assert!(inbox_json.get("warnings").is_none());
-    assert_eq!(server.requests().len(), 4);
+    assert_unsupported_capability(&inbox, "msg.inbox", "inbox-target-filters", "Phase 3");
+}
+
+#[test]
+fn msg_history_live_reads_without_legacy_secure_prekey_publish_side_effect() {
+    let workspace = TempDir::new("msg-secure-prekey-history").expect("workspace");
+    let manager = Manager::new(test_paths(workspace.path()));
+    let bob = register_generated_msg_identity(&manager, "bob-secure-history", "bob", "jwt-bob");
+    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
+    let message = json!({
+        "id": "msg-secure-prekey-history-1",
+        "type": "text",
+        "sender_did": alice_did,
+        "receiver_did": bob.did,
+        "content_type": "text/plain",
+        "content": "hello bob",
+        "sent_at": "2026-04-07T01:02:03Z",
+        "is_read": false,
+    });
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "messages": [message],
+        "total": 1,
+        "source": "remote_http"
+    })))]);
+    write_msg_config(workspace.path(), &server.base_url());
 
     let history = awiki_cmd(
         &[
             "--identity",
-            "bob-secure-read",
+            "bob-secure-history",
             "msg",
             "history",
             "--with",
@@ -96,42 +73,25 @@ fn msg_inbox_and_history_live_publish_secure_prekeys_before_direct_reads_like_go
     assert_eq!(history_json["summary"], "Loaded 1 direct history messages");
     assert_eq!(
         history_json["data"]["messages"][0]["id"],
-        "msg-secure-prekey-read-1"
+        "msg-secure-prekey-history-1"
     );
     assert!(history_json.get("warnings").is_none());
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 1);
     let bodies = request_json_bodies(&requests);
-    assert_eq!(
-        rpc_methods(&bodies),
-        vec![
-            "direct.e2ee.publish_prekey_bundle",
-            "direct.e2ee.publish_prekey_bundle",
-            "inbox.get",
-            "lookup",
-            "direct.e2ee.publish_prekey_bundle",
-            "direct.e2ee.publish_prekey_bundle",
-            "direct.get_history",
-        ]
-    );
-    assert_publish_prekey_request(&bodies[0], &bob.did);
-    assert_publish_prekey_request(&bodies[1], &bob.did);
-    assert_eq!(bodies[2]["params"]["body"]["user_did"], bob.did);
-    assert_eq!(bodies[3]["params"]["did"], alice_did);
-    assert_publish_prekey_request(&bodies[4], &bob.did);
-    assert_publish_prekey_request(&bodies[5], &bob.did);
-    assert_eq!(bodies[6]["params"]["body"]["peer_did"], alice_did);
+    assert_eq!(rpc_methods(&bodies), vec!["direct.get_history"]);
+    assert_eq!(bodies[0]["params"]["body"]["peer_did"], alice_did);
 }
 
 #[test]
-fn msg_inbox_live_keeps_read_success_when_secure_prekey_publish_warns_like_go() {
-    let workspace = TempDir::new("msg-secure-prekey-read-warning").expect("workspace");
+fn msg_history_live_keeps_read_success_without_legacy_secure_prekey_warning() {
+    let workspace = TempDir::new("msg-secure-prekey-history-success").expect("workspace");
     let manager = Manager::new(test_paths(workspace.path()));
-    let bob = register_generated_msg_identity(&manager, "bob-secure-warning", "bob", "jwt-bob");
+    let bob = register_generated_msg_identity(&manager, "bob-secure-success", "bob", "jwt-bob");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let message = json!({
-        "id": "msg-secure-prekey-warning-1",
+        "id": "msg-secure-prekey-success-1",
         "type": "text",
         "sender_did": alice_did,
         "receiver_did": bob.did,
@@ -140,63 +100,37 @@ fn msg_inbox_live_keeps_read_success_when_secure_prekey_publish_warns_like_go() 
         "sent_at": "2026-04-07T01:02:03Z",
         "is_read": false,
     });
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(
-            r#"{"jsonrpc":"2.0","error":{"code":-32050,"message":"prekey publish failed"},"id":"req-1"}"#,
-        ),
-        TestResponse::ok(&json_rpc_result(json!({
-            "messages": [message],
-            "total": 1,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "did": alice_did,
-            "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
-        }))),
-    ]);
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "messages": [message],
+        "total": 1,
+        "source": "remote_http"
+    })))]);
     write_msg_config(workspace.path(), &server.base_url());
 
-    let inbox = awiki_cmd(
+    let history = awiki_cmd(
         &[
             "--identity",
-            "bob-secure-warning",
+            "bob-secure-success",
             "msg",
-            "inbox",
-            "--scope",
-            "direct",
+            "history",
             "--with",
             alice_did,
         ],
         workspace.path(),
     );
-    assert_success(&inbox);
-    let inbox_json = success_json(&inbox);
-    assert_eq!(inbox_json["summary"], "Loaded 1 direct inbox messages");
+    assert_success(&history);
+    let history_json = success_json(&history);
+    assert_eq!(history_json["summary"], "Loaded 1 direct history messages");
     assert_eq!(
-        inbox_json["data"]["messages"][0]["id"],
-        "msg-secure-prekey-warning-1"
+        history_json["data"]["messages"][0]["id"],
+        "msg-secure-prekey-success-1"
     );
-    let warnings = inbox_json["warnings"].as_array().expect("warnings");
-    assert!(
-        warnings.iter().any(|warning| warning
-            == "Failed to publish secure prekeys: service rpc error -32050: prekey publish failed"),
-        "expected secure prekey publish warning, got: {warnings:?}"
-    );
+    assert!(history_json.get("warnings").is_none());
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 1);
     let bodies = request_json_bodies(&requests);
-    assert_eq!(
-        rpc_methods(&bodies),
-        vec![
-            "direct.e2ee.publish_prekey_bundle",
-            "direct.e2ee.publish_prekey_bundle",
-            "inbox.get",
-            "lookup",
-        ]
-    );
+    assert_eq!(rpc_methods(&bodies), vec!["direct.get_history"]);
 }
 
 fn register_generated_msg_identity(
@@ -296,6 +230,39 @@ fn success_json(output: &Output) -> Value {
     envelope
 }
 
+fn error_json(output: &Output) -> Value {
+    assert!(
+        !output.status.success(),
+        "command should fail\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stderr).expect("error JSON")
+}
+
+fn assert_unsupported_capability(
+    output: &Output,
+    command: &str,
+    capability: &str,
+    required_phase: &str,
+) {
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = error_json(output);
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], capability);
+    assert_eq!(
+        envelope["error"]["details"]["required_phase"],
+        required_phase
+    );
+}
+
 fn request_body(raw: &str) -> &str {
     raw.split("\r\n\r\n").nth(1).unwrap_or_default()
 }
@@ -312,26 +279,6 @@ fn rpc_methods(bodies: &[Value]) -> Vec<&str> {
         .iter()
         .map(|body| body["method"].as_str().expect("rpc method"))
         .collect()
-}
-
-fn assert_publish_prekey_request(body: &Value, owner_did: &str) {
-    assert_eq!(body["method"], "direct.e2ee.publish_prekey_bundle");
-    assert_eq!(body["params"]["meta"]["profile"], "anp.direct.e2ee.v1");
-    assert_eq!(
-        body["params"]["meta"]["security_profile"],
-        "transport-protected"
-    );
-    assert_eq!(
-        body["params"]["body"]["prekey_bundle"]["owner_did"],
-        owner_did
-    );
-    assert_eq!(
-        body["params"]["body"]["one_time_prekeys"]
-            .as_array()
-            .expect("one-time prekeys")
-            .len(),
-        16
-    );
 }
 
 fn path_string(path: &Path) -> String {

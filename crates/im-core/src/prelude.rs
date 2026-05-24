@@ -1,6 +1,7 @@
 pub use crate::attachments::{
-    AttachmentDestination, AttachmentInput, AttachmentSendRequest, AttachmentService,
-    DownloadAttachmentRequest, DownloadedAttachment, DownloadedAttachmentDestination,
+    AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
+    AttachmentSendResult, AttachmentService, DownloadAttachmentRequest, DownloadedAttachment,
+    DownloadedAttachmentDestination, UploadedAttachment,
 };
 pub use crate::auth::{AuthScope, AuthService, AuthStatus, SessionBundle, SessionUpdate};
 pub use crate::core::{
@@ -24,14 +25,16 @@ pub use crate::groups::{
     GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit, GroupMemberMutationRequest,
     GroupMemberRole, GroupMembersRequest, GroupMessageSecurityProfile, GroupMessagesRequest,
     GroupPolicyPatch, GroupProfilePatch, GroupService, GroupSnapshot, GroupSummary,
-    GroupUpdatePolicyRequest, GroupUpdateProfileRequest,
+    GroupUpdatePolicyRequest, GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };
 pub use crate::identity::{
     ContactBindingMethod, ContactBindingRequest, ContactBindingState, DefaultIdentityChange,
     HandleRegistrationResult, HandleRegistrationState, IdentityMissingItem, IdentityReadiness,
     IdentityRegistry, IdentitySelector, IdentityService, IdentitySummary, InitialProfile, Profile,
-    ProfileAttribute, ProfilePatch, RecoverHandleRequest, RecoverHandleState, RecoveredIdentity,
-    RegisterHandleRequest, RegistrationMethod, VerificationInput,
+    ProfileAttribute, ProfilePatch, RecoverHandleLocalFinalizeRequest, RecoverHandlePlan,
+    RecoverHandlePlanRequest, RecoverHandleRequest, RecoverHandleState,
+    RecoverLocalIdentitySummary, RecoverLocalUserState, RecoveredIdentity, RegisterHandleRequest,
+    RegistrationMethod, VerificationInput,
 };
 pub use crate::ids::{
     Cursor, Did, GroupRef, Handle, IdentityId, MessageId, Page, PageLimit, PeerRef, ThreadId,
@@ -39,10 +42,10 @@ pub use crate::ids::{
 pub use crate::messages::{
     Conversation, ConversationQuery, DeliveryState, HistoryQuery, InboxQuery, InboxScope,
     MarkReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
-    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageRetryAction,
-    MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy, MessageSendState,
-    MessageSendStateKind, MessageService, MessageTarget, SendMessageRequest, SendMessageResult,
-    ThreadRef,
+    MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessagePage,
+    MessageRetryAction, MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy,
+    MessageSendState, MessageSendStateKind, MessageService, MessageTarget, SendMessageRequest,
+    SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::{

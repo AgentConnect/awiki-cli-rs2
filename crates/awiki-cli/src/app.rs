@@ -38,6 +38,8 @@ pub struct GlobalOptions {
     pub format_changed: bool,
     pub jq: String,
     pub dry_run: bool,
+    pub diagnostic: bool,
+    pub migration: bool,
     pub identity: String,
     pub identity_changed: bool,
     pub verbose: bool,
@@ -50,6 +52,8 @@ impl Default for GlobalOptions {
             format_changed: false,
             jq: String::new(),
             dry_run: false,
+            diagnostic: false,
+            migration: false,
             identity: String::new(),
             identity_changed: false,
             verbose: false,
@@ -272,9 +276,43 @@ impl App {
         )
     }
 
-    pub fn run_schema(&self, args: &[String]) -> Result<(), ExitError> {
+    pub fn run_schema(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
-        if args.is_empty() {
+        if command.flags.contains_key("all") && command.flags.contains_key("audience") {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "schema accepts either --all or --audience, not both.",
+                "Use `awiki-cli schema --all` or `awiki-cli schema --audience diagnostic`.",
+            ));
+        }
+        if command.flags.contains_key("all") {
+            return self.render_success(
+                "awiki-cli schema",
+                &resolved,
+                json!({ "commands": cmdmeta::specs(), "phase": "phase1-shell", "audience": "all" }),
+                "Static command contract",
+                Vec::new(),
+            );
+        }
+        if let Some(audience) = command.flags.get("audience") {
+            let Some(commands) = cmdmeta::audience_surface_specs(audience) else {
+                return Err(ExitError::new(
+                    "invalid_argument",
+                    2,
+                    format!("unknown schema audience {audience:?}."),
+                    "Use default, advanced, operator, diagnostic, migration, internal, or all.",
+                ));
+            };
+            return self.render_success(
+                "awiki-cli schema",
+                &resolved,
+                json!({ "commands": commands, "phase": "phase1-shell", "audience": audience }),
+                "Static command contract",
+                Vec::new(),
+            );
+        }
+        if command.args.is_empty() {
             return self.render_success(
                 "awiki-cli schema",
                 &resolved,
@@ -283,7 +321,7 @@ impl App {
                 Vec::new(),
             );
         }
-        let target = args.join(" ");
+        let target = command.args.join(" ");
         let Some(spec) = cmdmeta::lookup(&target) else {
             return Err(ExitError::new(
                 "not_found",
@@ -405,8 +443,9 @@ impl App {
                 },
             );
         }
-        let result = identity::create_identity(&resolved, &manager, &name, &identity_name)
-            .map_err(identity_exit)?;
+        let result =
+            identity::create_migration_identity(&resolved, &manager, &name, &identity_name)
+                .map_err(identity_exit)?;
         self.render_identity_result("awiki-cli id create", &resolved, result)
     }
 
@@ -502,8 +541,9 @@ impl App {
                 },
             );
         }
-        let result = identity::import_v1(&self.identity_manager(&resolved), &name, import_all)
-            .map_err(identity_exit)?;
+        let result =
+            identity::import_v1_migration(&self.identity_manager(&resolved), &name, import_all)
+                .map_err(identity_exit)?;
         self.render_identity_result("awiki-cli id import-v1", &resolved, result)
     }
 

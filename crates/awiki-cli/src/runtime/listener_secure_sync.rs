@@ -2,9 +2,7 @@ use super::listener_secure_replay::{
     secure_pending_history_replay_candidates, secure_unread_replay_candidates, ReplayStoreLookup,
 };
 use crate::identity::types::StoredIdentity;
-// Phase 6 will move secure replay to stable im-core secure APIs; until then it
-// still needs raw encrypted message RPC payloads for local replay.
-use im_core::compat::wire::{self, HistoryWireRequest, InboxWireRequest, WireIdentity};
+use im_core::realtime::wire::{self, HistoryWireRequest, InboxWireRequest, WireIdentity};
 use serde_json::Value;
 use std::time::Duration;
 

@@ -100,7 +100,7 @@ fn e2ee_required_attachment_reports_secure_attachment_boundary() {
     let result = client.messages().send(SendMessageRequest {
         target: MessageTarget::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
         body: MessageBody::Attachment {
-            input: AttachmentInput::LocalFile("image.png".to_string()),
+            input: AttachmentInput::LocalFile(PathBuf::from("image.png")),
             caption: None,
             mime_type: None,
         },
@@ -175,6 +175,7 @@ fn test_config() -> ImCoreConfig {
         mail_service_endpoint: None,
         anp_service_endpoint: None,
         anp_service_did: None,
+        ca_bundle: None,
         transport_policy: MessageTransportPolicy::Auto,
     }
 }

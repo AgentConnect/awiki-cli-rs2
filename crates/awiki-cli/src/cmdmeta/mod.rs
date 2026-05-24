@@ -28,6 +28,132 @@ pub struct CommandSpec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAudience {
+    DefaultUser,
+    AdvancedUser,
+    Operator,
+    Diagnostic,
+    MigrationOnly,
+    InternalService,
+}
+
+impl CommandAudience {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DefaultUser => "default",
+            Self::AdvancedUser => "advanced",
+            Self::Operator => "operator",
+            Self::Diagnostic => "diagnostic",
+            Self::MigrationOnly => "migration",
+            Self::InternalService => "internal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandOwner {
+    CliShell,
+    ImCoreIdentity,
+    ImCoreAuth,
+    ImCoreDirectory,
+    ImCoreMessages,
+    ImCoreGroups,
+    ImCoreAttachments,
+    ImCoreRealtime,
+    ImCoreSecure,
+    ImCoreEmail,
+    CliDiagnostic,
+    CliMigration,
+    ExternalUnsupported,
+}
+
+impl CommandOwner {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CliShell => "cli_shell",
+            Self::ImCoreIdentity => "im_core_identity",
+            Self::ImCoreAuth => "im_core_auth",
+            Self::ImCoreDirectory => "im_core_directory",
+            Self::ImCoreMessages => "im_core_messages",
+            Self::ImCoreGroups => "im_core_groups",
+            Self::ImCoreAttachments => "im_core_attachments",
+            Self::ImCoreRealtime => "im_core_realtime",
+            Self::ImCoreSecure => "im_core_secure",
+            Self::ImCoreEmail => "im_core_email",
+            Self::CliDiagnostic => "cli_diagnostic",
+            Self::CliMigration => "cli_migration",
+            Self::ExternalUnsupported => "external_unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliShellRole {
+    None,
+    ParsesInputOnly,
+    WritesDefaultIdentityFile,
+    ReadsUserInputFile,
+    WritesUserOutputFile,
+    RendersDryRunPlan,
+    ManagesLocalService,
+    ManagesHostNotifyConfig,
+}
+
+impl CliShellRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ParsesInputOnly => "parses_input_only",
+            Self::WritesDefaultIdentityFile => "writes_default_identity_file",
+            Self::ReadsUserInputFile => "reads_user_input_file",
+            Self::WritesUserOutputFile => "writes_user_output_file",
+            Self::RendersDryRunPlan => "renders_dry_run_plan",
+            Self::ManagesLocalService => "manages_local_service",
+            Self::ManagesHostNotifyConfig => "manages_host_notify_config",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectInvocationPolicy {
+    Allow,
+    AllowWithWarning,
+    RequireDiagnosticGate,
+    RequireMigrationGate,
+    RequireInternalServiceGate,
+    StableUnsupported {
+        capability: &'static str,
+        phase: &'static str,
+    },
+    Removed {
+        replacement: Option<&'static str>,
+    },
+    DeprecatedAlias {
+        replacement: &'static str,
+        until: &'static str,
+    },
+}
+
+impl DirectInvocationPolicy {
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::AllowWithWarning => "allow_with_warning",
+            Self::RequireDiagnosticGate => "require_diagnostic_gate",
+            Self::RequireMigrationGate => "require_migration_gate",
+            Self::RequireInternalServiceGate => "require_internal_service_gate",
+            Self::StableUnsupported { .. } => "stable_unsupported",
+            Self::Removed { .. } => "removed",
+            Self::DeprecatedAlias { .. } => "deprecated_alias",
+        }
+    }
+
+    pub fn is_default_invocable(self) -> bool {
+        matches!(self, Self::Allow | Self::AllowWithWarning)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CutoverStatus {
     CliOwned,
     ImCore,
@@ -71,6 +197,14 @@ impl CutoverStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CommandCutoverView<'a> {
+    status: CutoverStatus,
+    default_surface: bool,
+    capability: Option<&'a str>,
+    required_phase: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCommand {
     pub name: String,
@@ -91,8 +225,38 @@ impl CommandSpec {
         self.use_
     }
 
+    pub fn canonical_name(&self) -> &'static str {
+        self.name
+    }
+
     pub fn cutover_status(&self) -> CutoverStatus {
         cutover_status(self.name)
+    }
+
+    pub fn audience(&self) -> CommandAudience {
+        command_audience(self.name)
+    }
+
+    pub fn primary_owner(&self) -> CommandOwner {
+        primary_owner(self.name)
+    }
+
+    pub fn secondary_owners(&self) -> &'static [CommandOwner] {
+        secondary_owners(self.name)
+    }
+
+    pub fn cli_shell_role(&self) -> CliShellRole {
+        cli_shell_role(self.name)
+    }
+
+    pub fn direct_invocation(&self) -> DirectInvocationPolicy {
+        direct_invocation_policy(self.name)
+    }
+
+    pub fn include_in_default_surface(&self) -> bool {
+        self.audience() == CommandAudience::DefaultUser
+            && default_surface_owner(self.primary_owner())
+            && self.direct_invocation().is_default_invocable()
     }
 }
 
@@ -103,9 +267,29 @@ pub fn specs() -> Vec<CommandSpec> {
 pub fn default_surface_specs() -> Vec<CommandSpec> {
     default_specs()
         .iter()
-        .filter(|spec| spec.cutover_status().include_in_default_surface())
+        .filter(|spec| spec.include_in_default_surface())
         .cloned()
         .collect()
+}
+
+pub fn audience_surface_specs(raw: &str) -> Option<Vec<CommandSpec>> {
+    let audience = match raw.trim().to_ascii_lowercase().as_str() {
+        "default" => return Some(default_surface_specs()),
+        "advanced" => CommandAudience::AdvancedUser,
+        "operator" => CommandAudience::Operator,
+        "diagnostic" => CommandAudience::Diagnostic,
+        "migration" => CommandAudience::MigrationOnly,
+        "internal" => CommandAudience::InternalService,
+        "all" => return Some(specs()),
+        _ => return None,
+    };
+    Some(
+        default_specs()
+            .iter()
+            .filter(|spec| spec.audience() == audience)
+            .cloned()
+            .collect(),
+    )
 }
 
 pub fn lookup(raw: &str) -> Option<CommandSpec> {
@@ -301,6 +485,290 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     None
 }
 
+pub fn command_audience(raw: &str) -> CommandAudience {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if is_one_of(
+        name,
+        &[
+            "runtime.listener.run",
+            "runtime.listener.service-run",
+            "runtime.host-notify.hermes.bridge",
+            "runtime.host-notify.hermes.bridge.service-run",
+        ],
+    ) || has_any_command_prefix(name, &["group.e2ee", "group.code", "debug.raw"])
+    {
+        return CommandAudience::InternalService;
+    }
+    if is_one_of(name, &["id.create", "id.import-v1", "debug.db.import-v1"]) {
+        return CommandAudience::MigrationOnly;
+    }
+    if is_one_of(
+        name,
+        &[
+            "id.replace-did",
+            "msg.secure.failed",
+            "msg.secure.retry",
+            "msg.secure.drop",
+            "debug",
+            "debug.db",
+            "debug.db.handle-history",
+            "debug.db.query",
+            "debug.schema-cache",
+            "debug.logs",
+        ],
+    ) {
+        return CommandAudience::Diagnostic;
+    }
+    if is_one_of(
+        name,
+        &[
+            "runtime.host-notify.hermes.set",
+            "runtime.host-notify.hermes.set-secret",
+            "runtime.host-notify.hermes.clear-secret",
+        ],
+    ) {
+        return CommandAudience::Diagnostic;
+    }
+    if name == "config.set" {
+        return CommandAudience::AdvancedUser;
+    }
+    if has_any_command_prefix(name, &["runtime.host-notify.openclaw"]) {
+        return CommandAudience::Operator;
+    }
+    if has_command_prefix(name, "runtime.host-notify.hermes") {
+        return CommandAudience::Operator;
+    }
+    if has_any_command_prefix(name, &["runtime.setup", "runtime.apply"]) {
+        return CommandAudience::Operator;
+    }
+    if is_one_of(
+        name,
+        &[
+            "runtime.listener.install",
+            "runtime.listener.start",
+            "runtime.listener.stop",
+            "runtime.listener.restart",
+            "runtime.listener.uninstall",
+            "runtime.host-notify.hermes.guide",
+            "runtime.host-notify.hermes.status",
+            "runtime.host-notify.hermes.setup",
+        ],
+    ) {
+        return CommandAudience::Operator;
+    }
+    if has_any_command_prefix(
+        name,
+        &[
+            "runtime.mode",
+            "runtime.listener.config",
+            "runtime.host-notify.config",
+            "runtime.heartbeat",
+        ],
+    ) {
+        return CommandAudience::AdvancedUser;
+    }
+    CommandAudience::DefaultUser
+}
+
+pub fn primary_owner(raw: &str) -> CommandOwner {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if has_any_command_prefix(name, &["debug.raw", "group.code"]) {
+        return CommandOwner::ExternalUnsupported;
+    }
+    if has_any_command_prefix(name, &["page", "site", "runtime.heartbeat"])
+        || name == "people.search"
+    {
+        return CommandOwner::ExternalUnsupported;
+    }
+    if has_command_prefix(name, "debug") {
+        return CommandOwner::CliDiagnostic;
+    }
+    if is_one_of(name, &["id.create", "id.import-v1"]) {
+        return CommandOwner::CliMigration;
+    }
+    if name == "id.refresh-token" {
+        return CommandOwner::ImCoreAuth;
+    }
+    if name == "id.resolve" {
+        return CommandOwner::ImCoreDirectory;
+    }
+    if has_command_prefix(name, "id") {
+        return CommandOwner::ImCoreIdentity;
+    }
+    if name == "msg.attachment" || name == "msg.attachment.download" {
+        return CommandOwner::ImCoreAttachments;
+    }
+    if has_command_prefix(name, "msg.secure") {
+        return CommandOwner::ImCoreSecure;
+    }
+    if has_command_prefix(name, "msg") {
+        return CommandOwner::ImCoreMessages;
+    }
+    if has_command_prefix(name, "mail") {
+        return CommandOwner::ImCoreEmail;
+    }
+    if has_command_prefix(name, "group.e2ee") || has_command_prefix(name, "group.secure") {
+        return CommandOwner::ImCoreSecure;
+    }
+    if has_command_prefix(name, "group") {
+        return CommandOwner::ImCoreGroups;
+    }
+    if has_command_prefix(name, "people") {
+        return CommandOwner::ImCoreDirectory;
+    }
+    if has_command_prefix(name, "runtime.listener.run")
+        || has_command_prefix(name, "runtime.listener.service-run")
+    {
+        return CommandOwner::ImCoreRealtime;
+    }
+    CommandOwner::CliShell
+}
+
+pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if name == "id.status" {
+        return &[CommandOwner::ImCoreAuth];
+    }
+    if name == "id.bind" {
+        return &[CommandOwner::ImCoreDirectory];
+    }
+    if name == "msg.send" || name == "msg.attachment" || name == "msg.attachment.download" {
+        return &[CommandOwner::ImCoreMessages];
+    }
+    if has_command_prefix(name, "group.e2ee") || has_command_prefix(name, "group.secure") {
+        return &[CommandOwner::ImCoreGroups];
+    }
+    &[]
+}
+
+pub fn cli_shell_role(raw: &str) -> CliShellRole {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if name == "id.use" {
+        return CliShellRole::WritesDefaultIdentityFile;
+    }
+    if is_one_of(
+        name,
+        &[
+            "id.register",
+            "id.recover",
+            "id.replace-did",
+            "id.create",
+            "id.import-v1",
+            "debug.db.import-v1",
+            "group.create",
+            "group.join",
+            "group.add",
+            "group.remove",
+            "group.leave",
+            "group.update",
+            "group.e2ee.publish-key-package",
+            "group.e2ee.repair",
+            "group.e2ee.update-key",
+            "group.e2ee.rejoin",
+            "group.e2ee.recover-member",
+            "group.e2ee.process-leave-request",
+        ],
+    ) {
+        return CliShellRole::RendersDryRunPlan;
+    }
+    if is_one_of(name, &["msg.send", "mail.send"])
+        || has_any_command_prefix(name, &["page", "site"])
+    {
+        return CliShellRole::ReadsUserInputFile;
+    }
+    if is_one_of(
+        name,
+        &["msg.attachment.download", "mail.attachment.download"],
+    ) {
+        return CliShellRole::WritesUserOutputFile;
+    }
+    if has_command_prefix(name, "runtime.listener") {
+        return CliShellRole::ManagesLocalService;
+    }
+    if has_command_prefix(name, "runtime.host-notify") {
+        return CliShellRole::ManagesHostNotifyConfig;
+    }
+    CliShellRole::None
+}
+
+pub fn direct_invocation_policy(raw: &str) -> DirectInvocationPolicy {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if has_command_prefix(name, "debug.raw") {
+        return DirectInvocationPolicy::Removed { replacement: None };
+    }
+    if has_command_prefix(name, "group.code") {
+        return DirectInvocationPolicy::Removed {
+            replacement: Some("group join"),
+        };
+    }
+    if has_any_command_prefix(
+        name,
+        &[
+            "runtime.listener.run",
+            "runtime.listener.service-run",
+            "runtime.host-notify.hermes.bridge",
+            "group.e2ee",
+        ],
+    ) {
+        return DirectInvocationPolicy::RequireInternalServiceGate;
+    }
+    if is_one_of(name, &["id.create", "id.import-v1", "debug.db.import-v1"]) {
+        return DirectInvocationPolicy::RequireMigrationGate;
+    }
+    if is_one_of(
+        name,
+        &[
+            "id.replace-did",
+            "debug",
+            "debug.db",
+            "debug.db.handle-history",
+            "debug.schema-cache",
+            "debug.logs",
+            "runtime.host-notify.hermes.set",
+            "runtime.host-notify.hermes.set-secret",
+            "runtime.host-notify.hermes.clear-secret",
+        ],
+    ) {
+        return DirectInvocationPolicy::RequireDiagnosticGate;
+    }
+    if name == "debug.db.query" {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "raw-sql",
+            phase: "outside current im-core cutover",
+        };
+    }
+    if has_command_prefix(name, "msg.secure") {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "secure-direct",
+            phase: "Phase 6",
+        };
+    }
+    if name == "people.search" {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "people-directory",
+            phase: "future people search API",
+        };
+    }
+    if has_any_command_prefix(name, &["page", "site"]) {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "page-site",
+            phase: "outside current im-core cutover",
+        };
+    }
+    if has_command_prefix(name, "runtime.heartbeat") {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "runtime-heartbeat",
+            phase: "outside current im-core cutover",
+        };
+    }
+    DirectInvocationPolicy::Allow
+}
+
 pub fn children_of(parent: &str) -> Vec<CommandSpec> {
     let needle = normalize_name(parent);
     let mut children: Vec<_> = default_specs()
@@ -429,6 +897,22 @@ fn has_any_command_prefix(name: &str, prefixes: &[&str]) -> bool {
         .any(|prefix| has_command_prefix(name, prefix))
 }
 
+fn default_surface_owner(owner: CommandOwner) -> bool {
+    matches!(
+        owner,
+        CommandOwner::CliShell
+            | CommandOwner::ImCoreIdentity
+            | CommandOwner::ImCoreAuth
+            | CommandOwner::ImCoreDirectory
+            | CommandOwner::ImCoreMessages
+            | CommandOwner::ImCoreGroups
+            | CommandOwner::ImCoreAttachments
+            | CommandOwner::ImCoreRealtime
+            | CommandOwner::ImCoreSecure
+            | CommandOwner::ImCoreEmail
+    )
+}
+
 fn parent_name(name: &str) -> String {
     let normalized = normalize_name(name);
     normalized
@@ -518,7 +1002,6 @@ fn default_specs() -> &'static [CommandSpec] {
     &[
         cmd!("status", "status", "Show the current phase-1 CLI status", "phase1", "status"),
         cmd!("docs", "docs [topic]", "Show built-in documentation topics", "phase1", "docs"),
-        cmd!("schema", "schema [command]", "Show the static command contract", "phase1", "schema"),
         cmd!("doctor", "doctor", "Run baseline environment and storage diagnostics", "phase1", "doctor"),
         cmd!("version", "version", "Show build information", "phase1", "version"),
         CommandSpec { name: "upgrade", use_: "upgrade", short: "Check for newer awiki-cli versions and show upgrade hints", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "upgrade", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
@@ -528,6 +1011,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "completion.zsh", use_: "zsh", short: "Generate Zsh completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.zsh", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.fish", use_: "fish", short: "Generate Fish completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.fish", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.powershell", use_: "powershell", short: "Generate PowerShell completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.powershell", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "schema", use_: "schema [COMMAND]", short: "Show static command contracts", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "schema", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("all", "bool", "Show every command surface"), flag!("audience", "string", "Show one command audience", choices = ["default", "advanced", "operator", "diagnostic", "migration", "internal", "all"])] },
         CommandSpec { name: "config", use_: "config", short: "Inspect resolved CLI configuration", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("config.show", "show", "Show resolved configuration values", "phase1", "config.show"),
         CommandSpec { name: "config.set", use_: "set", short: "Update persistent CLI configuration", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "config.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did-domain", "string", "Bare DID provider domain to persist in services.did_domain")] },
@@ -716,6 +1200,7 @@ impl Serialize for CommandSpec {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("name", self.name)?;
+        map.serialize_entry("canonical_name", self.canonical_name())?;
         map.serialize_entry("use", self.use_)?;
         map.serialize_entry("short", self.short)?;
         if !self.long.is_empty() {
@@ -739,7 +1224,59 @@ impl Serialize for CommandSpec {
         if !self.flags.is_empty() {
             map.serialize_entry("flags", self.flags)?;
         }
-        map.serialize_entry("cutover", &self.cutover_status())?;
+        map.serialize_entry("audience", &self.audience().as_str())?;
+        map.serialize_entry("primary_owner", &self.primary_owner().as_str())?;
+        let secondary_owners: Vec<_> = self
+            .secondary_owners()
+            .iter()
+            .map(|owner| owner.as_str())
+            .collect();
+        map.serialize_entry("secondary_owners", &secondary_owners)?;
+        map.serialize_entry("cli_shell_role", &self.cli_shell_role().as_str())?;
+        map.serialize_entry("direct_invocation", &self.direct_invocation())?;
+        map.serialize_entry(
+            "cutover",
+            &CommandCutoverView {
+                status: self.cutover_status(),
+                default_surface: self.include_in_default_surface(),
+                capability: self.cutover_status().capability(),
+                required_phase: self.cutover_status().required_phase(),
+            },
+        )?;
+        map.end()
+    }
+}
+
+impl Serialize for DirectInvocationPolicy {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("policy", self.kind())?;
+        match self {
+            DirectInvocationPolicy::StableUnsupported { capability, phase } => {
+                map.serialize_entry("capability", capability)?;
+                map.serialize_entry("required_phase", phase)?;
+            }
+            DirectInvocationPolicy::Removed { replacement } => {
+                if let Some(replacement) = replacement {
+                    map.serialize_entry("replacement", replacement)?;
+                } else {
+                    map.serialize_entry("replacement", &Option::<&str>::None)?;
+                }
+            }
+            DirectInvocationPolicy::DeprecatedAlias { replacement, until } => {
+                map.serialize_entry("replacement", replacement)?;
+                map.serialize_entry("until", until)?;
+            }
+            DirectInvocationPolicy::Allow
+            | DirectInvocationPolicy::AllowWithWarning
+            | DirectInvocationPolicy::RequireDiagnosticGate
+            | DirectInvocationPolicy::RequireMigrationGate
+            | DirectInvocationPolicy::RequireInternalServiceGate => {}
+        }
         map.end()
     }
 }
@@ -749,14 +1286,29 @@ impl Serialize for CutoverStatus {
     where
         S: serde::Serializer,
     {
+        CommandCutoverView {
+            status: *self,
+            default_surface: self.include_in_default_surface(),
+            capability: self.capability(),
+            required_phase: self.required_phase(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl Serialize for CommandCutoverView<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("status", self.kind())?;
-        map.serialize_entry("default_surface", &self.include_in_default_surface())?;
-        if let Some(capability) = self.capability() {
+        map.serialize_entry("status", self.status.kind())?;
+        map.serialize_entry("default_surface", &self.default_surface)?;
+        if let Some(capability) = self.capability {
             map.serialize_entry("capability", capability)?;
         }
-        if let Some(phase) = self.required_phase() {
+        if let Some(phase) = self.required_phase {
             map.serialize_entry("required_phase", phase)?;
         }
         map.end()

@@ -1,8 +1,10 @@
-use rustls::pki_types::ServerName;
+use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +14,7 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone)]
 pub(crate) struct HttpClient {
     tls_config: Arc<ClientConfig>,
+    init_error: Option<crate::ImError>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,19 +33,33 @@ pub(crate) struct HttpResponse {
 }
 
 impl HttpClient {
-    pub(crate) fn new() -> Self {
-        let roots = RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    pub(crate) fn from_config(config: &crate::ImCoreConfig) -> Self {
+        Self::with_ca_bundle(config.ca_bundle_path())
+    }
+
+    fn with_ca_bundle(ca_bundle: Option<&str>) -> Self {
+        let (roots, init_error) = match root_store(ca_bundle) {
+            Ok(roots) => (roots, None),
+            Err(err) => (
+                RootCertStore {
+                    roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+                },
+                Some(err),
+            ),
         };
         let tls_config = ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
         Self {
             tls_config: Arc::new(tls_config),
+            init_error,
         }
     }
 
     pub(crate) fn execute(&self, request: HttpRequest) -> crate::ImResult<HttpResponse> {
+        if let Some(err) = &self.init_error {
+            return Err(err.clone());
+        }
         let parsed = ParsedUrl::parse(&request.url)?;
         let mut stream = connect_tcp(&parsed)?;
         stream.set_write_timeout(Some(CONNECT_TIMEOUT))?;
@@ -70,6 +87,31 @@ impl HttpClient {
             read_http_response(&mut stream)
         }
     }
+}
+
+fn root_store(ca_bundle: Option<&str>) -> crate::ImResult<RootCertStore> {
+    let mut root_store = RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let Some(ca_bundle) = ca_bundle else {
+        return Ok(root_store);
+    };
+    let raw =
+        fs::read(Path::new(ca_bundle)).map_err(|err| crate::ImError::TransportUnavailable {
+            detail: format!("read ca bundle: {err}"),
+        })?;
+    let certs = CertificateDer::pem_slice_iter(&raw)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| crate::ImError::TransportUnavailable {
+            detail: format!("parse ca bundle: {err}"),
+        })?;
+    let (valid_count, _) = root_store.add_parsable_certificates(certs);
+    if valid_count == 0 {
+        return Err(crate::ImError::TransportUnavailable {
+            detail: format!("invalid ca bundle: {ca_bundle}"),
+        });
+    }
+    Ok(root_store)
 }
 
 #[derive(Debug)]

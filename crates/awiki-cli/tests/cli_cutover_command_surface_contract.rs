@@ -1,4 +1,6 @@
-use awiki_cli::cmdmeta::{self, CutoverStatus};
+use awiki_cli::cmdmeta::{
+    self, CliShellRole, CommandAudience, CommandOwner, CutoverStatus, DirectInvocationPolicy,
+};
 use serde_json::Value;
 use std::process::{Command, Output};
 
@@ -14,6 +16,33 @@ fn every_command_spec_has_cutover_classification() {
         missing.is_empty(),
         "every current command spec must be classified for CLI cutover: {missing:?}"
     );
+}
+
+#[test]
+fn every_command_spec_has_required_policy_metadata() {
+    for spec in cmdmeta::specs() {
+        assert_eq!(spec.canonical_name(), spec.name);
+        assert!(
+            !spec.audience().as_str().is_empty(),
+            "{} must classify audience",
+            spec.name
+        );
+        assert!(
+            !spec.primary_owner().as_str().is_empty(),
+            "{} must classify primary owner",
+            spec.name
+        );
+        assert!(
+            !spec.cli_shell_role().as_str().is_empty(),
+            "{} must classify CLI shell role",
+            spec.name
+        );
+        assert!(
+            !spec.direct_invocation().kind().is_empty(),
+            "{} must classify direct invocation policy",
+            spec.name
+        );
+    }
 }
 
 #[test]
@@ -82,29 +111,12 @@ fn cutover_classifier_keeps_cli_owned_host_commands() {
         "init",
         "completion.bash",
         "config.show",
-        "config.set",
         "runtime.status",
-        "runtime.apply",
-        "runtime.setup",
-        "runtime.mode.get",
-        "runtime.mode.set",
         "runtime.listener.status",
-        "runtime.listener.install",
-        "runtime.listener.start",
-        "runtime.listener.stop",
-        "runtime.listener.restart",
-        "runtime.listener.uninstall",
-        "runtime.listener.config.show",
-        "runtime.listener.config.set",
         "runtime.listener.enable",
         "runtime.listener.disable",
-        "runtime.host-notify.config.show",
-        "runtime.host-notify.config.set",
         "runtime.host-notify.enable",
         "runtime.host-notify.disable",
-        "runtime.host-notify.hermes.guide",
-        "runtime.host-notify.hermes.status",
-        "runtime.host-notify.hermes.setup",
     ] {
         assert_eq!(
             cmdmeta::cutover_status(command),
@@ -164,6 +176,10 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
         CutoverStatus::Hidden
     );
     assert_eq!(
+        cmdmeta::direct_invocation_policy("runtime.listener.run"),
+        DirectInvocationPolicy::RequireInternalServiceGate
+    );
+    assert_eq!(
         cmdmeta::cutover_status("group.code.get"),
         CutoverStatus::Removed
     );
@@ -174,10 +190,57 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
 }
 
 #[test]
+fn command_policy_maps_final_cutover_surfaces() {
+    let msg_send = cmdmeta::lookup("msg.send").unwrap();
+    assert_eq!(msg_send.audience(), CommandAudience::DefaultUser);
+    assert_eq!(msg_send.primary_owner(), CommandOwner::ImCoreMessages);
+    assert_eq!(msg_send.cli_shell_role(), CliShellRole::ReadsUserInputFile);
+    assert_eq!(msg_send.direct_invocation(), DirectInvocationPolicy::Allow);
+
+    let listener_start = cmdmeta::lookup("runtime.listener.start").unwrap();
+    assert_eq!(listener_start.audience(), CommandAudience::Operator);
+    assert_eq!(
+        listener_start.cli_shell_role(),
+        CliShellRole::ManagesLocalService
+    );
+    assert_eq!(
+        listener_start.direct_invocation(),
+        DirectInvocationPolicy::Allow
+    );
+
+    let service_run = cmdmeta::lookup("runtime.listener.service-run").unwrap();
+    assert_eq!(service_run.audience(), CommandAudience::InternalService);
+    assert_eq!(
+        service_run.direct_invocation(),
+        DirectInvocationPolicy::RequireInternalServiceGate
+    );
+
+    let diagnostic = cmdmeta::lookup("debug.db.handle-history").unwrap();
+    assert_eq!(diagnostic.audience(), CommandAudience::Diagnostic);
+    assert_eq!(diagnostic.primary_owner(), CommandOwner::CliDiagnostic);
+    assert_eq!(
+        diagnostic.direct_invocation(),
+        DirectInvocationPolicy::RequireDiagnosticGate
+    );
+
+    let migration = cmdmeta::lookup("id.import-v1").unwrap();
+    assert_eq!(migration.audience(), CommandAudience::MigrationOnly);
+    assert_eq!(migration.primary_owner(), CommandOwner::CliMigration);
+    assert_eq!(
+        migration.direct_invocation(),
+        DirectInvocationPolicy::RequireMigrationGate
+    );
+}
+
+#[test]
 fn schema_serializes_cutover_status_for_commands_and_children() {
     let msg_send = schema_value("msg.send");
     assert_eq!(msg_send["cutover"]["status"], "im_core");
     assert_eq!(msg_send["cutover"]["default_surface"], true);
+    assert_eq!(msg_send["audience"], "default");
+    assert_eq!(msg_send["primary_owner"], "im_core_messages");
+    assert_eq!(msg_send["cli_shell_role"], "reads_user_input_file");
+    assert_eq!(msg_send["direct_invocation"]["policy"], "allow");
 
     let attachment = schema_value("msg.attachment.download");
     assert_eq!(attachment["cutover"]["status"], "im_core");
@@ -187,6 +250,11 @@ fn schema_serializes_cutover_status_for_commands_and_children() {
     let run = schema_child("runtime.listener", "runtime.listener.run");
     assert_eq!(runtime["cutover"]["status"], "cli_owned");
     assert_eq!(run["cutover"]["status"], "hidden");
+    assert_eq!(run["audience"], "internal");
+    assert_eq!(
+        run["direct_invocation"]["policy"],
+        "require_internal_service_gate"
+    );
 }
 
 #[test]
@@ -208,8 +276,8 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "group.create",
         "people.follow",
         "people.contacts.list",
-        "runtime.listener.start",
-        "runtime.host-notify.hermes.setup",
+        "runtime.listener.enable",
+        "runtime.host-notify.enable",
     ] {
         assert!(
             names.contains(&command),
@@ -226,6 +294,8 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "group.e2ee.publish-key-package",
         "debug.db.query",
         "runtime.host-notify.openclaw.set-token",
+        "runtime.listener.start",
+        "runtime.host-notify.hermes.setup",
         "runtime.listener.run",
         "group.code.get",
         "debug.raw.rpc",
@@ -293,17 +363,47 @@ fn unsupported_cutover_stub_commands_do_not_enter_legacy_stub_boundary() {
         assert_code(&output, 2);
         let envelope = error_json(&output);
 
-        assert_eq!(envelope["error"]["code"], "unsupported_capability");
-        assert_eq!(envelope["error"]["details"]["command"], command);
-        assert_eq!(envelope["error"]["details"]["capability"], capability);
-        assert_eq!(
-            envelope["error"]["details"]["required_phase"],
-            required_phase
-        );
-        assert_eq!(
-            envelope["error"]["details"]["cutover_status"],
-            "unsupported"
-        );
+        if command == "debug.raw.rpc" {
+            assert_eq!(envelope["error"]["code"], "removed_command");
+            assert_eq!(envelope["error"]["details"]["command"], command);
+        } else {
+            assert_eq!(envelope["error"]["code"], "unsupported_capability");
+            assert_eq!(envelope["error"]["details"]["command"], command);
+            assert_eq!(envelope["error"]["details"]["capability"], capability);
+            assert_eq!(
+                envelope["error"]["details"]["required_phase"],
+                required_phase
+            );
+            assert_eq!(
+                envelope["error"]["details"]["cutover_status"],
+                "unsupported"
+            );
+        }
+    }
+}
+
+#[test]
+fn direct_invocation_policy_is_enforced_before_handlers() {
+    for (args, code) in [
+        (
+            &["debug", "db", "handle-history", "alice"][..],
+            "diagnostic_gate_required",
+        ),
+        (&["id", "import-v1"][..], "migration_gate_required"),
+        (
+            &["runtime", "listener", "service-run"][..],
+            "internal_command",
+        ),
+        (
+            &["group", "e2ee", "publish-key-package"][..],
+            "internal_command",
+        ),
+        (&["debug", "raw", "rpc"][..], "removed_command"),
+    ] {
+        let output = awiki_cmd(args);
+        assert_code(&output, 2);
+        let envelope = error_json(&output);
+        assert_eq!(envelope["error"]["code"], code);
     }
 }
 

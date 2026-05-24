@@ -1,91 +1,21 @@
 #![cfg(unix)]
 
-use awiki_cli::runtime::bridge::{self, BridgeRequest};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const IDENTITY: &str = "alice-group-ws";
-const ALICE_DID: &str = "did:wba:awiki.ai:alice:e1_alice";
 const BOB_DID: &str = "did:wba:awiki.ai:bob:e1_bob";
 const GROUP_DID: &str = "did:wba:awiki.ai:groups:ws:e1_group";
 
 #[test]
-fn msg_send_group_websocket_mode_uses_local_bridge_like_go() {
-    let workspace = TempDir::new("gws-send-ok").expect("workspace");
-    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
-    let (_bridge, bridge_requests) = spawn_bridge_server(
-        &socket_path,
-        json!({
-            "accepted": true,
-            "final_acceptance": true,
-            "group_did": GROUP_DID,
-            "message_id": "msg-ws-group-send-1",
-            "operation_id": "op-ws-group-send-1",
-            "group_event_seq": "9",
-            "group_state_version": "v9",
-            "accepted_at": "2026-05-16T01:02:03Z"
-        }),
-    );
-    write_group_ws_config(
-        workspace.path(),
-        "https://placeholder.invalid",
-        socket_path.to_str().expect("socket path"),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            IDENTITY,
-            "msg",
-            "send",
-            "--group",
-            GROUP_DID,
-            "--text",
-            "hello group over bridge",
-            "--type",
-            "text",
-        ],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Sent a group text message");
-    assert_eq!(envelope["data"]["target"]["kind"], "group");
-    assert_eq!(envelope["data"]["target"]["did"], GROUP_DID);
-    assert_eq!(envelope["data"]["message"]["id"], format!("{GROUP_DID}:9"));
-    assert_eq!(envelope["data"]["message"]["secure"], false);
-    assert_eq!(
-        envelope["data"]["delivery"]["message_id"],
-        "msg-ws-group-send-1"
-    );
-    assert_eq!(
-        envelope["data"]["delivery"]["operation_id"],
-        "op-ws-group-send-1"
-    );
-    assert_eq!(envelope["data"]["source"], "local_ws_cache");
-    assert_no_http_fallback_warning(&envelope);
-
-    let request = bridge_requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("bridge group.send request");
-    assert_eq!(request.method, "group.send");
-    assert_eq!(request.identity_name, IDENTITY);
-    assert_eq!(request.params["group"], GROUP_DID);
-    assert_eq!(request.params["text"], "hello group over bridge");
-    assert_eq!(request.params["type"], "text");
-}
-
-#[test]
-fn msg_send_group_websocket_mode_falls_back_to_http_with_warning_like_go() {
-    let workspace = TempDir::new("gws-send-http").expect("workspace");
+fn msg_send_group_websocket_mode_uses_im_core_http_not_legacy_bridge() {
+    let workspace = TempDir::new("gws-send-http-cutover").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
@@ -113,7 +43,9 @@ fn msg_send_group_websocket_mode_falls_back_to_http_with_warning_like_go() {
             "--group",
             GROUP_DID,
             "--text",
-            "hello group over HTTP fallback",
+            "hello group over HTTP",
+            "--type",
+            "text",
         ],
         workspace.path(),
     );
@@ -121,9 +53,20 @@ fn msg_send_group_websocket_mode_falls_back_to_http_with_warning_like_go() {
     assert_success(&output);
     let envelope = success_json(&output);
     assert_eq!(envelope["summary"], "Sent a group text message");
+    assert_eq!(envelope["data"]["target"]["kind"], "group");
+    assert_eq!(envelope["data"]["target"]["did"], GROUP_DID);
     assert_eq!(envelope["data"]["message"]["id"], format!("{GROUP_DID}:10"));
+    assert_eq!(envelope["data"]["message"]["secure"], false);
+    assert_eq!(
+        envelope["data"]["delivery"]["message_id"],
+        "msg-http-group-send-1"
+    );
+    assert_eq!(
+        envelope["data"]["delivery"]["operation_id"],
+        "op-http-group-send-1"
+    );
     assert_eq!(envelope["data"]["source"], "remote_http");
-    assert_has_http_fallback_warning(&envelope);
+    assert_no_legacy_websocket_fallback_warning(&envelope);
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -138,177 +81,13 @@ fn msg_send_group_websocket_mode_falls_back_to_http_with_warning_like_go() {
     );
     assert_eq!(
         body["params"]["body"],
-        json!({"text": "hello group over HTTP fallback"})
+        json!({"text": "hello group over HTTP"})
     );
 }
 
 #[test]
-fn msg_send_group_websocket_mode_returns_bridge_error_when_http_prepare_fails_like_go() {
-    let workspace = TempDir::new("gws-send-prep").expect("workspace");
-    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    write_group_ws_config_with_ca_bundle(
-        workspace.path(),
-        "http://127.0.0.1:9",
-        missing_socket.to_str().expect("socket path"),
-        workspace.path().join("missing-ca.pem").to_str().unwrap(),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            IDENTITY,
-            "msg",
-            "send",
-            "--group",
-            GROUP_DID,
-            "--text",
-            "http prepare should not mask bridge error",
-        ],
-        workspace.path(),
-    );
-
-    assert_failure(&output);
-    let envelope = failure_json(&output);
-    let message = error_message(&envelope);
-    assert_contains_text(message, "message transport is unavailable");
-    assert_contains_text(message, "local websocket bridge request failed");
-    assert!(
-        !message.contains("read ca bundle"),
-        "HTTP preparation failure should not mask bridge error, got: {message}"
-    );
-}
-
-#[test]
-fn group_messages_websocket_mode_uses_local_bridge_like_go() {
-    let workspace = TempDir::new("gws-msgs-ok").expect("workspace");
-    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
-    let (_bridge, bridge_requests) = spawn_bridge_server(
-        &socket_path,
-        json!({
-            "messages": [{
-                "id": "msg-ws-group-message-1",
-                "message_id": "msg-ws-group-message-1",
-                "sender_did": BOB_DID,
-                "group_did": GROUP_DID,
-                "content_type": "text/plain",
-                "content": "hello from group bridge",
-                "server_seq": 11,
-                "sent_at": "2026-05-16T03:04:05Z",
-                "is_read": false
-            }],
-            "total": 1,
-            "has_more": false
-        }),
-    );
-    write_group_ws_config(
-        workspace.path(),
-        "https://placeholder.invalid",
-        socket_path.to_str().expect("socket path"),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            IDENTITY,
-            "group",
-            "messages",
-            "--group",
-            GROUP_DID,
-            "--limit",
-            "5",
-            "--cursor",
-            "2",
-        ],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Loaded 1 group messages");
-    assert_eq!(envelope["data"]["group"], GROUP_DID);
-    assert_eq!(envelope["data"]["source"], "local_ws_cache");
-    assert_eq!(
-        envelope["data"]["messages"][0]["msg_id"],
-        "msg-ws-group-message-1"
-    );
-    assert_eq!(
-        envelope["data"]["messages"][0]["content"],
-        "hello from group bridge"
-    );
-    assert_no_http_fallback_warning(&envelope);
-
-    let request = bridge_requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("bridge group.list_messages request");
-    assert_eq!(request.method, "group.list_messages");
-    assert_eq!(request.identity_name, IDENTITY);
-    assert_eq!(request.params["group"], GROUP_DID);
-    assert_eq!(request.params["limit"], 5);
-    assert_eq!(request.params["cursor"], "2");
-    assert!(request.params.get("skip").is_none());
-}
-
-#[test]
-fn group_messages_websocket_mode_uses_local_cache_before_http_like_go() {
-    let workspace = TempDir::new("gws-msgs-cache").expect("workspace");
-    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
-    seed_group_message(
-        workspace.path(),
-        "msg-ws-group-cache-1",
-        "hello from group cache",
-        12,
-        "2026-05-16T04:05:06Z",
-    );
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(Vec::new());
-    write_group_ws_config(
-        workspace.path(),
-        &server.base_url(),
-        missing_socket.to_str().expect("socket path"),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            IDENTITY,
-            "group",
-            "messages",
-            "--group",
-            GROUP_DID,
-            "--limit",
-            "5",
-        ],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        "Loaded group messages from local cache"
-    );
-    assert_eq!(envelope["data"]["group"], GROUP_DID);
-    assert_eq!(envelope["data"]["source"], "local_ws_cache_fallback");
-    assert_eq!(envelope["data"]["total"], 1);
-    assert_eq!(
-        envelope["data"]["messages"][0]["msg_id"],
-        "msg-ws-group-cache-1"
-    );
-    assert_eq!(
-        envelope["data"]["messages"][0]["content"],
-        "hello from group cache"
-    );
-    assert!(envelope["data"].get("has_more").is_none());
-    assert!(envelope["data"].get("next_since_seq").is_none());
-    assert_has_cache_fallback_warning(&envelope);
-    assert!(server.requests().is_empty());
-}
-
-#[test]
-fn group_messages_websocket_mode_falls_back_to_http_with_warning_like_go() {
-    let workspace = TempDir::new("gws-msgs-http").expect("workspace");
+fn group_messages_websocket_mode_uses_im_core_http_not_legacy_bridge_or_cache() {
+    let workspace = TempDir::new("gws-msgs-http-cutover").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
@@ -317,7 +96,7 @@ fn group_messages_websocket_mode_falls_back_to_http_with_warning_like_go() {
             "sender_did": BOB_DID,
             "group_did": GROUP_DID,
             "content_type": "text/plain",
-            "content": "hello from group HTTP fallback",
+            "content": "hello from group HTTP",
             "server_seq": 13,
             "sent_at": "2026-05-16T05:06:07Z",
             "is_read": false
@@ -350,12 +129,17 @@ fn group_messages_websocket_mode_falls_back_to_http_with_warning_like_go() {
     assert_success(&output);
     let envelope = success_json(&output);
     assert_eq!(envelope["summary"], "Loaded 1 group messages");
+    assert_eq!(envelope["data"]["group"], GROUP_DID);
     assert_eq!(envelope["data"]["source"], "remote_http");
     assert_eq!(
         envelope["data"]["messages"][0]["msg_id"],
         "msg-http-group-message-1"
     );
-    assert_has_http_fallback_warning(&envelope);
+    assert_eq!(
+        envelope["data"]["messages"][0]["content"],
+        "hello from group HTTP"
+    );
+    assert_has_group_http_transport_warning(&envelope);
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -374,15 +158,42 @@ fn group_messages_websocket_mode_falls_back_to_http_with_warning_like_go() {
 }
 
 #[test]
-fn group_messages_websocket_mode_returns_bridge_error_when_http_prepare_fails_like_go() {
-    let workspace = TempDir::new("gws-msgs-prep").expect("workspace");
+fn msg_send_group_websocket_mode_reports_http_transport_failure_without_bridge_fallback() {
+    let workspace = TempDir::new("gws-send-http-failure").expect("workspace");
     register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    write_group_ws_config_with_ca_bundle(
+    write_group_ws_config(
         workspace.path(),
-        "http://127.0.0.1:9",
+        &closed_local_url(),
         missing_socket.to_str().expect("socket path"),
-        workspace.path().join("missing-ca.pem").to_str().unwrap(),
+    );
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            IDENTITY,
+            "msg",
+            "send",
+            "--group",
+            GROUP_DID,
+            "--text",
+            "http failure should not try bridge fallback",
+        ],
+        workspace.path(),
+    );
+
+    assert_transport_unavailable_without_bridge_fallback(&output);
+}
+
+#[test]
+fn group_messages_websocket_mode_reports_http_transport_failure_without_cache_fallback() {
+    let workspace = TempDir::new("gws-msgs-http-failure").expect("workspace");
+    register_ready_group_identity(workspace.path(), IDENTITY, "alice", "jwt-alice");
+    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    write_group_ws_config(
+        workspace.path(),
+        &closed_local_url(),
+        missing_socket.to_str().expect("socket path"),
     );
 
     let output = awiki_cmd(
@@ -397,78 +208,7 @@ fn group_messages_websocket_mode_returns_bridge_error_when_http_prepare_fails_li
         workspace.path(),
     );
 
-    assert_failure(&output);
-    let envelope = failure_json(&output);
-    let message = error_message(&envelope);
-    assert_contains_text(message, "message transport is unavailable");
-    assert_contains_text(message, "local websocket bridge request failed");
-    assert!(
-        !message.contains("read ca bundle"),
-        "HTTP preparation failure should not mask bridge error, got: {message}"
-    );
-}
-
-fn spawn_bridge_server(
-    socket_path: &Path,
-    result: Value,
-) -> (thread::JoinHandle<()>, mpsc::Receiver<BridgeRequest>) {
-    let listener =
-        bridge::listen_bridge(socket_path.to_str().expect("socket path")).expect("listen bridge");
-    listener
-        .set_nonblocking(true)
-        .expect("set bridge listener nonblocking");
-    let (requests_tx, requests_rx) = mpsc::channel();
-    let response_line = json!({ "ok": true, "result": result }).to_string() + "\n";
-
-    let handle = thread::spawn(move || loop {
-        let Ok((mut conn, _)) = accept_unix_connection(&listener) else {
-            return;
-        };
-        conn.set_read_timeout(Some(Duration::from_secs(2)))
-            .expect("set bridge read timeout");
-        let mut request_line = String::new();
-        let Ok(read) = BufReader::new(conn.try_clone().expect("clone bridge client"))
-            .read_line(&mut request_line)
-        else {
-            return;
-        };
-        if read == 0 || request_line.trim().is_empty() {
-            continue;
-        }
-
-        let request: BridgeRequest =
-            serde_json::from_str(request_line.trim_end()).expect("decode bridge request");
-        requests_tx.send(request).expect("send bridge request");
-        conn.write_all(response_line.as_bytes())
-            .expect("write bridge response");
-        break;
-    });
-
-    (handle, requests_rx)
-}
-
-fn accept_unix_connection(
-    listener: &std::os::unix::net::UnixListener,
-) -> std::io::Result<(
-    std::os::unix::net::UnixStream,
-    std::os::unix::net::SocketAddr,
-)> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match listener.accept() {
-            Ok(accepted) => return Ok(accepted),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "timed out accepting bridge test connection",
-                    ));
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Err(err),
-        }
-    }
+    assert_transport_unavailable_without_bridge_fallback(&output);
 }
 
 fn register_ready_group_identity(
@@ -479,6 +219,7 @@ fn register_ready_group_identity(
 ) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -544,62 +285,14 @@ fn write_group_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
     .unwrap();
 }
 
-fn write_group_ws_config_with_ca_bundle(
-    workspace: &Path,
-    base_url: &str,
-    socket_path: &str,
-    ca_bundle: &str,
-) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "runtime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n  ca_bundle: {ca_bundle}\n"
-        ),
-    )
-    .unwrap();
-}
-
-fn seed_group_message(
-    workspace: &Path,
-    msg_id: &str,
-    content: &str,
-    server_seq: i64,
-    sent_at: &str,
-) {
-    let statement = format!(
-        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, group_id, group_did, content_type, content, server_seq, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{ALICE_DID}', '{thread_id}', 0, '{BOB_DID}', '{GROUP_DID}', '{GROUP_DID}', 'text/plain', '{content}', {server_seq}, '{sent_at}', '{sent_at}', 0, '{IDENTITY}')",
-        thread_id = group_thread_id(),
-    );
-    execute_sql(workspace, statement);
-}
-
-fn group_thread_id() -> String {
-    format!("dm:{ALICE_DID}:{GROUP_DID}")
-}
-
-fn execute_sql(workspace: &Path, statement: String) {
-    assert_success(&awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            statement,
-        ],
-        workspace,
-    ));
+fn closed_local_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind closed local url");
+    let address = listener.local_addr().expect("local addr");
+    drop(listener);
+    format!("http://{address}")
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
-    awiki_cmd_owned(
-        &args
-            .iter()
-            .map(|arg| (*arg).to_string())
-            .collect::<Vec<_>>(),
-        workspace,
-    )
-}
-
-fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -624,16 +317,6 @@ fn assert_success(output: &Output) {
     );
 }
 
-fn assert_failure(output: &Output) {
-    assert_ne!(
-        output.status.code(),
-        Some(0),
-        "expected failure; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 fn success_json(output: &Output) -> Value {
     assert!(
         output.stderr.is_empty(),
@@ -647,55 +330,59 @@ fn success_json(output: &Output) -> Value {
 }
 
 fn failure_json(output: &Output) -> Value {
-    let raw = if output.stdout.is_empty() {
-        &output.stderr
-    } else {
-        &output.stdout
-    };
-    let envelope: Value =
-        serde_json::from_slice(raw).expect("output should be a JSON error envelope");
-    assert_eq!(envelope["ok"], false);
-    envelope
-}
-
-fn error_message(envelope: &Value) -> &str {
-    envelope["error"]["message"]
-        .as_str()
-        .expect("error message")
-}
-
-fn assert_no_http_fallback_warning(envelope: &Value) {
-    let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
     assert!(
-        warnings.iter().all(|warning| !warning
-            .as_str()
-            .unwrap_or_default()
-            .contains("used HTTP fallback")),
-        "unexpected websocket HTTP fallback warning: {warnings:?}"
+        !output.status.success(),
+        "expected failure; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope")
+}
+
+fn assert_transport_unavailable_without_bridge_fallback(output: &Output) {
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = failure_json(output);
+    assert_eq!(envelope["error"]["code"], "transport_unavailable");
+    let message = envelope["error"]["message"].as_str().expect("message");
+    assert_contains_text(message, "message transport is unavailable");
+    assert!(
+        !message.contains("local websocket bridge request failed"),
+        "legacy bridge fallback should not be used, got: {message}"
+    );
+    assert!(
+        !message.contains("loaded data from local cache"),
+        "legacy cache fallback should not be used, got: {message}"
     );
 }
 
-fn assert_has_http_fallback_warning(envelope: &Value) {
+fn assert_no_legacy_websocket_fallback_warning(envelope: &Value) {
     let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
     assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.as_str().unwrap_or_default().contains(
-                "WebSocket listener was unavailable for this identity; used HTTP fallback"
-            )),
-        "expected websocket HTTP fallback warning, got: {warnings:?}"
+        warnings.iter().all(|warning| {
+            let warning = warning.as_str().unwrap_or_default();
+            !warning.contains("used HTTP fallback")
+                && !warning.contains("loaded data from local cache")
+        }),
+        "unexpected legacy websocket fallback warning: {warnings:?}"
     );
 }
 
-fn assert_has_cache_fallback_warning(envelope: &Value) {
+fn assert_has_group_http_transport_warning(envelope: &Value) {
     let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
     assert!(
         warnings.iter().any(|warning| warning
             .as_str()
             .unwrap_or_default()
-            .contains("loaded data from local cache")),
-        "expected websocket cache fallback warning, got: {warnings:?}"
+            .contains("Group lifecycle commands use HTTP transport")),
+        "expected group HTTP transport warning, got: {warnings:?}"
     );
+    assert_no_legacy_websocket_fallback_warning(envelope);
 }
 
 fn request_body(raw: &str) -> &str {

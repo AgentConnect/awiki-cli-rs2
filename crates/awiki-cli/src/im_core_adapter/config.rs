@@ -12,6 +12,7 @@ pub fn build_im_core_config(resolved: &crate::config::Resolved) -> Result<ImCore
         Some(&resolved.mail_service_url),
         Some(&resolved.anp_service_endpoint),
         Some(&resolved.anp_service_did),
+        Some(&resolved.ca_bundle),
         &resolved.runtime_mode,
     )
 }
@@ -24,6 +25,7 @@ pub(crate) fn build_im_core_config_from_parts(
     mail_service_endpoint: Option<&str>,
     anp_service_endpoint: Option<&str>,
     anp_service_did: Option<&str>,
+    ca_bundle: Option<&str>,
     runtime_mode: &str,
 ) -> Result<ImCoreConfig, ExitError> {
     let service_base_url = parse_endpoint("service_base_url", service_base_url)?;
@@ -47,6 +49,10 @@ pub(crate) fn build_im_core_config_from_parts(
         mail_service_endpoint: optional_endpoint("mail_service_endpoint", mail_service_endpoint)?,
         anp_service_endpoint: optional_endpoint("anp_service_endpoint", anp_service_endpoint)?,
         anp_service_did: optional_did("anp_service_did", anp_service_did)?,
+        ca_bundle: ca_bundle
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
         transport_policy: transport_policy_from_runtime_mode(runtime_mode),
     })
 }

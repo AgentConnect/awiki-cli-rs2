@@ -334,10 +334,7 @@ mod tests {
         let contact = store::get_contact_by_did(&db, "did:owner", "did:peer")?;
         assert_eq!(string_field(&contact, "source_type"), "group.incoming");
         assert_eq!(string_field(&contact, "source_group_id"), "did:group");
-        assert_eq!(
-            store::list_dids_by_handle(&db, "did:owner", "bob")?,
-            vec!["did:peer".to_string()]
-        );
+        assert_eq!(current_binding_did(&db, "did:owner", "bob")?, "did:peer");
         Ok(())
     }
 
@@ -349,6 +346,18 @@ mod tests {
 
     fn contact_count(connection: &Connection) -> StoreResult<i64> {
         Ok(connection.query_row("SELECT COUNT(*) FROM contacts", [], |row| row.get(0))?)
+    }
+
+    fn current_binding_did(
+        connection: &Connection,
+        owner_did: &str,
+        handle: &str,
+    ) -> StoreResult<String> {
+        Ok(connection.query_row(
+            "SELECT did FROM contact_handle_bindings WHERE owner_did = ?1 AND handle = ?2 AND is_current = 1",
+            (owner_did, handle),
+            |row| row.get(0),
+        )?)
     }
 
     fn string_field<'a>(value: &'a Value, field: &str) -> &'a str {

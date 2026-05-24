@@ -1049,7 +1049,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     let workspace = TempDir::new().expect("workspace");
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
 
-    let status = success_json(&awiki_cmd(
+    let status = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1076,7 +1076,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
         .unwrap()
         .ends_with("/mls"));
 
-    let publish = success_json(&awiki_cmd(
+    let publish = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1105,7 +1105,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(publish_plan["device"], "bob-main");
     assert_eq!(publish_plan["contract_test_only"], true);
 
-    let recovery_alias = success_json(&awiki_cmd(
+    let recovery_alias = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1120,7 +1120,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(recovery_alias["data"]["plan"]["purpose"], "recovery");
     assert_eq!(recovery_alias["data"]["plan"]["recovery"], true);
 
-    let pending = success_json(&awiki_cmd(
+    let pending = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1138,7 +1138,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(pending["data"]["plan"]["provider"], "exec");
     assert_eq!(pending["data"]["plan"]["group"], group);
 
-    let repair = success_json(&awiki_cmd(
+    let repair = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1158,7 +1158,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
         .unwrap()
         .contains("replay welcome/commit notices"));
 
-    let process_leave = success_json(&awiki_cmd(
+    let process_leave = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1188,7 +1188,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(process_plan["request"]["LeaveRequestID"], "lr-bob-1");
     assert_eq!(process_plan["request"]["ReasonText"], "owner remove");
 
-    let recover = success_json(&awiki_cmd(
+    let recover = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1221,7 +1221,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
             "hidden group.e2ee.recover_member".to_string()
         )));
 
-    let update = success_json(&awiki_cmd(
+    let update = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1244,7 +1244,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(update["data"]["plan"]["hidden_awiki_extension"], true);
     assert_eq!(update["data"]["plan"]["p4_membership_mutate"], false);
 
-    let rejoin = success_json(&awiki_cmd(
+    let rejoin = success_json(&awiki_internal_cmd(
         &[
             "--identity",
             "alice",
@@ -1384,6 +1384,18 @@ fn group_e2ee_schema_exposes_hidden_and_side_effect_contracts() {
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
+    awiki_command(args, workspace)
+        .output()
+        .expect("run awiki-cli")
+}
+
+fn awiki_internal_cmd(args: &[&str], workspace: &Path) -> Output {
+    let mut command = awiki_command(args, workspace);
+    command.env("AWIKI_CLI_INTERNAL_ENTRY", "1");
+    command.output().expect("run awiki-cli")
+}
+
+fn awiki_command(args: &[&str], workspace: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -1395,7 +1407,7 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env_remove("AVIKI_WORKSPACE_HOME")
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT");
-    command.output().expect("run awiki-cli")
+    command
 }
 
 fn register_generated_group_identity(
@@ -1560,10 +1572,14 @@ fn assert_code(output: &Output, expected: i32) {
 fn assert_group_e2ee_unsupported(output: &Output, command: &str) {
     assert_code(output, 2);
     let envelope = error_json(output);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
     assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], "group e2ee");
-    assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
+    if command.starts_with("group.e2ee.") {
+        assert_eq!(envelope["error"]["code"], "internal_command");
+    } else {
+        assert_eq!(envelope["error"]["code"], "unsupported_capability");
+        assert_eq!(envelope["error"]["details"]["capability"], "group e2ee");
+        assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
+    }
 }
 
 fn assert_contains(value: &Value, needle: &str) {

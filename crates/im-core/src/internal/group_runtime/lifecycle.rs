@@ -642,6 +642,7 @@ mod tests {
                     mail_service_endpoint: None,
                     anp_service_endpoint: None,
                     anp_service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                    ca_bundle: None,
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 crate::ImCorePaths {
