@@ -611,7 +611,7 @@ fn message_kind(raw: &str) -> Result<MessageKind, ExitError> {
 
 fn message_security(
     command: &ParsedCommand,
-    target: &MessageTarget,
+    _target: &MessageTarget,
 ) -> Result<MessageSecurityMode, ExitError> {
     match string_flag(command, "secure")
         .trim()
@@ -620,26 +620,9 @@ fn message_security(
     {
         "" | "default" => Ok(MessageSecurityMode::DefaultPlain),
         "plain" | "off" | "false" => Ok(MessageSecurityMode::Plain),
-        "direct" | "secure-direct" | "on" | "true" => match target {
-            MessageTarget::Direct(_) => Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "secure direct messages are not supported by the Phase 1 IM Core adapter.",
-                "Use the existing legacy secure command path until secure migration starts.",
-            )),
-            MessageTarget::Group(_) => Err(ExitError::new(
-                "unsupported_capability",
-                2,
-                "group E2EE is not supported by the Phase 1 IM Core adapter.",
-                "Use the existing legacy group E2EE command path until secure migration starts.",
-            )),
-        },
-        "group-e2ee" | "e2ee" => Err(ExitError::new(
-            "unsupported_capability",
-            2,
-            "group E2EE is not supported by the Phase 1 IM Core adapter.",
-            "Use the existing legacy group E2EE command path until secure migration starts.",
-        )),
+        "direct" | "secure-direct" | "on" | "true" | "group-e2ee" | "e2ee" => {
+            Ok(MessageSecurityMode::E2eeRequired)
+        }
         value => Err(ExitError::new(
             "invalid_argument",
             2,
@@ -1702,6 +1685,11 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         im_core::ImError::UnsupportedCapability { capability } if capability == "attachments" => {
             MessageAdapterError::AttachmentNotSupported
         }
+        im_core::ImError::UnsupportedCapability { capability }
+            if capability == "secure-attachments" =>
+        {
+            MessageAdapterError::SecureAttachmentNotSupported
+        }
         im_core::ImError::UnsupportedCapability { capability } if capability == "secure-direct" => {
             MessageAdapterError::SecureNotSupported
         }
@@ -1911,5 +1899,14 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("awiki-cli-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn secure_attachment_unsupported_maps_to_specific_adapter_error() {
+        let err = im_error_to_message_error(im_core::ImError::UnsupportedCapability {
+            capability: "secure-attachments".to_string(),
+        });
+
+        assert_eq!(err, MessageAdapterError::SecureAttachmentNotSupported);
     }
 }

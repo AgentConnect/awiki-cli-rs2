@@ -7,190 +7,127 @@ import '../frb_generated.dart';
 import 'message.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-class DartRealtimeCapability {
-  final bool statusSupported;
-  final bool connectSupported;
-  final bool runnerExposed;
-  final String? reason;
 
-  const DartRealtimeCapability({
-    required this.statusSupported,
-    required this.connectSupported,
-    required this.runnerExposed,
-    this.reason,
-  });
 
-  @override
-  int get hashCode =>
-      statusSupported.hashCode ^
-      connectSupported.hashCode ^
-      runnerExposed.hashCode ^
-      reason.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRealtimeCapability &&
-          runtimeType == other.runtimeType &&
-          statusSupported == other.statusSupported &&
-          connectSupported == other.connectSupported &&
-          runnerExposed == other.runnerExposed &&
-          reason == other.reason;
-}
 
-class DartRealtimeEvent {
-  final String kind;
-  final String? state;
-  final String? reason;
-  final DartMessage? message;
-  final String? messageId;
-  final String? threadKind;
-  final String? threadId;
-  final String? updateKind;
-  final String? group;
-  final String? notificationId;
-  final String? title;
-  final String? body;
-  final String? source;
-  final String? hostKind;
-  final String? contentType;
-  final String? notificationType;
 
-  const DartRealtimeEvent({
-    required this.kind,
-    this.state,
-    this.reason,
-    this.message,
-    this.messageId,
-    this.threadKind,
-    this.threadId,
-    this.updateKind,
-    this.group,
-    this.notificationId,
-    this.title,
-    this.body,
-    this.source,
-    this.hostKind,
-    this.contentType,
-    this.notificationType,
-  });
+            class DartRealtimeCapability  {
+                final bool statusSupported;
+final bool connectSupported;
+final bool runnerExposed;
+final String? reason;
 
-  @override
-  int get hashCode =>
-      kind.hashCode ^
-      state.hashCode ^
-      reason.hashCode ^
-      message.hashCode ^
-      messageId.hashCode ^
-      threadKind.hashCode ^
-      threadId.hashCode ^
-      updateKind.hashCode ^
-      group.hashCode ^
-      notificationId.hashCode ^
-      title.hashCode ^
-      body.hashCode ^
-      source.hashCode ^
-      hostKind.hashCode ^
-      contentType.hashCode ^
-      notificationType.hashCode;
+                const DartRealtimeCapability({required this.statusSupported ,required this.connectSupported ,required this.runnerExposed ,this.reason ,});
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRealtimeEvent &&
-          runtimeType == other.runtimeType &&
-          kind == other.kind &&
-          state == other.state &&
-          reason == other.reason &&
-          message == other.message &&
-          messageId == other.messageId &&
-          threadKind == other.threadKind &&
-          threadId == other.threadId &&
-          updateKind == other.updateKind &&
-          group == other.group &&
-          notificationId == other.notificationId &&
-          title == other.title &&
-          body == other.body &&
-          source == other.source &&
-          hostKind == other.hostKind &&
-          contentType == other.contentType &&
-          notificationType == other.notificationType;
-}
 
-class DartRealtimeOptions {
-  final String reconnect;
-  final int eventBuffer;
-  final BigInt? reconnectDelayMs;
-  final BigInt? reconnectBaseDelayMs;
-  final BigInt? reconnectMaxDelayMs;
-  final int? reconnectMaxAttempts;
-  final List<String> subscriptions;
 
-  const DartRealtimeOptions({
-    required this.reconnect,
-    required this.eventBuffer,
-    this.reconnectDelayMs,
-    this.reconnectBaseDelayMs,
-    this.reconnectMaxDelayMs,
-    this.reconnectMaxAttempts,
-    required this.subscriptions,
-  });
 
-  @override
-  int get hashCode =>
-      reconnect.hashCode ^
-      eventBuffer.hashCode ^
-      reconnectDelayMs.hashCode ^
-      reconnectBaseDelayMs.hashCode ^
-      reconnectMaxDelayMs.hashCode ^
-      reconnectMaxAttempts.hashCode ^
-      subscriptions.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRealtimeOptions &&
-          runtimeType == other.runtimeType &&
-          reconnect == other.reconnect &&
-          eventBuffer == other.eventBuffer &&
-          reconnectDelayMs == other.reconnectDelayMs &&
-          reconnectBaseDelayMs == other.reconnectBaseDelayMs &&
-          reconnectMaxDelayMs == other.reconnectMaxDelayMs &&
-          reconnectMaxAttempts == other.reconnectMaxAttempts &&
-          subscriptions == other.subscriptions;
-}
+        @override
+        int get hashCode => statusSupported.hashCode^connectSupported.hashCode^runnerExposed.hashCode^reason.hashCode;
 
-class DartRealtimeStatus {
-  final bool connected;
-  final String state;
-  final List<String> subscriptions;
-  final String? lastError;
-  final List<String> warnings;
 
-  const DartRealtimeStatus({
-    required this.connected,
-    required this.state,
-    required this.subscriptions,
-    this.lastError,
-    required this.warnings,
-  });
 
-  @override
-  int get hashCode =>
-      connected.hashCode ^
-      state.hashCode ^
-      subscriptions.hashCode ^
-      lastError.hashCode ^
-      warnings.hashCode;
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRealtimeCapability &&
+                runtimeType == other.runtimeType
+                && statusSupported == other.statusSupported&& connectSupported == other.connectSupported&& runnerExposed == other.runnerExposed&& reason == other.reason;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRealtimeStatus &&
-          runtimeType == other.runtimeType &&
-          connected == other.connected &&
-          state == other.state &&
-          subscriptions == other.subscriptions &&
-          lastError == other.lastError &&
-          warnings == other.warnings;
-}
+            }
+
+class DartRealtimeEvent  {
+                final String kind;
+final String? state;
+final String? reason;
+final DartMessage? message;
+final String? messageId;
+final String? threadKind;
+final String? threadId;
+final String? updateKind;
+final String? group;
+final String? notificationId;
+final String? title;
+final String? body;
+final String? source;
+final String? hostKind;
+final String? contentType;
+final String? notificationType;
+
+                const DartRealtimeEvent({required this.kind ,this.state ,this.reason ,this.message ,this.messageId ,this.threadKind ,this.threadId ,this.updateKind ,this.group ,this.notificationId ,this.title ,this.body ,this.source ,this.hostKind ,this.contentType ,this.notificationType ,});
+
+
+
+
+
+        @override
+        int get hashCode => kind.hashCode^state.hashCode^reason.hashCode^message.hashCode^messageId.hashCode^threadKind.hashCode^threadId.hashCode^updateKind.hashCode^group.hashCode^notificationId.hashCode^title.hashCode^body.hashCode^source.hashCode^hostKind.hashCode^contentType.hashCode^notificationType.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRealtimeEvent &&
+                runtimeType == other.runtimeType
+                && kind == other.kind&& state == other.state&& reason == other.reason&& message == other.message&& messageId == other.messageId&& threadKind == other.threadKind&& threadId == other.threadId&& updateKind == other.updateKind&& group == other.group&& notificationId == other.notificationId&& title == other.title&& body == other.body&& source == other.source&& hostKind == other.hostKind&& contentType == other.contentType&& notificationType == other.notificationType;
+
+            }
+
+class DartRealtimeOptions  {
+                final String reconnect;
+final int eventBuffer;
+final BigInt? reconnectDelayMs;
+final BigInt? reconnectBaseDelayMs;
+final BigInt? reconnectMaxDelayMs;
+final int? reconnectMaxAttempts;
+final List<String> subscriptions;
+
+                const DartRealtimeOptions({required this.reconnect ,required this.eventBuffer ,this.reconnectDelayMs ,this.reconnectBaseDelayMs ,this.reconnectMaxDelayMs ,this.reconnectMaxAttempts ,required this.subscriptions ,});
+
+
+
+
+
+        @override
+        int get hashCode => reconnect.hashCode^eventBuffer.hashCode^reconnectDelayMs.hashCode^reconnectBaseDelayMs.hashCode^reconnectMaxDelayMs.hashCode^reconnectMaxAttempts.hashCode^subscriptions.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRealtimeOptions &&
+                runtimeType == other.runtimeType
+                && reconnect == other.reconnect&& eventBuffer == other.eventBuffer&& reconnectDelayMs == other.reconnectDelayMs&& reconnectBaseDelayMs == other.reconnectBaseDelayMs&& reconnectMaxDelayMs == other.reconnectMaxDelayMs&& reconnectMaxAttempts == other.reconnectMaxAttempts&& subscriptions == other.subscriptions;
+
+            }
+
+class DartRealtimeStatus  {
+                final bool connected;
+final String state;
+final List<String> subscriptions;
+final String? lastError;
+final List<String> warnings;
+
+                const DartRealtimeStatus({required this.connected ,required this.state ,required this.subscriptions ,this.lastError ,required this.warnings ,});
+
+
+
+
+
+        @override
+        int get hashCode => connected.hashCode^state.hashCode^subscriptions.hashCode^lastError.hashCode^warnings.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRealtimeStatus &&
+                runtimeType == other.runtimeType
+                && connected == other.connected&& state == other.state&& subscriptions == other.subscriptions&& lastError == other.lastError&& warnings == other.warnings;
+
+            }

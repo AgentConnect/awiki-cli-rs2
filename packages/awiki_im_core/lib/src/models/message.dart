@@ -38,7 +38,13 @@ class MessageThreadRef extends ThreadRef {
   final String threadId;
 }
 
-enum MessageSecurityMode { defaultPlain, plain, secureDirect, groupE2ee }
+enum MessageSecurityMode {
+  defaultPlain,
+  plain,
+  e2eeRequired,
+  secureDirect,
+  groupE2ee,
+}
 
 enum MessageDirection { outgoing, incoming, unknown }
 

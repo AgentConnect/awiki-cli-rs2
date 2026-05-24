@@ -12,3 +12,4 @@ export 'src/models/identity.dart';
 export 'src/models/message.dart';
 export 'src/models/profile.dart';
 export 'src/models/realtime.dart';
+export 'src/models/secure.dart';

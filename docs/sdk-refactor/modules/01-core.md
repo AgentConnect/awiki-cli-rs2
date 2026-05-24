@@ -94,7 +94,7 @@ impl ImClient {
     pub fn realtime(&self) -> RealtimeService<'_>;
 
     // P6+
-    pub fn secure(&self) -> SecureDiagnosticsService<'_>;
+    pub fn secure(&self) -> SecureService<'_>;
 }
 ```
 

@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 pub struct SendMessageRequest {
     pub target: MessageTarget,
     pub body: MessageBody,
-    pub security: MessageSecurityMode,
+    pub security: MessageSecurityPolicy,
     pub client_message_id: Option<crate::ids::MessageId>,
     pub delivery: MessageDeliveryOptions,
 }
@@ -76,13 +76,12 @@ pub enum MessageKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MessageSecurityMode {
-    DefaultPlain,
-    Plain,
+pub enum MessageSecurityPolicy {
+    Default,
+    Plaintext,
 
     // Reserved for Phase 6. P1 returns UnsupportedCapability.
-    SecureDirect,
-    GroupE2ee,
+    E2eeRequired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,9 +229,8 @@ P1 不把 `mark_read` 放进 `InboxQuery`。当前 CLI 若有 `--mark-read`，P1
    - Text 不能为空。
    - Attachment -> UnsupportedCapability("attachments")。
 2. 校验 security。
-   - DefaultPlain / Plain 继续。
-   - SecureDirect -> UnsupportedCapability("secure-direct")。
-   - GroupE2ee -> UnsupportedCapability("group-e2ee")。
+   - Default / Plaintext 继续。
+   - E2eeRequired -> UnsupportedCapability("e2ee")。
 3. 通过 ImClient runtime 注入身份、auth、owner。
 4. Direct target：做最小 PeerRef resolve。
 5. Group target：使用已有 GroupRef，不做 group lifecycle。

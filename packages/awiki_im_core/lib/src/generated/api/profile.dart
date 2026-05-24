@@ -10,21 +10,11 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<DartUserProfile> loadMyProfile({required ArcDartImClient client}) =>
-    RustLib.instance.api.crateApiProfileLoadMyProfile(client: client);
 
-Future<DartUserProfile> updateProfile({
-  required ArcDartImClient client,
-  required DartProfilePatch patch,
-}) => RustLib.instance.api.crateApiProfileUpdateProfile(
-  client: client,
-  patch: patch,
-);
 
-Future<DartUserProfile> loadPublicProfile({
-  required ArcDartImClient client,
-  required DartIdentitySubject subject,
-}) => RustLib.instance.api.crateApiProfileLoadPublicProfile(
-  client: client,
-  subject: subject,
-);
+
+            Future<DartUserProfile>  loadMyProfile({required ArcDartImClient client }) => RustLib.instance.api.crateApiProfileLoadMyProfile(client: client);
+
+Future<DartUserProfile>  updateProfile({required ArcDartImClient client , required DartProfilePatch patch }) => RustLib.instance.api.crateApiProfileUpdateProfile(client: client, patch: patch);
+
+Future<DartUserProfile>  loadPublicProfile({required ArcDartImClient client , required DartIdentitySubject subject }) => RustLib.instance.api.crateApiProfileLoadPublicProfile(client: client, subject: subject);

@@ -31,13 +31,15 @@ fn message_target_direct_and_group_can_construct() {
 fn secure_direct_and_group_e2ee_are_reserved_variants() {
     let secure_direct = MessageSecurityMode::SecureDirect;
     let group_e2ee = MessageSecurityMode::GroupE2ee;
+    let required = MessageSecurityPolicy::E2eeRequired;
 
     assert!(matches!(secure_direct, MessageSecurityMode::SecureDirect));
     assert!(matches!(group_e2ee, MessageSecurityMode::GroupE2ee));
+    assert!(matches!(required, MessageSecurityMode::E2eeRequired));
 }
 
 #[test]
-fn reserved_message_capabilities_return_unsupported() {
+fn reserved_message_capability_mismatches_fail_closed() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
@@ -54,10 +56,7 @@ fn reserved_message_capabilities_return_unsupported() {
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
     });
-    assert!(matches!(
-        secure,
-        Err(ImError::UnsupportedCapability { capability }) if capability == "secure-direct"
-    ));
+    assert!(matches!(secure, Err(ImError::PeerNotFound { .. })));
 
     let group_e2ee = client.messages().send(SendMessageRequest {
         target: MessageTarget::Direct(peer),
@@ -89,6 +88,53 @@ fn reserved_message_capabilities_return_unsupported() {
         attachment,
         Err(ImError::UnsupportedCapability { capability }) if capability == "attachments"
     ));
+}
+
+#[test]
+fn e2ee_required_attachment_reports_secure_attachment_boundary() {
+    let core = test_core();
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let result = client.messages().send(SendMessageRequest {
+        target: MessageTarget::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
+        body: MessageBody::Attachment {
+            input: AttachmentInput::LocalFile("image.png".to_string()),
+            caption: None,
+            mime_type: None,
+        },
+        security: MessageSecurityPolicy::E2eeRequired,
+        client_message_id: None,
+        delivery: MessageDeliveryOptions::default(),
+    });
+
+    assert!(matches!(
+        result,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "secure-attachments"
+    ));
+}
+
+#[test]
+fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
+    let core = test_core();
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+    let peer = PeerRef::parse("bob", "awiki.info").unwrap();
+
+    let result = client.messages().send(SendMessageRequest {
+        target: MessageTarget::Direct(peer),
+        body: MessageBody::Text {
+            text: "secret".to_string(),
+            kind: MessageKind::Text,
+        },
+        security: MessageSecurityPolicy::E2eeRequired,
+        client_message_id: None,
+        delivery: MessageDeliveryOptions::default(),
+    });
+
+    assert!(matches!(result, Err(ImError::PeerNotFound { .. })));
 }
 
 #[test]

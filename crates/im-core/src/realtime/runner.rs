@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::internal::transport::RpcTransport;
+
 pub trait RealtimeRunnerTransport {
     fn connect(&mut self) -> crate::ImResult<()>;
 
@@ -18,6 +20,15 @@ pub struct RealtimeRunnerOutcome {
     pub handle: super::RealtimeHandle,
 }
 
+pub(crate) struct RealtimeProjectionOutcome {
+    pub(crate) event: Option<super::ImEvent>,
+    pub(crate) warnings: Vec<String>,
+}
+
+pub(crate) trait RealtimeNotificationProjector {
+    fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome;
+}
+
 pub fn run_realtime_transport_until_shutdown<T>(
     options: super::RealtimeOptions,
     shutdown: super::ShutdownSignal,
@@ -29,7 +40,16 @@ where
 {
     let (sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let mut events = ChannelRunnerEvents { sender };
-    run_realtime_transport_loop(options, shutdown, control, transport, receiver, &mut events)
+    let mut projector = PlainRealtimeNotificationProjector;
+    run_realtime_transport_loop(
+        options,
+        shutdown,
+        control,
+        transport,
+        receiver,
+        &mut events,
+        &mut projector,
+    )
 }
 
 pub fn run_realtime_transport_with_event_sink_until_shutdown<T, S>(
@@ -45,20 +65,31 @@ where
 {
     let (_sender, receiver) = mpsc::sync_channel(options.event_buffer);
     let mut events = SinkRunnerEvents { sink: event_sink };
-    run_realtime_transport_loop(options, shutdown, control, transport, receiver, &mut events)
+    let mut projector = PlainRealtimeNotificationProjector;
+    run_realtime_transport_loop(
+        options,
+        shutdown,
+        control,
+        transport,
+        receiver,
+        &mut events,
+        &mut projector,
+    )
 }
 
-fn run_realtime_transport_loop<T, E>(
+fn run_realtime_transport_loop<T, E, P>(
     options: super::RealtimeOptions,
     shutdown: super::ShutdownSignal,
     control: super::RealtimeControl,
     transport: &mut T,
     receiver: mpsc::Receiver<super::ImEvent>,
     events: &mut E,
+    projector: &mut P,
 ) -> crate::ImResult<RealtimeRunnerOutcome>
 where
     T: RealtimeRunnerTransport,
     E: RunnerEvents,
+    P: RealtimeNotificationProjector,
 {
     let mut warnings = Vec::new();
     let mut reconnect_attempts = 0;
@@ -130,9 +161,12 @@ where
                     if notification.is_null() {
                         continue;
                     }
-                    let projection =
-                        crate::internal::realtime::projection::project_notification(&notification);
-                    if let Err(warning) = events.emit(projection.event) {
+                    let projection = projector.project(notification);
+                    warnings.extend(projection.warnings);
+                    let Some(event) = projection.event else {
+                        continue;
+                    };
+                    if let Err(warning) = events.emit(event) {
                         warnings.push(warning);
                         return Ok(outcome(
                             receiver,
@@ -197,6 +231,114 @@ trait RunnerEvents {
     fn emit(&mut self, event: super::ImEvent) -> Result<(), String>;
 }
 
+struct PlainRealtimeNotificationProjector;
+
+impl RealtimeNotificationProjector for PlainRealtimeNotificationProjector {
+    fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        RealtimeProjectionOutcome {
+            event: Some(
+                crate::internal::realtime::projection::project_notification(&notification).event,
+            ),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+struct SecureRealtimeNotificationProjector<'a, R> {
+    client: &'a crate::core::ImClient,
+    directory_transport: R,
+}
+
+impl<R> RealtimeNotificationProjector for SecureRealtimeNotificationProjector<'_, R>
+where
+    R: RpcTransport,
+{
+    fn project(&mut self, notification: Value) -> RealtimeProjectionOutcome {
+        let (notification, mut warnings) = normalize_direct_e2ee_realtime_notification(
+            self.client,
+            notification,
+            &mut self.directory_transport,
+        );
+        let Some(notification) = notification else {
+            return RealtimeProjectionOutcome {
+                event: None,
+                warnings,
+            };
+        };
+        let Some(notification) =
+            normalize_group_e2ee_realtime_notification(self.client, notification, &mut warnings)
+        else {
+            return RealtimeProjectionOutcome {
+                event: None,
+                warnings,
+            };
+        };
+        let event =
+            Some(crate::internal::realtime::projection::project_notification(&notification).event);
+        RealtimeProjectionOutcome { event, warnings }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn normalize_direct_e2ee_realtime_notification<R>(
+    client: &crate::core::ImClient,
+    notification: Value,
+    directory_transport: &mut R,
+) -> (Option<Value>, Vec<String>)
+where
+    R: RpcTransport,
+{
+    let projection = crate::internal::secure_direct::incoming::
+        maybe_normalize_direct_e2ee_notification_for_client(
+            client,
+            notification,
+            directory_transport,
+            crate::internal::secure_direct::incoming::DirectDecryptMode::WithSideEffects,
+        );
+    (projection.notification, projection.warnings)
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn normalize_direct_e2ee_realtime_notification<R>(
+    _client: &crate::core::ImClient,
+    notification: Value,
+    _directory_transport: &mut R,
+) -> (Option<Value>, Vec<String>)
+where
+    R: RpcTransport,
+{
+    (Some(notification), Vec::new())
+}
+
+#[cfg(feature = "group-e2ee")]
+fn normalize_group_e2ee_realtime_notification(
+    client: &crate::core::ImClient,
+    notification: Value,
+    warnings: &mut Vec<String>,
+) -> Option<Value> {
+    let notice_projection = crate::internal::group_e2ee::notices::
+        maybe_process_group_e2ee_notice_notification_for_client(client, notification);
+    warnings.extend(notice_projection.warnings);
+    let notification = notice_projection.notification?;
+
+    let projection =
+        crate::internal::group_e2ee::incoming::maybe_normalize_group_e2ee_notification_for_client(
+            client,
+            notification,
+        );
+    warnings.extend(projection.warnings);
+    projection.notification
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+fn normalize_group_e2ee_realtime_notification(
+    _client: &crate::core::ImClient,
+    notification: Value,
+    _warnings: &mut Vec<String>,
+) -> Option<Value> {
+    Some(notification)
+}
+
 struct ChannelRunnerEvents {
     sender: mpsc::SyncSender<super::ImEvent>,
 }
@@ -233,8 +375,22 @@ pub(crate) fn run_default_until_shutdown(
         socket: None,
         idle_ticks: 0,
     };
-    run_realtime_transport_until_shutdown(options, shutdown, control, &mut transport)
-        .map(|outcome| outcome.exit)
+    let (sender, receiver) = mpsc::sync_channel(options.event_buffer);
+    let mut events = ChannelRunnerEvents { sender };
+    let mut projector = SecureRealtimeNotificationProjector {
+        client,
+        directory_transport: crate::internal::transport::CoreHttpTransport::new(client),
+    };
+    run_realtime_transport_loop(
+        options,
+        shutdown,
+        control,
+        &mut transport,
+        receiver,
+        &mut events,
+        &mut projector,
+    )
+    .map(|outcome| outcome.exit)
 }
 
 pub(crate) fn spawn_default(
@@ -253,13 +409,21 @@ pub(crate) fn spawn_default(
                 socket: None,
                 idle_ticks: 0,
             };
+            let receiver = mpsc::channel().1;
             let mut sink = SenderRunnerEvents { sender };
-            let _ = run_realtime_transport_with_event_sink_until_shutdown(
+            let mut events = SinkRunnerEvents { sink: &mut sink };
+            let mut projector = SecureRealtimeNotificationProjector {
+                client: &client,
+                directory_transport: crate::internal::transport::CoreHttpTransport::new(&client),
+            };
+            let _ = run_realtime_transport_loop(
                 options,
                 super::ShutdownSignal::pending(),
                 worker_control,
                 &mut transport,
-                &mut sink,
+                receiver,
+                &mut events,
+                &mut projector,
             );
         })
         .map_err(|err| crate::ImError::Internal {

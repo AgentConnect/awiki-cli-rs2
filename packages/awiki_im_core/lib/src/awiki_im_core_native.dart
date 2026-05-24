@@ -12,6 +12,7 @@ import 'generated/api/identity.dart' as gen_identity_api;
 import 'generated/api/messages.dart' as gen_messages;
 import 'generated/api/profile.dart' as gen_profile;
 import 'generated/api/realtime.dart' as gen_realtime;
+import 'generated/api/secure.dart' as gen_secure;
 import 'generated/dto/auth.dart' as gen_auth_dto;
 import 'generated/dto/attachment.dart' as gen_attachment;
 import 'generated/dto/config.dart' as gen_config;
@@ -23,6 +24,7 @@ import 'generated/dto/identity.dart' as gen_identity;
 import 'generated/dto/message.dart' as gen_message;
 import 'generated/dto/profile.dart' as gen_profile_dto;
 import 'generated/dto/realtime.dart' as gen_realtime_dto;
+import 'generated/dto/secure.dart' as gen_secure_dto;
 import 'generated/frb_generated.dart' as gen;
 import 'models/auth.dart';
 import 'models/attachment.dart';
@@ -35,6 +37,7 @@ import 'models/identity.dart';
 import 'models/message.dart';
 import 'models/profile.dart';
 import 'models/realtime.dart';
+import 'models/secure.dart';
 import 'native_library_loader.dart';
 
 bool _rustLibInitialized = false;
@@ -220,6 +223,7 @@ class AwikiImClient {
   EmailApi get email => EmailApi._(this);
   GroupApi get groups => GroupApi._(this);
   RealtimeApi get realtime => RealtimeApi._(this);
+  SecureApi get secure => SecureApi._(this);
 
   Stream<RealtimeEvent> get events => _eventsController.stream;
 
@@ -875,6 +879,136 @@ extension on gen_realtime_dto.DartRealtimeEvent {
   );
 }
 
+class SecureApi {
+  SecureApi._(this._client);
+
+  final AwikiImClient _client;
+
+  DirectSecureConversation direct(String peer) =>
+      DirectSecureConversation._(_client, peer);
+
+  GroupSecureConversation group(String group) =>
+      GroupSecureConversation._(_client, group);
+
+  SecureOutboxApi get outbox => SecureOutboxApi._(_client);
+}
+
+class DirectSecureConversation {
+  DirectSecureConversation._(this._client, this.peer);
+
+  final AwikiImClient _client;
+  final String peer;
+
+  Future<DirectSecureStatus> status() async {
+    _client._ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_secure.secureDirectStatus(
+        client: _client._inner,
+        peer: peer,
+      ),
+    );
+    return status._toModel();
+  }
+
+  Future<DirectSecurePrepareResult> prepare() async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_secure.secureDirectPrepare(
+        client: _client._inner,
+        peer: peer,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<DirectSecureRepairResult> repair() async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_secure.secureDirectRepair(
+        client: _client._inner,
+        peer: peer,
+      ),
+    );
+    return result._toModel();
+  }
+}
+
+class GroupSecureConversation {
+  GroupSecureConversation._(this._client, this.group);
+
+  final AwikiImClient _client;
+  final String group;
+
+  Future<GroupSecureStatus> status() async {
+    _client._ensureNotDisposed();
+    final status = await _mapNativeErrors(
+      () => gen_secure.secureGroupStatus(
+        client: _client._inner,
+        group: group,
+      ),
+    );
+    return status._toModel();
+  }
+
+  Future<GroupSecurePrepareResult> prepare() async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_secure.secureGroupPrepare(
+        client: _client._inner,
+        group: group,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<GroupSecureRepairResult> repair() async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_secure.secureGroupRepair(
+        client: _client._inner,
+        group: group,
+      ),
+    );
+    return result._toModel();
+  }
+}
+
+class SecureOutboxApi {
+  SecureOutboxApi._(this._client);
+
+  final AwikiImClient _client;
+
+  Future<List<SecureOutboxEntry>> listFailed() async {
+    _client._ensureNotDisposed();
+    final entries = await _mapNativeErrors(
+      () => gen_secure.secureOutboxListFailed(client: _client._inner),
+    );
+    return entries.map((entry) => entry._toModel()).toList();
+  }
+
+  Future<SecureOutboxResult> retry(String outboxId) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_secure.secureOutboxRetry(
+        client: _client._inner,
+        outboxId: outboxId,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<SecureOutboxResult> drop(String outboxId) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_secure.secureOutboxDrop(
+        client: _client._inner,
+        outboxId: outboxId,
+      ),
+    );
+    return result._toModel();
+  }
+}
+
 extension on AwikiImCoreConfig {
   gen_config.DartImCoreConfig _toGen() => gen_config.DartImCoreConfig(
     serviceBaseUrl: serviceBaseUrl,
@@ -1125,6 +1259,8 @@ extension on MessageSecurityMode {
     MessageSecurityMode.defaultPlain =>
       gen_message.DartMessageSecurityMode.defaultPlain,
     MessageSecurityMode.plain => gen_message.DartMessageSecurityMode.plain,
+    MessageSecurityMode.e2eeRequired =>
+      gen_message.DartMessageSecurityMode.e2EeRequired,
     MessageSecurityMode.secureDirect =>
       gen_message.DartMessageSecurityMode.secureDirect,
     MessageSecurityMode.groupE2ee =>
@@ -1502,5 +1638,190 @@ extension on gen_realtime_dto.DartRealtimeStatus {
     subscriptions: subscriptions,
     lastError: lastError,
     warnings: warnings,
+  );
+}
+
+extension on gen_secure_dto.DartDirectSecureState {
+  DirectSecureState _toModel() => switch (this) {
+    gen_secure_dto.DartDirectSecureState.ready => DirectSecureState.ready,
+    gen_secure_dto.DartDirectSecureState.preparing =>
+      DirectSecureState.preparing,
+    gen_secure_dto.DartDirectSecureState.waitingForPeer =>
+      DirectSecureState.waitingForPeer,
+    gen_secure_dto.DartDirectSecureState.needsRepair =>
+      DirectSecureState.needsRepair,
+    gen_secure_dto.DartDirectSecureState.unavailable =>
+      DirectSecureState.unavailable,
+    gen_secure_dto.DartDirectSecureState.unknown => DirectSecureState.unknown,
+  };
+}
+
+extension on gen_secure_dto.DartDirectSecureStatus {
+  DirectSecureStatus _toModel() => DirectSecureStatus(
+    peer: peer,
+    resolvedPeer: resolvedPeer,
+    state: state._toModel(),
+    canSendSecure: canSendSecure,
+    pendingOutboxCount: pendingOutboxCount,
+    problem: problem?._toModel(),
+    warnings: warnings,
+  );
+}
+
+extension on gen_secure_dto.DartDirectSecurePrepareResult {
+  DirectSecurePrepareResult _toModel() => DirectSecurePrepareResult(
+    peer: peer,
+    state: state._toModel(),
+    canSendSecure: canSendSecure,
+    warnings: warnings,
+  );
+}
+
+extension on gen_secure_dto.DartDirectSecureRepairResult {
+  DirectSecureRepairResult _toModel() => DirectSecureRepairResult(
+    peer: peer,
+    state: state._toModel(),
+    repaired: repaired,
+    problem: problem?._toModel(),
+    warnings: warnings,
+  );
+}
+
+extension on gen_secure_dto.DartGroupSecureState {
+  GroupSecureState _toModel() => switch (this) {
+    gen_secure_dto.DartGroupSecureState.ready => GroupSecureState.ready,
+    gen_secure_dto.DartGroupSecureState.syncing => GroupSecureState.syncing,
+    gen_secure_dto.DartGroupSecureState.needsRepair =>
+      GroupSecureState.needsRepair,
+    gen_secure_dto.DartGroupSecureState.waitingForMembershipUpdate =>
+      GroupSecureState.waitingForMembershipUpdate,
+    gen_secure_dto.DartGroupSecureState.missingLocalState =>
+      GroupSecureState.missingLocalState,
+    gen_secure_dto.DartGroupSecureState.unavailable =>
+      GroupSecureState.unavailable,
+    gen_secure_dto.DartGroupSecureState.unknown => GroupSecureState.unknown,
+  };
+}
+
+extension on gen_secure_dto.DartGroupSecureLocalReadiness {
+  GroupSecureLocalReadiness _toModel() => GroupSecureLocalReadiness(
+    hasLocalState: hasLocalState,
+    hasActiveMembership: hasActiveMembership,
+  );
+}
+
+extension on gen_secure_dto.DartGroupSecurePendingWork {
+  GroupSecurePendingWork _toModel() => GroupSecurePendingWork(
+    pendingNotices: pendingNotices,
+    pendingCommits: pendingCommits,
+  );
+}
+
+extension on gen_secure_dto.DartGroupSecureStatus {
+  GroupSecureStatus _toModel() => GroupSecureStatus(
+    group: group,
+    state: state._toModel(),
+    canSendSecure: canSendSecure,
+    localReadiness: localReadiness._toModel(),
+    pendingWork: pendingWork._toModel(),
+    problem: problem?._toModel(),
+    warnings: warnings,
+  );
+}
+
+extension on gen_secure_dto.DartGroupSecurePrepareResult {
+  GroupSecurePrepareResult _toModel() => GroupSecurePrepareResult(
+    group: group,
+    state: state._toModel(),
+    canSendSecure: canSendSecure,
+    warnings: warnings,
+  );
+}
+
+extension on gen_secure_dto.DartGroupSecureRepairResult {
+  GroupSecureRepairResult _toModel() => GroupSecureRepairResult(
+    group: group,
+    state: state._toModel(),
+    repaired: repaired,
+    problem: problem?._toModel(),
+    warnings: warnings,
+  );
+}
+
+extension on gen_secure_dto.DartSecureOutboxStatus {
+  SecureOutboxStatus _toModel() => switch (this) {
+    gen_secure_dto.DartSecureOutboxStatus.queued => SecureOutboxStatus.queued,
+    gen_secure_dto.DartSecureOutboxStatus.sending =>
+      SecureOutboxStatus.sending,
+    gen_secure_dto.DartSecureOutboxStatus.failed => SecureOutboxStatus.failed,
+    gen_secure_dto.DartSecureOutboxStatus.sent => SecureOutboxStatus.sent,
+    gen_secure_dto.DartSecureOutboxStatus.dropped =>
+      SecureOutboxStatus.dropped,
+  };
+}
+
+extension on gen_secure_dto.DartSecureOutboxEntry {
+  SecureOutboxEntry _toModel() => SecureOutboxEntry(
+    id: id,
+    target: target._toModel(),
+    messageKind: messageKind,
+    status: status._toModel(),
+    attemptCount: attemptCount,
+    lastError: lastError?._toModel(),
+    createdAt: createdAt,
+    updatedAt: updatedAt,
+  );
+}
+
+extension on gen_secure_dto.DartSecureOutboxResult {
+  SecureOutboxResult _toModel() => SecureOutboxResult(
+    id: id,
+    status: status._toModel(),
+    delivery: delivery?._toModel(),
+    warnings: warnings,
+  );
+}
+
+extension on gen_secure_dto.DartSecureDelivery {
+  SecureDelivery _toModel() => SecureDelivery(
+    messageId: messageId,
+    state: state,
+  );
+}
+
+extension on gen_secure_dto.DartSecureProblem {
+  SecureProblem _toModel() => SecureProblem(
+    code: code._toModel(),
+    message: message,
+    retryable: retryable,
+  );
+}
+
+extension on gen_secure_dto.DartSecureProblemCode {
+  SecureProblemCode _toModel() => switch (this) {
+    gen_secure_dto.DartSecureProblemCode.identityNotReady =>
+      SecureProblemCode.identityNotReady,
+    gen_secure_dto.DartSecureProblemCode.peerNotFound =>
+      SecureProblemCode.peerNotFound,
+    gen_secure_dto.DartSecureProblemCode.peerKeysUnavailable =>
+      SecureProblemCode.peerKeysUnavailable,
+    gen_secure_dto.DartSecureProblemCode.sessionNeedsRepair =>
+      SecureProblemCode.sessionNeedsRepair,
+    gen_secure_dto.DartSecureProblemCode.groupStateUnavailable =>
+      SecureProblemCode.groupStateUnavailable,
+    gen_secure_dto.DartSecureProblemCode.localStateUnavailable =>
+      SecureProblemCode.localStateUnavailable,
+    gen_secure_dto.DartSecureProblemCode.transportUnavailable =>
+      SecureProblemCode.transportUnavailable,
+    gen_secure_dto.DartSecureProblemCode.unsupported =>
+      SecureProblemCode.unsupported,
+    gen_secure_dto.DartSecureProblemCode.unknown => SecureProblemCode.unknown,
+  };
+}
+
+extension on gen_message.DartMessageTarget {
+  MessageTarget _toModel() => when(
+    direct: (peer) => MessageTarget.direct(peer),
+    group: (group) => MessageTarget.group(group),
   );
 }

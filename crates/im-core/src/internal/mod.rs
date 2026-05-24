@@ -6,6 +6,8 @@ pub(crate) mod directory_runtime;
 pub(crate) mod discovery;
 pub(crate) mod email_runtime;
 pub(crate) mod email_wire;
+#[cfg(feature = "group-e2ee")]
+pub(crate) mod group_e2ee;
 pub(crate) mod group_runtime;
 pub(crate) mod http;
 pub(crate) mod identity_bind_runtime;
@@ -24,6 +26,7 @@ pub(crate) mod profile_runtime;
 pub(crate) mod proof;
 pub(crate) mod realtime;
 pub(crate) mod relationship_runtime;
+pub(crate) mod secure_direct;
 pub(crate) mod store;
 pub(crate) mod transport;
 pub(crate) mod wire;

@@ -825,6 +825,12 @@ pub(super) fn message_exit(err: impl Into<MessageAdapterError>, hint: &str) -> E
             err.to_string(),
             "Secure messaging is currently supported only for direct text messaging.",
         ),
+        MessageAdapterError::SecureAttachmentNotSupported => ExitError::new(
+            "not_implemented",
+            1,
+            err.to_string(),
+            "E2EE attachment sending is not supported yet. Send text with E2EE or use the non-E2EE attachment flow when available.",
+        ),
         MessageAdapterError::GroupE2eeSelfLeaveUnsupported => ExitError::new(
             "unsupported_mode",
             1,

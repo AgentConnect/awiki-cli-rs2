@@ -18,7 +18,7 @@
 - auth ensure + 401 refresh retry。
 - DID/handle 的最小 target resolve。
 - RPC params 构造作为内部 helper。
-- `SecureDirect` / `GroupE2ee` / `Attachment` 返回 `UnsupportedCapability`。
+- `MessageSecurityPolicy::E2eeRequired` / `Attachment` 返回 `UnsupportedCapability`。
 
 P1 不要求完整 conversation projection、mark-read、本地 cache merge。
 
@@ -37,7 +37,7 @@ P1 不要求完整 conversation projection、mark-read、本地 cache merge。
 pub struct SendMessageRequest {
     pub target: MessageTarget,
     pub body: MessageBody,
-    pub security: MessageSecurityMode,
+    pub security: MessageSecurityPolicy,
     pub client_message_id: Option<MessageId>,
     pub delivery: MessageDeliveryOptions,
 }
@@ -58,13 +58,12 @@ pub enum MessageBody {
     },
 }
 
-pub enum MessageSecurityMode {
-    DefaultPlain,
-    Plain,
+pub enum MessageSecurityPolicy {
+    Default,
+    Plaintext,
 
     // P6+
-    SecureDirect,
-    GroupE2ee,
+    E2eeRequired,
 }
 
 pub enum ThreadRef {

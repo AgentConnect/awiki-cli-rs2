@@ -9,3 +9,4 @@ pub mod identity;
 pub mod message;
 pub mod profile;
 pub mod realtime;
+pub mod secure;

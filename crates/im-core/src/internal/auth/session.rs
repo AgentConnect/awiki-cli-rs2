@@ -83,6 +83,26 @@ impl SessionProvider for FileSessionProvider<'_> {
     }
 }
 
+impl<T> SessionProvider for &T
+where
+    T: SessionProvider + ?Sized,
+{
+    fn ensure_session(
+        &self,
+        scope: crate::auth::AuthScope,
+    ) -> crate::ImResult<crate::auth::SessionBundle> {
+        (**self).ensure_session(scope)
+    }
+
+    fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+        (**self).refresh_session()
+    }
+
+    fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+        (**self).status()
+    }
+}
+
 struct SessionSnapshot {
     subject: crate::ids::Did,
     ready_for_auth: bool,

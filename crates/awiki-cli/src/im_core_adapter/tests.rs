@@ -457,6 +457,21 @@ fn send_message_request_builds_markdown_plain_direct_sdk_dto() {
 }
 
 #[test]
+fn send_message_request_maps_secure_flag_to_e2ee_required_policy() {
+    let direct = command_with_flags([("to", "bob"), ("text", "hello"), ("secure", "on")]);
+    let direct_request = messages::send_message_request(&direct, "awiki.test").unwrap();
+    assert_eq!(direct_request.security, MessageSecurityMode::E2eeRequired);
+
+    let group = command_with_flags([
+        ("group", "did:example:group"),
+        ("text", "hello group"),
+        ("secure", "e2ee"),
+    ]);
+    let group_request = messages::send_message_request(&group, "awiki.test").unwrap();
+    assert_eq!(group_request.security, MessageSecurityMode::E2eeRequired);
+}
+
+#[test]
 fn history_request_builds_direct_thread_and_query() {
     let command = command_with_flags([("with", "bob"), ("limit", "5"), ("cursor", "abc")]);
     let (thread, query) = messages::history_request(&command, "awiki.test").unwrap();

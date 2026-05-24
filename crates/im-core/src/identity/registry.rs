@@ -213,6 +213,10 @@ impl IdentityRegistry<'_> {
                 &identity_dir,
                 &["private.key", "key-1-private.pem"],
             ),
+            e2ee_agreement_private_key_path: first_existing_path(
+                &identity_dir,
+                &["e2ee-agreement-private.pem", "key-3-private.pem"],
+            ),
             auth_state_path: identity_dir.join("auth.json"),
             owner: crate::internal::identity_runtime::LocalOwnerContext {
                 identity_id: summary.id,

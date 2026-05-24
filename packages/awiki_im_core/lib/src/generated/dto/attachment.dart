@@ -9,155 +9,126 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'attachment.freezed.dart';
 
-@freezed
-sealed class DartAttachmentDestination with _$DartAttachmentDestination {
-  const DartAttachmentDestination._();
 
-  const factory DartAttachmentDestination.localFile({required String path}) =
-      DartAttachmentDestination_LocalFile;
-  const factory DartAttachmentDestination.memory() =
-      DartAttachmentDestination_Memory;
-}
 
-@freezed
-sealed class DartAttachmentInput with _$DartAttachmentInput {
-  const DartAttachmentInput._();
 
-  const factory DartAttachmentInput.localFile({required String path}) =
-      DartAttachmentInput_LocalFile;
-  const factory DartAttachmentInput.bytes({
-    String? filename,
-    String? mimeType,
-    required Uint8List bytes,
-  }) = DartAttachmentInput_Bytes;
-}
 
-class DartAttachmentSendRequest {
-  final DartMessageTarget target;
-  final DartAttachmentInput input;
-  final String? caption;
-  final String? mimeType;
-  final String? filename;
-  final String? idempotencyKey;
-  final bool waitForFinalAcceptance;
+            @freezed
+                sealed class DartAttachmentDestination with _$DartAttachmentDestination  {
+                    const DartAttachmentDestination._();
 
-  const DartAttachmentSendRequest({
-    required this.target,
-    required this.input,
-    this.caption,
-    this.mimeType,
-    this.filename,
-    this.idempotencyKey,
-    required this.waitForFinalAcceptance,
-  });
+                     const factory DartAttachmentDestination.localFile({   required String path , }) = DartAttachmentDestination_LocalFile;
+ const factory DartAttachmentDestination.memory() = DartAttachmentDestination_Memory;
 
-  @override
-  int get hashCode =>
-      target.hashCode ^
-      input.hashCode ^
-      caption.hashCode ^
-      mimeType.hashCode ^
-      filename.hashCode ^
-      idempotencyKey.hashCode ^
-      waitForFinalAcceptance.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartAttachmentSendRequest &&
-          runtimeType == other.runtimeType &&
-          target == other.target &&
-          input == other.input &&
-          caption == other.caption &&
-          mimeType == other.mimeType &&
-          filename == other.filename &&
-          idempotencyKey == other.idempotencyKey &&
-          waitForFinalAcceptance == other.waitForFinalAcceptance;
-}
 
-class DartDownloadAttachmentRequest {
-  final DartThreadRef thread;
-  final String messageId;
-  final String? attachmentId;
-  final DartAttachmentDestination destination;
-  final bool overwrite;
 
-  const DartDownloadAttachmentRequest({
-    required this.thread,
-    required this.messageId,
-    this.attachmentId,
-    required this.destination,
-    required this.overwrite,
-  });
-
-  @override
-  int get hashCode =>
-      thread.hashCode ^
-      messageId.hashCode ^
-      attachmentId.hashCode ^
-      destination.hashCode ^
-      overwrite.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartDownloadAttachmentRequest &&
-          runtimeType == other.runtimeType &&
-          thread == other.thread &&
-          messageId == other.messageId &&
-          attachmentId == other.attachmentId &&
-          destination == other.destination &&
-          overwrite == other.overwrite;
-}
-
-class DartDownloadedAttachment {
-  final String attachmentId;
-  final String? filename;
-  final String? mimeType;
-  final BigInt? sizeBytes;
-  final DartDownloadedAttachmentDestination destination;
-  final List<String> warnings;
-
-  const DartDownloadedAttachment({
-    required this.attachmentId,
-    this.filename,
-    this.mimeType,
-    this.sizeBytes,
-    required this.destination,
-    required this.warnings,
-  });
-
-  @override
-  int get hashCode =>
-      attachmentId.hashCode ^
-      filename.hashCode ^
-      mimeType.hashCode ^
-      sizeBytes.hashCode ^
-      destination.hashCode ^
-      warnings.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartDownloadedAttachment &&
-          runtimeType == other.runtimeType &&
-          attachmentId == other.attachmentId &&
-          filename == other.filename &&
-          mimeType == other.mimeType &&
-          sizeBytes == other.sizeBytes &&
-          destination == other.destination &&
-          warnings == other.warnings;
-}
+                }
 
 @freezed
-sealed class DartDownloadedAttachmentDestination
-    with _$DartDownloadedAttachmentDestination {
-  const DartDownloadedAttachmentDestination._();
+                sealed class DartAttachmentInput with _$DartAttachmentInput  {
+                    const DartAttachmentInput._();
 
-  const factory DartDownloadedAttachmentDestination.localFile({
-    required String path,
-  }) = DartDownloadedAttachmentDestination_LocalFile;
-  const factory DartDownloadedAttachmentDestination.memory({
-    required Uint8List bytes,
-  }) = DartDownloadedAttachmentDestination_Memory;
-}
+                     const factory DartAttachmentInput.localFile({   required String path , }) = DartAttachmentInput_LocalFile;
+ const factory DartAttachmentInput.bytes({   String? filename ,  String? mimeType ,  required Uint8List bytes , }) = DartAttachmentInput_Bytes;
+
+
+
+
+                }
+
+class DartAttachmentSendRequest  {
+                final DartMessageTarget target;
+final DartAttachmentInput input;
+final String? caption;
+final String? mimeType;
+final String? filename;
+final String? idempotencyKey;
+final bool waitForFinalAcceptance;
+
+                const DartAttachmentSendRequest({required this.target ,required this.input ,this.caption ,this.mimeType ,this.filename ,this.idempotencyKey ,required this.waitForFinalAcceptance ,});
+
+
+
+
+
+        @override
+        int get hashCode => target.hashCode^input.hashCode^caption.hashCode^mimeType.hashCode^filename.hashCode^idempotencyKey.hashCode^waitForFinalAcceptance.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartAttachmentSendRequest &&
+                runtimeType == other.runtimeType
+                && target == other.target&& input == other.input&& caption == other.caption&& mimeType == other.mimeType&& filename == other.filename&& idempotencyKey == other.idempotencyKey&& waitForFinalAcceptance == other.waitForFinalAcceptance;
+
+            }
+
+class DartDownloadAttachmentRequest  {
+                final DartThreadRef thread;
+final String messageId;
+final String? attachmentId;
+final DartAttachmentDestination destination;
+final bool overwrite;
+
+                const DartDownloadAttachmentRequest({required this.thread ,required this.messageId ,this.attachmentId ,required this.destination ,required this.overwrite ,});
+
+
+
+
+
+        @override
+        int get hashCode => thread.hashCode^messageId.hashCode^attachmentId.hashCode^destination.hashCode^overwrite.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartDownloadAttachmentRequest &&
+                runtimeType == other.runtimeType
+                && thread == other.thread&& messageId == other.messageId&& attachmentId == other.attachmentId&& destination == other.destination&& overwrite == other.overwrite;
+
+            }
+
+class DartDownloadedAttachment  {
+                final String attachmentId;
+final String? filename;
+final String? mimeType;
+final BigInt? sizeBytes;
+final DartDownloadedAttachmentDestination destination;
+final List<String> warnings;
+
+                const DartDownloadedAttachment({required this.attachmentId ,this.filename ,this.mimeType ,this.sizeBytes ,required this.destination ,required this.warnings ,});
+
+
+
+
+
+        @override
+        int get hashCode => attachmentId.hashCode^filename.hashCode^mimeType.hashCode^sizeBytes.hashCode^destination.hashCode^warnings.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartDownloadedAttachment &&
+                runtimeType == other.runtimeType
+                && attachmentId == other.attachmentId&& filename == other.filename&& mimeType == other.mimeType&& sizeBytes == other.sizeBytes&& destination == other.destination&& warnings == other.warnings;
+
+            }
+
+@freezed
+                sealed class DartDownloadedAttachmentDestination with _$DartDownloadedAttachmentDestination  {
+                    const DartDownloadedAttachmentDestination._();
+
+                     const factory DartDownloadedAttachmentDestination.localFile({   required String path , }) = DartDownloadedAttachmentDestination_LocalFile;
+ const factory DartDownloadedAttachmentDestination.memory({   required Uint8List bytes , }) = DartDownloadedAttachmentDestination_Memory;
+
+
+
+
+                }

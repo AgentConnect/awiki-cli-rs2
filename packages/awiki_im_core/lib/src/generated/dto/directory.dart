@@ -9,137 +9,124 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'profile.dart';
 part 'directory.freezed.dart';
 
-class DartDirectoryResolution {
-  final String input;
-  final String did;
-  final String? handle;
-  final DartUserProfile? profile;
-  final List<String> warnings;
 
-  const DartDirectoryResolution({
-    required this.input,
-    required this.did,
-    this.handle,
-    this.profile,
-    required this.warnings,
-  });
 
-  @override
-  int get hashCode =>
-      input.hashCode ^
-      did.hashCode ^
-      handle.hashCode ^
-      profile.hashCode ^
-      warnings.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartDirectoryResolution &&
-          runtimeType == other.runtimeType &&
-          input == other.input &&
-          did == other.did &&
-          handle == other.handle &&
-          profile == other.profile &&
-          warnings == other.warnings;
-}
+
+            class DartDirectoryResolution  {
+                final String input;
+final String did;
+final String? handle;
+final DartUserProfile? profile;
+final List<String> warnings;
+
+                const DartDirectoryResolution({required this.input ,required this.did ,this.handle ,this.profile ,required this.warnings ,});
+
+
+
+
+
+        @override
+        int get hashCode => input.hashCode^did.hashCode^handle.hashCode^profile.hashCode^warnings.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartDirectoryResolution &&
+                runtimeType == other.runtimeType
+                && input == other.input&& did == other.did&& handle == other.handle&& profile == other.profile&& warnings == other.warnings;
+
+            }
 
 @freezed
-sealed class DartIdentitySubject with _$DartIdentitySubject {
-  const DartIdentitySubject._();
+                sealed class DartIdentitySubject with _$DartIdentitySubject  {
+                    const DartIdentitySubject._();
 
-  const factory DartIdentitySubject.did({required String did}) =
-      DartIdentitySubject_Did;
-  const factory DartIdentitySubject.handle({required String handle}) =
-      DartIdentitySubject_Handle;
-  const factory DartIdentitySubject.any({required String value}) =
-      DartIdentitySubject_Any;
-}
+                     const factory DartIdentitySubject.did({   required String did , }) = DartIdentitySubject_Did;
+ const factory DartIdentitySubject.handle({   required String handle , }) = DartIdentitySubject_Handle;
+ const factory DartIdentitySubject.any({   required String value , }) = DartIdentitySubject_Any;
 
-class DartRelationStatus {
-  final String peer;
-  final String? relationship;
-  final String? displayName;
 
-  const DartRelationStatus({
-    required this.peer,
-    this.relationship,
-    this.displayName,
-  });
 
-  @override
-  int get hashCode =>
-      peer.hashCode ^ relationship.hashCode ^ displayName.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRelationStatus &&
-          runtimeType == other.runtimeType &&
-          peer == other.peer &&
-          relationship == other.relationship &&
-          displayName == other.displayName;
-}
+                }
 
-class DartRelationshipListItem {
-  final String did;
-  final String? handle;
-  final String? displayName;
-  final String relationship;
-  final String? createdAt;
-  final List<String> warnings;
+class DartRelationStatus  {
+                final String peer;
+final String? relationship;
+final String? displayName;
 
-  const DartRelationshipListItem({
-    required this.did,
-    this.handle,
-    this.displayName,
-    required this.relationship,
-    this.createdAt,
-    required this.warnings,
-  });
+                const DartRelationStatus({required this.peer ,this.relationship ,this.displayName ,});
 
-  @override
-  int get hashCode =>
-      did.hashCode ^
-      handle.hashCode ^
-      displayName.hashCode ^
-      relationship.hashCode ^
-      createdAt.hashCode ^
-      warnings.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRelationshipListItem &&
-          runtimeType == other.runtimeType &&
-          did == other.did &&
-          handle == other.handle &&
-          displayName == other.displayName &&
-          relationship == other.relationship &&
-          createdAt == other.createdAt &&
-          warnings == other.warnings;
-}
 
-class DartRelationshipPage {
-  final List<DartRelationshipListItem> items;
-  final String? nextCursor;
-  final bool hasMore;
 
-  const DartRelationshipPage({
-    required this.items,
-    this.nextCursor,
-    required this.hasMore,
-  });
 
-  @override
-  int get hashCode => items.hashCode ^ nextCursor.hashCode ^ hasMore.hashCode;
+        @override
+        int get hashCode => peer.hashCode^relationship.hashCode^displayName.hashCode;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DartRelationshipPage &&
-          runtimeType == other.runtimeType &&
-          items == other.items &&
-          nextCursor == other.nextCursor &&
-          hasMore == other.hasMore;
-}
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRelationStatus &&
+                runtimeType == other.runtimeType
+                && peer == other.peer&& relationship == other.relationship&& displayName == other.displayName;
+
+            }
+
+class DartRelationshipListItem  {
+                final String did;
+final String? handle;
+final String? displayName;
+final String relationship;
+final String? createdAt;
+final List<String> warnings;
+
+                const DartRelationshipListItem({required this.did ,this.handle ,this.displayName ,required this.relationship ,this.createdAt ,required this.warnings ,});
+
+
+
+
+
+        @override
+        int get hashCode => did.hashCode^handle.hashCode^displayName.hashCode^relationship.hashCode^createdAt.hashCode^warnings.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRelationshipListItem &&
+                runtimeType == other.runtimeType
+                && did == other.did&& handle == other.handle&& displayName == other.displayName&& relationship == other.relationship&& createdAt == other.createdAt&& warnings == other.warnings;
+
+            }
+
+class DartRelationshipPage  {
+                final List<DartRelationshipListItem> items;
+final String? nextCursor;
+final bool hasMore;
+
+                const DartRelationshipPage({required this.items ,this.nextCursor ,required this.hasMore ,});
+
+
+
+
+
+        @override
+        int get hashCode => items.hashCode^nextCursor.hashCode^hasMore.hashCode;
+
+
+
+        @override
+        bool operator ==(Object other) =>
+            identical(this, other) ||
+            other is DartRelationshipPage &&
+                runtimeType == other.runtimeType
+                && items == other.items&& nextCursor == other.nextCursor&& hasMore == other.hasMore;
+
+            }

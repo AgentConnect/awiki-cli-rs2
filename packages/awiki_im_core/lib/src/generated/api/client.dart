@@ -9,23 +9,21 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `close`, `new`, `with_inner`
+
+            // These functions are ignored because they are not marked as `pub`: `close`, `new`, `with_inner`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `DartImClientState`
 
-Future<ArcDartImClient> coreClient({
-  required ArcDartImCore core,
-  required DartIdentitySelector selector,
-}) => RustLib.instance.api.crateApiClientCoreClient(
-  core: core,
-  selector: selector,
-);
 
-Future<void> closeClient({required ArcDartImClient client}) =>
-    RustLib.instance.api.crateApiClientCloseClient(client: client);
+            Future<ArcDartImClient>  coreClient({required ArcDartImCore core , required DartIdentitySelector selector }) => RustLib.instance.api.crateApiClientCoreClient(core: core, selector: selector);
 
-Future<DartIdentitySummary> currentIdentity({
-  required ArcDartImClient client,
-}) => RustLib.instance.api.crateApiClientCurrentIdentity(client: client);
+Future<void>  closeClient({required ArcDartImClient client }) => RustLib.instance.api.crateApiClientCloseClient(client: client);
 
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImCore >>>
-abstract class ArcDartImCore implements RustOpaqueInterface {}
+Future<DartIdentitySummary>  currentIdentity({required ArcDartImClient client }) => RustLib.instance.api.crateApiClientCurrentIdentity(client: client);
+
+
+                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImCore >>>
+                abstract class ArcDartImCore implements RustOpaqueInterface {
+
+
+
+                }

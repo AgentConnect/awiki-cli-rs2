@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 13;
+pub(crate) const SCHEMA_VERSION: i64 = 15;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE TABLE IF NOT EXISTS e2ee_outbox (
     outbox_id            TEXT PRIMARY KEY,
+    owner_identity_id    TEXT,
     owner_did            TEXT NOT NULL DEFAULT '',
     peer_did             TEXT NOT NULL,
     session_id           TEXT,
@@ -188,6 +189,47 @@ CREATE TABLE IF NOT EXISTS contact_handle_bindings (
 );
 "#;
 
+const V14_TABLES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS direct_e2ee_sessions (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    peer_did          TEXT NOT NULL,
+    session_id        TEXT NOT NULL,
+    state_blob        BLOB NOT NULL,
+    metadata_json     TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, peer_did),
+    UNIQUE (owner_identity_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS direct_e2ee_signed_prekeys (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    key_id            TEXT NOT NULL,
+    private_key_blob  BLOB NOT NULL,
+    public_key_blob   BLOB,
+    status            TEXT NOT NULL DEFAULT 'active',
+    metadata_json     TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, key_id)
+);
+
+CREATE TABLE IF NOT EXISTS direct_e2ee_one_time_prekeys (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    key_id            TEXT NOT NULL,
+    private_key_blob  BLOB NOT NULL,
+    public_key_blob   BLOB,
+    status            TEXT NOT NULL DEFAULT 'available',
+    metadata_json     TEXT,
+    created_at        TEXT NOT NULL,
+    consumed_at       TEXT,
+    PRIMARY KEY (owner_identity_id, key_id)
+);
+"#;
+
 const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner_identity ON contacts(owner_identity_id, last_seen_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_did, last_seen_at DESC)",
@@ -208,6 +250,8 @@ const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_messages_owner_sender ON messages(owner_did, sender_did)",
     "CREATE INDEX IF NOT EXISTS idx_messages_owner ON messages(owner_did)",
     "CREATE INDEX IF NOT EXISTS idx_messages_credential ON messages(credential_name)",
+    "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_identity_status ON e2ee_outbox(owner_identity_id, local_status, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_identity_sent_msg ON e2ee_outbox(owner_identity_id, sent_msg_id)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_status ON e2ee_outbox(owner_did, local_status, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_sent_msg ON e2ee_outbox(owner_did, sent_msg_id)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_outbox_owner_sent_seq ON e2ee_outbox(owner_did, peer_did, sent_server_seq)",
@@ -232,6 +276,9 @@ const INDEX_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_relationship_events_owner_group ON relationship_events(owner_did, source_group_id)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_sessions_owner_updated ON e2ee_sessions(owner_did, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_e2ee_sessions_credential ON e2ee_sessions(credential_name)",
+    "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_sessions_owner_updated ON direct_e2ee_sessions(owner_identity_id, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_signed_prekeys_owner_status ON direct_e2ee_signed_prekeys(owner_identity_id, status, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_direct_e2ee_one_time_prekeys_owner_status ON direct_e2ee_one_time_prekeys(owner_identity_id, status, created_at ASC)",
 ];
 
 const VIEW_STATEMENTS: &[&str] = &[
@@ -294,6 +341,7 @@ fn create_schema(connection: &Connection) -> crate::ImResult<()> {
         V8_TABLES_SQL,
         V11_TABLES_SQL,
         V12_TABLES_SQL,
+        V14_TABLES_SQL,
     ] {
         connection
             .execute_batch(script)
@@ -324,6 +372,7 @@ fn ensure_owner_identity_columns(connection: &Connection) -> crate::ImResult<()>
         "contacts",
         "contact_handle_bindings",
         "messages",
+        "e2ee_outbox",
         "groups",
         "group_members",
         "relationship_events",
@@ -355,6 +404,7 @@ pub(crate) fn backfill_owner_identity_ids(
         "contacts",
         "contact_handle_bindings",
         "messages",
+        "e2ee_outbox",
         "groups",
         "group_members",
         "relationship_events",
@@ -542,6 +592,9 @@ mod tests {
             ("table", "relationship_events"),
             ("table", "e2ee_outbox"),
             ("table", "e2ee_sessions"),
+            ("table", "direct_e2ee_sessions"),
+            ("table", "direct_e2ee_signed_prekeys"),
+            ("table", "direct_e2ee_one_time_prekeys"),
             ("view", "threads"),
             ("view", "inbox"),
             ("view", "outbox"),
@@ -556,6 +609,9 @@ mod tests {
         assert_index_exists(&db, "idx_messages_owner_identity_thread");
         assert_index_exists(&db, "idx_groups_owner_status_last_message");
         assert_index_exists(&db, "idx_groups_owner_identity_status_last_message");
+        assert_index_exists(&db, "idx_direct_e2ee_sessions_owner_updated");
+        assert_index_exists(&db, "idx_direct_e2ee_signed_prekeys_owner_status");
+        assert_index_exists(&db, "idx_direct_e2ee_one_time_prekeys_owner_status");
         for table in [
             "contacts",
             "contact_handle_bindings",
@@ -563,12 +619,14 @@ mod tests {
             "groups",
             "group_members",
             "relationship_events",
+            "e2ee_outbox",
+            "direct_e2ee_sessions",
+            "direct_e2ee_signed_prekeys",
+            "direct_e2ee_one_time_prekeys",
         ] {
             assert_column_exists(&db, table, "owner_identity_id");
         }
-        for table in ["e2ee_outbox", "e2ee_sessions"] {
-            assert_column_missing(&db, table, "owner_identity_id");
-        }
+        assert_column_missing(&db, "e2ee_sessions", "owner_identity_id");
     }
 
     #[test]
@@ -665,7 +723,7 @@ VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2
         )
         .unwrap();
 
-        assert_eq!(updated, 2);
+        assert_eq!(updated, 3);
         assert_eq!(
             string_cell(
                 &db,
@@ -680,7 +738,13 @@ VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2
             ),
             "alice-id"
         );
-        assert_column_missing(&db, "e2ee_outbox", "owner_identity_id");
+        assert_eq!(
+            string_cell(
+                &db,
+                "SELECT owner_identity_id FROM e2ee_outbox WHERE outbox_id = 'outbox-1'"
+            ),
+            "alice-id"
+        );
     }
 
     fn assert_schema_object_exists(db: &Connection, object_type: &str, name: &str) {

@@ -142,7 +142,7 @@ P1 默认 public API 不导出：
 pub fn groups(&self) -> GroupService<'_>
 pub fn attachments(&self) -> AttachmentService<'_>
 pub fn realtime(&self) -> RealtimeService<'_>
-pub fn secure(&self) -> SecureDiagnosticsService<'_>
+pub fn secure(&self) -> SecureService<'_>
 ```
 
 这些 service 可以在后续阶段按 feature 或阶段加入；如果为了前向兼容提前提供 placeholder，必须放在 non-default feature 或 experimental API 中，并返回 `UnsupportedCapability`。
@@ -163,7 +163,7 @@ pub use crate::ids::{
 };
 pub use crate::messages::{
     HistoryQuery, InboxQuery, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
-    MessageDirection, MessageKind, MessageMetadata, MessageSecurityMode, MessageService,
+    MessageDirection, MessageKind, MessageMetadata, MessageSecurityPolicy, MessageService,
     MessageTarget, SendMessageRequest, SendMessageResult, ThreadRef,
 };
 pub use crate::paths::{ImCorePaths, IdentityRegistryPaths, LocalStatePaths, RuntimePaths};

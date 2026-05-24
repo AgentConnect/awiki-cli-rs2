@@ -16,4 +16,5 @@ pub mod messages;
 pub mod profile;
 pub mod proof;
 pub mod realtime;
+pub mod secure;
 pub mod wire;

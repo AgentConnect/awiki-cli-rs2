@@ -40,8 +40,9 @@ pub use crate::messages::{
     Conversation, ConversationQuery, DeliveryState, HistoryQuery, InboxQuery, InboxScope,
     MarkReadResult, Message, MessageBody, MessageBodyView, MessageDeliveryOptions,
     MessageDirection, MessageKind, MessageMetadata, MessageMetadataAttribute, MessageRetryAction,
-    MessageRetryPlan, MessageSecurityMode, MessageSendState, MessageSendStateKind, MessageService,
-    MessageTarget, SendMessageRequest, SendMessageResult, ThreadRef,
+    MessageRetryPlan, MessageSecurityMode, MessageSecurityPolicy, MessageSendState,
+    MessageSendStateKind, MessageService, MessageTarget, SendMessageRequest, SendMessageResult,
+    ThreadRef,
 };
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::{
@@ -53,5 +54,12 @@ pub use crate::realtime::{
     RealtimeExitReason, RealtimeHandle, RealtimeOptions, RealtimeRunnerEventSink,
     RealtimeRunnerOutcome, RealtimeRunnerTransport, RealtimeService, RealtimeStatus,
     RealtimeSubscription, ReconnectPolicy, ShutdownSignal, UnknownNotificationEvent,
+};
+pub use crate::secure::{
+    DirectSecureConversation, DirectSecurePrepareResult, DirectSecureRepairResult,
+    DirectSecureState, DirectSecureStatus, GroupSecureConversation, GroupSecureLocalReadiness,
+    GroupSecurePendingWork, GroupSecurePrepareResult, GroupSecureRepairResult, GroupSecureState,
+    GroupSecureStatus, SecureDelivery, SecureOutboxEntry, SecureOutboxId, SecureOutboxResult,
+    SecureOutboxService, SecureOutboxStatus, SecureProblem, SecureProblemCode, SecureService,
 };
 pub use crate::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};

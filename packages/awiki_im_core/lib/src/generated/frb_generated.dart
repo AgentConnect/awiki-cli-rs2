@@ -14,6 +14,7 @@ import 'api/identity.dart';
 import 'api/messages.dart';
 import 'api/profile.dart';
 import 'api/realtime.dart';
+import 'api/secure.dart';
 import 'api/unsupported.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -28,7568 +29,4835 @@ import 'dto/identity.dart';
 import 'dto/message.dart';
 import 'dto/profile.dart';
 import 'dto/realtime.dart';
+import 'dto/secure.dart';
 import 'frb_generated.dart';
-import 'frb_generated.io.dart'
-    if (dart.library.js_interop) 'frb_generated.web.dart';
+import 'frb_generated.io.dart' if (dart.library.js_interop) 'frb_generated.web.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// Main entrypoint of the Rust API
-class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
-  @internal
-  static final instance = RustLib._();
-
-  RustLib._();
-
-  /// Initialize flutter_rust_bridge
-  static Future<void> init({
-    RustLibApi? api,
-    BaseHandler? handler,
-    ExternalLibrary? externalLibrary,
-    bool forceSameCodegenVersion = true,
-  }) async {
-    await instance.initImpl(
-      api: api,
-      handler: handler,
-      externalLibrary: externalLibrary,
-      forceSameCodegenVersion: forceSameCodegenVersion,
-    );
-  }
-
-  /// Initialize flutter_rust_bridge in mock mode.
-  /// No libraries for FFI are loaded.
-  static void initMock({required RustLibApi api}) {
-    instance.initMockImpl(api: api);
-  }
-
-  /// Dispose flutter_rust_bridge
-  ///
-  /// The call to this function is optional, since flutter_rust_bridge (and everything else)
-  /// is automatically disposed when the app stops.
-  static void dispose() => instance.disposeImpl();
-
-  @override
-  ApiImplConstructor<RustLibApiImpl, RustLibWire> get apiImplConstructor =>
-      RustLibApiImpl.new;
-
-  @override
-  WireConstructor<RustLibWire> get wireConstructor =>
-      RustLibWire.fromExternalLibrary;
-
-  @override
-  Future<void> executeRustInitializers() async {}
-
-  @override
-  ExternalLibraryLoaderConfig get defaultExternalLibraryLoaderConfig =>
-      kDefaultExternalLibraryLoaderConfig;
-
-  @override
-  String get codegenVersion => '2.12.0';
-
-  @override
-  int get rustContentHash => -457216117;
-
-  static const kDefaultExternalLibraryLoaderConfig =
-      ExternalLibraryLoaderConfig(
-        stem: 'awiki_im_core',
-        ioDirectory: '../../crates/im-core-dart/target/release/',
-        webPrefix: 'pkg/',
-        wasmBindgenName: 'wasm_bindgen',
-      );
-}
-
-abstract class RustLibApi extends BaseApi {
-  Future<DartEmailAccount> crateApiEmailAccount({
-    required ArcDartImClient client,
-  });
-
-  Future<DartSessionBundle> crateApiAuthAuthEnsureSession({
-    required ArcDartImClient client,
-    required DartAuthScope scope,
-  });
-
-  Future<DartSessionBundle> crateApiAuthAuthLogin({
-    required ArcDartImClient client,
-  });
-
-  Future<DartSessionUpdate> crateApiAuthAuthRefreshSession({
-    required ArcDartImClient client,
-  });
-
-  Future<DartAuthStatus> crateApiAuthAuthStatus({
-    required ArcDartImClient client,
-  });
-
-  Future<void> crateApiClientCloseClient({required ArcDartImClient client});
-
-  Future<void> crateApiCoreCloseCore({required ArcDartImCore core});
-
-  Future<DartConversationPage> crateApiMessagesConversations({
-    required ArcDartImClient client,
-    required int limit,
-    required bool includeGroups,
-    required bool includeDirect,
-    required bool unreadOnly,
-  });
-
-  Future<ArcDartImClient> crateApiClientCoreClient({
-    required ArcDartImCore core,
-    required DartIdentitySelector selector,
-  });
-
-  Future<DartGroupReadResult> crateApiGroupsCreateGroup({
-    required ArcDartImClient client,
-    required DartCreateGroupRequest request,
-  });
-
-  Future<DartIdentitySummary> crateApiClientCurrentIdentity({
-    required ArcDartImClient client,
-  });
-
-  Future<DartIdentitySummary?> crateApiIdentityDefaultIdentity({
-    required ArcDartImCore core,
-  });
-
-  Future<DartDownloadedAttachment> crateApiAttachmentsDownloadAttachment({
-    required ArcDartImClient client,
-    required DartDownloadAttachmentRequest request,
-  });
-
-  Future<DartEmailAttachmentContent> crateApiEmailDownloadAttachment({
-    required ArcDartImClient client,
-    required String messageId,
-    required int attachmentIndex,
-  });
-
-  Future<void> crateApiDirectoryFollow({
-    required ArcDartImClient client,
-    required String peer,
-  });
-
-  Future<DartGroupReadResult> crateApiGroupsGetGroup({
-    required ArcDartImClient client,
-    required String groupDid,
-  });
-
-  Future<String?> crateApiGroupsGetGroupJoinCode({
-    required ArcDartImClient client,
-    required String groupDid,
-  });
-
-  Future<DartMessagePage> crateApiMessagesHistory({
-    required ArcDartImClient client,
-    required DartThreadRef thread,
-    required int limit,
-    String? cursor,
-  });
-
-  Future<DartEmailMessageSummaryPage> crateApiEmailInbox({
-    required ArcDartImClient client,
-    required String folder,
-    required int limit,
-    required int offset,
-    required bool unreadOnly,
-  });
-
-  Future<DartMessagePage> crateApiMessagesInbox({
-    required ArcDartImClient client,
-    required int limit,
-    String? cursor,
-    required bool unreadOnly,
-  });
-
-  Future<DartGroupReadResult> crateApiGroupsJoinGroup({
-    required ArcDartImClient client,
-    required String groupDid,
-  });
-
-  Future<DartGroupReadResult> crateApiGroupsLeaveGroup({
-    required ArcDartImClient client,
-    required String groupDid,
-  });
-
-  Future<DartRelationshipPage> crateApiDirectoryListFollowers({
-    required ArcDartImClient client,
-    required int limit,
-    required int offset,
-    required bool hydrateProfiles,
-  });
-
-  Future<DartRelationshipPage> crateApiDirectoryListFollowing({
-    required ArcDartImClient client,
-    required int limit,
-    required int offset,
-    required bool hydrateProfiles,
-  });
-
-  Future<DartGroupReadResult> crateApiGroupsListGroupMembers({
-    required ArcDartImClient client,
-    required String groupDid,
-    required int limit,
-  });
-
-  Future<DartGroupReadResult> crateApiGroupsListGroupMessages({
-    required ArcDartImClient client,
-    required String groupDid,
-    required int limit,
-    String? cursor,
-  });
-
-  Future<DartGroupReadResult> crateApiGroupsListGroups({
-    required ArcDartImClient client,
-    required int limit,
-  });
-
-  Future<List<DartIdentitySummary>> crateApiIdentityListIdentities({
-    required ArcDartImCore core,
-  });
-
-  Future<DartUserProfile> crateApiProfileLoadMyProfile({
-    required ArcDartImClient client,
-  });
-
-  Future<DartUserProfile> crateApiProfileLoadPublicProfile({
-    required ArcDartImClient client,
-    required DartIdentitySubject subject,
-  });
-
-  Future<DartDirectoryResolution> crateApiDirectoryLookupHandle({
-    required ArcDartImClient client,
-    required String handle,
-  });
-
-  Future<DartEmailMarkReadResult> crateApiEmailMarkRead({
-    required ArcDartImClient client,
-    required List<String> messageIds,
-    required bool isRead,
-  });
-
-  Future<DartMarkReadResult> crateApiMessagesMarkRead({
-    required ArcDartImClient client,
-    required List<String> messageIds,
-  });
-
-  Future<DartEmailNotificationPage> crateApiEmailNotifications({
-    required ArcDartImClient client,
-    required int limit,
-  });
-
-  Future<ArcDartImCore> crateApiCoreOpenCore({
-    required DartImCoreConfig config,
-    required DartImCorePaths paths,
-  });
-
-  Future<DartEmailMessage> crateApiEmailRead({
-    required ArcDartImClient client,
-    required String messageId,
-  });
-
-  Future<DartRealtimeCapability> crateApiRealtimeRealtimeCapability({
-    required ArcDartImClient client,
-  });
-
-  Future<void> crateApiRealtimeRealtimeConnect({
-    required ArcDartImClient client,
-  });
-
-  Stream<DartRealtimeEvent> crateApiRealtimeRealtimeEventStream({
-    required ArcDartRealtimeSession session,
-  });
-
-  Future<ArcDartRealtimeSession> crateApiRealtimeRealtimeStart({
-    required ArcDartImClient client,
-    required DartRealtimeOptions options,
-  });
-
-  Future<DartRealtimeStatus> crateApiRealtimeRealtimeStatus({
-    required ArcDartImClient client,
-  });
-
-  Future<void> crateApiRealtimeRealtimeStop({
-    required ArcDartRealtimeSession session,
-  });
-
-  Future<DartRecoverHandleResult> crateApiIdentityRecoverHandle({
-    required ArcDartImCore core,
-    required String handle,
-    required String phone,
-    String? otp,
-  });
-
-  Future<String?> crateApiGroupsRefreshGroupJoinCode({
-    required ArcDartImClient client,
-    required String groupDid,
-  });
-
-  Future<DartHandleRegistrationResult> crateApiIdentityRegisterHandleWithEmail({
-    required ArcDartImCore core,
-    String? localAlias,
-    required String requestedHandle,
-    required String email,
-    required bool waitForVerification,
-    String? inviteCode,
-    required DartInitialProfile profile,
-    required bool makeDefault,
-  });
-
-  Future<DartHandleRegistrationResult> crateApiIdentityRegisterHandleWithPhone({
-    required ArcDartImCore core,
-    String? localAlias,
-    required String requestedHandle,
-    required String phone,
-    String? otp,
-    String? inviteCode,
-    required DartInitialProfile profile,
-    required bool makeDefault,
-  });
-
-  Future<DartRelationStatus> crateApiDirectoryRelationStatus({
-    required ArcDartImClient client,
-    required String peer,
-  });
-
-  Future<DartIdentitySummary> crateApiIdentityResolveIdentity({
-    required ArcDartImCore core,
-    required DartIdentitySelector selector,
-  });
-
-  Future<DartDirectoryResolution> crateApiDirectoryResolvePeer({
-    required ArcDartImClient client,
-    required String peer,
-  });
-
-  Future<DartSendMessageResult> crateApiMessagesRetryMessage({
-    required ArcDartImClient client,
-    required String messageId,
-  });
-
-  Future<DartSendEmailResult> crateApiEmailSend({
-    required ArcDartImClient client,
-    required DartSendEmailRequest request,
-  });
-
-  Future<DartSendMessageResult> crateApiAttachmentsSendAttachment({
-    required ArcDartImClient client,
-    required DartAttachmentSendRequest request,
-  });
-
-  Future<DartSendMessageResult> crateApiMessagesSendText({
-    required ArcDartImClient client,
-    required DartSendTextRequest request,
-  });
-
-  Future<void> crateApiDirectoryUnfollow({
-    required ArcDartImClient client,
-    required String peer,
-  });
-
-  Future<void> crateApiUnsupportedUnsupported({required String capability});
-
-  Future<DartUserProfile> crateApiProfileUpdateProfile({
-    required ArcDartImClient client,
-    required DartProfilePatch patch,
-  });
-
-  Future<List<String>> crateApiCoreValidatePaths({required ArcDartImCore core});
-
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ArcDartImClient;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ArcDartImClient;
-
-  CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ArcDartImClientPtr;
-
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ArcDartImCore;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ArcDartImCore;
-
-  CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ArcDartImCorePtr;
-
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ArcDartRealtimeSession;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ArcDartRealtimeSession;
-
-  CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr;
-}
-
-class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
-  RustLibApiImpl({
-    required super.handler,
-    required super.wire,
-    required super.generalizedFrbRustBinding,
-    required super.portManager,
-  });
-
-  @override
-  Future<DartEmailAccount> crateApiEmailAccount({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 1,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+
+                /// Main entrypoint of the Rust API
+                class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
+                  @internal
+                  static final instance = RustLib._();
+
+                  RustLib._();
+
+                  /// Initialize flutter_rust_bridge
+                  static Future<void> init({
+                    RustLibApi? api,
+                    BaseHandler? handler,
+                    ExternalLibrary? externalLibrary,
+                    bool forceSameCodegenVersion = true,
+                  }) async {
+                    await instance.initImpl(
+                      api: api,
+                      handler: handler,
+                      externalLibrary: externalLibrary,
+                      forceSameCodegenVersion: forceSameCodegenVersion,
+                    );
+                  }
+
+                  /// Initialize flutter_rust_bridge in mock mode.
+                  /// No libraries for FFI are loaded.
+                  static void initMock({
+                    required RustLibApi api,
+                  }) {
+                    instance.initMockImpl(
+                      api: api,
+                    );
+                  }
+
+                  /// Dispose flutter_rust_bridge
+                  ///
+                  /// The call to this function is optional, since flutter_rust_bridge (and everything else)
+                  /// is automatically disposed when the app stops.
+                  static void dispose() => instance.disposeImpl();
+
+                  @override
+                  ApiImplConstructor<RustLibApiImpl, RustLibWire> get apiImplConstructor => RustLibApiImpl.new;
+
+                  @override
+                  WireConstructor<RustLibWire> get wireConstructor => RustLibWire.fromExternalLibrary;
+
+                  @override
+                  Future<void> executeRustInitializers() async {
+
+                  }
+
+                  @override
+                  ExternalLibraryLoaderConfig get defaultExternalLibraryLoaderConfig => kDefaultExternalLibraryLoaderConfig;
+
+                  @override
+                  String get codegenVersion => '2.12.0';
+
+                  @override
+                  int get rustContentHash => -1481079143;
+
+                  static const kDefaultExternalLibraryLoaderConfig = ExternalLibraryLoaderConfig(
+                    stem: 'awiki_im_core',
+                    ioDirectory: '../../crates/im-core-dart/target/release/',
+                    webPrefix: 'pkg/',
+                    wasmBindgenName: 'wasm_bindgen',
+                  );
+                }
+
+
+                abstract class RustLibApi extends BaseApi {
+                  Future<DartEmailAccount> crateApiEmailAccount({required ArcDartImClient client });
+
+Future<DartSessionBundle> crateApiAuthAuthEnsureSession({required ArcDartImClient client , required DartAuthScope scope });
+
+Future<DartSessionBundle> crateApiAuthAuthLogin({required ArcDartImClient client });
+
+Future<DartSessionUpdate> crateApiAuthAuthRefreshSession({required ArcDartImClient client });
+
+Future<DartAuthStatus> crateApiAuthAuthStatus({required ArcDartImClient client });
+
+Future<void> crateApiClientCloseClient({required ArcDartImClient client });
+
+Future<void> crateApiCoreCloseCore({required ArcDartImCore core });
+
+Future<DartConversationPage> crateApiMessagesConversations({required ArcDartImClient client , required int limit , required bool includeGroups , required bool includeDirect , required bool unreadOnly });
+
+Future<ArcDartImClient> crateApiClientCoreClient({required ArcDartImCore core , required DartIdentitySelector selector });
+
+Future<DartGroupReadResult> crateApiGroupsCreateGroup({required ArcDartImClient client , required DartCreateGroupRequest request });
+
+Future<DartIdentitySummary> crateApiClientCurrentIdentity({required ArcDartImClient client });
+
+Future<DartIdentitySummary?> crateApiIdentityDefaultIdentity({required ArcDartImCore core });
+
+Future<DartDownloadedAttachment> crateApiAttachmentsDownloadAttachment({required ArcDartImClient client , required DartDownloadAttachmentRequest request });
+
+Future<DartEmailAttachmentContent> crateApiEmailDownloadAttachment({required ArcDartImClient client , required String messageId , required int attachmentIndex });
+
+Future<void> crateApiDirectoryFollow({required ArcDartImClient client , required String peer });
+
+Future<DartGroupReadResult> crateApiGroupsGetGroup({required ArcDartImClient client , required String groupDid });
+
+Future<String?> crateApiGroupsGetGroupJoinCode({required ArcDartImClient client , required String groupDid });
+
+Future<DartMessagePage> crateApiMessagesHistory({required ArcDartImClient client , required DartThreadRef thread , required int limit , String? cursor });
+
+Future<DartEmailMessageSummaryPage> crateApiEmailInbox({required ArcDartImClient client , required String folder , required int limit , required int offset , required bool unreadOnly });
+
+Future<DartMessagePage> crateApiMessagesInbox({required ArcDartImClient client , required int limit , String? cursor , required bool unreadOnly });
+
+Future<DartGroupReadResult> crateApiGroupsJoinGroup({required ArcDartImClient client , required String groupDid });
+
+Future<DartGroupReadResult> crateApiGroupsLeaveGroup({required ArcDartImClient client , required String groupDid });
+
+Future<DartRelationshipPage> crateApiDirectoryListFollowers({required ArcDartImClient client , required int limit , required int offset , required bool hydrateProfiles });
+
+Future<DartRelationshipPage> crateApiDirectoryListFollowing({required ArcDartImClient client , required int limit , required int offset , required bool hydrateProfiles });
+
+Future<DartGroupReadResult> crateApiGroupsListGroupMembers({required ArcDartImClient client , required String groupDid , required int limit });
+
+Future<DartGroupReadResult> crateApiGroupsListGroupMessages({required ArcDartImClient client , required String groupDid , required int limit , String? cursor });
+
+Future<DartGroupReadResult> crateApiGroupsListGroups({required ArcDartImClient client , required int limit });
+
+Future<List<DartIdentitySummary>> crateApiIdentityListIdentities({required ArcDartImCore core });
+
+Future<DartUserProfile> crateApiProfileLoadMyProfile({required ArcDartImClient client });
+
+Future<DartUserProfile> crateApiProfileLoadPublicProfile({required ArcDartImClient client , required DartIdentitySubject subject });
+
+Future<DartDirectoryResolution> crateApiDirectoryLookupHandle({required ArcDartImClient client , required String handle });
+
+Future<DartEmailMarkReadResult> crateApiEmailMarkRead({required ArcDartImClient client , required List<String> messageIds , required bool isRead });
+
+Future<DartMarkReadResult> crateApiMessagesMarkRead({required ArcDartImClient client , required List<String> messageIds });
+
+Future<DartEmailNotificationPage> crateApiEmailNotifications({required ArcDartImClient client , required int limit });
+
+Future<ArcDartImCore> crateApiCoreOpenCore({required DartImCoreConfig config , required DartImCorePaths paths });
+
+Future<DartEmailMessage> crateApiEmailRead({required ArcDartImClient client , required String messageId });
+
+Future<DartRealtimeCapability> crateApiRealtimeRealtimeCapability({required ArcDartImClient client });
+
+Future<void> crateApiRealtimeRealtimeConnect({required ArcDartImClient client });
+
+Stream<DartRealtimeEvent> crateApiRealtimeRealtimeEventStream({required ArcDartRealtimeSession session });
+
+Future<ArcDartRealtimeSession> crateApiRealtimeRealtimeStart({required ArcDartImClient client , required DartRealtimeOptions options });
+
+Future<DartRealtimeStatus> crateApiRealtimeRealtimeStatus({required ArcDartImClient client });
+
+Future<void> crateApiRealtimeRealtimeStop({required ArcDartRealtimeSession session });
+
+Future<DartRecoverHandleResult> crateApiIdentityRecoverHandle({required ArcDartImCore core , required String handle , required String phone , String? otp });
+
+Future<String?> crateApiGroupsRefreshGroupJoinCode({required ArcDartImClient client , required String groupDid });
+
+Future<DartHandleRegistrationResult> crateApiIdentityRegisterHandleWithEmail({required ArcDartImCore core , String? localAlias , required String requestedHandle , required String email , required bool waitForVerification , String? inviteCode , required DartInitialProfile profile , required bool makeDefault });
+
+Future<DartHandleRegistrationResult> crateApiIdentityRegisterHandleWithPhone({required ArcDartImCore core , String? localAlias , required String requestedHandle , required String phone , String? otp , String? inviteCode , required DartInitialProfile profile , required bool makeDefault });
+
+Future<DartRelationStatus> crateApiDirectoryRelationStatus({required ArcDartImClient client , required String peer });
+
+Future<DartIdentitySummary> crateApiIdentityResolveIdentity({required ArcDartImCore core , required DartIdentitySelector selector });
+
+Future<DartDirectoryResolution> crateApiDirectoryResolvePeer({required ArcDartImClient client , required String peer });
+
+Future<DartSendMessageResult> crateApiMessagesRetryMessage({required ArcDartImClient client , required String messageId });
+
+Future<DartDirectSecurePrepareResult> crateApiSecureSecureDirectPrepare({required ArcDartImClient client , required String peer });
+
+Future<DartDirectSecureRepairResult> crateApiSecureSecureDirectRepair({required ArcDartImClient client , required String peer });
+
+Future<DartDirectSecureStatus> crateApiSecureSecureDirectStatus({required ArcDartImClient client , required String peer });
+
+Future<DartGroupSecurePrepareResult> crateApiSecureSecureGroupPrepare({required ArcDartImClient client , required String group });
+
+Future<DartGroupSecureRepairResult> crateApiSecureSecureGroupRepair({required ArcDartImClient client , required String group });
+
+Future<DartGroupSecureStatus> crateApiSecureSecureGroupStatus({required ArcDartImClient client , required String group });
+
+Future<DartSecureOutboxResult> crateApiSecureSecureOutboxDrop({required ArcDartImClient client , required String outboxId });
+
+Future<List<DartSecureOutboxEntry>> crateApiSecureSecureOutboxListFailed({required ArcDartImClient client });
+
+Future<DartSecureOutboxResult> crateApiSecureSecureOutboxRetry({required ArcDartImClient client , required String outboxId });
+
+Future<DartSendEmailResult> crateApiEmailSend({required ArcDartImClient client , required DartSendEmailRequest request });
+
+Future<DartSendMessageResult> crateApiAttachmentsSendAttachment({required ArcDartImClient client , required DartAttachmentSendRequest request });
+
+Future<DartSendMessageResult> crateApiMessagesSendText({required ArcDartImClient client , required DartSendTextRequest request });
+
+Future<void> crateApiDirectoryUnfollow({required ArcDartImClient client , required String peer });
+
+Future<void> crateApiUnsupportedUnsupported({required String capability });
+
+Future<DartUserProfile> crateApiProfileUpdateProfile({required ArcDartImClient client , required DartProfilePatch patch });
+
+Future<List<String>> crateApiCoreValidatePaths({required ArcDartImCore core });
+
+RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_ArcDartImClient;
+
+RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_ArcDartImClient;
+
+CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ArcDartImClientPtr;
+
+RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_ArcDartImCore;
+
+RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_ArcDartImCore;
+
+CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ArcDartImCorePtr;
+
+RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_ArcDartRealtimeSession;
+
+RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_ArcDartRealtimeSession;
+
+CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr;
+
+
+                }
+
+
+                class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
+                  RustLibApiImpl({
+                    required super.handler,
+                    required super.wire,
+                    required super.generalizedFrbRustBinding,
+                    required super.portManager,
+                  });
+
+                  @override Future<DartEmailAccount> crateApiEmailAccount({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 1, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_email_account,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiEmailAccountConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiEmailAccountConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiEmailAccountConstMeta =>
-      const TaskConstMeta(debugName: "account", argNames: ["client"]);
 
-  @override
-  Future<DartSessionBundle> crateApiAuthAuthEnsureSession({
-    required ArcDartImClient client,
-    required DartAuthScope scope,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_dart_auth_scope(scope, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 2,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiEmailAccountConstMeta => const TaskConstMeta(
+            debugName: "account",
+            argNames: ["client"],
+        );
+
+
+@override Future<DartSessionBundle> crateApiAuthAuthEnsureSession({required ArcDartImClient client , required DartAuthScope scope })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_dart_auth_scope(scope, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 2, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_session_bundle,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiAuthAuthEnsureSessionConstMeta,
-        argValues: [client, scope],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiAuthAuthEnsureSessionConstMeta,
+            argValues: [client, scope],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiAuthAuthEnsureSessionConstMeta =>
-      const TaskConstMeta(
-        debugName: "auth_ensure_session",
-        argNames: ["client", "scope"],
-      );
 
-  @override
-  Future<DartSessionBundle> crateApiAuthAuthLogin({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 3,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiAuthAuthEnsureSessionConstMeta => const TaskConstMeta(
+            debugName: "auth_ensure_session",
+            argNames: ["client", "scope"],
+        );
+
+
+@override Future<DartSessionBundle> crateApiAuthAuthLogin({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 3, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_session_bundle,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiAuthAuthLoginConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiAuthAuthLoginConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiAuthAuthLoginConstMeta =>
-      const TaskConstMeta(debugName: "auth_login", argNames: ["client"]);
 
-  @override
-  Future<DartSessionUpdate> crateApiAuthAuthRefreshSession({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 4,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiAuthAuthLoginConstMeta => const TaskConstMeta(
+            debugName: "auth_login",
+            argNames: ["client"],
+        );
+
+
+@override Future<DartSessionUpdate> crateApiAuthAuthRefreshSession({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_session_update,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiAuthAuthRefreshSessionConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiAuthAuthRefreshSessionConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiAuthAuthRefreshSessionConstMeta =>
-      const TaskConstMeta(
-        debugName: "auth_refresh_session",
-        argNames: ["client"],
-      );
 
-  @override
-  Future<DartAuthStatus> crateApiAuthAuthStatus({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 5,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiAuthAuthRefreshSessionConstMeta => const TaskConstMeta(
+            debugName: "auth_refresh_session",
+            argNames: ["client"],
+        );
+
+
+@override Future<DartAuthStatus> crateApiAuthAuthStatus({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_auth_status,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiAuthAuthStatusConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiAuthAuthStatusConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiAuthAuthStatusConstMeta =>
-      const TaskConstMeta(debugName: "auth_status", argNames: ["client"]);
 
-  @override
-  Future<void> crateApiClientCloseClient({required ArcDartImClient client}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 6,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiAuthAuthStatusConstMeta => const TaskConstMeta(
+            debugName: "auth_status",
+            argNames: ["client"],
+        );
+
+
+@override Future<void> crateApiClientCloseClient({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiClientCloseClientConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiClientCloseClientConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiClientCloseClientConstMeta =>
-      const TaskConstMeta(debugName: "close_client", argNames: ["client"]);
 
-  @override
-  Future<void> crateApiCoreCloseCore({required ArcDartImCore core}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 7,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiClientCloseClientConstMeta => const TaskConstMeta(
+            debugName: "close_client",
+            argNames: ["client"],
+        );
+
+
+@override Future<void> crateApiCoreCloseCore({required ArcDartImCore core })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiCoreCloseCoreConstMeta,
-        argValues: [core],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiCoreCloseCoreConstMeta,
+            argValues: [core],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiCoreCloseCoreConstMeta =>
-      const TaskConstMeta(debugName: "close_core", argNames: ["core"]);
 
-  @override
-  Future<DartConversationPage> crateApiMessagesConversations({
-    required ArcDartImClient client,
-    required int limit,
-    required bool includeGroups,
-    required bool includeDirect,
-    required bool unreadOnly,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_u_32(limit, serializer);
-          sse_encode_bool(includeGroups, serializer);
-          sse_encode_bool(includeDirect, serializer);
-          sse_encode_bool(unreadOnly, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 8,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiCoreCloseCoreConstMeta => const TaskConstMeta(
+            debugName: "close_core",
+            argNames: ["core"],
+        );
+
+
+@override Future<DartConversationPage> crateApiMessagesConversations({required ArcDartImClient client , required int limit , required bool includeGroups , required bool includeDirect , required bool unreadOnly })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_u_32(limit, serializer);
+sse_encode_bool(includeGroups, serializer);
+sse_encode_bool(includeDirect, serializer);
+sse_encode_bool(unreadOnly, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_conversation_page,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiMessagesConversationsConstMeta,
-        argValues: [client, limit, includeGroups, includeDirect, unreadOnly],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiMessagesConversationsConstMeta,
+            argValues: [client, limit, includeGroups, includeDirect, unreadOnly],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiMessagesConversationsConstMeta =>
-      const TaskConstMeta(
-        debugName: "conversations",
-        argNames: [
-          "client",
-          "limit",
-          "includeGroups",
-          "includeDirect",
-          "unreadOnly",
-        ],
-      );
 
-  @override
-  Future<ArcDartImClient> crateApiClientCoreClient({
-    required ArcDartImCore core,
-    required DartIdentitySelector selector,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 9,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient,
+        TaskConstMeta get kCrateApiMessagesConversationsConstMeta => const TaskConstMeta(
+            debugName: "conversations",
+            argNames: ["client", "limit", "includeGroups", "includeDirect", "unreadOnly"],
+        );
+
+
+@override Future<ArcDartImClient> crateApiClientCoreClient({required ArcDartImCore core , required DartIdentitySelector selector })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiClientCoreClientConstMeta,
-        argValues: [core, selector],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiClientCoreClientConstMeta,
+            argValues: [core, selector],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiClientCoreClientConstMeta => const TaskConstMeta(
-    debugName: "core_client",
-    argNames: ["core", "selector"],
-  );
 
-  @override
-  Future<DartGroupReadResult> crateApiGroupsCreateGroup({
-    required ArcDartImClient client,
-    required DartCreateGroupRequest request,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_create_group_request(request, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 10,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiClientCoreClientConstMeta => const TaskConstMeta(
+            debugName: "core_client",
+            argNames: ["core", "selector"],
+        );
+
+
+@override Future<DartGroupReadResult> crateApiGroupsCreateGroup({required ArcDartImClient client , required DartCreateGroupRequest request })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_create_group_request(request, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_group_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsCreateGroupConstMeta,
-        argValues: [client, request],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsCreateGroupConstMeta,
+            argValues: [client, request],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsCreateGroupConstMeta => const TaskConstMeta(
-    debugName: "create_group",
-    argNames: ["client", "request"],
-  );
 
-  @override
-  Future<DartIdentitySummary> crateApiClientCurrentIdentity({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 11,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsCreateGroupConstMeta => const TaskConstMeta(
+            debugName: "create_group",
+            argNames: ["client", "request"],
+        );
+
+
+@override Future<DartIdentitySummary> crateApiClientCurrentIdentity({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_identity_summary,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiClientCurrentIdentityConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiClientCurrentIdentityConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiClientCurrentIdentityConstMeta =>
-      const TaskConstMeta(debugName: "current_identity", argNames: ["client"]);
 
-  @override
-  Future<DartIdentitySummary?> crateApiIdentityDefaultIdentity({
-    required ArcDartImCore core,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 12,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiClientCurrentIdentityConstMeta => const TaskConstMeta(
+            debugName: "current_identity",
+            argNames: ["client"],
+        );
+
+
+@override Future<DartIdentitySummary?> crateApiIdentityDefaultIdentity({required ArcDartImCore core })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_dart_identity_summary,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiIdentityDefaultIdentityConstMeta,
-        argValues: [core],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiIdentityDefaultIdentityConstMeta,
+            argValues: [core],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiIdentityDefaultIdentityConstMeta =>
-      const TaskConstMeta(debugName: "default_identity", argNames: ["core"]);
 
-  @override
-  Future<DartDownloadedAttachment> crateApiAttachmentsDownloadAttachment({
-    required ArcDartImClient client,
-    required DartDownloadAttachmentRequest request,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_download_attachment_request(
-            request,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 13,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiIdentityDefaultIdentityConstMeta => const TaskConstMeta(
+            debugName: "default_identity",
+            argNames: ["core"],
+        );
+
+
+@override Future<DartDownloadedAttachment> crateApiAttachmentsDownloadAttachment({required ArcDartImClient client , required DartDownloadAttachmentRequest request })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_download_attachment_request(request, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_downloaded_attachment,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiAttachmentsDownloadAttachmentConstMeta,
-        argValues: [client, request],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiAttachmentsDownloadAttachmentConstMeta,
+            argValues: [client, request],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiAttachmentsDownloadAttachmentConstMeta =>
-      const TaskConstMeta(
-        debugName: "download_attachment",
-        argNames: ["client", "request"],
-      );
 
-  @override
-  Future<DartEmailAttachmentContent> crateApiEmailDownloadAttachment({
-    required ArcDartImClient client,
-    required String messageId,
-    required int attachmentIndex,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(messageId, serializer);
-          sse_encode_u_32(attachmentIndex, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 14,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiAttachmentsDownloadAttachmentConstMeta => const TaskConstMeta(
+            debugName: "download_attachment",
+            argNames: ["client", "request"],
+        );
+
+
+@override Future<DartEmailAttachmentContent> crateApiEmailDownloadAttachment({required ArcDartImClient client , required String messageId , required int attachmentIndex })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(messageId, serializer);
+sse_encode_u_32(attachmentIndex, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_email_attachment_content,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiEmailDownloadAttachmentConstMeta,
-        argValues: [client, messageId, attachmentIndex],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiEmailDownloadAttachmentConstMeta,
+            argValues: [client, messageId, attachmentIndex],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiEmailDownloadAttachmentConstMeta =>
-      const TaskConstMeta(
-        debugName: "download_attachment",
-        argNames: ["client", "messageId", "attachmentIndex"],
-      );
 
-  @override
-  Future<void> crateApiDirectoryFollow({
-    required ArcDartImClient client,
-    required String peer,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(peer, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 15,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiEmailDownloadAttachmentConstMeta => const TaskConstMeta(
+            debugName: "download_attachment",
+            argNames: ["client", "messageId", "attachmentIndex"],
+        );
+
+
+@override Future<void> crateApiDirectoryFollow({required ArcDartImClient client , required String peer })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(peer, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiDirectoryFollowConstMeta,
-        argValues: [client, peer],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiDirectoryFollowConstMeta,
+            argValues: [client, peer],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiDirectoryFollowConstMeta =>
-      const TaskConstMeta(debugName: "follow", argNames: ["client", "peer"]);
 
-  @override
-  Future<DartGroupReadResult> crateApiGroupsGetGroup({
-    required ArcDartImClient client,
-    required String groupDid,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(groupDid, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 16,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiDirectoryFollowConstMeta => const TaskConstMeta(
+            debugName: "follow",
+            argNames: ["client", "peer"],
+        );
+
+
+@override Future<DartGroupReadResult> crateApiGroupsGetGroup({required ArcDartImClient client , required String groupDid })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(groupDid, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_group_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsGetGroupConstMeta,
-        argValues: [client, groupDid],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsGetGroupConstMeta,
+            argValues: [client, groupDid],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsGetGroupConstMeta => const TaskConstMeta(
-    debugName: "get_group",
-    argNames: ["client", "groupDid"],
-  );
 
-  @override
-  Future<String?> crateApiGroupsGetGroupJoinCode({
-    required ArcDartImClient client,
-    required String groupDid,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(groupDid, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 17,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsGetGroupConstMeta => const TaskConstMeta(
+            debugName: "get_group",
+            argNames: ["client", "groupDid"],
+        );
+
+
+@override Future<String?> crateApiGroupsGetGroupJoinCode({required ArcDartImClient client , required String groupDid })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(groupDid, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_opt_String,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsGetGroupJoinCodeConstMeta,
-        argValues: [client, groupDid],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsGetGroupJoinCodeConstMeta,
+            argValues: [client, groupDid],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsGetGroupJoinCodeConstMeta =>
-      const TaskConstMeta(
-        debugName: "get_group_join_code",
-        argNames: ["client", "groupDid"],
-      );
 
-  @override
-  Future<DartMessagePage> crateApiMessagesHistory({
-    required ArcDartImClient client,
-    required DartThreadRef thread,
-    required int limit,
-    String? cursor,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_thread_ref(thread, serializer);
-          sse_encode_u_32(limit, serializer);
-          sse_encode_opt_String(cursor, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 18,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsGetGroupJoinCodeConstMeta => const TaskConstMeta(
+            debugName: "get_group_join_code",
+            argNames: ["client", "groupDid"],
+        );
+
+
+@override Future<DartMessagePage> crateApiMessagesHistory({required ArcDartImClient client , required DartThreadRef thread , required int limit , String? cursor })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_thread_ref(thread, serializer);
+sse_encode_u_32(limit, serializer);
+sse_encode_opt_String(cursor, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_message_page,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiMessagesHistoryConstMeta,
-        argValues: [client, thread, limit, cursor],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiMessagesHistoryConstMeta,
+            argValues: [client, thread, limit, cursor],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiMessagesHistoryConstMeta => const TaskConstMeta(
-    debugName: "history",
-    argNames: ["client", "thread", "limit", "cursor"],
-  );
 
-  @override
-  Future<DartEmailMessageSummaryPage> crateApiEmailInbox({
-    required ArcDartImClient client,
-    required String folder,
-    required int limit,
-    required int offset,
-    required bool unreadOnly,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(folder, serializer);
-          sse_encode_u_32(limit, serializer);
-          sse_encode_u_32(offset, serializer);
-          sse_encode_bool(unreadOnly, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 19,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiMessagesHistoryConstMeta => const TaskConstMeta(
+            debugName: "history",
+            argNames: ["client", "thread", "limit", "cursor"],
+        );
+
+
+@override Future<DartEmailMessageSummaryPage> crateApiEmailInbox({required ArcDartImClient client , required String folder , required int limit , required int offset , required bool unreadOnly })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(folder, serializer);
+sse_encode_u_32(limit, serializer);
+sse_encode_u_32(offset, serializer);
+sse_encode_bool(unreadOnly, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_email_message_summary_page,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiEmailInboxConstMeta,
-        argValues: [client, folder, limit, offset, unreadOnly],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiEmailInboxConstMeta,
+            argValues: [client, folder, limit, offset, unreadOnly],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiEmailInboxConstMeta => const TaskConstMeta(
-    debugName: "inbox",
-    argNames: ["client", "folder", "limit", "offset", "unreadOnly"],
-  );
 
-  @override
-  Future<DartMessagePage> crateApiMessagesInbox({
-    required ArcDartImClient client,
-    required int limit,
-    String? cursor,
-    required bool unreadOnly,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_u_32(limit, serializer);
-          sse_encode_opt_String(cursor, serializer);
-          sse_encode_bool(unreadOnly, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 20,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiEmailInboxConstMeta => const TaskConstMeta(
+            debugName: "inbox",
+            argNames: ["client", "folder", "limit", "offset", "unreadOnly"],
+        );
+
+
+@override Future<DartMessagePage> crateApiMessagesInbox({required ArcDartImClient client , required int limit , String? cursor , required bool unreadOnly })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_u_32(limit, serializer);
+sse_encode_opt_String(cursor, serializer);
+sse_encode_bool(unreadOnly, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_message_page,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiMessagesInboxConstMeta,
-        argValues: [client, limit, cursor, unreadOnly],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiMessagesInboxConstMeta,
+            argValues: [client, limit, cursor, unreadOnly],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiMessagesInboxConstMeta => const TaskConstMeta(
-    debugName: "inbox",
-    argNames: ["client", "limit", "cursor", "unreadOnly"],
-  );
 
-  @override
-  Future<DartGroupReadResult> crateApiGroupsJoinGroup({
-    required ArcDartImClient client,
-    required String groupDid,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(groupDid, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 21,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiMessagesInboxConstMeta => const TaskConstMeta(
+            debugName: "inbox",
+            argNames: ["client", "limit", "cursor", "unreadOnly"],
+        );
+
+
+@override Future<DartGroupReadResult> crateApiGroupsJoinGroup({required ArcDartImClient client , required String groupDid })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(groupDid, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_group_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsJoinGroupConstMeta,
-        argValues: [client, groupDid],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsJoinGroupConstMeta,
+            argValues: [client, groupDid],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsJoinGroupConstMeta => const TaskConstMeta(
-    debugName: "join_group",
-    argNames: ["client", "groupDid"],
-  );
 
-  @override
-  Future<DartGroupReadResult> crateApiGroupsLeaveGroup({
-    required ArcDartImClient client,
-    required String groupDid,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(groupDid, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 22,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsJoinGroupConstMeta => const TaskConstMeta(
+            debugName: "join_group",
+            argNames: ["client", "groupDid"],
+        );
+
+
+@override Future<DartGroupReadResult> crateApiGroupsLeaveGroup({required ArcDartImClient client , required String groupDid })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(groupDid, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_group_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsLeaveGroupConstMeta,
-        argValues: [client, groupDid],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsLeaveGroupConstMeta,
+            argValues: [client, groupDid],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsLeaveGroupConstMeta => const TaskConstMeta(
-    debugName: "leave_group",
-    argNames: ["client", "groupDid"],
-  );
 
-  @override
-  Future<DartRelationshipPage> crateApiDirectoryListFollowers({
-    required ArcDartImClient client,
-    required int limit,
-    required int offset,
-    required bool hydrateProfiles,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_u_32(limit, serializer);
-          sse_encode_u_32(offset, serializer);
-          sse_encode_bool(hydrateProfiles, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 23,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsLeaveGroupConstMeta => const TaskConstMeta(
+            debugName: "leave_group",
+            argNames: ["client", "groupDid"],
+        );
+
+
+@override Future<DartRelationshipPage> crateApiDirectoryListFollowers({required ArcDartImClient client , required int limit , required int offset , required bool hydrateProfiles })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_u_32(limit, serializer);
+sse_encode_u_32(offset, serializer);
+sse_encode_bool(hydrateProfiles, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_relationship_page,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiDirectoryListFollowersConstMeta,
-        argValues: [client, limit, offset, hydrateProfiles],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiDirectoryListFollowersConstMeta,
+            argValues: [client, limit, offset, hydrateProfiles],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiDirectoryListFollowersConstMeta =>
-      const TaskConstMeta(
-        debugName: "list_followers",
-        argNames: ["client", "limit", "offset", "hydrateProfiles"],
-      );
 
-  @override
-  Future<DartRelationshipPage> crateApiDirectoryListFollowing({
-    required ArcDartImClient client,
-    required int limit,
-    required int offset,
-    required bool hydrateProfiles,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_u_32(limit, serializer);
-          sse_encode_u_32(offset, serializer);
-          sse_encode_bool(hydrateProfiles, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 24,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiDirectoryListFollowersConstMeta => const TaskConstMeta(
+            debugName: "list_followers",
+            argNames: ["client", "limit", "offset", "hydrateProfiles"],
+        );
+
+
+@override Future<DartRelationshipPage> crateApiDirectoryListFollowing({required ArcDartImClient client , required int limit , required int offset , required bool hydrateProfiles })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_u_32(limit, serializer);
+sse_encode_u_32(offset, serializer);
+sse_encode_bool(hydrateProfiles, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_relationship_page,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiDirectoryListFollowingConstMeta,
-        argValues: [client, limit, offset, hydrateProfiles],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiDirectoryListFollowingConstMeta,
+            argValues: [client, limit, offset, hydrateProfiles],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiDirectoryListFollowingConstMeta =>
-      const TaskConstMeta(
-        debugName: "list_following",
-        argNames: ["client", "limit", "offset", "hydrateProfiles"],
-      );
 
-  @override
-  Future<DartGroupReadResult> crateApiGroupsListGroupMembers({
-    required ArcDartImClient client,
-    required String groupDid,
-    required int limit,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(groupDid, serializer);
-          sse_encode_u_32(limit, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 25,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiDirectoryListFollowingConstMeta => const TaskConstMeta(
+            debugName: "list_following",
+            argNames: ["client", "limit", "offset", "hydrateProfiles"],
+        );
+
+
+@override Future<DartGroupReadResult> crateApiGroupsListGroupMembers({required ArcDartImClient client , required String groupDid , required int limit })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(groupDid, serializer);
+sse_encode_u_32(limit, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 25, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_group_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsListGroupMembersConstMeta,
-        argValues: [client, groupDid, limit],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsListGroupMembersConstMeta,
+            argValues: [client, groupDid, limit],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsListGroupMembersConstMeta =>
-      const TaskConstMeta(
-        debugName: "list_group_members",
-        argNames: ["client", "groupDid", "limit"],
-      );
 
-  @override
-  Future<DartGroupReadResult> crateApiGroupsListGroupMessages({
-    required ArcDartImClient client,
-    required String groupDid,
-    required int limit,
-    String? cursor,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(groupDid, serializer);
-          sse_encode_u_32(limit, serializer);
-          sse_encode_opt_String(cursor, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 26,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsListGroupMembersConstMeta => const TaskConstMeta(
+            debugName: "list_group_members",
+            argNames: ["client", "groupDid", "limit"],
+        );
+
+
+@override Future<DartGroupReadResult> crateApiGroupsListGroupMessages({required ArcDartImClient client , required String groupDid , required int limit , String? cursor })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(groupDid, serializer);
+sse_encode_u_32(limit, serializer);
+sse_encode_opt_String(cursor, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 26, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_group_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsListGroupMessagesConstMeta,
-        argValues: [client, groupDid, limit, cursor],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsListGroupMessagesConstMeta,
+            argValues: [client, groupDid, limit, cursor],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsListGroupMessagesConstMeta =>
-      const TaskConstMeta(
-        debugName: "list_group_messages",
-        argNames: ["client", "groupDid", "limit", "cursor"],
-      );
 
-  @override
-  Future<DartGroupReadResult> crateApiGroupsListGroups({
-    required ArcDartImClient client,
-    required int limit,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_u_32(limit, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 27,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsListGroupMessagesConstMeta => const TaskConstMeta(
+            debugName: "list_group_messages",
+            argNames: ["client", "groupDid", "limit", "cursor"],
+        );
+
+
+@override Future<DartGroupReadResult> crateApiGroupsListGroups({required ArcDartImClient client , required int limit })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_u_32(limit, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 27, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_group_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsListGroupsConstMeta,
-        argValues: [client, limit],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsListGroupsConstMeta,
+            argValues: [client, limit],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsListGroupsConstMeta => const TaskConstMeta(
-    debugName: "list_groups",
-    argNames: ["client", "limit"],
-  );
 
-  @override
-  Future<List<DartIdentitySummary>> crateApiIdentityListIdentities({
-    required ArcDartImCore core,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 28,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsListGroupsConstMeta => const TaskConstMeta(
+            debugName: "list_groups",
+            argNames: ["client", "limit"],
+        );
+
+
+@override Future<List<DartIdentitySummary>> crateApiIdentityListIdentities({required ArcDartImCore core })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 28, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_list_dart_identity_summary,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiIdentityListIdentitiesConstMeta,
-        argValues: [core],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiIdentityListIdentitiesConstMeta,
+            argValues: [core],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiIdentityListIdentitiesConstMeta =>
-      const TaskConstMeta(debugName: "list_identities", argNames: ["core"]);
 
-  @override
-  Future<DartUserProfile> crateApiProfileLoadMyProfile({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 29,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiIdentityListIdentitiesConstMeta => const TaskConstMeta(
+            debugName: "list_identities",
+            argNames: ["core"],
+        );
+
+
+@override Future<DartUserProfile> crateApiProfileLoadMyProfile({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 29, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_user_profile,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiProfileLoadMyProfileConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiProfileLoadMyProfileConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiProfileLoadMyProfileConstMeta =>
-      const TaskConstMeta(debugName: "load_my_profile", argNames: ["client"]);
 
-  @override
-  Future<DartUserProfile> crateApiProfileLoadPublicProfile({
-    required ArcDartImClient client,
-    required DartIdentitySubject subject,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_identity_subject(subject, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 30,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiProfileLoadMyProfileConstMeta => const TaskConstMeta(
+            debugName: "load_my_profile",
+            argNames: ["client"],
+        );
+
+
+@override Future<DartUserProfile> crateApiProfileLoadPublicProfile({required ArcDartImClient client , required DartIdentitySubject subject })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_identity_subject(subject, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 30, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_user_profile,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiProfileLoadPublicProfileConstMeta,
-        argValues: [client, subject],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiProfileLoadPublicProfileConstMeta,
+            argValues: [client, subject],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiProfileLoadPublicProfileConstMeta =>
-      const TaskConstMeta(
-        debugName: "load_public_profile",
-        argNames: ["client", "subject"],
-      );
 
-  @override
-  Future<DartDirectoryResolution> crateApiDirectoryLookupHandle({
-    required ArcDartImClient client,
-    required String handle,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(handle, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 31,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiProfileLoadPublicProfileConstMeta => const TaskConstMeta(
+            debugName: "load_public_profile",
+            argNames: ["client", "subject"],
+        );
+
+
+@override Future<DartDirectoryResolution> crateApiDirectoryLookupHandle({required ArcDartImClient client , required String handle })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(handle, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 31, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_directory_resolution,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiDirectoryLookupHandleConstMeta,
-        argValues: [client, handle],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiDirectoryLookupHandleConstMeta,
+            argValues: [client, handle],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiDirectoryLookupHandleConstMeta =>
-      const TaskConstMeta(
-        debugName: "lookup_handle",
-        argNames: ["client", "handle"],
-      );
 
-  @override
-  Future<DartEmailMarkReadResult> crateApiEmailMarkRead({
-    required ArcDartImClient client,
-    required List<String> messageIds,
-    required bool isRead,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_list_String(messageIds, serializer);
-          sse_encode_bool(isRead, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 32,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiDirectoryLookupHandleConstMeta => const TaskConstMeta(
+            debugName: "lookup_handle",
+            argNames: ["client", "handle"],
+        );
+
+
+@override Future<DartEmailMarkReadResult> crateApiEmailMarkRead({required ArcDartImClient client , required List<String> messageIds , required bool isRead })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_list_String(messageIds, serializer);
+sse_encode_bool(isRead, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_email_mark_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiEmailMarkReadConstMeta,
-        argValues: [client, messageIds, isRead],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiEmailMarkReadConstMeta,
+            argValues: [client, messageIds, isRead],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiEmailMarkReadConstMeta => const TaskConstMeta(
-    debugName: "mark_read",
-    argNames: ["client", "messageIds", "isRead"],
-  );
 
-  @override
-  Future<DartMarkReadResult> crateApiMessagesMarkRead({
-    required ArcDartImClient client,
-    required List<String> messageIds,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_list_String(messageIds, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 33,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiEmailMarkReadConstMeta => const TaskConstMeta(
+            debugName: "mark_read",
+            argNames: ["client", "messageIds", "isRead"],
+        );
+
+
+@override Future<DartMarkReadResult> crateApiMessagesMarkRead({required ArcDartImClient client , required List<String> messageIds })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_list_String(messageIds, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_mark_read_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiMessagesMarkReadConstMeta,
-        argValues: [client, messageIds],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiMessagesMarkReadConstMeta,
+            argValues: [client, messageIds],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiMessagesMarkReadConstMeta => const TaskConstMeta(
-    debugName: "mark_read",
-    argNames: ["client", "messageIds"],
-  );
 
-  @override
-  Future<DartEmailNotificationPage> crateApiEmailNotifications({
-    required ArcDartImClient client,
-    required int limit,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_u_32(limit, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 34,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiMessagesMarkReadConstMeta => const TaskConstMeta(
+            debugName: "mark_read",
+            argNames: ["client", "messageIds"],
+        );
+
+
+@override Future<DartEmailNotificationPage> crateApiEmailNotifications({required ArcDartImClient client , required int limit })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_u_32(limit, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 34, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_email_notification_page,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiEmailNotificationsConstMeta,
-        argValues: [client, limit],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiEmailNotificationsConstMeta,
+            argValues: [client, limit],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiEmailNotificationsConstMeta => const TaskConstMeta(
-    debugName: "notifications",
-    argNames: ["client", "limit"],
-  );
 
-  @override
-  Future<ArcDartImCore> crateApiCoreOpenCore({
-    required DartImCoreConfig config,
-    required DartImCorePaths paths,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_box_autoadd_dart_im_core_config(config, serializer);
-          sse_encode_box_autoadd_dart_im_core_paths(paths, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 35,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore,
+        TaskConstMeta get kCrateApiEmailNotificationsConstMeta => const TaskConstMeta(
+            debugName: "notifications",
+            argNames: ["client", "limit"],
+        );
+
+
+@override Future<ArcDartImCore> crateApiCoreOpenCore({required DartImCoreConfig config , required DartImCorePaths paths })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_box_autoadd_dart_im_core_config(config, serializer);
+sse_encode_box_autoadd_dart_im_core_paths(paths, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 35, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiCoreOpenCoreConstMeta,
-        argValues: [config, paths],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiCoreOpenCoreConstMeta,
+            argValues: [config, paths],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiCoreOpenCoreConstMeta => const TaskConstMeta(
-    debugName: "open_core",
-    argNames: ["config", "paths"],
-  );
 
-  @override
-  Future<DartEmailMessage> crateApiEmailRead({
-    required ArcDartImClient client,
-    required String messageId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(messageId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 36,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiCoreOpenCoreConstMeta => const TaskConstMeta(
+            debugName: "open_core",
+            argNames: ["config", "paths"],
+        );
+
+
+@override Future<DartEmailMessage> crateApiEmailRead({required ArcDartImClient client , required String messageId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(messageId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 36, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_email_message,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiEmailReadConstMeta,
-        argValues: [client, messageId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiEmailReadConstMeta,
+            argValues: [client, messageId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiEmailReadConstMeta =>
-      const TaskConstMeta(debugName: "read", argNames: ["client", "messageId"]);
 
-  @override
-  Future<DartRealtimeCapability> crateApiRealtimeRealtimeCapability({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 37,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiEmailReadConstMeta => const TaskConstMeta(
+            debugName: "read",
+            argNames: ["client", "messageId"],
+        );
+
+
+@override Future<DartRealtimeCapability> crateApiRealtimeRealtimeCapability({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 37, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_realtime_capability,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiRealtimeRealtimeCapabilityConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiRealtimeRealtimeCapabilityConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiRealtimeRealtimeCapabilityConstMeta =>
-      const TaskConstMeta(
-        debugName: "realtime_capability",
-        argNames: ["client"],
-      );
 
-  @override
-  Future<void> crateApiRealtimeRealtimeConnect({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 38,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiRealtimeRealtimeCapabilityConstMeta => const TaskConstMeta(
+            debugName: "realtime_capability",
+            argNames: ["client"],
+        );
+
+
+@override Future<void> crateApiRealtimeRealtimeConnect({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 38, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiRealtimeRealtimeConnectConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiRealtimeRealtimeConnectConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiRealtimeRealtimeConnectConstMeta =>
-      const TaskConstMeta(debugName: "realtime_connect", argNames: ["client"]);
 
-  @override
-  Stream<DartRealtimeEvent> crateApiRealtimeRealtimeEventStream({
-    required ArcDartRealtimeSession session,
-  }) {
-    final sink = RustStreamSink<DartRealtimeEvent>();
-    unawaited(
-      handler.executeNormal(
-        NormalTask(
-          callFfi: (port_) {
-            final serializer = SseSerializer(generalizedFrbRustBinding);
-            sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-              session,
-              serializer,
-            );
-            sse_encode_StreamSink_dart_realtime_event_Sse(sink, serializer);
-            pdeCallFfi(
-              generalizedFrbRustBinding,
-              serializer,
-              funcId: 39,
-              port: port_,
-            );
-          },
-          codec: SseCodec(
-            decodeSuccessData: sse_decode_unit,
-            decodeErrorData: sse_decode_dart_im_error,
-          ),
-          constMeta: kCrateApiRealtimeRealtimeEventStreamConstMeta,
-          argValues: [session, sink],
-          apiImpl: this,
-        ),
-      ),
-    );
-    return sink.stream;
-  }
+        TaskConstMeta get kCrateApiRealtimeRealtimeConnectConstMeta => const TaskConstMeta(
+            debugName: "realtime_connect",
+            argNames: ["client"],
+        );
 
-  TaskConstMeta get kCrateApiRealtimeRealtimeEventStreamConstMeta =>
-      const TaskConstMeta(
-        debugName: "realtime_event_stream",
-        argNames: ["session", "sink"],
-      );
 
-  @override
-  Future<ArcDartRealtimeSession> crateApiRealtimeRealtimeStart({
-    required ArcDartImClient client,
-    required DartRealtimeOptions options,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_realtime_options(options, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 40,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
-          decodeSuccessData:
-              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession,
+@override Stream<DartRealtimeEvent> crateApiRealtimeRealtimeEventStream({required ArcDartRealtimeSession session })  {
+            final sink = RustStreamSink<DartRealtimeEvent>();
+            unawaited(handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(session, serializer);
+sse_encode_StreamSink_dart_realtime_event_Sse(sink, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 39, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiRealtimeRealtimeStartConstMeta,
-        argValues: [client, options],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiRealtimeRealtimeEventStreamConstMeta,
+            argValues: [session, sink],
+            apiImpl: this,
+        )));
+            return sink.stream;
+             }
 
-  TaskConstMeta get kCrateApiRealtimeRealtimeStartConstMeta =>
-      const TaskConstMeta(
-        debugName: "realtime_start",
-        argNames: ["client", "options"],
-      );
 
-  @override
-  Future<DartRealtimeStatus> crateApiRealtimeRealtimeStatus({
-    required ArcDartImClient client,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 41,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiRealtimeRealtimeEventStreamConstMeta => const TaskConstMeta(
+            debugName: "realtime_event_stream",
+            argNames: ["session", "sink"],
+        );
+
+
+@override Future<ArcDartRealtimeSession> crateApiRealtimeRealtimeStart({required ArcDartImClient client , required DartRealtimeOptions options })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_realtime_options(options, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 40, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiRealtimeRealtimeStartConstMeta,
+            argValues: [client, options],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiRealtimeRealtimeStartConstMeta => const TaskConstMeta(
+            debugName: "realtime_start",
+            argNames: ["client", "options"],
+        );
+
+
+@override Future<DartRealtimeStatus> crateApiRealtimeRealtimeStatus({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 41, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_realtime_status,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiRealtimeRealtimeStatusConstMeta,
-        argValues: [client],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiRealtimeRealtimeStatusConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiRealtimeRealtimeStatusConstMeta =>
-      const TaskConstMeta(debugName: "realtime_status", argNames: ["client"]);
 
-  @override
-  Future<void> crateApiRealtimeRealtimeStop({
-    required ArcDartRealtimeSession session,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-            session,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 42,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiRealtimeRealtimeStatusConstMeta => const TaskConstMeta(
+            debugName: "realtime_status",
+            argNames: ["client"],
+        );
+
+
+@override Future<void> crateApiRealtimeRealtimeStop({required ArcDartRealtimeSession session })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(session, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 42, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiRealtimeRealtimeStopConstMeta,
-        argValues: [session],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiRealtimeRealtimeStopConstMeta,
+            argValues: [session],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiRealtimeRealtimeStopConstMeta =>
-      const TaskConstMeta(debugName: "realtime_stop", argNames: ["session"]);
 
-  @override
-  Future<DartRecoverHandleResult> crateApiIdentityRecoverHandle({
-    required ArcDartImCore core,
-    required String handle,
-    required String phone,
-    String? otp,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          sse_encode_String(handle, serializer);
-          sse_encode_String(phone, serializer);
-          sse_encode_opt_String(otp, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 43,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiRealtimeRealtimeStopConstMeta => const TaskConstMeta(
+            debugName: "realtime_stop",
+            argNames: ["session"],
+        );
+
+
+@override Future<DartRecoverHandleResult> crateApiIdentityRecoverHandle({required ArcDartImCore core , required String handle , required String phone , String? otp })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+sse_encode_String(handle, serializer);
+sse_encode_String(phone, serializer);
+sse_encode_opt_String(otp, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 43, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_recover_handle_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiIdentityRecoverHandleConstMeta,
-        argValues: [core, handle, phone, otp],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiIdentityRecoverHandleConstMeta,
+            argValues: [core, handle, phone, otp],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiIdentityRecoverHandleConstMeta =>
-      const TaskConstMeta(
-        debugName: "recover_handle",
-        argNames: ["core", "handle", "phone", "otp"],
-      );
 
-  @override
-  Future<String?> crateApiGroupsRefreshGroupJoinCode({
-    required ArcDartImClient client,
-    required String groupDid,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(groupDid, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 44,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiIdentityRecoverHandleConstMeta => const TaskConstMeta(
+            debugName: "recover_handle",
+            argNames: ["core", "handle", "phone", "otp"],
+        );
+
+
+@override Future<String?> crateApiGroupsRefreshGroupJoinCode({required ArcDartImClient client , required String groupDid })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(groupDid, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 44, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_opt_String,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiGroupsRefreshGroupJoinCodeConstMeta,
-        argValues: [client, groupDid],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiGroupsRefreshGroupJoinCodeConstMeta,
+            argValues: [client, groupDid],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiGroupsRefreshGroupJoinCodeConstMeta =>
-      const TaskConstMeta(
-        debugName: "refresh_group_join_code",
-        argNames: ["client", "groupDid"],
-      );
 
-  @override
-  Future<DartHandleRegistrationResult> crateApiIdentityRegisterHandleWithEmail({
-    required ArcDartImCore core,
-    String? localAlias,
-    required String requestedHandle,
-    required String email,
-    required bool waitForVerification,
-    String? inviteCode,
-    required DartInitialProfile profile,
-    required bool makeDefault,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          sse_encode_opt_String(localAlias, serializer);
-          sse_encode_String(requestedHandle, serializer);
-          sse_encode_String(email, serializer);
-          sse_encode_bool(waitForVerification, serializer);
-          sse_encode_opt_String(inviteCode, serializer);
-          sse_encode_box_autoadd_dart_initial_profile(profile, serializer);
-          sse_encode_bool(makeDefault, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 45,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiGroupsRefreshGroupJoinCodeConstMeta => const TaskConstMeta(
+            debugName: "refresh_group_join_code",
+            argNames: ["client", "groupDid"],
+        );
+
+
+@override Future<DartHandleRegistrationResult> crateApiIdentityRegisterHandleWithEmail({required ArcDartImCore core , String? localAlias , required String requestedHandle , required String email , required bool waitForVerification , String? inviteCode , required DartInitialProfile profile , required bool makeDefault })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+sse_encode_opt_String(localAlias, serializer);
+sse_encode_String(requestedHandle, serializer);
+sse_encode_String(email, serializer);
+sse_encode_bool(waitForVerification, serializer);
+sse_encode_opt_String(inviteCode, serializer);
+sse_encode_box_autoadd_dart_initial_profile(profile, serializer);
+sse_encode_bool(makeDefault, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 45, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_handle_registration_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiIdentityRegisterHandleWithEmailConstMeta,
-        argValues: [
-          core,
-          localAlias,
-          requestedHandle,
-          email,
-          waitForVerification,
-          inviteCode,
-          profile,
-          makeDefault,
-        ],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiIdentityRegisterHandleWithEmailConstMeta,
+            argValues: [core, localAlias, requestedHandle, email, waitForVerification, inviteCode, profile, makeDefault],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiIdentityRegisterHandleWithEmailConstMeta =>
-      const TaskConstMeta(
-        debugName: "register_handle_with_email",
-        argNames: [
-          "core",
-          "localAlias",
-          "requestedHandle",
-          "email",
-          "waitForVerification",
-          "inviteCode",
-          "profile",
-          "makeDefault",
-        ],
-      );
 
-  @override
-  Future<DartHandleRegistrationResult> crateApiIdentityRegisterHandleWithPhone({
-    required ArcDartImCore core,
-    String? localAlias,
-    required String requestedHandle,
-    required String phone,
-    String? otp,
-    String? inviteCode,
-    required DartInitialProfile profile,
-    required bool makeDefault,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          sse_encode_opt_String(localAlias, serializer);
-          sse_encode_String(requestedHandle, serializer);
-          sse_encode_String(phone, serializer);
-          sse_encode_opt_String(otp, serializer);
-          sse_encode_opt_String(inviteCode, serializer);
-          sse_encode_box_autoadd_dart_initial_profile(profile, serializer);
-          sse_encode_bool(makeDefault, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 46,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiIdentityRegisterHandleWithEmailConstMeta => const TaskConstMeta(
+            debugName: "register_handle_with_email",
+            argNames: ["core", "localAlias", "requestedHandle", "email", "waitForVerification", "inviteCode", "profile", "makeDefault"],
+        );
+
+
+@override Future<DartHandleRegistrationResult> crateApiIdentityRegisterHandleWithPhone({required ArcDartImCore core , String? localAlias , required String requestedHandle , required String phone , String? otp , String? inviteCode , required DartInitialProfile profile , required bool makeDefault })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+sse_encode_opt_String(localAlias, serializer);
+sse_encode_String(requestedHandle, serializer);
+sse_encode_String(phone, serializer);
+sse_encode_opt_String(otp, serializer);
+sse_encode_opt_String(inviteCode, serializer);
+sse_encode_box_autoadd_dart_initial_profile(profile, serializer);
+sse_encode_bool(makeDefault, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 46, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_handle_registration_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiIdentityRegisterHandleWithPhoneConstMeta,
-        argValues: [
-          core,
-          localAlias,
-          requestedHandle,
-          phone,
-          otp,
-          inviteCode,
-          profile,
-          makeDefault,
-        ],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiIdentityRegisterHandleWithPhoneConstMeta,
+            argValues: [core, localAlias, requestedHandle, phone, otp, inviteCode, profile, makeDefault],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiIdentityRegisterHandleWithPhoneConstMeta =>
-      const TaskConstMeta(
-        debugName: "register_handle_with_phone",
-        argNames: [
-          "core",
-          "localAlias",
-          "requestedHandle",
-          "phone",
-          "otp",
-          "inviteCode",
-          "profile",
-          "makeDefault",
-        ],
-      );
 
-  @override
-  Future<DartRelationStatus> crateApiDirectoryRelationStatus({
-    required ArcDartImClient client,
-    required String peer,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(peer, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 47,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiIdentityRegisterHandleWithPhoneConstMeta => const TaskConstMeta(
+            debugName: "register_handle_with_phone",
+            argNames: ["core", "localAlias", "requestedHandle", "phone", "otp", "inviteCode", "profile", "makeDefault"],
+        );
+
+
+@override Future<DartRelationStatus> crateApiDirectoryRelationStatus({required ArcDartImClient client , required String peer })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(peer, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 47, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_relation_status,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiDirectoryRelationStatusConstMeta,
-        argValues: [client, peer],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiDirectoryRelationStatusConstMeta,
+            argValues: [client, peer],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiDirectoryRelationStatusConstMeta =>
-      const TaskConstMeta(
-        debugName: "relation_status",
-        argNames: ["client", "peer"],
-      );
 
-  @override
-  Future<DartIdentitySummary> crateApiIdentityResolveIdentity({
-    required ArcDartImCore core,
-    required DartIdentitySelector selector,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 48,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiDirectoryRelationStatusConstMeta => const TaskConstMeta(
+            debugName: "relation_status",
+            argNames: ["client", "peer"],
+        );
+
+
+@override Future<DartIdentitySummary> crateApiIdentityResolveIdentity({required ArcDartImCore core , required DartIdentitySelector selector })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+sse_encode_box_autoadd_dart_identity_selector(selector, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 48, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_identity_summary,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiIdentityResolveIdentityConstMeta,
-        argValues: [core, selector],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiIdentityResolveIdentityConstMeta,
+            argValues: [core, selector],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiIdentityResolveIdentityConstMeta =>
-      const TaskConstMeta(
-        debugName: "resolve_identity",
-        argNames: ["core", "selector"],
-      );
 
-  @override
-  Future<DartDirectoryResolution> crateApiDirectoryResolvePeer({
-    required ArcDartImClient client,
-    required String peer,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(peer, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 49,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiIdentityResolveIdentityConstMeta => const TaskConstMeta(
+            debugName: "resolve_identity",
+            argNames: ["core", "selector"],
+        );
+
+
+@override Future<DartDirectoryResolution> crateApiDirectoryResolvePeer({required ArcDartImClient client , required String peer })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(peer, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 49, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_directory_resolution,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiDirectoryResolvePeerConstMeta,
-        argValues: [client, peer],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiDirectoryResolvePeerConstMeta,
+            argValues: [client, peer],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiDirectoryResolvePeerConstMeta =>
-      const TaskConstMeta(
-        debugName: "resolve_peer",
-        argNames: ["client", "peer"],
-      );
 
-  @override
-  Future<DartSendMessageResult> crateApiMessagesRetryMessage({
-    required ArcDartImClient client,
-    required String messageId,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(messageId, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 50,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiDirectoryResolvePeerConstMeta => const TaskConstMeta(
+            debugName: "resolve_peer",
+            argNames: ["client", "peer"],
+        );
+
+
+@override Future<DartSendMessageResult> crateApiMessagesRetryMessage({required ArcDartImClient client , required String messageId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(messageId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 50, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_send_message_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiMessagesRetryMessageConstMeta,
-        argValues: [client, messageId],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiMessagesRetryMessageConstMeta,
+            argValues: [client, messageId],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiMessagesRetryMessageConstMeta =>
-      const TaskConstMeta(
-        debugName: "retry_message",
-        argNames: ["client", "messageId"],
-      );
 
-  @override
-  Future<DartSendEmailResult> crateApiEmailSend({
-    required ArcDartImClient client,
-    required DartSendEmailRequest request,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_send_email_request(request, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 51,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiMessagesRetryMessageConstMeta => const TaskConstMeta(
+            debugName: "retry_message",
+            argNames: ["client", "messageId"],
+        );
+
+
+@override Future<DartDirectSecurePrepareResult> crateApiSecureSecureDirectPrepare({required ArcDartImClient client , required String peer })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(peer, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 51, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_dart_direct_secure_prepare_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureDirectPrepareConstMeta,
+            argValues: [client, peer],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureDirectPrepareConstMeta => const TaskConstMeta(
+            debugName: "secure_direct_prepare",
+            argNames: ["client", "peer"],
+        );
+
+
+@override Future<DartDirectSecureRepairResult> crateApiSecureSecureDirectRepair({required ArcDartImClient client , required String peer })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(peer, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 52, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_dart_direct_secure_repair_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureDirectRepairConstMeta,
+            argValues: [client, peer],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureDirectRepairConstMeta => const TaskConstMeta(
+            debugName: "secure_direct_repair",
+            argNames: ["client", "peer"],
+        );
+
+
+@override Future<DartDirectSecureStatus> crateApiSecureSecureDirectStatus({required ArcDartImClient client , required String peer })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(peer, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 53, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_dart_direct_secure_status,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureDirectStatusConstMeta,
+            argValues: [client, peer],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureDirectStatusConstMeta => const TaskConstMeta(
+            debugName: "secure_direct_status",
+            argNames: ["client", "peer"],
+        );
+
+
+@override Future<DartGroupSecurePrepareResult> crateApiSecureSecureGroupPrepare({required ArcDartImClient client , required String group })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(group, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 54, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_dart_group_secure_prepare_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureGroupPrepareConstMeta,
+            argValues: [client, group],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureGroupPrepareConstMeta => const TaskConstMeta(
+            debugName: "secure_group_prepare",
+            argNames: ["client", "group"],
+        );
+
+
+@override Future<DartGroupSecureRepairResult> crateApiSecureSecureGroupRepair({required ArcDartImClient client , required String group })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(group, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 55, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_dart_group_secure_repair_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureGroupRepairConstMeta,
+            argValues: [client, group],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureGroupRepairConstMeta => const TaskConstMeta(
+            debugName: "secure_group_repair",
+            argNames: ["client", "group"],
+        );
+
+
+@override Future<DartGroupSecureStatus> crateApiSecureSecureGroupStatus({required ArcDartImClient client , required String group })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(group, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 56, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_dart_group_secure_status,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureGroupStatusConstMeta,
+            argValues: [client, group],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureGroupStatusConstMeta => const TaskConstMeta(
+            debugName: "secure_group_status",
+            argNames: ["client", "group"],
+        );
+
+
+@override Future<DartSecureOutboxResult> crateApiSecureSecureOutboxDrop({required ArcDartImClient client , required String outboxId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(outboxId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 57, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_dart_secure_outbox_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureOutboxDropConstMeta,
+            argValues: [client, outboxId],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureOutboxDropConstMeta => const TaskConstMeta(
+            debugName: "secure_outbox_drop",
+            argNames: ["client", "outboxId"],
+        );
+
+
+@override Future<List<DartSecureOutboxEntry>> crateApiSecureSecureOutboxListFailed({required ArcDartImClient client })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 58, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_list_dart_secure_outbox_entry,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureOutboxListFailedConstMeta,
+            argValues: [client],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureOutboxListFailedConstMeta => const TaskConstMeta(
+            debugName: "secure_outbox_list_failed",
+            argNames: ["client"],
+        );
+
+
+@override Future<DartSecureOutboxResult> crateApiSecureSecureOutboxRetry({required ArcDartImClient client , required String outboxId })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(outboxId, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 59, port: port_);
+
+            },
+            codec:
+        SseCodec(
+          decodeSuccessData: sse_decode_dart_secure_outbox_result,
+          decodeErrorData: sse_decode_dart_im_error,
+        )
+        ,
+            constMeta: kCrateApiSecureSecureOutboxRetryConstMeta,
+            argValues: [client, outboxId],
+            apiImpl: this,
+        )); }
+
+
+        TaskConstMeta get kCrateApiSecureSecureOutboxRetryConstMeta => const TaskConstMeta(
+            debugName: "secure_outbox_retry",
+            argNames: ["client", "outboxId"],
+        );
+
+
+@override Future<DartSendEmailResult> crateApiEmailSend({required ArcDartImClient client , required DartSendEmailRequest request })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_send_email_request(request, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 60, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_send_email_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiEmailSendConstMeta,
-        argValues: [client, request],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiEmailSendConstMeta,
+            argValues: [client, request],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiEmailSendConstMeta =>
-      const TaskConstMeta(debugName: "send", argNames: ["client", "request"]);
 
-  @override
-  Future<DartSendMessageResult> crateApiAttachmentsSendAttachment({
-    required ArcDartImClient client,
-    required DartAttachmentSendRequest request,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_attachment_send_request(
-            request,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 52,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiEmailSendConstMeta => const TaskConstMeta(
+            debugName: "send",
+            argNames: ["client", "request"],
+        );
+
+
+@override Future<DartSendMessageResult> crateApiAttachmentsSendAttachment({required ArcDartImClient client , required DartAttachmentSendRequest request })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_attachment_send_request(request, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 61, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_send_message_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiAttachmentsSendAttachmentConstMeta,
-        argValues: [client, request],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiAttachmentsSendAttachmentConstMeta,
+            argValues: [client, request],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiAttachmentsSendAttachmentConstMeta =>
-      const TaskConstMeta(
-        debugName: "send_attachment",
-        argNames: ["client", "request"],
-      );
 
-  @override
-  Future<DartSendMessageResult> crateApiMessagesSendText({
-    required ArcDartImClient client,
-    required DartSendTextRequest request,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_send_text_request(request, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 53,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiAttachmentsSendAttachmentConstMeta => const TaskConstMeta(
+            debugName: "send_attachment",
+            argNames: ["client", "request"],
+        );
+
+
+@override Future<DartSendMessageResult> crateApiMessagesSendText({required ArcDartImClient client , required DartSendTextRequest request })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_send_text_request(request, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 62, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_send_message_result,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiMessagesSendTextConstMeta,
-        argValues: [client, request],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiMessagesSendTextConstMeta,
+            argValues: [client, request],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiMessagesSendTextConstMeta => const TaskConstMeta(
-    debugName: "send_text",
-    argNames: ["client", "request"],
-  );
 
-  @override
-  Future<void> crateApiDirectoryUnfollow({
-    required ArcDartImClient client,
-    required String peer,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_String(peer, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 54,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiMessagesSendTextConstMeta => const TaskConstMeta(
+            debugName: "send_text",
+            argNames: ["client", "request"],
+        );
+
+
+@override Future<void> crateApiDirectoryUnfollow({required ArcDartImClient client , required String peer })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_String(peer, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 63, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiDirectoryUnfollowConstMeta,
-        argValues: [client, peer],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiDirectoryUnfollowConstMeta,
+            argValues: [client, peer],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiDirectoryUnfollowConstMeta =>
-      const TaskConstMeta(debugName: "unfollow", argNames: ["client", "peer"]);
 
-  @override
-  Future<void> crateApiUnsupportedUnsupported({required String capability}) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(capability, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 55,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiDirectoryUnfollowConstMeta => const TaskConstMeta(
+            debugName: "unfollow",
+            argNames: ["client", "peer"],
+        );
+
+
+@override Future<void> crateApiUnsupportedUnsupported({required String capability })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_String(capability, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 64, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_unit,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiUnsupportedUnsupportedConstMeta,
-        argValues: [capability],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiUnsupportedUnsupportedConstMeta,
+            argValues: [capability],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiUnsupportedUnsupportedConstMeta =>
-      const TaskConstMeta(debugName: "unsupported", argNames: ["capability"]);
 
-  @override
-  Future<DartUserProfile> crateApiProfileUpdateProfile({
-    required ArcDartImClient client,
-    required DartProfilePatch patch,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-            client,
-            serializer,
-          );
-          sse_encode_box_autoadd_dart_profile_patch(patch, serializer);
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 56,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiUnsupportedUnsupportedConstMeta => const TaskConstMeta(
+            debugName: "unsupported",
+            argNames: ["capability"],
+        );
+
+
+@override Future<DartUserProfile> crateApiProfileUpdateProfile({required ArcDartImClient client , required DartProfilePatch patch })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(client, serializer);
+sse_encode_box_autoadd_dart_profile_patch(patch, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 65, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_dart_user_profile,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiProfileUpdateProfileConstMeta,
-        argValues: [client, patch],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiProfileUpdateProfileConstMeta,
+            argValues: [client, patch],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiProfileUpdateProfileConstMeta =>
-      const TaskConstMeta(
-        debugName: "update_profile",
-        argNames: ["client", "patch"],
-      );
 
-  @override
-  Future<List<String>> crateApiCoreValidatePaths({
-    required ArcDartImCore core,
-  }) {
-    return handler.executeNormal(
-      NormalTask(
-        callFfi: (port_) {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-            core,
-            serializer,
-          );
-          pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 57,
-            port: port_,
-          );
-        },
-        codec: SseCodec(
+        TaskConstMeta get kCrateApiProfileUpdateProfileConstMeta => const TaskConstMeta(
+            debugName: "update_profile",
+            argNames: ["client", "patch"],
+        );
+
+
+@override Future<List<String>> crateApiCoreValidatePaths({required ArcDartImCore core })  { return handler.executeNormal(NormalTask(
+            callFfi: (port_) {
+
+            final serializer = SseSerializer(generalizedFrbRustBinding);sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(core, serializer);
+            pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 66, port: port_);
+
+            },
+            codec:
+        SseCodec(
           decodeSuccessData: sse_decode_list_String,
           decodeErrorData: sse_decode_dart_im_error,
-        ),
-        constMeta: kCrateApiCoreValidatePathsConstMeta,
-        argValues: [core],
-        apiImpl: this,
-      ),
-    );
-  }
+        )
+        ,
+            constMeta: kCrateApiCoreValidatePathsConstMeta,
+            argValues: [core],
+            apiImpl: this,
+        )); }
 
-  TaskConstMeta get kCrateApiCoreValidatePathsConstMeta =>
-      const TaskConstMeta(debugName: "validate_paths", argNames: ["core"]);
 
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ArcDartImClient => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ArcDartImClient => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient;
-
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ArcDartImCore => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ArcDartImCore => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore;
-
-  RustArcIncrementStrongCountFnType
-  get rust_arc_increment_strong_count_ArcDartRealtimeSession => wire
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession;
-
-  RustArcDecrementStrongCountFnType
-  get rust_arc_decrement_strong_count_ArcDartRealtimeSession => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession;
-
-  @protected
-  AnyhowException dco_decode_AnyhowException(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return AnyhowException(raw as String);
-  }
-
-  @protected
-  ArcDartImClient
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartImClientImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  ArcDartImCore
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartImCoreImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  ArcDartRealtimeSession
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartRealtimeSessionImpl.frbInternalDcoDecode(
-      raw as List<dynamic>,
-    );
-  }
-
-  @protected
-  ArcDartImClient
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartImClientImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  ArcDartImCore
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartImCoreImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  ArcDartRealtimeSession
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartRealtimeSessionImpl.frbInternalDcoDecode(
-      raw as List<dynamic>,
-    );
-  }
-
-  @protected
-  ArcDartImClient
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartImClientImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  ArcDartImCore
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartImCoreImpl.frbInternalDcoDecode(raw as List<dynamic>);
-  }
-
-  @protected
-  ArcDartRealtimeSession
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return ArcDartRealtimeSessionImpl.frbInternalDcoDecode(
-      raw as List<dynamic>,
-    );
-  }
-
-  @protected
-  RustStreamSink<DartRealtimeEvent>
-  dco_decode_StreamSink_dart_realtime_event_Sse(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    throw UnimplementedError();
-  }
-
-  @protected
-  String dco_decode_String(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as String;
-  }
-
-  @protected
-  bool dco_decode_bool(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as bool;
-  }
-
-  @protected
-  bool dco_decode_box_autoadd_bool(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as bool;
-  }
-
-  @protected
-  DartAttachmentSendRequest dco_decode_box_autoadd_dart_attachment_send_request(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_attachment_send_request(raw);
-  }
-
-  @protected
-  DartCreateGroupRequest dco_decode_box_autoadd_dart_create_group_request(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_create_group_request(raw);
-  }
-
-  @protected
-  DartDefaultIdentityChange dco_decode_box_autoadd_dart_default_identity_change(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_default_identity_change(raw);
-  }
-
-  @protected
-  DartDownloadAttachmentRequest
-  dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_download_attachment_request(raw);
-  }
-
-  @protected
-  DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_group_snapshot(raw);
-  }
-
-  @protected
-  DartIdentitySelector dco_decode_box_autoadd_dart_identity_selector(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_identity_selector(raw);
-  }
-
-  @protected
-  DartIdentitySubject dco_decode_box_autoadd_dart_identity_subject(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_identity_subject(raw);
-  }
-
-  @protected
-  DartIdentitySummary dco_decode_box_autoadd_dart_identity_summary(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_identity_summary(raw);
-  }
-
-  @protected
-  DartImCoreConfig dco_decode_box_autoadd_dart_im_core_config(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_im_core_config(raw);
-  }
-
-  @protected
-  DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_im_core_paths(raw);
-  }
-
-  @protected
-  DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_initial_profile(raw);
-  }
-
-  @protected
-  DartMessage dco_decode_box_autoadd_dart_message(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_message(raw);
-  }
-
-  @protected
-  DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_profile_patch(raw);
-  }
-
-  @protected
-  DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_realtime_options(raw);
-  }
-
-  @protected
-  DartSendEmailRequest dco_decode_box_autoadd_dart_send_email_request(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_send_email_request(raw);
-  }
-
-  @protected
-  DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_send_text_request(raw);
-  }
-
-  @protected
-  DartThreadRef dco_decode_box_autoadd_dart_thread_ref(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_thread_ref(raw);
-  }
-
-  @protected
-  DartUserProfile dco_decode_box_autoadd_dart_user_profile(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_dart_user_profile(raw);
-  }
-
-  @protected
-  PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_i_64(raw);
-  }
-
-  @protected
-  int dco_decode_box_autoadd_u_16(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  int dco_decode_box_autoadd_u_32(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  BigInt dco_decode_box_autoadd_u_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_u_64(raw);
-  }
-
-  @protected
-  DartAttachmentDestination dco_decode_dart_attachment_destination(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    switch (raw[0]) {
-      case 0:
-        return DartAttachmentDestination_LocalFile(
-          path: dco_decode_String(raw[1]),
+        TaskConstMeta get kCrateApiCoreValidatePathsConstMeta => const TaskConstMeta(
+            debugName: "validate_paths",
+            argNames: ["core"],
         );
-      case 1:
-        return DartAttachmentDestination_Memory();
-      default:
-        throw Exception("unreachable");
-    }
-  }
-
-  @protected
-  DartAttachmentInput dco_decode_dart_attachment_input(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    switch (raw[0]) {
-      case 0:
-        return DartAttachmentInput_LocalFile(path: dco_decode_String(raw[1]));
-      case 1:
-        return DartAttachmentInput_Bytes(
-          filename: dco_decode_opt_String(raw[1]),
-          mimeType: dco_decode_opt_String(raw[2]),
-          bytes: dco_decode_list_prim_u_8_strict(raw[3]),
-        );
-      default:
-        throw Exception("unreachable");
-    }
-  }
-
-  @protected
-  DartAttachmentSendRequest dco_decode_dart_attachment_send_request(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
-    return DartAttachmentSendRequest(
-      target: dco_decode_dart_message_target(arr[0]),
-      input: dco_decode_dart_attachment_input(arr[1]),
-      caption: dco_decode_opt_String(arr[2]),
-      mimeType: dco_decode_opt_String(arr[3]),
-      filename: dco_decode_opt_String(arr[4]),
-      idempotencyKey: dco_decode_opt_String(arr[5]),
-      waitForFinalAcceptance: dco_decode_bool(arr[6]),
-    );
-  }
-
-  @protected
-  DartAuthScope dco_decode_dart_auth_scope(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return DartAuthScope.values[raw as int];
-  }
-
-  @protected
-  DartAuthStatus dco_decode_dart_auth_status(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return DartAuthStatus(
-      subject: dco_decode_String(arr[0]),
-      hasSession: dco_decode_bool(arr[1]),
-      expiresAt: dco_decode_opt_String(arr[2]),
-      needsRefresh: dco_decode_bool(arr[3]),
-      warnings: dco_decode_list_String(arr[4]),
-    );
-  }
-
-  @protected
-  DartConversation dco_decode_dart_conversation(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
-    return DartConversation(
-      threadKind: dco_decode_String(arr[0]),
-      threadId: dco_decode_String(arr[1]),
-      title: dco_decode_opt_String(arr[2]),
-      participants: dco_decode_list_String(arr[3]),
-      lastMessage: dco_decode_opt_box_autoadd_dart_message(arr[4]),
-      unreadCount: dco_decode_u_32(arr[5]),
-      messageCount: dco_decode_u_32(arr[6]),
-      lastMessageAt: dco_decode_opt_String(arr[7]),
-    );
-  }
-
-  @protected
-  DartConversationPage dco_decode_dart_conversation_page(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartConversationPage(
-      items: dco_decode_list_dart_conversation(arr[0]),
-      nextCursor: dco_decode_opt_String(arr[1]),
-      hasMore: dco_decode_bool(arr[2]),
-    );
-  }
-
-  @protected
-  DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
-    return DartCreateGroupRequest(
-      name: dco_decode_String(arr[0]),
-      description: dco_decode_opt_String(arr[1]),
-      discoverability: dco_decode_opt_String(arr[2]),
-      admissionMode: dco_decode_opt_String(arr[3]),
-      messageSecurityProfile: dco_decode_opt_String(arr[4]),
-      e2Ee: dco_decode_bool(arr[5]),
-      slug: dco_decode_opt_String(arr[6]),
-      goal: dco_decode_opt_String(arr[7]),
-      rules: dco_decode_opt_String(arr[8]),
-      messagePrompt: dco_decode_opt_String(arr[9]),
-      docUrl: dco_decode_opt_String(arr[10]),
-      attachmentsAllowed: dco_decode_opt_box_autoadd_bool(arr[11]),
-      maxMembers: dco_decode_opt_String(arr[12]),
-      memberMaxMessages: dco_decode_opt_box_autoadd_i_64(arr[13]),
-      memberMaxTotalChars: dco_decode_opt_box_autoadd_i_64(arr[14]),
-    );
-  }
-
-  @protected
-  DartDefaultIdentityChange dco_decode_dart_default_identity_change(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return DartDefaultIdentityChange(
-      previous: dco_decode_opt_box_autoadd_dart_identity_summary(arr[0]),
-      next: dco_decode_dart_identity_summary(arr[1]),
-      requiresDefaultIdentityWrite: dco_decode_bool(arr[2]),
-      warnings: dco_decode_list_String(arr[3]),
-    );
-  }
-
-  @protected
-  DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return DartDirectoryResolution(
-      input: dco_decode_String(arr[0]),
-      did: dco_decode_String(arr[1]),
-      handle: dco_decode_opt_String(arr[2]),
-      profile: dco_decode_opt_box_autoadd_dart_user_profile(arr[3]),
-      warnings: dco_decode_list_String(arr[4]),
-    );
-  }
-
-  @protected
-  DartDownloadAttachmentRequest dco_decode_dart_download_attachment_request(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return DartDownloadAttachmentRequest(
-      thread: dco_decode_dart_thread_ref(arr[0]),
-      messageId: dco_decode_String(arr[1]),
-      attachmentId: dco_decode_opt_String(arr[2]),
-      destination: dco_decode_dart_attachment_destination(arr[3]),
-      overwrite: dco_decode_bool(arr[4]),
-    );
-  }
-
-  @protected
-  DartDownloadedAttachment dco_decode_dart_downloaded_attachment(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
-    return DartDownloadedAttachment(
-      attachmentId: dco_decode_String(arr[0]),
-      filename: dco_decode_opt_String(arr[1]),
-      mimeType: dco_decode_opt_String(arr[2]),
-      sizeBytes: dco_decode_opt_box_autoadd_u_64(arr[3]),
-      destination: dco_decode_dart_downloaded_attachment_destination(arr[4]),
-      warnings: dco_decode_list_String(arr[5]),
-    );
-  }
-
-  @protected
-  DartDownloadedAttachmentDestination
-  dco_decode_dart_downloaded_attachment_destination(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    switch (raw[0]) {
-      case 0:
-        return DartDownloadedAttachmentDestination_LocalFile(
-          path: dco_decode_String(raw[1]),
-        );
-      case 1:
-        return DartDownloadedAttachmentDestination_Memory(
-          bytes: dco_decode_list_prim_u_8_strict(raw[1]),
-        );
-      default:
-        throw Exception("unreachable");
-    }
-  }
-
-  @protected
-  DartEmailAccount dco_decode_dart_email_account(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return DartEmailAccount(
-      mailboxAddress: dco_decode_opt_String(arr[0]),
-      displayName: dco_decode_opt_String(arr[1]),
-      status: dco_decode_opt_String(arr[2]),
-      attributes: dco_decode_list_dart_email_attribute(arr[3]),
-    );
-  }
-
-  @protected
-  DartEmailAttachmentContent dco_decode_dart_email_attachment_content(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
-    return DartEmailAttachmentContent(
-      messageId: dco_decode_String(arr[0]),
-      attachmentIndex: dco_decode_u_32(arr[1]),
-      filename: dco_decode_String(arr[2]),
-      contentType: dco_decode_String(arr[3]),
-      size: dco_decode_opt_box_autoadd_u_64(arr[4]),
-      bytes: dco_decode_list_prim_u_8_strict(arr[5]),
-    );
-  }
-
-  @protected
-  DartEmailAttachmentMetadata dco_decode_dart_email_attachment_metadata(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return DartEmailAttachmentMetadata(
-      index: dco_decode_u_32(arr[0]),
-      filename: dco_decode_opt_String(arr[1]),
-      contentType: dco_decode_opt_String(arr[2]),
-      size: dco_decode_opt_box_autoadd_u_64(arr[3]),
-    );
-  }
-
-  @protected
-  DartEmailAttribute dco_decode_dart_email_attribute(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return DartEmailAttribute(
-      key: dco_decode_String(arr[0]),
-      value: dco_decode_String(arr[1]),
-    );
-  }
-
-  @protected
-  DartEmailMarkReadResult dco_decode_dart_email_mark_read_result(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 1)
-      throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
-    return DartEmailMarkReadResult(updated: dco_decode_u_32(arr[0]));
-  }
-
-  @protected
-  DartEmailMessage dco_decode_dart_email_message(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return DartEmailMessage(
-      summary: dco_decode_dart_email_message_summary(arr[0]),
-      bodyText: dco_decode_opt_String(arr[1]),
-      bodyHtml: dco_decode_opt_String(arr[2]),
-      attachments: dco_decode_list_dart_email_attachment_metadata(arr[3]),
-    );
-  }
-
-  @protected
-  DartEmailMessageSummary dco_decode_dart_email_message_summary(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 13)
-      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
-    return DartEmailMessageSummary(
-      id: dco_decode_String(arr[0]),
-      folder: dco_decode_opt_String(arr[1]),
-      from: dco_decode_list_String(arr[2]),
-      to: dco_decode_list_String(arr[3]),
-      cc: dco_decode_list_String(arr[4]),
-      subject: dco_decode_String(arr[5]),
-      preview: dco_decode_opt_String(arr[6]),
-      receivedAt: dco_decode_opt_String(arr[7]),
-      sentAt: dco_decode_opt_String(arr[8]),
-      unread: dco_decode_bool(arr[9]),
-      hasAttachments: dco_decode_bool(arr[10]),
-      attachmentCount: dco_decode_opt_box_autoadd_u_32(arr[11]),
-      attributes: dco_decode_list_dart_email_attribute(arr[12]),
-    );
-  }
-
-  @protected
-  DartEmailMessageSummaryPage dco_decode_dart_email_message_summary_page(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartEmailMessageSummaryPage(
-      items: dco_decode_list_dart_email_message_summary(arr[0]),
-      nextCursor: dco_decode_opt_String(arr[1]),
-      hasMore: dco_decode_bool(arr[2]),
-    );
-  }
-
-  @protected
-  DartEmailNotification dco_decode_dart_email_notification(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
-    return DartEmailNotification(
-      id: dco_decode_String(arr[0]),
-      mailboxAddress: dco_decode_opt_String(arr[1]),
-      fromAddr: dco_decode_opt_String(arr[2]),
-      subject: dco_decode_String(arr[3]),
-      preview: dco_decode_opt_String(arr[4]),
-      hasAttachments: dco_decode_bool(arr[5]),
-      receivedAt: dco_decode_opt_String(arr[6]),
-      attributes: dco_decode_list_dart_email_attribute(arr[7]),
-    );
-  }
-
-  @protected
-  DartEmailNotificationPage dco_decode_dart_email_notification_page(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartEmailNotificationPage(
-      items: dco_decode_list_dart_email_notification(arr[0]),
-      nextCursor: dco_decode_opt_String(arr[1]),
-      hasMore: dco_decode_bool(arr[2]),
-    );
-  }
-
-  @protected
-  DartGroupMember dco_decode_dart_group_member(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return DartGroupMember(
-      did: dco_decode_opt_String(arr[0]),
-      handle: dco_decode_opt_String(arr[1]),
-      role: dco_decode_opt_String(arr[2]),
-      status: dco_decode_opt_String(arr[3]),
-      joinedAt: dco_decode_opt_String(arr[4]),
-    );
-  }
-
-  @protected
-  DartGroupReadResult dco_decode_dart_group_read_result(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
-    return DartGroupReadResult(
-      group: dco_decode_opt_box_autoadd_dart_group_snapshot(arr[0]),
-      groups: dco_decode_list_dart_group_summary(arr[1]),
-      members: dco_decode_list_dart_group_member(arr[2]),
-      messages: dco_decode_dart_message_page(arr[3]),
-      total: dco_decode_opt_box_autoadd_u_32(arr[4]),
-      source: dco_decode_opt_String(arr[5]),
-      warnings: dco_decode_list_String(arr[6]),
-    );
-  }
-
-  @protected
-  DartGroupSnapshot dco_decode_dart_group_snapshot(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
-    return DartGroupSnapshot(
-      id: dco_decode_opt_String(arr[0]),
-      did: dco_decode_String(arr[1]),
-      name: dco_decode_opt_String(arr[2]),
-      description: dco_decode_opt_String(arr[3]),
-      myRole: dco_decode_opt_String(arr[4]),
-      membershipStatus: dco_decode_opt_String(arr[5]),
-      memberCount: dco_decode_opt_box_autoadd_u_32(arr[6]),
-      lastMessageAt: dco_decode_opt_String(arr[7]),
-    );
-  }
-
-  @protected
-  DartGroupSummary dco_decode_dart_group_summary(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
-    return DartGroupSummary(
-      id: dco_decode_opt_String(arr[0]),
-      did: dco_decode_String(arr[1]),
-      name: dco_decode_opt_String(arr[2]),
-      membershipStatus: dco_decode_opt_String(arr[3]),
-      memberCount: dco_decode_opt_box_autoadd_u_32(arr[4]),
-      lastMessageAt: dco_decode_opt_String(arr[5]),
-    );
-  }
-
-  @protected
-  DartHandleRegistrationResult dco_decode_dart_handle_registration_result(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
-    return DartHandleRegistrationResult(
-      identity: dco_decode_opt_box_autoadd_dart_identity_summary(arr[0]),
-      handle: dco_decode_String(arr[1]),
-      method: dco_decode_String(arr[2]),
-      state: dco_decode_String(arr[3]),
-      defaultIdentityChange:
-          dco_decode_opt_box_autoadd_dart_default_identity_change(arr[4]),
-      warnings: dco_decode_list_String(arr[5]),
-    );
-  }
-
-  @protected
-  DartIdentitySelector dco_decode_dart_identity_selector(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    switch (raw[0]) {
-      case 0:
-        return DartIdentitySelector_Default();
-      case 1:
-        return DartIdentitySelector_Id(id: dco_decode_String(raw[1]));
-      case 2:
-        return DartIdentitySelector_Did(did: dco_decode_String(raw[1]));
-      case 3:
-        return DartIdentitySelector_Handle(handle: dco_decode_String(raw[1]));
-      case 4:
-        return DartIdentitySelector_LocalAlias(
-          alias: dco_decode_String(raw[1]),
-        );
-      default:
-        throw Exception("unreachable");
-    }
-  }
-
-  @protected
-  DartIdentitySubject dco_decode_dart_identity_subject(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    switch (raw[0]) {
-      case 0:
-        return DartIdentitySubject_Did(did: dco_decode_String(raw[1]));
-      case 1:
-        return DartIdentitySubject_Handle(handle: dco_decode_String(raw[1]));
-      case 2:
-        return DartIdentitySubject_Any(value: dco_decode_String(raw[1]));
-      default:
-        throw Exception("unreachable");
-    }
-  }
-
-  @protected
-  DartIdentitySummary dco_decode_dart_identity_summary(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
-    return DartIdentitySummary(
-      id: dco_decode_String(arr[0]),
-      did: dco_decode_String(arr[1]),
-      handle: dco_decode_opt_String(arr[2]),
-      displayName: dco_decode_opt_String(arr[3]),
-      localAlias: dco_decode_opt_String(arr[4]),
-      deviceId: dco_decode_opt_String(arr[5]),
-      isDefault: dco_decode_bool(arr[6]),
-      readyForAuth: dco_decode_bool(arr[7]),
-      readyForMessaging: dco_decode_bool(arr[8]),
-      missing: dco_decode_list_String(arr[9]),
-    );
-  }
-
-  @protected
-  DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
-    return DartImCoreConfig(
-      serviceBaseUrl: dco_decode_String(arr[0]),
-      didDomain: dco_decode_String(arr[1]),
-      userServiceEndpoint: dco_decode_opt_String(arr[2]),
-      messageServiceEndpoint: dco_decode_opt_String(arr[3]),
-      mailServiceEndpoint: dco_decode_opt_String(arr[4]),
-      anpServiceEndpoint: dco_decode_opt_String(arr[5]),
-      anpServiceDid: dco_decode_opt_String(arr[6]),
-      transportPolicy: dco_decode_dart_message_transport_policy(arr[7]),
-    );
-  }
-
-  @protected
-  DartImCorePaths dco_decode_dart_im_core_paths(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
-    return DartImCorePaths(
-      identityRootDir: dco_decode_String(arr[0]),
-      registryPath: dco_decode_String(arr[1]),
-      defaultIdentityPath: dco_decode_opt_String(arr[2]),
-      sqlitePath: dco_decode_String(arr[3]),
-      cacheDir: dco_decode_String(arr[4]),
-      tempDir: dco_decode_String(arr[5]),
-    );
-  }
-
-  @protected
-  DartImError dco_decode_dart_im_error(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return DartImError(
-      code: dco_decode_String(arr[0]),
-      message: dco_decode_String(arr[1]),
-      field: dco_decode_opt_String(arr[2]),
-      statusCode: dco_decode_opt_box_autoadd_u_16(arr[3]),
-      capability: dco_decode_opt_String(arr[4]),
-    );
-  }
-
-  @protected
-  DartInitialProfile dco_decode_dart_initial_profile(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return DartInitialProfile(
-      displayName: dco_decode_opt_String(arr[0]),
-      avatarUrl: dco_decode_opt_String(arr[1]),
-    );
-  }
-
-  @protected
-  DartMarkReadResult dco_decode_dart_mark_read_result(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartMarkReadResult(
-      updatedCount: dco_decode_u_32(arr[0]),
-      messageIds: dco_decode_list_String(arr[1]),
-      warnings: dco_decode_list_String(arr[2]),
-    );
-  }
-
-  @protected
-  DartMessage dco_decode_dart_message(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
-    return DartMessage(
-      id: dco_decode_String(arr[0]),
-      threadKind: dco_decode_String(arr[1]),
-      threadId: dco_decode_String(arr[2]),
-      direction: dco_decode_dart_message_direction(arr[3]),
-      sender: dco_decode_String(arr[4]),
-      receiver: dco_decode_opt_String(arr[5]),
-      group: dco_decode_opt_String(arr[6]),
-      body: dco_decode_dart_message_body_view(arr[7]),
-      sentAt: dco_decode_opt_String(arr[8]),
-      receivedAt: dco_decode_opt_String(arr[9]),
-      metadata: dco_decode_dart_message_metadata(arr[10]),
-    );
-  }
-
-  @protected
-  DartMessageBodyView dco_decode_dart_message_body_view(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartMessageBodyView(
-      text: dco_decode_opt_String(arr[0]),
-      kind: dco_decode_opt_String(arr[1]),
-      unsupportedContentType: dco_decode_opt_String(arr[2]),
-    );
-  }
-
-  @protected
-  DartMessageDirection dco_decode_dart_message_direction(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return DartMessageDirection.values[raw as int];
-  }
-
-  @protected
-  DartMessageMetadata dco_decode_dart_message_metadata(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
-    return DartMessageMetadata(
-      operationId: dco_decode_opt_String(arr[0]),
-      deliveryState: dco_decode_opt_String(arr[1]),
-      sendState: dco_decode_opt_String(arr[2]),
-      retryable: dco_decode_opt_box_autoadd_bool(arr[3]),
-      retryAction: dco_decode_opt_String(arr[4]),
-      serverSequence: dco_decode_opt_box_autoadd_i_64(arr[5]),
-      contentType: dco_decode_opt_String(arr[6]),
-      attributes: dco_decode_list_dart_message_metadata_attribute(arr[7]),
-    );
-  }
-
-  @protected
-  DartMessageMetadataAttribute dco_decode_dart_message_metadata_attribute(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return DartMessageMetadataAttribute(
-      key: dco_decode_String(arr[0]),
-      value: dco_decode_String(arr[1]),
-    );
-  }
-
-  @protected
-  DartMessagePage dco_decode_dart_message_page(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartMessagePage(
-      items: dco_decode_list_dart_message(arr[0]),
-      nextCursor: dco_decode_opt_String(arr[1]),
-      hasMore: dco_decode_bool(arr[2]),
-    );
-  }
-
-  @protected
-  DartMessageSecurityMode dco_decode_dart_message_security_mode(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return DartMessageSecurityMode.values[raw as int];
-  }
-
-  @protected
-  DartMessageTarget dco_decode_dart_message_target(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    switch (raw[0]) {
-      case 0:
-        return DartMessageTarget_Direct(peer: dco_decode_String(raw[1]));
-      case 1:
-        return DartMessageTarget_Group(group: dco_decode_String(raw[1]));
-      default:
-        throw Exception("unreachable");
-    }
-  }
-
-  @protected
-  DartMessageTransportPolicy dco_decode_dart_message_transport_policy(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return DartMessageTransportPolicy.values[raw as int];
-  }
-
-  @protected
-  DartProfilePatch dco_decode_dart_profile_patch(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return DartProfilePatch(
-      displayName: dco_decode_opt_String(arr[0]),
-      bio: dco_decode_opt_String(arr[1]),
-      tags: dco_decode_opt_list_String(arr[2]),
-      markdown: dco_decode_opt_String(arr[3]),
-    );
-  }
-
-  @protected
-  DartRealtimeCapability dco_decode_dart_realtime_capability(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return DartRealtimeCapability(
-      statusSupported: dco_decode_bool(arr[0]),
-      connectSupported: dco_decode_bool(arr[1]),
-      runnerExposed: dco_decode_bool(arr[2]),
-      reason: dco_decode_opt_String(arr[3]),
-    );
-  }
-
-  @protected
-  DartRealtimeEvent dco_decode_dart_realtime_event(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
-    return DartRealtimeEvent(
-      kind: dco_decode_String(arr[0]),
-      state: dco_decode_opt_String(arr[1]),
-      reason: dco_decode_opt_String(arr[2]),
-      message: dco_decode_opt_box_autoadd_dart_message(arr[3]),
-      messageId: dco_decode_opt_String(arr[4]),
-      threadKind: dco_decode_opt_String(arr[5]),
-      threadId: dco_decode_opt_String(arr[6]),
-      updateKind: dco_decode_opt_String(arr[7]),
-      group: dco_decode_opt_String(arr[8]),
-      notificationId: dco_decode_opt_String(arr[9]),
-      title: dco_decode_opt_String(arr[10]),
-      body: dco_decode_opt_String(arr[11]),
-      source: dco_decode_opt_String(arr[12]),
-      hostKind: dco_decode_opt_String(arr[13]),
-      contentType: dco_decode_opt_String(arr[14]),
-      notificationType: dco_decode_opt_String(arr[15]),
-    );
-  }
-
-  @protected
-  DartRealtimeOptions dco_decode_dart_realtime_options(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
-    return DartRealtimeOptions(
-      reconnect: dco_decode_String(arr[0]),
-      eventBuffer: dco_decode_u_32(arr[1]),
-      reconnectDelayMs: dco_decode_opt_box_autoadd_u_64(arr[2]),
-      reconnectBaseDelayMs: dco_decode_opt_box_autoadd_u_64(arr[3]),
-      reconnectMaxDelayMs: dco_decode_opt_box_autoadd_u_64(arr[4]),
-      reconnectMaxAttempts: dco_decode_opt_box_autoadd_u_32(arr[5]),
-      subscriptions: dco_decode_list_String(arr[6]),
-    );
-  }
-
-  @protected
-  DartRealtimeStatus dco_decode_dart_realtime_status(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return DartRealtimeStatus(
-      connected: dco_decode_bool(arr[0]),
-      state: dco_decode_String(arr[1]),
-      subscriptions: dco_decode_list_String(arr[2]),
-      lastError: dco_decode_opt_String(arr[3]),
-      warnings: dco_decode_list_String(arr[4]),
-    );
-  }
-
-  @protected
-  DartRecoverHandleResult dco_decode_dart_recover_handle_result(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
-    return DartRecoverHandleResult(
-      handle: dco_decode_String(arr[0]),
-      phone: dco_decode_String(arr[1]),
-      state: dco_decode_String(arr[2]),
-      recoveredIdentity: dco_decode_opt_box_autoadd_dart_identity_summary(
-        arr[3],
-      ),
-      userId: dco_decode_opt_String(arr[4]),
-      accessTokenPresent: dco_decode_bool(arr[5]),
-      warnings: dco_decode_list_String(arr[6]),
-    );
-  }
-
-  @protected
-  DartRelationStatus dco_decode_dart_relation_status(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartRelationStatus(
-      peer: dco_decode_String(arr[0]),
-      relationship: dco_decode_opt_String(arr[1]),
-      displayName: dco_decode_opt_String(arr[2]),
-    );
-  }
-
-  @protected
-  DartRelationshipListItem dco_decode_dart_relationship_list_item(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
-    return DartRelationshipListItem(
-      did: dco_decode_String(arr[0]),
-      handle: dco_decode_opt_String(arr[1]),
-      displayName: dco_decode_opt_String(arr[2]),
-      relationship: dco_decode_String(arr[3]),
-      createdAt: dco_decode_opt_String(arr[4]),
-      warnings: dco_decode_list_String(arr[5]),
-    );
-  }
-
-  @protected
-  DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartRelationshipPage(
-      items: dco_decode_list_dart_relationship_list_item(arr[0]),
-      nextCursor: dco_decode_opt_String(arr[1]),
-      hasMore: dco_decode_bool(arr[2]),
-    );
-  }
-
-  @protected
-  DartSendEmailRequest dco_decode_dart_send_email_request(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return DartSendEmailRequest(
-      to: dco_decode_list_String(arr[0]),
-      cc: dco_decode_list_String(arr[1]),
-      subject: dco_decode_String(arr[2]),
-      bodyText: dco_decode_String(arr[3]),
-      bodyHtml: dco_decode_opt_String(arr[4]),
-    );
-  }
-
-  @protected
-  DartSendEmailResult dco_decode_dart_send_email_result(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartSendEmailResult(
-      accepted: dco_decode_bool(arr[0]),
-      messageId: dco_decode_opt_String(arr[1]),
-      warnings: dco_decode_list_String(arr[2]),
-    );
-  }
-
-  @protected
-  DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 3)
-      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
-    return DartSendMessageResult(
-      message: dco_decode_dart_message(arr[0]),
-      deliveryState: dco_decode_String(arr[1]),
-      warnings: dco_decode_list_String(arr[2]),
-    );
-  }
-
-  @protected
-  DartSendTextRequest dco_decode_dart_send_text_request(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
-    return DartSendTextRequest(
-      target: dco_decode_dart_message_target(arr[0]),
-      text: dco_decode_String(arr[1]),
-      markdown: dco_decode_bool(arr[2]),
-      security: dco_decode_dart_message_security_mode(arr[3]),
-      clientMessageId: dco_decode_opt_String(arr[4]),
-      idempotencyKey: dco_decode_opt_String(arr[5]),
-      waitForFinalAcceptance: dco_decode_bool(arr[6]),
-    );
-  }
-
-  @protected
-  DartSessionBundle dco_decode_dart_session_bundle(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return DartSessionBundle(
-      subject: dco_decode_String(arr[0]),
-      scope: dco_decode_dart_auth_scope(arr[1]),
-      expiresAt: dco_decode_opt_String(arr[2]),
-      refreshed: dco_decode_bool(arr[3]),
-    );
-  }
-
-  @protected
-  DartSessionUpdate dco_decode_dart_session_update(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
-    return DartSessionUpdate(
-      subject: dco_decode_String(arr[0]),
-      previousExpiresAt: dco_decode_opt_String(arr[1]),
-      newExpiresAt: dco_decode_opt_String(arr[2]),
-      refreshed: dco_decode_bool(arr[3]),
-    );
-  }
-
-  @protected
-  DartThreadRef dco_decode_dart_thread_ref(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    switch (raw[0]) {
-      case 0:
-        return DartThreadRef_Direct(peer: dco_decode_String(raw[1]));
-      case 1:
-        return DartThreadRef_Group(group: dco_decode_String(raw[1]));
-      case 2:
-        return DartThreadRef_Thread(threadId: dco_decode_String(raw[1]));
-      default:
-        throw Exception("unreachable");
-    }
-  }
-
-  @protected
-  DartUserProfile dco_decode_dart_user_profile(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
-    return DartUserProfile(
-      subject: dco_decode_String(arr[0]),
-      handle: dco_decode_opt_String(arr[1]),
-      displayName: dco_decode_opt_String(arr[2]),
-      bio: dco_decode_opt_String(arr[3]),
-      tags: dco_decode_list_String(arr[4]),
-      markdown: dco_decode_opt_String(arr[5]),
-      avatarUrl: dco_decode_opt_String(arr[6]),
-      updatedAt: dco_decode_opt_String(arr[7]),
-    );
-  }
-
-  @protected
-  int dco_decode_i_32(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  PlatformInt64 dco_decode_i_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dcoDecodeI64(raw);
-  }
-
-  @protected
-  List<String> dco_decode_list_String(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_String).toList();
-  }
-
-  @protected
-  List<DartConversation> dco_decode_list_dart_conversation(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_dart_conversation).toList();
-  }
-
-  @protected
-  List<DartEmailAttachmentMetadata>
-  dco_decode_list_dart_email_attachment_metadata(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_dart_email_attachment_metadata)
-        .toList();
-  }
-
-  @protected
-  List<DartEmailAttribute> dco_decode_list_dart_email_attribute(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_dart_email_attribute).toList();
-  }
-
-  @protected
-  List<DartEmailMessageSummary> dco_decode_list_dart_email_message_summary(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_dart_email_message_summary)
-        .toList();
-  }
-
-  @protected
-  List<DartEmailNotification> dco_decode_list_dart_email_notification(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_dart_email_notification)
-        .toList();
-  }
-
-  @protected
-  List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_dart_group_member).toList();
-  }
-
-  @protected
-  List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_dart_group_summary).toList();
-  }
-
-  @protected
-  List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_dart_identity_summary)
-        .toList();
-  }
-
-  @protected
-  List<DartMessage> dco_decode_list_dart_message(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_dart_message).toList();
-  }
-
-  @protected
-  List<DartMessageMetadataAttribute>
-  dco_decode_list_dart_message_metadata_attribute(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_dart_message_metadata_attribute)
-        .toList();
-  }
-
-  @protected
-  List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>)
-        .map(dco_decode_dart_relationship_list_item)
-        .toList();
-  }
-
-  @protected
-  Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as Uint8List;
-  }
-
-  @protected
-  String? dco_decode_opt_String(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_String(raw);
-  }
-
-  @protected
-  bool? dco_decode_opt_box_autoadd_bool(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_bool(raw);
-  }
-
-  @protected
-  DartDefaultIdentityChange?
-  dco_decode_opt_box_autoadd_dart_default_identity_change(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null
-        ? null
-        : dco_decode_box_autoadd_dart_default_identity_change(raw);
-  }
-
-  @protected
-  DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_dart_group_snapshot(raw);
-  }
-
-  @protected
-  DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null
-        ? null
-        : dco_decode_box_autoadd_dart_identity_summary(raw);
-  }
-
-  @protected
-  DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_dart_message(raw);
-  }
-
-  @protected
-  DartUserProfile? dco_decode_opt_box_autoadd_dart_user_profile(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_dart_user_profile(raw);
-  }
-
-  @protected
-  PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_i_64(raw);
-  }
-
-  @protected
-  int? dco_decode_opt_box_autoadd_u_16(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_u_16(raw);
-  }
-
-  @protected
-  int? dco_decode_opt_box_autoadd_u_32(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_u_32(raw);
-  }
-
-  @protected
-  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
-  }
-
-  @protected
-  List<String>? dco_decode_opt_list_String(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_list_String(raw);
-  }
-
-  @protected
-  int dco_decode_u_16(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  int dco_decode_u_32(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  BigInt dco_decode_u_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dcoDecodeU64(raw);
-  }
-
-  @protected
-  int dco_decode_u_8(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw as int;
-  }
-
-  @protected
-  void dco_decode_unit(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return;
-  }
-
-  @protected
-  BigInt dco_decode_usize(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dcoDecodeU64(raw);
-  }
-
-  @protected
-  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_String(deserializer);
-    return AnyhowException(inner);
-  }
-
-  @protected
-  ArcDartImClient
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartImClientImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ArcDartImCore
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartImCoreImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ArcDartRealtimeSession
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartRealtimeSessionImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ArcDartImClient
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartImClientImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ArcDartImCore
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartImCoreImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ArcDartRealtimeSession
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartRealtimeSessionImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ArcDartImClient
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartImClientImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ArcDartImCore
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartImCoreImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  ArcDartRealtimeSession
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return ArcDartRealtimeSessionImpl.frbInternalSseDecode(
-      sse_decode_usize(deserializer),
-      sse_decode_i_32(deserializer),
-    );
-  }
-
-  @protected
-  RustStreamSink<DartRealtimeEvent>
-  sse_decode_StreamSink_dart_realtime_event_Sse(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    throw UnimplementedError('Unreachable ()');
-  }
-
-  @protected
-  String sse_decode_String(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_list_prim_u_8_strict(deserializer);
-    return utf8.decoder.convert(inner);
-  }
-
-  @protected
-  bool sse_decode_bool(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint8() != 0;
-  }
-
-  @protected
-  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_bool(deserializer));
-  }
-
-  @protected
-  DartAttachmentSendRequest sse_decode_box_autoadd_dart_attachment_send_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_attachment_send_request(deserializer));
-  }
-
-  @protected
-  DartCreateGroupRequest sse_decode_box_autoadd_dart_create_group_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_create_group_request(deserializer));
-  }
-
-  @protected
-  DartDefaultIdentityChange sse_decode_box_autoadd_dart_default_identity_change(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_default_identity_change(deserializer));
-  }
-
-  @protected
-  DartDownloadAttachmentRequest
-  sse_decode_box_autoadd_dart_download_attachment_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_download_attachment_request(deserializer));
-  }
-
-  @protected
-  DartGroupSnapshot sse_decode_box_autoadd_dart_group_snapshot(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_group_snapshot(deserializer));
-  }
-
-  @protected
-  DartIdentitySelector sse_decode_box_autoadd_dart_identity_selector(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_identity_selector(deserializer));
-  }
-
-  @protected
-  DartIdentitySubject sse_decode_box_autoadd_dart_identity_subject(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_identity_subject(deserializer));
-  }
-
-  @protected
-  DartIdentitySummary sse_decode_box_autoadd_dart_identity_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_identity_summary(deserializer));
-  }
-
-  @protected
-  DartImCoreConfig sse_decode_box_autoadd_dart_im_core_config(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_im_core_config(deserializer));
-  }
-
-  @protected
-  DartImCorePaths sse_decode_box_autoadd_dart_im_core_paths(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_im_core_paths(deserializer));
-  }
-
-  @protected
-  DartInitialProfile sse_decode_box_autoadd_dart_initial_profile(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_initial_profile(deserializer));
-  }
-
-  @protected
-  DartMessage sse_decode_box_autoadd_dart_message(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_message(deserializer));
-  }
-
-  @protected
-  DartProfilePatch sse_decode_box_autoadd_dart_profile_patch(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_profile_patch(deserializer));
-  }
-
-  @protected
-  DartRealtimeOptions sse_decode_box_autoadd_dart_realtime_options(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_realtime_options(deserializer));
-  }
-
-  @protected
-  DartSendEmailRequest sse_decode_box_autoadd_dart_send_email_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_send_email_request(deserializer));
-  }
-
-  @protected
-  DartSendTextRequest sse_decode_box_autoadd_dart_send_text_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_send_text_request(deserializer));
-  }
-
-  @protected
-  DartThreadRef sse_decode_box_autoadd_dart_thread_ref(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_thread_ref(deserializer));
-  }
-
-  @protected
-  DartUserProfile sse_decode_box_autoadd_dart_user_profile(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_dart_user_profile(deserializer));
-  }
-
-  @protected
-  PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_i_64(deserializer));
-  }
-
-  @protected
-  int sse_decode_box_autoadd_u_16(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_u_16(deserializer));
-  }
-
-  @protected
-  int sse_decode_box_autoadd_u_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_u_32(deserializer));
-  }
-
-  @protected
-  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_u_64(deserializer));
-  }
-
-  @protected
-  DartAttachmentDestination sse_decode_dart_attachment_destination(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var tag_ = sse_decode_i_32(deserializer);
-    switch (tag_) {
-      case 0:
-        var var_path = sse_decode_String(deserializer);
-        return DartAttachmentDestination_LocalFile(path: var_path);
-      case 1:
-        return DartAttachmentDestination_Memory();
-      default:
-        throw UnimplementedError('');
-    }
-  }
-
-  @protected
-  DartAttachmentInput sse_decode_dart_attachment_input(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var tag_ = sse_decode_i_32(deserializer);
-    switch (tag_) {
-      case 0:
-        var var_path = sse_decode_String(deserializer);
-        return DartAttachmentInput_LocalFile(path: var_path);
-      case 1:
-        var var_filename = sse_decode_opt_String(deserializer);
-        var var_mimeType = sse_decode_opt_String(deserializer);
-        var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
-        return DartAttachmentInput_Bytes(
-          filename: var_filename,
-          mimeType: var_mimeType,
-          bytes: var_bytes,
-        );
-      default:
-        throw UnimplementedError('');
-    }
-  }
-
-  @protected
-  DartAttachmentSendRequest sse_decode_dart_attachment_send_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_target = sse_decode_dart_message_target(deserializer);
-    var var_input = sse_decode_dart_attachment_input(deserializer);
-    var var_caption = sse_decode_opt_String(deserializer);
-    var var_mimeType = sse_decode_opt_String(deserializer);
-    var var_filename = sse_decode_opt_String(deserializer);
-    var var_idempotencyKey = sse_decode_opt_String(deserializer);
-    var var_waitForFinalAcceptance = sse_decode_bool(deserializer);
-    return DartAttachmentSendRequest(
-      target: var_target,
-      input: var_input,
-      caption: var_caption,
-      mimeType: var_mimeType,
-      filename: var_filename,
-      idempotencyKey: var_idempotencyKey,
-      waitForFinalAcceptance: var_waitForFinalAcceptance,
-    );
-  }
-
-  @protected
-  DartAuthScope sse_decode_dart_auth_scope(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return DartAuthScope.values[inner];
-  }
-
-  @protected
-  DartAuthStatus sse_decode_dart_auth_status(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_subject = sse_decode_String(deserializer);
-    var var_hasSession = sse_decode_bool(deserializer);
-    var var_expiresAt = sse_decode_opt_String(deserializer);
-    var var_needsRefresh = sse_decode_bool(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartAuthStatus(
-      subject: var_subject,
-      hasSession: var_hasSession,
-      expiresAt: var_expiresAt,
-      needsRefresh: var_needsRefresh,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartConversation sse_decode_dart_conversation(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_threadKind = sse_decode_String(deserializer);
-    var var_threadId = sse_decode_String(deserializer);
-    var var_title = sse_decode_opt_String(deserializer);
-    var var_participants = sse_decode_list_String(deserializer);
-    var var_lastMessage = sse_decode_opt_box_autoadd_dart_message(deserializer);
-    var var_unreadCount = sse_decode_u_32(deserializer);
-    var var_messageCount = sse_decode_u_32(deserializer);
-    var var_lastMessageAt = sse_decode_opt_String(deserializer);
-    return DartConversation(
-      threadKind: var_threadKind,
-      threadId: var_threadId,
-      title: var_title,
-      participants: var_participants,
-      lastMessage: var_lastMessage,
-      unreadCount: var_unreadCount,
-      messageCount: var_messageCount,
-      lastMessageAt: var_lastMessageAt,
-    );
-  }
-
-  @protected
-  DartConversationPage sse_decode_dart_conversation_page(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_items = sse_decode_list_dart_conversation(deserializer);
-    var var_nextCursor = sse_decode_opt_String(deserializer);
-    var var_hasMore = sse_decode_bool(deserializer);
-    return DartConversationPage(
-      items: var_items,
-      nextCursor: var_nextCursor,
-      hasMore: var_hasMore,
-    );
-  }
-
-  @protected
-  DartCreateGroupRequest sse_decode_dart_create_group_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_name = sse_decode_String(deserializer);
-    var var_description = sse_decode_opt_String(deserializer);
-    var var_discoverability = sse_decode_opt_String(deserializer);
-    var var_admissionMode = sse_decode_opt_String(deserializer);
-    var var_messageSecurityProfile = sse_decode_opt_String(deserializer);
-    var var_e2Ee = sse_decode_bool(deserializer);
-    var var_slug = sse_decode_opt_String(deserializer);
-    var var_goal = sse_decode_opt_String(deserializer);
-    var var_rules = sse_decode_opt_String(deserializer);
-    var var_messagePrompt = sse_decode_opt_String(deserializer);
-    var var_docUrl = sse_decode_opt_String(deserializer);
-    var var_attachmentsAllowed = sse_decode_opt_box_autoadd_bool(deserializer);
-    var var_maxMembers = sse_decode_opt_String(deserializer);
-    var var_memberMaxMessages = sse_decode_opt_box_autoadd_i_64(deserializer);
-    var var_memberMaxTotalChars = sse_decode_opt_box_autoadd_i_64(deserializer);
-    return DartCreateGroupRequest(
-      name: var_name,
-      description: var_description,
-      discoverability: var_discoverability,
-      admissionMode: var_admissionMode,
-      messageSecurityProfile: var_messageSecurityProfile,
-      e2Ee: var_e2Ee,
-      slug: var_slug,
-      goal: var_goal,
-      rules: var_rules,
-      messagePrompt: var_messagePrompt,
-      docUrl: var_docUrl,
-      attachmentsAllowed: var_attachmentsAllowed,
-      maxMembers: var_maxMembers,
-      memberMaxMessages: var_memberMaxMessages,
-      memberMaxTotalChars: var_memberMaxTotalChars,
-    );
-  }
-
-  @protected
-  DartDefaultIdentityChange sse_decode_dart_default_identity_change(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_previous = sse_decode_opt_box_autoadd_dart_identity_summary(
-      deserializer,
-    );
-    var var_next = sse_decode_dart_identity_summary(deserializer);
-    var var_requiresDefaultIdentityWrite = sse_decode_bool(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartDefaultIdentityChange(
-      previous: var_previous,
-      next: var_next,
-      requiresDefaultIdentityWrite: var_requiresDefaultIdentityWrite,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartDirectoryResolution sse_decode_dart_directory_resolution(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_input = sse_decode_String(deserializer);
-    var var_did = sse_decode_String(deserializer);
-    var var_handle = sse_decode_opt_String(deserializer);
-    var var_profile = sse_decode_opt_box_autoadd_dart_user_profile(
-      deserializer,
-    );
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartDirectoryResolution(
-      input: var_input,
-      did: var_did,
-      handle: var_handle,
-      profile: var_profile,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartDownloadAttachmentRequest sse_decode_dart_download_attachment_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_thread = sse_decode_dart_thread_ref(deserializer);
-    var var_messageId = sse_decode_String(deserializer);
-    var var_attachmentId = sse_decode_opt_String(deserializer);
-    var var_destination = sse_decode_dart_attachment_destination(deserializer);
-    var var_overwrite = sse_decode_bool(deserializer);
-    return DartDownloadAttachmentRequest(
-      thread: var_thread,
-      messageId: var_messageId,
-      attachmentId: var_attachmentId,
-      destination: var_destination,
-      overwrite: var_overwrite,
-    );
-  }
-
-  @protected
-  DartDownloadedAttachment sse_decode_dart_downloaded_attachment(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_attachmentId = sse_decode_String(deserializer);
-    var var_filename = sse_decode_opt_String(deserializer);
-    var var_mimeType = sse_decode_opt_String(deserializer);
-    var var_sizeBytes = sse_decode_opt_box_autoadd_u_64(deserializer);
-    var var_destination = sse_decode_dart_downloaded_attachment_destination(
-      deserializer,
-    );
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartDownloadedAttachment(
-      attachmentId: var_attachmentId,
-      filename: var_filename,
-      mimeType: var_mimeType,
-      sizeBytes: var_sizeBytes,
-      destination: var_destination,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartDownloadedAttachmentDestination
-  sse_decode_dart_downloaded_attachment_destination(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var tag_ = sse_decode_i_32(deserializer);
-    switch (tag_) {
-      case 0:
-        var var_path = sse_decode_String(deserializer);
-        return DartDownloadedAttachmentDestination_LocalFile(path: var_path);
-      case 1:
-        var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
-        return DartDownloadedAttachmentDestination_Memory(bytes: var_bytes);
-      default:
-        throw UnimplementedError('');
-    }
-  }
-
-  @protected
-  DartEmailAccount sse_decode_dart_email_account(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_mailboxAddress = sse_decode_opt_String(deserializer);
-    var var_displayName = sse_decode_opt_String(deserializer);
-    var var_status = sse_decode_opt_String(deserializer);
-    var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
-    return DartEmailAccount(
-      mailboxAddress: var_mailboxAddress,
-      displayName: var_displayName,
-      status: var_status,
-      attributes: var_attributes,
-    );
-  }
-
-  @protected
-  DartEmailAttachmentContent sse_decode_dart_email_attachment_content(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_messageId = sse_decode_String(deserializer);
-    var var_attachmentIndex = sse_decode_u_32(deserializer);
-    var var_filename = sse_decode_String(deserializer);
-    var var_contentType = sse_decode_String(deserializer);
-    var var_size = sse_decode_opt_box_autoadd_u_64(deserializer);
-    var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
-    return DartEmailAttachmentContent(
-      messageId: var_messageId,
-      attachmentIndex: var_attachmentIndex,
-      filename: var_filename,
-      contentType: var_contentType,
-      size: var_size,
-      bytes: var_bytes,
-    );
-  }
-
-  @protected
-  DartEmailAttachmentMetadata sse_decode_dart_email_attachment_metadata(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_index = sse_decode_u_32(deserializer);
-    var var_filename = sse_decode_opt_String(deserializer);
-    var var_contentType = sse_decode_opt_String(deserializer);
-    var var_size = sse_decode_opt_box_autoadd_u_64(deserializer);
-    return DartEmailAttachmentMetadata(
-      index: var_index,
-      filename: var_filename,
-      contentType: var_contentType,
-      size: var_size,
-    );
-  }
-
-  @protected
-  DartEmailAttribute sse_decode_dart_email_attribute(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_key = sse_decode_String(deserializer);
-    var var_value = sse_decode_String(deserializer);
-    return DartEmailAttribute(key: var_key, value: var_value);
-  }
-
-  @protected
-  DartEmailMarkReadResult sse_decode_dart_email_mark_read_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_updated = sse_decode_u_32(deserializer);
-    return DartEmailMarkReadResult(updated: var_updated);
-  }
-
-  @protected
-  DartEmailMessage sse_decode_dart_email_message(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_summary = sse_decode_dart_email_message_summary(deserializer);
-    var var_bodyText = sse_decode_opt_String(deserializer);
-    var var_bodyHtml = sse_decode_opt_String(deserializer);
-    var var_attachments = sse_decode_list_dart_email_attachment_metadata(
-      deserializer,
-    );
-    return DartEmailMessage(
-      summary: var_summary,
-      bodyText: var_bodyText,
-      bodyHtml: var_bodyHtml,
-      attachments: var_attachments,
-    );
-  }
-
-  @protected
-  DartEmailMessageSummary sse_decode_dart_email_message_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_String(deserializer);
-    var var_folder = sse_decode_opt_String(deserializer);
-    var var_from = sse_decode_list_String(deserializer);
-    var var_to = sse_decode_list_String(deserializer);
-    var var_cc = sse_decode_list_String(deserializer);
-    var var_subject = sse_decode_String(deserializer);
-    var var_preview = sse_decode_opt_String(deserializer);
-    var var_receivedAt = sse_decode_opt_String(deserializer);
-    var var_sentAt = sse_decode_opt_String(deserializer);
-    var var_unread = sse_decode_bool(deserializer);
-    var var_hasAttachments = sse_decode_bool(deserializer);
-    var var_attachmentCount = sse_decode_opt_box_autoadd_u_32(deserializer);
-    var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
-    return DartEmailMessageSummary(
-      id: var_id,
-      folder: var_folder,
-      from: var_from,
-      to: var_to,
-      cc: var_cc,
-      subject: var_subject,
-      preview: var_preview,
-      receivedAt: var_receivedAt,
-      sentAt: var_sentAt,
-      unread: var_unread,
-      hasAttachments: var_hasAttachments,
-      attachmentCount: var_attachmentCount,
-      attributes: var_attributes,
-    );
-  }
-
-  @protected
-  DartEmailMessageSummaryPage sse_decode_dart_email_message_summary_page(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_items = sse_decode_list_dart_email_message_summary(deserializer);
-    var var_nextCursor = sse_decode_opt_String(deserializer);
-    var var_hasMore = sse_decode_bool(deserializer);
-    return DartEmailMessageSummaryPage(
-      items: var_items,
-      nextCursor: var_nextCursor,
-      hasMore: var_hasMore,
-    );
-  }
-
-  @protected
-  DartEmailNotification sse_decode_dart_email_notification(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_String(deserializer);
-    var var_mailboxAddress = sse_decode_opt_String(deserializer);
-    var var_fromAddr = sse_decode_opt_String(deserializer);
-    var var_subject = sse_decode_String(deserializer);
-    var var_preview = sse_decode_opt_String(deserializer);
-    var var_hasAttachments = sse_decode_bool(deserializer);
-    var var_receivedAt = sse_decode_opt_String(deserializer);
-    var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
-    return DartEmailNotification(
-      id: var_id,
-      mailboxAddress: var_mailboxAddress,
-      fromAddr: var_fromAddr,
-      subject: var_subject,
-      preview: var_preview,
-      hasAttachments: var_hasAttachments,
-      receivedAt: var_receivedAt,
-      attributes: var_attributes,
-    );
-  }
-
-  @protected
-  DartEmailNotificationPage sse_decode_dart_email_notification_page(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_items = sse_decode_list_dart_email_notification(deserializer);
-    var var_nextCursor = sse_decode_opt_String(deserializer);
-    var var_hasMore = sse_decode_bool(deserializer);
-    return DartEmailNotificationPage(
-      items: var_items,
-      nextCursor: var_nextCursor,
-      hasMore: var_hasMore,
-    );
-  }
-
-  @protected
-  DartGroupMember sse_decode_dart_group_member(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_did = sse_decode_opt_String(deserializer);
-    var var_handle = sse_decode_opt_String(deserializer);
-    var var_role = sse_decode_opt_String(deserializer);
-    var var_status = sse_decode_opt_String(deserializer);
-    var var_joinedAt = sse_decode_opt_String(deserializer);
-    return DartGroupMember(
-      did: var_did,
-      handle: var_handle,
-      role: var_role,
-      status: var_status,
-      joinedAt: var_joinedAt,
-    );
-  }
-
-  @protected
-  DartGroupReadResult sse_decode_dart_group_read_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_group = sse_decode_opt_box_autoadd_dart_group_snapshot(
-      deserializer,
-    );
-    var var_groups = sse_decode_list_dart_group_summary(deserializer);
-    var var_members = sse_decode_list_dart_group_member(deserializer);
-    var var_messages = sse_decode_dart_message_page(deserializer);
-    var var_total = sse_decode_opt_box_autoadd_u_32(deserializer);
-    var var_source = sse_decode_opt_String(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartGroupReadResult(
-      group: var_group,
-      groups: var_groups,
-      members: var_members,
-      messages: var_messages,
-      total: var_total,
-      source: var_source,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartGroupSnapshot sse_decode_dart_group_snapshot(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_opt_String(deserializer);
-    var var_did = sse_decode_String(deserializer);
-    var var_name = sse_decode_opt_String(deserializer);
-    var var_description = sse_decode_opt_String(deserializer);
-    var var_myRole = sse_decode_opt_String(deserializer);
-    var var_membershipStatus = sse_decode_opt_String(deserializer);
-    var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
-    var var_lastMessageAt = sse_decode_opt_String(deserializer);
-    return DartGroupSnapshot(
-      id: var_id,
-      did: var_did,
-      name: var_name,
-      description: var_description,
-      myRole: var_myRole,
-      membershipStatus: var_membershipStatus,
-      memberCount: var_memberCount,
-      lastMessageAt: var_lastMessageAt,
-    );
-  }
-
-  @protected
-  DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_opt_String(deserializer);
-    var var_did = sse_decode_String(deserializer);
-    var var_name = sse_decode_opt_String(deserializer);
-    var var_membershipStatus = sse_decode_opt_String(deserializer);
-    var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
-    var var_lastMessageAt = sse_decode_opt_String(deserializer);
-    return DartGroupSummary(
-      id: var_id,
-      did: var_did,
-      name: var_name,
-      membershipStatus: var_membershipStatus,
-      memberCount: var_memberCount,
-      lastMessageAt: var_lastMessageAt,
-    );
-  }
-
-  @protected
-  DartHandleRegistrationResult sse_decode_dart_handle_registration_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_identity = sse_decode_opt_box_autoadd_dart_identity_summary(
-      deserializer,
-    );
-    var var_handle = sse_decode_String(deserializer);
-    var var_method = sse_decode_String(deserializer);
-    var var_state = sse_decode_String(deserializer);
-    var var_defaultIdentityChange =
-        sse_decode_opt_box_autoadd_dart_default_identity_change(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartHandleRegistrationResult(
-      identity: var_identity,
-      handle: var_handle,
-      method: var_method,
-      state: var_state,
-      defaultIdentityChange: var_defaultIdentityChange,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartIdentitySelector sse_decode_dart_identity_selector(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var tag_ = sse_decode_i_32(deserializer);
-    switch (tag_) {
-      case 0:
-        return DartIdentitySelector_Default();
-      case 1:
-        var var_id = sse_decode_String(deserializer);
-        return DartIdentitySelector_Id(id: var_id);
-      case 2:
-        var var_did = sse_decode_String(deserializer);
-        return DartIdentitySelector_Did(did: var_did);
-      case 3:
-        var var_handle = sse_decode_String(deserializer);
-        return DartIdentitySelector_Handle(handle: var_handle);
-      case 4:
-        var var_alias = sse_decode_String(deserializer);
-        return DartIdentitySelector_LocalAlias(alias: var_alias);
-      default:
-        throw UnimplementedError('');
-    }
-  }
-
-  @protected
-  DartIdentitySubject sse_decode_dart_identity_subject(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var tag_ = sse_decode_i_32(deserializer);
-    switch (tag_) {
-      case 0:
-        var var_did = sse_decode_String(deserializer);
-        return DartIdentitySubject_Did(did: var_did);
-      case 1:
-        var var_handle = sse_decode_String(deserializer);
-        return DartIdentitySubject_Handle(handle: var_handle);
-      case 2:
-        var var_value = sse_decode_String(deserializer);
-        return DartIdentitySubject_Any(value: var_value);
-      default:
-        throw UnimplementedError('');
-    }
-  }
-
-  @protected
-  DartIdentitySummary sse_decode_dart_identity_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_String(deserializer);
-    var var_did = sse_decode_String(deserializer);
-    var var_handle = sse_decode_opt_String(deserializer);
-    var var_displayName = sse_decode_opt_String(deserializer);
-    var var_localAlias = sse_decode_opt_String(deserializer);
-    var var_deviceId = sse_decode_opt_String(deserializer);
-    var var_isDefault = sse_decode_bool(deserializer);
-    var var_readyForAuth = sse_decode_bool(deserializer);
-    var var_readyForMessaging = sse_decode_bool(deserializer);
-    var var_missing = sse_decode_list_String(deserializer);
-    return DartIdentitySummary(
-      id: var_id,
-      did: var_did,
-      handle: var_handle,
-      displayName: var_displayName,
-      localAlias: var_localAlias,
-      deviceId: var_deviceId,
-      isDefault: var_isDefault,
-      readyForAuth: var_readyForAuth,
-      readyForMessaging: var_readyForMessaging,
-      missing: var_missing,
-    );
-  }
-
-  @protected
-  DartImCoreConfig sse_decode_dart_im_core_config(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_serviceBaseUrl = sse_decode_String(deserializer);
-    var var_didDomain = sse_decode_String(deserializer);
-    var var_userServiceEndpoint = sse_decode_opt_String(deserializer);
-    var var_messageServiceEndpoint = sse_decode_opt_String(deserializer);
-    var var_mailServiceEndpoint = sse_decode_opt_String(deserializer);
-    var var_anpServiceEndpoint = sse_decode_opt_String(deserializer);
-    var var_anpServiceDid = sse_decode_opt_String(deserializer);
-    var var_transportPolicy = sse_decode_dart_message_transport_policy(
-      deserializer,
-    );
-    return DartImCoreConfig(
-      serviceBaseUrl: var_serviceBaseUrl,
-      didDomain: var_didDomain,
-      userServiceEndpoint: var_userServiceEndpoint,
-      messageServiceEndpoint: var_messageServiceEndpoint,
-      mailServiceEndpoint: var_mailServiceEndpoint,
-      anpServiceEndpoint: var_anpServiceEndpoint,
-      anpServiceDid: var_anpServiceDid,
-      transportPolicy: var_transportPolicy,
-    );
-  }
-
-  @protected
-  DartImCorePaths sse_decode_dart_im_core_paths(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_identityRootDir = sse_decode_String(deserializer);
-    var var_registryPath = sse_decode_String(deserializer);
-    var var_defaultIdentityPath = sse_decode_opt_String(deserializer);
-    var var_sqlitePath = sse_decode_String(deserializer);
-    var var_cacheDir = sse_decode_String(deserializer);
-    var var_tempDir = sse_decode_String(deserializer);
-    return DartImCorePaths(
-      identityRootDir: var_identityRootDir,
-      registryPath: var_registryPath,
-      defaultIdentityPath: var_defaultIdentityPath,
-      sqlitePath: var_sqlitePath,
-      cacheDir: var_cacheDir,
-      tempDir: var_tempDir,
-    );
-  }
-
-  @protected
-  DartImError sse_decode_dart_im_error(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_code = sse_decode_String(deserializer);
-    var var_message = sse_decode_String(deserializer);
-    var var_field = sse_decode_opt_String(deserializer);
-    var var_statusCode = sse_decode_opt_box_autoadd_u_16(deserializer);
-    var var_capability = sse_decode_opt_String(deserializer);
-    return DartImError(
-      code: var_code,
-      message: var_message,
-      field: var_field,
-      statusCode: var_statusCode,
-      capability: var_capability,
-    );
-  }
-
-  @protected
-  DartInitialProfile sse_decode_dart_initial_profile(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_displayName = sse_decode_opt_String(deserializer);
-    var var_avatarUrl = sse_decode_opt_String(deserializer);
-    return DartInitialProfile(
-      displayName: var_displayName,
-      avatarUrl: var_avatarUrl,
-    );
-  }
-
-  @protected
-  DartMarkReadResult sse_decode_dart_mark_read_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_updatedCount = sse_decode_u_32(deserializer);
-    var var_messageIds = sse_decode_list_String(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartMarkReadResult(
-      updatedCount: var_updatedCount,
-      messageIds: var_messageIds,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartMessage sse_decode_dart_message(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_id = sse_decode_String(deserializer);
-    var var_threadKind = sse_decode_String(deserializer);
-    var var_threadId = sse_decode_String(deserializer);
-    var var_direction = sse_decode_dart_message_direction(deserializer);
-    var var_sender = sse_decode_String(deserializer);
-    var var_receiver = sse_decode_opt_String(deserializer);
-    var var_group = sse_decode_opt_String(deserializer);
-    var var_body = sse_decode_dart_message_body_view(deserializer);
-    var var_sentAt = sse_decode_opt_String(deserializer);
-    var var_receivedAt = sse_decode_opt_String(deserializer);
-    var var_metadata = sse_decode_dart_message_metadata(deserializer);
-    return DartMessage(
-      id: var_id,
-      threadKind: var_threadKind,
-      threadId: var_threadId,
-      direction: var_direction,
-      sender: var_sender,
-      receiver: var_receiver,
-      group: var_group,
-      body: var_body,
-      sentAt: var_sentAt,
-      receivedAt: var_receivedAt,
-      metadata: var_metadata,
-    );
-  }
-
-  @protected
-  DartMessageBodyView sse_decode_dart_message_body_view(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_text = sse_decode_opt_String(deserializer);
-    var var_kind = sse_decode_opt_String(deserializer);
-    var var_unsupportedContentType = sse_decode_opt_String(deserializer);
-    return DartMessageBodyView(
-      text: var_text,
-      kind: var_kind,
-      unsupportedContentType: var_unsupportedContentType,
-    );
-  }
-
-  @protected
-  DartMessageDirection sse_decode_dart_message_direction(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return DartMessageDirection.values[inner];
-  }
-
-  @protected
-  DartMessageMetadata sse_decode_dart_message_metadata(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_operationId = sse_decode_opt_String(deserializer);
-    var var_deliveryState = sse_decode_opt_String(deserializer);
-    var var_sendState = sse_decode_opt_String(deserializer);
-    var var_retryable = sse_decode_opt_box_autoadd_bool(deserializer);
-    var var_retryAction = sse_decode_opt_String(deserializer);
-    var var_serverSequence = sse_decode_opt_box_autoadd_i_64(deserializer);
-    var var_contentType = sse_decode_opt_String(deserializer);
-    var var_attributes = sse_decode_list_dart_message_metadata_attribute(
-      deserializer,
-    );
-    return DartMessageMetadata(
-      operationId: var_operationId,
-      deliveryState: var_deliveryState,
-      sendState: var_sendState,
-      retryable: var_retryable,
-      retryAction: var_retryAction,
-      serverSequence: var_serverSequence,
-      contentType: var_contentType,
-      attributes: var_attributes,
-    );
-  }
-
-  @protected
-  DartMessageMetadataAttribute sse_decode_dart_message_metadata_attribute(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_key = sse_decode_String(deserializer);
-    var var_value = sse_decode_String(deserializer);
-    return DartMessageMetadataAttribute(key: var_key, value: var_value);
-  }
-
-  @protected
-  DartMessagePage sse_decode_dart_message_page(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_items = sse_decode_list_dart_message(deserializer);
-    var var_nextCursor = sse_decode_opt_String(deserializer);
-    var var_hasMore = sse_decode_bool(deserializer);
-    return DartMessagePage(
-      items: var_items,
-      nextCursor: var_nextCursor,
-      hasMore: var_hasMore,
-    );
-  }
-
-  @protected
-  DartMessageSecurityMode sse_decode_dart_message_security_mode(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return DartMessageSecurityMode.values[inner];
-  }
-
-  @protected
-  DartMessageTarget sse_decode_dart_message_target(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var tag_ = sse_decode_i_32(deserializer);
-    switch (tag_) {
-      case 0:
-        var var_peer = sse_decode_String(deserializer);
-        return DartMessageTarget_Direct(peer: var_peer);
-      case 1:
-        var var_group = sse_decode_String(deserializer);
-        return DartMessageTarget_Group(group: var_group);
-      default:
-        throw UnimplementedError('');
-    }
-  }
-
-  @protected
-  DartMessageTransportPolicy sse_decode_dart_message_transport_policy(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var inner = sse_decode_i_32(deserializer);
-    return DartMessageTransportPolicy.values[inner];
-  }
-
-  @protected
-  DartProfilePatch sse_decode_dart_profile_patch(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_displayName = sse_decode_opt_String(deserializer);
-    var var_bio = sse_decode_opt_String(deserializer);
-    var var_tags = sse_decode_opt_list_String(deserializer);
-    var var_markdown = sse_decode_opt_String(deserializer);
-    return DartProfilePatch(
-      displayName: var_displayName,
-      bio: var_bio,
-      tags: var_tags,
-      markdown: var_markdown,
-    );
-  }
-
-  @protected
-  DartRealtimeCapability sse_decode_dart_realtime_capability(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_statusSupported = sse_decode_bool(deserializer);
-    var var_connectSupported = sse_decode_bool(deserializer);
-    var var_runnerExposed = sse_decode_bool(deserializer);
-    var var_reason = sse_decode_opt_String(deserializer);
-    return DartRealtimeCapability(
-      statusSupported: var_statusSupported,
-      connectSupported: var_connectSupported,
-      runnerExposed: var_runnerExposed,
-      reason: var_reason,
-    );
-  }
-
-  @protected
-  DartRealtimeEvent sse_decode_dart_realtime_event(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_kind = sse_decode_String(deserializer);
-    var var_state = sse_decode_opt_String(deserializer);
-    var var_reason = sse_decode_opt_String(deserializer);
-    var var_message = sse_decode_opt_box_autoadd_dart_message(deserializer);
-    var var_messageId = sse_decode_opt_String(deserializer);
-    var var_threadKind = sse_decode_opt_String(deserializer);
-    var var_threadId = sse_decode_opt_String(deserializer);
-    var var_updateKind = sse_decode_opt_String(deserializer);
-    var var_group = sse_decode_opt_String(deserializer);
-    var var_notificationId = sse_decode_opt_String(deserializer);
-    var var_title = sse_decode_opt_String(deserializer);
-    var var_body = sse_decode_opt_String(deserializer);
-    var var_source = sse_decode_opt_String(deserializer);
-    var var_hostKind = sse_decode_opt_String(deserializer);
-    var var_contentType = sse_decode_opt_String(deserializer);
-    var var_notificationType = sse_decode_opt_String(deserializer);
-    return DartRealtimeEvent(
-      kind: var_kind,
-      state: var_state,
-      reason: var_reason,
-      message: var_message,
-      messageId: var_messageId,
-      threadKind: var_threadKind,
-      threadId: var_threadId,
-      updateKind: var_updateKind,
-      group: var_group,
-      notificationId: var_notificationId,
-      title: var_title,
-      body: var_body,
-      source: var_source,
-      hostKind: var_hostKind,
-      contentType: var_contentType,
-      notificationType: var_notificationType,
-    );
-  }
-
-  @protected
-  DartRealtimeOptions sse_decode_dart_realtime_options(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_reconnect = sse_decode_String(deserializer);
-    var var_eventBuffer = sse_decode_u_32(deserializer);
-    var var_reconnectDelayMs = sse_decode_opt_box_autoadd_u_64(deserializer);
-    var var_reconnectBaseDelayMs = sse_decode_opt_box_autoadd_u_64(
-      deserializer,
-    );
-    var var_reconnectMaxDelayMs = sse_decode_opt_box_autoadd_u_64(deserializer);
-    var var_reconnectMaxAttempts = sse_decode_opt_box_autoadd_u_32(
-      deserializer,
-    );
-    var var_subscriptions = sse_decode_list_String(deserializer);
-    return DartRealtimeOptions(
-      reconnect: var_reconnect,
-      eventBuffer: var_eventBuffer,
-      reconnectDelayMs: var_reconnectDelayMs,
-      reconnectBaseDelayMs: var_reconnectBaseDelayMs,
-      reconnectMaxDelayMs: var_reconnectMaxDelayMs,
-      reconnectMaxAttempts: var_reconnectMaxAttempts,
-      subscriptions: var_subscriptions,
-    );
-  }
-
-  @protected
-  DartRealtimeStatus sse_decode_dart_realtime_status(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_connected = sse_decode_bool(deserializer);
-    var var_state = sse_decode_String(deserializer);
-    var var_subscriptions = sse_decode_list_String(deserializer);
-    var var_lastError = sse_decode_opt_String(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartRealtimeStatus(
-      connected: var_connected,
-      state: var_state,
-      subscriptions: var_subscriptions,
-      lastError: var_lastError,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartRecoverHandleResult sse_decode_dart_recover_handle_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_handle = sse_decode_String(deserializer);
-    var var_phone = sse_decode_String(deserializer);
-    var var_state = sse_decode_String(deserializer);
-    var var_recoveredIdentity =
-        sse_decode_opt_box_autoadd_dart_identity_summary(deserializer);
-    var var_userId = sse_decode_opt_String(deserializer);
-    var var_accessTokenPresent = sse_decode_bool(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartRecoverHandleResult(
-      handle: var_handle,
-      phone: var_phone,
-      state: var_state,
-      recoveredIdentity: var_recoveredIdentity,
-      userId: var_userId,
-      accessTokenPresent: var_accessTokenPresent,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartRelationStatus sse_decode_dart_relation_status(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_peer = sse_decode_String(deserializer);
-    var var_relationship = sse_decode_opt_String(deserializer);
-    var var_displayName = sse_decode_opt_String(deserializer);
-    return DartRelationStatus(
-      peer: var_peer,
-      relationship: var_relationship,
-      displayName: var_displayName,
-    );
-  }
-
-  @protected
-  DartRelationshipListItem sse_decode_dart_relationship_list_item(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_did = sse_decode_String(deserializer);
-    var var_handle = sse_decode_opt_String(deserializer);
-    var var_displayName = sse_decode_opt_String(deserializer);
-    var var_relationship = sse_decode_String(deserializer);
-    var var_createdAt = sse_decode_opt_String(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartRelationshipListItem(
-      did: var_did,
-      handle: var_handle,
-      displayName: var_displayName,
-      relationship: var_relationship,
-      createdAt: var_createdAt,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartRelationshipPage sse_decode_dart_relationship_page(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_items = sse_decode_list_dart_relationship_list_item(deserializer);
-    var var_nextCursor = sse_decode_opt_String(deserializer);
-    var var_hasMore = sse_decode_bool(deserializer);
-    return DartRelationshipPage(
-      items: var_items,
-      nextCursor: var_nextCursor,
-      hasMore: var_hasMore,
-    );
-  }
-
-  @protected
-  DartSendEmailRequest sse_decode_dart_send_email_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_to = sse_decode_list_String(deserializer);
-    var var_cc = sse_decode_list_String(deserializer);
-    var var_subject = sse_decode_String(deserializer);
-    var var_bodyText = sse_decode_String(deserializer);
-    var var_bodyHtml = sse_decode_opt_String(deserializer);
-    return DartSendEmailRequest(
-      to: var_to,
-      cc: var_cc,
-      subject: var_subject,
-      bodyText: var_bodyText,
-      bodyHtml: var_bodyHtml,
-    );
-  }
-
-  @protected
-  DartSendEmailResult sse_decode_dart_send_email_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_accepted = sse_decode_bool(deserializer);
-    var var_messageId = sse_decode_opt_String(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartSendEmailResult(
-      accepted: var_accepted,
-      messageId: var_messageId,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartSendMessageResult sse_decode_dart_send_message_result(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_message = sse_decode_dart_message(deserializer);
-    var var_deliveryState = sse_decode_String(deserializer);
-    var var_warnings = sse_decode_list_String(deserializer);
-    return DartSendMessageResult(
-      message: var_message,
-      deliveryState: var_deliveryState,
-      warnings: var_warnings,
-    );
-  }
-
-  @protected
-  DartSendTextRequest sse_decode_dart_send_text_request(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_target = sse_decode_dart_message_target(deserializer);
-    var var_text = sse_decode_String(deserializer);
-    var var_markdown = sse_decode_bool(deserializer);
-    var var_security = sse_decode_dart_message_security_mode(deserializer);
-    var var_clientMessageId = sse_decode_opt_String(deserializer);
-    var var_idempotencyKey = sse_decode_opt_String(deserializer);
-    var var_waitForFinalAcceptance = sse_decode_bool(deserializer);
-    return DartSendTextRequest(
-      target: var_target,
-      text: var_text,
-      markdown: var_markdown,
-      security: var_security,
-      clientMessageId: var_clientMessageId,
-      idempotencyKey: var_idempotencyKey,
-      waitForFinalAcceptance: var_waitForFinalAcceptance,
-    );
-  }
-
-  @protected
-  DartSessionBundle sse_decode_dart_session_bundle(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_subject = sse_decode_String(deserializer);
-    var var_scope = sse_decode_dart_auth_scope(deserializer);
-    var var_expiresAt = sse_decode_opt_String(deserializer);
-    var var_refreshed = sse_decode_bool(deserializer);
-    return DartSessionBundle(
-      subject: var_subject,
-      scope: var_scope,
-      expiresAt: var_expiresAt,
-      refreshed: var_refreshed,
-    );
-  }
-
-  @protected
-  DartSessionUpdate sse_decode_dart_session_update(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_subject = sse_decode_String(deserializer);
-    var var_previousExpiresAt = sse_decode_opt_String(deserializer);
-    var var_newExpiresAt = sse_decode_opt_String(deserializer);
-    var var_refreshed = sse_decode_bool(deserializer);
-    return DartSessionUpdate(
-      subject: var_subject,
-      previousExpiresAt: var_previousExpiresAt,
-      newExpiresAt: var_newExpiresAt,
-      refreshed: var_refreshed,
-    );
-  }
-
-  @protected
-  DartThreadRef sse_decode_dart_thread_ref(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var tag_ = sse_decode_i_32(deserializer);
-    switch (tag_) {
-      case 0:
-        var var_peer = sse_decode_String(deserializer);
-        return DartThreadRef_Direct(peer: var_peer);
-      case 1:
-        var var_group = sse_decode_String(deserializer);
-        return DartThreadRef_Group(group: var_group);
-      case 2:
-        var var_threadId = sse_decode_String(deserializer);
-        return DartThreadRef_Thread(threadId: var_threadId);
-      default:
-        throw UnimplementedError('');
-    }
-  }
-
-  @protected
-  DartUserProfile sse_decode_dart_user_profile(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_subject = sse_decode_String(deserializer);
-    var var_handle = sse_decode_opt_String(deserializer);
-    var var_displayName = sse_decode_opt_String(deserializer);
-    var var_bio = sse_decode_opt_String(deserializer);
-    var var_tags = sse_decode_list_String(deserializer);
-    var var_markdown = sse_decode_opt_String(deserializer);
-    var var_avatarUrl = sse_decode_opt_String(deserializer);
-    var var_updatedAt = sse_decode_opt_String(deserializer);
-    return DartUserProfile(
-      subject: var_subject,
-      handle: var_handle,
-      displayName: var_displayName,
-      bio: var_bio,
-      tags: var_tags,
-      markdown: var_markdown,
-      avatarUrl: var_avatarUrl,
-      updatedAt: var_updatedAt,
-    );
-  }
-
-  @protected
-  int sse_decode_i_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getInt32();
-  }
-
-  @protected
-  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getPlatformInt64();
-  }
-
-  @protected
-  List<String> sse_decode_list_String(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <String>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_String(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartConversation> sse_decode_list_dart_conversation(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartConversation>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_conversation(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartEmailAttachmentMetadata>
-  sse_decode_list_dart_email_attachment_metadata(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartEmailAttachmentMetadata>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_email_attachment_metadata(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartEmailAttribute> sse_decode_list_dart_email_attribute(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartEmailAttribute>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_email_attribute(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartEmailMessageSummary> sse_decode_list_dart_email_message_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartEmailMessageSummary>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_email_message_summary(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartEmailNotification> sse_decode_list_dart_email_notification(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartEmailNotification>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_email_notification(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartGroupMember> sse_decode_list_dart_group_member(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartGroupMember>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_group_member(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartGroupSummary> sse_decode_list_dart_group_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartGroupSummary>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_group_summary(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartIdentitySummary> sse_decode_list_dart_identity_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartIdentitySummary>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_identity_summary(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartMessage> sse_decode_list_dart_message(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartMessage>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_message(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartMessageMetadataAttribute>
-  sse_decode_list_dart_message_metadata_attribute(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartMessageMetadataAttribute>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_message_metadata_attribute(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <DartRelationshipListItem>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_dart_relationship_list_item(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var len_ = sse_decode_i_32(deserializer);
-    return deserializer.buffer.getUint8List(len_);
-  }
-
-  @protected
-  String? sse_decode_opt_String(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_String(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_bool(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  DartDefaultIdentityChange?
-  sse_decode_opt_box_autoadd_dart_default_identity_change(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_dart_default_identity_change(
-        deserializer,
-      ));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_dart_group_snapshot(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  DartIdentitySummary? sse_decode_opt_box_autoadd_dart_identity_summary(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_dart_identity_summary(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  DartMessage? sse_decode_opt_box_autoadd_dart_message(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_dart_message(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  DartUserProfile? sse_decode_opt_box_autoadd_dart_user_profile(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_dart_user_profile(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_i_64(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  int? sse_decode_opt_box_autoadd_u_16(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_u_16(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_u_32(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_u_64(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  List<String>? sse_decode_opt_list_String(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_list_String(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
-  int sse_decode_u_16(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint16();
-  }
-
-  @protected
-  int sse_decode_u_32(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint32();
-  }
-
-  @protected
-  BigInt sse_decode_u_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getBigUint64();
-  }
-
-  @protected
-  int sse_decode_u_8(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getUint8();
-  }
-
-  @protected
-  void sse_decode_unit(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-  }
-
-  @protected
-  BigInt sse_decode_usize(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return deserializer.buffer.getBigUint64();
-  }
-
-  @protected
-  void sse_encode_AnyhowException(
-    AnyhowException self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.message, serializer);
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    ArcDartImClient self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartImClientImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    ArcDartImCore self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartImCoreImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    ArcDartRealtimeSession self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartRealtimeSessionImpl).frbInternalSseEncode(move: true),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    ArcDartImClient self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartImClientImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    ArcDartImCore self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartImCoreImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    ArcDartRealtimeSession self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartRealtimeSessionImpl).frbInternalSseEncode(move: false),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    ArcDartImClient self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartImClientImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    ArcDartImCore self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartImCoreImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
-  }
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    ArcDartRealtimeSession self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_usize(
-      (self as ArcDartRealtimeSessionImpl).frbInternalSseEncode(move: null),
-      serializer,
-    );
-  }
-
-  @protected
-  void sse_encode_StreamSink_dart_realtime_event_Sse(
-    RustStreamSink<DartRealtimeEvent> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(
-      self.setupAndSerialize(
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_dart_realtime_event,
-          decodeErrorData: sse_decode_AnyhowException,
-        ),
-      ),
-      serializer,
-    );
-  }
-
-  @protected
-  void sse_encode_String(String self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer);
-  }
-
-  @protected
-  void sse_encode_bool(bool self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint8(self ? 1 : 0);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bool(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_attachment_send_request(
-    DartAttachmentSendRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_attachment_send_request(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_create_group_request(
-    DartCreateGroupRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_create_group_request(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_default_identity_change(
-    DartDefaultIdentityChange self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_default_identity_change(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_download_attachment_request(
-    DartDownloadAttachmentRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_download_attachment_request(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_group_snapshot(
-    DartGroupSnapshot self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_group_snapshot(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_identity_selector(
-    DartIdentitySelector self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_identity_selector(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_identity_subject(
-    DartIdentitySubject self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_identity_subject(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_identity_summary(
-    DartIdentitySummary self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_identity_summary(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_im_core_config(
-    DartImCoreConfig self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_im_core_config(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_im_core_paths(
-    DartImCorePaths self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_im_core_paths(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_initial_profile(
-    DartInitialProfile self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_initial_profile(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_message(
-    DartMessage self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_message(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_profile_patch(
-    DartProfilePatch self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_profile_patch(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_realtime_options(
-    DartRealtimeOptions self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_realtime_options(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_send_email_request(
-    DartSendEmailRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_send_email_request(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_send_text_request(
-    DartSendTextRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_send_text_request(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_thread_ref(
-    DartThreadRef self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_thread_ref(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_dart_user_profile(
-    DartUserProfile self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_user_profile(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_i_64(
-    PlatformInt64 self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_64(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_u_16(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_16(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_32(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_64(self, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_attachment_destination(
-    DartAttachmentDestination self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case DartAttachmentDestination_LocalFile(path: final path):
-        sse_encode_i_32(0, serializer);
-        sse_encode_String(path, serializer);
-      case DartAttachmentDestination_Memory():
-        sse_encode_i_32(1, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_dart_attachment_input(
-    DartAttachmentInput self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case DartAttachmentInput_LocalFile(path: final path):
-        sse_encode_i_32(0, serializer);
-        sse_encode_String(path, serializer);
-      case DartAttachmentInput_Bytes(
-        filename: final filename,
-        mimeType: final mimeType,
-        bytes: final bytes,
-      ):
-        sse_encode_i_32(1, serializer);
-        sse_encode_opt_String(filename, serializer);
-        sse_encode_opt_String(mimeType, serializer);
-        sse_encode_list_prim_u_8_strict(bytes, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_dart_attachment_send_request(
-    DartAttachmentSendRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_message_target(self.target, serializer);
-    sse_encode_dart_attachment_input(self.input, serializer);
-    sse_encode_opt_String(self.caption, serializer);
-    sse_encode_opt_String(self.mimeType, serializer);
-    sse_encode_opt_String(self.filename, serializer);
-    sse_encode_opt_String(self.idempotencyKey, serializer);
-    sse_encode_bool(self.waitForFinalAcceptance, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_auth_scope(
-    DartAuthScope self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_auth_status(
-    DartAuthStatus self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.subject, serializer);
-    sse_encode_bool(self.hasSession, serializer);
-    sse_encode_opt_String(self.expiresAt, serializer);
-    sse_encode_bool(self.needsRefresh, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_conversation(
-    DartConversation self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.threadKind, serializer);
-    sse_encode_String(self.threadId, serializer);
-    sse_encode_opt_String(self.title, serializer);
-    sse_encode_list_String(self.participants, serializer);
-    sse_encode_opt_box_autoadd_dart_message(self.lastMessage, serializer);
-    sse_encode_u_32(self.unreadCount, serializer);
-    sse_encode_u_32(self.messageCount, serializer);
-    sse_encode_opt_String(self.lastMessageAt, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_conversation_page(
-    DartConversationPage self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_dart_conversation(self.items, serializer);
-    sse_encode_opt_String(self.nextCursor, serializer);
-    sse_encode_bool(self.hasMore, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_create_group_request(
-    DartCreateGroupRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.name, serializer);
-    sse_encode_opt_String(self.description, serializer);
-    sse_encode_opt_String(self.discoverability, serializer);
-    sse_encode_opt_String(self.admissionMode, serializer);
-    sse_encode_opt_String(self.messageSecurityProfile, serializer);
-    sse_encode_bool(self.e2Ee, serializer);
-    sse_encode_opt_String(self.slug, serializer);
-    sse_encode_opt_String(self.goal, serializer);
-    sse_encode_opt_String(self.rules, serializer);
-    sse_encode_opt_String(self.messagePrompt, serializer);
-    sse_encode_opt_String(self.docUrl, serializer);
-    sse_encode_opt_box_autoadd_bool(self.attachmentsAllowed, serializer);
-    sse_encode_opt_String(self.maxMembers, serializer);
-    sse_encode_opt_box_autoadd_i_64(self.memberMaxMessages, serializer);
-    sse_encode_opt_box_autoadd_i_64(self.memberMaxTotalChars, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_default_identity_change(
-    DartDefaultIdentityChange self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_box_autoadd_dart_identity_summary(self.previous, serializer);
-    sse_encode_dart_identity_summary(self.next, serializer);
-    sse_encode_bool(self.requiresDefaultIdentityWrite, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_directory_resolution(
-    DartDirectoryResolution self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.input, serializer);
-    sse_encode_String(self.did, serializer);
-    sse_encode_opt_String(self.handle, serializer);
-    sse_encode_opt_box_autoadd_dart_user_profile(self.profile, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_download_attachment_request(
-    DartDownloadAttachmentRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_thread_ref(self.thread, serializer);
-    sse_encode_String(self.messageId, serializer);
-    sse_encode_opt_String(self.attachmentId, serializer);
-    sse_encode_dart_attachment_destination(self.destination, serializer);
-    sse_encode_bool(self.overwrite, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_downloaded_attachment(
-    DartDownloadedAttachment self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.attachmentId, serializer);
-    sse_encode_opt_String(self.filename, serializer);
-    sse_encode_opt_String(self.mimeType, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.sizeBytes, serializer);
-    sse_encode_dart_downloaded_attachment_destination(
-      self.destination,
-      serializer,
-    );
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_downloaded_attachment_destination(
-    DartDownloadedAttachmentDestination self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case DartDownloadedAttachmentDestination_LocalFile(path: final path):
-        sse_encode_i_32(0, serializer);
-        sse_encode_String(path, serializer);
-      case DartDownloadedAttachmentDestination_Memory(bytes: final bytes):
-        sse_encode_i_32(1, serializer);
-        sse_encode_list_prim_u_8_strict(bytes, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_dart_email_account(
-    DartEmailAccount self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.mailboxAddress, serializer);
-    sse_encode_opt_String(self.displayName, serializer);
-    sse_encode_opt_String(self.status, serializer);
-    sse_encode_list_dart_email_attribute(self.attributes, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_email_attachment_content(
-    DartEmailAttachmentContent self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.messageId, serializer);
-    sse_encode_u_32(self.attachmentIndex, serializer);
-    sse_encode_String(self.filename, serializer);
-    sse_encode_String(self.contentType, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.size, serializer);
-    sse_encode_list_prim_u_8_strict(self.bytes, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_email_attachment_metadata(
-    DartEmailAttachmentMetadata self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_32(self.index, serializer);
-    sse_encode_opt_String(self.filename, serializer);
-    sse_encode_opt_String(self.contentType, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.size, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_email_attribute(
-    DartEmailAttribute self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.key, serializer);
-    sse_encode_String(self.value, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_email_mark_read_result(
-    DartEmailMarkReadResult self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_32(self.updated, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_email_message(
-    DartEmailMessage self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_email_message_summary(self.summary, serializer);
-    sse_encode_opt_String(self.bodyText, serializer);
-    sse_encode_opt_String(self.bodyHtml, serializer);
-    sse_encode_list_dart_email_attachment_metadata(
-      self.attachments,
-      serializer,
-    );
-  }
-
-  @protected
-  void sse_encode_dart_email_message_summary(
-    DartEmailMessageSummary self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.id, serializer);
-    sse_encode_opt_String(self.folder, serializer);
-    sse_encode_list_String(self.from, serializer);
-    sse_encode_list_String(self.to, serializer);
-    sse_encode_list_String(self.cc, serializer);
-    sse_encode_String(self.subject, serializer);
-    sse_encode_opt_String(self.preview, serializer);
-    sse_encode_opt_String(self.receivedAt, serializer);
-    sse_encode_opt_String(self.sentAt, serializer);
-    sse_encode_bool(self.unread, serializer);
-    sse_encode_bool(self.hasAttachments, serializer);
-    sse_encode_opt_box_autoadd_u_32(self.attachmentCount, serializer);
-    sse_encode_list_dart_email_attribute(self.attributes, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_email_message_summary_page(
-    DartEmailMessageSummaryPage self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_dart_email_message_summary(self.items, serializer);
-    sse_encode_opt_String(self.nextCursor, serializer);
-    sse_encode_bool(self.hasMore, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_email_notification(
-    DartEmailNotification self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.id, serializer);
-    sse_encode_opt_String(self.mailboxAddress, serializer);
-    sse_encode_opt_String(self.fromAddr, serializer);
-    sse_encode_String(self.subject, serializer);
-    sse_encode_opt_String(self.preview, serializer);
-    sse_encode_bool(self.hasAttachments, serializer);
-    sse_encode_opt_String(self.receivedAt, serializer);
-    sse_encode_list_dart_email_attribute(self.attributes, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_email_notification_page(
-    DartEmailNotificationPage self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_dart_email_notification(self.items, serializer);
-    sse_encode_opt_String(self.nextCursor, serializer);
-    sse_encode_bool(self.hasMore, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_group_member(
-    DartGroupMember self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.did, serializer);
-    sse_encode_opt_String(self.handle, serializer);
-    sse_encode_opt_String(self.role, serializer);
-    sse_encode_opt_String(self.status, serializer);
-    sse_encode_opt_String(self.joinedAt, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_group_read_result(
-    DartGroupReadResult self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_box_autoadd_dart_group_snapshot(self.group, serializer);
-    sse_encode_list_dart_group_summary(self.groups, serializer);
-    sse_encode_list_dart_group_member(self.members, serializer);
-    sse_encode_dart_message_page(self.messages, serializer);
-    sse_encode_opt_box_autoadd_u_32(self.total, serializer);
-    sse_encode_opt_String(self.source, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_group_snapshot(
-    DartGroupSnapshot self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.id, serializer);
-    sse_encode_String(self.did, serializer);
-    sse_encode_opt_String(self.name, serializer);
-    sse_encode_opt_String(self.description, serializer);
-    sse_encode_opt_String(self.myRole, serializer);
-    sse_encode_opt_String(self.membershipStatus, serializer);
-    sse_encode_opt_box_autoadd_u_32(self.memberCount, serializer);
-    sse_encode_opt_String(self.lastMessageAt, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_group_summary(
-    DartGroupSummary self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.id, serializer);
-    sse_encode_String(self.did, serializer);
-    sse_encode_opt_String(self.name, serializer);
-    sse_encode_opt_String(self.membershipStatus, serializer);
-    sse_encode_opt_box_autoadd_u_32(self.memberCount, serializer);
-    sse_encode_opt_String(self.lastMessageAt, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_handle_registration_result(
-    DartHandleRegistrationResult self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_box_autoadd_dart_identity_summary(self.identity, serializer);
-    sse_encode_String(self.handle, serializer);
-    sse_encode_String(self.method, serializer);
-    sse_encode_String(self.state, serializer);
-    sse_encode_opt_box_autoadd_dart_default_identity_change(
-      self.defaultIdentityChange,
-      serializer,
-    );
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_identity_selector(
-    DartIdentitySelector self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case DartIdentitySelector_Default():
-        sse_encode_i_32(0, serializer);
-      case DartIdentitySelector_Id(id: final id):
-        sse_encode_i_32(1, serializer);
-        sse_encode_String(id, serializer);
-      case DartIdentitySelector_Did(did: final did):
-        sse_encode_i_32(2, serializer);
-        sse_encode_String(did, serializer);
-      case DartIdentitySelector_Handle(handle: final handle):
-        sse_encode_i_32(3, serializer);
-        sse_encode_String(handle, serializer);
-      case DartIdentitySelector_LocalAlias(alias: final alias):
-        sse_encode_i_32(4, serializer);
-        sse_encode_String(alias, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_dart_identity_subject(
-    DartIdentitySubject self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case DartIdentitySubject_Did(did: final did):
-        sse_encode_i_32(0, serializer);
-        sse_encode_String(did, serializer);
-      case DartIdentitySubject_Handle(handle: final handle):
-        sse_encode_i_32(1, serializer);
-        sse_encode_String(handle, serializer);
-      case DartIdentitySubject_Any(value: final value):
-        sse_encode_i_32(2, serializer);
-        sse_encode_String(value, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_dart_identity_summary(
-    DartIdentitySummary self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.id, serializer);
-    sse_encode_String(self.did, serializer);
-    sse_encode_opt_String(self.handle, serializer);
-    sse_encode_opt_String(self.displayName, serializer);
-    sse_encode_opt_String(self.localAlias, serializer);
-    sse_encode_opt_String(self.deviceId, serializer);
-    sse_encode_bool(self.isDefault, serializer);
-    sse_encode_bool(self.readyForAuth, serializer);
-    sse_encode_bool(self.readyForMessaging, serializer);
-    sse_encode_list_String(self.missing, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_im_core_config(
-    DartImCoreConfig self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.serviceBaseUrl, serializer);
-    sse_encode_String(self.didDomain, serializer);
-    sse_encode_opt_String(self.userServiceEndpoint, serializer);
-    sse_encode_opt_String(self.messageServiceEndpoint, serializer);
-    sse_encode_opt_String(self.mailServiceEndpoint, serializer);
-    sse_encode_opt_String(self.anpServiceEndpoint, serializer);
-    sse_encode_opt_String(self.anpServiceDid, serializer);
-    sse_encode_dart_message_transport_policy(self.transportPolicy, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_im_core_paths(
-    DartImCorePaths self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.identityRootDir, serializer);
-    sse_encode_String(self.registryPath, serializer);
-    sse_encode_opt_String(self.defaultIdentityPath, serializer);
-    sse_encode_String(self.sqlitePath, serializer);
-    sse_encode_String(self.cacheDir, serializer);
-    sse_encode_String(self.tempDir, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_im_error(DartImError self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.code, serializer);
-    sse_encode_String(self.message, serializer);
-    sse_encode_opt_String(self.field, serializer);
-    sse_encode_opt_box_autoadd_u_16(self.statusCode, serializer);
-    sse_encode_opt_String(self.capability, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_initial_profile(
-    DartInitialProfile self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.displayName, serializer);
-    sse_encode_opt_String(self.avatarUrl, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_mark_read_result(
-    DartMarkReadResult self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_u_32(self.updatedCount, serializer);
-    sse_encode_list_String(self.messageIds, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_message(DartMessage self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.id, serializer);
-    sse_encode_String(self.threadKind, serializer);
-    sse_encode_String(self.threadId, serializer);
-    sse_encode_dart_message_direction(self.direction, serializer);
-    sse_encode_String(self.sender, serializer);
-    sse_encode_opt_String(self.receiver, serializer);
-    sse_encode_opt_String(self.group, serializer);
-    sse_encode_dart_message_body_view(self.body, serializer);
-    sse_encode_opt_String(self.sentAt, serializer);
-    sse_encode_opt_String(self.receivedAt, serializer);
-    sse_encode_dart_message_metadata(self.metadata, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_message_body_view(
-    DartMessageBodyView self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.text, serializer);
-    sse_encode_opt_String(self.kind, serializer);
-    sse_encode_opt_String(self.unsupportedContentType, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_message_direction(
-    DartMessageDirection self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_message_metadata(
-    DartMessageMetadata self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.operationId, serializer);
-    sse_encode_opt_String(self.deliveryState, serializer);
-    sse_encode_opt_String(self.sendState, serializer);
-    sse_encode_opt_box_autoadd_bool(self.retryable, serializer);
-    sse_encode_opt_String(self.retryAction, serializer);
-    sse_encode_opt_box_autoadd_i_64(self.serverSequence, serializer);
-    sse_encode_opt_String(self.contentType, serializer);
-    sse_encode_list_dart_message_metadata_attribute(
-      self.attributes,
-      serializer,
-    );
-  }
-
-  @protected
-  void sse_encode_dart_message_metadata_attribute(
-    DartMessageMetadataAttribute self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.key, serializer);
-    sse_encode_String(self.value, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_message_page(
-    DartMessagePage self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_dart_message(self.items, serializer);
-    sse_encode_opt_String(self.nextCursor, serializer);
-    sse_encode_bool(self.hasMore, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_message_security_mode(
-    DartMessageSecurityMode self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_message_target(
-    DartMessageTarget self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case DartMessageTarget_Direct(peer: final peer):
-        sse_encode_i_32(0, serializer);
-        sse_encode_String(peer, serializer);
-      case DartMessageTarget_Group(group: final group):
-        sse_encode_i_32(1, serializer);
-        sse_encode_String(group, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_dart_message_transport_policy(
-    DartMessageTransportPolicy self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.index, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_profile_patch(
-    DartProfilePatch self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_opt_String(self.displayName, serializer);
-    sse_encode_opt_String(self.bio, serializer);
-    sse_encode_opt_list_String(self.tags, serializer);
-    sse_encode_opt_String(self.markdown, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_realtime_capability(
-    DartRealtimeCapability self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bool(self.statusSupported, serializer);
-    sse_encode_bool(self.connectSupported, serializer);
-    sse_encode_bool(self.runnerExposed, serializer);
-    sse_encode_opt_String(self.reason, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_realtime_event(
-    DartRealtimeEvent self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.kind, serializer);
-    sse_encode_opt_String(self.state, serializer);
-    sse_encode_opt_String(self.reason, serializer);
-    sse_encode_opt_box_autoadd_dart_message(self.message, serializer);
-    sse_encode_opt_String(self.messageId, serializer);
-    sse_encode_opt_String(self.threadKind, serializer);
-    sse_encode_opt_String(self.threadId, serializer);
-    sse_encode_opt_String(self.updateKind, serializer);
-    sse_encode_opt_String(self.group, serializer);
-    sse_encode_opt_String(self.notificationId, serializer);
-    sse_encode_opt_String(self.title, serializer);
-    sse_encode_opt_String(self.body, serializer);
-    sse_encode_opt_String(self.source, serializer);
-    sse_encode_opt_String(self.hostKind, serializer);
-    sse_encode_opt_String(self.contentType, serializer);
-    sse_encode_opt_String(self.notificationType, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_realtime_options(
-    DartRealtimeOptions self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.reconnect, serializer);
-    sse_encode_u_32(self.eventBuffer, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.reconnectDelayMs, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.reconnectBaseDelayMs, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.reconnectMaxDelayMs, serializer);
-    sse_encode_opt_box_autoadd_u_32(self.reconnectMaxAttempts, serializer);
-    sse_encode_list_String(self.subscriptions, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_realtime_status(
-    DartRealtimeStatus self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bool(self.connected, serializer);
-    sse_encode_String(self.state, serializer);
-    sse_encode_list_String(self.subscriptions, serializer);
-    sse_encode_opt_String(self.lastError, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_recover_handle_result(
-    DartRecoverHandleResult self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.handle, serializer);
-    sse_encode_String(self.phone, serializer);
-    sse_encode_String(self.state, serializer);
-    sse_encode_opt_box_autoadd_dart_identity_summary(
-      self.recoveredIdentity,
-      serializer,
-    );
-    sse_encode_opt_String(self.userId, serializer);
-    sse_encode_bool(self.accessTokenPresent, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_relation_status(
-    DartRelationStatus self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.peer, serializer);
-    sse_encode_opt_String(self.relationship, serializer);
-    sse_encode_opt_String(self.displayName, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_relationship_list_item(
-    DartRelationshipListItem self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.did, serializer);
-    sse_encode_opt_String(self.handle, serializer);
-    sse_encode_opt_String(self.displayName, serializer);
-    sse_encode_String(self.relationship, serializer);
-    sse_encode_opt_String(self.createdAt, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_relationship_page(
-    DartRelationshipPage self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_dart_relationship_list_item(self.items, serializer);
-    sse_encode_opt_String(self.nextCursor, serializer);
-    sse_encode_bool(self.hasMore, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_send_email_request(
-    DartSendEmailRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_list_String(self.to, serializer);
-    sse_encode_list_String(self.cc, serializer);
-    sse_encode_String(self.subject, serializer);
-    sse_encode_String(self.bodyText, serializer);
-    sse_encode_opt_String(self.bodyHtml, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_send_email_result(
-    DartSendEmailResult self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bool(self.accepted, serializer);
-    sse_encode_opt_String(self.messageId, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_send_message_result(
-    DartSendMessageResult self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_message(self.message, serializer);
-    sse_encode_String(self.deliveryState, serializer);
-    sse_encode_list_String(self.warnings, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_send_text_request(
-    DartSendTextRequest self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_dart_message_target(self.target, serializer);
-    sse_encode_String(self.text, serializer);
-    sse_encode_bool(self.markdown, serializer);
-    sse_encode_dart_message_security_mode(self.security, serializer);
-    sse_encode_opt_String(self.clientMessageId, serializer);
-    sse_encode_opt_String(self.idempotencyKey, serializer);
-    sse_encode_bool(self.waitForFinalAcceptance, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_session_bundle(
-    DartSessionBundle self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.subject, serializer);
-    sse_encode_dart_auth_scope(self.scope, serializer);
-    sse_encode_opt_String(self.expiresAt, serializer);
-    sse_encode_bool(self.refreshed, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_session_update(
-    DartSessionUpdate self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.subject, serializer);
-    sse_encode_opt_String(self.previousExpiresAt, serializer);
-    sse_encode_opt_String(self.newExpiresAt, serializer);
-    sse_encode_bool(self.refreshed, serializer);
-  }
-
-  @protected
-  void sse_encode_dart_thread_ref(
-    DartThreadRef self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case DartThreadRef_Direct(peer: final peer):
-        sse_encode_i_32(0, serializer);
-        sse_encode_String(peer, serializer);
-      case DartThreadRef_Group(group: final group):
-        sse_encode_i_32(1, serializer);
-        sse_encode_String(group, serializer);
-      case DartThreadRef_Thread(threadId: final threadId):
-        sse_encode_i_32(2, serializer);
-        sse_encode_String(threadId, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_dart_user_profile(
-    DartUserProfile self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_String(self.subject, serializer);
-    sse_encode_opt_String(self.handle, serializer);
-    sse_encode_opt_String(self.displayName, serializer);
-    sse_encode_opt_String(self.bio, serializer);
-    sse_encode_list_String(self.tags, serializer);
-    sse_encode_opt_String(self.markdown, serializer);
-    sse_encode_opt_String(self.avatarUrl, serializer);
-    sse_encode_opt_String(self.updatedAt, serializer);
-  }
-
-  @protected
-  void sse_encode_i_32(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putInt32(self);
-  }
-
-  @protected
-  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putPlatformInt64(self);
-  }
-
-  @protected
-  void sse_encode_list_String(List<String> self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_String(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_conversation(
-    List<DartConversation> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_conversation(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_email_attachment_metadata(
-    List<DartEmailAttachmentMetadata> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_email_attachment_metadata(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_email_attribute(
-    List<DartEmailAttribute> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_email_attribute(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_email_message_summary(
-    List<DartEmailMessageSummary> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_email_message_summary(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_email_notification(
-    List<DartEmailNotification> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_email_notification(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_group_member(
-    List<DartGroupMember> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_group_member(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_group_summary(
-    List<DartGroupSummary> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_group_summary(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_identity_summary(
-    List<DartIdentitySummary> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_identity_summary(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_message(
-    List<DartMessage> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_message(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_message_metadata_attribute(
-    List<DartMessageMetadataAttribute> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_message_metadata_attribute(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_dart_relationship_list_item(
-    List<DartRelationshipListItem> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_dart_relationship_list_item(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_prim_u_8_strict(
-    Uint8List self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    serializer.buffer.putUint8List(self);
-  }
-
-  @protected
-  void sse_encode_opt_String(String? self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_String(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_bool(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_default_identity_change(
-    DartDefaultIdentityChange? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_dart_default_identity_change(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_group_snapshot(
-    DartGroupSnapshot? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_dart_group_snapshot(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_identity_summary(
-    DartIdentitySummary? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_dart_identity_summary(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_message(
-    DartMessage? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_dart_message(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_user_profile(
-    DartUserProfile? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_dart_user_profile(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_i_64(
-    PlatformInt64? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_i_64(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_u_16(int? self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_u_16(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_u_32(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_box_autoadd_u_64(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_opt_list_String(
-    List<String>? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_list_String(self, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_u_16(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint16(self);
-  }
-
-  @protected
-  void sse_encode_u_32(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint32(self);
-  }
-
-  @protected
-  void sse_encode_u_64(BigInt self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putBigUint64(self);
-  }
-
-  @protected
-  void sse_encode_u_8(int self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putUint8(self);
-  }
-
-  @protected
-  void sse_encode_unit(void self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-  }
-
-  @protected
-  void sse_encode_usize(BigInt self, SseSerializer serializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    serializer.buffer.putBigUint64(self);
-  }
-}
-
-@sealed
-class ArcDartImClientImpl extends RustOpaque implements ArcDartImClient {
-  // Not to be used by end users
-  ArcDartImClientImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
-
-  // Not to be used by end users
-  ArcDartImClientImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
-    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
-
-  static final _kStaticData = RustArcStaticData(
-    rustArcIncrementStrongCount:
-        RustLib.instance.api.rust_arc_increment_strong_count_ArcDartImClient,
-    rustArcDecrementStrongCount:
-        RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartImClient,
-    rustArcDecrementStrongCountPtr:
-        RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartImClientPtr,
-  );
-}
-
-@sealed
-class ArcDartImCoreImpl extends RustOpaque implements ArcDartImCore {
-  // Not to be used by end users
-  ArcDartImCoreImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
-
-  // Not to be used by end users
-  ArcDartImCoreImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative)
-    : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
-
-  static final _kStaticData = RustArcStaticData(
-    rustArcIncrementStrongCount:
-        RustLib.instance.api.rust_arc_increment_strong_count_ArcDartImCore,
-    rustArcDecrementStrongCount:
-        RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartImCore,
-    rustArcDecrementStrongCountPtr:
-        RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartImCorePtr,
-  );
-}
-
-@sealed
-class ArcDartRealtimeSessionImpl extends RustOpaque
-    implements ArcDartRealtimeSession {
-  // Not to be used by end users
-  ArcDartRealtimeSessionImpl.frbInternalDcoDecode(List<dynamic> wire)
-    : super.frbInternalDcoDecode(wire, _kStaticData);
-
-  // Not to be used by end users
-  ArcDartRealtimeSessionImpl.frbInternalSseDecode(
-    BigInt ptr,
-    int externalSizeOnNative,
-  ) : super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
-
-  static final _kStaticData = RustArcStaticData(
-    rustArcIncrementStrongCount: RustLib
-        .instance
-        .api
-        .rust_arc_increment_strong_count_ArcDartRealtimeSession,
-    rustArcDecrementStrongCount: RustLib
-        .instance
-        .api
-        .rust_arc_decrement_strong_count_ArcDartRealtimeSession,
-    rustArcDecrementStrongCountPtr: RustLib
-        .instance
-        .api
-        .rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr,
-  );
-}
+
+
+RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_ArcDartImClient => wire.rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient;
+
+RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_ArcDartImClient => wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient;
+
+RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_ArcDartImCore => wire.rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore;
+
+RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_ArcDartImCore => wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore;
+
+RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_ArcDartRealtimeSession => wire.rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession;
+
+RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_ArcDartRealtimeSession => wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession;
+
+
+
+                  @protected AnyhowException dco_decode_AnyhowException(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return AnyhowException(raw as String); }
+
+@protected ArcDartImClient dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartImClientImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected ArcDartImCore dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartImCoreImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected ArcDartRealtimeSession dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartRealtimeSessionImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected ArcDartImClient dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartImClientImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected ArcDartImCore dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartImCoreImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected ArcDartRealtimeSession dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartRealtimeSessionImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected ArcDartImClient dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartImClientImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected ArcDartImCore dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartImCoreImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected ArcDartRealtimeSession dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return ArcDartRealtimeSessionImpl.frbInternalDcoDecode(raw as List<dynamic>); }
+
+@protected RustStreamSink<DartRealtimeEvent> dco_decode_StreamSink_dart_realtime_event_Sse(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+throw UnimplementedError(); }
+
+@protected String dco_decode_String(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as String; }
+
+@protected bool dco_decode_bool(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as bool; }
+
+@protected bool dco_decode_box_autoadd_bool(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as bool; }
+
+@protected DartAttachmentSendRequest dco_decode_box_autoadd_dart_attachment_send_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_attachment_send_request(raw); }
+
+@protected DartCreateGroupRequest dco_decode_box_autoadd_dart_create_group_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_create_group_request(raw); }
+
+@protected DartDefaultIdentityChange dco_decode_box_autoadd_dart_default_identity_change(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_default_identity_change(raw); }
+
+@protected DartDownloadAttachmentRequest dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_download_attachment_request(raw); }
+
+@protected DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_group_snapshot(raw); }
+
+@protected DartIdentitySelector dco_decode_box_autoadd_dart_identity_selector(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_identity_selector(raw); }
+
+@protected DartIdentitySubject dco_decode_box_autoadd_dart_identity_subject(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_identity_subject(raw); }
+
+@protected DartIdentitySummary dco_decode_box_autoadd_dart_identity_summary(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_identity_summary(raw); }
+
+@protected DartImCoreConfig dco_decode_box_autoadd_dart_im_core_config(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_im_core_config(raw); }
+
+@protected DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_im_core_paths(raw); }
+
+@protected DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_initial_profile(raw); }
+
+@protected DartMessage dco_decode_box_autoadd_dart_message(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_message(raw); }
+
+@protected DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_profile_patch(raw); }
+
+@protected DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_realtime_options(raw); }
+
+@protected DartSecureDelivery dco_decode_box_autoadd_dart_secure_delivery(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_secure_delivery(raw); }
+
+@protected DartSecureProblem dco_decode_box_autoadd_dart_secure_problem(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_secure_problem(raw); }
+
+@protected DartSendEmailRequest dco_decode_box_autoadd_dart_send_email_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_send_email_request(raw); }
+
+@protected DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_send_text_request(raw); }
+
+@protected DartThreadRef dco_decode_box_autoadd_dart_thread_ref(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_thread_ref(raw); }
+
+@protected DartUserProfile dco_decode_box_autoadd_dart_user_profile(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_dart_user_profile(raw); }
+
+@protected PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_i_64(raw); }
+
+@protected int dco_decode_box_autoadd_u_16(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected int dco_decode_box_autoadd_u_32(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected BigInt dco_decode_box_autoadd_u_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dco_decode_u_64(raw); }
+
+@protected DartAttachmentDestination dco_decode_dart_attachment_destination(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+switch (raw[0]) {
+                case 0: return DartAttachmentDestination_LocalFile(path: dco_decode_String(raw[1]),);
+case 1: return DartAttachmentDestination_Memory();
+                default: throw Exception("unreachable");
+            } }
+
+@protected DartAttachmentInput dco_decode_dart_attachment_input(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+switch (raw[0]) {
+                case 0: return DartAttachmentInput_LocalFile(path: dco_decode_String(raw[1]),);
+case 1: return DartAttachmentInput_Bytes(filename: dco_decode_opt_String(raw[1]),mimeType: dco_decode_opt_String(raw[2]),bytes: dco_decode_list_prim_u_8_strict(raw[3]),);
+                default: throw Exception("unreachable");
+            } }
+
+@protected DartAttachmentSendRequest dco_decode_dart_attachment_send_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 7) throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+                return DartAttachmentSendRequest(target: dco_decode_dart_message_target(arr[0]),
+input: dco_decode_dart_attachment_input(arr[1]),
+caption: dco_decode_opt_String(arr[2]),
+mimeType: dco_decode_opt_String(arr[3]),
+filename: dco_decode_opt_String(arr[4]),
+idempotencyKey: dco_decode_opt_String(arr[5]),
+waitForFinalAcceptance: dco_decode_bool(arr[6]),); }
+
+@protected DartAuthScope dco_decode_dart_auth_scope(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DartAuthScope.values[raw as int]; }
+
+@protected DartAuthStatus dco_decode_dart_auth_status(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartAuthStatus(subject: dco_decode_String(arr[0]),
+hasSession: dco_decode_bool(arr[1]),
+expiresAt: dco_decode_opt_String(arr[2]),
+needsRefresh: dco_decode_bool(arr[3]),
+warnings: dco_decode_list_String(arr[4]),); }
+
+@protected DartConversation dco_decode_dart_conversation(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 8) throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+                return DartConversation(threadKind: dco_decode_String(arr[0]),
+threadId: dco_decode_String(arr[1]),
+title: dco_decode_opt_String(arr[2]),
+participants: dco_decode_list_String(arr[3]),
+lastMessage: dco_decode_opt_box_autoadd_dart_message(arr[4]),
+unreadCount: dco_decode_u_32(arr[5]),
+messageCount: dco_decode_u_32(arr[6]),
+lastMessageAt: dco_decode_opt_String(arr[7]),); }
+
+@protected DartConversationPage dco_decode_dart_conversation_page(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartConversationPage(items: dco_decode_list_dart_conversation(arr[0]),
+nextCursor: dco_decode_opt_String(arr[1]),
+hasMore: dco_decode_bool(arr[2]),); }
+
+@protected DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 15) throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+                return DartCreateGroupRequest(name: dco_decode_String(arr[0]),
+description: dco_decode_opt_String(arr[1]),
+discoverability: dco_decode_opt_String(arr[2]),
+admissionMode: dco_decode_opt_String(arr[3]),
+messageSecurityProfile: dco_decode_opt_String(arr[4]),
+e2Ee: dco_decode_bool(arr[5]),
+slug: dco_decode_opt_String(arr[6]),
+goal: dco_decode_opt_String(arr[7]),
+rules: dco_decode_opt_String(arr[8]),
+messagePrompt: dco_decode_opt_String(arr[9]),
+docUrl: dco_decode_opt_String(arr[10]),
+attachmentsAllowed: dco_decode_opt_box_autoadd_bool(arr[11]),
+maxMembers: dco_decode_opt_String(arr[12]),
+memberMaxMessages: dco_decode_opt_box_autoadd_i_64(arr[13]),
+memberMaxTotalChars: dco_decode_opt_box_autoadd_i_64(arr[14]),); }
+
+@protected DartDefaultIdentityChange dco_decode_dart_default_identity_change(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartDefaultIdentityChange(previous: dco_decode_opt_box_autoadd_dart_identity_summary(arr[0]),
+next: dco_decode_dart_identity_summary(arr[1]),
+requiresDefaultIdentityWrite: dco_decode_bool(arr[2]),
+warnings: dco_decode_list_String(arr[3]),); }
+
+@protected DartDirectSecurePrepareResult dco_decode_dart_direct_secure_prepare_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartDirectSecurePrepareResult(peer: dco_decode_String(arr[0]),
+state: dco_decode_dart_direct_secure_state(arr[1]),
+canSendSecure: dco_decode_bool(arr[2]),
+warnings: dco_decode_list_String(arr[3]),); }
+
+@protected DartDirectSecureRepairResult dco_decode_dart_direct_secure_repair_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartDirectSecureRepairResult(peer: dco_decode_String(arr[0]),
+state: dco_decode_dart_direct_secure_state(arr[1]),
+repaired: dco_decode_bool(arr[2]),
+problem: dco_decode_opt_box_autoadd_dart_secure_problem(arr[3]),
+warnings: dco_decode_list_String(arr[4]),); }
+
+@protected DartDirectSecureState dco_decode_dart_direct_secure_state(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DartDirectSecureState.values[raw as int]; }
+
+@protected DartDirectSecureStatus dco_decode_dart_direct_secure_status(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 7) throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+                return DartDirectSecureStatus(peer: dco_decode_String(arr[0]),
+resolvedPeer: dco_decode_opt_String(arr[1]),
+state: dco_decode_dart_direct_secure_state(arr[2]),
+canSendSecure: dco_decode_bool(arr[3]),
+pendingOutboxCount: dco_decode_u_32(arr[4]),
+problem: dco_decode_opt_box_autoadd_dart_secure_problem(arr[5]),
+warnings: dco_decode_list_String(arr[6]),); }
+
+@protected DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartDirectoryResolution(input: dco_decode_String(arr[0]),
+did: dco_decode_String(arr[1]),
+handle: dco_decode_opt_String(arr[2]),
+profile: dco_decode_opt_box_autoadd_dart_user_profile(arr[3]),
+warnings: dco_decode_list_String(arr[4]),); }
+
+@protected DartDownloadAttachmentRequest dco_decode_dart_download_attachment_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartDownloadAttachmentRequest(thread: dco_decode_dart_thread_ref(arr[0]),
+messageId: dco_decode_String(arr[1]),
+attachmentId: dco_decode_opt_String(arr[2]),
+destination: dco_decode_dart_attachment_destination(arr[3]),
+overwrite: dco_decode_bool(arr[4]),); }
+
+@protected DartDownloadedAttachment dco_decode_dart_downloaded_attachment(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 6) throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+                return DartDownloadedAttachment(attachmentId: dco_decode_String(arr[0]),
+filename: dco_decode_opt_String(arr[1]),
+mimeType: dco_decode_opt_String(arr[2]),
+sizeBytes: dco_decode_opt_box_autoadd_u_64(arr[3]),
+destination: dco_decode_dart_downloaded_attachment_destination(arr[4]),
+warnings: dco_decode_list_String(arr[5]),); }
+
+@protected DartDownloadedAttachmentDestination dco_decode_dart_downloaded_attachment_destination(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+switch (raw[0]) {
+                case 0: return DartDownloadedAttachmentDestination_LocalFile(path: dco_decode_String(raw[1]),);
+case 1: return DartDownloadedAttachmentDestination_Memory(bytes: dco_decode_list_prim_u_8_strict(raw[1]),);
+                default: throw Exception("unreachable");
+            } }
+
+@protected DartEmailAccount dco_decode_dart_email_account(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartEmailAccount(mailboxAddress: dco_decode_opt_String(arr[0]),
+displayName: dco_decode_opt_String(arr[1]),
+status: dco_decode_opt_String(arr[2]),
+attributes: dco_decode_list_dart_email_attribute(arr[3]),); }
+
+@protected DartEmailAttachmentContent dco_decode_dart_email_attachment_content(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 6) throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+                return DartEmailAttachmentContent(messageId: dco_decode_String(arr[0]),
+attachmentIndex: dco_decode_u_32(arr[1]),
+filename: dco_decode_String(arr[2]),
+contentType: dco_decode_String(arr[3]),
+size: dco_decode_opt_box_autoadd_u_64(arr[4]),
+bytes: dco_decode_list_prim_u_8_strict(arr[5]),); }
+
+@protected DartEmailAttachmentMetadata dco_decode_dart_email_attachment_metadata(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartEmailAttachmentMetadata(index: dco_decode_u_32(arr[0]),
+filename: dco_decode_opt_String(arr[1]),
+contentType: dco_decode_opt_String(arr[2]),
+size: dco_decode_opt_box_autoadd_u_64(arr[3]),); }
+
+@protected DartEmailAttribute dco_decode_dart_email_attribute(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return DartEmailAttribute(key: dco_decode_String(arr[0]),
+value: dco_decode_String(arr[1]),); }
+
+@protected DartEmailMarkReadResult dco_decode_dart_email_mark_read_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 1) throw Exception('unexpected arr length: expect 1 but see ${arr.length}');
+                return DartEmailMarkReadResult(updated: dco_decode_u_32(arr[0]),); }
+
+@protected DartEmailMessage dco_decode_dart_email_message(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartEmailMessage(summary: dco_decode_dart_email_message_summary(arr[0]),
+bodyText: dco_decode_opt_String(arr[1]),
+bodyHtml: dco_decode_opt_String(arr[2]),
+attachments: dco_decode_list_dart_email_attachment_metadata(arr[3]),); }
+
+@protected DartEmailMessageSummary dco_decode_dart_email_message_summary(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 13) throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+                return DartEmailMessageSummary(id: dco_decode_String(arr[0]),
+folder: dco_decode_opt_String(arr[1]),
+from: dco_decode_list_String(arr[2]),
+to: dco_decode_list_String(arr[3]),
+cc: dco_decode_list_String(arr[4]),
+subject: dco_decode_String(arr[5]),
+preview: dco_decode_opt_String(arr[6]),
+receivedAt: dco_decode_opt_String(arr[7]),
+sentAt: dco_decode_opt_String(arr[8]),
+unread: dco_decode_bool(arr[9]),
+hasAttachments: dco_decode_bool(arr[10]),
+attachmentCount: dco_decode_opt_box_autoadd_u_32(arr[11]),
+attributes: dco_decode_list_dart_email_attribute(arr[12]),); }
+
+@protected DartEmailMessageSummaryPage dco_decode_dart_email_message_summary_page(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartEmailMessageSummaryPage(items: dco_decode_list_dart_email_message_summary(arr[0]),
+nextCursor: dco_decode_opt_String(arr[1]),
+hasMore: dco_decode_bool(arr[2]),); }
+
+@protected DartEmailNotification dco_decode_dart_email_notification(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 8) throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+                return DartEmailNotification(id: dco_decode_String(arr[0]),
+mailboxAddress: dco_decode_opt_String(arr[1]),
+fromAddr: dco_decode_opt_String(arr[2]),
+subject: dco_decode_String(arr[3]),
+preview: dco_decode_opt_String(arr[4]),
+hasAttachments: dco_decode_bool(arr[5]),
+receivedAt: dco_decode_opt_String(arr[6]),
+attributes: dco_decode_list_dart_email_attribute(arr[7]),); }
+
+@protected DartEmailNotificationPage dco_decode_dart_email_notification_page(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartEmailNotificationPage(items: dco_decode_list_dart_email_notification(arr[0]),
+nextCursor: dco_decode_opt_String(arr[1]),
+hasMore: dco_decode_bool(arr[2]),); }
+
+@protected DartGroupMember dco_decode_dart_group_member(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartGroupMember(did: dco_decode_opt_String(arr[0]),
+handle: dco_decode_opt_String(arr[1]),
+role: dco_decode_opt_String(arr[2]),
+status: dco_decode_opt_String(arr[3]),
+joinedAt: dco_decode_opt_String(arr[4]),); }
+
+@protected DartGroupReadResult dco_decode_dart_group_read_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 7) throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+                return DartGroupReadResult(group: dco_decode_opt_box_autoadd_dart_group_snapshot(arr[0]),
+groups: dco_decode_list_dart_group_summary(arr[1]),
+members: dco_decode_list_dart_group_member(arr[2]),
+messages: dco_decode_dart_message_page(arr[3]),
+total: dco_decode_opt_box_autoadd_u_32(arr[4]),
+source: dco_decode_opt_String(arr[5]),
+warnings: dco_decode_list_String(arr[6]),); }
+
+@protected DartGroupSecureLocalReadiness dco_decode_dart_group_secure_local_readiness(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return DartGroupSecureLocalReadiness(hasLocalState: dco_decode_bool(arr[0]),
+hasActiveMembership: dco_decode_bool(arr[1]),); }
+
+@protected DartGroupSecurePendingWork dco_decode_dart_group_secure_pending_work(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return DartGroupSecurePendingWork(pendingNotices: dco_decode_u_32(arr[0]),
+pendingCommits: dco_decode_u_32(arr[1]),); }
+
+@protected DartGroupSecurePrepareResult dco_decode_dart_group_secure_prepare_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartGroupSecurePrepareResult(group: dco_decode_String(arr[0]),
+state: dco_decode_dart_group_secure_state(arr[1]),
+canSendSecure: dco_decode_bool(arr[2]),
+warnings: dco_decode_list_String(arr[3]),); }
+
+@protected DartGroupSecureRepairResult dco_decode_dart_group_secure_repair_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartGroupSecureRepairResult(group: dco_decode_String(arr[0]),
+state: dco_decode_dart_group_secure_state(arr[1]),
+repaired: dco_decode_bool(arr[2]),
+problem: dco_decode_opt_box_autoadd_dart_secure_problem(arr[3]),
+warnings: dco_decode_list_String(arr[4]),); }
+
+@protected DartGroupSecureState dco_decode_dart_group_secure_state(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DartGroupSecureState.values[raw as int]; }
+
+@protected DartGroupSecureStatus dco_decode_dart_group_secure_status(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 7) throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+                return DartGroupSecureStatus(group: dco_decode_String(arr[0]),
+state: dco_decode_dart_group_secure_state(arr[1]),
+canSendSecure: dco_decode_bool(arr[2]),
+localReadiness: dco_decode_dart_group_secure_local_readiness(arr[3]),
+pendingWork: dco_decode_dart_group_secure_pending_work(arr[4]),
+problem: dco_decode_opt_box_autoadd_dart_secure_problem(arr[5]),
+warnings: dco_decode_list_String(arr[6]),); }
+
+@protected DartGroupSnapshot dco_decode_dart_group_snapshot(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 8) throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+                return DartGroupSnapshot(id: dco_decode_opt_String(arr[0]),
+did: dco_decode_String(arr[1]),
+name: dco_decode_opt_String(arr[2]),
+description: dco_decode_opt_String(arr[3]),
+myRole: dco_decode_opt_String(arr[4]),
+membershipStatus: dco_decode_opt_String(arr[5]),
+memberCount: dco_decode_opt_box_autoadd_u_32(arr[6]),
+lastMessageAt: dco_decode_opt_String(arr[7]),); }
+
+@protected DartGroupSummary dco_decode_dart_group_summary(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 6) throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+                return DartGroupSummary(id: dco_decode_opt_String(arr[0]),
+did: dco_decode_String(arr[1]),
+name: dco_decode_opt_String(arr[2]),
+membershipStatus: dco_decode_opt_String(arr[3]),
+memberCount: dco_decode_opt_box_autoadd_u_32(arr[4]),
+lastMessageAt: dco_decode_opt_String(arr[5]),); }
+
+@protected DartHandleRegistrationResult dco_decode_dart_handle_registration_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 6) throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+                return DartHandleRegistrationResult(identity: dco_decode_opt_box_autoadd_dart_identity_summary(arr[0]),
+handle: dco_decode_String(arr[1]),
+method: dco_decode_String(arr[2]),
+state: dco_decode_String(arr[3]),
+defaultIdentityChange: dco_decode_opt_box_autoadd_dart_default_identity_change(arr[4]),
+warnings: dco_decode_list_String(arr[5]),); }
+
+@protected DartIdentitySelector dco_decode_dart_identity_selector(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+switch (raw[0]) {
+                case 0: return DartIdentitySelector_Default();
+case 1: return DartIdentitySelector_Id(id: dco_decode_String(raw[1]),);
+case 2: return DartIdentitySelector_Did(did: dco_decode_String(raw[1]),);
+case 3: return DartIdentitySelector_Handle(handle: dco_decode_String(raw[1]),);
+case 4: return DartIdentitySelector_LocalAlias(alias: dco_decode_String(raw[1]),);
+                default: throw Exception("unreachable");
+            } }
+
+@protected DartIdentitySubject dco_decode_dart_identity_subject(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+switch (raw[0]) {
+                case 0: return DartIdentitySubject_Did(did: dco_decode_String(raw[1]),);
+case 1: return DartIdentitySubject_Handle(handle: dco_decode_String(raw[1]),);
+case 2: return DartIdentitySubject_Any(value: dco_decode_String(raw[1]),);
+                default: throw Exception("unreachable");
+            } }
+
+@protected DartIdentitySummary dco_decode_dart_identity_summary(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 10) throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+                return DartIdentitySummary(id: dco_decode_String(arr[0]),
+did: dco_decode_String(arr[1]),
+handle: dco_decode_opt_String(arr[2]),
+displayName: dco_decode_opt_String(arr[3]),
+localAlias: dco_decode_opt_String(arr[4]),
+deviceId: dco_decode_opt_String(arr[5]),
+isDefault: dco_decode_bool(arr[6]),
+readyForAuth: dco_decode_bool(arr[7]),
+readyForMessaging: dco_decode_bool(arr[8]),
+missing: dco_decode_list_String(arr[9]),); }
+
+@protected DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 8) throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+                return DartImCoreConfig(serviceBaseUrl: dco_decode_String(arr[0]),
+didDomain: dco_decode_String(arr[1]),
+userServiceEndpoint: dco_decode_opt_String(arr[2]),
+messageServiceEndpoint: dco_decode_opt_String(arr[3]),
+mailServiceEndpoint: dco_decode_opt_String(arr[4]),
+anpServiceEndpoint: dco_decode_opt_String(arr[5]),
+anpServiceDid: dco_decode_opt_String(arr[6]),
+transportPolicy: dco_decode_dart_message_transport_policy(arr[7]),); }
+
+@protected DartImCorePaths dco_decode_dart_im_core_paths(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 6) throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+                return DartImCorePaths(identityRootDir: dco_decode_String(arr[0]),
+registryPath: dco_decode_String(arr[1]),
+defaultIdentityPath: dco_decode_opt_String(arr[2]),
+sqlitePath: dco_decode_String(arr[3]),
+cacheDir: dco_decode_String(arr[4]),
+tempDir: dco_decode_String(arr[5]),); }
+
+@protected DartImError dco_decode_dart_im_error(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartImError(code: dco_decode_String(arr[0]),
+message: dco_decode_String(arr[1]),
+field: dco_decode_opt_String(arr[2]),
+statusCode: dco_decode_opt_box_autoadd_u_16(arr[3]),
+capability: dco_decode_opt_String(arr[4]),); }
+
+@protected DartInitialProfile dco_decode_dart_initial_profile(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return DartInitialProfile(displayName: dco_decode_opt_String(arr[0]),
+avatarUrl: dco_decode_opt_String(arr[1]),); }
+
+@protected DartMarkReadResult dco_decode_dart_mark_read_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartMarkReadResult(updatedCount: dco_decode_u_32(arr[0]),
+messageIds: dco_decode_list_String(arr[1]),
+warnings: dco_decode_list_String(arr[2]),); }
+
+@protected DartMessage dco_decode_dart_message(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 11) throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+                return DartMessage(id: dco_decode_String(arr[0]),
+threadKind: dco_decode_String(arr[1]),
+threadId: dco_decode_String(arr[2]),
+direction: dco_decode_dart_message_direction(arr[3]),
+sender: dco_decode_String(arr[4]),
+receiver: dco_decode_opt_String(arr[5]),
+group: dco_decode_opt_String(arr[6]),
+body: dco_decode_dart_message_body_view(arr[7]),
+sentAt: dco_decode_opt_String(arr[8]),
+receivedAt: dco_decode_opt_String(arr[9]),
+metadata: dco_decode_dart_message_metadata(arr[10]),); }
+
+@protected DartMessageBodyView dco_decode_dart_message_body_view(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartMessageBodyView(text: dco_decode_opt_String(arr[0]),
+kind: dco_decode_opt_String(arr[1]),
+unsupportedContentType: dco_decode_opt_String(arr[2]),); }
+
+@protected DartMessageDirection dco_decode_dart_message_direction(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DartMessageDirection.values[raw as int]; }
+
+@protected DartMessageMetadata dco_decode_dart_message_metadata(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 8) throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+                return DartMessageMetadata(operationId: dco_decode_opt_String(arr[0]),
+deliveryState: dco_decode_opt_String(arr[1]),
+sendState: dco_decode_opt_String(arr[2]),
+retryable: dco_decode_opt_box_autoadd_bool(arr[3]),
+retryAction: dco_decode_opt_String(arr[4]),
+serverSequence: dco_decode_opt_box_autoadd_i_64(arr[5]),
+contentType: dco_decode_opt_String(arr[6]),
+attributes: dco_decode_list_dart_message_metadata_attribute(arr[7]),); }
+
+@protected DartMessageMetadataAttribute dco_decode_dart_message_metadata_attribute(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return DartMessageMetadataAttribute(key: dco_decode_String(arr[0]),
+value: dco_decode_String(arr[1]),); }
+
+@protected DartMessagePage dco_decode_dart_message_page(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartMessagePage(items: dco_decode_list_dart_message(arr[0]),
+nextCursor: dco_decode_opt_String(arr[1]),
+hasMore: dco_decode_bool(arr[2]),); }
+
+@protected DartMessageSecurityMode dco_decode_dart_message_security_mode(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DartMessageSecurityMode.values[raw as int]; }
+
+@protected DartMessageTarget dco_decode_dart_message_target(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+switch (raw[0]) {
+                case 0: return DartMessageTarget_Direct(peer: dco_decode_String(raw[1]),);
+case 1: return DartMessageTarget_Group(group: dco_decode_String(raw[1]),);
+                default: throw Exception("unreachable");
+            } }
+
+@protected DartMessageTransportPolicy dco_decode_dart_message_transport_policy(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DartMessageTransportPolicy.values[raw as int]; }
+
+@protected DartProfilePatch dco_decode_dart_profile_patch(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartProfilePatch(displayName: dco_decode_opt_String(arr[0]),
+bio: dco_decode_opt_String(arr[1]),
+tags: dco_decode_opt_list_String(arr[2]),
+markdown: dco_decode_opt_String(arr[3]),); }
+
+@protected DartRealtimeCapability dco_decode_dart_realtime_capability(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartRealtimeCapability(statusSupported: dco_decode_bool(arr[0]),
+connectSupported: dco_decode_bool(arr[1]),
+runnerExposed: dco_decode_bool(arr[2]),
+reason: dco_decode_opt_String(arr[3]),); }
+
+@protected DartRealtimeEvent dco_decode_dart_realtime_event(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 16) throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+                return DartRealtimeEvent(kind: dco_decode_String(arr[0]),
+state: dco_decode_opt_String(arr[1]),
+reason: dco_decode_opt_String(arr[2]),
+message: dco_decode_opt_box_autoadd_dart_message(arr[3]),
+messageId: dco_decode_opt_String(arr[4]),
+threadKind: dco_decode_opt_String(arr[5]),
+threadId: dco_decode_opt_String(arr[6]),
+updateKind: dco_decode_opt_String(arr[7]),
+group: dco_decode_opt_String(arr[8]),
+notificationId: dco_decode_opt_String(arr[9]),
+title: dco_decode_opt_String(arr[10]),
+body: dco_decode_opt_String(arr[11]),
+source: dco_decode_opt_String(arr[12]),
+hostKind: dco_decode_opt_String(arr[13]),
+contentType: dco_decode_opt_String(arr[14]),
+notificationType: dco_decode_opt_String(arr[15]),); }
+
+@protected DartRealtimeOptions dco_decode_dart_realtime_options(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 7) throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+                return DartRealtimeOptions(reconnect: dco_decode_String(arr[0]),
+eventBuffer: dco_decode_u_32(arr[1]),
+reconnectDelayMs: dco_decode_opt_box_autoadd_u_64(arr[2]),
+reconnectBaseDelayMs: dco_decode_opt_box_autoadd_u_64(arr[3]),
+reconnectMaxDelayMs: dco_decode_opt_box_autoadd_u_64(arr[4]),
+reconnectMaxAttempts: dco_decode_opt_box_autoadd_u_32(arr[5]),
+subscriptions: dco_decode_list_String(arr[6]),); }
+
+@protected DartRealtimeStatus dco_decode_dart_realtime_status(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartRealtimeStatus(connected: dco_decode_bool(arr[0]),
+state: dco_decode_String(arr[1]),
+subscriptions: dco_decode_list_String(arr[2]),
+lastError: dco_decode_opt_String(arr[3]),
+warnings: dco_decode_list_String(arr[4]),); }
+
+@protected DartRecoverHandleResult dco_decode_dart_recover_handle_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 7) throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+                return DartRecoverHandleResult(handle: dco_decode_String(arr[0]),
+phone: dco_decode_String(arr[1]),
+state: dco_decode_String(arr[2]),
+recoveredIdentity: dco_decode_opt_box_autoadd_dart_identity_summary(arr[3]),
+userId: dco_decode_opt_String(arr[4]),
+accessTokenPresent: dco_decode_bool(arr[5]),
+warnings: dco_decode_list_String(arr[6]),); }
+
+@protected DartRelationStatus dco_decode_dart_relation_status(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartRelationStatus(peer: dco_decode_String(arr[0]),
+relationship: dco_decode_opt_String(arr[1]),
+displayName: dco_decode_opt_String(arr[2]),); }
+
+@protected DartRelationshipListItem dco_decode_dart_relationship_list_item(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 6) throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+                return DartRelationshipListItem(did: dco_decode_String(arr[0]),
+handle: dco_decode_opt_String(arr[1]),
+displayName: dco_decode_opt_String(arr[2]),
+relationship: dco_decode_String(arr[3]),
+createdAt: dco_decode_opt_String(arr[4]),
+warnings: dco_decode_list_String(arr[5]),); }
+
+@protected DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartRelationshipPage(items: dco_decode_list_dart_relationship_list_item(arr[0]),
+nextCursor: dco_decode_opt_String(arr[1]),
+hasMore: dco_decode_bool(arr[2]),); }
+
+@protected DartSecureDelivery dco_decode_dart_secure_delivery(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 2) throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+                return DartSecureDelivery(messageId: dco_decode_opt_String(arr[0]),
+state: dco_decode_String(arr[1]),); }
+
+@protected DartSecureOutboxEntry dco_decode_dart_secure_outbox_entry(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 8) throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+                return DartSecureOutboxEntry(id: dco_decode_String(arr[0]),
+target: dco_decode_dart_message_target(arr[1]),
+messageKind: dco_decode_String(arr[2]),
+status: dco_decode_dart_secure_outbox_status(arr[3]),
+attemptCount: dco_decode_u_32(arr[4]),
+lastError: dco_decode_opt_box_autoadd_dart_secure_problem(arr[5]),
+createdAt: dco_decode_opt_String(arr[6]),
+updatedAt: dco_decode_opt_String(arr[7]),); }
+
+@protected DartSecureOutboxResult dco_decode_dart_secure_outbox_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartSecureOutboxResult(id: dco_decode_String(arr[0]),
+status: dco_decode_dart_secure_outbox_status(arr[1]),
+delivery: dco_decode_opt_box_autoadd_dart_secure_delivery(arr[2]),
+warnings: dco_decode_list_String(arr[3]),); }
+
+@protected DartSecureOutboxStatus dco_decode_dart_secure_outbox_status(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DartSecureOutboxStatus.values[raw as int]; }
+
+@protected DartSecureProblem dco_decode_dart_secure_problem(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartSecureProblem(code: dco_decode_dart_secure_problem_code(arr[0]),
+message: dco_decode_String(arr[1]),
+retryable: dco_decode_bool(arr[2]),); }
+
+@protected DartSecureProblemCode dco_decode_dart_secure_problem_code(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return DartSecureProblemCode.values[raw as int]; }
+
+@protected DartSendEmailRequest dco_decode_dart_send_email_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 5) throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+                return DartSendEmailRequest(to: dco_decode_list_String(arr[0]),
+cc: dco_decode_list_String(arr[1]),
+subject: dco_decode_String(arr[2]),
+bodyText: dco_decode_String(arr[3]),
+bodyHtml: dco_decode_opt_String(arr[4]),); }
+
+@protected DartSendEmailResult dco_decode_dart_send_email_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartSendEmailResult(accepted: dco_decode_bool(arr[0]),
+messageId: dco_decode_opt_String(arr[1]),
+warnings: dco_decode_list_String(arr[2]),); }
+
+@protected DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 3) throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+                return DartSendMessageResult(message: dco_decode_dart_message(arr[0]),
+deliveryState: dco_decode_String(arr[1]),
+warnings: dco_decode_list_String(arr[2]),); }
+
+@protected DartSendTextRequest dco_decode_dart_send_text_request(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 7) throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+                return DartSendTextRequest(target: dco_decode_dart_message_target(arr[0]),
+text: dco_decode_String(arr[1]),
+markdown: dco_decode_bool(arr[2]),
+security: dco_decode_dart_message_security_mode(arr[3]),
+clientMessageId: dco_decode_opt_String(arr[4]),
+idempotencyKey: dco_decode_opt_String(arr[5]),
+waitForFinalAcceptance: dco_decode_bool(arr[6]),); }
+
+@protected DartSessionBundle dco_decode_dart_session_bundle(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartSessionBundle(subject: dco_decode_String(arr[0]),
+scope: dco_decode_dart_auth_scope(arr[1]),
+expiresAt: dco_decode_opt_String(arr[2]),
+refreshed: dco_decode_bool(arr[3]),); }
+
+@protected DartSessionUpdate dco_decode_dart_session_update(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 4) throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+                return DartSessionUpdate(subject: dco_decode_String(arr[0]),
+previousExpiresAt: dco_decode_opt_String(arr[1]),
+newExpiresAt: dco_decode_opt_String(arr[2]),
+refreshed: dco_decode_bool(arr[3]),); }
+
+@protected DartThreadRef dco_decode_dart_thread_ref(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+switch (raw[0]) {
+                case 0: return DartThreadRef_Direct(peer: dco_decode_String(raw[1]),);
+case 1: return DartThreadRef_Group(group: dco_decode_String(raw[1]),);
+case 2: return DartThreadRef_Thread(threadId: dco_decode_String(raw[1]),);
+                default: throw Exception("unreachable");
+            } }
+
+@protected DartUserProfile dco_decode_dart_user_profile(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+final arr = raw as List<dynamic>;
+                if (arr.length != 8) throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+                return DartUserProfile(subject: dco_decode_String(arr[0]),
+handle: dco_decode_opt_String(arr[1]),
+displayName: dco_decode_opt_String(arr[2]),
+bio: dco_decode_opt_String(arr[3]),
+tags: dco_decode_list_String(arr[4]),
+markdown: dco_decode_opt_String(arr[5]),
+avatarUrl: dco_decode_opt_String(arr[6]),
+updatedAt: dco_decode_opt_String(arr[7]),); }
+
+@protected int dco_decode_i_32(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected PlatformInt64 dco_decode_i_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dcoDecodeI64(raw); }
+
+@protected List<String> dco_decode_list_String(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_String).toList(); }
+
+@protected List<DartConversation> dco_decode_list_dart_conversation(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_conversation).toList(); }
+
+@protected List<DartEmailAttachmentMetadata> dco_decode_list_dart_email_attachment_metadata(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_email_attachment_metadata).toList(); }
+
+@protected List<DartEmailAttribute> dco_decode_list_dart_email_attribute(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_email_attribute).toList(); }
+
+@protected List<DartEmailMessageSummary> dco_decode_list_dart_email_message_summary(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_email_message_summary).toList(); }
+
+@protected List<DartEmailNotification> dco_decode_list_dart_email_notification(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_email_notification).toList(); }
+
+@protected List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_group_member).toList(); }
+
+@protected List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_group_summary).toList(); }
+
+@protected List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_identity_summary).toList(); }
+
+@protected List<DartMessage> dco_decode_list_dart_message(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_message).toList(); }
+
+@protected List<DartMessageMetadataAttribute> dco_decode_list_dart_message_metadata_attribute(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_message_metadata_attribute).toList(); }
+
+@protected List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_relationship_list_item).toList(); }
+
+@protected List<DartSecureOutboxEntry> dco_decode_list_dart_secure_outbox_entry(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return (raw as List<dynamic>).map(dco_decode_dart_secure_outbox_entry).toList(); }
+
+@protected Uint8List dco_decode_list_prim_u_8_strict(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as Uint8List; }
+
+@protected String? dco_decode_opt_String(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_String(raw); }
+
+@protected bool? dco_decode_opt_box_autoadd_bool(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_bool(raw); }
+
+@protected DartDefaultIdentityChange? dco_decode_opt_box_autoadd_dart_default_identity_change(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_dart_default_identity_change(raw); }
+
+@protected DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_dart_group_snapshot(raw); }
+
+@protected DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_dart_identity_summary(raw); }
+
+@protected DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_dart_message(raw); }
+
+@protected DartSecureDelivery? dco_decode_opt_box_autoadd_dart_secure_delivery(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_dart_secure_delivery(raw); }
+
+@protected DartSecureProblem? dco_decode_opt_box_autoadd_dart_secure_problem(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_dart_secure_problem(raw); }
+
+@protected DartUserProfile? dco_decode_opt_box_autoadd_dart_user_profile(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_dart_user_profile(raw); }
+
+@protected PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_i_64(raw); }
+
+@protected int? dco_decode_opt_box_autoadd_u_16(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_u_16(raw); }
+
+@protected int? dco_decode_opt_box_autoadd_u_32(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_u_32(raw); }
+
+@protected BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_box_autoadd_u_64(raw); }
+
+@protected List<String>? dco_decode_opt_list_String(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw == null ? null : dco_decode_list_String(raw); }
+
+@protected int dco_decode_u_16(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected int dco_decode_u_32(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected BigInt dco_decode_u_64(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dcoDecodeU64(raw); }
+
+@protected int dco_decode_u_8(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return raw as int; }
+
+@protected void dco_decode_unit(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return; }
+
+@protected BigInt dco_decode_usize(dynamic raw){ // Codec=Dco (DartCObject based), see doc to use other codecs
+return dcoDecodeU64(raw); }
+
+@protected AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_String(deserializer);
+        return AnyhowException(inner); }
+
+@protected ArcDartImClient sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartImClientImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected ArcDartImCore sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartImCoreImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected ArcDartRealtimeSession sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartRealtimeSessionImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected ArcDartImClient sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartImClientImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected ArcDartImCore sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartImCoreImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected ArcDartRealtimeSession sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartRealtimeSessionImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected ArcDartImClient sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartImClientImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected ArcDartImCore sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartImCoreImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected ArcDartRealtimeSession sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return ArcDartRealtimeSessionImpl.frbInternalSseDecode(sse_decode_usize(deserializer), sse_decode_i_32(deserializer)); }
+
+@protected RustStreamSink<DartRealtimeEvent> sse_decode_StreamSink_dart_realtime_event_Sse(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+throw UnimplementedError('Unreachable ()'); }
+
+@protected String sse_decode_String(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_list_prim_u_8_strict(deserializer);
+        return utf8.decoder.convert(inner); }
+
+@protected bool sse_decode_bool(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getUint8() != 0; }
+
+@protected bool sse_decode_box_autoadd_bool(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_bool(deserializer)); }
+
+@protected DartAttachmentSendRequest sse_decode_box_autoadd_dart_attachment_send_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_attachment_send_request(deserializer)); }
+
+@protected DartCreateGroupRequest sse_decode_box_autoadd_dart_create_group_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_create_group_request(deserializer)); }
+
+@protected DartDefaultIdentityChange sse_decode_box_autoadd_dart_default_identity_change(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_default_identity_change(deserializer)); }
+
+@protected DartDownloadAttachmentRequest sse_decode_box_autoadd_dart_download_attachment_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_download_attachment_request(deserializer)); }
+
+@protected DartGroupSnapshot sse_decode_box_autoadd_dart_group_snapshot(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_group_snapshot(deserializer)); }
+
+@protected DartIdentitySelector sse_decode_box_autoadd_dart_identity_selector(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_identity_selector(deserializer)); }
+
+@protected DartIdentitySubject sse_decode_box_autoadd_dart_identity_subject(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_identity_subject(deserializer)); }
+
+@protected DartIdentitySummary sse_decode_box_autoadd_dart_identity_summary(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_identity_summary(deserializer)); }
+
+@protected DartImCoreConfig sse_decode_box_autoadd_dart_im_core_config(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_im_core_config(deserializer)); }
+
+@protected DartImCorePaths sse_decode_box_autoadd_dart_im_core_paths(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_im_core_paths(deserializer)); }
+
+@protected DartInitialProfile sse_decode_box_autoadd_dart_initial_profile(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_initial_profile(deserializer)); }
+
+@protected DartMessage sse_decode_box_autoadd_dart_message(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_message(deserializer)); }
+
+@protected DartProfilePatch sse_decode_box_autoadd_dart_profile_patch(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_profile_patch(deserializer)); }
+
+@protected DartRealtimeOptions sse_decode_box_autoadd_dart_realtime_options(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_realtime_options(deserializer)); }
+
+@protected DartSecureDelivery sse_decode_box_autoadd_dart_secure_delivery(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_secure_delivery(deserializer)); }
+
+@protected DartSecureProblem sse_decode_box_autoadd_dart_secure_problem(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_secure_problem(deserializer)); }
+
+@protected DartSendEmailRequest sse_decode_box_autoadd_dart_send_email_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_send_email_request(deserializer)); }
+
+@protected DartSendTextRequest sse_decode_box_autoadd_dart_send_text_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_send_text_request(deserializer)); }
+
+@protected DartThreadRef sse_decode_box_autoadd_dart_thread_ref(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_thread_ref(deserializer)); }
+
+@protected DartUserProfile sse_decode_box_autoadd_dart_user_profile(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_dart_user_profile(deserializer)); }
+
+@protected PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_i_64(deserializer)); }
+
+@protected int sse_decode_box_autoadd_u_16(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_u_16(deserializer)); }
+
+@protected int sse_decode_box_autoadd_u_32(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_u_32(deserializer)); }
+
+@protected BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return (sse_decode_u_64(deserializer)); }
+
+@protected DartAttachmentDestination sse_decode_dart_attachment_destination(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            var tag_ = sse_decode_i_32(deserializer);
+            switch (tag_) { case 0: var var_path = sse_decode_String(deserializer);
+return DartAttachmentDestination_LocalFile(path: var_path);case 1: return DartAttachmentDestination_Memory(); default: throw UnimplementedError(''); }
+             }
+
+@protected DartAttachmentInput sse_decode_dart_attachment_input(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            var tag_ = sse_decode_i_32(deserializer);
+            switch (tag_) { case 0: var var_path = sse_decode_String(deserializer);
+return DartAttachmentInput_LocalFile(path: var_path);case 1: var var_filename = sse_decode_opt_String(deserializer);
+var var_mimeType = sse_decode_opt_String(deserializer);
+var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
+return DartAttachmentInput_Bytes(filename: var_filename, mimeType: var_mimeType, bytes: var_bytes); default: throw UnimplementedError(''); }
+             }
+
+@protected DartAttachmentSendRequest sse_decode_dart_attachment_send_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_target = sse_decode_dart_message_target(deserializer);
+var var_input = sse_decode_dart_attachment_input(deserializer);
+var var_caption = sse_decode_opt_String(deserializer);
+var var_mimeType = sse_decode_opt_String(deserializer);
+var var_filename = sse_decode_opt_String(deserializer);
+var var_idempotencyKey = sse_decode_opt_String(deserializer);
+var var_waitForFinalAcceptance = sse_decode_bool(deserializer);
+return DartAttachmentSendRequest(target: var_target, input: var_input, caption: var_caption, mimeType: var_mimeType, filename: var_filename, idempotencyKey: var_idempotencyKey, waitForFinalAcceptance: var_waitForFinalAcceptance); }
+
+@protected DartAuthScope sse_decode_dart_auth_scope(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DartAuthScope.values[inner]; }
+
+@protected DartAuthStatus sse_decode_dart_auth_status(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_subject = sse_decode_String(deserializer);
+var var_hasSession = sse_decode_bool(deserializer);
+var var_expiresAt = sse_decode_opt_String(deserializer);
+var var_needsRefresh = sse_decode_bool(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartAuthStatus(subject: var_subject, hasSession: var_hasSession, expiresAt: var_expiresAt, needsRefresh: var_needsRefresh, warnings: var_warnings); }
+
+@protected DartConversation sse_decode_dart_conversation(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_threadKind = sse_decode_String(deserializer);
+var var_threadId = sse_decode_String(deserializer);
+var var_title = sse_decode_opt_String(deserializer);
+var var_participants = sse_decode_list_String(deserializer);
+var var_lastMessage = sse_decode_opt_box_autoadd_dart_message(deserializer);
+var var_unreadCount = sse_decode_u_32(deserializer);
+var var_messageCount = sse_decode_u_32(deserializer);
+var var_lastMessageAt = sse_decode_opt_String(deserializer);
+return DartConversation(threadKind: var_threadKind, threadId: var_threadId, title: var_title, participants: var_participants, lastMessage: var_lastMessage, unreadCount: var_unreadCount, messageCount: var_messageCount, lastMessageAt: var_lastMessageAt); }
+
+@protected DartConversationPage sse_decode_dart_conversation_page(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_items = sse_decode_list_dart_conversation(deserializer);
+var var_nextCursor = sse_decode_opt_String(deserializer);
+var var_hasMore = sse_decode_bool(deserializer);
+return DartConversationPage(items: var_items, nextCursor: var_nextCursor, hasMore: var_hasMore); }
+
+@protected DartCreateGroupRequest sse_decode_dart_create_group_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_name = sse_decode_String(deserializer);
+var var_description = sse_decode_opt_String(deserializer);
+var var_discoverability = sse_decode_opt_String(deserializer);
+var var_admissionMode = sse_decode_opt_String(deserializer);
+var var_messageSecurityProfile = sse_decode_opt_String(deserializer);
+var var_e2Ee = sse_decode_bool(deserializer);
+var var_slug = sse_decode_opt_String(deserializer);
+var var_goal = sse_decode_opt_String(deserializer);
+var var_rules = sse_decode_opt_String(deserializer);
+var var_messagePrompt = sse_decode_opt_String(deserializer);
+var var_docUrl = sse_decode_opt_String(deserializer);
+var var_attachmentsAllowed = sse_decode_opt_box_autoadd_bool(deserializer);
+var var_maxMembers = sse_decode_opt_String(deserializer);
+var var_memberMaxMessages = sse_decode_opt_box_autoadd_i_64(deserializer);
+var var_memberMaxTotalChars = sse_decode_opt_box_autoadd_i_64(deserializer);
+return DartCreateGroupRequest(name: var_name, description: var_description, discoverability: var_discoverability, admissionMode: var_admissionMode, messageSecurityProfile: var_messageSecurityProfile, e2Ee: var_e2Ee, slug: var_slug, goal: var_goal, rules: var_rules, messagePrompt: var_messagePrompt, docUrl: var_docUrl, attachmentsAllowed: var_attachmentsAllowed, maxMembers: var_maxMembers, memberMaxMessages: var_memberMaxMessages, memberMaxTotalChars: var_memberMaxTotalChars); }
+
+@protected DartDefaultIdentityChange sse_decode_dart_default_identity_change(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_previous = sse_decode_opt_box_autoadd_dart_identity_summary(deserializer);
+var var_next = sse_decode_dart_identity_summary(deserializer);
+var var_requiresDefaultIdentityWrite = sse_decode_bool(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartDefaultIdentityChange(previous: var_previous, next: var_next, requiresDefaultIdentityWrite: var_requiresDefaultIdentityWrite, warnings: var_warnings); }
+
+@protected DartDirectSecurePrepareResult sse_decode_dart_direct_secure_prepare_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_peer = sse_decode_String(deserializer);
+var var_state = sse_decode_dart_direct_secure_state(deserializer);
+var var_canSendSecure = sse_decode_bool(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartDirectSecurePrepareResult(peer: var_peer, state: var_state, canSendSecure: var_canSendSecure, warnings: var_warnings); }
+
+@protected DartDirectSecureRepairResult sse_decode_dart_direct_secure_repair_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_peer = sse_decode_String(deserializer);
+var var_state = sse_decode_dart_direct_secure_state(deserializer);
+var var_repaired = sse_decode_bool(deserializer);
+var var_problem = sse_decode_opt_box_autoadd_dart_secure_problem(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartDirectSecureRepairResult(peer: var_peer, state: var_state, repaired: var_repaired, problem: var_problem, warnings: var_warnings); }
+
+@protected DartDirectSecureState sse_decode_dart_direct_secure_state(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DartDirectSecureState.values[inner]; }
+
+@protected DartDirectSecureStatus sse_decode_dart_direct_secure_status(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_peer = sse_decode_String(deserializer);
+var var_resolvedPeer = sse_decode_opt_String(deserializer);
+var var_state = sse_decode_dart_direct_secure_state(deserializer);
+var var_canSendSecure = sse_decode_bool(deserializer);
+var var_pendingOutboxCount = sse_decode_u_32(deserializer);
+var var_problem = sse_decode_opt_box_autoadd_dart_secure_problem(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartDirectSecureStatus(peer: var_peer, resolvedPeer: var_resolvedPeer, state: var_state, canSendSecure: var_canSendSecure, pendingOutboxCount: var_pendingOutboxCount, problem: var_problem, warnings: var_warnings); }
+
+@protected DartDirectoryResolution sse_decode_dart_directory_resolution(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_input = sse_decode_String(deserializer);
+var var_did = sse_decode_String(deserializer);
+var var_handle = sse_decode_opt_String(deserializer);
+var var_profile = sse_decode_opt_box_autoadd_dart_user_profile(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartDirectoryResolution(input: var_input, did: var_did, handle: var_handle, profile: var_profile, warnings: var_warnings); }
+
+@protected DartDownloadAttachmentRequest sse_decode_dart_download_attachment_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_thread = sse_decode_dart_thread_ref(deserializer);
+var var_messageId = sse_decode_String(deserializer);
+var var_attachmentId = sse_decode_opt_String(deserializer);
+var var_destination = sse_decode_dart_attachment_destination(deserializer);
+var var_overwrite = sse_decode_bool(deserializer);
+return DartDownloadAttachmentRequest(thread: var_thread, messageId: var_messageId, attachmentId: var_attachmentId, destination: var_destination, overwrite: var_overwrite); }
+
+@protected DartDownloadedAttachment sse_decode_dart_downloaded_attachment(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_attachmentId = sse_decode_String(deserializer);
+var var_filename = sse_decode_opt_String(deserializer);
+var var_mimeType = sse_decode_opt_String(deserializer);
+var var_sizeBytes = sse_decode_opt_box_autoadd_u_64(deserializer);
+var var_destination = sse_decode_dart_downloaded_attachment_destination(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartDownloadedAttachment(attachmentId: var_attachmentId, filename: var_filename, mimeType: var_mimeType, sizeBytes: var_sizeBytes, destination: var_destination, warnings: var_warnings); }
+
+@protected DartDownloadedAttachmentDestination sse_decode_dart_downloaded_attachment_destination(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            var tag_ = sse_decode_i_32(deserializer);
+            switch (tag_) { case 0: var var_path = sse_decode_String(deserializer);
+return DartDownloadedAttachmentDestination_LocalFile(path: var_path);case 1: var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
+return DartDownloadedAttachmentDestination_Memory(bytes: var_bytes); default: throw UnimplementedError(''); }
+             }
+
+@protected DartEmailAccount sse_decode_dart_email_account(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_mailboxAddress = sse_decode_opt_String(deserializer);
+var var_displayName = sse_decode_opt_String(deserializer);
+var var_status = sse_decode_opt_String(deserializer);
+var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
+return DartEmailAccount(mailboxAddress: var_mailboxAddress, displayName: var_displayName, status: var_status, attributes: var_attributes); }
+
+@protected DartEmailAttachmentContent sse_decode_dart_email_attachment_content(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_messageId = sse_decode_String(deserializer);
+var var_attachmentIndex = sse_decode_u_32(deserializer);
+var var_filename = sse_decode_String(deserializer);
+var var_contentType = sse_decode_String(deserializer);
+var var_size = sse_decode_opt_box_autoadd_u_64(deserializer);
+var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
+return DartEmailAttachmentContent(messageId: var_messageId, attachmentIndex: var_attachmentIndex, filename: var_filename, contentType: var_contentType, size: var_size, bytes: var_bytes); }
+
+@protected DartEmailAttachmentMetadata sse_decode_dart_email_attachment_metadata(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_index = sse_decode_u_32(deserializer);
+var var_filename = sse_decode_opt_String(deserializer);
+var var_contentType = sse_decode_opt_String(deserializer);
+var var_size = sse_decode_opt_box_autoadd_u_64(deserializer);
+return DartEmailAttachmentMetadata(index: var_index, filename: var_filename, contentType: var_contentType, size: var_size); }
+
+@protected DartEmailAttribute sse_decode_dart_email_attribute(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_key = sse_decode_String(deserializer);
+var var_value = sse_decode_String(deserializer);
+return DartEmailAttribute(key: var_key, value: var_value); }
+
+@protected DartEmailMarkReadResult sse_decode_dart_email_mark_read_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_updated = sse_decode_u_32(deserializer);
+return DartEmailMarkReadResult(updated: var_updated); }
+
+@protected DartEmailMessage sse_decode_dart_email_message(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_summary = sse_decode_dart_email_message_summary(deserializer);
+var var_bodyText = sse_decode_opt_String(deserializer);
+var var_bodyHtml = sse_decode_opt_String(deserializer);
+var var_attachments = sse_decode_list_dart_email_attachment_metadata(deserializer);
+return DartEmailMessage(summary: var_summary, bodyText: var_bodyText, bodyHtml: var_bodyHtml, attachments: var_attachments); }
+
+@protected DartEmailMessageSummary sse_decode_dart_email_message_summary(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_String(deserializer);
+var var_folder = sse_decode_opt_String(deserializer);
+var var_from = sse_decode_list_String(deserializer);
+var var_to = sse_decode_list_String(deserializer);
+var var_cc = sse_decode_list_String(deserializer);
+var var_subject = sse_decode_String(deserializer);
+var var_preview = sse_decode_opt_String(deserializer);
+var var_receivedAt = sse_decode_opt_String(deserializer);
+var var_sentAt = sse_decode_opt_String(deserializer);
+var var_unread = sse_decode_bool(deserializer);
+var var_hasAttachments = sse_decode_bool(deserializer);
+var var_attachmentCount = sse_decode_opt_box_autoadd_u_32(deserializer);
+var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
+return DartEmailMessageSummary(id: var_id, folder: var_folder, from: var_from, to: var_to, cc: var_cc, subject: var_subject, preview: var_preview, receivedAt: var_receivedAt, sentAt: var_sentAt, unread: var_unread, hasAttachments: var_hasAttachments, attachmentCount: var_attachmentCount, attributes: var_attributes); }
+
+@protected DartEmailMessageSummaryPage sse_decode_dart_email_message_summary_page(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_items = sse_decode_list_dart_email_message_summary(deserializer);
+var var_nextCursor = sse_decode_opt_String(deserializer);
+var var_hasMore = sse_decode_bool(deserializer);
+return DartEmailMessageSummaryPage(items: var_items, nextCursor: var_nextCursor, hasMore: var_hasMore); }
+
+@protected DartEmailNotification sse_decode_dart_email_notification(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_String(deserializer);
+var var_mailboxAddress = sse_decode_opt_String(deserializer);
+var var_fromAddr = sse_decode_opt_String(deserializer);
+var var_subject = sse_decode_String(deserializer);
+var var_preview = sse_decode_opt_String(deserializer);
+var var_hasAttachments = sse_decode_bool(deserializer);
+var var_receivedAt = sse_decode_opt_String(deserializer);
+var var_attributes = sse_decode_list_dart_email_attribute(deserializer);
+return DartEmailNotification(id: var_id, mailboxAddress: var_mailboxAddress, fromAddr: var_fromAddr, subject: var_subject, preview: var_preview, hasAttachments: var_hasAttachments, receivedAt: var_receivedAt, attributes: var_attributes); }
+
+@protected DartEmailNotificationPage sse_decode_dart_email_notification_page(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_items = sse_decode_list_dart_email_notification(deserializer);
+var var_nextCursor = sse_decode_opt_String(deserializer);
+var var_hasMore = sse_decode_bool(deserializer);
+return DartEmailNotificationPage(items: var_items, nextCursor: var_nextCursor, hasMore: var_hasMore); }
+
+@protected DartGroupMember sse_decode_dart_group_member(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_did = sse_decode_opt_String(deserializer);
+var var_handle = sse_decode_opt_String(deserializer);
+var var_role = sse_decode_opt_String(deserializer);
+var var_status = sse_decode_opt_String(deserializer);
+var var_joinedAt = sse_decode_opt_String(deserializer);
+return DartGroupMember(did: var_did, handle: var_handle, role: var_role, status: var_status, joinedAt: var_joinedAt); }
+
+@protected DartGroupReadResult sse_decode_dart_group_read_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_group = sse_decode_opt_box_autoadd_dart_group_snapshot(deserializer);
+var var_groups = sse_decode_list_dart_group_summary(deserializer);
+var var_members = sse_decode_list_dart_group_member(deserializer);
+var var_messages = sse_decode_dart_message_page(deserializer);
+var var_total = sse_decode_opt_box_autoadd_u_32(deserializer);
+var var_source = sse_decode_opt_String(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartGroupReadResult(group: var_group, groups: var_groups, members: var_members, messages: var_messages, total: var_total, source: var_source, warnings: var_warnings); }
+
+@protected DartGroupSecureLocalReadiness sse_decode_dart_group_secure_local_readiness(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_hasLocalState = sse_decode_bool(deserializer);
+var var_hasActiveMembership = sse_decode_bool(deserializer);
+return DartGroupSecureLocalReadiness(hasLocalState: var_hasLocalState, hasActiveMembership: var_hasActiveMembership); }
+
+@protected DartGroupSecurePendingWork sse_decode_dart_group_secure_pending_work(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_pendingNotices = sse_decode_u_32(deserializer);
+var var_pendingCommits = sse_decode_u_32(deserializer);
+return DartGroupSecurePendingWork(pendingNotices: var_pendingNotices, pendingCommits: var_pendingCommits); }
+
+@protected DartGroupSecurePrepareResult sse_decode_dart_group_secure_prepare_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_group = sse_decode_String(deserializer);
+var var_state = sse_decode_dart_group_secure_state(deserializer);
+var var_canSendSecure = sse_decode_bool(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartGroupSecurePrepareResult(group: var_group, state: var_state, canSendSecure: var_canSendSecure, warnings: var_warnings); }
+
+@protected DartGroupSecureRepairResult sse_decode_dart_group_secure_repair_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_group = sse_decode_String(deserializer);
+var var_state = sse_decode_dart_group_secure_state(deserializer);
+var var_repaired = sse_decode_bool(deserializer);
+var var_problem = sse_decode_opt_box_autoadd_dart_secure_problem(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartGroupSecureRepairResult(group: var_group, state: var_state, repaired: var_repaired, problem: var_problem, warnings: var_warnings); }
+
+@protected DartGroupSecureState sse_decode_dart_group_secure_state(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DartGroupSecureState.values[inner]; }
+
+@protected DartGroupSecureStatus sse_decode_dart_group_secure_status(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_group = sse_decode_String(deserializer);
+var var_state = sse_decode_dart_group_secure_state(deserializer);
+var var_canSendSecure = sse_decode_bool(deserializer);
+var var_localReadiness = sse_decode_dart_group_secure_local_readiness(deserializer);
+var var_pendingWork = sse_decode_dart_group_secure_pending_work(deserializer);
+var var_problem = sse_decode_opt_box_autoadd_dart_secure_problem(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartGroupSecureStatus(group: var_group, state: var_state, canSendSecure: var_canSendSecure, localReadiness: var_localReadiness, pendingWork: var_pendingWork, problem: var_problem, warnings: var_warnings); }
+
+@protected DartGroupSnapshot sse_decode_dart_group_snapshot(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_opt_String(deserializer);
+var var_did = sse_decode_String(deserializer);
+var var_name = sse_decode_opt_String(deserializer);
+var var_description = sse_decode_opt_String(deserializer);
+var var_myRole = sse_decode_opt_String(deserializer);
+var var_membershipStatus = sse_decode_opt_String(deserializer);
+var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
+var var_lastMessageAt = sse_decode_opt_String(deserializer);
+return DartGroupSnapshot(id: var_id, did: var_did, name: var_name, description: var_description, myRole: var_myRole, membershipStatus: var_membershipStatus, memberCount: var_memberCount, lastMessageAt: var_lastMessageAt); }
+
+@protected DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_opt_String(deserializer);
+var var_did = sse_decode_String(deserializer);
+var var_name = sse_decode_opt_String(deserializer);
+var var_membershipStatus = sse_decode_opt_String(deserializer);
+var var_memberCount = sse_decode_opt_box_autoadd_u_32(deserializer);
+var var_lastMessageAt = sse_decode_opt_String(deserializer);
+return DartGroupSummary(id: var_id, did: var_did, name: var_name, membershipStatus: var_membershipStatus, memberCount: var_memberCount, lastMessageAt: var_lastMessageAt); }
+
+@protected DartHandleRegistrationResult sse_decode_dart_handle_registration_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_identity = sse_decode_opt_box_autoadd_dart_identity_summary(deserializer);
+var var_handle = sse_decode_String(deserializer);
+var var_method = sse_decode_String(deserializer);
+var var_state = sse_decode_String(deserializer);
+var var_defaultIdentityChange = sse_decode_opt_box_autoadd_dart_default_identity_change(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartHandleRegistrationResult(identity: var_identity, handle: var_handle, method: var_method, state: var_state, defaultIdentityChange: var_defaultIdentityChange, warnings: var_warnings); }
+
+@protected DartIdentitySelector sse_decode_dart_identity_selector(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            var tag_ = sse_decode_i_32(deserializer);
+            switch (tag_) { case 0: return DartIdentitySelector_Default();case 1: var var_id = sse_decode_String(deserializer);
+return DartIdentitySelector_Id(id: var_id);case 2: var var_did = sse_decode_String(deserializer);
+return DartIdentitySelector_Did(did: var_did);case 3: var var_handle = sse_decode_String(deserializer);
+return DartIdentitySelector_Handle(handle: var_handle);case 4: var var_alias = sse_decode_String(deserializer);
+return DartIdentitySelector_LocalAlias(alias: var_alias); default: throw UnimplementedError(''); }
+             }
+
+@protected DartIdentitySubject sse_decode_dart_identity_subject(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            var tag_ = sse_decode_i_32(deserializer);
+            switch (tag_) { case 0: var var_did = sse_decode_String(deserializer);
+return DartIdentitySubject_Did(did: var_did);case 1: var var_handle = sse_decode_String(deserializer);
+return DartIdentitySubject_Handle(handle: var_handle);case 2: var var_value = sse_decode_String(deserializer);
+return DartIdentitySubject_Any(value: var_value); default: throw UnimplementedError(''); }
+             }
+
+@protected DartIdentitySummary sse_decode_dart_identity_summary(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_String(deserializer);
+var var_did = sse_decode_String(deserializer);
+var var_handle = sse_decode_opt_String(deserializer);
+var var_displayName = sse_decode_opt_String(deserializer);
+var var_localAlias = sse_decode_opt_String(deserializer);
+var var_deviceId = sse_decode_opt_String(deserializer);
+var var_isDefault = sse_decode_bool(deserializer);
+var var_readyForAuth = sse_decode_bool(deserializer);
+var var_readyForMessaging = sse_decode_bool(deserializer);
+var var_missing = sse_decode_list_String(deserializer);
+return DartIdentitySummary(id: var_id, did: var_did, handle: var_handle, displayName: var_displayName, localAlias: var_localAlias, deviceId: var_deviceId, isDefault: var_isDefault, readyForAuth: var_readyForAuth, readyForMessaging: var_readyForMessaging, missing: var_missing); }
+
+@protected DartImCoreConfig sse_decode_dart_im_core_config(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_serviceBaseUrl = sse_decode_String(deserializer);
+var var_didDomain = sse_decode_String(deserializer);
+var var_userServiceEndpoint = sse_decode_opt_String(deserializer);
+var var_messageServiceEndpoint = sse_decode_opt_String(deserializer);
+var var_mailServiceEndpoint = sse_decode_opt_String(deserializer);
+var var_anpServiceEndpoint = sse_decode_opt_String(deserializer);
+var var_anpServiceDid = sse_decode_opt_String(deserializer);
+var var_transportPolicy = sse_decode_dart_message_transport_policy(deserializer);
+return DartImCoreConfig(serviceBaseUrl: var_serviceBaseUrl, didDomain: var_didDomain, userServiceEndpoint: var_userServiceEndpoint, messageServiceEndpoint: var_messageServiceEndpoint, mailServiceEndpoint: var_mailServiceEndpoint, anpServiceEndpoint: var_anpServiceEndpoint, anpServiceDid: var_anpServiceDid, transportPolicy: var_transportPolicy); }
+
+@protected DartImCorePaths sse_decode_dart_im_core_paths(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_identityRootDir = sse_decode_String(deserializer);
+var var_registryPath = sse_decode_String(deserializer);
+var var_defaultIdentityPath = sse_decode_opt_String(deserializer);
+var var_sqlitePath = sse_decode_String(deserializer);
+var var_cacheDir = sse_decode_String(deserializer);
+var var_tempDir = sse_decode_String(deserializer);
+return DartImCorePaths(identityRootDir: var_identityRootDir, registryPath: var_registryPath, defaultIdentityPath: var_defaultIdentityPath, sqlitePath: var_sqlitePath, cacheDir: var_cacheDir, tempDir: var_tempDir); }
+
+@protected DartImError sse_decode_dart_im_error(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_code = sse_decode_String(deserializer);
+var var_message = sse_decode_String(deserializer);
+var var_field = sse_decode_opt_String(deserializer);
+var var_statusCode = sse_decode_opt_box_autoadd_u_16(deserializer);
+var var_capability = sse_decode_opt_String(deserializer);
+return DartImError(code: var_code, message: var_message, field: var_field, statusCode: var_statusCode, capability: var_capability); }
+
+@protected DartInitialProfile sse_decode_dart_initial_profile(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_displayName = sse_decode_opt_String(deserializer);
+var var_avatarUrl = sse_decode_opt_String(deserializer);
+return DartInitialProfile(displayName: var_displayName, avatarUrl: var_avatarUrl); }
+
+@protected DartMarkReadResult sse_decode_dart_mark_read_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_updatedCount = sse_decode_u_32(deserializer);
+var var_messageIds = sse_decode_list_String(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartMarkReadResult(updatedCount: var_updatedCount, messageIds: var_messageIds, warnings: var_warnings); }
+
+@protected DartMessage sse_decode_dart_message(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_String(deserializer);
+var var_threadKind = sse_decode_String(deserializer);
+var var_threadId = sse_decode_String(deserializer);
+var var_direction = sse_decode_dart_message_direction(deserializer);
+var var_sender = sse_decode_String(deserializer);
+var var_receiver = sse_decode_opt_String(deserializer);
+var var_group = sse_decode_opt_String(deserializer);
+var var_body = sse_decode_dart_message_body_view(deserializer);
+var var_sentAt = sse_decode_opt_String(deserializer);
+var var_receivedAt = sse_decode_opt_String(deserializer);
+var var_metadata = sse_decode_dart_message_metadata(deserializer);
+return DartMessage(id: var_id, threadKind: var_threadKind, threadId: var_threadId, direction: var_direction, sender: var_sender, receiver: var_receiver, group: var_group, body: var_body, sentAt: var_sentAt, receivedAt: var_receivedAt, metadata: var_metadata); }
+
+@protected DartMessageBodyView sse_decode_dart_message_body_view(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_text = sse_decode_opt_String(deserializer);
+var var_kind = sse_decode_opt_String(deserializer);
+var var_unsupportedContentType = sse_decode_opt_String(deserializer);
+return DartMessageBodyView(text: var_text, kind: var_kind, unsupportedContentType: var_unsupportedContentType); }
+
+@protected DartMessageDirection sse_decode_dart_message_direction(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DartMessageDirection.values[inner]; }
+
+@protected DartMessageMetadata sse_decode_dart_message_metadata(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_operationId = sse_decode_opt_String(deserializer);
+var var_deliveryState = sse_decode_opt_String(deserializer);
+var var_sendState = sse_decode_opt_String(deserializer);
+var var_retryable = sse_decode_opt_box_autoadd_bool(deserializer);
+var var_retryAction = sse_decode_opt_String(deserializer);
+var var_serverSequence = sse_decode_opt_box_autoadd_i_64(deserializer);
+var var_contentType = sse_decode_opt_String(deserializer);
+var var_attributes = sse_decode_list_dart_message_metadata_attribute(deserializer);
+return DartMessageMetadata(operationId: var_operationId, deliveryState: var_deliveryState, sendState: var_sendState, retryable: var_retryable, retryAction: var_retryAction, serverSequence: var_serverSequence, contentType: var_contentType, attributes: var_attributes); }
+
+@protected DartMessageMetadataAttribute sse_decode_dart_message_metadata_attribute(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_key = sse_decode_String(deserializer);
+var var_value = sse_decode_String(deserializer);
+return DartMessageMetadataAttribute(key: var_key, value: var_value); }
+
+@protected DartMessagePage sse_decode_dart_message_page(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_items = sse_decode_list_dart_message(deserializer);
+var var_nextCursor = sse_decode_opt_String(deserializer);
+var var_hasMore = sse_decode_bool(deserializer);
+return DartMessagePage(items: var_items, nextCursor: var_nextCursor, hasMore: var_hasMore); }
+
+@protected DartMessageSecurityMode sse_decode_dart_message_security_mode(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DartMessageSecurityMode.values[inner]; }
+
+@protected DartMessageTarget sse_decode_dart_message_target(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            var tag_ = sse_decode_i_32(deserializer);
+            switch (tag_) { case 0: var var_peer = sse_decode_String(deserializer);
+return DartMessageTarget_Direct(peer: var_peer);case 1: var var_group = sse_decode_String(deserializer);
+return DartMessageTarget_Group(group: var_group); default: throw UnimplementedError(''); }
+             }
+
+@protected DartMessageTransportPolicy sse_decode_dart_message_transport_policy(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DartMessageTransportPolicy.values[inner]; }
+
+@protected DartProfilePatch sse_decode_dart_profile_patch(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_displayName = sse_decode_opt_String(deserializer);
+var var_bio = sse_decode_opt_String(deserializer);
+var var_tags = sse_decode_opt_list_String(deserializer);
+var var_markdown = sse_decode_opt_String(deserializer);
+return DartProfilePatch(displayName: var_displayName, bio: var_bio, tags: var_tags, markdown: var_markdown); }
+
+@protected DartRealtimeCapability sse_decode_dart_realtime_capability(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_statusSupported = sse_decode_bool(deserializer);
+var var_connectSupported = sse_decode_bool(deserializer);
+var var_runnerExposed = sse_decode_bool(deserializer);
+var var_reason = sse_decode_opt_String(deserializer);
+return DartRealtimeCapability(statusSupported: var_statusSupported, connectSupported: var_connectSupported, runnerExposed: var_runnerExposed, reason: var_reason); }
+
+@protected DartRealtimeEvent sse_decode_dart_realtime_event(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_kind = sse_decode_String(deserializer);
+var var_state = sse_decode_opt_String(deserializer);
+var var_reason = sse_decode_opt_String(deserializer);
+var var_message = sse_decode_opt_box_autoadd_dart_message(deserializer);
+var var_messageId = sse_decode_opt_String(deserializer);
+var var_threadKind = sse_decode_opt_String(deserializer);
+var var_threadId = sse_decode_opt_String(deserializer);
+var var_updateKind = sse_decode_opt_String(deserializer);
+var var_group = sse_decode_opt_String(deserializer);
+var var_notificationId = sse_decode_opt_String(deserializer);
+var var_title = sse_decode_opt_String(deserializer);
+var var_body = sse_decode_opt_String(deserializer);
+var var_source = sse_decode_opt_String(deserializer);
+var var_hostKind = sse_decode_opt_String(deserializer);
+var var_contentType = sse_decode_opt_String(deserializer);
+var var_notificationType = sse_decode_opt_String(deserializer);
+return DartRealtimeEvent(kind: var_kind, state: var_state, reason: var_reason, message: var_message, messageId: var_messageId, threadKind: var_threadKind, threadId: var_threadId, updateKind: var_updateKind, group: var_group, notificationId: var_notificationId, title: var_title, body: var_body, source: var_source, hostKind: var_hostKind, contentType: var_contentType, notificationType: var_notificationType); }
+
+@protected DartRealtimeOptions sse_decode_dart_realtime_options(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_reconnect = sse_decode_String(deserializer);
+var var_eventBuffer = sse_decode_u_32(deserializer);
+var var_reconnectDelayMs = sse_decode_opt_box_autoadd_u_64(deserializer);
+var var_reconnectBaseDelayMs = sse_decode_opt_box_autoadd_u_64(deserializer);
+var var_reconnectMaxDelayMs = sse_decode_opt_box_autoadd_u_64(deserializer);
+var var_reconnectMaxAttempts = sse_decode_opt_box_autoadd_u_32(deserializer);
+var var_subscriptions = sse_decode_list_String(deserializer);
+return DartRealtimeOptions(reconnect: var_reconnect, eventBuffer: var_eventBuffer, reconnectDelayMs: var_reconnectDelayMs, reconnectBaseDelayMs: var_reconnectBaseDelayMs, reconnectMaxDelayMs: var_reconnectMaxDelayMs, reconnectMaxAttempts: var_reconnectMaxAttempts, subscriptions: var_subscriptions); }
+
+@protected DartRealtimeStatus sse_decode_dart_realtime_status(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_connected = sse_decode_bool(deserializer);
+var var_state = sse_decode_String(deserializer);
+var var_subscriptions = sse_decode_list_String(deserializer);
+var var_lastError = sse_decode_opt_String(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartRealtimeStatus(connected: var_connected, state: var_state, subscriptions: var_subscriptions, lastError: var_lastError, warnings: var_warnings); }
+
+@protected DartRecoverHandleResult sse_decode_dart_recover_handle_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_handle = sse_decode_String(deserializer);
+var var_phone = sse_decode_String(deserializer);
+var var_state = sse_decode_String(deserializer);
+var var_recoveredIdentity = sse_decode_opt_box_autoadd_dart_identity_summary(deserializer);
+var var_userId = sse_decode_opt_String(deserializer);
+var var_accessTokenPresent = sse_decode_bool(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartRecoverHandleResult(handle: var_handle, phone: var_phone, state: var_state, recoveredIdentity: var_recoveredIdentity, userId: var_userId, accessTokenPresent: var_accessTokenPresent, warnings: var_warnings); }
+
+@protected DartRelationStatus sse_decode_dart_relation_status(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_peer = sse_decode_String(deserializer);
+var var_relationship = sse_decode_opt_String(deserializer);
+var var_displayName = sse_decode_opt_String(deserializer);
+return DartRelationStatus(peer: var_peer, relationship: var_relationship, displayName: var_displayName); }
+
+@protected DartRelationshipListItem sse_decode_dart_relationship_list_item(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_did = sse_decode_String(deserializer);
+var var_handle = sse_decode_opt_String(deserializer);
+var var_displayName = sse_decode_opt_String(deserializer);
+var var_relationship = sse_decode_String(deserializer);
+var var_createdAt = sse_decode_opt_String(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartRelationshipListItem(did: var_did, handle: var_handle, displayName: var_displayName, relationship: var_relationship, createdAt: var_createdAt, warnings: var_warnings); }
+
+@protected DartRelationshipPage sse_decode_dart_relationship_page(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_items = sse_decode_list_dart_relationship_list_item(deserializer);
+var var_nextCursor = sse_decode_opt_String(deserializer);
+var var_hasMore = sse_decode_bool(deserializer);
+return DartRelationshipPage(items: var_items, nextCursor: var_nextCursor, hasMore: var_hasMore); }
+
+@protected DartSecureDelivery sse_decode_dart_secure_delivery(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_messageId = sse_decode_opt_String(deserializer);
+var var_state = sse_decode_String(deserializer);
+return DartSecureDelivery(messageId: var_messageId, state: var_state); }
+
+@protected DartSecureOutboxEntry sse_decode_dart_secure_outbox_entry(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_String(deserializer);
+var var_target = sse_decode_dart_message_target(deserializer);
+var var_messageKind = sse_decode_String(deserializer);
+var var_status = sse_decode_dart_secure_outbox_status(deserializer);
+var var_attemptCount = sse_decode_u_32(deserializer);
+var var_lastError = sse_decode_opt_box_autoadd_dart_secure_problem(deserializer);
+var var_createdAt = sse_decode_opt_String(deserializer);
+var var_updatedAt = sse_decode_opt_String(deserializer);
+return DartSecureOutboxEntry(id: var_id, target: var_target, messageKind: var_messageKind, status: var_status, attemptCount: var_attemptCount, lastError: var_lastError, createdAt: var_createdAt, updatedAt: var_updatedAt); }
+
+@protected DartSecureOutboxResult sse_decode_dart_secure_outbox_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_id = sse_decode_String(deserializer);
+var var_status = sse_decode_dart_secure_outbox_status(deserializer);
+var var_delivery = sse_decode_opt_box_autoadd_dart_secure_delivery(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartSecureOutboxResult(id: var_id, status: var_status, delivery: var_delivery, warnings: var_warnings); }
+
+@protected DartSecureOutboxStatus sse_decode_dart_secure_outbox_status(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DartSecureOutboxStatus.values[inner]; }
+
+@protected DartSecureProblem sse_decode_dart_secure_problem(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_code = sse_decode_dart_secure_problem_code(deserializer);
+var var_message = sse_decode_String(deserializer);
+var var_retryable = sse_decode_bool(deserializer);
+return DartSecureProblem(code: var_code, message: var_message, retryable: var_retryable); }
+
+@protected DartSecureProblemCode sse_decode_dart_secure_problem_code(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var inner = sse_decode_i_32(deserializer);
+        return DartSecureProblemCode.values[inner]; }
+
+@protected DartSendEmailRequest sse_decode_dart_send_email_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_to = sse_decode_list_String(deserializer);
+var var_cc = sse_decode_list_String(deserializer);
+var var_subject = sse_decode_String(deserializer);
+var var_bodyText = sse_decode_String(deserializer);
+var var_bodyHtml = sse_decode_opt_String(deserializer);
+return DartSendEmailRequest(to: var_to, cc: var_cc, subject: var_subject, bodyText: var_bodyText, bodyHtml: var_bodyHtml); }
+
+@protected DartSendEmailResult sse_decode_dart_send_email_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_accepted = sse_decode_bool(deserializer);
+var var_messageId = sse_decode_opt_String(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartSendEmailResult(accepted: var_accepted, messageId: var_messageId, warnings: var_warnings); }
+
+@protected DartSendMessageResult sse_decode_dart_send_message_result(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_message = sse_decode_dart_message(deserializer);
+var var_deliveryState = sse_decode_String(deserializer);
+var var_warnings = sse_decode_list_String(deserializer);
+return DartSendMessageResult(message: var_message, deliveryState: var_deliveryState, warnings: var_warnings); }
+
+@protected DartSendTextRequest sse_decode_dart_send_text_request(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_target = sse_decode_dart_message_target(deserializer);
+var var_text = sse_decode_String(deserializer);
+var var_markdown = sse_decode_bool(deserializer);
+var var_security = sse_decode_dart_message_security_mode(deserializer);
+var var_clientMessageId = sse_decode_opt_String(deserializer);
+var var_idempotencyKey = sse_decode_opt_String(deserializer);
+var var_waitForFinalAcceptance = sse_decode_bool(deserializer);
+return DartSendTextRequest(target: var_target, text: var_text, markdown: var_markdown, security: var_security, clientMessageId: var_clientMessageId, idempotencyKey: var_idempotencyKey, waitForFinalAcceptance: var_waitForFinalAcceptance); }
+
+@protected DartSessionBundle sse_decode_dart_session_bundle(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_subject = sse_decode_String(deserializer);
+var var_scope = sse_decode_dart_auth_scope(deserializer);
+var var_expiresAt = sse_decode_opt_String(deserializer);
+var var_refreshed = sse_decode_bool(deserializer);
+return DartSessionBundle(subject: var_subject, scope: var_scope, expiresAt: var_expiresAt, refreshed: var_refreshed); }
+
+@protected DartSessionUpdate sse_decode_dart_session_update(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_subject = sse_decode_String(deserializer);
+var var_previousExpiresAt = sse_decode_opt_String(deserializer);
+var var_newExpiresAt = sse_decode_opt_String(deserializer);
+var var_refreshed = sse_decode_bool(deserializer);
+return DartSessionUpdate(subject: var_subject, previousExpiresAt: var_previousExpiresAt, newExpiresAt: var_newExpiresAt, refreshed: var_refreshed); }
+
+@protected DartThreadRef sse_decode_dart_thread_ref(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            var tag_ = sse_decode_i_32(deserializer);
+            switch (tag_) { case 0: var var_peer = sse_decode_String(deserializer);
+return DartThreadRef_Direct(peer: var_peer);case 1: var var_group = sse_decode_String(deserializer);
+return DartThreadRef_Group(group: var_group);case 2: var var_threadId = sse_decode_String(deserializer);
+return DartThreadRef_Thread(threadId: var_threadId); default: throw UnimplementedError(''); }
+             }
+
+@protected DartUserProfile sse_decode_dart_user_profile(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var var_subject = sse_decode_String(deserializer);
+var var_handle = sse_decode_opt_String(deserializer);
+var var_displayName = sse_decode_opt_String(deserializer);
+var var_bio = sse_decode_opt_String(deserializer);
+var var_tags = sse_decode_list_String(deserializer);
+var var_markdown = sse_decode_opt_String(deserializer);
+var var_avatarUrl = sse_decode_opt_String(deserializer);
+var var_updatedAt = sse_decode_opt_String(deserializer);
+return DartUserProfile(subject: var_subject, handle: var_handle, displayName: var_displayName, bio: var_bio, tags: var_tags, markdown: var_markdown, avatarUrl: var_avatarUrl, updatedAt: var_updatedAt); }
+
+@protected int sse_decode_i_32(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getInt32(); }
+
+@protected PlatformInt64 sse_decode_i_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getPlatformInt64(); }
+
+@protected List<String> sse_decode_list_String(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <String>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_String(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartConversation> sse_decode_list_dart_conversation(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartConversation>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_conversation(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartEmailAttachmentMetadata> sse_decode_list_dart_email_attachment_metadata(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartEmailAttachmentMetadata>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_email_attachment_metadata(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartEmailAttribute> sse_decode_list_dart_email_attribute(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartEmailAttribute>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_email_attribute(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartEmailMessageSummary> sse_decode_list_dart_email_message_summary(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartEmailMessageSummary>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_email_message_summary(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartEmailNotification> sse_decode_list_dart_email_notification(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartEmailNotification>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_email_notification(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartGroupMember> sse_decode_list_dart_group_member(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartGroupMember>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_group_member(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartGroupSummary> sse_decode_list_dart_group_summary(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartGroupSummary>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_group_summary(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartIdentitySummary> sse_decode_list_dart_identity_summary(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartIdentitySummary>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_identity_summary(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartMessage> sse_decode_list_dart_message(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartMessage>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_message(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartMessageMetadataAttribute> sse_decode_list_dart_message_metadata_attribute(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartMessageMetadataAttribute>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_message_metadata_attribute(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartRelationshipListItem>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_relationship_list_item(deserializer)); }
+        return ans_;
+         }
+
+@protected List<DartSecureOutboxEntry> sse_decode_list_dart_secure_outbox_entry(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+        var len_ = sse_decode_i_32(deserializer);
+        var ans_ = <DartSecureOutboxEntry>[];
+        for (var idx_ = 0; idx_ < len_; ++idx_) { ans_.add(sse_decode_dart_secure_outbox_entry(deserializer)); }
+        return ans_;
+         }
+
+@protected Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+var len_ = sse_decode_i_32(deserializer);
+                return deserializer.buffer.getUint8List(len_); }
+
+@protected String? sse_decode_opt_String(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_String(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_bool(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected DartDefaultIdentityChange? sse_decode_opt_box_autoadd_dart_default_identity_change(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_dart_default_identity_change(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_dart_group_snapshot(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected DartIdentitySummary? sse_decode_opt_box_autoadd_dart_identity_summary(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_dart_identity_summary(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected DartMessage? sse_decode_opt_box_autoadd_dart_message(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_dart_message(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected DartSecureDelivery? sse_decode_opt_box_autoadd_dart_secure_delivery(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_dart_secure_delivery(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected DartSecureProblem? sse_decode_opt_box_autoadd_dart_secure_problem(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_dart_secure_problem(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected DartUserProfile? sse_decode_opt_box_autoadd_dart_user_profile(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_dart_user_profile(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_i_64(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected int? sse_decode_opt_box_autoadd_u_16(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_u_16(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_u_32(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_box_autoadd_u_64(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected List<String>? sse_decode_opt_list_String(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+            if (sse_decode_bool(deserializer)) {
+                return (sse_decode_list_String(deserializer));
+            } else {
+                return null;
+            }
+             }
+
+@protected int sse_decode_u_16(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getUint16(); }
+
+@protected int sse_decode_u_32(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getUint32(); }
+
+@protected BigInt sse_decode_u_64(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getBigUint64(); }
+
+@protected int sse_decode_u_8(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getUint8(); }
+
+@protected void sse_decode_unit(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+ }
+
+@protected BigInt sse_decode_usize(SseDeserializer deserializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+return deserializer.buffer.getBigUint64(); }
+
+@protected void sse_encode_AnyhowException(AnyhowException self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.message, serializer); }
+
+@protected void sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(ArcDartImClient self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartImClientImpl).frbInternalSseEncode(move: true), serializer); }
+
+@protected void sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(ArcDartImCore self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartImCoreImpl).frbInternalSseEncode(move: true), serializer); }
+
+@protected void sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(ArcDartRealtimeSession self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartRealtimeSessionImpl).frbInternalSseEncode(move: true), serializer); }
+
+@protected void sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(ArcDartImClient self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartImClientImpl).frbInternalSseEncode(move: false), serializer); }
+
+@protected void sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(ArcDartImCore self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartImCoreImpl).frbInternalSseEncode(move: false), serializer); }
+
+@protected void sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(ArcDartRealtimeSession self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartRealtimeSessionImpl).frbInternalSseEncode(move: false), serializer); }
+
+@protected void sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(ArcDartImClient self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartImClientImpl).frbInternalSseEncode(move: null), serializer); }
+
+@protected void sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(ArcDartImCore self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartImCoreImpl).frbInternalSseEncode(move: null), serializer); }
+
+@protected void sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(ArcDartRealtimeSession self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_usize((self as ArcDartRealtimeSessionImpl).frbInternalSseEncode(move: null), serializer); }
+
+@protected void sse_encode_StreamSink_dart_realtime_event_Sse(RustStreamSink<DartRealtimeEvent> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.setupAndSerialize(codec: SseCodec(
+            decodeSuccessData: sse_decode_dart_realtime_event,
+            decodeErrorData: sse_decode_AnyhowException,
+        )), serializer); }
+
+@protected void sse_encode_String(String self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_prim_u_8_strict(utf8.encoder.convert(self), serializer); }
+
+@protected void sse_encode_bool(bool self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putUint8(self ? 1 : 0); }
+
+@protected void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_bool(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_attachment_send_request(DartAttachmentSendRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_attachment_send_request(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_create_group_request(DartCreateGroupRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_create_group_request(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_default_identity_change(DartDefaultIdentityChange self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_default_identity_change(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_download_attachment_request(DartDownloadAttachmentRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_download_attachment_request(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_group_snapshot(DartGroupSnapshot self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_group_snapshot(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_identity_selector(DartIdentitySelector self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_identity_selector(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_identity_subject(DartIdentitySubject self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_identity_subject(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_identity_summary(DartIdentitySummary self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_identity_summary(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_im_core_config(DartImCoreConfig self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_im_core_config(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_im_core_paths(DartImCorePaths self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_im_core_paths(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_initial_profile(DartInitialProfile self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_initial_profile(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_message(DartMessage self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_message(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_profile_patch(DartProfilePatch self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_profile_patch(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_realtime_options(DartRealtimeOptions self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_realtime_options(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_secure_delivery(DartSecureDelivery self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_secure_delivery(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_secure_problem(DartSecureProblem self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_secure_problem(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_send_email_request(DartSendEmailRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_send_email_request(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_send_text_request(DartSendTextRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_send_text_request(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_thread_ref(DartThreadRef self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_thread_ref(self, serializer); }
+
+@protected void sse_encode_box_autoadd_dart_user_profile(DartUserProfile self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_user_profile(self, serializer); }
+
+@protected void sse_encode_box_autoadd_i_64(PlatformInt64 self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_64(self, serializer); }
+
+@protected void sse_encode_box_autoadd_u_16(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_u_16(self, serializer); }
+
+@protected void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_u_32(self, serializer); }
+
+@protected void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_u_64(self, serializer); }
+
+@protected void sse_encode_dart_attachment_destination(DartAttachmentDestination self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+switch (self) { case DartAttachmentDestination_LocalFile(path: final path): sse_encode_i_32(0, serializer); sse_encode_String(path, serializer);
+case DartAttachmentDestination_Memory(): sse_encode_i_32(1, serializer);   } }
+
+@protected void sse_encode_dart_attachment_input(DartAttachmentInput self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+switch (self) { case DartAttachmentInput_LocalFile(path: final path): sse_encode_i_32(0, serializer); sse_encode_String(path, serializer);
+case DartAttachmentInput_Bytes(filename: final filename,mimeType: final mimeType,bytes: final bytes): sse_encode_i_32(1, serializer); sse_encode_opt_String(filename, serializer);
+sse_encode_opt_String(mimeType, serializer);
+sse_encode_list_prim_u_8_strict(bytes, serializer);
+  } }
+
+@protected void sse_encode_dart_attachment_send_request(DartAttachmentSendRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_message_target(self.target, serializer);
+sse_encode_dart_attachment_input(self.input, serializer);
+sse_encode_opt_String(self.caption, serializer);
+sse_encode_opt_String(self.mimeType, serializer);
+sse_encode_opt_String(self.filename, serializer);
+sse_encode_opt_String(self.idempotencyKey, serializer);
+sse_encode_bool(self.waitForFinalAcceptance, serializer);
+ }
+
+@protected void sse_encode_dart_auth_scope(DartAuthScope self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_dart_auth_status(DartAuthStatus self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.subject, serializer);
+sse_encode_bool(self.hasSession, serializer);
+sse_encode_opt_String(self.expiresAt, serializer);
+sse_encode_bool(self.needsRefresh, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_conversation(DartConversation self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.threadKind, serializer);
+sse_encode_String(self.threadId, serializer);
+sse_encode_opt_String(self.title, serializer);
+sse_encode_list_String(self.participants, serializer);
+sse_encode_opt_box_autoadd_dart_message(self.lastMessage, serializer);
+sse_encode_u_32(self.unreadCount, serializer);
+sse_encode_u_32(self.messageCount, serializer);
+sse_encode_opt_String(self.lastMessageAt, serializer);
+ }
+
+@protected void sse_encode_dart_conversation_page(DartConversationPage self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_dart_conversation(self.items, serializer);
+sse_encode_opt_String(self.nextCursor, serializer);
+sse_encode_bool(self.hasMore, serializer);
+ }
+
+@protected void sse_encode_dart_create_group_request(DartCreateGroupRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.name, serializer);
+sse_encode_opt_String(self.description, serializer);
+sse_encode_opt_String(self.discoverability, serializer);
+sse_encode_opt_String(self.admissionMode, serializer);
+sse_encode_opt_String(self.messageSecurityProfile, serializer);
+sse_encode_bool(self.e2Ee, serializer);
+sse_encode_opt_String(self.slug, serializer);
+sse_encode_opt_String(self.goal, serializer);
+sse_encode_opt_String(self.rules, serializer);
+sse_encode_opt_String(self.messagePrompt, serializer);
+sse_encode_opt_String(self.docUrl, serializer);
+sse_encode_opt_box_autoadd_bool(self.attachmentsAllowed, serializer);
+sse_encode_opt_String(self.maxMembers, serializer);
+sse_encode_opt_box_autoadd_i_64(self.memberMaxMessages, serializer);
+sse_encode_opt_box_autoadd_i_64(self.memberMaxTotalChars, serializer);
+ }
+
+@protected void sse_encode_dart_default_identity_change(DartDefaultIdentityChange self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_box_autoadd_dart_identity_summary(self.previous, serializer);
+sse_encode_dart_identity_summary(self.next, serializer);
+sse_encode_bool(self.requiresDefaultIdentityWrite, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_direct_secure_prepare_result(DartDirectSecurePrepareResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.peer, serializer);
+sse_encode_dart_direct_secure_state(self.state, serializer);
+sse_encode_bool(self.canSendSecure, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_direct_secure_repair_result(DartDirectSecureRepairResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.peer, serializer);
+sse_encode_dart_direct_secure_state(self.state, serializer);
+sse_encode_bool(self.repaired, serializer);
+sse_encode_opt_box_autoadd_dart_secure_problem(self.problem, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_direct_secure_state(DartDirectSecureState self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_dart_direct_secure_status(DartDirectSecureStatus self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.peer, serializer);
+sse_encode_opt_String(self.resolvedPeer, serializer);
+sse_encode_dart_direct_secure_state(self.state, serializer);
+sse_encode_bool(self.canSendSecure, serializer);
+sse_encode_u_32(self.pendingOutboxCount, serializer);
+sse_encode_opt_box_autoadd_dart_secure_problem(self.problem, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_directory_resolution(DartDirectoryResolution self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.input, serializer);
+sse_encode_String(self.did, serializer);
+sse_encode_opt_String(self.handle, serializer);
+sse_encode_opt_box_autoadd_dart_user_profile(self.profile, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_download_attachment_request(DartDownloadAttachmentRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_thread_ref(self.thread, serializer);
+sse_encode_String(self.messageId, serializer);
+sse_encode_opt_String(self.attachmentId, serializer);
+sse_encode_dart_attachment_destination(self.destination, serializer);
+sse_encode_bool(self.overwrite, serializer);
+ }
+
+@protected void sse_encode_dart_downloaded_attachment(DartDownloadedAttachment self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.attachmentId, serializer);
+sse_encode_opt_String(self.filename, serializer);
+sse_encode_opt_String(self.mimeType, serializer);
+sse_encode_opt_box_autoadd_u_64(self.sizeBytes, serializer);
+sse_encode_dart_downloaded_attachment_destination(self.destination, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_downloaded_attachment_destination(DartDownloadedAttachmentDestination self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+switch (self) { case DartDownloadedAttachmentDestination_LocalFile(path: final path): sse_encode_i_32(0, serializer); sse_encode_String(path, serializer);
+case DartDownloadedAttachmentDestination_Memory(bytes: final bytes): sse_encode_i_32(1, serializer); sse_encode_list_prim_u_8_strict(bytes, serializer);
+  } }
+
+@protected void sse_encode_dart_email_account(DartEmailAccount self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.mailboxAddress, serializer);
+sse_encode_opt_String(self.displayName, serializer);
+sse_encode_opt_String(self.status, serializer);
+sse_encode_list_dart_email_attribute(self.attributes, serializer);
+ }
+
+@protected void sse_encode_dart_email_attachment_content(DartEmailAttachmentContent self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.messageId, serializer);
+sse_encode_u_32(self.attachmentIndex, serializer);
+sse_encode_String(self.filename, serializer);
+sse_encode_String(self.contentType, serializer);
+sse_encode_opt_box_autoadd_u_64(self.size, serializer);
+sse_encode_list_prim_u_8_strict(self.bytes, serializer);
+ }
+
+@protected void sse_encode_dart_email_attachment_metadata(DartEmailAttachmentMetadata self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_u_32(self.index, serializer);
+sse_encode_opt_String(self.filename, serializer);
+sse_encode_opt_String(self.contentType, serializer);
+sse_encode_opt_box_autoadd_u_64(self.size, serializer);
+ }
+
+@protected void sse_encode_dart_email_attribute(DartEmailAttribute self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.key, serializer);
+sse_encode_String(self.value, serializer);
+ }
+
+@protected void sse_encode_dart_email_mark_read_result(DartEmailMarkReadResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_u_32(self.updated, serializer);
+ }
+
+@protected void sse_encode_dart_email_message(DartEmailMessage self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_email_message_summary(self.summary, serializer);
+sse_encode_opt_String(self.bodyText, serializer);
+sse_encode_opt_String(self.bodyHtml, serializer);
+sse_encode_list_dart_email_attachment_metadata(self.attachments, serializer);
+ }
+
+@protected void sse_encode_dart_email_message_summary(DartEmailMessageSummary self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.id, serializer);
+sse_encode_opt_String(self.folder, serializer);
+sse_encode_list_String(self.from, serializer);
+sse_encode_list_String(self.to, serializer);
+sse_encode_list_String(self.cc, serializer);
+sse_encode_String(self.subject, serializer);
+sse_encode_opt_String(self.preview, serializer);
+sse_encode_opt_String(self.receivedAt, serializer);
+sse_encode_opt_String(self.sentAt, serializer);
+sse_encode_bool(self.unread, serializer);
+sse_encode_bool(self.hasAttachments, serializer);
+sse_encode_opt_box_autoadd_u_32(self.attachmentCount, serializer);
+sse_encode_list_dart_email_attribute(self.attributes, serializer);
+ }
+
+@protected void sse_encode_dart_email_message_summary_page(DartEmailMessageSummaryPage self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_dart_email_message_summary(self.items, serializer);
+sse_encode_opt_String(self.nextCursor, serializer);
+sse_encode_bool(self.hasMore, serializer);
+ }
+
+@protected void sse_encode_dart_email_notification(DartEmailNotification self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.id, serializer);
+sse_encode_opt_String(self.mailboxAddress, serializer);
+sse_encode_opt_String(self.fromAddr, serializer);
+sse_encode_String(self.subject, serializer);
+sse_encode_opt_String(self.preview, serializer);
+sse_encode_bool(self.hasAttachments, serializer);
+sse_encode_opt_String(self.receivedAt, serializer);
+sse_encode_list_dart_email_attribute(self.attributes, serializer);
+ }
+
+@protected void sse_encode_dart_email_notification_page(DartEmailNotificationPage self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_dart_email_notification(self.items, serializer);
+sse_encode_opt_String(self.nextCursor, serializer);
+sse_encode_bool(self.hasMore, serializer);
+ }
+
+@protected void sse_encode_dart_group_member(DartGroupMember self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.did, serializer);
+sse_encode_opt_String(self.handle, serializer);
+sse_encode_opt_String(self.role, serializer);
+sse_encode_opt_String(self.status, serializer);
+sse_encode_opt_String(self.joinedAt, serializer);
+ }
+
+@protected void sse_encode_dart_group_read_result(DartGroupReadResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_box_autoadd_dart_group_snapshot(self.group, serializer);
+sse_encode_list_dart_group_summary(self.groups, serializer);
+sse_encode_list_dart_group_member(self.members, serializer);
+sse_encode_dart_message_page(self.messages, serializer);
+sse_encode_opt_box_autoadd_u_32(self.total, serializer);
+sse_encode_opt_String(self.source, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_group_secure_local_readiness(DartGroupSecureLocalReadiness self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_bool(self.hasLocalState, serializer);
+sse_encode_bool(self.hasActiveMembership, serializer);
+ }
+
+@protected void sse_encode_dart_group_secure_pending_work(DartGroupSecurePendingWork self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_u_32(self.pendingNotices, serializer);
+sse_encode_u_32(self.pendingCommits, serializer);
+ }
+
+@protected void sse_encode_dart_group_secure_prepare_result(DartGroupSecurePrepareResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.group, serializer);
+sse_encode_dart_group_secure_state(self.state, serializer);
+sse_encode_bool(self.canSendSecure, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_group_secure_repair_result(DartGroupSecureRepairResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.group, serializer);
+sse_encode_dart_group_secure_state(self.state, serializer);
+sse_encode_bool(self.repaired, serializer);
+sse_encode_opt_box_autoadd_dart_secure_problem(self.problem, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_group_secure_state(DartGroupSecureState self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_dart_group_secure_status(DartGroupSecureStatus self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.group, serializer);
+sse_encode_dart_group_secure_state(self.state, serializer);
+sse_encode_bool(self.canSendSecure, serializer);
+sse_encode_dart_group_secure_local_readiness(self.localReadiness, serializer);
+sse_encode_dart_group_secure_pending_work(self.pendingWork, serializer);
+sse_encode_opt_box_autoadd_dart_secure_problem(self.problem, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_group_snapshot(DartGroupSnapshot self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.id, serializer);
+sse_encode_String(self.did, serializer);
+sse_encode_opt_String(self.name, serializer);
+sse_encode_opt_String(self.description, serializer);
+sse_encode_opt_String(self.myRole, serializer);
+sse_encode_opt_String(self.membershipStatus, serializer);
+sse_encode_opt_box_autoadd_u_32(self.memberCount, serializer);
+sse_encode_opt_String(self.lastMessageAt, serializer);
+ }
+
+@protected void sse_encode_dart_group_summary(DartGroupSummary self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.id, serializer);
+sse_encode_String(self.did, serializer);
+sse_encode_opt_String(self.name, serializer);
+sse_encode_opt_String(self.membershipStatus, serializer);
+sse_encode_opt_box_autoadd_u_32(self.memberCount, serializer);
+sse_encode_opt_String(self.lastMessageAt, serializer);
+ }
+
+@protected void sse_encode_dart_handle_registration_result(DartHandleRegistrationResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_box_autoadd_dart_identity_summary(self.identity, serializer);
+sse_encode_String(self.handle, serializer);
+sse_encode_String(self.method, serializer);
+sse_encode_String(self.state, serializer);
+sse_encode_opt_box_autoadd_dart_default_identity_change(self.defaultIdentityChange, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_identity_selector(DartIdentitySelector self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+switch (self) { case DartIdentitySelector_Default(): sse_encode_i_32(0, serializer); case DartIdentitySelector_Id(id: final id): sse_encode_i_32(1, serializer); sse_encode_String(id, serializer);
+case DartIdentitySelector_Did(did: final did): sse_encode_i_32(2, serializer); sse_encode_String(did, serializer);
+case DartIdentitySelector_Handle(handle: final handle): sse_encode_i_32(3, serializer); sse_encode_String(handle, serializer);
+case DartIdentitySelector_LocalAlias(alias: final alias): sse_encode_i_32(4, serializer); sse_encode_String(alias, serializer);
+  } }
+
+@protected void sse_encode_dart_identity_subject(DartIdentitySubject self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+switch (self) { case DartIdentitySubject_Did(did: final did): sse_encode_i_32(0, serializer); sse_encode_String(did, serializer);
+case DartIdentitySubject_Handle(handle: final handle): sse_encode_i_32(1, serializer); sse_encode_String(handle, serializer);
+case DartIdentitySubject_Any(value: final value): sse_encode_i_32(2, serializer); sse_encode_String(value, serializer);
+  } }
+
+@protected void sse_encode_dart_identity_summary(DartIdentitySummary self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.id, serializer);
+sse_encode_String(self.did, serializer);
+sse_encode_opt_String(self.handle, serializer);
+sse_encode_opt_String(self.displayName, serializer);
+sse_encode_opt_String(self.localAlias, serializer);
+sse_encode_opt_String(self.deviceId, serializer);
+sse_encode_bool(self.isDefault, serializer);
+sse_encode_bool(self.readyForAuth, serializer);
+sse_encode_bool(self.readyForMessaging, serializer);
+sse_encode_list_String(self.missing, serializer);
+ }
+
+@protected void sse_encode_dart_im_core_config(DartImCoreConfig self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.serviceBaseUrl, serializer);
+sse_encode_String(self.didDomain, serializer);
+sse_encode_opt_String(self.userServiceEndpoint, serializer);
+sse_encode_opt_String(self.messageServiceEndpoint, serializer);
+sse_encode_opt_String(self.mailServiceEndpoint, serializer);
+sse_encode_opt_String(self.anpServiceEndpoint, serializer);
+sse_encode_opt_String(self.anpServiceDid, serializer);
+sse_encode_dart_message_transport_policy(self.transportPolicy, serializer);
+ }
+
+@protected void sse_encode_dart_im_core_paths(DartImCorePaths self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.identityRootDir, serializer);
+sse_encode_String(self.registryPath, serializer);
+sse_encode_opt_String(self.defaultIdentityPath, serializer);
+sse_encode_String(self.sqlitePath, serializer);
+sse_encode_String(self.cacheDir, serializer);
+sse_encode_String(self.tempDir, serializer);
+ }
+
+@protected void sse_encode_dart_im_error(DartImError self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.code, serializer);
+sse_encode_String(self.message, serializer);
+sse_encode_opt_String(self.field, serializer);
+sse_encode_opt_box_autoadd_u_16(self.statusCode, serializer);
+sse_encode_opt_String(self.capability, serializer);
+ }
+
+@protected void sse_encode_dart_initial_profile(DartInitialProfile self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.displayName, serializer);
+sse_encode_opt_String(self.avatarUrl, serializer);
+ }
+
+@protected void sse_encode_dart_mark_read_result(DartMarkReadResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_u_32(self.updatedCount, serializer);
+sse_encode_list_String(self.messageIds, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_message(DartMessage self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.id, serializer);
+sse_encode_String(self.threadKind, serializer);
+sse_encode_String(self.threadId, serializer);
+sse_encode_dart_message_direction(self.direction, serializer);
+sse_encode_String(self.sender, serializer);
+sse_encode_opt_String(self.receiver, serializer);
+sse_encode_opt_String(self.group, serializer);
+sse_encode_dart_message_body_view(self.body, serializer);
+sse_encode_opt_String(self.sentAt, serializer);
+sse_encode_opt_String(self.receivedAt, serializer);
+sse_encode_dart_message_metadata(self.metadata, serializer);
+ }
+
+@protected void sse_encode_dart_message_body_view(DartMessageBodyView self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.text, serializer);
+sse_encode_opt_String(self.kind, serializer);
+sse_encode_opt_String(self.unsupportedContentType, serializer);
+ }
+
+@protected void sse_encode_dart_message_direction(DartMessageDirection self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_dart_message_metadata(DartMessageMetadata self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.operationId, serializer);
+sse_encode_opt_String(self.deliveryState, serializer);
+sse_encode_opt_String(self.sendState, serializer);
+sse_encode_opt_box_autoadd_bool(self.retryable, serializer);
+sse_encode_opt_String(self.retryAction, serializer);
+sse_encode_opt_box_autoadd_i_64(self.serverSequence, serializer);
+sse_encode_opt_String(self.contentType, serializer);
+sse_encode_list_dart_message_metadata_attribute(self.attributes, serializer);
+ }
+
+@protected void sse_encode_dart_message_metadata_attribute(DartMessageMetadataAttribute self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.key, serializer);
+sse_encode_String(self.value, serializer);
+ }
+
+@protected void sse_encode_dart_message_page(DartMessagePage self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_dart_message(self.items, serializer);
+sse_encode_opt_String(self.nextCursor, serializer);
+sse_encode_bool(self.hasMore, serializer);
+ }
+
+@protected void sse_encode_dart_message_security_mode(DartMessageSecurityMode self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_dart_message_target(DartMessageTarget self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+switch (self) { case DartMessageTarget_Direct(peer: final peer): sse_encode_i_32(0, serializer); sse_encode_String(peer, serializer);
+case DartMessageTarget_Group(group: final group): sse_encode_i_32(1, serializer); sse_encode_String(group, serializer);
+  } }
+
+@protected void sse_encode_dart_message_transport_policy(DartMessageTransportPolicy self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_dart_profile_patch(DartProfilePatch self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.displayName, serializer);
+sse_encode_opt_String(self.bio, serializer);
+sse_encode_opt_list_String(self.tags, serializer);
+sse_encode_opt_String(self.markdown, serializer);
+ }
+
+@protected void sse_encode_dart_realtime_capability(DartRealtimeCapability self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_bool(self.statusSupported, serializer);
+sse_encode_bool(self.connectSupported, serializer);
+sse_encode_bool(self.runnerExposed, serializer);
+sse_encode_opt_String(self.reason, serializer);
+ }
+
+@protected void sse_encode_dart_realtime_event(DartRealtimeEvent self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.kind, serializer);
+sse_encode_opt_String(self.state, serializer);
+sse_encode_opt_String(self.reason, serializer);
+sse_encode_opt_box_autoadd_dart_message(self.message, serializer);
+sse_encode_opt_String(self.messageId, serializer);
+sse_encode_opt_String(self.threadKind, serializer);
+sse_encode_opt_String(self.threadId, serializer);
+sse_encode_opt_String(self.updateKind, serializer);
+sse_encode_opt_String(self.group, serializer);
+sse_encode_opt_String(self.notificationId, serializer);
+sse_encode_opt_String(self.title, serializer);
+sse_encode_opt_String(self.body, serializer);
+sse_encode_opt_String(self.source, serializer);
+sse_encode_opt_String(self.hostKind, serializer);
+sse_encode_opt_String(self.contentType, serializer);
+sse_encode_opt_String(self.notificationType, serializer);
+ }
+
+@protected void sse_encode_dart_realtime_options(DartRealtimeOptions self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.reconnect, serializer);
+sse_encode_u_32(self.eventBuffer, serializer);
+sse_encode_opt_box_autoadd_u_64(self.reconnectDelayMs, serializer);
+sse_encode_opt_box_autoadd_u_64(self.reconnectBaseDelayMs, serializer);
+sse_encode_opt_box_autoadd_u_64(self.reconnectMaxDelayMs, serializer);
+sse_encode_opt_box_autoadd_u_32(self.reconnectMaxAttempts, serializer);
+sse_encode_list_String(self.subscriptions, serializer);
+ }
+
+@protected void sse_encode_dart_realtime_status(DartRealtimeStatus self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_bool(self.connected, serializer);
+sse_encode_String(self.state, serializer);
+sse_encode_list_String(self.subscriptions, serializer);
+sse_encode_opt_String(self.lastError, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_recover_handle_result(DartRecoverHandleResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.handle, serializer);
+sse_encode_String(self.phone, serializer);
+sse_encode_String(self.state, serializer);
+sse_encode_opt_box_autoadd_dart_identity_summary(self.recoveredIdentity, serializer);
+sse_encode_opt_String(self.userId, serializer);
+sse_encode_bool(self.accessTokenPresent, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_relation_status(DartRelationStatus self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.peer, serializer);
+sse_encode_opt_String(self.relationship, serializer);
+sse_encode_opt_String(self.displayName, serializer);
+ }
+
+@protected void sse_encode_dart_relationship_list_item(DartRelationshipListItem self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.did, serializer);
+sse_encode_opt_String(self.handle, serializer);
+sse_encode_opt_String(self.displayName, serializer);
+sse_encode_String(self.relationship, serializer);
+sse_encode_opt_String(self.createdAt, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_relationship_page(DartRelationshipPage self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_dart_relationship_list_item(self.items, serializer);
+sse_encode_opt_String(self.nextCursor, serializer);
+sse_encode_bool(self.hasMore, serializer);
+ }
+
+@protected void sse_encode_dart_secure_delivery(DartSecureDelivery self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_opt_String(self.messageId, serializer);
+sse_encode_String(self.state, serializer);
+ }
+
+@protected void sse_encode_dart_secure_outbox_entry(DartSecureOutboxEntry self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.id, serializer);
+sse_encode_dart_message_target(self.target, serializer);
+sse_encode_String(self.messageKind, serializer);
+sse_encode_dart_secure_outbox_status(self.status, serializer);
+sse_encode_u_32(self.attemptCount, serializer);
+sse_encode_opt_box_autoadd_dart_secure_problem(self.lastError, serializer);
+sse_encode_opt_String(self.createdAt, serializer);
+sse_encode_opt_String(self.updatedAt, serializer);
+ }
+
+@protected void sse_encode_dart_secure_outbox_result(DartSecureOutboxResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.id, serializer);
+sse_encode_dart_secure_outbox_status(self.status, serializer);
+sse_encode_opt_box_autoadd_dart_secure_delivery(self.delivery, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_secure_outbox_status(DartSecureOutboxStatus self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_dart_secure_problem(DartSecureProblem self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_secure_problem_code(self.code, serializer);
+sse_encode_String(self.message, serializer);
+sse_encode_bool(self.retryable, serializer);
+ }
+
+@protected void sse_encode_dart_secure_problem_code(DartSecureProblemCode self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.index, serializer); }
+
+@protected void sse_encode_dart_send_email_request(DartSendEmailRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_list_String(self.to, serializer);
+sse_encode_list_String(self.cc, serializer);
+sse_encode_String(self.subject, serializer);
+sse_encode_String(self.bodyText, serializer);
+sse_encode_opt_String(self.bodyHtml, serializer);
+ }
+
+@protected void sse_encode_dart_send_email_result(DartSendEmailResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_bool(self.accepted, serializer);
+sse_encode_opt_String(self.messageId, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_send_message_result(DartSendMessageResult self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_message(self.message, serializer);
+sse_encode_String(self.deliveryState, serializer);
+sse_encode_list_String(self.warnings, serializer);
+ }
+
+@protected void sse_encode_dart_send_text_request(DartSendTextRequest self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_dart_message_target(self.target, serializer);
+sse_encode_String(self.text, serializer);
+sse_encode_bool(self.markdown, serializer);
+sse_encode_dart_message_security_mode(self.security, serializer);
+sse_encode_opt_String(self.clientMessageId, serializer);
+sse_encode_opt_String(self.idempotencyKey, serializer);
+sse_encode_bool(self.waitForFinalAcceptance, serializer);
+ }
+
+@protected void sse_encode_dart_session_bundle(DartSessionBundle self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.subject, serializer);
+sse_encode_dart_auth_scope(self.scope, serializer);
+sse_encode_opt_String(self.expiresAt, serializer);
+sse_encode_bool(self.refreshed, serializer);
+ }
+
+@protected void sse_encode_dart_session_update(DartSessionUpdate self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.subject, serializer);
+sse_encode_opt_String(self.previousExpiresAt, serializer);
+sse_encode_opt_String(self.newExpiresAt, serializer);
+sse_encode_bool(self.refreshed, serializer);
+ }
+
+@protected void sse_encode_dart_thread_ref(DartThreadRef self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+switch (self) { case DartThreadRef_Direct(peer: final peer): sse_encode_i_32(0, serializer); sse_encode_String(peer, serializer);
+case DartThreadRef_Group(group: final group): sse_encode_i_32(1, serializer); sse_encode_String(group, serializer);
+case DartThreadRef_Thread(threadId: final threadId): sse_encode_i_32(2, serializer); sse_encode_String(threadId, serializer);
+  } }
+
+@protected void sse_encode_dart_user_profile(DartUserProfile self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_String(self.subject, serializer);
+sse_encode_opt_String(self.handle, serializer);
+sse_encode_opt_String(self.displayName, serializer);
+sse_encode_opt_String(self.bio, serializer);
+sse_encode_list_String(self.tags, serializer);
+sse_encode_opt_String(self.markdown, serializer);
+sse_encode_opt_String(self.avatarUrl, serializer);
+sse_encode_opt_String(self.updatedAt, serializer);
+ }
+
+@protected void sse_encode_i_32(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putInt32(self); }
+
+@protected void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putPlatformInt64(self); }
+
+@protected void sse_encode_list_String(List<String> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_String(item, serializer); } }
+
+@protected void sse_encode_list_dart_conversation(List<DartConversation> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_conversation(item, serializer); } }
+
+@protected void sse_encode_list_dart_email_attachment_metadata(List<DartEmailAttachmentMetadata> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_email_attachment_metadata(item, serializer); } }
+
+@protected void sse_encode_list_dart_email_attribute(List<DartEmailAttribute> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_email_attribute(item, serializer); } }
+
+@protected void sse_encode_list_dart_email_message_summary(List<DartEmailMessageSummary> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_email_message_summary(item, serializer); } }
+
+@protected void sse_encode_list_dart_email_notification(List<DartEmailNotification> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_email_notification(item, serializer); } }
+
+@protected void sse_encode_list_dart_group_member(List<DartGroupMember> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_group_member(item, serializer); } }
+
+@protected void sse_encode_list_dart_group_summary(List<DartGroupSummary> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_group_summary(item, serializer); } }
+
+@protected void sse_encode_list_dart_identity_summary(List<DartIdentitySummary> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_identity_summary(item, serializer); } }
+
+@protected void sse_encode_list_dart_message(List<DartMessage> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_message(item, serializer); } }
+
+@protected void sse_encode_list_dart_message_metadata_attribute(List<DartMessageMetadataAttribute> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_message_metadata_attribute(item, serializer); } }
+
+@protected void sse_encode_list_dart_relationship_list_item(List<DartRelationshipListItem> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_relationship_list_item(item, serializer); } }
+
+@protected void sse_encode_list_dart_secure_outbox_entry(List<DartSecureOutboxEntry> self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+        for (final item in self) { sse_encode_dart_secure_outbox_entry(item, serializer); } }
+
+@protected void sse_encode_list_prim_u_8_strict(Uint8List self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+sse_encode_i_32(self.length, serializer);
+                    serializer.buffer.putUint8List(self); }
+
+@protected void sse_encode_opt_String(String? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_String(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_bool(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_dart_default_identity_change(DartDefaultIdentityChange? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_dart_default_identity_change(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_dart_group_snapshot(DartGroupSnapshot? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_dart_group_snapshot(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_dart_identity_summary(DartIdentitySummary? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_dart_identity_summary(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_dart_message(DartMessage? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_dart_message(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_dart_secure_delivery(DartSecureDelivery? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_dart_secure_delivery(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_dart_secure_problem(DartSecureProblem? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_dart_secure_problem(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_dart_user_profile(DartUserProfile? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_dart_user_profile(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_i_64(PlatformInt64? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_i_64(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_u_16(int? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_u_16(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_u_32(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_box_autoadd_u_64(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+
+                sse_encode_bool(self != null, serializer);
+                if (self != null) {
+                    sse_encode_list_String(self, serializer);
+                }
+                 }
+
+@protected void sse_encode_u_16(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putUint16(self); }
+
+@protected void sse_encode_u_32(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putUint32(self); }
+
+@protected void sse_encode_u_64(BigInt self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putBigUint64(self); }
+
+@protected void sse_encode_u_8(int self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putUint8(self); }
+
+@protected void sse_encode_unit(void self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+ }
+
+@protected void sse_encode_usize(BigInt self, SseSerializer serializer){ // Codec=Sse (Serialization based), see doc to use other codecs
+serializer.buffer.putBigUint64(self); }
+                }
+
+
+            @sealed class ArcDartImClientImpl extends RustOpaque implements ArcDartImClient {
+                // Not to be used by end users
+                ArcDartImClientImpl.frbInternalDcoDecode(List<dynamic> wire):
+                    super.frbInternalDcoDecode(wire, _kStaticData);
+
+                // Not to be used by end users
+                ArcDartImClientImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):
+                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+                static final _kStaticData = RustArcStaticData(
+                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_ArcDartImClient,
+                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartImClient,
+                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartImClientPtr,
+                );
+
+
+            }
+            @sealed class ArcDartImCoreImpl extends RustOpaque implements ArcDartImCore {
+                // Not to be used by end users
+                ArcDartImCoreImpl.frbInternalDcoDecode(List<dynamic> wire):
+                    super.frbInternalDcoDecode(wire, _kStaticData);
+
+                // Not to be used by end users
+                ArcDartImCoreImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):
+                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+                static final _kStaticData = RustArcStaticData(
+                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_ArcDartImCore,
+                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartImCore,
+                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartImCorePtr,
+                );
+
+
+            }
+            @sealed class ArcDartRealtimeSessionImpl extends RustOpaque implements ArcDartRealtimeSession {
+                // Not to be used by end users
+                ArcDartRealtimeSessionImpl.frbInternalDcoDecode(List<dynamic> wire):
+                    super.frbInternalDcoDecode(wire, _kStaticData);
+
+                // Not to be used by end users
+                ArcDartRealtimeSessionImpl.frbInternalSseDecode(BigInt ptr, int externalSizeOnNative):
+                    super.frbInternalSseDecode(ptr, externalSizeOnNative, _kStaticData);
+
+                static final _kStaticData = RustArcStaticData(
+                    rustArcIncrementStrongCount: RustLib.instance.api.rust_arc_increment_strong_count_ArcDartRealtimeSession,
+                    rustArcDecrementStrongCount: RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartRealtimeSession,
+                    rustArcDecrementStrongCountPtr: RustLib.instance.api.rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr,
+                );
+
+
+            }

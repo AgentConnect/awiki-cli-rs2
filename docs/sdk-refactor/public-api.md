@@ -96,7 +96,7 @@ impl ImClient {
     pub fn groups(&self) -> GroupService<'_>;           // P3+
     pub fn attachments(&self) -> AttachmentService<'_>; // P4+
     pub fn realtime(&self) -> RealtimeService<'_>;      // P5+
-    pub fn secure(&self) -> SecureDiagnosticsService<'_>; // P6+
+    pub fn secure(&self) -> SecureService<'_>;           // P6+
     pub fn email(&self) -> EmailService<'_>;             // Email
 }
 ```
@@ -279,7 +279,7 @@ pub struct MessageService<'a> {
 pub struct SendMessageRequest {
     pub target: MessageTarget,
     pub body: MessageBody,
-    pub security: MessageSecurityMode,
+    pub security: MessageSecurityPolicy,
     pub client_message_id: Option<MessageId>,
     pub delivery: MessageDeliveryOptions,
 }
@@ -315,13 +315,12 @@ pub enum MessageKind {
     System,
 }
 
-pub enum MessageSecurityMode {
-    DefaultPlain,
-    Plain,
+pub enum MessageSecurityPolicy {
+    Default,
+    Plaintext,
 
     // P6+ reserved. P1 返回 UnsupportedCapability。
-    SecureDirect,
-    GroupE2ee,
+    E2eeRequired,
 }
 
 pub struct MessageDeliveryOptions {
@@ -354,7 +353,7 @@ impl MessageService<'_> {
 }
 ```
 
-`msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityMode`。
+`msg send --to`、`--group`、`--text-file`、`--file`、`--secure` 是 CLI 输入形态，不是 SDK 字段。CLI adapter 负责转换成 `MessageTarget`、`MessageBody`、`MessageSecurityPolicy`。
 
 ## 9. directory：P2+
 
@@ -396,7 +395,7 @@ P1 的群聊只要求：
 client.messages().send(SendMessageRequest {
     target: MessageTarget::Group(group_ref),
     body: MessageBody::Text { ... },
-    security: MessageSecurityMode::DefaultPlain,
+    security: MessageSecurityPolicy::Default,
     ..
 })
 ```
@@ -523,17 +522,20 @@ CLI daemon/service 仍在 `awiki-cli`。SDK 只提供 runner，不安装服务�
 
 ## 14. secure：P6+
 
-P1 不实现 secure public flow。`MessageSecurityMode::SecureDirect` / `GroupE2ee` 返回 `UnsupportedCapability`。
+P1 不实现 secure public flow。`MessageSecurityPolicy::E2eeRequired` 返回 `UnsupportedCapability`。
 
 P6 增加：
 
 ```rust
-client.secure().direct_status(peer)
-client.secure().repair_direct_session(peer)
-client.secure().list_failed_outbox()
-client.secure().retry_outbox(id)
-client.secure().group_status(group)
-client.secure().repair_group_state(group)
+client.secure().direct(peer).status()
+client.secure().direct(peer).prepare()
+client.secure().direct(peer).repair()
+client.secure().outbox().list_failed()
+client.secure().outbox().retry(id)
+client.secure().outbox().drop(id)
+client.secure().group(group).status()
+client.secure().group(group).prepare()
+client.secure().group(group).repair()
 ```
 
-KeyPackage、prekey、MLS provider、ciphertext processing 不进入默认 public API。
+KeyPackage、prekey、MLS provider、ciphertext processing、direct session id、ratchet counter、raw attachment manifest 不进入默认 public API。

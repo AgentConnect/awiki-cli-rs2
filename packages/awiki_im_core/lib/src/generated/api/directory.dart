@@ -10,61 +10,20 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `page_limit`, `relationship_item_to_dart`, `relationship_list`
 
-Future<DartDirectoryResolution> resolvePeer({
-  required ArcDartImClient client,
-  required String peer,
-}) => RustLib.instance.api.crateApiDirectoryResolvePeer(
-  client: client,
-  peer: peer,
-);
+            // These functions are ignored because they are not marked as `pub`: `page_limit`, `relationship_item_to_dart`, `relationship_list`
 
-Future<DartDirectoryResolution> lookupHandle({
-  required ArcDartImClient client,
-  required String handle,
-}) => RustLib.instance.api.crateApiDirectoryLookupHandle(
-  client: client,
-  handle: handle,
-);
 
-Future<DartRelationStatus> relationStatus({
-  required ArcDartImClient client,
-  required String peer,
-}) => RustLib.instance.api.crateApiDirectoryRelationStatus(
-  client: client,
-  peer: peer,
-);
+            Future<DartDirectoryResolution>  resolvePeer({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiDirectoryResolvePeer(client: client, peer: peer);
 
-Future<void> follow({required ArcDartImClient client, required String peer}) =>
-    RustLib.instance.api.crateApiDirectoryFollow(client: client, peer: peer);
+Future<DartDirectoryResolution>  lookupHandle({required ArcDartImClient client , required String handle }) => RustLib.instance.api.crateApiDirectoryLookupHandle(client: client, handle: handle);
 
-Future<void> unfollow({
-  required ArcDartImClient client,
-  required String peer,
-}) =>
-    RustLib.instance.api.crateApiDirectoryUnfollow(client: client, peer: peer);
+Future<DartRelationStatus>  relationStatus({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiDirectoryRelationStatus(client: client, peer: peer);
 
-Future<DartRelationshipPage> listFollowers({
-  required ArcDartImClient client,
-  required int limit,
-  required int offset,
-  required bool hydrateProfiles,
-}) => RustLib.instance.api.crateApiDirectoryListFollowers(
-  client: client,
-  limit: limit,
-  offset: offset,
-  hydrateProfiles: hydrateProfiles,
-);
+Future<void>  follow({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiDirectoryFollow(client: client, peer: peer);
 
-Future<DartRelationshipPage> listFollowing({
-  required ArcDartImClient client,
-  required int limit,
-  required int offset,
-  required bool hydrateProfiles,
-}) => RustLib.instance.api.crateApiDirectoryListFollowing(
-  client: client,
-  limit: limit,
-  offset: offset,
-  hydrateProfiles: hydrateProfiles,
-);
+Future<void>  unfollow({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiDirectoryUnfollow(client: client, peer: peer);
+
+Future<DartRelationshipPage>  listFollowers({required ArcDartImClient client , required int limit , required int offset , required bool hydrateProfiles }) => RustLib.instance.api.crateApiDirectoryListFollowers(client: client, limit: limit, offset: offset, hydrateProfiles: hydrateProfiles);
+
+Future<DartRelationshipPage>  listFollowing({required ArcDartImClient client , required int limit , required int offset , required bool hydrateProfiles }) => RustLib.instance.api.crateApiDirectoryListFollowing(client: client, limit: limit, offset: offset, hydrateProfiles: hydrateProfiles);

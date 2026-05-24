@@ -20,6 +20,13 @@ use crate::dto::{
     },
     profile::DartUserProfile,
     realtime::{DartRealtimeEvent, DartRealtimeStatus},
+    secure::{
+        DartDirectSecurePrepareResult, DartDirectSecureRepairResult, DartDirectSecureState,
+        DartDirectSecureStatus, DartGroupSecureLocalReadiness, DartGroupSecurePendingWork,
+        DartGroupSecurePrepareResult, DartGroupSecureRepairResult, DartGroupSecureState,
+        DartGroupSecureStatus, DartSecureDelivery, DartSecureOutboxEntry, DartSecureOutboxResult,
+        DartSecureOutboxStatus, DartSecureProblem, DartSecureProblemCode,
+    },
 };
 
 impl From<im_core::identity::IdentitySummary> for DartIdentitySummary {
@@ -437,6 +444,19 @@ impl From<im_core::messages::MessageMetadataAttribute> for DartMessageMetadataAt
     }
 }
 
+impl From<im_core::messages::MessageTarget> for crate::dto::message::DartMessageTarget {
+    fn from(value: im_core::messages::MessageTarget) -> Self {
+        match value {
+            im_core::messages::MessageTarget::Direct(peer) => Self::Direct {
+                peer: peer.as_str().to_string(),
+            },
+            im_core::messages::MessageTarget::Group(group) => Self::Group {
+                group: group.as_str().to_string(),
+            },
+        }
+    }
+}
+
 impl From<im_core::messages::Message> for DartMessage {
     fn from(value: im_core::messages::Message) -> Self {
         let (thread_kind, thread_id) = thread_ref_parts(value.thread);
@@ -554,6 +574,204 @@ fn delivery_state_to_string(value: im_core::messages::DeliveryState) -> String {
         im_core::messages::DeliveryState::Sent => "sent".to_string(),
         im_core::messages::DeliveryState::StoredLocally => "stored_locally".to_string(),
         im_core::messages::DeliveryState::Failed { reason } => format!("failed:{reason}"),
+    }
+}
+
+impl From<im_core::secure::DirectSecureState> for DartDirectSecureState {
+    fn from(value: im_core::secure::DirectSecureState) -> Self {
+        match value {
+            im_core::secure::DirectSecureState::Ready => Self::Ready,
+            im_core::secure::DirectSecureState::Preparing => Self::Preparing,
+            im_core::secure::DirectSecureState::WaitingForPeer => Self::WaitingForPeer,
+            im_core::secure::DirectSecureState::NeedsRepair => Self::NeedsRepair,
+            im_core::secure::DirectSecureState::Unavailable => Self::Unavailable,
+            im_core::secure::DirectSecureState::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<im_core::secure::DirectSecureStatus> for DartDirectSecureStatus {
+    fn from(value: im_core::secure::DirectSecureStatus) -> Self {
+        Self {
+            peer: value.peer.as_str().to_string(),
+            resolved_peer: value.resolved_peer.map(|peer| peer.as_str().to_string()),
+            state: value.state.into(),
+            can_send_secure: value.can_send_secure,
+            pending_outbox_count: value.pending_outbox_count,
+            problem: value.problem.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::secure::DirectSecurePrepareResult> for DartDirectSecurePrepareResult {
+    fn from(value: im_core::secure::DirectSecurePrepareResult) -> Self {
+        Self {
+            peer: value.peer.as_str().to_string(),
+            state: value.state.into(),
+            can_send_secure: value.can_send_secure,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::secure::DirectSecureRepairResult> for DartDirectSecureRepairResult {
+    fn from(value: im_core::secure::DirectSecureRepairResult) -> Self {
+        Self {
+            peer: value.peer.as_str().to_string(),
+            state: value.state.into(),
+            repaired: value.repaired,
+            problem: value.problem.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::secure::GroupSecureState> for DartGroupSecureState {
+    fn from(value: im_core::secure::GroupSecureState) -> Self {
+        match value {
+            im_core::secure::GroupSecureState::Ready => Self::Ready,
+            im_core::secure::GroupSecureState::Syncing => Self::Syncing,
+            im_core::secure::GroupSecureState::NeedsRepair => Self::NeedsRepair,
+            im_core::secure::GroupSecureState::WaitingForMembershipUpdate => {
+                Self::WaitingForMembershipUpdate
+            }
+            im_core::secure::GroupSecureState::MissingLocalState => Self::MissingLocalState,
+            im_core::secure::GroupSecureState::Unavailable => Self::Unavailable,
+            im_core::secure::GroupSecureState::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl From<im_core::secure::GroupSecureLocalReadiness> for DartGroupSecureLocalReadiness {
+    fn from(value: im_core::secure::GroupSecureLocalReadiness) -> Self {
+        Self {
+            has_local_state: value.has_local_state,
+            has_active_membership: value.has_active_membership,
+        }
+    }
+}
+
+impl From<im_core::secure::GroupSecurePendingWork> for DartGroupSecurePendingWork {
+    fn from(value: im_core::secure::GroupSecurePendingWork) -> Self {
+        Self {
+            pending_notices: value.pending_notices,
+            pending_commits: value.pending_commits,
+        }
+    }
+}
+
+impl From<im_core::secure::GroupSecureStatus> for DartGroupSecureStatus {
+    fn from(value: im_core::secure::GroupSecureStatus) -> Self {
+        Self {
+            group: value.group.as_str().to_string(),
+            state: value.state.into(),
+            can_send_secure: value.can_send_secure,
+            local_readiness: value.local_readiness.into(),
+            pending_work: value.pending_work.into(),
+            problem: value.problem.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::secure::GroupSecurePrepareResult> for DartGroupSecurePrepareResult {
+    fn from(value: im_core::secure::GroupSecurePrepareResult) -> Self {
+        Self {
+            group: value.group.as_str().to_string(),
+            state: value.state.into(),
+            can_send_secure: value.can_send_secure,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::secure::GroupSecureRepairResult> for DartGroupSecureRepairResult {
+    fn from(value: im_core::secure::GroupSecureRepairResult) -> Self {
+        Self {
+            group: value.group.as_str().to_string(),
+            state: value.state.into(),
+            repaired: value.repaired,
+            problem: value.problem.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::secure::SecureOutboxStatus> for DartSecureOutboxStatus {
+    fn from(value: im_core::secure::SecureOutboxStatus) -> Self {
+        match value {
+            im_core::secure::SecureOutboxStatus::Queued => Self::Queued,
+            im_core::secure::SecureOutboxStatus::Sending => Self::Sending,
+            im_core::secure::SecureOutboxStatus::Failed => Self::Failed,
+            im_core::secure::SecureOutboxStatus::Sent => Self::Sent,
+            im_core::secure::SecureOutboxStatus::Dropped => Self::Dropped,
+        }
+    }
+}
+
+impl From<im_core::secure::SecureOutboxEntry> for DartSecureOutboxEntry {
+    fn from(value: im_core::secure::SecureOutboxEntry) -> Self {
+        Self {
+            id: value.id.as_str().to_string(),
+            target: value.target.into(),
+            message_kind: value.message_kind,
+            status: value.status.into(),
+            attempt_count: value.attempt_count,
+            last_error: value.last_error.map(Into::into),
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl From<im_core::secure::SecureOutboxResult> for DartSecureOutboxResult {
+    fn from(value: im_core::secure::SecureOutboxResult) -> Self {
+        Self {
+            id: value.id.as_str().to_string(),
+            status: value.status.into(),
+            delivery: value.delivery.map(Into::into),
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::secure::SecureDelivery> for DartSecureDelivery {
+    fn from(value: im_core::secure::SecureDelivery) -> Self {
+        Self {
+            message_id: value.message_id.map(|id| id.as_str().to_string()),
+            state: delivery_state_to_string(value.state),
+        }
+    }
+}
+
+impl From<im_core::secure::SecureProblem> for DartSecureProblem {
+    fn from(value: im_core::secure::SecureProblem) -> Self {
+        Self {
+            code: value.code.into(),
+            message: value.message,
+            retryable: value.retryable,
+        }
+    }
+}
+
+impl From<im_core::secure::SecureProblemCode> for DartSecureProblemCode {
+    fn from(value: im_core::secure::SecureProblemCode) -> Self {
+        match value {
+            im_core::secure::SecureProblemCode::IdentityNotReady => Self::IdentityNotReady,
+            im_core::secure::SecureProblemCode::PeerNotFound => Self::PeerNotFound,
+            im_core::secure::SecureProblemCode::PeerKeysUnavailable => Self::PeerKeysUnavailable,
+            im_core::secure::SecureProblemCode::SessionNeedsRepair => Self::SessionNeedsRepair,
+            im_core::secure::SecureProblemCode::GroupStateUnavailable => {
+                Self::GroupStateUnavailable
+            }
+            im_core::secure::SecureProblemCode::LocalStateUnavailable => {
+                Self::LocalStateUnavailable
+            }
+            im_core::secure::SecureProblemCode::TransportUnavailable => Self::TransportUnavailable,
+            im_core::secure::SecureProblemCode::Unsupported => Self::Unsupported,
+            im_core::secure::SecureProblemCode::Unknown => Self::Unknown,
+        }
     }
 }
 

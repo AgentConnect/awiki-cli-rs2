@@ -16,7 +16,7 @@ P1 不公开或不要求实现完整 `GroupService`。群聊 MVP 通过 messages
 client.messages().send(SendMessageRequest {
     target: MessageTarget::Group(group_ref),
     body: MessageBody::Text { ... },
-    security: MessageSecurityMode::DefaultPlain,
+    security: MessageSecurityPolicy::Default,
     ..
 })?;
 ```

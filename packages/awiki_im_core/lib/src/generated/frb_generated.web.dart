@@ -3,6 +3,7 @@
 
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
+
 // Static analysis wrongly picks the IO variant, thus ignore this
 // ignore_for_file: argument_type_not_assignable
 
@@ -17,6 +18,7 @@ import 'api/identity.dart';
 import 'api/messages.dart';
 import 'api/profile.dart';
 import 'api/realtime.dart';
+import 'api/secure.dart';
 import 'api/unsupported.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -31,1885 +33,973 @@ import 'dto/identity.dart';
 import 'dto/message.dart';
 import 'dto/profile.dart';
 import 'dto/realtime.dart';
+import 'dto/secure.dart';
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
 
-abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
-  RustLibApiImplPlatform({
-    required super.handler,
-    required super.wire,
-    required super.generalizedFrbRustBinding,
-    required super.portManager,
-  });
-
-  CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ArcDartImClientPtr => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient;
-
-  CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ArcDartImCorePtr => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore;
-
-  CrossPlatformFinalizerArg
-  get rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr => wire
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession;
-
-  @protected
-  AnyhowException dco_decode_AnyhowException(dynamic raw);
-
-  @protected
-  ArcDartImClient
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    dynamic raw,
-  );
-
-  @protected
-  ArcDartImCore
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    dynamic raw,
-  );
-
-  @protected
-  ArcDartRealtimeSession
-  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    dynamic raw,
-  );
-
-  @protected
-  ArcDartImClient
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    dynamic raw,
-  );
-
-  @protected
-  ArcDartImCore
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    dynamic raw,
-  );
-
-  @protected
-  ArcDartRealtimeSession
-  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    dynamic raw,
-  );
-
-  @protected
-  ArcDartImClient
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    dynamic raw,
-  );
-
-  @protected
-  ArcDartImCore
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    dynamic raw,
-  );
-
-  @protected
-  ArcDartRealtimeSession
-  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    dynamic raw,
-  );
-
-  @protected
-  RustStreamSink<DartRealtimeEvent>
-  dco_decode_StreamSink_dart_realtime_event_Sse(dynamic raw);
-
-  @protected
-  String dco_decode_String(dynamic raw);
-
-  @protected
-  bool dco_decode_bool(dynamic raw);
-
-  @protected
-  bool dco_decode_box_autoadd_bool(dynamic raw);
-
-  @protected
-  DartAttachmentSendRequest dco_decode_box_autoadd_dart_attachment_send_request(
-    dynamic raw,
-  );
-
-  @protected
-  DartCreateGroupRequest dco_decode_box_autoadd_dart_create_group_request(
-    dynamic raw,
-  );
-
-  @protected
-  DartDefaultIdentityChange dco_decode_box_autoadd_dart_default_identity_change(
-    dynamic raw,
-  );
 
-  @protected
-  DartDownloadAttachmentRequest
-  dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw);
 
-  @protected
-  DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw);
 
-  @protected
-  DartIdentitySelector dco_decode_box_autoadd_dart_identity_selector(
-    dynamic raw,
-  );
+                abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
+                  RustLibApiImplPlatform({
+                    required super.handler,
+                    required super.wire,
+                    required super.generalizedFrbRustBinding,
+                    required super.portManager,
+                  });
 
-  @protected
-  DartIdentitySubject dco_decode_box_autoadd_dart_identity_subject(dynamic raw);
+                  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ArcDartImClientPtr => wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient;
 
-  @protected
-  DartIdentitySummary dco_decode_box_autoadd_dart_identity_summary(dynamic raw);
+CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ArcDartImCorePtr => wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore;
 
-  @protected
-  DartImCoreConfig dco_decode_box_autoadd_dart_im_core_config(dynamic raw);
+CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_ArcDartRealtimeSessionPtr => wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession;
 
-  @protected
-  DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw);
 
-  @protected
-  DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw);
 
-  @protected
-  DartMessage dco_decode_box_autoadd_dart_message(dynamic raw);
+                  @protected AnyhowException dco_decode_AnyhowException(dynamic raw);
 
-  @protected
-  DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw);
+@protected ArcDartImClient dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(dynamic raw);
 
-  @protected
-  DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(dynamic raw);
+@protected ArcDartImCore dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(dynamic raw);
 
-  @protected
-  DartSendEmailRequest dco_decode_box_autoadd_dart_send_email_request(
-    dynamic raw,
-  );
+@protected ArcDartRealtimeSession dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(dynamic raw);
 
-  @protected
-  DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(
-    dynamic raw,
-  );
+@protected ArcDartImClient dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(dynamic raw);
 
-  @protected
-  DartThreadRef dco_decode_box_autoadd_dart_thread_ref(dynamic raw);
+@protected ArcDartImCore dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(dynamic raw);
 
-  @protected
-  DartUserProfile dco_decode_box_autoadd_dart_user_profile(dynamic raw);
+@protected ArcDartRealtimeSession dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(dynamic raw);
 
-  @protected
-  PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
+@protected ArcDartImClient dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(dynamic raw);
 
-  @protected
-  int dco_decode_box_autoadd_u_16(dynamic raw);
+@protected ArcDartImCore dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(dynamic raw);
 
-  @protected
-  int dco_decode_box_autoadd_u_32(dynamic raw);
+@protected ArcDartRealtimeSession dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(dynamic raw);
 
-  @protected
-  BigInt dco_decode_box_autoadd_u_64(dynamic raw);
+@protected RustStreamSink<DartRealtimeEvent> dco_decode_StreamSink_dart_realtime_event_Sse(dynamic raw);
 
-  @protected
-  DartAttachmentDestination dco_decode_dart_attachment_destination(dynamic raw);
+@protected String dco_decode_String(dynamic raw);
 
-  @protected
-  DartAttachmentInput dco_decode_dart_attachment_input(dynamic raw);
+@protected bool dco_decode_bool(dynamic raw);
 
-  @protected
-  DartAttachmentSendRequest dco_decode_dart_attachment_send_request(
-    dynamic raw,
-  );
+@protected bool dco_decode_box_autoadd_bool(dynamic raw);
 
-  @protected
-  DartAuthScope dco_decode_dart_auth_scope(dynamic raw);
+@protected DartAttachmentSendRequest dco_decode_box_autoadd_dart_attachment_send_request(dynamic raw);
 
-  @protected
-  DartAuthStatus dco_decode_dart_auth_status(dynamic raw);
+@protected DartCreateGroupRequest dco_decode_box_autoadd_dart_create_group_request(dynamic raw);
 
-  @protected
-  DartConversation dco_decode_dart_conversation(dynamic raw);
+@protected DartDefaultIdentityChange dco_decode_box_autoadd_dart_default_identity_change(dynamic raw);
 
-  @protected
-  DartConversationPage dco_decode_dart_conversation_page(dynamic raw);
+@protected DartDownloadAttachmentRequest dco_decode_box_autoadd_dart_download_attachment_request(dynamic raw);
 
-  @protected
-  DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw);
+@protected DartGroupSnapshot dco_decode_box_autoadd_dart_group_snapshot(dynamic raw);
 
-  @protected
-  DartDefaultIdentityChange dco_decode_dart_default_identity_change(
-    dynamic raw,
-  );
+@protected DartIdentitySelector dco_decode_box_autoadd_dart_identity_selector(dynamic raw);
 
-  @protected
-  DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw);
+@protected DartIdentitySubject dco_decode_box_autoadd_dart_identity_subject(dynamic raw);
 
-  @protected
-  DartDownloadAttachmentRequest dco_decode_dart_download_attachment_request(
-    dynamic raw,
-  );
+@protected DartIdentitySummary dco_decode_box_autoadd_dart_identity_summary(dynamic raw);
 
-  @protected
-  DartDownloadedAttachment dco_decode_dart_downloaded_attachment(dynamic raw);
+@protected DartImCoreConfig dco_decode_box_autoadd_dart_im_core_config(dynamic raw);
 
-  @protected
-  DartDownloadedAttachmentDestination
-  dco_decode_dart_downloaded_attachment_destination(dynamic raw);
+@protected DartImCorePaths dco_decode_box_autoadd_dart_im_core_paths(dynamic raw);
 
-  @protected
-  DartEmailAccount dco_decode_dart_email_account(dynamic raw);
+@protected DartInitialProfile dco_decode_box_autoadd_dart_initial_profile(dynamic raw);
 
-  @protected
-  DartEmailAttachmentContent dco_decode_dart_email_attachment_content(
-    dynamic raw,
-  );
+@protected DartMessage dco_decode_box_autoadd_dart_message(dynamic raw);
 
-  @protected
-  DartEmailAttachmentMetadata dco_decode_dart_email_attachment_metadata(
-    dynamic raw,
-  );
+@protected DartProfilePatch dco_decode_box_autoadd_dart_profile_patch(dynamic raw);
 
-  @protected
-  DartEmailAttribute dco_decode_dart_email_attribute(dynamic raw);
+@protected DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(dynamic raw);
 
-  @protected
-  DartEmailMarkReadResult dco_decode_dart_email_mark_read_result(dynamic raw);
+@protected DartSecureDelivery dco_decode_box_autoadd_dart_secure_delivery(dynamic raw);
 
-  @protected
-  DartEmailMessage dco_decode_dart_email_message(dynamic raw);
+@protected DartSecureProblem dco_decode_box_autoadd_dart_secure_problem(dynamic raw);
 
-  @protected
-  DartEmailMessageSummary dco_decode_dart_email_message_summary(dynamic raw);
+@protected DartSendEmailRequest dco_decode_box_autoadd_dart_send_email_request(dynamic raw);
 
-  @protected
-  DartEmailMessageSummaryPage dco_decode_dart_email_message_summary_page(
-    dynamic raw,
-  );
+@protected DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(dynamic raw);
 
-  @protected
-  DartEmailNotification dco_decode_dart_email_notification(dynamic raw);
+@protected DartThreadRef dco_decode_box_autoadd_dart_thread_ref(dynamic raw);
 
-  @protected
-  DartEmailNotificationPage dco_decode_dart_email_notification_page(
-    dynamic raw,
-  );
+@protected DartUserProfile dco_decode_box_autoadd_dart_user_profile(dynamic raw);
 
-  @protected
-  DartGroupMember dco_decode_dart_group_member(dynamic raw);
+@protected PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
-  @protected
-  DartGroupReadResult dco_decode_dart_group_read_result(dynamic raw);
+@protected int dco_decode_box_autoadd_u_16(dynamic raw);
 
-  @protected
-  DartGroupSnapshot dco_decode_dart_group_snapshot(dynamic raw);
+@protected int dco_decode_box_autoadd_u_32(dynamic raw);
 
-  @protected
-  DartGroupSummary dco_decode_dart_group_summary(dynamic raw);
+@protected BigInt dco_decode_box_autoadd_u_64(dynamic raw);
 
-  @protected
-  DartHandleRegistrationResult dco_decode_dart_handle_registration_result(
-    dynamic raw,
-  );
+@protected DartAttachmentDestination dco_decode_dart_attachment_destination(dynamic raw);
 
-  @protected
-  DartIdentitySelector dco_decode_dart_identity_selector(dynamic raw);
+@protected DartAttachmentInput dco_decode_dart_attachment_input(dynamic raw);
 
-  @protected
-  DartIdentitySubject dco_decode_dart_identity_subject(dynamic raw);
+@protected DartAttachmentSendRequest dco_decode_dart_attachment_send_request(dynamic raw);
 
-  @protected
-  DartIdentitySummary dco_decode_dart_identity_summary(dynamic raw);
+@protected DartAuthScope dco_decode_dart_auth_scope(dynamic raw);
 
-  @protected
-  DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw);
+@protected DartAuthStatus dco_decode_dart_auth_status(dynamic raw);
 
-  @protected
-  DartImCorePaths dco_decode_dart_im_core_paths(dynamic raw);
+@protected DartConversation dco_decode_dart_conversation(dynamic raw);
 
-  @protected
-  DartImError dco_decode_dart_im_error(dynamic raw);
+@protected DartConversationPage dco_decode_dart_conversation_page(dynamic raw);
 
-  @protected
-  DartInitialProfile dco_decode_dart_initial_profile(dynamic raw);
+@protected DartCreateGroupRequest dco_decode_dart_create_group_request(dynamic raw);
 
-  @protected
-  DartMarkReadResult dco_decode_dart_mark_read_result(dynamic raw);
+@protected DartDefaultIdentityChange dco_decode_dart_default_identity_change(dynamic raw);
 
-  @protected
-  DartMessage dco_decode_dart_message(dynamic raw);
+@protected DartDirectSecurePrepareResult dco_decode_dart_direct_secure_prepare_result(dynamic raw);
 
-  @protected
-  DartMessageBodyView dco_decode_dart_message_body_view(dynamic raw);
+@protected DartDirectSecureRepairResult dco_decode_dart_direct_secure_repair_result(dynamic raw);
 
-  @protected
-  DartMessageDirection dco_decode_dart_message_direction(dynamic raw);
+@protected DartDirectSecureState dco_decode_dart_direct_secure_state(dynamic raw);
 
-  @protected
-  DartMessageMetadata dco_decode_dart_message_metadata(dynamic raw);
+@protected DartDirectSecureStatus dco_decode_dart_direct_secure_status(dynamic raw);
 
-  @protected
-  DartMessageMetadataAttribute dco_decode_dart_message_metadata_attribute(
-    dynamic raw,
-  );
+@protected DartDirectoryResolution dco_decode_dart_directory_resolution(dynamic raw);
 
-  @protected
-  DartMessagePage dco_decode_dart_message_page(dynamic raw);
+@protected DartDownloadAttachmentRequest dco_decode_dart_download_attachment_request(dynamic raw);
 
-  @protected
-  DartMessageSecurityMode dco_decode_dart_message_security_mode(dynamic raw);
+@protected DartDownloadedAttachment dco_decode_dart_downloaded_attachment(dynamic raw);
 
-  @protected
-  DartMessageTarget dco_decode_dart_message_target(dynamic raw);
+@protected DartDownloadedAttachmentDestination dco_decode_dart_downloaded_attachment_destination(dynamic raw);
 
-  @protected
-  DartMessageTransportPolicy dco_decode_dart_message_transport_policy(
-    dynamic raw,
-  );
+@protected DartEmailAccount dco_decode_dart_email_account(dynamic raw);
 
-  @protected
-  DartProfilePatch dco_decode_dart_profile_patch(dynamic raw);
+@protected DartEmailAttachmentContent dco_decode_dart_email_attachment_content(dynamic raw);
 
-  @protected
-  DartRealtimeCapability dco_decode_dart_realtime_capability(dynamic raw);
+@protected DartEmailAttachmentMetadata dco_decode_dart_email_attachment_metadata(dynamic raw);
 
-  @protected
-  DartRealtimeEvent dco_decode_dart_realtime_event(dynamic raw);
+@protected DartEmailAttribute dco_decode_dart_email_attribute(dynamic raw);
 
-  @protected
-  DartRealtimeOptions dco_decode_dart_realtime_options(dynamic raw);
+@protected DartEmailMarkReadResult dco_decode_dart_email_mark_read_result(dynamic raw);
 
-  @protected
-  DartRealtimeStatus dco_decode_dart_realtime_status(dynamic raw);
+@protected DartEmailMessage dco_decode_dart_email_message(dynamic raw);
 
-  @protected
-  DartRecoverHandleResult dco_decode_dart_recover_handle_result(dynamic raw);
+@protected DartEmailMessageSummary dco_decode_dart_email_message_summary(dynamic raw);
 
-  @protected
-  DartRelationStatus dco_decode_dart_relation_status(dynamic raw);
+@protected DartEmailMessageSummaryPage dco_decode_dart_email_message_summary_page(dynamic raw);
 
-  @protected
-  DartRelationshipListItem dco_decode_dart_relationship_list_item(dynamic raw);
+@protected DartEmailNotification dco_decode_dart_email_notification(dynamic raw);
 
-  @protected
-  DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw);
+@protected DartEmailNotificationPage dco_decode_dart_email_notification_page(dynamic raw);
 
-  @protected
-  DartSendEmailRequest dco_decode_dart_send_email_request(dynamic raw);
+@protected DartGroupMember dco_decode_dart_group_member(dynamic raw);
 
-  @protected
-  DartSendEmailResult dco_decode_dart_send_email_result(dynamic raw);
+@protected DartGroupReadResult dco_decode_dart_group_read_result(dynamic raw);
 
-  @protected
-  DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw);
+@protected DartGroupSecureLocalReadiness dco_decode_dart_group_secure_local_readiness(dynamic raw);
 
-  @protected
-  DartSendTextRequest dco_decode_dart_send_text_request(dynamic raw);
+@protected DartGroupSecurePendingWork dco_decode_dart_group_secure_pending_work(dynamic raw);
 
-  @protected
-  DartSessionBundle dco_decode_dart_session_bundle(dynamic raw);
+@protected DartGroupSecurePrepareResult dco_decode_dart_group_secure_prepare_result(dynamic raw);
 
-  @protected
-  DartSessionUpdate dco_decode_dart_session_update(dynamic raw);
+@protected DartGroupSecureRepairResult dco_decode_dart_group_secure_repair_result(dynamic raw);
 
-  @protected
-  DartThreadRef dco_decode_dart_thread_ref(dynamic raw);
+@protected DartGroupSecureState dco_decode_dart_group_secure_state(dynamic raw);
 
-  @protected
-  DartUserProfile dco_decode_dart_user_profile(dynamic raw);
+@protected DartGroupSecureStatus dco_decode_dart_group_secure_status(dynamic raw);
 
-  @protected
-  int dco_decode_i_32(dynamic raw);
+@protected DartGroupSnapshot dco_decode_dart_group_snapshot(dynamic raw);
 
-  @protected
-  PlatformInt64 dco_decode_i_64(dynamic raw);
+@protected DartGroupSummary dco_decode_dart_group_summary(dynamic raw);
 
-  @protected
-  List<String> dco_decode_list_String(dynamic raw);
+@protected DartHandleRegistrationResult dco_decode_dart_handle_registration_result(dynamic raw);
 
-  @protected
-  List<DartConversation> dco_decode_list_dart_conversation(dynamic raw);
+@protected DartIdentitySelector dco_decode_dart_identity_selector(dynamic raw);
 
-  @protected
-  List<DartEmailAttachmentMetadata>
-  dco_decode_list_dart_email_attachment_metadata(dynamic raw);
+@protected DartIdentitySubject dco_decode_dart_identity_subject(dynamic raw);
 
-  @protected
-  List<DartEmailAttribute> dco_decode_list_dart_email_attribute(dynamic raw);
+@protected DartIdentitySummary dco_decode_dart_identity_summary(dynamic raw);
 
-  @protected
-  List<DartEmailMessageSummary> dco_decode_list_dart_email_message_summary(
-    dynamic raw,
-  );
+@protected DartImCoreConfig dco_decode_dart_im_core_config(dynamic raw);
 
-  @protected
-  List<DartEmailNotification> dco_decode_list_dart_email_notification(
-    dynamic raw,
-  );
+@protected DartImCorePaths dco_decode_dart_im_core_paths(dynamic raw);
 
-  @protected
-  List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw);
+@protected DartImError dco_decode_dart_im_error(dynamic raw);
 
-  @protected
-  List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw);
+@protected DartInitialProfile dco_decode_dart_initial_profile(dynamic raw);
 
-  @protected
-  List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw);
+@protected DartMarkReadResult dco_decode_dart_mark_read_result(dynamic raw);
 
-  @protected
-  List<DartMessage> dco_decode_list_dart_message(dynamic raw);
+@protected DartMessage dco_decode_dart_message(dynamic raw);
 
-  @protected
-  List<DartMessageMetadataAttribute>
-  dco_decode_list_dart_message_metadata_attribute(dynamic raw);
+@protected DartMessageBodyView dco_decode_dart_message_body_view(dynamic raw);
 
-  @protected
-  List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(
-    dynamic raw,
-  );
+@protected DartMessageDirection dco_decode_dart_message_direction(dynamic raw);
 
-  @protected
-  Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
+@protected DartMessageMetadata dco_decode_dart_message_metadata(dynamic raw);
 
-  @protected
-  String? dco_decode_opt_String(dynamic raw);
+@protected DartMessageMetadataAttribute dco_decode_dart_message_metadata_attribute(dynamic raw);
 
-  @protected
-  bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
+@protected DartMessagePage dco_decode_dart_message_page(dynamic raw);
 
-  @protected
-  DartDefaultIdentityChange?
-  dco_decode_opt_box_autoadd_dart_default_identity_change(dynamic raw);
+@protected DartMessageSecurityMode dco_decode_dart_message_security_mode(dynamic raw);
 
-  @protected
-  DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(
-    dynamic raw,
-  );
+@protected DartMessageTarget dco_decode_dart_message_target(dynamic raw);
 
-  @protected
-  DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(
-    dynamic raw,
-  );
+@protected DartMessageTransportPolicy dco_decode_dart_message_transport_policy(dynamic raw);
 
-  @protected
-  DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
+@protected DartProfilePatch dco_decode_dart_profile_patch(dynamic raw);
 
-  @protected
-  DartUserProfile? dco_decode_opt_box_autoadd_dart_user_profile(dynamic raw);
+@protected DartRealtimeCapability dco_decode_dart_realtime_capability(dynamic raw);
 
-  @protected
-  PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
+@protected DartRealtimeEvent dco_decode_dart_realtime_event(dynamic raw);
 
-  @protected
-  int? dco_decode_opt_box_autoadd_u_16(dynamic raw);
+@protected DartRealtimeOptions dco_decode_dart_realtime_options(dynamic raw);
 
-  @protected
-  int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
+@protected DartRealtimeStatus dco_decode_dart_realtime_status(dynamic raw);
 
-  @protected
-  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
+@protected DartRecoverHandleResult dco_decode_dart_recover_handle_result(dynamic raw);
 
-  @protected
-  List<String>? dco_decode_opt_list_String(dynamic raw);
+@protected DartRelationStatus dco_decode_dart_relation_status(dynamic raw);
 
-  @protected
-  int dco_decode_u_16(dynamic raw);
+@protected DartRelationshipListItem dco_decode_dart_relationship_list_item(dynamic raw);
 
-  @protected
-  int dco_decode_u_32(dynamic raw);
+@protected DartRelationshipPage dco_decode_dart_relationship_page(dynamic raw);
 
-  @protected
-  BigInt dco_decode_u_64(dynamic raw);
+@protected DartSecureDelivery dco_decode_dart_secure_delivery(dynamic raw);
 
-  @protected
-  int dco_decode_u_8(dynamic raw);
+@protected DartSecureOutboxEntry dco_decode_dart_secure_outbox_entry(dynamic raw);
 
-  @protected
-  void dco_decode_unit(dynamic raw);
+@protected DartSecureOutboxResult dco_decode_dart_secure_outbox_result(dynamic raw);
 
-  @protected
-  BigInt dco_decode_usize(dynamic raw);
+@protected DartSecureOutboxStatus dco_decode_dart_secure_outbox_status(dynamic raw);
 
-  @protected
-  AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
+@protected DartSecureProblem dco_decode_dart_secure_problem(dynamic raw);
 
-  @protected
-  ArcDartImClient
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    SseDeserializer deserializer,
-  );
+@protected DartSecureProblemCode dco_decode_dart_secure_problem_code(dynamic raw);
 
-  @protected
-  ArcDartImCore
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    SseDeserializer deserializer,
-  );
+@protected DartSendEmailRequest dco_decode_dart_send_email_request(dynamic raw);
 
-  @protected
-  ArcDartRealtimeSession
-  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    SseDeserializer deserializer,
-  );
+@protected DartSendEmailResult dco_decode_dart_send_email_result(dynamic raw);
 
-  @protected
-  ArcDartImClient
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    SseDeserializer deserializer,
-  );
+@protected DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw);
 
-  @protected
-  ArcDartImCore
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    SseDeserializer deserializer,
-  );
+@protected DartSendTextRequest dco_decode_dart_send_text_request(dynamic raw);
 
-  @protected
-  ArcDartRealtimeSession
-  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    SseDeserializer deserializer,
-  );
+@protected DartSessionBundle dco_decode_dart_session_bundle(dynamic raw);
 
-  @protected
-  ArcDartImClient
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    SseDeserializer deserializer,
-  );
+@protected DartSessionUpdate dco_decode_dart_session_update(dynamic raw);
 
-  @protected
-  ArcDartImCore
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    SseDeserializer deserializer,
-  );
+@protected DartThreadRef dco_decode_dart_thread_ref(dynamic raw);
 
-  @protected
-  ArcDartRealtimeSession
-  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    SseDeserializer deserializer,
-  );
+@protected DartUserProfile dco_decode_dart_user_profile(dynamic raw);
 
-  @protected
-  RustStreamSink<DartRealtimeEvent>
-  sse_decode_StreamSink_dart_realtime_event_Sse(SseDeserializer deserializer);
+@protected int dco_decode_i_32(dynamic raw);
 
-  @protected
-  String sse_decode_String(SseDeserializer deserializer);
+@protected PlatformInt64 dco_decode_i_64(dynamic raw);
 
-  @protected
-  bool sse_decode_bool(SseDeserializer deserializer);
+@protected List<String> dco_decode_list_String(dynamic raw);
 
-  @protected
-  bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
+@protected List<DartConversation> dco_decode_list_dart_conversation(dynamic raw);
 
-  @protected
-  DartAttachmentSendRequest sse_decode_box_autoadd_dart_attachment_send_request(
-    SseDeserializer deserializer,
-  );
+@protected List<DartEmailAttachmentMetadata> dco_decode_list_dart_email_attachment_metadata(dynamic raw);
 
-  @protected
-  DartCreateGroupRequest sse_decode_box_autoadd_dart_create_group_request(
-    SseDeserializer deserializer,
-  );
+@protected List<DartEmailAttribute> dco_decode_list_dart_email_attribute(dynamic raw);
 
-  @protected
-  DartDefaultIdentityChange sse_decode_box_autoadd_dart_default_identity_change(
-    SseDeserializer deserializer,
-  );
+@protected List<DartEmailMessageSummary> dco_decode_list_dart_email_message_summary(dynamic raw);
 
-  @protected
-  DartDownloadAttachmentRequest
-  sse_decode_box_autoadd_dart_download_attachment_request(
-    SseDeserializer deserializer,
-  );
+@protected List<DartEmailNotification> dco_decode_list_dart_email_notification(dynamic raw);
 
-  @protected
-  DartGroupSnapshot sse_decode_box_autoadd_dart_group_snapshot(
-    SseDeserializer deserializer,
-  );
+@protected List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw);
 
-  @protected
-  DartIdentitySelector sse_decode_box_autoadd_dart_identity_selector(
-    SseDeserializer deserializer,
-  );
+@protected List<DartGroupSummary> dco_decode_list_dart_group_summary(dynamic raw);
 
-  @protected
-  DartIdentitySubject sse_decode_box_autoadd_dart_identity_subject(
-    SseDeserializer deserializer,
-  );
+@protected List<DartIdentitySummary> dco_decode_list_dart_identity_summary(dynamic raw);
 
-  @protected
-  DartIdentitySummary sse_decode_box_autoadd_dart_identity_summary(
-    SseDeserializer deserializer,
-  );
+@protected List<DartMessage> dco_decode_list_dart_message(dynamic raw);
 
-  @protected
-  DartImCoreConfig sse_decode_box_autoadd_dart_im_core_config(
-    SseDeserializer deserializer,
-  );
+@protected List<DartMessageMetadataAttribute> dco_decode_list_dart_message_metadata_attribute(dynamic raw);
 
-  @protected
-  DartImCorePaths sse_decode_box_autoadd_dart_im_core_paths(
-    SseDeserializer deserializer,
-  );
+@protected List<DartRelationshipListItem> dco_decode_list_dart_relationship_list_item(dynamic raw);
 
-  @protected
-  DartInitialProfile sse_decode_box_autoadd_dart_initial_profile(
-    SseDeserializer deserializer,
-  );
+@protected List<DartSecureOutboxEntry> dco_decode_list_dart_secure_outbox_entry(dynamic raw);
 
-  @protected
-  DartMessage sse_decode_box_autoadd_dart_message(SseDeserializer deserializer);
+@protected Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
-  @protected
-  DartProfilePatch sse_decode_box_autoadd_dart_profile_patch(
-    SseDeserializer deserializer,
-  );
+@protected String? dco_decode_opt_String(dynamic raw);
 
-  @protected
-  DartRealtimeOptions sse_decode_box_autoadd_dart_realtime_options(
-    SseDeserializer deserializer,
-  );
+@protected bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
 
-  @protected
-  DartSendEmailRequest sse_decode_box_autoadd_dart_send_email_request(
-    SseDeserializer deserializer,
-  );
+@protected DartDefaultIdentityChange? dco_decode_opt_box_autoadd_dart_default_identity_change(dynamic raw);
 
-  @protected
-  DartSendTextRequest sse_decode_box_autoadd_dart_send_text_request(
-    SseDeserializer deserializer,
-  );
+@protected DartGroupSnapshot? dco_decode_opt_box_autoadd_dart_group_snapshot(dynamic raw);
 
-  @protected
-  DartThreadRef sse_decode_box_autoadd_dart_thread_ref(
-    SseDeserializer deserializer,
-  );
+@protected DartIdentitySummary? dco_decode_opt_box_autoadd_dart_identity_summary(dynamic raw);
 
-  @protected
-  DartUserProfile sse_decode_box_autoadd_dart_user_profile(
-    SseDeserializer deserializer,
-  );
+@protected DartMessage? dco_decode_opt_box_autoadd_dart_message(dynamic raw);
 
-  @protected
-  PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
+@protected DartSecureDelivery? dco_decode_opt_box_autoadd_dart_secure_delivery(dynamic raw);
 
-  @protected
-  int sse_decode_box_autoadd_u_16(SseDeserializer deserializer);
+@protected DartSecureProblem? dco_decode_opt_box_autoadd_dart_secure_problem(dynamic raw);
 
-  @protected
-  int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
+@protected DartUserProfile? dco_decode_opt_box_autoadd_dart_user_profile(dynamic raw);
 
-  @protected
-  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
+@protected PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
-  @protected
-  DartAttachmentDestination sse_decode_dart_attachment_destination(
-    SseDeserializer deserializer,
-  );
+@protected int? dco_decode_opt_box_autoadd_u_16(dynamic raw);
 
-  @protected
-  DartAttachmentInput sse_decode_dart_attachment_input(
-    SseDeserializer deserializer,
-  );
+@protected int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
 
-  @protected
-  DartAttachmentSendRequest sse_decode_dart_attachment_send_request(
-    SseDeserializer deserializer,
-  );
+@protected BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw);
 
-  @protected
-  DartAuthScope sse_decode_dart_auth_scope(SseDeserializer deserializer);
+@protected List<String>? dco_decode_opt_list_String(dynamic raw);
 
-  @protected
-  DartAuthStatus sse_decode_dart_auth_status(SseDeserializer deserializer);
+@protected int dco_decode_u_16(dynamic raw);
 
-  @protected
-  DartConversation sse_decode_dart_conversation(SseDeserializer deserializer);
+@protected int dco_decode_u_32(dynamic raw);
 
-  @protected
-  DartConversationPage sse_decode_dart_conversation_page(
-    SseDeserializer deserializer,
-  );
+@protected BigInt dco_decode_u_64(dynamic raw);
 
-  @protected
-  DartCreateGroupRequest sse_decode_dart_create_group_request(
-    SseDeserializer deserializer,
-  );
+@protected int dco_decode_u_8(dynamic raw);
 
-  @protected
-  DartDefaultIdentityChange sse_decode_dart_default_identity_change(
-    SseDeserializer deserializer,
-  );
+@protected void dco_decode_unit(dynamic raw);
 
-  @protected
-  DartDirectoryResolution sse_decode_dart_directory_resolution(
-    SseDeserializer deserializer,
-  );
+@protected BigInt dco_decode_usize(dynamic raw);
 
-  @protected
-  DartDownloadAttachmentRequest sse_decode_dart_download_attachment_request(
-    SseDeserializer deserializer,
-  );
+@protected AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
 
-  @protected
-  DartDownloadedAttachment sse_decode_dart_downloaded_attachment(
-    SseDeserializer deserializer,
-  );
+@protected ArcDartImClient sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(SseDeserializer deserializer);
 
-  @protected
-  DartDownloadedAttachmentDestination
-  sse_decode_dart_downloaded_attachment_destination(
-    SseDeserializer deserializer,
-  );
+@protected ArcDartImCore sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(SseDeserializer deserializer);
 
-  @protected
-  DartEmailAccount sse_decode_dart_email_account(SseDeserializer deserializer);
+@protected ArcDartRealtimeSession sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(SseDeserializer deserializer);
 
-  @protected
-  DartEmailAttachmentContent sse_decode_dart_email_attachment_content(
-    SseDeserializer deserializer,
-  );
+@protected ArcDartImClient sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(SseDeserializer deserializer);
 
-  @protected
-  DartEmailAttachmentMetadata sse_decode_dart_email_attachment_metadata(
-    SseDeserializer deserializer,
-  );
+@protected ArcDartImCore sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(SseDeserializer deserializer);
 
-  @protected
-  DartEmailAttribute sse_decode_dart_email_attribute(
-    SseDeserializer deserializer,
-  );
+@protected ArcDartRealtimeSession sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(SseDeserializer deserializer);
 
-  @protected
-  DartEmailMarkReadResult sse_decode_dart_email_mark_read_result(
-    SseDeserializer deserializer,
-  );
+@protected ArcDartImClient sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(SseDeserializer deserializer);
 
-  @protected
-  DartEmailMessage sse_decode_dart_email_message(SseDeserializer deserializer);
+@protected ArcDartImCore sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(SseDeserializer deserializer);
 
-  @protected
-  DartEmailMessageSummary sse_decode_dart_email_message_summary(
-    SseDeserializer deserializer,
-  );
+@protected ArcDartRealtimeSession sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(SseDeserializer deserializer);
 
-  @protected
-  DartEmailMessageSummaryPage sse_decode_dart_email_message_summary_page(
-    SseDeserializer deserializer,
-  );
+@protected RustStreamSink<DartRealtimeEvent> sse_decode_StreamSink_dart_realtime_event_Sse(SseDeserializer deserializer);
 
-  @protected
-  DartEmailNotification sse_decode_dart_email_notification(
-    SseDeserializer deserializer,
-  );
+@protected String sse_decode_String(SseDeserializer deserializer);
 
-  @protected
-  DartEmailNotificationPage sse_decode_dart_email_notification_page(
-    SseDeserializer deserializer,
-  );
+@protected bool sse_decode_bool(SseDeserializer deserializer);
 
-  @protected
-  DartGroupMember sse_decode_dart_group_member(SseDeserializer deserializer);
+@protected bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
 
-  @protected
-  DartGroupReadResult sse_decode_dart_group_read_result(
-    SseDeserializer deserializer,
-  );
+@protected DartAttachmentSendRequest sse_decode_box_autoadd_dart_attachment_send_request(SseDeserializer deserializer);
 
-  @protected
-  DartGroupSnapshot sse_decode_dart_group_snapshot(
-    SseDeserializer deserializer,
-  );
+@protected DartCreateGroupRequest sse_decode_box_autoadd_dart_create_group_request(SseDeserializer deserializer);
 
-  @protected
-  DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer);
+@protected DartDefaultIdentityChange sse_decode_box_autoadd_dart_default_identity_change(SseDeserializer deserializer);
 
-  @protected
-  DartHandleRegistrationResult sse_decode_dart_handle_registration_result(
-    SseDeserializer deserializer,
-  );
+@protected DartDownloadAttachmentRequest sse_decode_box_autoadd_dart_download_attachment_request(SseDeserializer deserializer);
 
-  @protected
-  DartIdentitySelector sse_decode_dart_identity_selector(
-    SseDeserializer deserializer,
-  );
+@protected DartGroupSnapshot sse_decode_box_autoadd_dart_group_snapshot(SseDeserializer deserializer);
 
-  @protected
-  DartIdentitySubject sse_decode_dart_identity_subject(
-    SseDeserializer deserializer,
-  );
+@protected DartIdentitySelector sse_decode_box_autoadd_dart_identity_selector(SseDeserializer deserializer);
 
-  @protected
-  DartIdentitySummary sse_decode_dart_identity_summary(
-    SseDeserializer deserializer,
-  );
+@protected DartIdentitySubject sse_decode_box_autoadd_dart_identity_subject(SseDeserializer deserializer);
 
-  @protected
-  DartImCoreConfig sse_decode_dart_im_core_config(SseDeserializer deserializer);
+@protected DartIdentitySummary sse_decode_box_autoadd_dart_identity_summary(SseDeserializer deserializer);
 
-  @protected
-  DartImCorePaths sse_decode_dart_im_core_paths(SseDeserializer deserializer);
+@protected DartImCoreConfig sse_decode_box_autoadd_dart_im_core_config(SseDeserializer deserializer);
 
-  @protected
-  DartImError sse_decode_dart_im_error(SseDeserializer deserializer);
+@protected DartImCorePaths sse_decode_box_autoadd_dart_im_core_paths(SseDeserializer deserializer);
 
-  @protected
-  DartInitialProfile sse_decode_dart_initial_profile(
-    SseDeserializer deserializer,
-  );
+@protected DartInitialProfile sse_decode_box_autoadd_dart_initial_profile(SseDeserializer deserializer);
 
-  @protected
-  DartMarkReadResult sse_decode_dart_mark_read_result(
-    SseDeserializer deserializer,
-  );
+@protected DartMessage sse_decode_box_autoadd_dart_message(SseDeserializer deserializer);
 
-  @protected
-  DartMessage sse_decode_dart_message(SseDeserializer deserializer);
+@protected DartProfilePatch sse_decode_box_autoadd_dart_profile_patch(SseDeserializer deserializer);
 
-  @protected
-  DartMessageBodyView sse_decode_dart_message_body_view(
-    SseDeserializer deserializer,
-  );
+@protected DartRealtimeOptions sse_decode_box_autoadd_dart_realtime_options(SseDeserializer deserializer);
 
-  @protected
-  DartMessageDirection sse_decode_dart_message_direction(
-    SseDeserializer deserializer,
-  );
+@protected DartSecureDelivery sse_decode_box_autoadd_dart_secure_delivery(SseDeserializer deserializer);
 
-  @protected
-  DartMessageMetadata sse_decode_dart_message_metadata(
-    SseDeserializer deserializer,
-  );
+@protected DartSecureProblem sse_decode_box_autoadd_dart_secure_problem(SseDeserializer deserializer);
 
-  @protected
-  DartMessageMetadataAttribute sse_decode_dart_message_metadata_attribute(
-    SseDeserializer deserializer,
-  );
+@protected DartSendEmailRequest sse_decode_box_autoadd_dart_send_email_request(SseDeserializer deserializer);
 
-  @protected
-  DartMessagePage sse_decode_dart_message_page(SseDeserializer deserializer);
+@protected DartSendTextRequest sse_decode_box_autoadd_dart_send_text_request(SseDeserializer deserializer);
 
-  @protected
-  DartMessageSecurityMode sse_decode_dart_message_security_mode(
-    SseDeserializer deserializer,
-  );
+@protected DartThreadRef sse_decode_box_autoadd_dart_thread_ref(SseDeserializer deserializer);
 
-  @protected
-  DartMessageTarget sse_decode_dart_message_target(
-    SseDeserializer deserializer,
-  );
+@protected DartUserProfile sse_decode_box_autoadd_dart_user_profile(SseDeserializer deserializer);
 
-  @protected
-  DartMessageTransportPolicy sse_decode_dart_message_transport_policy(
-    SseDeserializer deserializer,
-  );
+@protected PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
-  @protected
-  DartProfilePatch sse_decode_dart_profile_patch(SseDeserializer deserializer);
+@protected int sse_decode_box_autoadd_u_16(SseDeserializer deserializer);
 
-  @protected
-  DartRealtimeCapability sse_decode_dart_realtime_capability(
-    SseDeserializer deserializer,
-  );
+@protected int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
 
-  @protected
-  DartRealtimeEvent sse_decode_dart_realtime_event(
-    SseDeserializer deserializer,
-  );
+@protected BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer);
 
-  @protected
-  DartRealtimeOptions sse_decode_dart_realtime_options(
-    SseDeserializer deserializer,
-  );
+@protected DartAttachmentDestination sse_decode_dart_attachment_destination(SseDeserializer deserializer);
 
-  @protected
-  DartRealtimeStatus sse_decode_dart_realtime_status(
-    SseDeserializer deserializer,
-  );
+@protected DartAttachmentInput sse_decode_dart_attachment_input(SseDeserializer deserializer);
 
-  @protected
-  DartRecoverHandleResult sse_decode_dart_recover_handle_result(
-    SseDeserializer deserializer,
-  );
+@protected DartAttachmentSendRequest sse_decode_dart_attachment_send_request(SseDeserializer deserializer);
 
-  @protected
-  DartRelationStatus sse_decode_dart_relation_status(
-    SseDeserializer deserializer,
-  );
+@protected DartAuthScope sse_decode_dart_auth_scope(SseDeserializer deserializer);
 
-  @protected
-  DartRelationshipListItem sse_decode_dart_relationship_list_item(
-    SseDeserializer deserializer,
-  );
+@protected DartAuthStatus sse_decode_dart_auth_status(SseDeserializer deserializer);
 
-  @protected
-  DartRelationshipPage sse_decode_dart_relationship_page(
-    SseDeserializer deserializer,
-  );
+@protected DartConversation sse_decode_dart_conversation(SseDeserializer deserializer);
 
-  @protected
-  DartSendEmailRequest sse_decode_dart_send_email_request(
-    SseDeserializer deserializer,
-  );
+@protected DartConversationPage sse_decode_dart_conversation_page(SseDeserializer deserializer);
 
-  @protected
-  DartSendEmailResult sse_decode_dart_send_email_result(
-    SseDeserializer deserializer,
-  );
+@protected DartCreateGroupRequest sse_decode_dart_create_group_request(SseDeserializer deserializer);
 
-  @protected
-  DartSendMessageResult sse_decode_dart_send_message_result(
-    SseDeserializer deserializer,
-  );
+@protected DartDefaultIdentityChange sse_decode_dart_default_identity_change(SseDeserializer deserializer);
 
-  @protected
-  DartSendTextRequest sse_decode_dart_send_text_request(
-    SseDeserializer deserializer,
-  );
+@protected DartDirectSecurePrepareResult sse_decode_dart_direct_secure_prepare_result(SseDeserializer deserializer);
 
-  @protected
-  DartSessionBundle sse_decode_dart_session_bundle(
-    SseDeserializer deserializer,
-  );
+@protected DartDirectSecureRepairResult sse_decode_dart_direct_secure_repair_result(SseDeserializer deserializer);
 
-  @protected
-  DartSessionUpdate sse_decode_dart_session_update(
-    SseDeserializer deserializer,
-  );
+@protected DartDirectSecureState sse_decode_dart_direct_secure_state(SseDeserializer deserializer);
 
-  @protected
-  DartThreadRef sse_decode_dart_thread_ref(SseDeserializer deserializer);
+@protected DartDirectSecureStatus sse_decode_dart_direct_secure_status(SseDeserializer deserializer);
 
-  @protected
-  DartUserProfile sse_decode_dart_user_profile(SseDeserializer deserializer);
+@protected DartDirectoryResolution sse_decode_dart_directory_resolution(SseDeserializer deserializer);
 
-  @protected
-  int sse_decode_i_32(SseDeserializer deserializer);
+@protected DartDownloadAttachmentRequest sse_decode_dart_download_attachment_request(SseDeserializer deserializer);
 
-  @protected
-  PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+@protected DartDownloadedAttachment sse_decode_dart_downloaded_attachment(SseDeserializer deserializer);
 
-  @protected
-  List<String> sse_decode_list_String(SseDeserializer deserializer);
+@protected DartDownloadedAttachmentDestination sse_decode_dart_downloaded_attachment_destination(SseDeserializer deserializer);
 
-  @protected
-  List<DartConversation> sse_decode_list_dart_conversation(
-    SseDeserializer deserializer,
-  );
+@protected DartEmailAccount sse_decode_dart_email_account(SseDeserializer deserializer);
 
-  @protected
-  List<DartEmailAttachmentMetadata>
-  sse_decode_list_dart_email_attachment_metadata(SseDeserializer deserializer);
+@protected DartEmailAttachmentContent sse_decode_dart_email_attachment_content(SseDeserializer deserializer);
 
-  @protected
-  List<DartEmailAttribute> sse_decode_list_dart_email_attribute(
-    SseDeserializer deserializer,
-  );
+@protected DartEmailAttachmentMetadata sse_decode_dart_email_attachment_metadata(SseDeserializer deserializer);
 
-  @protected
-  List<DartEmailMessageSummary> sse_decode_list_dart_email_message_summary(
-    SseDeserializer deserializer,
-  );
+@protected DartEmailAttribute sse_decode_dart_email_attribute(SseDeserializer deserializer);
 
-  @protected
-  List<DartEmailNotification> sse_decode_list_dart_email_notification(
-    SseDeserializer deserializer,
-  );
+@protected DartEmailMarkReadResult sse_decode_dart_email_mark_read_result(SseDeserializer deserializer);
 
-  @protected
-  List<DartGroupMember> sse_decode_list_dart_group_member(
-    SseDeserializer deserializer,
-  );
+@protected DartEmailMessage sse_decode_dart_email_message(SseDeserializer deserializer);
 
-  @protected
-  List<DartGroupSummary> sse_decode_list_dart_group_summary(
-    SseDeserializer deserializer,
-  );
+@protected DartEmailMessageSummary sse_decode_dart_email_message_summary(SseDeserializer deserializer);
 
-  @protected
-  List<DartIdentitySummary> sse_decode_list_dart_identity_summary(
-    SseDeserializer deserializer,
-  );
+@protected DartEmailMessageSummaryPage sse_decode_dart_email_message_summary_page(SseDeserializer deserializer);
 
-  @protected
-  List<DartMessage> sse_decode_list_dart_message(SseDeserializer deserializer);
+@protected DartEmailNotification sse_decode_dart_email_notification(SseDeserializer deserializer);
 
-  @protected
-  List<DartMessageMetadataAttribute>
-  sse_decode_list_dart_message_metadata_attribute(SseDeserializer deserializer);
+@protected DartEmailNotificationPage sse_decode_dart_email_notification_page(SseDeserializer deserializer);
 
-  @protected
-  List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(
-    SseDeserializer deserializer,
-  );
+@protected DartGroupMember sse_decode_dart_group_member(SseDeserializer deserializer);
 
-  @protected
-  Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+@protected DartGroupReadResult sse_decode_dart_group_read_result(SseDeserializer deserializer);
 
-  @protected
-  String? sse_decode_opt_String(SseDeserializer deserializer);
-
-  @protected
-  bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
-
-  @protected
-  DartDefaultIdentityChange?
-  sse_decode_opt_box_autoadd_dart_default_identity_change(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartIdentitySummary? sse_decode_opt_box_autoadd_dart_identity_summary(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartMessage? sse_decode_opt_box_autoadd_dart_message(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  DartUserProfile? sse_decode_opt_box_autoadd_dart_user_profile(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
-
-  @protected
-  int? sse_decode_opt_box_autoadd_u_16(SseDeserializer deserializer);
-
-  @protected
-  int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
-
-  @protected
-  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
-
-  @protected
-  List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
-
-  @protected
-  int sse_decode_u_16(SseDeserializer deserializer);
-
-  @protected
-  int sse_decode_u_32(SseDeserializer deserializer);
-
-  @protected
-  BigInt sse_decode_u_64(SseDeserializer deserializer);
-
-  @protected
-  int sse_decode_u_8(SseDeserializer deserializer);
-
-  @protected
-  void sse_decode_unit(SseDeserializer deserializer);
-
-  @protected
-  BigInt sse_decode_usize(SseDeserializer deserializer);
-
-  @protected
-  void sse_encode_AnyhowException(
-    AnyhowException self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    ArcDartImClient self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    ArcDartImCore self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    ArcDartRealtimeSession self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    ArcDartImClient self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    ArcDartImCore self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    ArcDartRealtimeSession self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    ArcDartImClient self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    ArcDartImCore self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    ArcDartRealtimeSession self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_StreamSink_dart_realtime_event_Sse(
-    RustStreamSink<DartRealtimeEvent> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_String(String self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_bool(bool self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_autoadd_dart_attachment_send_request(
-    DartAttachmentSendRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_create_group_request(
-    DartCreateGroupRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_default_identity_change(
-    DartDefaultIdentityChange self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_download_attachment_request(
-    DartDownloadAttachmentRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_group_snapshot(
-    DartGroupSnapshot self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_identity_selector(
-    DartIdentitySelector self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_identity_subject(
-    DartIdentitySubject self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_identity_summary(
-    DartIdentitySummary self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_im_core_config(
-    DartImCoreConfig self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_im_core_paths(
-    DartImCorePaths self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_initial_profile(
-    DartInitialProfile self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_message(
-    DartMessage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_profile_patch(
-    DartProfilePatch self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_realtime_options(
-    DartRealtimeOptions self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_send_email_request(
-    DartSendEmailRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_send_text_request(
-    DartSendTextRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_thread_ref(
-    DartThreadRef self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_dart_user_profile(
-    DartUserProfile self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_i_64(
-    PlatformInt64 self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_u_16(int self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_dart_attachment_destination(
-    DartAttachmentDestination self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_attachment_input(
-    DartAttachmentInput self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_attachment_send_request(
-    DartAttachmentSendRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_auth_scope(DartAuthScope self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_dart_auth_status(
-    DartAuthStatus self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_conversation(
-    DartConversation self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_conversation_page(
-    DartConversationPage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_create_group_request(
-    DartCreateGroupRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_default_identity_change(
-    DartDefaultIdentityChange self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_directory_resolution(
-    DartDirectoryResolution self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_download_attachment_request(
-    DartDownloadAttachmentRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_downloaded_attachment(
-    DartDownloadedAttachment self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_downloaded_attachment_destination(
-    DartDownloadedAttachmentDestination self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_account(
-    DartEmailAccount self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_attachment_content(
-    DartEmailAttachmentContent self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_attachment_metadata(
-    DartEmailAttachmentMetadata self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_attribute(
-    DartEmailAttribute self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_mark_read_result(
-    DartEmailMarkReadResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_message(
-    DartEmailMessage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_message_summary(
-    DartEmailMessageSummary self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_message_summary_page(
-    DartEmailMessageSummaryPage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_notification(
-    DartEmailNotification self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_email_notification_page(
-    DartEmailNotificationPage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_group_member(
-    DartGroupMember self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_group_read_result(
-    DartGroupReadResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_group_snapshot(
-    DartGroupSnapshot self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_group_summary(
-    DartGroupSummary self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_handle_registration_result(
-    DartHandleRegistrationResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_identity_selector(
-    DartIdentitySelector self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_identity_subject(
-    DartIdentitySubject self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_identity_summary(
-    DartIdentitySummary self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_im_core_config(
-    DartImCoreConfig self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_im_core_paths(
-    DartImCorePaths self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_im_error(DartImError self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_dart_initial_profile(
-    DartInitialProfile self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_mark_read_result(
-    DartMarkReadResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_message(DartMessage self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_dart_message_body_view(
-    DartMessageBodyView self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_message_direction(
-    DartMessageDirection self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_message_metadata(
-    DartMessageMetadata self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_message_metadata_attribute(
-    DartMessageMetadataAttribute self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_message_page(
-    DartMessagePage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_message_security_mode(
-    DartMessageSecurityMode self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_message_target(
-    DartMessageTarget self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_message_transport_policy(
-    DartMessageTransportPolicy self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_profile_patch(
-    DartProfilePatch self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_realtime_capability(
-    DartRealtimeCapability self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_realtime_event(
-    DartRealtimeEvent self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_realtime_options(
-    DartRealtimeOptions self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_realtime_status(
-    DartRealtimeStatus self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_recover_handle_result(
-    DartRecoverHandleResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_relation_status(
-    DartRelationStatus self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_relationship_list_item(
-    DartRelationshipListItem self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_relationship_page(
-    DartRelationshipPage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_send_email_request(
-    DartSendEmailRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_send_email_result(
-    DartSendEmailResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_send_message_result(
-    DartSendMessageResult self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_send_text_request(
-    DartSendTextRequest self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_session_bundle(
-    DartSessionBundle self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_session_update(
-    DartSessionUpdate self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_dart_thread_ref(DartThreadRef self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_dart_user_profile(
-    DartUserProfile self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_i_32(int self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_list_String(List<String> self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_list_dart_conversation(
-    List<DartConversation> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_email_attachment_metadata(
-    List<DartEmailAttachmentMetadata> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_email_attribute(
-    List<DartEmailAttribute> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_email_message_summary(
-    List<DartEmailMessageSummary> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_email_notification(
-    List<DartEmailNotification> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_group_member(
-    List<DartGroupMember> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_group_summary(
-    List<DartGroupSummary> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_identity_summary(
-    List<DartIdentitySummary> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_message(
-    List<DartMessage> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_message_metadata_attribute(
-    List<DartMessageMetadataAttribute> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_dart_relationship_list_item(
-    List<DartRelationshipListItem> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_prim_u_8_strict(
-    Uint8List self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_String(String? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_default_identity_change(
-    DartDefaultIdentityChange? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_group_snapshot(
-    DartGroupSnapshot? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_identity_summary(
-    DartIdentitySummary? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_message(
-    DartMessage? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_dart_user_profile(
-    DartUserProfile? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_i_64(
-    PlatformInt64? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_u_16(int? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_u_16(int self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_u_32(int self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_u_64(BigInt self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_u_8(int self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_unit(void self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_usize(BigInt self, SseSerializer serializer);
-}
+@protected DartGroupSecureLocalReadiness sse_decode_dart_group_secure_local_readiness(SseDeserializer deserializer);
+
+@protected DartGroupSecurePendingWork sse_decode_dart_group_secure_pending_work(SseDeserializer deserializer);
+
+@protected DartGroupSecurePrepareResult sse_decode_dart_group_secure_prepare_result(SseDeserializer deserializer);
+
+@protected DartGroupSecureRepairResult sse_decode_dart_group_secure_repair_result(SseDeserializer deserializer);
+
+@protected DartGroupSecureState sse_decode_dart_group_secure_state(SseDeserializer deserializer);
+
+@protected DartGroupSecureStatus sse_decode_dart_group_secure_status(SseDeserializer deserializer);
+
+@protected DartGroupSnapshot sse_decode_dart_group_snapshot(SseDeserializer deserializer);
+
+@protected DartGroupSummary sse_decode_dart_group_summary(SseDeserializer deserializer);
+
+@protected DartHandleRegistrationResult sse_decode_dart_handle_registration_result(SseDeserializer deserializer);
+
+@protected DartIdentitySelector sse_decode_dart_identity_selector(SseDeserializer deserializer);
+
+@protected DartIdentitySubject sse_decode_dart_identity_subject(SseDeserializer deserializer);
+
+@protected DartIdentitySummary sse_decode_dart_identity_summary(SseDeserializer deserializer);
+
+@protected DartImCoreConfig sse_decode_dart_im_core_config(SseDeserializer deserializer);
+
+@protected DartImCorePaths sse_decode_dart_im_core_paths(SseDeserializer deserializer);
+
+@protected DartImError sse_decode_dart_im_error(SseDeserializer deserializer);
+
+@protected DartInitialProfile sse_decode_dart_initial_profile(SseDeserializer deserializer);
+
+@protected DartMarkReadResult sse_decode_dart_mark_read_result(SseDeserializer deserializer);
+
+@protected DartMessage sse_decode_dart_message(SseDeserializer deserializer);
+
+@protected DartMessageBodyView sse_decode_dart_message_body_view(SseDeserializer deserializer);
+
+@protected DartMessageDirection sse_decode_dart_message_direction(SseDeserializer deserializer);
+
+@protected DartMessageMetadata sse_decode_dart_message_metadata(SseDeserializer deserializer);
+
+@protected DartMessageMetadataAttribute sse_decode_dart_message_metadata_attribute(SseDeserializer deserializer);
+
+@protected DartMessagePage sse_decode_dart_message_page(SseDeserializer deserializer);
+
+@protected DartMessageSecurityMode sse_decode_dart_message_security_mode(SseDeserializer deserializer);
+
+@protected DartMessageTarget sse_decode_dart_message_target(SseDeserializer deserializer);
+
+@protected DartMessageTransportPolicy sse_decode_dart_message_transport_policy(SseDeserializer deserializer);
+
+@protected DartProfilePatch sse_decode_dart_profile_patch(SseDeserializer deserializer);
+
+@protected DartRealtimeCapability sse_decode_dart_realtime_capability(SseDeserializer deserializer);
+
+@protected DartRealtimeEvent sse_decode_dart_realtime_event(SseDeserializer deserializer);
+
+@protected DartRealtimeOptions sse_decode_dart_realtime_options(SseDeserializer deserializer);
+
+@protected DartRealtimeStatus sse_decode_dart_realtime_status(SseDeserializer deserializer);
+
+@protected DartRecoverHandleResult sse_decode_dart_recover_handle_result(SseDeserializer deserializer);
+
+@protected DartRelationStatus sse_decode_dart_relation_status(SseDeserializer deserializer);
+
+@protected DartRelationshipListItem sse_decode_dart_relationship_list_item(SseDeserializer deserializer);
+
+@protected DartRelationshipPage sse_decode_dart_relationship_page(SseDeserializer deserializer);
+
+@protected DartSecureDelivery sse_decode_dart_secure_delivery(SseDeserializer deserializer);
+
+@protected DartSecureOutboxEntry sse_decode_dart_secure_outbox_entry(SseDeserializer deserializer);
+
+@protected DartSecureOutboxResult sse_decode_dart_secure_outbox_result(SseDeserializer deserializer);
+
+@protected DartSecureOutboxStatus sse_decode_dart_secure_outbox_status(SseDeserializer deserializer);
+
+@protected DartSecureProblem sse_decode_dart_secure_problem(SseDeserializer deserializer);
+
+@protected DartSecureProblemCode sse_decode_dart_secure_problem_code(SseDeserializer deserializer);
+
+@protected DartSendEmailRequest sse_decode_dart_send_email_request(SseDeserializer deserializer);
+
+@protected DartSendEmailResult sse_decode_dart_send_email_result(SseDeserializer deserializer);
+
+@protected DartSendMessageResult sse_decode_dart_send_message_result(SseDeserializer deserializer);
+
+@protected DartSendTextRequest sse_decode_dart_send_text_request(SseDeserializer deserializer);
+
+@protected DartSessionBundle sse_decode_dart_session_bundle(SseDeserializer deserializer);
+
+@protected DartSessionUpdate sse_decode_dart_session_update(SseDeserializer deserializer);
+
+@protected DartThreadRef sse_decode_dart_thread_ref(SseDeserializer deserializer);
+
+@protected DartUserProfile sse_decode_dart_user_profile(SseDeserializer deserializer);
+
+@protected int sse_decode_i_32(SseDeserializer deserializer);
+
+@protected PlatformInt64 sse_decode_i_64(SseDeserializer deserializer);
+
+@protected List<String> sse_decode_list_String(SseDeserializer deserializer);
+
+@protected List<DartConversation> sse_decode_list_dart_conversation(SseDeserializer deserializer);
+
+@protected List<DartEmailAttachmentMetadata> sse_decode_list_dart_email_attachment_metadata(SseDeserializer deserializer);
+
+@protected List<DartEmailAttribute> sse_decode_list_dart_email_attribute(SseDeserializer deserializer);
+
+@protected List<DartEmailMessageSummary> sse_decode_list_dart_email_message_summary(SseDeserializer deserializer);
+
+@protected List<DartEmailNotification> sse_decode_list_dart_email_notification(SseDeserializer deserializer);
+
+@protected List<DartGroupMember> sse_decode_list_dart_group_member(SseDeserializer deserializer);
+
+@protected List<DartGroupSummary> sse_decode_list_dart_group_summary(SseDeserializer deserializer);
+
+@protected List<DartIdentitySummary> sse_decode_list_dart_identity_summary(SseDeserializer deserializer);
+
+@protected List<DartMessage> sse_decode_list_dart_message(SseDeserializer deserializer);
+
+@protected List<DartMessageMetadataAttribute> sse_decode_list_dart_message_metadata_attribute(SseDeserializer deserializer);
+
+@protected List<DartRelationshipListItem> sse_decode_list_dart_relationship_list_item(SseDeserializer deserializer);
+
+@protected List<DartSecureOutboxEntry> sse_decode_list_dart_secure_outbox_entry(SseDeserializer deserializer);
+
+@protected Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
+
+@protected String? sse_decode_opt_String(SseDeserializer deserializer);
+
+@protected bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
+
+@protected DartDefaultIdentityChange? sse_decode_opt_box_autoadd_dart_default_identity_change(SseDeserializer deserializer);
+
+@protected DartGroupSnapshot? sse_decode_opt_box_autoadd_dart_group_snapshot(SseDeserializer deserializer);
+
+@protected DartIdentitySummary? sse_decode_opt_box_autoadd_dart_identity_summary(SseDeserializer deserializer);
+
+@protected DartMessage? sse_decode_opt_box_autoadd_dart_message(SseDeserializer deserializer);
+
+@protected DartSecureDelivery? sse_decode_opt_box_autoadd_dart_secure_delivery(SseDeserializer deserializer);
+
+@protected DartSecureProblem? sse_decode_opt_box_autoadd_dart_secure_problem(SseDeserializer deserializer);
+
+@protected DartUserProfile? sse_decode_opt_box_autoadd_dart_user_profile(SseDeserializer deserializer);
+
+@protected PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
+
+@protected int? sse_decode_opt_box_autoadd_u_16(SseDeserializer deserializer);
+
+@protected int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
+
+@protected BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer);
+
+@protected List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
+
+@protected int sse_decode_u_16(SseDeserializer deserializer);
+
+@protected int sse_decode_u_32(SseDeserializer deserializer);
+
+@protected BigInt sse_decode_u_64(SseDeserializer deserializer);
+
+@protected int sse_decode_u_8(SseDeserializer deserializer);
+
+@protected void sse_decode_unit(SseDeserializer deserializer);
+
+@protected BigInt sse_decode_usize(SseDeserializer deserializer);
+
+@protected void sse_encode_AnyhowException(AnyhowException self, SseSerializer serializer);
+
+@protected void sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(ArcDartImClient self, SseSerializer serializer);
+
+@protected void sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(ArcDartImCore self, SseSerializer serializer);
+
+@protected void sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(ArcDartRealtimeSession self, SseSerializer serializer);
+
+@protected void sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(ArcDartImClient self, SseSerializer serializer);
+
+@protected void sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(ArcDartImCore self, SseSerializer serializer);
+
+@protected void sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(ArcDartRealtimeSession self, SseSerializer serializer);
+
+@protected void sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(ArcDartImClient self, SseSerializer serializer);
+
+@protected void sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(ArcDartImCore self, SseSerializer serializer);
+
+@protected void sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(ArcDartRealtimeSession self, SseSerializer serializer);
+
+@protected void sse_encode_StreamSink_dart_realtime_event_Sse(RustStreamSink<DartRealtimeEvent> self, SseSerializer serializer);
+
+@protected void sse_encode_String(String self, SseSerializer serializer);
+
+@protected void sse_encode_bool(bool self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_attachment_send_request(DartAttachmentSendRequest self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_create_group_request(DartCreateGroupRequest self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_default_identity_change(DartDefaultIdentityChange self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_download_attachment_request(DartDownloadAttachmentRequest self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_group_snapshot(DartGroupSnapshot self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_identity_selector(DartIdentitySelector self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_identity_subject(DartIdentitySubject self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_identity_summary(DartIdentitySummary self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_im_core_config(DartImCoreConfig self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_im_core_paths(DartImCorePaths self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_initial_profile(DartInitialProfile self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_message(DartMessage self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_profile_patch(DartProfilePatch self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_realtime_options(DartRealtimeOptions self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_secure_delivery(DartSecureDelivery self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_secure_problem(DartSecureProblem self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_send_email_request(DartSendEmailRequest self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_send_text_request(DartSendTextRequest self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_thread_ref(DartThreadRef self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_dart_user_profile(DartUserProfile self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_i_64(PlatformInt64 self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_u_16(int self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
+
+@protected void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer);
+
+@protected void sse_encode_dart_attachment_destination(DartAttachmentDestination self, SseSerializer serializer);
+
+@protected void sse_encode_dart_attachment_input(DartAttachmentInput self, SseSerializer serializer);
+
+@protected void sse_encode_dart_attachment_send_request(DartAttachmentSendRequest self, SseSerializer serializer);
+
+@protected void sse_encode_dart_auth_scope(DartAuthScope self, SseSerializer serializer);
+
+@protected void sse_encode_dart_auth_status(DartAuthStatus self, SseSerializer serializer);
+
+@protected void sse_encode_dart_conversation(DartConversation self, SseSerializer serializer);
+
+@protected void sse_encode_dart_conversation_page(DartConversationPage self, SseSerializer serializer);
+
+@protected void sse_encode_dart_create_group_request(DartCreateGroupRequest self, SseSerializer serializer);
+
+@protected void sse_encode_dart_default_identity_change(DartDefaultIdentityChange self, SseSerializer serializer);
+
+@protected void sse_encode_dart_direct_secure_prepare_result(DartDirectSecurePrepareResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_direct_secure_repair_result(DartDirectSecureRepairResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_direct_secure_state(DartDirectSecureState self, SseSerializer serializer);
+
+@protected void sse_encode_dart_direct_secure_status(DartDirectSecureStatus self, SseSerializer serializer);
+
+@protected void sse_encode_dart_directory_resolution(DartDirectoryResolution self, SseSerializer serializer);
+
+@protected void sse_encode_dart_download_attachment_request(DartDownloadAttachmentRequest self, SseSerializer serializer);
+
+@protected void sse_encode_dart_downloaded_attachment(DartDownloadedAttachment self, SseSerializer serializer);
+
+@protected void sse_encode_dart_downloaded_attachment_destination(DartDownloadedAttachmentDestination self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_account(DartEmailAccount self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_attachment_content(DartEmailAttachmentContent self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_attachment_metadata(DartEmailAttachmentMetadata self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_attribute(DartEmailAttribute self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_mark_read_result(DartEmailMarkReadResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_message(DartEmailMessage self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_message_summary(DartEmailMessageSummary self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_message_summary_page(DartEmailMessageSummaryPage self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_notification(DartEmailNotification self, SseSerializer serializer);
+
+@protected void sse_encode_dart_email_notification_page(DartEmailNotificationPage self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_member(DartGroupMember self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_read_result(DartGroupReadResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_secure_local_readiness(DartGroupSecureLocalReadiness self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_secure_pending_work(DartGroupSecurePendingWork self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_secure_prepare_result(DartGroupSecurePrepareResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_secure_repair_result(DartGroupSecureRepairResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_secure_state(DartGroupSecureState self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_secure_status(DartGroupSecureStatus self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_snapshot(DartGroupSnapshot self, SseSerializer serializer);
+
+@protected void sse_encode_dart_group_summary(DartGroupSummary self, SseSerializer serializer);
+
+@protected void sse_encode_dart_handle_registration_result(DartHandleRegistrationResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_identity_selector(DartIdentitySelector self, SseSerializer serializer);
+
+@protected void sse_encode_dart_identity_subject(DartIdentitySubject self, SseSerializer serializer);
+
+@protected void sse_encode_dart_identity_summary(DartIdentitySummary self, SseSerializer serializer);
+
+@protected void sse_encode_dart_im_core_config(DartImCoreConfig self, SseSerializer serializer);
+
+@protected void sse_encode_dart_im_core_paths(DartImCorePaths self, SseSerializer serializer);
+
+@protected void sse_encode_dart_im_error(DartImError self, SseSerializer serializer);
+
+@protected void sse_encode_dart_initial_profile(DartInitialProfile self, SseSerializer serializer);
+
+@protected void sse_encode_dart_mark_read_result(DartMarkReadResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message(DartMessage self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message_body_view(DartMessageBodyView self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message_direction(DartMessageDirection self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message_metadata(DartMessageMetadata self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message_metadata_attribute(DartMessageMetadataAttribute self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message_page(DartMessagePage self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message_security_mode(DartMessageSecurityMode self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message_target(DartMessageTarget self, SseSerializer serializer);
+
+@protected void sse_encode_dart_message_transport_policy(DartMessageTransportPolicy self, SseSerializer serializer);
+
+@protected void sse_encode_dart_profile_patch(DartProfilePatch self, SseSerializer serializer);
+
+@protected void sse_encode_dart_realtime_capability(DartRealtimeCapability self, SseSerializer serializer);
+
+@protected void sse_encode_dart_realtime_event(DartRealtimeEvent self, SseSerializer serializer);
+
+@protected void sse_encode_dart_realtime_options(DartRealtimeOptions self, SseSerializer serializer);
+
+@protected void sse_encode_dart_realtime_status(DartRealtimeStatus self, SseSerializer serializer);
+
+@protected void sse_encode_dart_recover_handle_result(DartRecoverHandleResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_relation_status(DartRelationStatus self, SseSerializer serializer);
+
+@protected void sse_encode_dart_relationship_list_item(DartRelationshipListItem self, SseSerializer serializer);
+
+@protected void sse_encode_dart_relationship_page(DartRelationshipPage self, SseSerializer serializer);
+
+@protected void sse_encode_dart_secure_delivery(DartSecureDelivery self, SseSerializer serializer);
+
+@protected void sse_encode_dart_secure_outbox_entry(DartSecureOutboxEntry self, SseSerializer serializer);
+
+@protected void sse_encode_dart_secure_outbox_result(DartSecureOutboxResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_secure_outbox_status(DartSecureOutboxStatus self, SseSerializer serializer);
+
+@protected void sse_encode_dart_secure_problem(DartSecureProblem self, SseSerializer serializer);
+
+@protected void sse_encode_dart_secure_problem_code(DartSecureProblemCode self, SseSerializer serializer);
+
+@protected void sse_encode_dart_send_email_request(DartSendEmailRequest self, SseSerializer serializer);
+
+@protected void sse_encode_dart_send_email_result(DartSendEmailResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_send_message_result(DartSendMessageResult self, SseSerializer serializer);
+
+@protected void sse_encode_dart_send_text_request(DartSendTextRequest self, SseSerializer serializer);
+
+@protected void sse_encode_dart_session_bundle(DartSessionBundle self, SseSerializer serializer);
+
+@protected void sse_encode_dart_session_update(DartSessionUpdate self, SseSerializer serializer);
+
+@protected void sse_encode_dart_thread_ref(DartThreadRef self, SseSerializer serializer);
+
+@protected void sse_encode_dart_user_profile(DartUserProfile self, SseSerializer serializer);
+
+@protected void sse_encode_i_32(int self, SseSerializer serializer);
+
+@protected void sse_encode_i_64(PlatformInt64 self, SseSerializer serializer);
+
+@protected void sse_encode_list_String(List<String> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_conversation(List<DartConversation> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_email_attachment_metadata(List<DartEmailAttachmentMetadata> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_email_attribute(List<DartEmailAttribute> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_email_message_summary(List<DartEmailMessageSummary> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_email_notification(List<DartEmailNotification> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_group_member(List<DartGroupMember> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_group_summary(List<DartGroupSummary> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_identity_summary(List<DartIdentitySummary> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_message(List<DartMessage> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_message_metadata_attribute(List<DartMessageMetadataAttribute> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_relationship_list_item(List<DartRelationshipListItem> self, SseSerializer serializer);
+
+@protected void sse_encode_list_dart_secure_outbox_entry(List<DartSecureOutboxEntry> self, SseSerializer serializer);
+
+@protected void sse_encode_list_prim_u_8_strict(Uint8List self, SseSerializer serializer);
+
+@protected void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_dart_default_identity_change(DartDefaultIdentityChange? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_dart_group_snapshot(DartGroupSnapshot? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_dart_identity_summary(DartIdentitySummary? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_dart_message(DartMessage? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_dart_secure_delivery(DartSecureDelivery? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_dart_secure_problem(DartSecureProblem? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_dart_user_profile(DartUserProfile? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_i_64(PlatformInt64? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_u_16(int? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer);
+
+@protected void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
+
+@protected void sse_encode_u_16(int self, SseSerializer serializer);
+
+@protected void sse_encode_u_32(int self, SseSerializer serializer);
+
+@protected void sse_encode_u_64(BigInt self, SseSerializer serializer);
+
+@protected void sse_encode_u_8(int self, SseSerializer serializer);
+
+@protected void sse_encode_unit(void self, SseSerializer serializer);
+
+@protected void sse_encode_usize(BigInt self, SseSerializer serializer);
+                }
+
+
 
 // Section: wire_class
 
 class RustLibWire implements BaseWire {
-  RustLibWire.fromExternalLibrary(ExternalLibrary lib);
+            RustLibWire.fromExternalLibrary(ExternalLibrary lib);
 
-  void
-  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    int ptr,
-  ) => wasmModule
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-        ptr,
-      );
+            void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(int ptr) => wasmModule.rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(ptr);
 
-  void
-  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    int ptr,
-  ) => wasmModule
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-        ptr,
-      );
+void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(int ptr) => wasmModule.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(ptr);
 
-  void
-  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    int ptr,
-  ) => wasmModule
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-        ptr,
-      );
+void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(int ptr) => wasmModule.rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(ptr);
 
-  void
-  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    int ptr,
-  ) => wasmModule
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-        ptr,
-      );
+void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(int ptr) => wasmModule.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(ptr);
 
-  void
-  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    int ptr,
-  ) => wasmModule
-      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-        ptr,
-      );
+void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(int ptr) => wasmModule.rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(ptr);
 
-  void
-  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    int ptr,
-  ) => wasmModule
-      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-        ptr,
-      );
-}
+void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(int ptr) => wasmModule.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(ptr);
+        }
+        @JS('wasm_bindgen') external RustLibWasmModule get wasmModule;
 
-@JS('wasm_bindgen')
-external RustLibWasmModule get wasmModule;
+        @JS() @anonymous extension type RustLibWasmModule._(JSObject _) implements JSObject {
+            external void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(int ptr);
 
-@JS()
-@anonymous
-extension type RustLibWasmModule._(JSObject _) implements JSObject {
-  external void
-  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    int ptr,
-  );
+external void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(int ptr);
 
-  external void
-  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImClient(
-    int ptr,
-  );
+external void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(int ptr);
 
-  external void
-  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    int ptr,
-  );
+external void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(int ptr);
 
-  external void
-  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartImCore(
-    int ptr,
-  );
+external void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(int ptr);
 
-  external void
-  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    int ptr,
-  );
-
-  external void
-  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(
-    int ptr,
-  );
-}
+external void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerArcDartRealtimeSession(int ptr);
+        }

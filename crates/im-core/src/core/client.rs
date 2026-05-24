@@ -64,6 +64,10 @@ impl ImClient {
         crate::email::EmailService::new(self)
     }
 
+    pub fn secure(&self) -> crate::secure::SecureService<'_> {
+        crate::secure::SecureService::new(self)
+    }
+
     pub(crate) fn runtime(&self) -> &crate::internal::identity_runtime::ClientIdentityRuntime {
         &self.runtime
     }

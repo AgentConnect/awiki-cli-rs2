@@ -1,0 +1,873 @@
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+
+use anp::direct_e2ee::{
+    ApplicationPlaintext, DirectE2eeError, DirectE2eeSession, DirectEnvelopeMetadata,
+    OneTimePrekey, PrekeyBundle, SignedPrekeyStore as _,
+};
+use anp::{PrivateKeyMaterial, PublicKeyMaterial};
+use rusqlite::Connection;
+use serde_json::{Map, Value};
+
+use super::sqlite_store::{
+    AnpDirectOneTimePrekeyStore, AnpDirectSessionStore, AnpDirectSignedPrekeyStore,
+};
+
+const DIRECT_E2EE_PROFILE: &str = "anp.direct.e2ee.v1";
+const DIRECT_E2EE_SECURITY_PROFILE: &str = "direct-e2ee";
+const DEFAULT_SIGNED_PREKEY_ID: &str = "spk-initial";
+const DEFAULT_SIGNED_PREKEY_EXPIRY: &str = "2030-01-01T00:00:00Z";
+const DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE: usize = 16;
+
+pub(crate) type DirectSecureRpcResult = crate::ImResult<Map<String, Value>>;
+pub(crate) type DirectSecureRpc<'a> =
+    dyn FnMut(&str, Map<String, Value>) -> DirectSecureRpcResult + 'a;
+pub(crate) type DirectSecureDidResolver<'a> = dyn FnMut(&str) -> crate::ImResult<Value> + 'a;
+
+pub(crate) struct DirectSecureClientInput<'a> {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) identity_name: String,
+    pub(crate) signing_key_id: String,
+    pub(crate) agreement_key_id: String,
+    pub(crate) signing_private_pem: String,
+    pub(crate) agreement_private_pem: String,
+    pub(crate) local_did_document: Value,
+    pub(crate) local_state: &'a Connection,
+}
+
+pub(crate) struct PreparedDirectSecureClient<'a> {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) identity_name: String,
+    pub(crate) local_service_did: String,
+    pub(crate) signing_key_id: String,
+    pub(crate) agreement_key_id: String,
+    pub(crate) signing_private: PrivateKeyMaterial,
+    pub(crate) agreement_private: PrivateKeyMaterial,
+    pub(crate) local_did_document: Value,
+    pub(crate) local_state: &'a Connection,
+}
+
+pub(crate) struct MessageServiceDirectSecureClient<'a> {
+    prepared: PreparedDirectSecureClient<'a>,
+    rpc: Box<DirectSecureRpc<'a>>,
+    resolver: Box<DirectSecureDidResolver<'a>>,
+    pending_by_peer: HashMap<String, Vec<Map<String, Value>>>,
+}
+
+pub(crate) fn prepare_direct_secure_client(
+    input: DirectSecureClientInput<'_>,
+) -> crate::ImResult<PreparedDirectSecureClient<'_>> {
+    let owner_identity_id = required("owner_identity_id", &input.owner_identity_id)?;
+    let owner_did = required("owner_did", &input.owner_did)?;
+    let identity_name = required("identity_name", &input.identity_name)?;
+    let signing_key_id = default_key_id(&owner_did, &input.signing_key_id, "key-1");
+    let agreement_key_id = default_key_id(&owner_did, &input.agreement_key_id, "key-3");
+    let signing_private =
+        PrivateKeyMaterial::from_pem(&input.signing_private_pem).map_err(|err| {
+            crate::ImError::Serialization {
+                detail: format!("parse direct E2EE signing private key: {err}"),
+            }
+        })?;
+    let agreement_private =
+        PrivateKeyMaterial::from_pem(&input.agreement_private_pem).map_err(|err| {
+            crate::ImError::Serialization {
+                detail: format!("parse direct E2EE agreement private key: {err}"),
+            }
+        })?;
+    let local_service_did =
+        anp::direct_e2ee::message_service_did_from_document(&input.local_did_document)
+            .map_err(map_direct_error)?;
+    Ok(PreparedDirectSecureClient {
+        owner_identity_id,
+        owner_did,
+        identity_name,
+        local_service_did,
+        signing_key_id,
+        agreement_key_id,
+        signing_private,
+        agreement_private,
+        local_did_document: input.local_did_document,
+        local_state: input.local_state,
+    })
+}
+
+impl<'a> MessageServiceDirectSecureClient<'a> {
+    pub(crate) fn new(
+        prepared: PreparedDirectSecureClient<'a>,
+        rpc: Box<DirectSecureRpc<'a>>,
+        resolver: Box<DirectSecureDidResolver<'a>>,
+    ) -> Self {
+        Self {
+            prepared,
+            rpc,
+            resolver,
+            pending_by_peer: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn publish_prekey_bundle(&mut self) -> DirectSecureRpcResult {
+        let bundle = self.ensure_fresh_prekey_bundle()?;
+        self.publish_prekey_bundle_rpc(&bundle)
+    }
+
+    pub(crate) fn ensure_fresh_prekey_bundle(&mut self) -> crate::ImResult<PrekeyBundle> {
+        self.ensure_fresh_one_time_prekeys(DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE)?;
+        let signed_prekey = match self.signed_prekey_store()?.load_latest_signed_prekey()? {
+            Some((_private_key, metadata)) => metadata,
+            None => {
+                let private_key = generated_x25519_private_key()?;
+                let metadata = signed_prekey_from_private_key(
+                    DEFAULT_SIGNED_PREKEY_ID,
+                    &private_key,
+                    DEFAULT_SIGNED_PREKEY_EXPIRY,
+                )?;
+                self.signed_prekey_store()?
+                    .save_signed_prekey(&metadata.key_id, &private_key, &metadata)
+                    .map_err(map_direct_error)?;
+                metadata
+            }
+        };
+        let bundle = self.build_prekey_bundle(signed_prekey)?;
+        let _ = self.publish_prekey_bundle_rpc(&bundle);
+        Ok(bundle)
+    }
+
+    pub(crate) fn send_text(
+        &mut self,
+        peer_did: &str,
+        text: &str,
+        operation_id: &str,
+        message_id: &str,
+    ) -> DirectSecureRpcResult {
+        self.send_application_plaintext(
+            peer_did,
+            ApplicationPlaintext::new_text("text/plain", text),
+            operation_id,
+            message_id,
+        )
+    }
+
+    pub(crate) fn send_json(
+        &mut self,
+        peer_did: &str,
+        payload: Map<String, Value>,
+        operation_id: &str,
+        message_id: &str,
+    ) -> DirectSecureRpcResult {
+        self.send_application_plaintext(
+            peer_did,
+            ApplicationPlaintext::new_json("application/json", Value::Object(payload)),
+            operation_id,
+            message_id,
+        )
+    }
+
+    pub(crate) fn process_incoming(
+        &mut self,
+        message: Map<String, Value>,
+    ) -> DirectSecureRpcResult {
+        let meta = message.get("meta").and_then(Value::as_object);
+        let sender_did = string_value(meta.and_then(|value| value.get("sender_did")));
+        let recipient_did = meta
+            .and_then(|value| value.get("target"))
+            .and_then(Value::as_object)
+            .and_then(|value| value.get("did"))
+            .map(string_value_from_value)
+            .unwrap_or_default();
+        let content_type = string_value(meta.and_then(|value| value.get("content_type")));
+        let metadata = DirectEnvelopeMetadata {
+            sender_did: sender_did.clone(),
+            recipient_did,
+            message_id: string_value(meta.and_then(|value| value.get("message_id"))),
+            profile: string_value(meta.and_then(|value| value.get("profile"))),
+            security_profile: string_value(meta.and_then(|value| value.get("security_profile"))),
+        };
+        let body = message.get("body").cloned().unwrap_or(Value::Null);
+        match content_type.as_str() {
+            "application/anp-direct-init+json" => {
+                self.process_incoming_init(&sender_did, &metadata, &body)
+            }
+            "application/anp-direct-cipher+json" => {
+                self.process_incoming_cipher(message, &sender_did, &metadata, &body)
+            }
+            _ => Err(crate::ImError::Serialization {
+                detail: format!("unsupported direct E2EE content type: {content_type}"),
+            }),
+        }
+    }
+
+    pub(crate) fn current_session_id(&self, peer_did: &str) -> String {
+        self.session_store()
+            .ok()
+            .and_then(|store| store.find_by_peer_did(peer_did).ok())
+            .flatten()
+            .map(|session| session.session_id)
+            .unwrap_or_default()
+    }
+
+    fn send_application_plaintext(
+        &mut self,
+        peer_did: &str,
+        plaintext: ApplicationPlaintext,
+        operation_id: &str,
+        message_id: &str,
+    ) -> DirectSecureRpcResult {
+        anp::direct_e2ee::validate_direct_send_ids(operation_id, message_id)
+            .map_err(map_direct_error)?;
+        let peer_did = required("peer_did", peer_did)?;
+        let metadata = DirectEnvelopeMetadata {
+            sender_did: self.prepared.owner_did.clone(),
+            recipient_did: peer_did.clone(),
+            message_id: message_id.to_owned(),
+            profile: DIRECT_E2EE_PROFILE.to_owned(),
+            security_profile: DIRECT_E2EE_SECURITY_PROFILE.to_owned(),
+        };
+        let mut session_store = self.session_store()?;
+        if let Some(mut session) = session_store.find_by_peer_did(&peer_did)? {
+            let (_pending, body) = DirectE2eeSession::encrypt_follow_up(
+                &mut session,
+                &metadata,
+                operation_id,
+                &plaintext,
+            )
+            .map_err(map_direct_error)?;
+            anp::direct_e2ee::SessionStore::save_session(&mut session_store, &session)
+                .map_err(map_direct_error)?;
+            let request = anp::direct_e2ee::direct_cipher_send_request(
+                &self.prepared.owner_did,
+                &peer_did,
+                operation_id,
+                message_id,
+                &body,
+            )
+            .map_err(map_direct_error)?;
+            return self.call_request(request);
+        }
+
+        let verified = self.get_verified_prekey_bundle(&peer_did)?;
+        let did_document = (self.resolver)(&peer_did)?;
+        let recipient_static_public = anp::direct_e2ee::extract_x25519_public_key(
+            &did_document,
+            &verified.bundle.static_key_agreement_id,
+        )
+        .map_err(map_direct_error)?;
+        let recipient_signed_prekey_public = decode_public_key_b64u(
+            &verified.bundle.signed_prekey.public_key_b64u,
+            "signed_prekey.public_key_b64u",
+        )?;
+        let (recipient_one_time_prekey_public, recipient_one_time_prekey_id) =
+            if let Some(one_time_prekey) = &verified.one_time_prekey {
+                (
+                    Some(decode_public_key_b64u(
+                        &one_time_prekey.public_key_b64u,
+                        "one_time_prekey.public_key_b64u",
+                    )?),
+                    Some(one_time_prekey.key_id.clone()),
+                )
+            } else {
+                (None, None)
+            };
+        let PrivateKeyMaterial::X25519(agreement_private) = &self.prepared.agreement_private else {
+            return Err(expected_x25519_private_key());
+        };
+        let (session, _pending, body) = DirectE2eeSession::initiate_session_with_opk(
+            &metadata,
+            operation_id,
+            &self.prepared.agreement_key_id,
+            agreement_private,
+            &verified.bundle,
+            &recipient_static_public,
+            &recipient_signed_prekey_public,
+            recipient_one_time_prekey_public.as_ref(),
+            recipient_one_time_prekey_id,
+            &plaintext,
+        )
+        .map_err(map_direct_error)?;
+        anp::direct_e2ee::SessionStore::save_session(&mut session_store, &session)
+            .map_err(map_direct_error)?;
+        let request = anp::direct_e2ee::direct_init_send_request(
+            &self.prepared.owner_did,
+            &peer_did,
+            operation_id,
+            message_id,
+            &body,
+        )
+        .map_err(map_direct_error)?;
+        self.call_request(request)
+    }
+
+    fn process_incoming_init(
+        &mut self,
+        sender_did: &str,
+        metadata: &DirectEnvelopeMetadata,
+        body: &Value,
+    ) -> DirectSecureRpcResult {
+        let init_body = super::wire::direct_init_body_from_value(body);
+        let sender_document = (self.resolver)(sender_did)?;
+        let sender_static_public = anp::direct_e2ee::extract_x25519_public_key(
+            &sender_document,
+            &init_body.sender_static_key_agreement_id,
+        )
+        .map_err(map_direct_error)?;
+        let signed_prekey_private = self
+            .signed_prekey_store()?
+            .load_signed_prekey(&init_body.recipient_signed_prekey_id)
+            .map_err(map_direct_error)?;
+        let one_time_prekey_id = init_body
+            .recipient_one_time_prekey_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let one_time_prekey_material = if let Some(key_id) = one_time_prekey_id.as_deref() {
+            self.one_time_prekey_store()?
+                .load_one_time_prekey(key_id)?
+                .map(|record| record.private_key)
+        } else {
+            None
+        };
+        let PrivateKeyMaterial::X25519(agreement_private) = &self.prepared.agreement_private else {
+            return Err(expected_x25519_private_key());
+        };
+        let PrivateKeyMaterial::X25519(signed_prekey_private) = &signed_prekey_private else {
+            return Err(expected_x25519_private_key());
+        };
+        let one_time_prekey_private = match one_time_prekey_material.as_ref() {
+            Some(PrivateKeyMaterial::X25519(key)) => Some(key),
+            Some(_) => return Err(expected_x25519_private_key()),
+            None => None,
+        };
+        let (session, plaintext) = DirectE2eeSession::accept_incoming_init_with_opk(
+            metadata,
+            &self.prepared.agreement_key_id,
+            agreement_private,
+            signed_prekey_private,
+            one_time_prekey_private,
+            &sender_static_public,
+            &init_body,
+        )
+        .map_err(map_direct_error)?;
+        if let Some(key_id) = one_time_prekey_id {
+            let _ = self
+                .one_time_prekey_store()?
+                .mark_consumed(&key_id, &now_utc_like())?;
+        }
+        anp::direct_e2ee::SessionStore::save_session(&mut self.session_store()?, &session)
+            .map_err(map_direct_error)?;
+        let mut result = Map::from_iter([
+            ("state".to_owned(), Value::String("decrypted".to_owned())),
+            (
+                "plaintext".to_owned(),
+                anp::direct_e2ee::plaintext_to_value(&plaintext),
+            ),
+        ]);
+        if let Some(pending) = self.pending_by_peer.get(sender_did).cloned() {
+            if !pending.is_empty() {
+                let mut pending_results = Vec::new();
+                for pending_message in pending {
+                    if let Ok(result) = self.process_incoming(pending_message) {
+                        pending_results.push(Value::Object(result));
+                    }
+                }
+                self.pending_by_peer.remove(sender_did);
+                result.insert("pending_results".to_owned(), Value::Array(pending_results));
+            }
+        }
+        Ok(result)
+    }
+
+    fn process_incoming_cipher(
+        &mut self,
+        message: Map<String, Value>,
+        sender_did: &str,
+        metadata: &DirectEnvelopeMetadata,
+        body: &Value,
+    ) -> DirectSecureRpcResult {
+        let cipher_body = super::wire::direct_cipher_body_from_value(body);
+        let mut session_store = self.session_store()?;
+        let mut session = match anp::direct_e2ee::SessionStore::load_session(
+            &session_store,
+            &cipher_body.session_id,
+        ) {
+            Ok(session) => session,
+            Err(_) => {
+                self.pending_by_peer
+                    .entry(sender_did.to_owned())
+                    .or_default()
+                    .push(message);
+                return Ok(Map::from_iter([(
+                    "state".to_owned(),
+                    Value::String("pending".to_owned()),
+                )]));
+            }
+        };
+        match DirectE2eeSession::decrypt_follow_up(&mut session, metadata, &cipher_body, "") {
+            Ok(plaintext) => {
+                anp::direct_e2ee::SessionStore::save_session(&mut session_store, &session)
+                    .map_err(map_direct_error)?;
+                Ok(Map::from_iter([
+                    ("state".to_owned(), Value::String("decrypted".to_owned())),
+                    (
+                        "plaintext".to_owned(),
+                        anp::direct_e2ee::plaintext_to_value(&plaintext),
+                    ),
+                ]))
+            }
+            Err(_) => {
+                anp::direct_e2ee::SessionStore::save_session(&mut session_store, &session)
+                    .map_err(map_direct_error)?;
+                Ok(Map::from_iter([(
+                    "state".to_owned(),
+                    Value::String("undecryptable".to_owned()),
+                )]))
+            }
+        }
+    }
+
+    fn get_verified_prekey_bundle(
+        &mut self,
+        target_did: &str,
+    ) -> crate::ImResult<VerifiedPrekeyBundle> {
+        let did_document = (self.resolver)(target_did)?;
+        let target_service_did = anp::direct_e2ee::message_service_did_from_document(&did_document)
+            .map_err(map_direct_error)?;
+        let response =
+            match self.fetch_prekey_bundle_response(target_did, &target_service_did, true) {
+                Ok(response) => response,
+                Err(err)
+                    if anp::direct_e2ee::should_retry_without_opk_message(&err.to_string()) =>
+                {
+                    self.fetch_prekey_bundle_response(target_did, &target_service_did, false)?
+                }
+                Err(err) => return Err(err),
+            };
+        let bundle_value = response
+            .get("prekey_bundle")
+            .ok_or_else(|| missing_field("prekey_bundle"))?
+            .clone();
+        let bundle: PrekeyBundle =
+            serde_json::from_value(bundle_value).map_err(|err| crate::ImError::Serialization {
+                detail: format!("parse prekey_bundle: {err}"),
+            })?;
+        anp::direct_e2ee::verify_prekey_bundle(&bundle, &did_document).map_err(map_direct_error)?;
+        let one_time_prekey = response
+            .get("one_time_prekey")
+            .cloned()
+            .map(serde_json::from_value::<OneTimePrekey>)
+            .transpose()
+            .map_err(|err| crate::ImError::Serialization {
+                detail: format!("parse one_time_prekey: {err}"),
+            })?;
+        if let Some(one_time_prekey) = &one_time_prekey {
+            validate_one_time_prekey(one_time_prekey)?;
+        }
+        Ok(VerifiedPrekeyBundle {
+            bundle,
+            one_time_prekey,
+        })
+    }
+
+    fn fetch_prekey_bundle_response(
+        &mut self,
+        target_did: &str,
+        target_service_did: &str,
+        require_opk: bool,
+    ) -> DirectSecureRpcResult {
+        let operation_id = format!("op-get-prekey-{}", operation_nonce_hex());
+        let request = anp::direct_e2ee::prekey_bundle_get_request(
+            &self.prepared.owner_did,
+            target_service_did,
+            target_did,
+            require_opk,
+            &operation_id,
+        );
+        self.call_request(request)
+    }
+
+    fn publish_prekey_bundle_rpc(&mut self, bundle: &PrekeyBundle) -> DirectSecureRpcResult {
+        let one_time_prekeys = self.one_time_prekey_store()?.list_one_time_prekeys()?;
+        let request = anp::direct_e2ee::prekey_bundle_publish_request(
+            &self.prepared.owner_did,
+            &self.prepared.local_service_did,
+            bundle,
+            &one_time_prekeys,
+        );
+        self.call_request(request)
+    }
+
+    fn build_prekey_bundle(
+        &self,
+        signed_prekey: anp::direct_e2ee::SignedPrekey,
+    ) -> crate::ImResult<PrekeyBundle> {
+        anp::direct_e2ee::build_prekey_bundle(
+            &format!("spk-{}-{}", unix_seconds(), signed_prekey.key_id),
+            &self.prepared.owner_did,
+            &self.prepared.agreement_key_id,
+            signed_prekey,
+            &self.prepared.signing_private,
+            &self.prepared.signing_key_id,
+            None,
+        )
+        .map_err(map_direct_error)
+    }
+
+    fn ensure_fresh_one_time_prekeys(&mut self, min_count: usize) -> crate::ImResult<()> {
+        if min_count == 0 {
+            return Ok(());
+        }
+        let current = self.one_time_prekey_store()?.list_one_time_prekeys()?;
+        if current.len() >= min_count {
+            return Ok(());
+        }
+        let prefix = unix_nanos();
+        let mut store = self.one_time_prekey_store()?;
+        for index in current.len()..min_count {
+            let key_id = format!("opk-{prefix}-{index:03}");
+            let private_key = generated_x25519_private_key()?;
+            let metadata = one_time_prekey_from_private_key(&key_id, &private_key)?;
+            store.save_one_time_prekey(&key_id, &private_key, &metadata)?;
+        }
+        Ok(())
+    }
+
+    fn call_request(&mut self, request: Value) -> DirectSecureRpcResult {
+        let object = request
+            .as_object()
+            .ok_or_else(|| missing_field("request"))?;
+        let method = object
+            .get("method")
+            .and_then(Value::as_str)
+            .ok_or_else(|| missing_field("method"))?
+            .to_owned();
+        let params = object
+            .get("params")
+            .and_then(Value::as_object)
+            .ok_or_else(|| missing_field("params"))?
+            .clone();
+        (self.rpc)(&method, params)
+    }
+
+    fn session_store(&self) -> crate::ImResult<AnpDirectSessionStore<'a>> {
+        AnpDirectSessionStore::new(
+            self.prepared.local_state,
+            &self.prepared.owner_identity_id,
+            &self.prepared.owner_did,
+        )
+    }
+
+    fn signed_prekey_store(&self) -> crate::ImResult<AnpDirectSignedPrekeyStore<'a>> {
+        AnpDirectSignedPrekeyStore::new(
+            self.prepared.local_state,
+            &self.prepared.owner_identity_id,
+            &self.prepared.owner_did,
+        )
+    }
+
+    fn one_time_prekey_store(&self) -> crate::ImResult<AnpDirectOneTimePrekeyStore<'a>> {
+        AnpDirectOneTimePrekeyStore::new(
+            self.prepared.local_state,
+            &self.prepared.owner_identity_id,
+            &self.prepared.owner_did,
+        )
+    }
+}
+
+struct VerifiedPrekeyBundle {
+    bundle: PrekeyBundle,
+    one_time_prekey: Option<OneTimePrekey>,
+}
+
+fn required(field: &str, value: &str) -> crate::ImResult<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some(field.to_owned()),
+            format!("{field} must not be empty"),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn default_key_id(owner_did: &str, provided: &str, fragment: &str) -> String {
+    let provided = provided.trim();
+    if provided.is_empty() {
+        format!("{owner_did}#{fragment}")
+    } else {
+        provided.to_owned()
+    }
+}
+
+fn generated_x25519_private_key() -> crate::ImResult<PrivateKeyMaterial> {
+    let bundle = anp::authentication::create_did_wba_document(
+        "awiki.ai",
+        anp::authentication::DidDocumentOptions::default(),
+    )
+    .map_err(|err| crate::ImError::Serialization {
+        detail: format!("generate direct E2EE X25519 private key: {err}"),
+    })?;
+    bundle
+        .load_private_key("key-3")
+        .map_err(|err| crate::ImError::Serialization {
+            detail: format!("load generated direct E2EE X25519 private key: {err}"),
+        })
+}
+
+fn signed_prekey_from_private_key(
+    key_id: &str,
+    private_key: &PrivateKeyMaterial,
+    expires_at: &str,
+) -> crate::ImResult<anp::direct_e2ee::SignedPrekey> {
+    Ok(anp::direct_e2ee::SignedPrekey {
+        key_id: key_id.to_owned(),
+        public_key_b64u: x25519_public_key_b64u(private_key)?,
+        expires_at: expires_at.to_owned(),
+    })
+}
+
+fn one_time_prekey_from_private_key(
+    key_id: &str,
+    private_key: &PrivateKeyMaterial,
+) -> crate::ImResult<OneTimePrekey> {
+    Ok(OneTimePrekey {
+        key_id: key_id.to_owned(),
+        public_key_b64u: x25519_public_key_b64u(private_key)?,
+    })
+}
+
+fn x25519_public_key_b64u(private_key: &PrivateKeyMaterial) -> crate::ImResult<String> {
+    match private_key.public_key() {
+        PublicKeyMaterial::X25519(bytes) => {
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+            Ok(URL_SAFE_NO_PAD.encode(bytes))
+        }
+        _ => Err(crate::ImError::Serialization {
+            detail: "expected X25519 private key".to_owned(),
+        }),
+    }
+}
+
+fn expected_x25519_private_key() -> crate::ImError {
+    crate::ImError::Serialization {
+        detail: "expected X25519 private key".to_owned(),
+    }
+}
+
+fn decode_public_key_b64u(value: &str, field: &str) -> crate::ImResult<[u8; 32]> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| crate::ImError::invalid_input(Some(field.to_owned()), "invalid base64url"))?;
+    bytes.try_into().map_err(|_| {
+        crate::ImError::invalid_input(Some(field.to_owned()), "expected 32-byte public key")
+    })
+}
+
+fn validate_one_time_prekey(prekey: &OneTimePrekey) -> crate::ImResult<()> {
+    if prekey.key_id.trim().is_empty() {
+        return Err(missing_field("one_time_prekey.key_id"));
+    }
+    if prekey.public_key_b64u.trim().is_empty() {
+        return Err(missing_field("one_time_prekey.public_key_b64u"));
+    }
+    Ok(())
+}
+
+fn map_direct_error(error: DirectE2eeError) -> crate::ImError {
+    crate::ImError::Serialization {
+        detail: format!("direct E2EE: {error}"),
+    }
+}
+
+fn missing_field(field: &'static str) -> crate::ImError {
+    crate::ImError::Serialization {
+        detail: format!("missing field: {field}"),
+    }
+}
+
+fn string_value(value: Option<&Value>) -> String {
+    value.map(string_value_from_value).unwrap_or_default()
+}
+
+fn string_value_from_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Number(number) => number.to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn now_utc_like() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{seconds}")
+}
+
+fn unix_seconds() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn unix_nanos() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn operation_nonce_hex() -> String {
+    use rand::RngCore;
+
+    let mut bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::internal::secure_direct::sqlite_store::SqliteDirectSecureStateStore;
+
+    #[test]
+    fn secure_direct_client_publishes_prekey_bundle_from_sqlite_state() {
+        let db = Connection::open_in_memory().unwrap();
+        let identity = test_identity("alice.example", "alice");
+        let calls = Rc::new(RefCell::new(Vec::<(String, Map<String, Value>)>::new()));
+        let rpc_calls = calls.clone();
+        let mut client = MessageServiceDirectSecureClient::new(
+            prepare_direct_secure_client(DirectSecureClientInput {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: identity.did.clone(),
+                identity_name: "alice".to_owned(),
+                signing_key_id: format!("{}#key-1", identity.did),
+                agreement_key_id: format!("{}#key-3", identity.did),
+                signing_private_pem: identity.signing_private_pem,
+                agreement_private_pem: identity.agreement_private_pem,
+                local_did_document: identity.document,
+                local_state: &db,
+            })
+            .unwrap(),
+            Box::new(move |method, params| {
+                rpc_calls
+                    .borrow_mut()
+                    .push((method.to_owned(), params.clone()));
+                Ok(Map::new())
+            }),
+            Box::new(|did| {
+                Err(crate::ImError::PeerNotFound {
+                    peer: did.to_owned(),
+                })
+            }),
+        );
+
+        let response = client.publish_prekey_bundle().unwrap();
+
+        assert!(response.is_empty());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "direct.e2ee.publish_prekey_bundle");
+        assert_eq!(calls[1].0, "direct.e2ee.publish_prekey_bundle");
+        let body = calls[1].1.get("body").and_then(Value::as_object).unwrap();
+        assert!(body.get("prekey_bundle").is_some());
+        assert_eq!(
+            body.get("one_time_prekeys")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE)
+        );
+        let store = SqliteDirectSecureStateStore::new(&db).unwrap();
+        assert!(store.active_signed_prekey("alice-id").unwrap().is_some());
+        assert_eq!(
+            store
+                .list_available_one_time_prekeys("alice-id")
+                .unwrap()
+                .len(),
+            DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE
+        );
+    }
+
+    #[test]
+    fn prepare_direct_secure_client_rejects_empty_owner_identity() {
+        let db = Connection::open_in_memory().unwrap();
+        let identity = test_identity("alice.example", "alice");
+
+        let err = match prepare_direct_secure_client(DirectSecureClientInput {
+            owner_identity_id: " ".to_owned(),
+            owner_did: identity.did,
+            identity_name: "alice".to_owned(),
+            signing_key_id: String::new(),
+            agreement_key_id: String::new(),
+            signing_private_pem: identity.signing_private_pem,
+            agreement_private_pem: identity.agreement_private_pem,
+            local_did_document: identity.document,
+            local_state: &db,
+        }) {
+            Ok(_) => panic!("empty owner identity must fail"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            crate::ImError::InvalidInput {
+                field: Some(field),
+                ..
+            } if field == "owner_identity_id"
+        ));
+    }
+
+    struct TestIdentity {
+        did: String,
+        document: Value,
+        signing_private_pem: String,
+        agreement_private_pem: String,
+    }
+
+    fn test_identity(domain: &str, label: &str) -> TestIdentity {
+        let bundle = anp::authentication::create_did_wba_document(
+            domain,
+            anp::authentication::DidDocumentOptions {
+                path_segments: vec!["agents".to_owned(), label.to_owned()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let did = bundle.did().unwrap().to_owned();
+        let signing_private_pem = bundle.private_key_pem("key-1").unwrap().to_owned();
+        let agreement_private_pem = bundle.private_key_pem("key-3").unwrap().to_owned();
+        let mut document = bundle.did_document;
+        let service = anp::authentication::build_agent_message_service_with_options(
+            &did,
+            format!("https://{domain}/anp-im/rpc"),
+            anp::authentication::AnpMessageServiceOptions::default().with_service_did(&did),
+        );
+        document
+            .as_object_mut()
+            .unwrap()
+            .insert("service".to_owned(), Value::Array(vec![service]));
+        assert_eq!(document.get("id"), Some(&json!(did)));
+        TestIdentity {
+            did,
+            document,
+            signing_private_pem,
+            agreement_private_pem,
+        }
+    }
+}

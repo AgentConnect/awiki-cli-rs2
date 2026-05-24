@@ -292,6 +292,7 @@ impl From<DartMessageSecurityMode> for im_core::messages::MessageSecurityMode {
         match value {
             DartMessageSecurityMode::DefaultPlain => Self::DefaultPlain,
             DartMessageSecurityMode::Plain => Self::Plain,
+            DartMessageSecurityMode::E2eeRequired => Self::E2eeRequired,
             DartMessageSecurityMode::SecureDirect => Self::SecureDirect,
             DartMessageSecurityMode::GroupE2ee => Self::GroupE2ee,
         }

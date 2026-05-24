@@ -10,34 +10,27 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `new`, `stop`, `take_event_receiver`
+
+            // These functions are ignored because they are not marked as `pub`: `new`, `stop`, `take_event_receiver`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`
 
-Future<DartRealtimeCapability> realtimeCapability({
-  required ArcDartImClient client,
-}) => RustLib.instance.api.crateApiRealtimeRealtimeCapability(client: client);
 
-Future<DartRealtimeStatus> realtimeStatus({required ArcDartImClient client}) =>
-    RustLib.instance.api.crateApiRealtimeRealtimeStatus(client: client);
+            Future<DartRealtimeCapability>  realtimeCapability({required ArcDartImClient client }) => RustLib.instance.api.crateApiRealtimeRealtimeCapability(client: client);
 
-Future<void> realtimeConnect({required ArcDartImClient client}) =>
-    RustLib.instance.api.crateApiRealtimeRealtimeConnect(client: client);
+Future<DartRealtimeStatus>  realtimeStatus({required ArcDartImClient client }) => RustLib.instance.api.crateApiRealtimeRealtimeStatus(client: client);
 
-Future<ArcDartRealtimeSession> realtimeStart({
-  required ArcDartImClient client,
-  required DartRealtimeOptions options,
-}) => RustLib.instance.api.crateApiRealtimeRealtimeStart(
-  client: client,
-  options: options,
-);
+Future<void>  realtimeConnect({required ArcDartImClient client }) => RustLib.instance.api.crateApiRealtimeRealtimeConnect(client: client);
 
-Future<void> realtimeStop({required ArcDartRealtimeSession session}) =>
-    RustLib.instance.api.crateApiRealtimeRealtimeStop(session: session);
+Future<ArcDartRealtimeSession>  realtimeStart({required ArcDartImClient client , required DartRealtimeOptions options }) => RustLib.instance.api.crateApiRealtimeRealtimeStart(client: client, options: options);
 
-Stream<DartRealtimeEvent> realtimeEventStream({
-  required ArcDartRealtimeSession session,
-}) =>
-    RustLib.instance.api.crateApiRealtimeRealtimeEventStream(session: session);
+Future<void>  realtimeStop({required ArcDartRealtimeSession session }) => RustLib.instance.api.crateApiRealtimeRealtimeStop(session: session);
 
-// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartRealtimeSession >>>
-abstract class ArcDartRealtimeSession implements RustOpaqueInterface {}
+Stream<DartRealtimeEvent>  realtimeEventStream({required ArcDartRealtimeSession session }) => RustLib.instance.api.crateApiRealtimeRealtimeEventStream(session: session);
+
+
+                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartRealtimeSession >>>
+                abstract class ArcDartRealtimeSession implements RustOpaqueInterface {
+
+
+
+                }
