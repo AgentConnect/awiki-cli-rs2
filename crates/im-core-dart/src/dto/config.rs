@@ -4,6 +4,7 @@ pub struct DartImCoreConfig {
     pub did_domain: String,
     pub user_service_endpoint: Option<String>,
     pub message_service_endpoint: Option<String>,
+    pub mail_service_endpoint: Option<String>,
     pub anp_service_endpoint: Option<String>,
     pub anp_service_did: Option<String>,
     pub transport_policy: DartMessageTransportPolicy,

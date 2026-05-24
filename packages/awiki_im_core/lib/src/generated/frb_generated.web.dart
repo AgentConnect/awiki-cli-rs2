@@ -11,6 +11,7 @@ import 'api/auth.dart';
 import 'api/client.dart';
 import 'api/core.dart';
 import 'api/directory.dart';
+import 'api/email.dart';
 import 'api/groups.dart';
 import 'api/identity.dart';
 import 'api/messages.dart';
@@ -23,6 +24,7 @@ import 'dto/attachment.dart';
 import 'dto/auth.dart';
 import 'dto/config.dart';
 import 'dto/directory.dart';
+import 'dto/email.dart';
 import 'dto/error.dart';
 import 'dto/group.dart';
 import 'dto/identity.dart';
@@ -174,6 +176,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartRealtimeOptions dco_decode_box_autoadd_dart_realtime_options(dynamic raw);
 
   @protected
+  DartSendEmailRequest dco_decode_box_autoadd_dart_send_email_request(
+    dynamic raw,
+  );
+
+  @protected
   DartSendTextRequest dco_decode_box_autoadd_dart_send_text_request(
     dynamic raw,
   );
@@ -241,6 +248,44 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDownloadedAttachmentDestination
   dco_decode_dart_downloaded_attachment_destination(dynamic raw);
+
+  @protected
+  DartEmailAccount dco_decode_dart_email_account(dynamic raw);
+
+  @protected
+  DartEmailAttachmentContent dco_decode_dart_email_attachment_content(
+    dynamic raw,
+  );
+
+  @protected
+  DartEmailAttachmentMetadata dco_decode_dart_email_attachment_metadata(
+    dynamic raw,
+  );
+
+  @protected
+  DartEmailAttribute dco_decode_dart_email_attribute(dynamic raw);
+
+  @protected
+  DartEmailMarkReadResult dco_decode_dart_email_mark_read_result(dynamic raw);
+
+  @protected
+  DartEmailMessage dco_decode_dart_email_message(dynamic raw);
+
+  @protected
+  DartEmailMessageSummary dco_decode_dart_email_message_summary(dynamic raw);
+
+  @protected
+  DartEmailMessageSummaryPage dco_decode_dart_email_message_summary_page(
+    dynamic raw,
+  );
+
+  @protected
+  DartEmailNotification dco_decode_dart_email_notification(dynamic raw);
+
+  @protected
+  DartEmailNotificationPage dco_decode_dart_email_notification_page(
+    dynamic raw,
+  );
 
   @protected
   DartGroupMember dco_decode_dart_group_member(dynamic raw);
@@ -336,6 +381,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   DartRelationStatus dco_decode_dart_relation_status(dynamic raw);
 
   @protected
+  DartSendEmailRequest dco_decode_dart_send_email_request(dynamic raw);
+
+  @protected
+  DartSendEmailResult dco_decode_dart_send_email_result(dynamic raw);
+
+  @protected
   DartSendMessageResult dco_decode_dart_send_message_result(dynamic raw);
 
   @protected
@@ -364,6 +415,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartConversation> dco_decode_list_dart_conversation(dynamic raw);
+
+  @protected
+  List<DartEmailAttachmentMetadata>
+  dco_decode_list_dart_email_attachment_metadata(dynamic raw);
+
+  @protected
+  List<DartEmailAttribute> dco_decode_list_dart_email_attribute(dynamic raw);
+
+  @protected
+  List<DartEmailMessageSummary> dco_decode_list_dart_email_message_summary(
+    dynamic raw,
+  );
+
+  @protected
+  List<DartEmailNotification> dco_decode_list_dart_email_notification(
+    dynamic raw,
+  );
 
   @protected
   List<DartGroupMember> dco_decode_list_dart_group_member(dynamic raw);
@@ -583,6 +651,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSendEmailRequest sse_decode_box_autoadd_dart_send_email_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartSendTextRequest sse_decode_box_autoadd_dart_send_text_request(
     SseDeserializer deserializer,
   );
@@ -666,6 +739,52 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   DartDownloadedAttachmentDestination
   sse_decode_dart_downloaded_attachment_destination(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartEmailAccount sse_decode_dart_email_account(SseDeserializer deserializer);
+
+  @protected
+  DartEmailAttachmentContent sse_decode_dart_email_attachment_content(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartEmailAttachmentMetadata sse_decode_dart_email_attachment_metadata(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartEmailAttribute sse_decode_dart_email_attribute(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartEmailMarkReadResult sse_decode_dart_email_mark_read_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartEmailMessage sse_decode_dart_email_message(SseDeserializer deserializer);
+
+  @protected
+  DartEmailMessageSummary sse_decode_dart_email_message_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartEmailMessageSummaryPage sse_decode_dart_email_message_summary_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartEmailNotification sse_decode_dart_email_notification(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartEmailNotificationPage sse_decode_dart_email_notification_page(
     SseDeserializer deserializer,
   );
 
@@ -799,6 +918,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartSendEmailRequest sse_decode_dart_send_email_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartSendEmailResult sse_decode_dart_send_email_result(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   DartSendMessageResult sse_decode_dart_send_message_result(
     SseDeserializer deserializer,
   );
@@ -835,6 +964,25 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<DartConversation> sse_decode_list_dart_conversation(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartEmailAttachmentMetadata>
+  sse_decode_list_dart_email_attachment_metadata(SseDeserializer deserializer);
+
+  @protected
+  List<DartEmailAttribute> sse_decode_list_dart_email_attribute(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartEmailMessageSummary> sse_decode_list_dart_email_message_summary(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<DartEmailNotification> sse_decode_list_dart_email_notification(
     SseDeserializer deserializer,
   );
 
@@ -1097,6 +1245,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_dart_send_email_request(
+    DartSendEmailRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_dart_send_text_request(
     DartSendTextRequest self,
     SseSerializer serializer,
@@ -1201,6 +1355,66 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_downloaded_attachment_destination(
     DartDownloadedAttachmentDestination self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_account(
+    DartEmailAccount self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_attachment_content(
+    DartEmailAttachmentContent self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_attachment_metadata(
+    DartEmailAttachmentMetadata self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_attribute(
+    DartEmailAttribute self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_mark_read_result(
+    DartEmailMarkReadResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_message(
+    DartEmailMessage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_message_summary(
+    DartEmailMessageSummary self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_message_summary_page(
+    DartEmailMessageSummaryPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_notification(
+    DartEmailNotification self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_email_notification_page(
+    DartEmailNotificationPage self,
     SseSerializer serializer,
   );
 
@@ -1373,6 +1587,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_dart_send_email_request(
+    DartSendEmailRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_send_email_result(
+    DartSendEmailResult self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_dart_send_message_result(
     DartSendMessageResult self,
     SseSerializer serializer,
@@ -1417,6 +1643,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_dart_conversation(
     List<DartConversation> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_email_attachment_metadata(
+    List<DartEmailAttachmentMetadata> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_email_attribute(
+    List<DartEmailAttribute> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_email_message_summary(
+    List<DartEmailMessageSummary> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_dart_email_notification(
+    List<DartEmailNotification> self,
     SseSerializer serializer,
   );
 

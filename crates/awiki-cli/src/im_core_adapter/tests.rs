@@ -345,6 +345,7 @@ fn build_im_core_config_from_parts_maps_fields() {
         "awiki.test",
         Some("https://users.example.test"),
         Some("https://messages.example.test"),
+        Some("https://mail.example.test"),
         Some("https://anp.example.test/rpc"),
         Some("did:wba:anp.example.test"),
         "websocket",
@@ -359,6 +360,10 @@ fn build_im_core_config_from_parts_maps_fields() {
     assert_eq!(
         cfg.message_service_endpoint.unwrap().as_str(),
         "https://messages.example.test"
+    );
+    assert_eq!(
+        cfg.mail_service_endpoint.unwrap().as_str(),
+        "https://mail.example.test"
     );
     assert_eq!(
         cfg.anp_service_endpoint.unwrap().as_str(),

@@ -8,6 +8,7 @@ use crate::dto::{
     auth::DartAuthScope,
     config::{DartImCoreConfig, DartImCorePaths, DartMessageTransportPolicy},
     directory::DartIdentitySubject,
+    email::DartSendEmailRequest,
     error::DartImError,
     group::DartCreateGroupRequest,
     identity::DartIdentitySelector,
@@ -27,6 +28,7 @@ impl TryFrom<DartImCoreConfig> for im_core::ImCoreConfig {
         .map_err(DartImError::from)?;
         config.user_service_endpoint = parse_endpoint(value.user_service_endpoint)?;
         config.message_service_endpoint = parse_endpoint(value.message_service_endpoint)?;
+        config.mail_service_endpoint = parse_endpoint(value.mail_service_endpoint)?;
         config.anp_service_endpoint = parse_endpoint(value.anp_service_endpoint)?;
         config.anp_service_did = value
             .anp_service_did
@@ -36,6 +38,30 @@ impl TryFrom<DartImCoreConfig> for im_core::ImCoreConfig {
         config.transport_policy = value.transport_policy.into();
         Ok(config)
     }
+}
+
+impl TryFrom<DartSendEmailRequest> for im_core::email::SendEmailRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSendEmailRequest) -> Result<Self, Self::Error> {
+        Ok(Self {
+            to: parse_email_addresses(value.to)?,
+            cc: parse_email_addresses(value.cc)?,
+            subject: value.subject,
+            body_text: value.body_text,
+            body_html: value.body_html,
+        })
+    }
+}
+
+fn parse_email_addresses(
+    values: Vec<String>,
+) -> Result<Vec<im_core::email::EmailAddress>, DartImError> {
+    values
+        .into_iter()
+        .map(im_core::email::EmailAddress::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DartImError::from)
 }
 
 fn parse_endpoint(value: Option<String>) -> Result<Option<im_core::ServiceEndpoint>, DartImError> {

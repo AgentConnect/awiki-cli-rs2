@@ -5,6 +5,7 @@ export 'src/models/attachment.dart';
 export 'src/models/auth.dart';
 export 'src/models/config.dart';
 export 'src/models/directory.dart';
+export 'src/models/email.dart';
 export 'src/models/error.dart';
 export 'src/models/group.dart';
 export 'src/models/identity.dart';

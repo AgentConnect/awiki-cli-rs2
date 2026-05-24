@@ -4,6 +4,8 @@ pub(crate) mod blob;
 pub(crate) mod contact_store;
 pub(crate) mod directory_runtime;
 pub(crate) mod discovery;
+pub(crate) mod email_runtime;
+pub(crate) mod email_wire;
 pub(crate) mod group_runtime;
 pub(crate) mod http;
 pub(crate) mod identity_bind_runtime;

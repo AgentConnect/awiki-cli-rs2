@@ -12,6 +12,12 @@ pub use crate::directory::{
     HandleLookupResult, IdentitySubject, PublicProfile, RelationStatus, RelationshipListItem,
     RelationshipListQuery, RelationshipStatus, SaveContactRequest, UnfollowRequest, UnfollowResult,
 };
+pub use crate::email::{
+    EmailAccount, EmailAddress, EmailAttachmentContent, EmailAttachmentDownloadRequest,
+    EmailAttachmentMetadata, EmailAttribute, EmailFolder, EmailInboxQuery, EmailMarkReadRequest,
+    EmailMarkReadResult, EmailMessage, EmailMessageId, EmailMessageSummary, EmailNotification,
+    EmailNotificationQuery, EmailService, SendEmailRequest, SendEmailResult,
+};
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::{
     GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupJoinRequest,

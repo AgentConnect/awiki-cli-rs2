@@ -11,7 +11,10 @@ pub mod doctor;
 pub mod durablefs;
 pub mod identity;
 pub mod im_core_adapter;
-pub mod mail;
+// TODO(sdk-refactor-email-e7): delete this legacy module once historical
+// parity references have fully moved to `im_core::email`.
+#[allow(dead_code)]
+pub(crate) mod mail;
 pub mod message;
 pub mod output;
 pub mod runtime;

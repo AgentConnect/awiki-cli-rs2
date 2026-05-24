@@ -90,8 +90,9 @@ class GroupAdmissionMode {
 class GroupMessageSecurityProfile {
   const GroupMessageSecurityProfile._(this.value);
 
-  static const transportProtected =
-      GroupMessageSecurityProfile._('transport-protected');
+  static const transportProtected = GroupMessageSecurityProfile._(
+    'transport-protected',
+  );
   static const groupE2ee = GroupMessageSecurityProfile._('group-e2ee');
 
   factory GroupMessageSecurityProfile.custom(String value) {

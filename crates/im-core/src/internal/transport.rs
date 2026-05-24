@@ -110,20 +110,22 @@ impl<'a> CoreHttpTransport<'a> {
         if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
             return endpoint.to_string();
         }
+        let config = self.client.core_inner().sdk_config();
         let base = if endpoint.starts_with("/im/") {
-            self.client
-                .core_inner()
-                .sdk_config()
+            config
                 .message_service_endpoint
                 .as_ref()
-                .unwrap_or(&self.client.core_inner().sdk_config().service_base_url)
+                .unwrap_or(&config.service_base_url)
+        } else if endpoint.starts_with("/mail/") {
+            config
+                .mail_service_endpoint
+                .as_ref()
+                .unwrap_or(&config.service_base_url)
         } else {
-            self.client
-                .core_inner()
-                .sdk_config()
+            config
                 .user_service_endpoint
                 .as_ref()
-                .unwrap_or(&self.client.core_inner().sdk_config().service_base_url)
+                .unwrap_or(&config.service_base_url)
         };
         join_base_url(base.as_str(), endpoint)
     }
@@ -365,20 +367,22 @@ impl<'a> CorePlainTransport<'a> {
         if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
             return endpoint.to_string();
         }
+        let config = self.core.inner().sdk_config();
         let base = if endpoint.starts_with("/im/") {
-            self.core
-                .inner()
-                .sdk_config()
+            config
                 .message_service_endpoint
                 .as_ref()
-                .unwrap_or(&self.core.inner().sdk_config().service_base_url)
+                .unwrap_or(&config.service_base_url)
+        } else if endpoint.starts_with("/mail/") {
+            config
+                .mail_service_endpoint
+                .as_ref()
+                .unwrap_or(&config.service_base_url)
         } else {
-            self.core
-                .inner()
-                .sdk_config()
+            config
                 .user_service_endpoint
                 .as_ref()
-                .unwrap_or(&self.core.inner().sdk_config().service_base_url)
+                .unwrap_or(&config.service_base_url)
         };
         join_base_url(base.as_str(), endpoint)
     }

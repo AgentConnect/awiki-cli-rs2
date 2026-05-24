@@ -6,6 +6,7 @@ import 'generated/api/attachments.dart' as gen_attachments;
 import 'generated/api/client.dart' as gen_client;
 import 'generated/api/core.dart' as gen_core;
 import 'generated/api/directory.dart' as gen_directory;
+import 'generated/api/email.dart' as gen_email;
 import 'generated/api/groups.dart' as gen_groups;
 import 'generated/api/identity.dart' as gen_identity_api;
 import 'generated/api/messages.dart' as gen_messages;
@@ -15,6 +16,7 @@ import 'generated/dto/auth.dart' as gen_auth_dto;
 import 'generated/dto/attachment.dart' as gen_attachment;
 import 'generated/dto/config.dart' as gen_config;
 import 'generated/dto/directory.dart' as gen_directory_dto;
+import 'generated/dto/email.dart' as gen_email_dto;
 import 'generated/dto/error.dart' as gen_error;
 import 'generated/dto/group.dart' as gen_group_dto;
 import 'generated/dto/identity.dart' as gen_identity;
@@ -26,6 +28,7 @@ import 'models/auth.dart';
 import 'models/attachment.dart';
 import 'models/config.dart';
 import 'models/directory.dart';
+import 'models/email.dart';
 import 'models/error.dart';
 import 'models/group.dart';
 import 'models/identity.dart';
@@ -214,6 +217,7 @@ class AwikiImClient {
   ProfileApi get profile => ProfileApi._(this);
   MessageApi get messages => MessageApi._(this);
   AttachmentApi get attachments => AttachmentApi._(this);
+  EmailApi get email => EmailApi._(this);
   GroupApi get groups => GroupApi._(this);
   RealtimeApi get realtime => RealtimeApi._(this);
 
@@ -482,6 +486,101 @@ class AttachmentApi {
   }
 }
 
+class EmailApi {
+  EmailApi._(this._client);
+
+  final AwikiImClient _client;
+
+  Future<EmailAccount> account() async {
+    _client._ensureNotDisposed();
+    final account = await _mapNativeErrors(
+      () => gen_email.account(client: _client._inner),
+    );
+    return account._toModel();
+  }
+
+  Future<EmailMessageSummaryPage> inbox({
+    String folder = 'inbox',
+    int limit = 20,
+    int offset = 0,
+    bool unreadOnly = false,
+  }) async {
+    _client._ensureNotDisposed();
+    final page = await _mapNativeErrors(
+      () => gen_email.inbox(
+        client: _client._inner,
+        folder: folder,
+        limit: limit,
+        offset: offset,
+        unreadOnly: unreadOnly,
+      ),
+    );
+    return page._toModel();
+  }
+
+  Future<EmailMessageSummaryPage> inboxWithQuery(EmailInboxQuery query) =>
+      inbox(
+        folder: query.folder,
+        limit: query.limit,
+        offset: query.offset,
+        unreadOnly: query.unreadOnly,
+      );
+
+  Future<EmailMessage> read(String messageId) async {
+    _client._ensureNotDisposed();
+    final message = await _mapNativeErrors(
+      () => gen_email.read(client: _client._inner, messageId: messageId),
+    );
+    return message._toModel();
+  }
+
+  Future<EmailMarkReadResult> markRead(
+    List<String> messageIds, {
+    bool isRead = true,
+  }) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_email.markRead(
+        client: _client._inner,
+        messageIds: messageIds,
+        isRead: isRead,
+      ),
+    );
+    return result._toModel();
+  }
+
+  Future<SendEmailResult> send(SendEmailRequest request) async {
+    _client._ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_email.send(client: _client._inner, request: request._toGen()),
+    );
+    return result._toModel();
+  }
+
+  Future<EmailAttachmentContent> downloadAttachment({
+    required String messageId,
+    required int attachmentIndex,
+  }) async {
+    _client._ensureNotDisposed();
+    final content = await _mapNativeErrors(
+      () => gen_email.downloadAttachment(
+        client: _client._inner,
+        messageId: messageId,
+        attachmentIndex: attachmentIndex,
+      ),
+    );
+    return content._toModel();
+  }
+
+  Future<EmailNotificationPage> notifications({int limit = 20}) async {
+    _client._ensureNotDisposed();
+    final page = await _mapNativeErrors(
+      () => gen_email.notifications(client: _client._inner, limit: limit),
+    );
+    return page._toModel();
+  }
+}
+
 class GroupApi {
   GroupApi._(this._client);
 
@@ -734,6 +833,7 @@ extension on AwikiImCoreConfig {
     didDomain: didDomain,
     userServiceEndpoint: userServiceEndpoint,
     messageServiceEndpoint: messageServiceEndpoint,
+    mailServiceEndpoint: mailServiceEndpoint,
     anpServiceEndpoint: anpServiceEndpoint,
     anpServiceDid: anpServiceDid,
     transportPolicy: transportPolicy._toGen(),
@@ -1040,6 +1140,120 @@ extension on gen_attachment.DartDownloadedAttachment {
     sizeBytes: sizeBytes?.toInt(),
     destination: destination._toModel(),
     warnings: warnings,
+  );
+}
+
+extension on gen_email_dto.DartEmailAttribute {
+  EmailAttribute _toModel() => EmailAttribute(key: key, value: value);
+}
+
+extension on gen_email_dto.DartEmailAccount {
+  EmailAccount _toModel() => EmailAccount(
+    mailboxAddress: mailboxAddress,
+    displayName: displayName,
+    status: status,
+    attributes: attributes.map((attribute) => attribute._toModel()).toList(),
+  );
+}
+
+extension on gen_email_dto.DartEmailMessageSummary {
+  EmailMessageSummary _toModel() => EmailMessageSummary(
+    id: id,
+    folder: folder,
+    from: from,
+    to: to,
+    cc: cc,
+    subject: subject,
+    preview: preview,
+    receivedAt: receivedAt,
+    sentAt: sentAt,
+    unread: unread,
+    hasAttachments: hasAttachments,
+    attachmentCount: attachmentCount,
+    attributes: attributes.map((attribute) => attribute._toModel()).toList(),
+  );
+}
+
+extension on gen_email_dto.DartEmailMessageSummaryPage {
+  EmailMessageSummaryPage _toModel() => EmailMessageSummaryPage(
+    items: items.map((message) => message._toModel()).toList(),
+    nextCursor: nextCursor,
+    hasMore: hasMore,
+  );
+}
+
+extension on gen_email_dto.DartEmailAttachmentMetadata {
+  EmailAttachmentMetadata _toModel() => EmailAttachmentMetadata(
+    index: index,
+    filename: filename,
+    contentType: contentType,
+    size: size?.toInt(),
+  );
+}
+
+extension on gen_email_dto.DartEmailMessage {
+  EmailMessage _toModel() => EmailMessage(
+    summary: summary._toModel(),
+    bodyText: bodyText,
+    bodyHtml: bodyHtml,
+    attachments: attachments
+        .map((attachment) => attachment._toModel())
+        .toList(),
+  );
+}
+
+extension on gen_email_dto.DartEmailMarkReadResult {
+  EmailMarkReadResult _toModel() => EmailMarkReadResult(updated: updated);
+}
+
+extension on SendEmailRequest {
+  gen_email_dto.DartSendEmailRequest _toGen() =>
+      gen_email_dto.DartSendEmailRequest(
+        to: to,
+        cc: cc,
+        subject: subject,
+        bodyText: bodyText,
+        bodyHtml: bodyHtml,
+      );
+}
+
+extension on gen_email_dto.DartSendEmailResult {
+  SendEmailResult _toModel() => SendEmailResult(
+    accepted: accepted,
+    messageId: messageId,
+    warnings: warnings,
+  );
+}
+
+extension on gen_email_dto.DartEmailAttachmentContent {
+  EmailAttachmentContent _toModel() => EmailAttachmentContent(
+    messageId: messageId,
+    attachmentIndex: attachmentIndex,
+    filename: filename,
+    contentType: contentType,
+    size: size?.toInt(),
+    bytes: bytes,
+  );
+}
+
+extension on gen_email_dto.DartEmailNotification {
+  EmailNotification _toModel() => EmailNotification(
+    id: id,
+    mailboxAddress: mailboxAddress,
+    fromAddr: fromAddr,
+    subject: subject,
+    preview: preview,
+    hasAttachments: hasAttachments,
+    receivedAt: receivedAt,
+    attributes: attributes.map((attribute) => attribute._toModel()).toList(),
+  );
+}
+
+extension on gen_email_dto.DartEmailNotificationPage {
+  EmailNotificationPage _toModel() => EmailNotificationPage(
+    items: items.map((notification) => notification._toModel()).toList(),
+    nextCursor: nextCursor,
+    hasMore: hasMore,
   );
 }
 

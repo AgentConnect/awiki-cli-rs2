@@ -11,6 +11,7 @@ class DartImCoreConfig {
   final String didDomain;
   final String? userServiceEndpoint;
   final String? messageServiceEndpoint;
+  final String? mailServiceEndpoint;
   final String? anpServiceEndpoint;
   final String? anpServiceDid;
   final DartMessageTransportPolicy transportPolicy;
@@ -20,6 +21,7 @@ class DartImCoreConfig {
     required this.didDomain,
     this.userServiceEndpoint,
     this.messageServiceEndpoint,
+    this.mailServiceEndpoint,
     this.anpServiceEndpoint,
     this.anpServiceDid,
     required this.transportPolicy,
@@ -31,6 +33,7 @@ class DartImCoreConfig {
       didDomain.hashCode ^
       userServiceEndpoint.hashCode ^
       messageServiceEndpoint.hashCode ^
+      mailServiceEndpoint.hashCode ^
       anpServiceEndpoint.hashCode ^
       anpServiceDid.hashCode ^
       transportPolicy.hashCode;
@@ -44,6 +47,7 @@ class DartImCoreConfig {
           didDomain == other.didDomain &&
           userServiceEndpoint == other.userServiceEndpoint &&
           messageServiceEndpoint == other.messageServiceEndpoint &&
+          mailServiceEndpoint == other.mailServiceEndpoint &&
           anpServiceEndpoint == other.anpServiceEndpoint &&
           anpServiceDid == other.anpServiceDid &&
           transportPolicy == other.transportPolicy;

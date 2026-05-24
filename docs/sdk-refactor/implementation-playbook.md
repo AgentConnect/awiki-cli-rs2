@@ -1509,11 +1509,38 @@ ImCore / ImClient / service DTO 保持稳定。
 
 ---
 
-## 22. 回滚策略
+## 22. Email / Mail 迁移
+
+Email / Mail 不属于 Phase 1 IM MVP，但独立 Email 阶段完成后属于 CLI 默认命令面。`mail.*` 必须通过 `im-core::email` 执行，不恢复 legacy fallback；CLI 只保留 flag 解析、dry-run、输出 envelope 和附件文件写入。
+
+执行入口：
+
+```text
+接口设计：docs/sdk-refactor/Interface/08-email-interface.md
+迁移计划：docs/sdk-refactor/plan/email-migration-execution-plan.md
+系统测试：使用 awiki.ai 域名和 mail-service 配置
+```
+
+推荐顺序：
+
+```text
+Email E1：接口和 crate 边界
+Email E2：wire builder / normalization 迁入 im-core
+Email E3：远端 account/inbox/read/mark-read/send/download 真迁移
+Email E4：本地 mail notification 视图迁入 im-core local_state
+Email E5：CLI adapter 与 dry-run/render/file-write 切换
+Email E6：CLI cutover classifier 打开 mail 默认命令面
+Email E7：Dart bridge / package facade
+Email E8：awiki.ai 系统测试与 legacy 清理
+```
+
+---
+
+## 23. 回滚策略
 
 每个阶段都要能快速回滚。
 
-### 22.1 使用环境变量开关
+### 23.1 使用环境变量开关
 
 ```text
 AWIKI_USE_IM_CORE_MVP=1
@@ -1521,7 +1548,7 @@ AWIKI_USE_IM_CORE_MVP=1
 
 默认先不打开。出问题时关掉即可回到 legacy。
 
-### 22.2 保留 legacy handler
+### 23.2 保留 legacy handler
 
 初期可以保留：
 
@@ -1532,7 +1559,7 @@ run_msg_send_via_im_core(command)
 
 稳定后再删除 legacy wrapper。
 
-### 22.3 每个 PR 控制范围
+### 23.3 每个 PR 控制范围
 
 单个 PR 不要同时做：
 
@@ -1548,7 +1575,7 @@ run_msg_send_via_im_core(command)
 
 ---
 
-## 23. 推荐 PR 拆分
+## 24. 推荐 PR 拆分
 
 ```text
 PR 1：新增 crates/im-core skeleton + compile fence
@@ -1567,7 +1594,7 @@ PR 12：inbox/history 真迁移
 
 ---
 
-## 24. 每个 PR 的验收清单
+## 25. 每个 PR 的验收清单
 
 每个 PR 都必须检查：
 
@@ -1584,7 +1611,7 @@ PR 12：inbox/history 真迁移
 
 ---
 
-## 25. 最小成功标准
+## 26. 最小成功标准
 
 P1 成功标准：
 
@@ -1605,7 +1632,7 @@ P1 成功标准：
 
 ---
 
-## 26. 一句话执行原则
+## 27. 一句话执行原则
 
 **先让 CLI 像调用 SDK 一样调用现有能力；再把这些能力按垂直业务切片逐步迁进真正的 SDK。**
 

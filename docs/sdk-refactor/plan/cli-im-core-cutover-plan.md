@@ -395,22 +395,23 @@ cutover 规则：
 4. message id / cursor 可以保留，因为这是用户级分页/定位概念。
 ```
 
-### 6.4 Mail，默认不纳入 im-core cutover
+### 6.4 Mail，由独立 Email 阶段打开默认命令面
 
-当前 `mail.*` 不是 `public-api.md` 中的 im-core IM public service。cutover 时建议：
+Email / Mail 不是 Phase 1 IM MVP，但独立 Email 阶段完成后通过 `im-core::email` 进入默认命令面：
 
 | 命令 | cutover 策略 |
 | --- | --- |
-| `mail.inbox` / `mail.notify` / `mail.read` / `mail.mark-read` | 默认 hidden 或 unsupported |
-| `mail.account` / `mail.send` | 默认 hidden 或 unsupported |
-| `mail.attachment.download` | 默认 hidden 或 unsupported |
+| `mail.inbox` / `mail.notify` / `mail.read` / `mail.mark-read` | `client.email()` |
+| `mail.account` / `mail.send` | `client.email()` |
+| `mail.attachment.download` | `client.email().download_attachment(...)`，CLI 写输出文件 |
 
 理由：
 
 ```text
-1. mail 是独立产品域，不应挤进当前 IM SDK cutover。
-2. 如果未来要保留，应先设计 im-core mail service 或单独 mail-core/service。
+1. mail 是独立产品域，接口与执行顺序由 `docs/sdk-refactor/Interface/08-email-interface.md` 和 `docs/sdk-refactor/plan/email-migration-execution-plan.md` 约束。
+2. CLI 只负责 flag parse / dry-run / render / 附件文件写入。
 3. cutover 不应为了兼容旧 CLI 而保留一条旧业务 fallback。
+4. 系统测试使用 awiki.ai 和 mail-service 配置。
 ```
 
 ### 6.5 Secure direct，Phase 6 前不进入默认命令面
@@ -861,7 +862,7 @@ rg "listener_session_loop|run_listener_session|legacy.*listener" crates/awiki-cl
 建议处理：
 
 ```text
-mail.*                       -> hidden / unsupported
+mail.*                       -> im-core Email service
 msg.secure.failed/retry/drop -> hidden / diagnostic-only
 group.e2ee.*                 -> hidden / diagnostic-only
 group.code.*                 -> removed / hidden

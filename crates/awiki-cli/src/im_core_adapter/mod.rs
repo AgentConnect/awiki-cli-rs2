@@ -16,6 +16,7 @@ pub(crate) mod active_identity;
 pub mod auth;
 pub mod config;
 pub mod core;
+pub mod email;
 pub mod error;
 pub mod groups;
 pub mod identity;

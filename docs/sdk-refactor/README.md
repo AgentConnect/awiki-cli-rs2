@@ -66,6 +66,9 @@ provider 抽象
    - [attachments](modules/09-attachments.md)
    - [secure](modules/10-secure.md)
    - [realtime](modules/11-realtime.md)
+7. Email / Mail 迁移：
+   - [Email interface](Interface/08-email-interface.md)
+   - [Email migration execution plan](plan/email-migration-execution-plan.md)
 
 `implementation-playbook.md` 是阶段路线和实际 PR 执行手册。若步骤粒度和模块接口文档不同，以 `implementation-playbook.md` 的执行粒度为准；若接口形态或 public/internal 边界不同，以 `public-api.md` 和模块接口文档为准。
 
@@ -89,6 +92,7 @@ provider 抽象
 | realtime runner | 否 | Phase 5 | CLI service 管理永远留 CLI。 |
 | direct E2EE / group E2EE | 否 | Phase 6 | secure 作为高级能力后移。 |
 | provider traits | 否 | Phase 7 | API 稳定后按 App 需求引入。 |
+| Email / Mail | 是 | 独立 Email 阶段 | `mail.*` 默认命令面通过 `im-core::email` 执行；CLI 只保留 flag/dry-run/render/附件文件写入，Dart package 通过 `AwikiImClient.email` 暴露。系统测试使用 awiki.ai。 |
 
 ## 5. 一句话边界
 
