@@ -1,5 +1,5 @@
 use awiki_cli::identity::types::StoredIdentity;
-use awiki_cli::runtime::listener_secure_outbox_flush::{
+use awiki_cli::runtime_legacy::listener_secure_outbox_flush::{
     flush_peer_queued_secure_outbox_plan, SecureOutboxFlushAction, SecureOutboxFlushSession,
 };
 

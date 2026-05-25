@@ -1,6 +1,6 @@
 use awiki_cli::config::{self, Paths, Resolved};
-use awiki_cli::runtime::listener_ws_transport::WsTransport;
-use awiki_cli::runtime::listener_wsclient;
+use awiki_cli::runtime_legacy::listener_ws_transport::WsTransport;
+use awiki_cli::runtime_legacy::listener_wsclient;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::ser::{Serialize, Serializer};
 use serde_json::json;

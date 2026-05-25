@@ -13,6 +13,9 @@ pub mod im_core_adapter;
 pub mod message;
 pub mod output;
 pub mod runtime;
+#[doc(hidden)]
+#[allow(dead_code)]
+pub mod runtime_legacy;
 pub mod store;
 pub mod traceutil;
 pub mod transportcfg;

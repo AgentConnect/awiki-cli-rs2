@@ -123,7 +123,10 @@ impl<'a> IdentityService<'a> {
         &self,
         request: super::ReplaceDidPlanRequest,
     ) -> crate::ImResult<super::ReplaceDidPlan> {
-        crate::internal::identity_replace_did_plan::plan_replace_did(request)
+        crate::internal::identity_replace_did_plan::plan_replace_did_for_client(
+            self.client,
+            request,
+        )
     }
 
     pub(crate) fn replace_did_with_runtime<B>(

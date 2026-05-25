@@ -12,6 +12,32 @@ const REPLACE_DID_LOCAL_WRITES: &[&str] = &[
     "sqlite.e2ee_cleanup",
 ];
 
+#[cfg(feature = "sqlite")]
+const REPLACE_DID_REBIND_TABLES: &[&str] = &[
+    "messages",
+    "contacts",
+    "contact_handle_bindings",
+    "relationship_events",
+    "groups",
+    "group_members",
+];
+
+#[cfg(feature = "sqlite")]
+const REPLACE_DID_E2EE_TABLES: &[&str] = &["e2ee_outbox", "e2ee_sessions"];
+
+pub(crate) fn plan_replace_did_for_client(
+    client: &crate::core::ImClient,
+    mut request: crate::identity::ReplaceDidPlanRequest,
+) -> crate::ImResult<crate::identity::ReplaceDidPlan> {
+    validate_plan_request(&request)?;
+    request.affected_local_state = plan_replace_did_local_state_rebind(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+        request.identity.did.as_str(),
+        request.planned_new_did.as_str(),
+    )?;
+    plan_replace_did(request)
+}
+
 pub(crate) fn plan_replace_did(
     request: crate::identity::ReplaceDidPlanRequest,
 ) -> crate::ImResult<crate::identity::ReplaceDidPlan> {
@@ -72,6 +98,82 @@ pub(crate) fn plan_replace_did(
             .collect(),
         warnings: Vec::new(),
     })
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn plan_replace_did_local_state_rebind(
+    sqlite_path: &std::path::Path,
+    old_owner_did: &str,
+    new_owner_did: &str,
+) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState> {
+    let empty = crate::identity::ReplaceDidAffectedLocalState {
+        store_rebind_counts: zero_counts(REPLACE_DID_REBIND_TABLES),
+        e2ee_cleanup_counts: zero_counts(REPLACE_DID_E2EE_TABLES),
+    };
+    if sqlite_path.metadata().is_err() {
+        return Ok(empty);
+    }
+
+    let old_owner_did = old_owner_did.trim();
+    let new_owner_did = new_owner_did.trim();
+    if old_owner_did.is_empty() || new_owner_did.is_empty() || old_owner_did == new_owner_did {
+        return Ok(empty);
+    }
+
+    let connection = rusqlite::Connection::open_with_flags(
+        sqlite_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(crate::identity::ReplaceDidAffectedLocalState {
+        store_rebind_counts: count_owner_rows_by_table(
+            &connection,
+            REPLACE_DID_REBIND_TABLES,
+            old_owner_did,
+        )?,
+        e2ee_cleanup_counts: count_owner_rows_by_table(
+            &connection,
+            REPLACE_DID_E2EE_TABLES,
+            old_owner_did,
+        )?,
+    })
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) fn plan_replace_did_local_state_rebind(
+    _sqlite_path: &std::path::Path,
+    _old_owner_did: &str,
+    _new_owner_did: &str,
+) -> crate::ImResult<crate::identity::ReplaceDidAffectedLocalState> {
+    Ok(crate::identity::ReplaceDidAffectedLocalState::default())
+}
+
+#[cfg(feature = "sqlite")]
+fn count_owner_rows_by_table(
+    connection: &rusqlite::Connection,
+    tables: &[&str],
+    owner_did: &str,
+) -> crate::ImResult<std::collections::BTreeMap<String, i64>> {
+    let mut result = zero_counts(tables);
+    for table in tables {
+        let count = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE owner_did = ?1"),
+                rusqlite::params![owner_did],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        result.insert((*table).to_string(), count);
+    }
+    Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
+fn zero_counts(tables: &[&str]) -> std::collections::BTreeMap<String, i64> {
+    tables
+        .iter()
+        .map(|table| ((*table).to_string(), 0))
+        .collect()
 }
 
 pub(crate) fn validate_plan_request(
@@ -195,6 +297,107 @@ mod tests {
             .rollback_notes
             .iter()
             .any(|note| note.contains("backup manifest")));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn replace_did_service_counts_local_state_from_client_sqlite_path() {
+        let root = tempfile::TempDir::new().unwrap();
+        let core = crate::core::ImCore::new(
+            crate::config::ImCoreConfig {
+                service_base_url: crate::config::ServiceEndpoint::parse("https://example.test")
+                    .unwrap(),
+                did_domain: "awiki.test".to_string(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::config::MessageTransportPolicy::HttpOnly,
+            },
+            crate::paths::ImCorePaths {
+                identities: crate::paths::IdentityRegistryPaths {
+                    identity_root_dir: root.path().join("identities"),
+                    registry_path: root.path().join("identities").join("registry.json"),
+                    default_identity_path: Some(root.path().join("identities").join("default")),
+                },
+                local_state: crate::paths::LocalStatePaths {
+                    sqlite_path: root.path().join("local").join("im.sqlite"),
+                },
+                runtime: crate::paths::RuntimePaths {
+                    cache_dir: root.path().join("cache"),
+                    temp_dir: root.path().join("tmp"),
+                },
+            },
+        )
+        .unwrap();
+        let client = core
+            .client(crate::identity::IdentitySelector::Did(
+                crate::ids::Did::parse("did:wba:awiki.test:alice:e1_old").unwrap(),
+            ))
+            .unwrap();
+        let sqlite_path = &client.core_inner().sdk_paths().local_state.sqlite_path;
+        let connection = crate::internal::local_state::open_writable(sqlite_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO messages (msg_id, owner_did, thread_id, stored_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    "replace-did-msg-1",
+                    "did:wba:awiki.test:alice:e1_old",
+                    "dm:alice:bob",
+                    "2026-05-25T00:00:00Z",
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO e2ee_sessions
+                 (owner_did, peer_did, session_id, send_chain_key, recv_chain_key, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "did:wba:awiki.test:alice:e1_old",
+                    "did:wba:example.test:bob",
+                    "session-1",
+                    "send",
+                    "recv",
+                    "2026-05-25T00:00:00Z",
+                    "2026-05-25T00:00:00Z",
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut request = crate::identity::ReplaceDidPlanRequest {
+            identity: identity_summary(),
+            linked_identity_names: vec!["alice".to_string()],
+            planned_new_did: crate::ids::Did::parse("did:wba:awiki.test:alice:e1_new").unwrap(),
+            backup_path_preview: "/tmp/.legacy-backup/replace-did/<timestamp>-alice".to_string(),
+            old_dir_name: "e1_old".to_string(),
+            is_public: Some(false),
+            is_agent: None,
+            role: None,
+            endpoint_url: Some("https://example.test/agent".to_string()),
+            affected_local_state: crate::identity::ReplaceDidAffectedLocalState::default(),
+        };
+        let plan = client.identity().replace_did_plan(request.clone()).unwrap();
+        assert_eq!(plan.affected_local_state.store_rebind_counts["messages"], 1);
+        assert_eq!(
+            plan.affected_local_state.e2ee_cleanup_counts["e2ee_sessions"],
+            1
+        );
+
+        request.planned_new_did = request.identity.did.clone();
+        let same_did_plan = client.identity().replace_did_plan(request).unwrap();
+        assert_eq!(
+            same_did_plan.affected_local_state.store_rebind_counts["messages"],
+            0
+        );
+        assert_eq!(
+            same_did_plan.affected_local_state.e2ee_cleanup_counts["e2ee_sessions"],
+            0
+        );
     }
 
     fn identity_summary() -> crate::identity::IdentitySummary {

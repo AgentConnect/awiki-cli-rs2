@@ -1,4 +1,4 @@
-use awiki_cli::runtime::listener_secure_ack_delivery::{
+use awiki_cli::runtime_legacy::listener_secure_ack_delivery::{
     deliver_local_secure_ack_plan, LocalSecureAckDeliveryAction, LocalSecureAckDeliveryDecision,
 };
 use serde_json::{json, Value};
@@ -139,7 +139,7 @@ fn delivered_ack_builds_go_direct_incoming_cipher_notification() {
 }
 
 fn delivered_notification(
-    plan: awiki_cli::runtime::listener_secure_ack_delivery::LocalSecureAckDeliveryPlan,
+    plan: awiki_cli::runtime_legacy::listener_secure_ack_delivery::LocalSecureAckDeliveryPlan,
 ) -> Value {
     assert_eq!(plan.decision, LocalSecureAckDeliveryDecision::Delivered);
     match plan.actions.as_slice() {

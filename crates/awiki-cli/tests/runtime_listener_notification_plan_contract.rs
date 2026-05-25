@@ -1,5 +1,5 @@
 use awiki_cli::runtime::host_notify::HostNotificationData;
-use awiki_cli::runtime::listener_notification_plan::{
+use awiki_cli::runtime_legacy::listener_notification_plan::{
     handle_notification_plan, IncomingContactSyncRequest, NotificationRoute,
     NotificationSessionContext, NotificationSideEffect, SecureNotificationEffect,
     SecureNotificationNormalization,

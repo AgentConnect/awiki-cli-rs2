@@ -1571,13 +1571,13 @@ mod tests {
     #[test]
     fn direct_attachment_download_target_uses_resolved_did() {
         let thread = ThreadRef::Direct(PeerRef::parse("bob", "").expect("peer"));
-        let resolved = TargetResolution {
-            did: "did:wba:example:bob".to_string(),
-            handle: "bob.awiki.test".to_string(),
+        let selection = AttachmentSelection {
+            sender_did: "did:wba:example:bob".to_string(),
+            ..AttachmentSelection::default()
         };
 
         assert_eq!(
-            download_target_value(&thread, Some(&resolved)),
+            download_target_value(&thread, Some(&selection)),
             json!({"kind": "direct", "did": "did:wba:example:bob"})
         );
     }
