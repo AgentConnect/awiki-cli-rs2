@@ -29,10 +29,10 @@ cargo --version
 
 ### 1.2 ANP Rust SDK（P5 secure direct）
 
-awiki-cli 的 ANP 依赖来自同级 Rust workspace 路径 `../anp/rust`。拉取或构建本仓库时，需要保证该 sibling repository 可用：
+awiki-cli 的 ANP 依赖来自同级 Rust workspace 路径 `../anp/anp/rust`。拉取或构建本仓库时，需要保证该 sibling repository 可用：
 
 ```bash
-ls ../anp/rust/Cargo.toml
+ls ../anp/anp/rust/Cargo.toml
 ```
 
 P5 secure direct / OPK 客户端能力由 Rust SDK 依赖提供。首次拉取依赖时请确保本机可以访问 crates.io 和对应源码仓库。
@@ -534,7 +534,7 @@ awiki-cli 是纯客户端，不需要本地数据库服务，但需要连接以�
 确认同级 ANP Rust SDK 路径存在，并且 Cargo 可以读取 workspace path dependency：
 
 ```bash
-ls ../anp/rust/Cargo.toml
+ls ../anp/anp/rust/Cargo.toml
 cargo check -p awiki-cli --all-features
 ```
 

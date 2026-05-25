@@ -6,7 +6,7 @@
 
 设计依据：
 
-- `anp/AgentNetworkProtocol/chinese/message/02-身份与发现.md`
+- `../anp/AgentNetworkProtocol/chinese/message/02-身份与发现.md`
 - 本仓库当前 CLI / runtime / identity 结构
 
 当前结论：

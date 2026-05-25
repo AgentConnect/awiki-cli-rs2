@@ -13,7 +13,7 @@ Pipeline:
 - Used a read-only Native Agent to map Group E2EE selector prerequisites,
   smallest focused selectors, failure artifacts, and mail independence.
 - Built the local ANP Rust SDK `anp-mls` prerequisite from
-  `/home/ecs-user/awiki-space/anp/rust`.
+  `/home/ecs-user/awiki-space/anp/anp/rust`.
 - Temporarily switched the local Cargo registry config from the configured USTC
   mirror to crates.io sparse only for the `anp-mls` build, then restored the
   original Cargo config.
@@ -27,15 +27,15 @@ Pipeline:
 Prerequisite command:
 
 ```text
-cd /home/ecs-user/awiki-space/anp/rust && CARGO_HTTP_MULTIPLEXING=false CARGO_NET_RETRY=6 CARGO_HTTP_TIMEOUT=120 cargo +stable build --manifest-path /home/ecs-user/awiki-space/anp/rust/Cargo.toml --bin anp-mls
+cd /home/ecs-user/awiki-space/anp/anp/rust && CARGO_HTTP_MULTIPLEXING=false CARGO_NET_RETRY=6 CARGO_HTTP_TIMEOUT=120 cargo +stable build --manifest-path /home/ecs-user/awiki-space/anp/anp/rust/Cargo.toml --bin anp-mls
 ```
 
 Prerequisite result:
 
 - `anp-mls` built successfully at
-  `/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls`.
+  `/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls`.
 - Final executable check:
-  `/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls` existed and was
+  `/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls` existed and was
   executable.
 - Cargo config was restored to the original USTC mirror configuration:
   `source.crates-io.replace-with = "ustc"`.
@@ -43,9 +43,9 @@ Prerequisite result:
 Focused enabled-mode system-test commands:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 AWIKI_ENABLE_MAIL_TESTS=0 AWIKI_GROUP_E2EE_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls AWIKI_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -ra -q -s tests_v2/cli/test_awiki_cli_group_e2ee_local.py::test_awiki_cli_group_e2ee_alice_bob_real_mls_loop
-cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 AWIKI_ENABLE_MAIL_TESTS=0 AWIKI_GROUP_E2EE_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls AWIKI_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -x -ra -q -s tests_v2/cli/test_awiki_cli_group_e2ee_local.py tests_v2/cli/test_awiki_cli_group_e2ee_negative_local.py tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py tests_v2/cli/test_awiki_cli_group_e2ee_recovery_local.py tests_v2/cli/test_awiki_cli_group_e2ee_update_rejoin_local.py
-cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 AWIKI_ENABLE_MAIL_TESTS=0 AWIKI_GROUP_E2EE_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls AWIKI_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -x -ra -q -s tests_v2/cli/test_awiki_cli_group_e2ee_rust_contracts.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 AWIKI_ENABLE_MAIL_TESTS=0 AWIKI_GROUP_E2EE_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls AWIKI_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -ra -q -s tests_v2/cli/test_awiki_cli_group_e2ee_local.py::test_awiki_cli_group_e2ee_alice_bob_real_mls_loop
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 AWIKI_ENABLE_MAIL_TESTS=0 AWIKI_GROUP_E2EE_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls AWIKI_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -x -ra -q -s tests_v2/cli/test_awiki_cli_group_e2ee_local.py tests_v2/cli/test_awiki_cli_group_e2ee_negative_local.py tests_v2/cli/test_awiki_cli_group_e2ee_lifecycle_local.py tests_v2/cli/test_awiki_cli_group_e2ee_recovery_local.py tests_v2/cli/test_awiki_cli_group_e2ee_update_rejoin_local.py
+cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 AWIKI_ENABLE_MAIL_TESTS=0 AWIKI_GROUP_E2EE_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls AWIKI_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -x -ra -q -s tests_v2/cli/test_awiki_cli_group_e2ee_rust_contracts.py
 ```
 
 Focused enabled-mode results:

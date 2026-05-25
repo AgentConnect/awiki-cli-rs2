@@ -177,7 +177,7 @@ crates/awiki-cli/src/message/group_e2ee_update.rs
 
 `group_e2ee_provider.rs` 通过 `anp-mls` 外部 binary 执行 status、key-package、create/add/remove/recover/update、welcome/commit process、encrypt/decrypt 等 MLS 操作，并使用 `AWIKI_ANP_MLS_BINARY` 环境变量定位 binary。
 
-`../anp/rust` 已经完成 MLS API 化后，新的 im-core 路径不应继续复用这个 subprocess/RPC provider。Phase 6 的 `NativeAnpMlsProvider` 应直接调用 `anp::group_e2ee::operations`，并通过 `anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore` 管理 owner/device scoped MLS state。历史 `MlsExecProvider` 只能作为待清理的旧 awiki-cli 路径存在，不能进入新的 im-core group E2EE runtime。
+`../anp/anp/rust` 已经完成 MLS API 化后，新的 im-core 路径不应继续复用这个 subprocess/RPC provider。Phase 6 的 `NativeAnpMlsProvider` 应直接调用 `anp::group_e2ee::operations`，并通过 `anp::group_e2ee::storage::ImCoreSqliteGroupMlsStore` 管理 owner/device scoped MLS state。历史 `MlsExecProvider` 只能作为待清理的旧 awiki-cli 路径存在，不能进入新的 im-core group E2EE runtime。
 
 `group_e2ee_status.rs` 已经有 status、pending notice、local MLS status、service head、diagnosis、recovery artifact 等逻辑，是 group diagnostics 的主要迁移源。
 
@@ -628,7 +628,7 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_one_time_prekeys (
 
 ### 7.2 group MLS path
 
-群组 E2EE 存储策略需要对接 `../anp/rust` 已完成的 native MLS API 化结果。`anp-mls` 不再作为长期 binary / stdin JSON command surface；Phase 6 的 group E2EE 新路径应直接调用：
+群组 E2EE 存储策略需要对接 `../anp/anp/rust` 已完成的 native MLS API 化结果。`anp-mls` 不再作为长期 binary / stdin JSON command surface；Phase 6 的 group E2EE 新路径应直接调用：
 
 ```rust
 anp::group_e2ee::operations
@@ -669,7 +669,7 @@ internal contract：
 6. KeyPackage、Welcome、Commit、MLS epoch、pending_commit_id 只能作为 internal/service artifact 或 diagnostics-redacted 信息，不进入普通 SDK public API。
 7. 所有会推进 MLS epoch 的本地操作必须走 prepare -> message service RPC -> finalize/abort；prepare 成功但服务端提交失败时不能推进本地 binding epoch。
 8. Phase 7 如需公开 provider trait，需要另开 public provider 设计；Phase 6 的 GroupMlsProvider 保持 `pub(crate)` internal。
-9. 如果前置 `../anp/rust` MLS API 化仍有未完成项，统一在 PR 6H 补齐 `anp::group_e2ee::operations` / `storage` typed API；后续 6I/6J/6K 只能消费该 API，不能重新适配 `anp-mls` binary、stdin JSON command 或 RPC provider。
+9. 如果前置 `../anp/anp/rust` MLS API 化仍有未完成项，统一在 PR 6H 补齐 `anp::group_e2ee::operations` / `storage` typed API；后续 6I/6J/6K 只能消费该 API，不能重新适配 `anp-mls` binary、stdin JSON command 或 RPC provider。
 ```
 
 存储落地策略：
@@ -1338,20 +1338,20 @@ cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
 
 #### 目标
 
-迁移 group E2EE wire builder、authenticated transport 和 MLS provider internal boundary，并在这一阶段完成 im-core 对 `../anp/rust` native MLS API 的直接对接；但不接 group `messages().send(... E2eeRequired ...)` route。
+迁移 group E2EE wire builder、authenticated transport 和 MLS provider internal boundary，并在这一阶段完成 im-core 对 `../anp/anp/rust` native MLS API 的直接对接；但不接 group `messages().send(... E2eeRequired ...)` route。
 
 这个阶段是承接前置 `anp-mls` API 化工作的最合适位置：status、repair、notice processing 和 send 都依赖同一个 internal provider 边界。如果 6H 仍保留 binary/RPC provider，后续 6I/6J/6K 会继续把旧链路带进 im-core。
 
-因此 6H 也是 native MLS 对接的收口阶段：如果 `../anp/rust` 只完成了部分 library extraction，或者 typed operation / store API 与 im-core 需要的 provider matrix 不完全匹配，应在本阶段同步补齐 anp 侧 API。6I/6J/6K 不再新增 `anp-mls` 兼容层，也不再通过 subprocess/RPC 间接调用 MLS。
+因此 6H 也是 native MLS 对接的收口阶段：如果 `../anp/anp/rust` 只完成了部分 library extraction，或者 typed operation / store API 与 im-core 需要的 provider matrix 不完全匹配，应在本阶段同步补齐 anp 侧 API。6I/6J/6K 不再新增 `anp-mls` 兼容层，也不再通过 subprocess/RPC 间接调用 MLS。
 
 本阶段新增明确决策：
 
 ```text
 1. 6H 先完成 anp MLS native API acceptance，再迁移依赖该 provider 的 im-core group runtime 入口。
-2. `../anp/rust` 的未完成对接项属于 6H 范围；实现时可以在同一 PR/同一任务链中先改 anp，再改 im-core adapter。
+2. `../anp/anp/rust` 的未完成对接项属于 6H 范围；实现时可以在同一 PR/同一任务链中先改 anp，再改 im-core adapter。
 3. 6H 结束时，`NativeAnpMlsProvider` 必须是真实 anp library adapter，不是留给 6I/6J/6K 补的占位实现。
 4. 后续 6I/6J/6K 不允许为了赶功能而回退到 `anp-mls` binary、stdin JSON command、stdout/stderr 解析或 RPC subprocess。
-5. 如果 6H 发现前置 anp API 仍不能表达某个 MLS 操作，应优先补 `../anp/rust` 的 `group_e2ee::operations/storage`，而不是在 im-core 里访问 OpenMLS provider、复刻 command dispatcher 或保留 binary fallback。
+5. 如果 6H 发现前置 anp API 仍不能表达某个 MLS 操作，应优先补 `../anp/anp/rust` 的 `group_e2ee::operations/storage`，而不是在 im-core 里访问 OpenMLS provider、复刻 command dispatcher 或保留 binary fallback。
 ```
 
 #### 源和目标
@@ -1411,7 +1411,7 @@ encrypt
 decrypt
 ```
 
-如果上面的 operation 在 `../anp/rust` 中尚不存在、仍然只存在于历史 binary command path，6H 必须先把它抽成 library API，再接入 NativeAnpMlsProvider。不要在 im-core 中复刻 OpenMLS 细节，也不要把历史 command envelope 搬进 SDK runtime。
+如果上面的 operation 在 `../anp/anp/rust` 中尚不存在、仍然只存在于历史 binary command path，6H 必须先把它抽成 library API，再接入 NativeAnpMlsProvider。不要在 im-core 中复刻 OpenMLS 细节，也不要把历史 command envelope 搬进 SDK runtime。
 
 #### 不支持范围
 
@@ -1441,8 +1441,8 @@ anp-mls binary path / stdin JSON command compatibility in new im-core runtime
 #### PR 6H 内部顺序
 
 ```text
-6H-0. anp MLS native API acceptance：在 ../anp/rust 确认 anp::group_e2ee::operations/storage 是唯一 MLS library surface，且不需要 anp-mls binary。
-6H-1. 对齐 anp native API：确认 operations/storage 覆盖 provider matrix；缺失的 typed operation、store adapter、owner/device scoped constructor、error type 或 redaction helper 先在 ../anp/rust 补齐。
+6H-0. anp MLS native API acceptance：在 ../anp/anp/rust 确认 anp::group_e2ee::operations/storage 是唯一 MLS library surface，且不需要 anp-mls binary。
+6H-1. 对齐 anp native API：确认 operations/storage 覆盖 provider matrix；缺失的 typed operation、store adapter、owner/device scoped constructor、error type 或 redaction helper 先在 ../anp/anp/rust 补齐。
 6H-2. 引入 im-core internal GroupMlsProvider trait 和 fake provider，先用 typed DTO 固定 SDK 编排边界。
 6H-3. 实现 NativeAnpMlsProvider，直接调用 anp::group_e2ee::operations，并使用 ImCoreSqliteGroupMlsStore 构造 owner/device-scoped store。
 6H-4. 迁移 wire/transport builder，保持 message service RPC 只负责分发 commit/welcome/cipher/notice。

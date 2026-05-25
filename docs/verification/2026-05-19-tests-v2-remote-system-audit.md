@@ -24,7 +24,7 @@ The system-test `.env` currently enables hidden Group E2EE focused acceptance:
 
 ```text
 AWIKI_GROUP_E2EE_CONTRACT_TEST=1
-AWIKI_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls
+AWIKI_ANP_MLS_BINARY=/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls
 AWIKI_ENABLE_MAIL_TESTS=1
 ```
 
@@ -55,13 +55,13 @@ The 10 errors were all Group E2EE focused selectors failing during fixture setup
 because `AWIKI_ANP_MLS_BINARY` pointed at a non-executable or missing binary:
 
 ```text
-/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls
+/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls
 ```
 
 Attempted local prerequisite build:
 
 ```text
-cd /home/ecs-user/awiki-space/anp/rust
+cd /home/ecs-user/awiki-space/anp/anp/rust
 cargo +1.79.0 build --bin anp-mls --locked
 ```
 

@@ -9,7 +9,7 @@ Usage:
   scripts/release/build-anp-mls.sh [--dry-run] [--output DIR]
 
 Environment:
-  ANP_MLS_SOURCE_DIR           Path to the anp/rust crate (default: ../anp/rust)
+  ANP_MLS_SOURCE_DIR           Path to the anp/anp/rust crate (default: ../anp/anp/rust)
   AWIKI_ANP_MLS_RELEASE_DIR    Output directory (default: dist/anp-mls)
   CARGO                        Cargo binary (default: cargo)
 
@@ -19,8 +19,10 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-source_dir="${ANP_MLS_SOURCE_DIR:-$(cd "${repo_root}/.." && pwd)/anp/rust}"
-output_dir="${AWIKI_ANP_MLS_RELEASE_DIR:-${repo_root}/dist/anp-mls}"
+cd "${repo_root}"
+
+source_dir="${ANP_MLS_SOURCE_DIR:-../anp/anp/rust}"
+output_dir="${AWIKI_ANP_MLS_RELEASE_DIR:-dist/anp-mls}"
 dry_run=0
 
 while [[ $# -gt 0 ]]; do
@@ -53,7 +55,7 @@ cargo_bin="${CARGO:-cargo}"
 manifest_path="${source_dir}/Cargo.toml"
 if [[ ! -f "${manifest_path}" ]]; then
   echo "anp-mls Cargo.toml not found: ${manifest_path}" >&2
-  echo "Set ANP_MLS_SOURCE_DIR to the sibling anp/rust crate." >&2
+  echo "Set ANP_MLS_SOURCE_DIR to the sibling anp/anp/rust crate." >&2
   exit 1
 fi
 

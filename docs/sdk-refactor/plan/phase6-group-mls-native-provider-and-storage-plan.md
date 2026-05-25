@@ -2,7 +2,7 @@
 
 **状态**：设计草案
 **适用范围**：group E2EE / `anp-mls` / OpenMLS operations / im-core secure group runtime
-**目标**：在 `im-core` 已经 Rust 化后，去掉本地 MLS operations 对 `anp-mls` 子进程 JSON 协议的长期依赖；把 `../anp/rust/src/bin/anp-mls.rs` 中真实 OpenMLS operations 抽成 library API，并设计一个符合 OpenMLS 语义、同时与 `im-core` local state 架构统一的 MLS 存储方案。
+**目标**：在 `im-core` 已经 Rust 化后，去掉本地 MLS operations 对 `anp-mls` 子进程 JSON 协议的长期依赖；把 `../anp/anp/rust/src/bin/anp-mls.rs` 中真实 OpenMLS operations 抽成 library API，并设计一个符合 OpenMLS 语义、同时与 `im-core` local state 架构统一的 MLS 存储方案。
 
 ---
 
@@ -115,7 +115,7 @@ workspace/mls/agents/<agent-hash>/<device>/state.lock
 
 ## 2. 当前状态
 
-当前 `../anp/rust` 是一个 Rust crate：
+当前 `../anp/anp/rust` 是一个 Rust crate：
 
 ```text
 package: anp
@@ -134,7 +134,7 @@ pub mod group_e2ee;
 但 `group_e2ee/mod.rs` 当前主要是 wire helper、data model、AAD helper 和 contract-test artifact。真实 OpenMLS operations 仍主要在：
 
 ```text
-../anp/rust/src/bin/anp-mls.rs
+../anp/anp/rust/src/bin/anp-mls.rs
 ```
 
 当前 `awiki-cli` 通过 `MlsExecProvider` 调用 `anp-mls`：
@@ -173,7 +173,7 @@ Command::new(anp-mls)
 当前 `im-core` 已经依赖 workspace `anp`：
 
 ```toml
-anp = { path = "../anp/rust", default-features = false }
+anp = { path = "../anp/anp/rust", default-features = false }
 ```
 
 但 `im-core` 尚未启用 `anp/mls`，也没有直接调用 group MLS operations。
@@ -213,7 +213,7 @@ anp = { path = "../anp/rust", default-features = false }
 把 `src/bin/anp-mls.rs` 中真实 OpenMLS operations 抽到 library。`anp::group_e2ee` 不设计长时间运行的 runtime，不持有后台任务，不启动 event loop，不管理 SDK 生命周期；它只提供 one-shot MLS operation functions。
 
 ```text
-../anp/rust/src/group_e2ee/
+../anp/anp/rust/src/group_e2ee/
   mod.rs
   models.rs              # 现有 public wire/domain model，可逐步拆分
   aad.rs                 # build_send_aad 等 helper
@@ -223,7 +223,7 @@ anp = { path = "../anp/rust", default-features = false }
   errors.rs              # 新增：typed errors
   contract.rs            # 可选：contract-test artifacts
 
-../anp/rust/src/bin/anp-mls.rs
+../anp/anp/rust/src/bin/anp-mls.rs
   # 只保留：
   # - CLI args parse
   # - stdin/stdout JSON envelope
@@ -525,7 +525,7 @@ C. 只能 internal sibling mls_state.sqlite。
 当前 spike 证据记录：
 
 ```text
-测试文件：../anp/rust/tests/group_e2ee_storage_spike_tests.rs
+测试文件：../anp/anp/rust/tests/group_e2ee_storage_spike_tests.rs
 命令：cargo test --test group_e2ee_storage_spike_tests --features mls -- --nocapture
 结果：4 passed
 ```
@@ -533,10 +533,10 @@ C. 只能 internal sibling mls_state.sqlite。
 当前 M3 落地证据记录：
 
 ```text
-../anp/rust local commit 8aeb96f
+../anp/anp/rust local commit 8aeb96f
   feat: add im-core scoped group mls store
 
-测试文件：../anp/rust/tests/group_e2ee_typed_operations_tests.rs
+测试文件：../anp/anp/rust/tests/group_e2ee_typed_operations_tests.rs
 命令：cargo test --test group_e2ee_typed_operations_tests --features mls
 结果：2 passed
 ```
@@ -548,7 +548,7 @@ C. 只能 internal sibling mls_state.sqlite。
 2. OpenMLS / anp-mls migrations 未覆盖已有 PRAGMA user_version = 13。
 3. 同文件双连接可共存，但当 im-core-like connection 持有 BEGIN IMMEDIATE 写事务时，anp-mls 另一连接无法加入同一事务，只会遇到 SQLite locked/busy。
 4. 初始 spike 曾验证旧 group add-member 会立即 merge pending commit 并把 binding epoch 推进到 1；不能作为 NativeAnpMlsProvider 的长期语义。
-5. 当前 group add-member 已在 ../anp/rust local commit 54982b6 改为 prepare 语义：prepare 返回 pending_commit_id，local_epoch 仍停留在旧 epoch，pending_commits 可见。
+5. 当前 group add-member 已在 ../anp/anp/rust local commit 54982b6 改为 prepare 语义：prepare 返回 pending_commit_id，local_epoch 仍停留在旧 epoch，pending_commits 可见。
 6. 当前 group remove-member 已是 prepare 语义：prepare 返回 pending commit，local_epoch 仍停留在旧 epoch，pending_commits 可见。
 7. 当前 group create 已改为 metadata-level prepare 语义：OpenMLS 本地 group state 先创建，但 binding 状态为 pending_create；finalize 后才 active，abort 会清理 pending binding 和对应 openmls group state。
 ```
@@ -1100,10 +1100,10 @@ C. 只能 internal sibling mls_state.sqlite。
 当前进展：
 
 ```text
-../anp/rust local commit ce77ce5
+../anp/anp/rust local commit ce77ce5
   refactor: extract group mls command storage helpers
 
-../anp/rust local commit ee77c58
+../anp/anp/rust local commit ee77c58
   refactor: extract group mls real operations
 
 已完成：
@@ -1142,7 +1142,7 @@ C. 只能 internal sibling mls_state.sqlite。
 验证：
 
 ```bash
-cd ../anp/rust
+cd ../anp/anp/rust
 cargo check --features mls --bin anp-mls
 cargo test --test group_e2ee_contract_tests --features mls
 cargo test --test group_e2ee_storage_spike_tests --features mls
@@ -1191,13 +1191,13 @@ generic commit-finalize / commit-abort typed API
 当前进展：
 
 ```text
-../anp/rust local commit 54982b6
+../anp/anp/rust local commit 54982b6
   fix: make group add member use pending commit
 
-../anp/rust local commit 834bea6
+../anp/anp/rust local commit 834bea6
   group create metadata prepare/finalize/abort implemented; pending create binding is not active until finalize.
 
-../anp/rust local commit 55cfb31
+../anp/anp/rust local commit 55cfb31
   anp::group_e2ee::operations typed wrappers implemented for status, key package, create/add/remove/leave/update/recover prepare, finalize/abort, welcome/notice process, encrypt/decrypt.
 
 已完成：
@@ -1238,7 +1238,7 @@ generic commit-finalize / commit-abort typed API
 当前进展：
 
 ```text
-../anp/rust local commit 8aeb96f
+../anp/anp/rust local commit 8aeb96f
   feat: add im-core scoped group mls store
 
 已完成：
@@ -1558,7 +1558,7 @@ state.lock path
 一步到位的长期方案应定为：
 
 ```text
-1. 先在 ../anp/rust 把 anp-mls real OpenMLS operations 抽成 library API。
+1. 先在 ../anp/anp/rust 把 anp-mls real OpenMLS operations 抽成 library API。
 2. im-core 通过 NativeAnpMlsProvider 直接调用 anp library。
 3. anp-mls binary 保留为 thin wrapper 和 compat fallback。
 4. MLS storage 统一进入 im-core local SQLite，但 OpenMLS private state 仍由 OpenMLS StorageProvider 管理。

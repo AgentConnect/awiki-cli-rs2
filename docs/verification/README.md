@@ -38,7 +38,7 @@ Rust CLI in the configured remote `awiki.info` environment. The first run used
 the current `.env` gates and produced 139 passed, 35 failed, 5 skipped, and 10
 errors; the errors were all hidden Group E2EE setup failures caused by
 `AWIKI_GROUP_E2EE_CONTRACT_TEST=1` plus a missing executable
-`/home/ecs-user/awiki-space/anp/rust/target/debug/anp-mls`. Attempts to build
+`/home/ecs-user/awiki-space/anp/anp/rust/target/debug/anp-mls`. Attempts to build
 that local `anp-mls` prerequisite were blocked before compilation by the
 configured USTC crates.io mirror returning SSL errors and HTTP 429 rate limits.
 Direct endpoint probes showed `https://awiki.info/user-service/health` was 200,
@@ -7341,7 +7341,7 @@ System-test configuration context:
 - `PYTHONDONTWRITEBYTECODE=1`.
 - The selector requires hidden P6/group-E2EE APIs to be explicitly enabled and
   uses the local sibling ANP Rust SDK `anp-mls` binary path or builds it from
-  `/home/ecs-user/awiki-space/anp/rust`.
+  `/home/ecs-user/awiki-space/anp/anp/rust`.
 
 Coverage boundary:
 
@@ -7408,7 +7408,7 @@ System-test configuration context:
 - `PYTHONDONTWRITEBYTECODE=1`.
 - The selector requires hidden P6/group-E2EE APIs to be explicitly enabled and
   uses the local sibling ANP Rust SDK `anp-mls` binary path or builds it from
-  `/home/ecs-user/awiki-space/anp/rust`.
+  `/home/ecs-user/awiki-space/anp/anp/rust`.
 
 Coverage boundary:
 
@@ -7850,7 +7850,7 @@ user-service calls, message-service calls, mail behavior, listener behavior, or
 service-manager behavior.
 
 Dependency note: no Rust dependency was added. The exercised path uses the
-existing local `../anp/rust` key compatibility API and identity store code.
+existing local `../anp/anp/rust` key compatibility API and identity store code.
 
 ## 2026-05-17 Identity ANP Service System Selector
 
@@ -7933,7 +7933,7 @@ profile calls, message-service discovery, PEM compatibility conversion, or new
 ANP SDK feature work.
 
 Dependency note: no Rust dependency was added. The exercised path uses the
-existing local `../anp/rust` SDK facade and identity store code.
+existing local `../anp/anp/rust` SDK facade and identity store code.
 
 ## 2026-05-17 OpenClaw Route Webhook System Selector
 
@@ -9209,7 +9209,7 @@ Observed results:
 Timestamp: 2026-05-17T10:29:46+0800.
 
 Scope: continue Go `internal/anpsdk/registry.go` parity by exposing the
-transport-free PascalCase registry facade names over the local `../anp/rust`
+transport-free PascalCase registry facade names over the local `../anp/anp/rust`
 SDK and the existing CLI-side direct-E2EE file stores.
 
 What changed:
@@ -12261,7 +12261,7 @@ Parallelism note: a read-only Native Agent reviewed this slice for Go/Rust
 boundary drift. No code-writing Native Agent changed code for this slice.
 
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
-unchanged. This slice reuses the existing local `../anp/rust` key material APIs
+unchanged. This slice reuses the existing local `../anp/anp/rust` key material APIs
 through the CLI facade and the existing CLI-side file-store facades. It does
 not enable ANP SDK `network`/default features and does not add OpenSSL,
 `native-tls`, bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, async
@@ -16428,7 +16428,7 @@ not implement real service calls, HTTP/TLS transport, ANP SDK network/default
 features, or MLS provider execution.
 
 No dependency was added. Cargo manifests and lockfile were unchanged; this
-slice reuses the existing local `../anp/rust` SDK path with default features
+slice reuses the existing local `../anp/anp/rust` SDK path with default features
 disabled. TLS policy remains Rustls-first and unchanged.
 
 ## 2026-05-15 Identity Remote Wire Contract Slice
@@ -16724,7 +16724,7 @@ Status update: the later Authsdk Rustls HTTP Execution and Identity Refresh
 Token Live slices now cover `EnsureJWT`, live `id refresh-token`, and
 identity-store JWT persistence.
 
-No dependency was added. The code reuses the existing local `../anp/rust`
+No dependency was added. The code reuses the existing local `../anp/anp/rust`
 dependency with `default-features = false`; it does not enable ANP `network`,
 add `reqwest`, `hyper`, WebSocket crates, OpenSSL, `native-tls`, or bundled
 OpenSSL. TLS policy remains Rustls-first and unchanged.
@@ -19633,7 +19633,7 @@ Scope:
   covered-component normalization, and returned challenge headers remain
   auth-only like Go.
 - Added no-network tests that generate real local DID documents and private
-  keys through `../anp/rust`, proving `Signature-Input`, `Signature`,
+  keys through `../anp/anp/rust`, proving `Signature-Input`, `Signature`,
   `Content-Digest`, key id, bearer cache reuse, force-new signing, and server
   nonce reuse without selecting an HTTP client.
 
@@ -20035,7 +20035,7 @@ transport, or full awiki-system-test service acceptance. Those remain in later
 service/client slices now that the shared auth transport is available.
 
 No dependency was added. Cargo manifests and lockfile were unchanged. This slice
-uses existing local `../anp/rust` APIs with default features disabled and the
+uses existing local `../anp/anp/rust` APIs with default features disabled and the
 existing Rustls/std transport client. It does not add `reqwest`, `hyper`,
 OpenSSL, `native-tls`, bundled OpenSSL, WebSocket crates, YAML crates, platform
 service libraries, or new SQLite dependencies.
@@ -20174,7 +20174,7 @@ Status: locally verified.
 Local Rust and Go reference verification:
 
 ```bash
-cd ../anp/rust
+cd ../anp/anp/rust
 cargo +1.79.0 fmt --check
 cargo +1.79.0 test --locked --no-default-features --test key_pem_tests
 cd ../../awiki-cli-rs2
@@ -20193,7 +20193,7 @@ go test ./internal/identity -run 'TestManagerLoadMigratesLegacyANPPrivateKeysToP
 Result: passed after final verification.
 
 Additional ANP SDK note: the code-writing Native Agent also attempted
-`cargo +1.79.0 test --manifest-path anp/rust/Cargo.toml --test key_pem_tests`
+`cargo +1.79.0 test --manifest-path ../anp/anp/rust/Cargo.toml --test key_pem_tests`
 with default features. That broader SDK command was blocked before compilation
 by a registry mirror TLS download failure for `zerovec-derive 0.10.3`; the
 required no-default-features key PEM test above passed locally and keeps the CLI
@@ -20278,7 +20278,7 @@ message-service E2EE adapter remains tracked under the secure client rows, not
 as a simple registry alias.
 
 Dependency note: no dependency was added. Cargo manifests and lockfile remain
-unchanged. The slice reuses the local `../anp/rust` path dependency with
+unchanged. The slice reuses the local `../anp/anp/rust` path dependency with
 default features disabled and does not introduce OpenSSL, `native-tls`,
 bundled OpenSSL, `reqwest`, `hyper`, WebSocket crates, YAML crates, platform
 service libraries, or a new SQLite backend.
@@ -20300,7 +20300,7 @@ cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/message -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSecureInitCreatesPendingSession' -count=1
-cd ../anp/golang && go test ./direct_e2ee -run 'TestClientSendAndPendingHistoryProcessing|TestClientFallsBackToSignedPrekeyWhenOPKUnavailable' -count=1
+cd ../anp/anp/golang && go test ./direct_e2ee -run 'TestClientSendAndPendingHistoryProcessing|TestClientFallsBackToSignedPrekeyWhenOPKUnavailable' -count=1
 ```
 
 Result: passed after final verification. Focused Rust test counts:
@@ -20364,7 +20364,7 @@ cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
-cd ../anp/golang && go test ./direct_e2ee -run 'TestClientSendAndPendingHistoryProcessing|TestJSONRoundTripForPendingResult|TestSessionInitAndFollowUpRoundTrip|TestSkippedMessageKeySurvivesFailedAuthentication|TestClientFallsBackToSignedPrekeyWhenOPKUnavailable|TestDirectInitBodyOmitsAbsentOPKAndLegacyStaticField|TestSharedP5Vectors|TestSharedP5VectorAADDoesNotContainApplicationContentType' -count=1
+cd ../anp/anp/golang && go test ./direct_e2ee -run 'TestClientSendAndPendingHistoryProcessing|TestJSONRoundTripForPendingResult|TestSessionInitAndFollowUpRoundTrip|TestSkippedMessageKeySurvivesFailedAuthentication|TestClientFallsBackToSignedPrekeyWhenOPKUnavailable|TestDirectInitBodyOmitsAbsentOPKAndLegacyStaticField|TestSharedP5Vectors|TestSharedP5VectorAADDoesNotContainApplicationContentType' -count=1
 ```
 
 Result: passed. Focused Rust test counts: `message_secure_client_contract`
@@ -20406,7 +20406,7 @@ listener real `ProcessIncoming` wiring, network/local secure ACK delivery,
 `SecureInit`, `SecureRepair`, and awiki-system-test secure-direct acceptance
 remain deferred parity slices.
 
-Dependency note: no dependency was added. The slice reuses local `../anp/rust`
+Dependency note: no dependency was added. The slice reuses local `../anp/anp/rust`
 direct-E2EE session primitives and existing file-store facades. It does not add
 or enable HTTP/TLS, WebSocket, OpenSSL, `native-tls`, bundled OpenSSL, YAML,
 platform service libraries, or a new SQLite path. TLS remains Rustls-first for

@@ -104,7 +104,7 @@ Full Android builds require `cargo-ndk`. Full Apple builds must run on macOS wit
 
 ## Common local errors
 
-- Missing `../anp/rust` sibling checkout: this workspace depends on a sibling ANP Rust crate.
+- Missing `../anp/anp/rust` sibling checkout: this workspace depends on a sibling ANP Rust crate.
 - Missing `cargo-ndk`: required for full Android native library builds.
 - iOS symbols not found: verify the podspec vendored XCFramework path and `-force_load` slice path.
 - FRB generated files stale: run `scripts/flutter/codegen-check.sh`.

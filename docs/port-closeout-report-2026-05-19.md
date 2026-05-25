@@ -14,7 +14,7 @@ results, and the intermediate evidence documents produced during development.
 | Rust target | `/home/ecs-user/awiki-space/awiki-cli-rs2` | `main` | `74e835a Record site write live boundary acceptance` | Clean and pushed to `origin/main` |
 | System tests | `/home/ecs-user/awiki-space/awiki-system-test` | `feature/changshan/group-e2ee` | `5fa1245 Prove site write non-admin RPC boundary` | Pushed; two pre-existing helper files remain dirty |
 | Go reference | `/home/ecs-user/awiki-space/awiki-cli` | reference only | not changed by the final batch | Reference source |
-| ANP Rust SDK | `/home/ecs-user/awiki-space/anp/rust` | local SDK dependency | not changed by the final batch | Used by Rust port |
+| ANP Rust SDK | `/home/ecs-user/awiki-space/anp/anp/rust` | local SDK dependency | not changed by the final batch | Used by Rust port |
 
 Remaining dirty files in `awiki-system-test` after final push:
 

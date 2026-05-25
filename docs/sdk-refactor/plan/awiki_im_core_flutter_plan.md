@@ -2291,7 +2291,7 @@ DartImError -> awiki-me UI error state
 
 ### 6.3 anp sibling dependency
 
-`awiki-cli-rs2` 当前 workspace 依赖 sibling path `../anp/rust`。CI 和本地构建必须 checkout sibling `anp`。后续发布 Flutter SDK 时，应评估把 `anp` 改成 pinned git dependency 或 vendored submodule。
+`awiki-cli-rs2` 当前 workspace 依赖 sibling path `../anp/anp/rust`。CI 和本地构建必须 checkout sibling `anp`。后续发布 Flutter SDK 时，应评估把 `anp` 改成 pinned git dependency 或 vendored submodule。
 
 ### 6.4 flutter_rust_bridge 版本
 
