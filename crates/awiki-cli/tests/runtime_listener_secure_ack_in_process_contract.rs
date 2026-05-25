@@ -1,4 +1,4 @@
-use awiki_cli::identity::types::StoredIdentity;
+use awiki_cli::legacy_identity::types::StoredIdentity;
 use awiki_cli::runtime_legacy::listener_secure_ack_in_process::{
     deliver_local_secure_ack_in_process_plan, ActiveRecipientSessionOutcome,
     EncryptFollowUpOutcome, LocalSecureAckInProcessAction, LocalSecureAckInProcessDecision,

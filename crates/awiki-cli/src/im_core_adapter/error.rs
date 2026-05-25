@@ -123,9 +123,11 @@ pub fn map_identity_boundary_error(err: ExitError) -> ExitError {
     if err.detail.code == "identity_required"
         && err.detail.message.contains("default identity is missing")
     {
-        return crate::app::identity_exit(crate::identity::IdentityError::NoDefaultIdentity(
-            "identity not found: no active identity is configured".to_string(),
-        ));
+        return crate::app::identity_exit(
+            crate::legacy_identity::IdentityError::NoDefaultIdentity(
+                "identity not found: no active identity is configured".to_string(),
+            ),
+        );
     }
     err
 }

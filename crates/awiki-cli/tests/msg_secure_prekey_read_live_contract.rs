@@ -1,5 +1,5 @@
 use awiki_cli::config::Paths;
-use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
+use awiki_cli::legacy_identity::{generate_identity, types::SaveInput, Manager};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -138,7 +138,7 @@ fn register_generated_msg_identity(
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) -> awiki_cli::identity::types::StoredIdentity {
+) -> awiki_cli::legacy_identity::types::StoredIdentity {
     let generated = generate_identity(
         "awiki.ai",
         "https://awiki.ai/anp-im/rpc",

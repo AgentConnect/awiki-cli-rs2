@@ -1,5 +1,5 @@
-use awiki_cli::identity::generate_identity;
-use awiki_cli::identity::types::{GeneratedIdentity, StoredIdentity};
+use awiki_cli::legacy_identity::generate_identity;
+use awiki_cli::legacy_identity::types::{GeneratedIdentity, StoredIdentity};
 use awiki_cli::runtime::bridge::BridgeRequest;
 use awiki_cli::runtime::listener_bridge_connection::{
     execute_listener_bridge_request, handle_listener_bridge_connection_once, ListenerBridgeRuntime,

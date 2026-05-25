@@ -1,4 +1,4 @@
-use crate::identity::types::StoredIdentity;
+use crate::legacy_identity::types::StoredIdentity;
 
 #[derive(Debug, Clone, Default)]
 pub struct ListenerSessionMethods {

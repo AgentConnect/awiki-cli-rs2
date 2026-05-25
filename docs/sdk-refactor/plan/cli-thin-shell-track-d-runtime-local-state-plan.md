@@ -2,6 +2,7 @@
 
 **并行分支**：`cutover/thin-shell-track-d-runtime-local-state`  
 **依赖**：可直接开始；最终删除 shared store/module 需等 Final。  
+**详细边界图**：`docs/sdk-refactor/plan/cli-thin-shell-track-d-runtime-boundary-map.md`  
 **目标**：让 `runtime listener run/service-run` 只宿主 `im-core` realtime runner；IM notification classify、message/group/contact projection、secure ack/outbox/replay 等底层逻辑归 `im-core`。`awiki-cli` runtime 只保留 service manager、pid/log/socket、shutdown、host notify delivery。
 
 ---
@@ -261,4 +262,3 @@ cargo test -p awiki-cli --test runtime_listener_contract
 4. CLI store 在默认 runtime path 中断引用。
 5. Final 可以安全删除 store 普通 IM projection wrapper 和旧 runtime listener internals。
 ```
-

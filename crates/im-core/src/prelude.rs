@@ -29,8 +29,8 @@ pub use crate::groups::{
     GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit, GroupMemberMutationRequest,
     GroupMemberRef, GroupMemberResolution, GroupMemberRole, GroupMembersRequest,
     GroupMessageSecurityProfile, GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch,
-    GroupSecurityRequirement, GroupService, GroupSnapshot, GroupSummary,
-    GroupUpdatePolicyRequest, GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
+    GroupSecurityRequirement, GroupService, GroupSnapshot, GroupSummary, GroupUpdatePolicyRequest,
+    GroupUpdateProfileRequest, GroupUpdateRequest, GroupUpdateResult,
 };
 pub use crate::identity::{
     ContactBindingMethod, ContactBindingRequest, ContactBindingState, DefaultIdentityChange,

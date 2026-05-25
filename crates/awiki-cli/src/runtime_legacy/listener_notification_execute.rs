@@ -6,7 +6,7 @@ use super::listener_notification_plan::{
     handle_notification_plan, NotificationRoute, NotificationSessionContext,
     NotificationSideEffect, SecureNotificationEffect, SecureNotificationNormalization,
 };
-use crate::store::{store_message, upsert_group, upsert_group_member};
+use crate::legacy_store::{store_message, upsert_group, upsert_group_member};
 use rusqlite::Connection;
 use serde_json::Value;
 use time::OffsetDateTime;

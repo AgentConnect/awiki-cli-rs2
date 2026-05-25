@@ -13,7 +13,6 @@ use serde_json::{json, Value};
 
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
-use crate::im_core_adapter::active_identity;
 use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError, ServiceError};
 use crate::output::ExitError;
 
@@ -175,11 +174,10 @@ pub fn history_request(
 
 pub fn send_text_via_im_core(
     _resolved: &Resolved,
-    _manager: &crate::identity::Manager,
-    _identity_name: &str,
     client: &im_core::ImClient,
     request: SendMessageRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
     let mut rpc_phase = crate::traceutil::rpc_phase(sdk_send_trace_operation(&request));
     let secure = matches!(
         request.security,
@@ -210,6 +208,7 @@ pub fn send_attachment_via_im_core(
     target: MessageTarget,
     request: AttachmentSendRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
     let result = client
         .attachments()
         .send(target, request)
@@ -233,6 +232,7 @@ pub fn download_attachment_via_im_core(
     client: &im_core::ImClient,
     request: DownloadAttachmentRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
     prepare_download_destination(&request)?;
     let thread = request.thread.clone();
     let downloaded = client
@@ -270,6 +270,20 @@ pub fn download_attachment_via_im_core(
         summary: format!("Downloaded attachment to {output_path_string}"),
         warnings: compact_warnings(warnings),
     })
+}
+
+fn require_messaging_ready(client: &im_core::ImClient) -> Result<(), MessageAdapterError> {
+    let identity = client.current_identity();
+    if identity.readiness.ready_for_messaging {
+        return Ok(());
+    }
+    let identity_name = identity
+        .local_alias
+        .as_deref()
+        .unwrap_or_else(|| identity.id.as_str());
+    Err(MessageAdapterError::IdentityRequired(format!(
+        "identity {identity_name} requires user registration before messaging"
+    )))
 }
 
 fn prepare_download_destination(
@@ -313,13 +327,11 @@ fn download_target_value(thread: &ThreadRef, selection: Option<&AttachmentSelect
 }
 
 pub fn read_inbox_via_im_core(
-    resolved: &Resolved,
-    manager: &crate::identity::Manager,
+    _resolved: &Resolved,
     client: &im_core::ImClient,
-    identity_name: &str,
     query: InboxQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
+    require_messaging_ready(client)?;
     let mut rpc_phase = crate::traceutil::rpc_phase("inbox.get");
     let page = client
         .messages()
@@ -356,19 +368,13 @@ pub fn read_inbox_via_im_core(
 
 pub fn read_history_via_im_core(
     resolved: &Resolved,
-    manager: &crate::identity::Manager,
     client: &im_core::ImClient,
-    identity_name: &str,
     thread: ThreadRef,
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     match thread {
-        ThreadRef::Direct(peer) => {
-            read_direct_history_via_im_core(resolved, manager, client, identity_name, peer, query)
-        }
-        ThreadRef::Group(group) => {
-            read_group_history_via_im_core(resolved, manager, client, identity_name, group, query)
-        }
+        ThreadRef::Direct(peer) => read_direct_history_via_im_core(resolved, client, peer, query),
+        ThreadRef::Group(group) => read_group_history_via_im_core(resolved, client, group, query),
         ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread history is not supported by the CLI renderer".to_string(),
         )),
@@ -376,14 +382,12 @@ pub fn read_history_via_im_core(
 }
 
 fn read_direct_history_via_im_core(
-    resolved: &Resolved,
-    manager: &crate::identity::Manager,
+    _resolved: &Resolved,
     client: &im_core::ImClient,
-    identity_name: &str,
     peer: PeerRef,
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
+    require_messaging_ready(client)?;
     let target_is_handle = !peer.as_str().trim().starts_with("did:");
     let page = client
         .messages()
@@ -409,14 +413,12 @@ fn read_direct_history_via_im_core(
 }
 
 fn read_group_history_via_im_core(
-    resolved: &Resolved,
-    manager: &crate::identity::Manager,
+    _resolved: &Resolved,
     client: &im_core::ImClient,
-    identity_name: &str,
     group: GroupRef,
     query: HistoryQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
+    require_messaging_ready(client)?;
     let page = client
         .messages()
         .history_with_metadata(ThreadRef::Group(group.clone()), query.clone())
@@ -439,11 +441,10 @@ fn read_group_history_via_im_core(
 
 pub fn mark_read_via_im_core(
     _resolved: &Resolved,
-    _manager: &crate::identity::Manager,
     client: &im_core::ImClient,
-    _identity_name: &str,
     message_ids: Vec<String>,
 ) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
     if message_ids.is_empty() {
         return Err(MessageAdapterError::MessageNotFound);
     }
@@ -473,6 +474,7 @@ pub fn direct_secure_status_via_im_core(
     peer: String,
     default_domain: &str,
 ) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
     let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
     let status = client
         .secure()
@@ -494,6 +496,7 @@ pub fn direct_secure_repair_via_im_core(
     peer: String,
     default_domain: &str,
 ) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
     let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
     let repair = client
         .secure()

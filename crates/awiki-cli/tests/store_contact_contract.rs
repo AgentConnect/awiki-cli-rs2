@@ -1,4 +1,4 @@
-use awiki_cli::store::{self, ContactRecord, MessageRecord, StoreResult};
+use awiki_cli::legacy_store::{self as store, ContactRecord, MessageRecord, StoreResult};
 use rusqlite::Connection;
 
 #[test]

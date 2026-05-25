@@ -4,10 +4,11 @@ pub mod handle_input;
 pub mod key_compat;
 pub mod layout;
 pub mod legacy;
+#[doc(hidden)]
+pub mod legacy_store;
 pub mod recover;
 pub mod replace_did;
 pub mod service;
-pub mod store;
 pub mod types;
 pub mod wire;
 
@@ -22,6 +23,7 @@ pub use handle_input::{
 };
 pub use key_compat::ensure_key1_private_pem_compatible;
 pub use layout::Manager;
+pub use legacy_store::choose_default_identity_name;
 pub use recover::{
     finalize_recovered_handle, recover_identity_ignored_warning, recover_preview,
     RecoverFinalizeError, RecoverFinalizeRequest, RecoverPlan,
@@ -34,7 +36,6 @@ pub use service::{
     sanitize_public_value, set_profile, status as identity_status, switch_default_identity,
     use_plan, CommandResult, GetProfileParams, ResolveParams, SetProfileParams,
 };
-pub use store::choose_default_identity_name;
 pub use types::{
     BindParams, IdentityError, IdentitySummary, LegacyScan, RecoverParams, RegisterParams,
     ReplaceDidParams, UserState,

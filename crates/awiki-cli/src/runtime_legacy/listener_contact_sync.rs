@@ -1,4 +1,4 @@
-use crate::store::{self, ContactRecord};
+use crate::legacy_store::{self as store, ContactRecord};
 
 pub type IncomingContactLookup<'a> = &'a mut dyn FnMut(&str) -> anyhow::Result<Option<String>>;
 
@@ -64,7 +64,7 @@ pub fn normalize_listener_handle(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ContactRecord, StoreResult};
+    use crate::legacy_store::{ContactRecord, StoreResult};
     use rusqlite::Connection;
     use serde_json::Value;
     use time::format_description::well_known::Rfc3339;

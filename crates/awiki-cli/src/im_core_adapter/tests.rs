@@ -204,33 +204,35 @@ fn replace_did_plan_command_request_builds_sdk_plan_request() {
         env_hits: Vec::new(),
         sources: BTreeMap::new(),
     };
-    let manager = crate::identity::Manager::new(paths);
-    let generated = crate::identity::generate_identity(
-        "awiki.test",
-        "https://example.test/agent",
-        "did:wba:example.test",
-    )
-    .expect("generate identity fixture");
     let generated_did = "did:wba:awiki.test:alice:e1_old".to_string();
-    manager
-        .save(crate::identity::types::SaveInput {
-            identity_name: "alice".to_string(),
-            did: generated_did.clone(),
-            unique_id: "e1_old".to_string(),
-            display_name: "Alice".to_string(),
-            handle: "alice".to_string(),
-            full_handle: "alice.awiki.test".to_string(),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            ..Default::default()
+    std::fs::create_dir_all(&resolved.paths.identity_dir).expect("identity dir");
+    std::fs::write(
+        std::path::Path::new(&resolved.paths.identity_dir).join("index.json"),
+        serde_json::json!({
+            "default_identity": "alice",
+            "identities": [{
+                "id": "e1_old",
+                "did": generated_did,
+                "dir_name": "alice",
+                "handle": "alice.awiki.test",
+                "display_name": "Alice",
+                "local_alias": "alice",
+                "is_default": true,
+                "ready_for_auth": true,
+                "ready_for_messaging": true,
+                "missing": [],
+            }]
         })
-        .expect("save identity");
+        .to_string(),
+    )
+    .expect("write identity registry");
+    std::fs::write(
+        std::path::Path::new(&resolved.paths.identity_dir).join("default"),
+        "alice\n",
+    )
+    .expect("write default identity");
     let request = identity::replace_did_plan_command_request(
         &resolved,
-        &manager,
         "alice",
         Some(false),
         Some(true),

@@ -240,10 +240,11 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
 }
 
 fn command_name(tokens: &[String]) -> Result<cmdmeta::ResolvedCommand, ExitError> {
-    for token in tokens
+    if let Some(token) = tokens
         .iter()
         .take_while(|token| !token.starts_with("--"))
         .filter(|token| is_unknown_shorthand_flag(token))
+        .next()
     {
         return Err(unknown_shorthand_flag(token));
     }

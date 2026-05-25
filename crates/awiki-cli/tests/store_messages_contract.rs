@@ -1,4 +1,4 @@
-use awiki_cli::store::{self, MessageRecord, StoreError, StoreResult};
+use awiki_cli::legacy_store::{self as store, MessageRecord, StoreError, StoreResult};
 use rusqlite::Connection;
 use serde_json::Value;
 

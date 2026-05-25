@@ -1,4 +1,4 @@
-use crate::identity::types::StoredIdentity;
+use crate::legacy_identity::types::StoredIdentity;
 use crate::runtime::bridge::BridgeRequest;
 use im_core::realtime::wire::{
     self, BridgeWireIdentity, GroupCreateWireRequest, HistoryWireRequest, InboxWireRequest,

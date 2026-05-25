@@ -1,10 +1,10 @@
 use super::client::Client;
 use super::did::{generate_identity, generate_identity_with_path_segments};
 use super::handle_input::normalize_handle_input;
-use super::recover::{build_recover_plan, recover_active_before, RecoverBackupRequest};
-use super::store::{
+use super::legacy_store::{
     choose_default_identity_name, choose_named_identity, identity_summary_from_record,
 };
+use super::recover::{build_recover_plan, recover_active_before, RecoverBackupRequest};
 use super::types::{
     BindParams, IdentityError, RecoverParams, RegisterParams, SaveInput, LEGACY_LAYOUT_HINT,
 };

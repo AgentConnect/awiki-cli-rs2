@@ -185,43 +185,43 @@ impl std::error::Error for ServiceError {}
 impl std::error::Error for IdentityError {}
 impl std::error::Error for MessageAdapterError {}
 
-impl From<crate::identity::IdentityError> for IdentityError {
-    fn from(value: crate::identity::IdentityError) -> Self {
+impl From<crate::legacy_identity::IdentityError> for IdentityError {
+    fn from(value: crate::legacy_identity::IdentityError) -> Self {
         match value {
-            crate::identity::IdentityError::InvalidInput(message) => Self {
+            crate::legacy_identity::IdentityError::InvalidInput(message) => Self {
                 kind: IdentityErrorKind::InvalidInput,
                 message,
             },
-            crate::identity::IdentityError::NotFound(message)
-            | crate::identity::IdentityError::LegacyNotFound(message)
-            | crate::identity::IdentityError::NoDefaultIdentity(message) => Self {
+            crate::legacy_identity::IdentityError::NotFound(message)
+            | crate::legacy_identity::IdentityError::LegacyNotFound(message)
+            | crate::legacy_identity::IdentityError::NoDefaultIdentity(message) => Self {
                 kind: IdentityErrorKind::NotFound,
                 message,
             },
-            crate::identity::IdentityError::Conflict(message) => Self {
+            crate::legacy_identity::IdentityError::Conflict(message) => Self {
                 kind: IdentityErrorKind::Conflict,
                 message,
             },
-            crate::identity::IdentityError::AuthRequired(message) => Self {
+            crate::legacy_identity::IdentityError::AuthRequired(message) => Self {
                 kind: IdentityErrorKind::AuthRequired,
                 message,
             },
-            crate::identity::IdentityError::Service(error) => {
+            crate::legacy_identity::IdentityError::Service(error) => {
                 let message = error.to_string();
                 Self {
                     kind: identity_service_error_kind(error.status_code, error.rpc_code),
                     message,
                 }
             }
-            crate::identity::IdentityError::Io(error) => Self {
+            crate::legacy_identity::IdentityError::Io(error) => Self {
                 kind: IdentityErrorKind::Internal,
                 message: error.to_string(),
             },
-            crate::identity::IdentityError::Json(error) => Self {
+            crate::legacy_identity::IdentityError::Json(error) => Self {
                 kind: IdentityErrorKind::Internal,
                 message: error.to_string(),
             },
-            crate::identity::IdentityError::Internal(message) => Self {
+            crate::legacy_identity::IdentityError::Internal(message) => Self {
                 kind: IdentityErrorKind::Internal,
                 message,
             },

@@ -2,12 +2,12 @@ use super::records::{
     ContactHandleBindingRecord, ContactRecord, GroupMemberRecord, GroupRecord, MessageRecord,
     RelationshipEventRecord,
 };
-use crate::store::helpers::{
+use crate::legacy_store::helpers::{
     bool_to_int, default_bool_value, default_string, normalize_credential_name, normalize_metadata,
     normalize_optional_bool, normalize_optional_float64, normalize_optional_int64,
     normalize_optional_string, normalize_owner_did, now_utc,
 };
-use crate::store::StoreResult;
+use crate::legacy_store::StoreResult;
 use rusqlite::types::ValueRef;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};

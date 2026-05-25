@@ -1,4 +1,6 @@
-use awiki_cli::{config, identity, store, upgrade};
+use awiki_cli::legacy_identity as identity;
+use awiki_cli::legacy_store as store;
+use awiki_cli::{config, upgrade};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -484,7 +486,7 @@ fn workspace_v0_to_v1_legacy_imports_identity_and_sqlite_when_no_workspace() {
 
     assert_eq!(imported.imported.len(), 1);
     assert_eq!(imported.imported[0].identity_name, "legacy");
-    let manager = awiki_cli::identity::Manager::new(resolved.paths.clone());
+    let manager = awiki_cli::legacy_identity::Manager::new(resolved.paths.clone());
     let identities = manager.list().expect("list imported identities");
     assert_eq!(identities.len(), 1);
     assert_eq!(identities[0].did, "did:wba:example.test:user:e1_legacy");

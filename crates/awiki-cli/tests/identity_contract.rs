@@ -6,72 +6,77 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[test]
 fn identity_anp_service_helpers_match_go_contract() {
     assert_eq!(
-        awiki_cli::identity::default_anp_service_endpoint(" awiki.ai "),
+        awiki_cli::legacy_identity::default_anp_service_endpoint(" awiki.ai "),
         "https://awiki.ai/anp-im/rpc"
     );
     assert_eq!(
-        awiki_cli::identity::default_anp_service_did(" awiki.ai "),
+        awiki_cli::legacy_identity::default_anp_service_did(" awiki.ai "),
         "did:wba:awiki.ai"
     );
 
-    awiki_cli::identity::did::validate_anp_service_endpoint("https://awiki.ai/anp-im/rpc")
+    awiki_cli::legacy_identity::did::validate_anp_service_endpoint("https://awiki.ai/anp-im/rpc")
         .expect("https endpoint");
-    awiki_cli::identity::did::validate_anp_service_endpoint("http://api.example/rpc")
+    awiki_cli::legacy_identity::did::validate_anp_service_endpoint("http://api.example/rpc")
         .expect("http endpoint");
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_endpoint(" ").expect_err("missing endpoint"),
+        awiki_cli::legacy_identity::did::validate_anp_service_endpoint(" ")
+            .expect_err("missing endpoint"),
         "invalid input: anp_service_endpoint is required",
     );
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_endpoint("ftp://awiki.ai/rpc")
+        awiki_cli::legacy_identity::did::validate_anp_service_endpoint("ftp://awiki.ai/rpc")
             .expect_err("bad scheme"),
         "invalid input: anp_service_endpoint must use http or https",
     );
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_endpoint("https:///rpc")
+        awiki_cli::legacy_identity::did::validate_anp_service_endpoint("https:///rpc")
             .expect_err("missing hostname"),
         "invalid input: anp_service_endpoint must include a hostname",
     );
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_endpoint("https://localhost/anp-im/rpc")
-            .expect_err("localhost"),
+        awiki_cli::legacy_identity::did::validate_anp_service_endpoint(
+            "https://localhost/anp-im/rpc",
+        )
+        .expect_err("localhost"),
         "invalid input: anp_service_endpoint must not use localhost",
     );
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_endpoint("http://127.0.0.1:9898/rpc")
+        awiki_cli::legacy_identity::did::validate_anp_service_endpoint("http://127.0.0.1:9898/rpc")
             .expect_err("loopback"),
         "invalid input: anp_service_endpoint must not use a loopback address",
     );
 
-    awiki_cli::identity::did::validate_anp_service_did("did:wba:awiki.ai")
+    awiki_cli::legacy_identity::did::validate_anp_service_did("did:wba:awiki.ai")
         .expect("bare service did");
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_did(" ").expect_err("missing service did"),
+        awiki_cli::legacy_identity::did::validate_anp_service_did(" ")
+            .expect_err("missing service did"),
         "invalid input: anp_service_did is required",
     );
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_did("did:key:z6Mkwrong")
+        awiki_cli::legacy_identity::did::validate_anp_service_did("did:key:z6Mkwrong")
             .expect_err("wrong did method"),
         "invalid input: anp_service_did must use did:wba",
     );
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_did("did:wba:awiki.ai#message")
+        awiki_cli::legacy_identity::did::validate_anp_service_did("did:wba:awiki.ai#message")
             .expect_err("fragment"),
         "invalid input: anp_service_did must not include a fragment",
     );
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_did("did:wba:").expect_err("missing domain"),
+        awiki_cli::legacy_identity::did::validate_anp_service_did("did:wba:")
+            .expect_err("missing domain"),
         "invalid input: anp_service_did must include a domain",
     );
     assert_error_contains(
-        awiki_cli::identity::did::validate_anp_service_did(
+        awiki_cli::legacy_identity::did::validate_anp_service_did(
             "did:wba:awiki.ai:services:message:e1_local",
         )
         .expect_err("non-bare service did"),
         "invalid input: anp_service_did must be a bare-domain did:wba DID",
     );
 
-    let service = awiki_cli::identity::did::build_agent_anp_message_service(
+    let service = awiki_cli::legacy_identity::did::build_agent_anp_message_service(
         " https://awiki.ai/anp-im/rpc ",
         " did:wba:awiki.ai ",
     )
@@ -95,69 +100,80 @@ fn identity_anp_service_helpers_match_go_contract() {
 
 #[test]
 fn identity_handle_input_helpers_match_go_contract() {
-    let bare = awiki_cli::identity::normalize_handle_input("Alice", "Tenant.Example.")
+    let bare = awiki_cli::legacy_identity::normalize_handle_input("Alice", "Tenant.Example.")
         .expect("normalize bare handle");
     assert_eq!(bare.local_part, "alice");
     assert_eq!(bare.full_handle, "alice.tenant.example");
     assert_eq!(bare.effective_domain, "tenant.example");
     assert!(!bare.explicit_domain);
 
-    let full = awiki_cli::identity::normalize_handle_input("Alice.Other.Example", "tenant.example")
-        .expect("normalize full handle");
+    let full =
+        awiki_cli::legacy_identity::normalize_handle_input("Alice.Other.Example", "tenant.example")
+            .expect("normalize full handle");
     assert_eq!(full.local_part, "alice");
     assert_eq!(full.full_handle, "alice.other.example");
     assert_eq!(full.effective_domain, "other.example");
     assert!(full.explicit_domain);
 
-    let wba =
-        awiki_cli::identity::normalize_handle_input("wba://Alice.Other.Example", "tenant.example")
-            .expect("normalize wba handle");
+    let wba = awiki_cli::legacy_identity::normalize_handle_input(
+        "wba://Alice.Other.Example",
+        "tenant.example",
+    )
+    .expect("normalize wba handle");
     assert_eq!(wba.full_handle, "alice.other.example");
     assert!(wba.explicit_domain);
 
-    let did_error =
-        awiki_cli::identity::normalize_handle_input("did:wba:tenant.example:user:alice:e1", "")
-            .expect_err("did input must be rejected");
+    let did_error = awiki_cli::legacy_identity::normalize_handle_input(
+        "did:wba:tenant.example:user:alice:e1",
+        "",
+    )
+    .expect_err("did input must be rejected");
     assert!(did_error
         .to_string()
         .contains("did values are not supported in handle input"));
     assert_eq!(
-        awiki_cli::identity::complete_bare_handle("Alice", "Tenant.Example."),
+        awiki_cli::legacy_identity::complete_bare_handle("Alice", "Tenant.Example."),
         "alice.tenant.example"
     );
     assert_eq!(
-        awiki_cli::identity::complete_bare_handle("alice.other.example", "tenant.example"),
+        awiki_cli::legacy_identity::complete_bare_handle("alice.other.example", "tenant.example"),
         "alice.other.example"
     );
     assert_eq!(
-        awiki_cli::identity::complete_bare_handle(" Alice.Other.Example ", "tenant.example"),
+        awiki_cli::legacy_identity::complete_bare_handle(" Alice.Other.Example ", "tenant.example"),
         "Alice.Other.Example"
     );
     assert_eq!(
-        awiki_cli::identity::complete_bare_handle("wba://Alice", "tenant.example"),
+        awiki_cli::legacy_identity::complete_bare_handle("wba://Alice", "tenant.example"),
         "alice.tenant.example"
     );
     assert_eq!(
-        awiki_cli::identity::complete_bare_handle("wba://Alice.Other.Example", "tenant.example"),
+        awiki_cli::legacy_identity::complete_bare_handle(
+            "wba://Alice.Other.Example",
+            "tenant.example"
+        ),
         "wba://Alice.Other.Example"
     );
     assert_eq!(
-        awiki_cli::identity::complete_bare_handle("Alice", ""),
+        awiki_cli::legacy_identity::complete_bare_handle("Alice", ""),
         "Alice"
     );
     assert_eq!(
-        awiki_cli::identity::complete_bare_handle("did:wba:tenant.example:user:alice:e1", "x"),
+        awiki_cli::legacy_identity::complete_bare_handle(
+            "did:wba:tenant.example:user:alice:e1",
+            "x"
+        ),
         "did:wba:tenant.example:user:alice:e1"
     );
     assert_eq!(
-        awiki_cli::identity::derive_full_handle_from_did(
+        awiki_cli::legacy_identity::derive_full_handle_from_did(
             "Alice",
             "did:wba:Tenant.Example:profile:e1_alice",
         ),
         "alice.tenant.example"
     );
     assert_eq!(
-        awiki_cli::identity::derive_full_handle_from_did(
+        awiki_cli::legacy_identity::derive_full_handle_from_did(
             "Alice",
             "did:wba:tenant.example:user:e1_alice",
         ),
@@ -170,7 +186,7 @@ fn identity_load_backfills_full_handle_from_handle_did_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
     let record = manager
-        .save(awiki_cli::identity::types::SaveInput {
+        .save(awiki_cli::legacy_identity::types::SaveInput {
             identity_name: "alice".to_string(),
             did: "did:wba:tenant.example:alice:e1_alice".to_string(),
             unique_id: "e1_alice".to_string(),
@@ -221,7 +237,7 @@ fn identity_load_does_not_backfill_full_handle_for_user_did_like_go() {
     let workspace = TempDir::new().expect("workspace");
     let manager = identity_manager(workspace.path());
     let record = manager
-        .save(awiki_cli::identity::types::SaveInput {
+        .save(awiki_cli::legacy_identity::types::SaveInput {
             identity_name: "alice".to_string(),
             did: "did:wba:tenant.example:user:e1_alice".to_string(),
             unique_id: "e1_alice".to_string(),
@@ -302,7 +318,7 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
         .collect();
     assert_eq!(names, ["alice", "bob"]);
     assert_eq!(list["data"]["default_identity"]["identity_name"], "bob");
-    assert!(list["data"]["legacy_scan"].is_object());
+    assert!(list["data"].get("legacy_scan").is_none());
 
     let status = success_json(&awiki_cmd(&["id", "status"], workspace.path()));
     assert_eq!(status["data"]["active_identity"]["identity_name"], "bob");
@@ -488,7 +504,7 @@ fn identity_use_migrates_legacy_config_json_before_switch_like_go() {
     std::fs::create_dir_all(&workspace_home).expect("create workspace home");
     let manager = identity_manager(&workspace_home);
     let alice = manager
-        .save(awiki_cli::identity::types::SaveInput {
+        .save(awiki_cli::legacy_identity::types::SaveInput {
             identity_name: "alice".to_string(),
             did: "did:wba:legacy-id-use.example:user:e1_alice".to_string(),
             unique_id: "e1_alice".to_string(),
@@ -497,7 +513,7 @@ fn identity_use_migrates_legacy_config_json_before_switch_like_go() {
         })
         .expect("save alice");
     let bob = manager
-        .save(awiki_cli::identity::types::SaveInput {
+        .save(awiki_cli::legacy_identity::types::SaveInput {
             identity_name: "bob".to_string(),
             did: "did:wba:legacy-id-use.example:user:e1_bob".to_string(),
             unique_id: "e1_bob".to_string(),
@@ -799,14 +815,14 @@ fn identity_dry_run_and_validation_contracts_match_go() {
         .unwrap()
         .contains("Danger"));
 
-    let generated = awiki_cli::identity::generate_identity(
+    let generated = awiki_cli::legacy_identity::generate_identity(
         "awiki.ai",
         "https://awiki.ai/anp-im/rpc",
         "did:wba:awiki.ai",
     )
     .expect("replace-did fixture identity");
     identity_manager(&workspace.path().join(".awiki-cli"))
-        .save(awiki_cli::identity::types::SaveInput {
+        .save(awiki_cli::legacy_identity::types::SaveInput {
             identity_name: "alice".to_string(),
             did: "did:wba:awiki.ai:alice:e1_alice".to_string(),
             unique_id: "e1_alice".to_string(),
@@ -955,7 +971,7 @@ fn identity_dry_run_and_validation_contracts_match_go() {
 fn identity_import_v1_flat_legacy_contract() {
     let workspace = TempDir::new().expect("workspace");
     let home = workspace.path().join("home");
-    let generated = awiki_cli::identity::generate_identity("example.test", "", "")
+    let generated = awiki_cli::legacy_identity::generate_identity("example.test", "", "")
         .expect("legacy fixture identity");
     let legacy = home
         .join(".openclaw")
@@ -1015,8 +1031,9 @@ fn identity_import_v1_migrates_legacy_config_json_before_import_like_go() {
     std::fs::write(&legacy_config, &legacy_text).expect("write legacy config");
 
     let home = workspace.path().join("home");
-    let generated = awiki_cli::identity::generate_identity("legacy-id-import.example", "", "")
-        .expect("legacy fixture identity");
+    let generated =
+        awiki_cli::legacy_identity::generate_identity("legacy-id-import.example", "", "")
+            .expect("legacy fixture identity");
     let legacy = home
         .join(".openclaw")
         .join("credentials")
@@ -1072,8 +1089,8 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
     awiki_cmd_with_home(args, workspace, workspace)
 }
 
-fn identity_manager(workspace: &Path) -> awiki_cli::identity::Manager {
-    awiki_cli::identity::Manager::new(awiki_cli::config::Paths {
+fn identity_manager(workspace: &Path) -> awiki_cli::legacy_identity::Manager {
+    awiki_cli::legacy_identity::Manager::new(awiki_cli::config::Paths {
         workspace_home_dir: path_string(workspace),
         root_dir: path_string(workspace),
         config_dir: path_string(&workspace.join("config")),
@@ -1217,7 +1234,7 @@ fn assert_code(output: &Output, code: i32) {
     );
 }
 
-fn assert_error_contains(error: awiki_cli::identity::IdentityError, needle: &str) {
+fn assert_error_contains(error: awiki_cli::legacy_identity::IdentityError, needle: &str) {
     let message = error.to_string();
     assert!(
         message.contains(needle),

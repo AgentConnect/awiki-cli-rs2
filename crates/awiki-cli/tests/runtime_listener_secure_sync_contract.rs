@@ -1,4 +1,4 @@
-use awiki_cli::identity::types::StoredIdentity;
+use awiki_cli::legacy_identity::types::StoredIdentity;
 use awiki_cli::runtime_legacy::listener_secure_replay::ReplayStoreLookup;
 use awiki_cli::runtime_legacy::listener_secure_sync::{
     sync_pending_confirmation_secure_history_plan, sync_unread_secure_direct_inbox_plan,

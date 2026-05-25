@@ -68,7 +68,7 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     let workspace_home = workspace.path().join(".awiki-cli");
     let manager = identity_manager(&workspace_home);
     manager
-        .save(awiki_cli::identity::types::SaveInput {
+        .save(awiki_cli::legacy_identity::types::SaveInput {
             identity_name: "alice".to_string(),
             did: "did:wba:awiki.ai:user:e1_alice".to_string(),
             unique_id: "e1_alice".to_string(),
@@ -77,7 +77,7 @@ fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
         })
         .expect("save alice");
     manager
-        .save(awiki_cli::identity::types::SaveInput {
+        .save(awiki_cli::legacy_identity::types::SaveInput {
             identity_name: "bob".to_string(),
             did: "did:wba:awiki.ai:user:e1_bob".to_string(),
             unique_id: "e1_bob".to_string(),
@@ -753,8 +753,8 @@ fn register_alice_response() -> &'static str {
     r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","message":"Registration successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#
 }
 
-fn identity_manager(workspace: &Path) -> awiki_cli::identity::Manager {
-    awiki_cli::identity::Manager::new(awiki_cli::config::Paths {
+fn identity_manager(workspace: &Path) -> awiki_cli::legacy_identity::Manager {
+    awiki_cli::legacy_identity::Manager::new(awiki_cli::config::Paths {
         workspace_home_dir: path_string(workspace),
         root_dir: path_string(workspace),
         config_dir: path_string(&workspace.join("config")),

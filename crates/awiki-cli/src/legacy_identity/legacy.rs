@@ -1,7 +1,7 @@
 use super::layout::{
     copy_dir, ensure_dir, file_exists, path_string, preferred_dir_name, read_json_value,
 };
-use super::store::copy_optional_legacy_e2ee_state;
+use super::legacy_store::copy_optional_legacy_e2ee_state;
 use super::types::{
     IdentityError, IdentitySummary, ImportResult, IndexEntry, LegacyFlatIdentity, LegacyScan,
     SaveInput, INDEX_FILE_NAME, LEGACY_E2EE_PREFIX, LEGACY_LAYOUT_HINT,
@@ -260,8 +260,8 @@ impl Manager {
             let dst = self.build_paths(&dir_name);
             copy_optional_legacy_e2ee_state(&e2ee_state_path, &dst.e2ee_state_path);
         }
-        let mut summary = super::store::identity_summary_from_record(&record);
-        summary.user_state = super::store::evaluate_identity_summary_user_state(&summary);
+        let mut summary = super::legacy_store::identity_summary_from_record(&record);
+        summary.user_state = super::legacy_store::evaluate_identity_summary_user_state(&summary);
         Ok(summary)
     }
 }

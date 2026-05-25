@@ -1,7 +1,7 @@
 use super::listener_secure_replay::{
     secure_pending_history_replay_candidates, secure_unread_replay_candidates, ReplayStoreLookup,
 };
-use crate::identity::types::StoredIdentity;
+use crate::legacy_identity::types::StoredIdentity;
 use im_core::realtime::wire::{self, HistoryWireRequest, InboxWireRequest, WireIdentity};
 use serde_json::Value;
 use std::time::Duration;

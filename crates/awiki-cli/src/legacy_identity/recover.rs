@@ -3,7 +3,7 @@ use super::layout::{
     copy_dir, ensure_dir, sanitize_component, sanitize_identity_name, write_secure_json,
     write_secure_text, Manager,
 };
-use super::store::choose_named_identity;
+use super::legacy_store::choose_named_identity;
 use super::types::{
     IdentityError, IdentitySummary, RecoverParams, StoredIdentity, LEGACY_BACKUP_DIR_NAME,
 };

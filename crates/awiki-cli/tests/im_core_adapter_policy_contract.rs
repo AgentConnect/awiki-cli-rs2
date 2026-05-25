@@ -99,8 +99,10 @@ fn runtime_listener_host_uses_public_realtime_runner_api() {
         );
     }
     assert!(
-        text.contains("im_core::realtime::run_realtime_transport_with_event_sink_until_shutdown"),
-        "runtime listener host should call the public realtime runner API outside compat"
+        text.contains(".realtime()")
+            && text.contains(".run_until_shutdown_with_event_sink(")
+            && text.contains("im_core_realtime_adapter::listener_realtime_options()"),
+        "runtime listener host should call the public realtime runner service API outside compat"
     );
 }
 

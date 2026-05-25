@@ -1,4 +1,4 @@
-use awiki_cli::identity::{
+use awiki_cli::legacy_identity::{
     generate_identity, types::GeneratedIdentity, types::IdentityError, types::IndexEntry,
     types::IndexPayload, types::SaveInput, Manager,
 };

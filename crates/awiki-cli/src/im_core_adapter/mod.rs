@@ -12,7 +12,6 @@
 //! - Delete remaining bridge exceptions during the default-path cutover and
 //!   cleanup slices: C2, C3, C4, C5, and C7.
 
-pub(crate) mod active_identity;
 pub mod auth;
 pub mod config;
 pub mod content;

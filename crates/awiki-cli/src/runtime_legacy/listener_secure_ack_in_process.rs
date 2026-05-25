@@ -1,5 +1,5 @@
 use super::listener_json_helpers::struct_to_map;
-use crate::identity::types::StoredIdentity;
+use crate::legacy_identity::types::StoredIdentity;
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

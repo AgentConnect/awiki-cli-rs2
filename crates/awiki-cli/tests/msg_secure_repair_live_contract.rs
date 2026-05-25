@@ -1,6 +1,6 @@
 use awiki_cli::config::Paths;
-use awiki_cli::identity::{types::SaveInput, Manager};
-use awiki_cli::store::{self, E2EEOutboxRecord};
+use awiki_cli::legacy_identity::{types::SaveInput, Manager};
+use awiki_cli::legacy_store::{self as store, E2EEOutboxRecord};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -78,7 +78,7 @@ fn save_ready_identity(
     manager: &Manager,
     identity_name: &str,
     handle: &str,
-) -> awiki_cli::identity::types::StoredIdentity {
+) -> awiki_cli::legacy_identity::types::StoredIdentity {
     manager
         .save(SaveInput {
             identity_name: identity_name.to_string(),

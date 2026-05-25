@@ -1,7 +1,7 @@
 use super::{legacy_owner_lookup, store_exit, App};
 use crate::cli::ParsedCommand;
+use crate::legacy_store::{self as store, StoreError};
 use crate::output::ExitError;
-use crate::store::{self, StoreError};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 

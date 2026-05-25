@@ -9,8 +9,7 @@ use im_core::prelude::{
 use serde_json::{json, Map, Value};
 
 use crate::cli::ParsedCommand;
-use crate::identity;
-use crate::identity::types::LEGACY_LAYOUT_HINT;
+use crate::legacy_identity as identity;
 use crate::output::ExitError;
 
 pub use super::identity_replace_did_plan::{
@@ -233,7 +232,6 @@ fn register_handle_command_result(
 
 pub fn list_identities_via_im_core(
     resolved: &crate::config::Resolved,
-    legacy: identity::LegacyScan,
 ) -> Result<identity::CommandResult, ExitError> {
     let core = super::build_im_core(resolved)?;
     let identities = core
@@ -247,9 +245,6 @@ pub fn list_identities_via_im_core(
         .find(|identity| identity.is_default)
         .map(|identity| cli_identity_summary_from_sdk(identity, &summaries));
     let mut warnings = Vec::new();
-    if legacy.has_legacy {
-        warnings.push(LEGACY_LAYOUT_HINT.to_string());
-    }
     if current
         .as_ref()
         .is_some_and(|identity| !identity.user_state.ready_for_messaging)
@@ -263,7 +258,6 @@ pub fn list_identities_via_im_core(
         data: json!({
             "identities": summaries,
             "default_identity": current,
-            "legacy_scan": legacy,
         }),
         summary: format!("Found {identity_count} local identities"),
         warnings,
@@ -303,7 +297,6 @@ pub fn current_identity_via_im_core(
 
 pub fn identity_status_via_im_core(
     resolved: &crate::config::Resolved,
-    legacy: identity::LegacyScan,
 ) -> Result<identity::CommandResult, ExitError> {
     let core = super::build_im_core(resolved)?;
     let identities = core
@@ -316,9 +309,6 @@ pub fn identity_status_via_im_core(
         .find(|identity| identity.is_default)
         .map(|identity| cli_identity_summary_from_sdk(identity, &summaries));
     let mut warnings = Vec::new();
-    if legacy.has_legacy {
-        warnings.push(LEGACY_LAYOUT_HINT.to_string());
-    }
     let mut summary = "Identity store is ready".to_string();
     if active_identity.is_none() {
         summary = "No default identity is configured yet".to_string();
@@ -336,7 +326,6 @@ pub fn identity_status_via_im_core(
         data: json!({
             "active_identity": active_identity,
             "identity_count": summaries.len(),
-            "legacy_scan": legacy,
         }),
         summary,
         warnings,
@@ -1273,7 +1262,7 @@ fn register_handle_plan_command_result(
     } else {
         target.local_part.as_str()
     };
-    let identity_name = identity::store::choose_named_identity(
+    let identity_name = identity::legacy_store::choose_named_identity(
         &request.local_alias.unwrap_or_default(),
         &existing,
         alias_base,

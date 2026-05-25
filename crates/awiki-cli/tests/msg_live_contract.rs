@@ -1,6 +1,6 @@
 use awiki_cli::config::Paths;
-use awiki_cli::identity::{generate_identity, types::SaveInput, Manager};
-use awiki_cli::store::{self, E2EEOutboxRecord};
+use awiki_cli::legacy_identity::{generate_identity, types::SaveInput, Manager};
+use awiki_cli::legacy_store::{self as store, E2EEOutboxRecord};
 use rusqlite::types::ValueRef;
 use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
@@ -525,7 +525,7 @@ fn register_generated_msg_identity(
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) -> awiki_cli::identity::types::StoredIdentity {
+) -> awiki_cli::legacy_identity::types::StoredIdentity {
     let generated = generate_identity(
         "awiki.ai",
         "https://awiki.ai/anp-im/rpc",
@@ -583,8 +583,8 @@ fn test_paths(workspace: &Path) -> Paths {
 fn seed_established_secure_session(
     manager: &Manager,
     identity_name: &str,
-    owner: &awiki_cli::identity::types::StoredIdentity,
-    peer: &awiki_cli::identity::types::StoredIdentity,
+    owner: &awiki_cli::legacy_identity::types::StoredIdentity,
+    peer: &awiki_cli::legacy_identity::types::StoredIdentity,
 ) {
     let paths = manager
         .paths_for_identity(identity_name)

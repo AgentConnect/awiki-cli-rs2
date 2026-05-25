@@ -1,6 +1,6 @@
 use crate::config;
-use crate::identity;
-use crate::store;
+use crate::legacy_identity as identity;
+use crate::legacy_store as store;
 use crate::upgrade::fsutil;
 use crate::upgrade::upgrader::{Context, MigrationError};
 use rusqlite::Connection;

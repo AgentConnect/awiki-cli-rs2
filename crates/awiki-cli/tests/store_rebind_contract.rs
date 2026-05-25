@@ -1,5 +1,5 @@
 use awiki_cli::config::Paths;
-use awiki_cli::store;
+use awiki_cli::legacy_store as store;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 

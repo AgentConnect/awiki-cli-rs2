@@ -13,7 +13,6 @@ use super::listener_shutdown_signal::{
     install_foreground_shutdown_handler, wait_for_foreground_shutdown,
 };
 use crate::config::Resolved;
-use crate::identity::Manager;
 use crate::im_core_adapter::realtime::{
     self as im_core_realtime_adapter, ListenerRunHostKind, ListenerRunnerMode,
 };
@@ -48,7 +47,6 @@ fn run_listener(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result
 
 struct ListenerSupervisor {
     resolved: Arc<Resolved>,
-    manager: Manager,
     status: Arc<Mutex<Status>>,
     shutdown: Arc<AtomicBool>,
     listener: Option<bridge::BridgeListener>,
@@ -86,7 +84,6 @@ impl ListenerSupervisor {
             ..Status::default()
         };
         Ok(Self {
-            manager: Manager::new(resolved.paths.clone()),
             resolved: Arc::new(resolved),
             status: Arc::new(Mutex::new(status)),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -158,10 +155,16 @@ impl ListenerSupervisor {
     }
 
     fn start_known_sessions(&self) -> anyhow::Result<()> {
-        let identities = self.manager.list()?;
+        let core = crate::im_core_adapter::build_im_core(&self.resolved)?;
+        let identities = core.identities().list()?;
         for summary in identities {
-            if let Err(err) = self.ensure_known_session(&summary.identity_name, &summary.did) {
-                self.record_session_error(&summary.identity_name, &summary.did, &err.to_string());
+            let identity_name = summary
+                .local_alias
+                .as_deref()
+                .unwrap_or_else(|| summary.id.as_str());
+            let did = summary.did.as_str();
+            if let Err(err) = self.ensure_known_session(identity_name, did) {
+                self.record_session_error(identity_name, did, &err.to_string());
             }
         }
         self.refresh_status();

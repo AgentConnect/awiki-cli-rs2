@@ -1,7 +1,7 @@
+use super::handle_helpers::complete_bare_handle;
 use super::App;
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
-use crate::identity;
 use crate::im_core_adapter::message_result::{
     CommandResult, IdentityErrorKind, MessageAdapterError,
 };
@@ -65,24 +65,18 @@ impl App {
             );
         }
 
-        let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        let mut result = crate::im_core_adapter::messages::send_text_via_im_core(
-            &resolved,
-            &manager,
-            &self.globals.identity,
-            &client,
-            request,
-        )
-        .map_err(|err| {
-            message_exit(
-                err,
-                "Ensure the active identity is ready and the message service is reachable.",
-            )
-        })?;
+        let mut result =
+            crate::im_core_adapter::messages::send_text_via_im_core(&resolved, &client, request)
+                .map_err(|err| {
+                    message_exit(
+                        err,
+                        "Ensure the active identity is ready and the message service is reachable.",
+                    )
+                })?;
         result.warnings.extend(request_warnings);
         self.render_message_result("awiki-cli msg send", &resolved, result)
     }
@@ -298,24 +292,18 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::im_core_adapter::messages::inbox_query(command)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            let result = crate::im_core_adapter::messages::read_inbox_via_im_core(
-                &resolved,
-                &manager,
-                &client,
-                &self.globals.identity,
-                query,
-            )
-            .map_err(|err| {
-                message_exit(
+            let result =
+                crate::im_core_adapter::messages::read_inbox_via_im_core(&resolved, &client, query)
+                    .map_err(|err| {
+                        message_exit(
                     err,
                     "Ensure the active identity is ready and the message service is reachable.",
                 )
-            })?;
+                    })?;
             return self.render_message_result("awiki-cli msg inbox", &resolved, result);
         }
         self.render_msg_inbox_plan(command, &resolved)
@@ -370,18 +358,12 @@ impl App {
         let (thread, query) =
             crate::im_core_adapter::messages::history_request(command, &resolved.did_domain)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::messages::read_history_via_im_core(
-                &resolved,
-                &manager,
-                &client,
-                &self.globals.identity,
-                thread,
-                query,
+                &resolved, &client, thread, query,
             )
             .map_err(|err| {
                 message_exit(
@@ -472,16 +454,13 @@ impl App {
         }
         let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::messages::mark_read_via_im_core(
                 &resolved,
-                &manager,
                 &client,
-                &self.globals.identity,
                 command.args.clone(),
             )
             .map_err(|err| {
@@ -683,10 +662,6 @@ fn insert_completed_handle(
     if completed != target.trim() {
         map.insert(key.to_string(), Value::String(completed));
     }
-}
-
-fn complete_bare_handle(target: &str, did_domain: &str) -> String {
-    identity::complete_bare_handle(target, did_domain)
 }
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {

@@ -2,7 +2,7 @@ use im_core::prelude::AuthScope;
 use serde_json::json;
 
 use crate::config::Resolved;
-use crate::identity;
+use crate::legacy_identity as identity;
 use crate::output::ExitError;
 
 pub fn auth_scope_from_cli(value: &str) -> Result<AuthScope, ExitError> {
@@ -16,6 +16,22 @@ pub fn auth_scope_from_cli(value: &str) -> Result<AuthScope, ExitError> {
             format!("unsupported auth scope {value:?}."),
             "Use profile, messaging, or group-messaging.",
         )),
+    }
+}
+
+pub fn refresh_token_plan_via_im_core(identity_name: &str) -> identity::CommandResult {
+    identity::CommandResult {
+        data: json!({
+            "plan": {
+                "action": "refresh_token",
+                "identity_name": identity_name.trim(),
+                "remote_calls": ["did-auth.get_me"],
+                "local_writes": ["auth.json"],
+                "auth_flow": "did_auth_get_me_without_stored_bearer",
+            }
+        }),
+        summary: "Dry run: JWT refresh planned".to_string(),
+        warnings: Vec::new(),
     }
 }
 

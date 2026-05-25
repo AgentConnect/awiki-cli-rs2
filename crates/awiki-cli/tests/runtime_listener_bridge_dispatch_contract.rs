@@ -1,5 +1,5 @@
-use awiki_cli::identity::generate_identity;
-use awiki_cli::identity::types::{GeneratedIdentity, StoredIdentity};
+use awiki_cli::legacy_identity::generate_identity;
+use awiki_cli::legacy_identity::types::{GeneratedIdentity, StoredIdentity};
 use awiki_cli::runtime::bridge::BridgeRequest;
 use awiki_cli::runtime::listener_bridge_dispatch::{
     bridge_request_flow_plan, build_bridge_rpc_call, BridgeEnsureSessionOutcome,

@@ -1,7 +1,7 @@
 use crate::config::Resolved;
-use crate::identity::client::Client;
-use crate::identity::types::IdentityError;
-use crate::identity::wire::{
+use crate::legacy_identity::client::Client;
+use crate::legacy_identity::types::IdentityError;
+use crate::legacy_identity::wire::{
     build_handle_lookup_by_did_rpc_call, handle_lookup_error_is_not_found,
     normalize_handle_lookup_result, HandleLookupResult,
 };

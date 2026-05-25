@@ -5,8 +5,8 @@ use super::layout::{
     copy_dir, path_string, preferred_dir_name, sanitize_component, sanitize_identity_name,
     write_secure_json, Manager,
 };
+use super::legacy_store::identity_summary_from_record;
 use super::service::{auth_session, load_identity_for_mutation, CommandResult};
-use super::store::identity_summary_from_record;
 use super::types::{
     IdentityError, IndexEntry, ReplaceDidParams, SaveInput, StoredIdentity, LEGACY_BACKUP_DIR_NAME,
 };

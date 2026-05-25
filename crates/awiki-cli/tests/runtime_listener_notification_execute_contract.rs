@@ -1,3 +1,4 @@
+use awiki_cli::legacy_store::{self as store, StoreResult};
 use awiki_cli::runtime::host_notify::{HostNotificationData, HostNotificationEvent};
 use awiki_cli::runtime::host_notify_sink::HostNotifySink;
 use awiki_cli::runtime::listener::{self, HostNotifyStatus, Status};
@@ -9,7 +10,6 @@ use awiki_cli::runtime_legacy::listener_notification_plan::{
     NotificationRoute, NotificationSessionContext, SecureNotificationEffect,
     SecureNotificationNormalization,
 };
-use awiki_cli::store::{self, StoreResult};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::cell::RefCell;

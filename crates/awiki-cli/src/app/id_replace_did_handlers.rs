@@ -12,7 +12,6 @@ impl App {
         if self.globals.dry_run {
             let result = crate::im_core_adapter::identity::replace_did_plan_via_im_core(
                 &resolved,
-                &self.identity_manager(&resolved),
                 &self.globals.identity,
                 is_public,
                 is_agent,

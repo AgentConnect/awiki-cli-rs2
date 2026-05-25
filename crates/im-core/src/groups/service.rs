@@ -169,7 +169,10 @@ impl<'a> GroupService<'a> {
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .add_member(resolved_group_member_request(request, &resolved_member), None)?;
+        .add_member(
+            resolved_group_member_request(request, &resolved_member),
+            None,
+        )?;
         result.resolved_member = Some(resolved_member.clone());
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state_for(&mut result, &group, true);
@@ -254,7 +257,10 @@ impl<'a> GroupService<'a> {
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .remove_member(resolved_group_member_request(request, &resolved_member), None)?;
+        .remove_member(
+            resolved_group_member_request(request, &resolved_member),
+            None,
+        )?;
         result.resolved_member = Some(resolved_member);
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state_for(&mut result, &group, true);

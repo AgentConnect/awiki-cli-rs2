@@ -4,9 +4,9 @@ use crate::cmdmeta;
 use crate::config::{self, Overrides, Resolved};
 use crate::docs;
 use crate::doctor;
-use crate::identity::{self, IdentityError, Manager};
+use crate::legacy_identity::{self as identity, IdentityError, Manager};
+use crate::legacy_store::{self as store, StoreError};
 use crate::output::{self, ErrorEnvelope, ExitError, Format, IdentityMeta, Meta, SuccessEnvelope};
-use crate::store::{self, StoreError};
 use crate::traceutil;
 use crate::upgrade;
 use serde_json::{json, Value};
@@ -18,6 +18,7 @@ mod debug_handlers;
 mod error_hints;
 mod group_e2ee_handlers;
 mod group_handlers;
+mod handle_helpers;
 mod id_recover_handlers;
 mod id_replace_did_handlers;
 mod mail_handlers;
@@ -476,10 +477,7 @@ impl App {
 
     pub fn run_id_list(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let manager = self.identity_manager(&resolved);
-        let legacy = manager.scan_legacy().map_err(identity_exit)?;
-        let result =
-            crate::im_core_adapter::identity::list_identities_via_im_core(&resolved, legacy)?;
+        let result = crate::im_core_adapter::identity::list_identities_via_im_core(&resolved)?;
         self.render_identity_result("awiki-cli id list", &resolved, result)
     }
 
@@ -509,10 +507,7 @@ impl App {
 
     pub fn run_id_status(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let manager = self.identity_manager(&resolved);
-        let legacy = manager.scan_legacy().map_err(identity_exit)?;
-        let result =
-            crate::im_core_adapter::identity::identity_status_via_im_core(&resolved, legacy)?;
+        let result = crate::im_core_adapter::identity::identity_status_via_im_core(&resolved)?;
         self.render_identity_result("awiki-cli id status", &resolved, result)
     }
 
@@ -563,9 +558,8 @@ impl App {
 
     pub fn run_id_refresh_token(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
-            identity::refresh_token_plan(&manager, &self.globals.identity)
+            crate::im_core_adapter::auth::refresh_token_plan_via_im_core(&self.globals.identity)
         } else {
             crate::im_core_adapter::auth::refresh_token_via_im_core(
                 &resolved,
@@ -853,8 +847,9 @@ fn init_dirs(resolved: &Resolved) -> Vec<String> {
 }
 
 fn ensure_sqlite_schema(resolved: &Resolved) -> anyhow::Result<()> {
-    let db = store::open(&resolved.paths)?;
-    store::ensure_schema(&db)?;
+    crate::im_core_adapter::build_im_core(resolved)?
+        .bootstrap()
+        .initialize_local_state()?;
     Ok(())
 }
 

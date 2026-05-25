@@ -2,7 +2,7 @@ use super::sql::{
     bool_from_row, bool_ptr_from_row, float64_ptr_from_row, int64_ptr_from_row, int_from_row,
     string_from_row, RowMap,
 };
-use crate::store::helpers::{default_string, make_thread_id, normalize_owner_did};
+use crate::legacy_store::helpers::{default_string, make_thread_id, normalize_owner_did};
 use std::collections::BTreeSet;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;

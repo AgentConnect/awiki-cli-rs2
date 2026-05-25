@@ -1,4 +1,4 @@
-use crate::identity;
+use crate::legacy_identity as identity;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;

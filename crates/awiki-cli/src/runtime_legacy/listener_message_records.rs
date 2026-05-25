@@ -1,4 +1,4 @@
-use crate::store::{self, GroupMemberRecord, GroupRecord, MessageRecord};
+use crate::legacy_store::{self as store, GroupMemberRecord, GroupRecord, MessageRecord};
 use serde_json::{Map, Value};
 
 pub fn message_record_from_direct_incoming(

@@ -1,6 +1,6 @@
+use super::handle_helpers::complete_bare_handle;
 use super::{msg_handlers::message_exit, App};
 use crate::cli::ParsedCommand;
-use crate::identity;
 use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError};
 use crate::output::ExitError;
 use serde_json::{json, Value};
@@ -809,8 +809,4 @@ fn optional_i64(command: &ParsedCommand, name: &str) -> Result<Option<i64>, Exit
 
 fn changed(command: &ParsedCommand, name: &str) -> bool {
     command.changed_flags.iter().any(|flag| flag == name)
-}
-
-fn complete_bare_handle(target: &str, did_domain: &str) -> String {
-    identity::complete_bare_handle(target, did_domain)
 }

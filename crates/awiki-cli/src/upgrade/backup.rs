@@ -1,6 +1,7 @@
 use super::fsutil;
 use super::types::Paths;
-use crate::{config, store};
+use crate::config;
+use crate::legacy_store as store;
 use std::fmt;
 use std::fs;
 use std::path::Path;
