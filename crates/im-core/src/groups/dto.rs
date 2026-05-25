@@ -6,6 +6,8 @@ pub struct GroupReadResult {
     pub group: Option<GroupSnapshot>,
     pub groups: Vec<GroupSummary>,
     pub members: Vec<GroupMember>,
+    #[serde(default)]
+    pub resolved_member: Option<GroupMemberResolution>,
     pub messages: crate::ids::Page<crate::messages::Message>,
     pub total: Option<u32>,
     pub source: Option<String>,
@@ -40,6 +42,7 @@ impl GroupReadResult {
             group,
             groups,
             members,
+            resolved_member: None,
             messages,
             total: u32_value(raw.get("total")),
             source: optional_string(raw.get("source")),
@@ -114,11 +117,67 @@ pub struct GroupLeaveRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupMemberMutationRequest {
     pub group: crate::ids::GroupRef,
-    pub member: crate::ids::Did,
+    pub member: GroupMemberRef,
     pub role: Option<GroupMemberRole>,
     pub reason_text: Option<String>,
     #[serde(default)]
     pub security: GroupSecurityRequirement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GroupMemberRef(String);
+
+impl GroupMemberRef {
+    pub fn parse(input: impl AsRef<str>, default_domain: &str) -> crate::ImResult<Self> {
+        let value = input.as_ref().trim();
+        if value.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("member".to_string()),
+                "group member must not be empty",
+            ));
+        }
+        if value.starts_with("did:") {
+            return crate::ids::Did::parse(value).map(Self::from);
+        }
+        crate::ids::Handle::parse(value, default_domain).map(Self::from)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_did(&self) -> bool {
+        self.0.starts_with("did:")
+    }
+
+    pub fn as_did(&self) -> crate::ImResult<crate::ids::Did> {
+        crate::ids::Did::parse(self.as_str())
+    }
+}
+
+impl From<crate::ids::Did> for GroupMemberRef {
+    fn from(did: crate::ids::Did) -> Self {
+        Self(did.as_str().to_string())
+    }
+}
+
+impl From<crate::ids::Handle> for GroupMemberRef {
+    fn from(handle: crate::ids::Handle) -> Self {
+        Self(handle.as_str().to_string())
+    }
+}
+
+impl From<crate::ids::PeerRef> for GroupMemberRef {
+    fn from(peer: crate::ids::PeerRef) -> Self {
+        Self(peer.as_str().to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupMemberResolution {
+    pub did: crate::ids::Did,
+    pub handle: Option<crate::ids::Handle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

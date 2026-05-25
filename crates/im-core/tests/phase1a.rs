@@ -28,7 +28,7 @@ fn message_target_direct_and_group_can_construct() {
 }
 
 #[test]
-fn secure_direct_and_group_e2ee_are_reserved_variants() {
+fn secure_direct_and_group_e2ee_security_modes_can_construct() {
     let secure_direct = MessageSecurityMode::SecureDirect;
     let group_e2ee = MessageSecurityMode::GroupE2ee;
     let required = MessageSecurityPolicy::E2eeRequired;
@@ -39,12 +39,12 @@ fn secure_direct_and_group_e2ee_are_reserved_variants() {
 }
 
 #[test]
-fn reserved_message_capability_mismatches_fail_closed() {
+fn message_security_mode_mismatches_fail_closed() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
-    let peer = PeerRef::parse("bob", "awiki.info").unwrap();
+    let peer = PeerRef::parse("did:example:bob", "").unwrap();
 
     let secure = client.messages().send(SendMessageRequest {
         target: MessageTarget::Direct(peer.clone()),
@@ -56,7 +56,7 @@ fn reserved_message_capability_mismatches_fail_closed() {
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
     });
-    assert!(matches!(secure, Err(ImError::PeerNotFound { .. })));
+    assert!(matches!(secure, Err(ImError::AuthRequired)));
 
     let group_e2ee = client.messages().send(SendMessageRequest {
         target: MessageTarget::Direct(peer),
@@ -121,7 +121,7 @@ fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
-    let peer = PeerRef::parse("bob", "awiki.info").unwrap();
+    let peer = PeerRef::parse("did:example:bob", "").unwrap();
 
     let result = client.messages().send(SendMessageRequest {
         target: MessageTarget::Direct(peer),
@@ -134,7 +134,7 @@ fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
         delivery: MessageDeliveryOptions::default(),
     });
 
-    assert!(matches!(result, Err(ImError::PeerNotFound { .. })));
+    assert!(matches!(result, Err(ImError::AuthRequired)));
 }
 
 #[test]

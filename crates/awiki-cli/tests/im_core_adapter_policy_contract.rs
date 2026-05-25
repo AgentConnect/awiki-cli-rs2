@@ -26,10 +26,8 @@ fn im_core_adapter_has_no_legacy_bridge_needles() {
         .filter(|path| path.file_name().is_some_and(|name| name != "tests.rs"))
         .filter_map(|path| {
             let text = fs::read_to_string(&path).expect("read adapter source");
-            let allowed = allowed_compat_references(&path);
             let has_bridge = LEGACY_BRIDGE_NEEDLES
                 .iter()
-                .filter(|needle| !allowed.contains(needle))
                 .any(|needle| text.contains(needle));
             has_bridge.then_some(path)
         })
@@ -91,9 +89,9 @@ fn runtime_listener_host_uses_public_realtime_runner_api() {
         .join("listener_supervisor_run.rs");
     let text = fs::read_to_string(&path).expect("read runtime listener supervisor");
     for forbidden in [
-        "im_core::compat::realtime::run_realtime_transport",
-        "im_core::compat::realtime::RealtimeRunnerEventSink",
-        "im_core::compat::realtime::RealtimeRunnerTransport",
+        concat!("im_core::", "compat::realtime::run_realtime_transport"),
+        concat!("im_core::", "compat::realtime::RealtimeRunnerEventSink"),
+        concat!("im_core::", "compat::realtime::RealtimeRunnerTransport"),
     ] {
         assert!(
             !text.contains(forbidden),
@@ -107,23 +105,15 @@ fn runtime_listener_host_uses_public_realtime_runner_api() {
 }
 
 const LEGACY_BRIDGE_NEEDLES: &[&str] = &[
-    "im_core::compat",
-    "use crate::message",
-    "crate::message::",
-    "message::",
+    concat!("im_core::", "compat"),
+    concat!("use crate::", "message"),
+    concat!("crate::", "message::"),
+    concat!("message", "::"),
     "identity::register(",
     "identity::register_plan(",
     "identity::refresh_token(",
     "runtime::listener_",
 ];
-
-fn allowed_compat_references(path: &Path) -> &'static [&'static str] {
-    match path.file_name().and_then(|name| name.to_str()) {
-        Some("groups.rs") | Some("identity.rs") => &["im_core::compat"],
-        Some("messages.rs") => &["im_core::compat"],
-        _ => &[],
-    }
-}
 
 fn adapter_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

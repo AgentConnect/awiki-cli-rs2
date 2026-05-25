@@ -139,8 +139,9 @@ impl<'a> GroupService<'a> {
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
         let group = request.group.as_str().to_string();
+        let resolved_member = resolve_group_member(self.client, &request.member)?;
         #[cfg(feature = "group-e2ee")]
-        let member = request.member.as_str().to_string();
+        let member = resolved_member.did.as_str().to_string();
         #[cfg(feature = "group-e2ee")]
         let reason_text = request.reason_text.clone();
         #[cfg(not(feature = "group-e2ee"))]
@@ -168,7 +169,8 @@ impl<'a> GroupService<'a> {
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .add_member(request, None)?;
+        .add_member(resolved_group_member_request(request, &resolved_member), None)?;
+        result.resolved_member = Some(resolved_member.clone());
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state_for(&mut result, &group, true);
         #[cfg(feature = "group-e2ee")]
@@ -199,6 +201,7 @@ impl<'a> GroupService<'a> {
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
         let group = request.group.as_str().to_string();
+        let resolved_member = resolve_group_member(self.client, &request.member)?;
         #[cfg(not(feature = "group-e2ee"))]
         if request.security.required() {
             return Err(crate::ImError::unsupported("group-e2ee"));
@@ -232,7 +235,7 @@ impl<'a> GroupService<'a> {
                     .remove_secure_member(
                         crate::internal::group_e2ee::lifecycle::GroupE2eeMemberMutationInput {
                             group: request.group,
-                            member: request.member,
+                            member: resolved_member.did.clone(),
                             reason_text: request.reason_text,
                             leave_request_id: None,
                             credentials: None,
@@ -241,6 +244,7 @@ impl<'a> GroupService<'a> {
                     )?;
                 let mut result =
                     super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
+                result.resolved_member = Some(resolved_member);
                 self.refresh_group_state_for(&mut result, &group, true);
                 return Ok(result);
             }
@@ -250,7 +254,8 @@ impl<'a> GroupService<'a> {
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
         )
-        .remove_member(request, None)?;
+        .remove_member(resolved_group_member_request(request, &resolved_member), None)?;
+        result.resolved_member = Some(resolved_member);
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state_for(&mut result, &group, true);
         Ok(result)
@@ -501,6 +506,37 @@ fn group_did(result: &super::GroupReadResult) -> Option<String> {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
+}
+
+fn resolve_group_member(
+    client: &crate::core::ImClient,
+    member: &super::GroupMemberRef,
+) -> crate::ImResult<super::GroupMemberResolution> {
+    if member.is_did() {
+        return Ok(super::GroupMemberResolution {
+            did: member.as_did()?,
+            handle: None,
+        });
+    }
+    let handle = crate::ids::Handle::parse(member.as_str(), "")?;
+    let lookup = client.directory().lookup_handle(handle)?;
+    Ok(super::GroupMemberResolution {
+        did: lookup.did,
+        handle: Some(lookup.handle),
+    })
+}
+
+fn resolved_group_member_request(
+    request: super::GroupMemberMutationRequest,
+    member: &super::GroupMemberResolution,
+) -> super::GroupMemberMutationRequest {
+    super::GroupMemberMutationRequest {
+        group: request.group,
+        member: super::GroupMemberRef::from(member.did.clone()),
+        role: request.role,
+        reason_text: request.reason_text,
+        security: request.security,
+    }
 }
 
 fn group_create_uses_e2ee(request: &super::GroupCreateRequest) -> bool {

@@ -350,7 +350,8 @@ fn build_group_mutation_rpc_params(
 fn group_member_mutation_request(
     request: GroupMemberRequest,
 ) -> Result<im_core::groups::GroupMemberMutationRequest, MessageError> {
-    let member = im_core::ids::Did::parse(&request.member).map_err(group_mutation_wire_error)?;
+    let member =
+        im_core::groups::GroupMemberRef::parse(&request.member, "").map_err(group_mutation_wire_error)?;
     Ok(im_core::groups::GroupMemberMutationRequest {
         group: im_core::ids::GroupRef::parse(&request.group).map_err(group_mutation_wire_error)?,
         member,
