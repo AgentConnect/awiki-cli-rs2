@@ -441,11 +441,16 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
     let people = schema_for(&["people"]);
     assert_eq!(schema_command(&people)["name"], "people");
     assert_eq!(schema_command(&people)["implemented"], true);
-    assert_go_stub_schema(
-        schema_child(&people, "people.search"),
-        "people.search",
-        "phase8",
+    assert!(
+        people["data"]["children"]
+            .as_array()
+            .expect("people children should be an array")
+            .iter()
+            .all(|command| command["name"] != "people.search"),
+        "unsupported people.search should stay off the default schema surface: {people:?}"
     );
+    let people_search = schema_all_command("people.search");
+    assert_go_stub_schema(&people_search, "people.search", "phase8");
 
     let contacts = schema_for(&["people", "contacts"]);
     assert_eq!(schema_command(&contacts)["implemented"], true);
@@ -591,7 +596,7 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
     let msg_send = schema_for(&["msg", "send"]);
     assert_eq!(
         schema_flag(schema_command(&msg_send), "secure")["choices"],
-        serde_json::json!(["off", "on"])
+        serde_json::json!(["off", "required"])
     );
     let msg_inbox = schema_for(&["msg", "inbox"]);
     assert_eq!(
@@ -600,8 +605,17 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
     );
 
     let group_create = schema_for(&["group", "create"]);
+    assert!(
+        schema_command(&group_create)["flags"]
+            .as_array()
+            .expect("group.create flags should be an array")
+            .iter()
+            .all(|flag| flag["name"] != "message-security-profile"),
+        "deprecated message-security-profile should stay off the default schema surface: {group_create:?}"
+    );
+    let group_create_all = schema_all_command("group.create");
     assert_eq!(
-        schema_flag(schema_command(&group_create), "message-security-profile")["choices"],
+        schema_flag(&group_create_all, "message-security-profile")["choices"],
         serde_json::json!(["transport-protected", "group-e2ee"])
     );
     let publish = schema_for(&["group", "e2ee", "publish-key-package"]);
@@ -1049,6 +1063,19 @@ fn schema_for(path: &[&str]) -> Value {
     let output = awiki_cmd(&args);
     assert_success(&output);
     success_json(&output)
+}
+
+fn schema_all_command(name: &str) -> Value {
+    let output = awiki_cmd(&["schema", "--all"]);
+    assert_success(&output);
+    let schema = success_json(&output);
+    schema["data"]["commands"]
+        .as_array()
+        .unwrap_or_else(|| panic!("schema --all commands should be an array: {schema:?}"))
+        .iter()
+        .find(|command| command["name"] == name)
+        .unwrap_or_else(|| panic!("missing schema --all command {name:?}: {schema:?}"))
+        .clone()
 }
 
 fn schema_command(schema: &Value) -> &Value {

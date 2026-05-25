@@ -191,7 +191,10 @@ fn group_base_lifecycle_params_match_go_contracts() {
         },
     )
     .expect("leave params");
-    assert_eq!(leave["body"], json!({}));
+    assert_eq!(
+        leave["body"],
+        json!({ "reason_text": "ignored by base leave" })
+    );
     assert_origin_proof_verifies(&leave, "group.leave", &record);
 }
 
