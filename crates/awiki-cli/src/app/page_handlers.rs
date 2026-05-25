@@ -1,4 +1,4 @@
-use super::{identity_exit, App};
+use super::App;
 use crate::cli::ParsedCommand;
 use crate::im_core_adapter::content::{self, CommandResult};
 use crate::output::ExitError;
@@ -24,9 +24,10 @@ impl App {
                 json!({
                 "plan": {
                     "action": "page.create",
+                    "service": "im-core.content",
+                    "operation": "page.create",
+                    "remote_call": "content.create_page",
                     "identity": self.globals.identity,
-                    "rpc_endpoint": "/content/rpc",
-                    "rpc_method": "create",
                     "request": {
                         "slug": slug.trim(),
                         "title": title.trim(),
@@ -63,9 +64,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "page.list",
+                        "service": "im-core.content",
+                        "operation": "page.list",
+                        "remote_call": "content.list_pages",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/content/rpc",
-                        "rpc_method": "list",
                     }
                 }),
                 "Dry run: page list planned",
@@ -90,9 +92,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "page.get",
+                        "service": "im-core.content",
+                        "operation": "page.get",
+                        "remote_call": "content.get_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/content/rpc",
-                        "rpc_method": "get",
                         "request": {
                             "slug": string_flag(command, "slug").trim(),
                         },
@@ -150,9 +153,10 @@ impl App {
             json!({
                 "plan": {
                     "action": "page.update",
+                    "service": "im-core.content",
+                    "operation": "page.update",
+                    "remote_call": "content.update_page",
                     "identity": self.globals.identity,
-                    "rpc_endpoint": "/content/rpc",
-                    "rpc_method": "update",
                     "changed_fields": changed_fields,
                     "request": {
                         "slug": string_flag(command, "slug").trim(),
@@ -177,9 +181,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "page.rename",
+                        "service": "im-core.content",
+                        "operation": "page.rename",
+                        "remote_call": "content.rename_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/content/rpc",
-                        "rpc_method": "rename",
                         "request": {
                             "old_slug": string_flag(command, "slug").trim(),
                             "new_slug": string_flag(command, "to").trim(),
@@ -213,9 +218,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "page.delete",
+                        "service": "im-core.content",
+                        "operation": "page.delete",
+                        "remote_call": "content.delete_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/content/rpc",
-                        "rpc_method": "delete",
                         "request": {
                             "slug": string_flag(command, "slug").trim(),
                         },
@@ -335,11 +341,6 @@ fn content_exit(
     hint: &'static str,
 ) -> impl FnOnce(im_core::ImError) -> ExitError {
     move |err| match err {
-        im_core::ImError::IdentityNotFound { selector }
-            if selector == "identity not found: no active identity is configured" =>
-        {
-            identity_exit(crate::identity::IdentityError::NotFound(selector))
-        }
         im_core::ImError::Service {
             status_code,
             code,

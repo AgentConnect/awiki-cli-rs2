@@ -45,7 +45,7 @@ fn mail_dry_run_commands_plan_im_core_email_calls_without_side_effects() {
     let attachment_path = workspace.path().join("planned").join("attachment.txt");
     let attachment_path_string = attachment_path.to_string_lossy().into_owned();
 
-    for (args, command, action) in [
+    for (args, command, action, operation, remote_call) in [
         (
             &[
                 "--dry-run",
@@ -60,27 +60,37 @@ fn mail_dry_run_commands_plan_im_core_email_calls_without_side_effects() {
                 "--unread",
             ][..],
             "awiki-cli mail inbox",
-            "mail.getInbox",
+            "mail.inbox",
+            "mail.inbox",
+            "email.inbox",
         ),
         (
             &["--dry-run", "mail", "notify", "--limit", "3"][..],
             "awiki-cli mail notify",
             "mail.notifications",
+            "mail.notify",
+            "",
         ),
         (
             &["--dry-run", "mail", "read", "--id", "msg-1"][..],
             "awiki-cli mail read",
-            "mail.getMessage",
+            "mail.read",
+            "mail.read",
+            "email.read",
         ),
         (
             &["--dry-run", "mail", "mark-read", "msg-1"][..],
             "awiki-cli mail mark-read",
-            "mail.markRead",
+            "mail.mark-read",
+            "mail.mark-read",
+            "email.mark_read",
         ),
         (
             &["--dry-run", "mail", "account"][..],
             "awiki-cli mail account",
-            "mail.getMailbox",
+            "mail.account",
+            "mail.account",
+            "email.account",
         ),
         (
             &[
@@ -100,6 +110,8 @@ fn mail_dry_run_commands_plan_im_core_email_calls_without_side_effects() {
             ][..],
             "awiki-cli mail send",
             "mail.send",
+            "mail.send",
+            "email.send",
         ),
         (
             &[
@@ -115,7 +127,9 @@ fn mail_dry_run_commands_plan_im_core_email_calls_without_side_effects() {
                 &attachment_path_string,
             ][..],
             "awiki-cli mail attachment download",
-            "mail.getAttachment",
+            "mail.attachment.download",
+            "mail.attachment.download",
+            "email.download_attachment",
         ),
     ] {
         let output = awiki_cmd(args, workspace.path());
@@ -124,6 +138,18 @@ fn mail_dry_run_commands_plan_im_core_email_calls_without_side_effects() {
         assert_eq!(envelope["command"], command);
         assert_eq!(envelope["meta"]["dry_run"], true);
         assert_eq!(envelope["data"]["plan"]["action"], action);
+        assert_eq!(envelope["data"]["plan"]["service"], "im-core.email");
+        assert_eq!(envelope["data"]["plan"]["operation"], operation);
+        if remote_call.is_empty() {
+            assert!(envelope["data"]["plan"].get("remote_call").is_none());
+            assert_eq!(
+                envelope["data"]["plan"]["local_read"],
+                "email.notifications"
+            );
+        } else {
+            assert_eq!(envelope["data"]["plan"]["remote_call"], remote_call);
+        }
+        assert!(envelope["data"]["plan"].get("remote_calls").is_none());
     }
 
     assert!(

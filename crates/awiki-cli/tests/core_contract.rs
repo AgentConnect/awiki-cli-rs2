@@ -888,6 +888,11 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
     assert_eq!(envelope["command"], "awiki-cli people contacts save");
     assert_eq!(envelope["meta"]["dry_run"], true);
     assert_eq!(envelope["data"]["plan"]["action"], "contacts.save");
+    assert_eq!(envelope["data"]["plan"]["service"], "im-core.directory");
+    assert_eq!(
+        envelope["data"]["plan"]["operation"],
+        "people.contacts.save"
+    );
     assert_eq!(envelope["data"]["plan"]["did"], "did:example:alice");
     assert_eq!(envelope["data"]["plan"]["handle"], "alice.awiki.ai");
     assert_eq!(envelope["data"]["plan"]["note"], "migration smoke");
@@ -895,6 +900,119 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
         envelope["error"]["code"], "unsupported_capability",
         "people.contacts.save should route through the im-core handler"
     );
+}
+
+#[test]
+fn people_follow_write_dry_run_plans_hide_relationship_wire_names() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let cases = [
+        (
+            &["--dry-run", "people", "follow", "alice"][..],
+            "awiki-cli people follow",
+            "follow",
+            "people.follow",
+            "directory.follow",
+            "Dry run: follow planned",
+        ),
+        (
+            &["--dry-run", "people", "unfollow", "alice"][..],
+            "awiki-cli people unfollow",
+            "unfollow",
+            "people.unfollow",
+            "directory.unfollow",
+            "Dry run: unfollow planned",
+        ),
+    ];
+
+    for (args, command, action, operation, remote_call, summary) in cases {
+        let output = awiki_cmd_with_workspace(args, workspace.path().to_str().unwrap());
+        assert_success(&output);
+        let envelope = success_json(&output);
+        assert_eq!(envelope["command"], command);
+        assert_eq!(envelope["summary"], summary);
+        assert_eq!(envelope["data"]["plan"]["action"], action);
+        assert_eq!(envelope["data"]["plan"]["service"], "im-core.directory");
+        assert_eq!(envelope["data"]["plan"]["operation"], operation);
+        assert_eq!(envelope["data"]["plan"]["remote_call"], remote_call);
+        assert_eq!(
+            envelope["data"]["plan"]["status_refresh"],
+            "directory.relationship_status"
+        );
+        assert!(envelope["data"]["plan"].get("remote_calls").is_none());
+    }
+}
+
+#[test]
+fn people_read_dry_run_commands_use_im_core_plans_without_identity() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let cases = [
+        (
+            &["--dry-run", "people", "status", "alice"][..],
+            "awiki-cli people status",
+            "relationship.status",
+            "im-core.directory",
+            "people.status",
+            "directory.relationship_status",
+            "Dry run: relationship status planned",
+        ),
+        (
+            &[
+                "--dry-run",
+                "people",
+                "followers",
+                "--limit",
+                "2",
+                "--offset",
+                "1",
+                "--profile",
+            ][..],
+            "awiki-cli people followers",
+            "relationships.followers",
+            "im-core.directory",
+            "people.followers",
+            "directory.followers",
+            "Dry run: followers list planned",
+        ),
+        (
+            &["--dry-run", "people", "following", "--limit", "3"][..],
+            "awiki-cli people following",
+            "relationships.following",
+            "im-core.directory",
+            "people.following",
+            "directory.following",
+            "Dry run: following list planned",
+        ),
+        (
+            &["--dry-run", "people", "contacts", "list", "--limit", "4"][..],
+            "awiki-cli people contacts list",
+            "contacts.list",
+            "im-core.directory",
+            "people.contacts.list",
+            "",
+            "Dry run: contacts list planned",
+        ),
+    ];
+
+    for (args, command, action, service, operation, remote_call, summary) in cases {
+        let output = awiki_cmd_with_workspace(args, workspace.path().to_str().unwrap());
+        assert_success(&output);
+        let envelope = success_json(&output);
+        assert_eq!(envelope["command"], command);
+        assert_eq!(envelope["summary"], summary);
+        assert_eq!(envelope["meta"]["dry_run"], true);
+        assert_eq!(envelope["data"]["plan"]["action"], action);
+        assert_eq!(envelope["data"]["plan"]["service"], service);
+        assert_eq!(envelope["data"]["plan"]["operation"], operation);
+        if remote_call.is_empty() {
+            assert!(envelope["data"]["plan"].get("remote_call").is_none());
+        } else {
+            assert_eq!(envelope["data"]["plan"]["remote_call"], remote_call);
+        }
+        assert!(
+            !workspace.path().join("identities").exists(),
+            "dry-run people read command should not require or create identity state"
+        );
+    }
 }
 
 #[test]

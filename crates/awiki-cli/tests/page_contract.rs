@@ -45,13 +45,13 @@ fn page_dry_run_plans_keep_cli_envelope_contract() {
         (
             vec!["--dry-run", "page", "list"],
             "page.list",
-            "list",
+            "content.list_pages",
             "Dry run: page list planned",
         ),
         (
             vec!["--dry-run", "page", "get", "--slug", "hello"],
             "page.get",
-            "get",
+            "content.get_page",
             "Dry run: page get planned",
         ),
         (
@@ -67,7 +67,7 @@ fn page_dry_run_plans_keep_cli_envelope_contract() {
                 "Body",
             ],
             "page.create",
-            "create",
+            "content.create_page",
             "Dry run: page create planned",
         ),
         (
@@ -81,7 +81,7 @@ fn page_dry_run_plans_keep_cli_envelope_contract() {
                 "New",
             ],
             "page.update",
-            "update",
+            "content.update_page",
             "Dry run: page update planned",
         ),
         (
@@ -95,25 +95,28 @@ fn page_dry_run_plans_keep_cli_envelope_contract() {
                 "new",
             ],
             "page.rename",
-            "rename",
+            "content.rename_page",
             "Dry run: page rename planned",
         ),
         (
             vec!["--dry-run", "page", "delete", "--slug", "hello"],
             "page.delete",
-            "delete",
+            "content.delete_page",
             "Dry run: page delete planned",
         ),
     ];
 
-    for (args, action, rpc_method, summary) in cases {
+    for (args, action, remote_call, summary) in cases {
         let output = awiki_cmd(&args, workspace.path());
         assert_success(&output);
         let envelope = success_json(&output);
         assert_eq!(envelope["summary"], summary);
         assert_eq!(envelope["data"]["plan"]["action"], action);
-        assert_eq!(envelope["data"]["plan"]["rpc_endpoint"], "/content/rpc");
-        assert_eq!(envelope["data"]["plan"]["rpc_method"], rpc_method);
+        assert_eq!(envelope["data"]["plan"]["service"], "im-core.content");
+        assert_eq!(envelope["data"]["plan"]["operation"], action);
+        assert_eq!(envelope["data"]["plan"]["remote_call"], remote_call);
+        assert!(envelope["data"]["plan"].get("rpc_endpoint").is_none());
+        assert!(envelope["data"]["plan"].get("rpc_method").is_none());
     }
 }
 

@@ -117,7 +117,16 @@ fn mail_attachment_dry_run_does_not_hit_remote_or_write_output() {
         envelope["summary"],
         "Dry run: mail attachment download planned"
     );
-    assert_eq!(envelope["data"]["plan"]["action"], "mail.getAttachment");
+    assert_eq!(
+        envelope["data"]["plan"]["action"],
+        "mail.attachment.download"
+    );
+    assert_eq!(envelope["data"]["plan"]["service"], "im-core.email");
+    assert_eq!(
+        envelope["data"]["plan"]["remote_call"],
+        "email.download_attachment"
+    );
+    assert!(envelope["data"]["plan"].get("remote_calls").is_none());
     assert!(
         !output_path.exists(),
         "dry-run mail attachment command must not write output files"

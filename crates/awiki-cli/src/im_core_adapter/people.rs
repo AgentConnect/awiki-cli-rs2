@@ -5,7 +5,6 @@ use im_core::prelude::{
 use serde_json::json;
 
 use crate::cli::ParsedCommand;
-use crate::identity;
 use crate::im_core_adapter::message_result::CommandResult;
 use crate::output::ExitError;
 
@@ -15,8 +14,11 @@ pub fn follow_plan(command: &ParsedCommand, did_domain: &str) -> Result<CommandR
         data: json!({
             "plan": {
                 "action": "follow",
+                "service": "im-core.directory",
+                "operation": "people.follow",
+                "remote_call": "directory.follow",
+                "status_refresh": "directory.relationship_status",
                 "target": peer.as_str(),
-                "remote_calls": ["did.relationships.follow", "did.relationships.get_status"],
                 "local_writes": ["contacts", "relationship_events"],
             }
         }),
@@ -34,8 +36,11 @@ pub fn unfollow_plan(
         data: json!({
             "plan": {
                 "action": "unfollow",
+                "service": "im-core.directory",
+                "operation": "people.unfollow",
+                "remote_call": "directory.unfollow",
+                "status_refresh": "directory.relationship_status",
                 "target": peer.as_str(),
-                "remote_calls": ["did.relationships.unfollow", "did.relationships.get_status"],
                 "local_writes": ["contacts", "relationship_events"],
             }
         }),
@@ -53,6 +58,8 @@ pub fn save_contact_plan(
         data: json!({
             "plan": {
                 "action": "contacts.save",
+                "service": "im-core.directory",
+                "operation": "people.contacts.save",
                 "peer": request.peer.as_str(),
                 "did": request.did.as_ref().map(|did| did.as_str()),
                 "handle": request.handle.as_ref().map(|handle| handle.as_str()),
@@ -62,6 +69,79 @@ pub fn save_contact_plan(
             }
         }),
         summary: "Dry run: contact save planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+pub fn relationship_status_plan(
+    command: &ParsedCommand,
+    did_domain: &str,
+) -> Result<CommandResult, ExitError> {
+    let peer = required_peer_arg(command, did_domain, "people status")?;
+    Ok(CommandResult {
+        data: json!({
+            "plan": {
+                "action": "relationship.status",
+                "service": "im-core.directory",
+                "operation": "people.status",
+                "remote_call": "directory.relationship_status",
+                "target": peer.as_str(),
+            }
+        }),
+        summary: "Dry run: relationship status planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+pub fn followers_plan(command: &ParsedCommand) -> Result<CommandResult, ExitError> {
+    let query = relationship_list_query(command)?;
+    Ok(CommandResult {
+        data: json!({
+            "plan": {
+                "action": "relationships.followers",
+                "service": "im-core.directory",
+                "operation": "people.followers",
+                "remote_call": "directory.followers",
+                "query": relationship_list_query_value(&query),
+            }
+        }),
+        summary: "Dry run: followers list planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+pub fn following_plan(command: &ParsedCommand) -> Result<CommandResult, ExitError> {
+    let query = relationship_list_query(command)?;
+    Ok(CommandResult {
+        data: json!({
+            "plan": {
+                "action": "relationships.following",
+                "service": "im-core.directory",
+                "operation": "people.following",
+                "remote_call": "directory.following",
+                "query": relationship_list_query_value(&query),
+            }
+        }),
+        summary: "Dry run: following list planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+pub fn contacts_list_plan(command: &ParsedCommand) -> Result<CommandResult, ExitError> {
+    let limit = optional_page_limit(command, "limit")?;
+    Ok(CommandResult {
+        data: json!({
+            "plan": {
+                "action": "contacts.list",
+                "service": "im-core.directory",
+                "operation": "people.contacts.list",
+                "local_read": "contacts",
+                "query": {
+                    "limit": limit.as_ref().map(|limit| limit.0),
+                },
+            }
+        }),
+        summary: "Dry run: contacts list planned".to_string(),
         warnings: Vec::new(),
     })
 }
@@ -260,6 +340,14 @@ fn relationship_list_query(command: &ParsedCommand) -> Result<RelationshipListQu
     })
 }
 
+fn relationship_list_query_value(query: &RelationshipListQuery) -> serde_json::Value {
+    json!({
+        "limit": query.limit.as_ref().map(|limit| limit.0),
+        "offset": query.offset,
+        "hydrate_profiles": query.hydrate_profiles,
+    })
+}
+
 fn parse_peer(raw: &str, did_domain: &str) -> Result<PeerRef, ExitError> {
     PeerRef::parse(raw, did_domain).map_err(|err| super::map_im_error(err, "people target"))
 }
@@ -274,9 +362,7 @@ fn optional_handle(
     if value.trim().is_empty() {
         return Ok(None);
     }
-    let normalized =
-        identity::normalize_handle_input(&value, did_domain).map_err(crate::app::identity_exit)?;
-    Handle::parse(&normalized.full_handle, "")
+    Handle::parse(&value, did_domain)
         .map(Some)
         .map_err(|err| super::map_im_error(err, context))
 }

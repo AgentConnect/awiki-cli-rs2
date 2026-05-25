@@ -1,4 +1,4 @@
-use super::{identity_exit, App};
+use super::App;
 use crate::cli::ParsedCommand;
 use crate::im_core_adapter::site::{self, CommandResult};
 use crate::output::ExitError;
@@ -16,9 +16,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.root.get",
+                        "service": "im-core.site",
+                        "operation": "site.root.get",
+                        "remote_call": "site.get_root",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "get_root",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                         },
@@ -47,9 +48,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.root.set",
+                        "service": "im-core.site",
+                        "operation": "site.root.set",
+                        "remote_call": "site.set_root",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "set_root",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "body_bytes": body.len(),
@@ -80,9 +82,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.list",
+                        "service": "im-core.site",
+                        "operation": "site.page.list",
+                        "remote_call": "site.list_pages",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "list_pages",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                         },
@@ -112,9 +115,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.get",
+                        "service": "im-core.site",
+                        "operation": "site.page.get",
+                        "remote_call": "site.get_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "get_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "slug": string_flag(command, "slug").trim(),
@@ -149,9 +153,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.create",
+                        "service": "im-core.site",
+                        "operation": "site.page.create",
+                        "remote_call": "site.create_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "create_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "slug": string_flag(command, "slug").trim(),
@@ -188,9 +193,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.update",
+                        "service": "im-core.site",
+                        "operation": "site.page.update",
+                        "remote_call": "site.update_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "update_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "slug": string_flag(command, "slug").trim(),
@@ -226,9 +232,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.rename",
+                        "service": "im-core.site",
+                        "operation": "site.page.rename",
+                        "remote_call": "site.rename_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "rename_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "old_slug": string_flag(command, "slug").trim(),
@@ -264,9 +271,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.delete",
+                        "service": "im-core.site",
+                        "operation": "site.page.delete",
+                        "remote_call": "site.delete_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "delete_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "slug": string_flag(command, "slug").trim(),
@@ -390,11 +398,6 @@ fn site_exit(
     hint: &'static str,
 ) -> impl FnOnce(im_core::ImError) -> ExitError {
     move |err| match err {
-        im_core::ImError::IdentityNotFound { selector }
-            if selector == "identity not found: no active identity is configured" =>
-        {
-            identity_exit(crate::identity::IdentityError::NotFound(selector))
-        }
         im_core::ImError::Service {
             status_code,
             code,

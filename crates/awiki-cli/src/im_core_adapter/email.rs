@@ -146,13 +146,15 @@ pub fn inbox_plan(
     CommandResult {
         data: json!({
             "plan": {
-                "action": "mail.getInbox",
+                "action": "mail.inbox",
+                "service": "im-core.email",
+                "operation": "mail.inbox",
+                "remote_call": "email.inbox",
                 "identity": identity,
                 "folder": if folder.trim().is_empty() { "inbox" } else { folder },
                 "limit": limit,
                 "offset": offset,
                 "unread_only": unread_only,
-                "remote_calls": ["POST /mail/rpc mail.getInbox"],
             }
         }),
         summary: "Dry run: mail inbox planned".to_string(),
@@ -164,10 +166,12 @@ pub fn read_plan(identity: &str, message_id: &str) -> CommandResult {
     CommandResult {
         data: json!({
             "plan": {
-                "action": "mail.getMessage",
+                "action": "mail.read",
+                "service": "im-core.email",
+                "operation": "mail.read",
+                "remote_call": "email.read",
                 "identity": identity,
                 "message_id": message_id,
-                "remote_calls": ["POST /mail/rpc mail.getMessage"],
             }
         }),
         summary: "Dry run: mail read planned".to_string(),
@@ -179,10 +183,12 @@ pub fn mark_read_plan(identity: &str, message_ids: &[String]) -> CommandResult {
     CommandResult {
         data: json!({
             "plan": {
-                "action": "mail.markRead",
+                "action": "mail.mark-read",
+                "service": "im-core.email",
+                "operation": "mail.mark-read",
+                "remote_call": "email.mark_read",
                 "identity": identity,
                 "message_ids": message_ids,
-                "remote_calls": ["POST /mail/rpc mail.markRead"],
             }
         }),
         summary: "Dry run: mail mark-read planned".to_string(),
@@ -194,9 +200,11 @@ pub fn account_plan(identity: &str) -> CommandResult {
     CommandResult {
         data: json!({
             "plan": {
-                "action": "mail.getMailbox",
+                "action": "mail.account",
+                "service": "im-core.email",
+                "operation": "mail.account",
+                "remote_call": "email.account",
                 "identity": identity,
-                "remote_calls": ["POST /mail/rpc mail.getMailbox"],
             }
         }),
         summary: "Dry run: mail account lookup planned".to_string(),
@@ -215,12 +223,14 @@ pub fn send_plan(
         data: json!({
             "plan": {
                 "action": "mail.send",
+                "service": "im-core.email",
+                "operation": "mail.send",
+                "remote_call": "email.send",
                 "identity": identity,
                 "to": to,
                 "cc": cc,
                 "subject": subject,
                 "has_html": !html.trim().is_empty(),
-                "remote_calls": ["POST /mail/rpc mail.send"],
             }
         }),
         summary: "Dry run: mail send planned".to_string(),
@@ -237,12 +247,14 @@ pub fn attachment_download_plan(
     CommandResult {
         data: json!({
             "plan": {
-                "action": "mail.getAttachment",
+                "action": "mail.attachment.download",
+                "service": "im-core.email",
+                "operation": "mail.attachment.download",
+                "remote_call": "email.download_attachment",
                 "identity": identity,
                 "message_id": message_id,
                 "attachment_index": attachment_index,
                 "output": output,
-                "remote_calls": ["POST /mail/rpc mail.getAttachment"],
             }
         }),
         summary: "Dry run: mail attachment download planned".to_string(),
@@ -255,9 +267,11 @@ pub fn notifications_plan(identity: &str, limit: i64) -> CommandResult {
         data: json!({
             "plan": {
                 "action": "mail.notifications",
+                "service": "im-core.email",
+                "operation": "mail.notify",
+                "local_read": "email.notifications",
                 "identity": identity,
                 "limit": limit,
-                "remote_calls": [],
             }
         }),
         summary: "Dry run: mail notifications planned".to_string(),
