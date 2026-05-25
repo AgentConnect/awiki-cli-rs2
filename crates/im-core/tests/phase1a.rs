@@ -100,7 +100,7 @@ fn e2ee_required_attachment_reports_secure_attachment_boundary() {
     let result = client.messages().send(SendMessageRequest {
         target: MessageTarget::Direct(PeerRef::parse("did:example:bob", "").unwrap()),
         body: MessageBody::Attachment {
-            input: AttachmentInput::LocalFile("image.png".to_string()),
+            input: AttachmentInput::LocalFile("image.png".into()),
             caption: None,
             mime_type: None,
         },

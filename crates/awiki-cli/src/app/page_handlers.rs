@@ -1,6 +1,6 @@
 use super::{identity_exit, App};
 use crate::cli::ParsedCommand;
-use crate::content::{self, CommandResult, ContentError};
+use crate::im_core_adapter::content::{self, CommandResult};
 use crate::output::ExitError;
 use serde_json::{json, Value};
 use std::fs;
@@ -39,22 +39,18 @@ impl App {
                 Vec::new(),
             );
         }
+        let client = self.content_client(&resolved)?;
         let result = content::create_page(
-            &resolved,
-            &self.identity_manager(&resolved),
-            content::CreatePageParams {
-                slug,
-                title,
-                body,
-                visibility: string_flag(command, "visibility"),
-            },
+            &client,
+            slug,
+            title,
+            body,
+            string_flag(command, "visibility"),
         )
-        .map_err(|err| {
-            content_exit(
-                err,
-                "Make sure the active identity has a handle and the page slug is valid.",
-            )
-        })?;
+        .map_err(content_exit(
+            "page create",
+            "Make sure the active identity has a handle and the page slug is valid.",
+        ))?;
         self.render_content_result("awiki-cli page create", &resolved, result)
     }
 
@@ -76,13 +72,11 @@ impl App {
                 Vec::new(),
             );
         }
-        let result =
-            content::list_pages(&resolved, &self.identity_manager(&resolved)).map_err(|err| {
-                content_exit(
-                    err,
-                    "Make sure the active identity has a handle and can access content pages.",
-                )
-            })?;
+        let client = self.content_client(&resolved)?;
+        let result = content::list_pages(&client).map_err(content_exit(
+            "page list",
+            "Make sure the active identity has a handle and can access content pages.",
+        ))?;
         self.render_content_result("awiki-cli page list", &resolved, result)
     }
 
@@ -109,13 +103,11 @@ impl App {
             );
         }
         let slug = string_flag(command, "slug");
-        let result = content::get_page(&resolved, &self.identity_manager(&resolved), &slug)
-            .map_err(|err| {
-                content_exit(
-                    err,
-                    "Make sure the page exists and the active identity can access it.",
-                )
-            })?;
+        let client = self.content_client(&resolved)?;
+        let result = content::get_page(&client, slug).map_err(content_exit(
+            "page get",
+            "Make sure the page exists and the active identity can access it.",
+        ))?;
         self.render_content_result("awiki-cli page get", &resolved, result)
     }
 
@@ -125,23 +117,18 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let title = string_flag(command, "title");
         if !self.globals.dry_run {
+            let client = self.content_client(&resolved)?;
             let result = content::update_page(
-                &resolved,
-                &self.identity_manager(&resolved),
-                content::UpdatePageParams {
-                    slug: string_flag(command, "slug"),
-                    title,
-                    body,
-                    visibility: changed_flag(command, "visibility")
-                        .then(|| string_flag(command, "visibility")),
-                },
+                &client,
+                string_flag(command, "slug"),
+                title,
+                body,
+                changed_flag(command, "visibility").then(|| string_flag(command, "visibility")),
             )
-            .map_err(|err| {
-                content_exit(
-                    err,
-                    "Make sure the page exists and the updated fields are valid.",
-                )
-            })?;
+            .map_err(content_exit(
+                "page update",
+                "Make sure the page exists and the updated fields are valid.",
+            ))?;
             return self.render_content_result("awiki-cli page update", &resolved, result);
         }
         let mut changed_fields = Vec::new();
@@ -151,7 +138,9 @@ impl App {
         if body.is_some() {
             changed_fields.push(Value::String("body".to_string()));
         }
-        if changed_flag(command, "visibility") {
+        if changed_flag(command, "visibility")
+            && !string_flag(command, "visibility").trim().is_empty()
+        {
             changed_fields.push(Value::String("visibility".to_string()));
         }
         let body_bytes = body.as_ref().map(|value| value.len()).unwrap_or_default();
@@ -201,20 +190,16 @@ impl App {
                 Vec::new(),
             );
         }
+        let client = self.content_client(&resolved)?;
         let result = content::rename_page(
-            &resolved,
-            &self.identity_manager(&resolved),
-            content::RenamePageParams {
-                slug: string_flag(command, "slug"),
-                to: string_flag(command, "to"),
-            },
+            &client,
+            string_flag(command, "slug"),
+            string_flag(command, "to"),
         )
-        .map_err(|err| {
-            content_exit(
-                err,
-                "Make sure the source page exists and the target slug is available.",
-            )
-        })?;
+        .map_err(content_exit(
+            "page rename",
+            "Make sure the source page exists and the target slug is available.",
+        ))?;
         self.render_content_result("awiki-cli page rename", &resolved, result)
     }
 
@@ -241,13 +226,11 @@ impl App {
             );
         }
         let slug = string_flag(command, "slug");
-        let result = content::delete_page(&resolved, &self.identity_manager(&resolved), &slug)
-            .map_err(|err| {
-                content_exit(
-                    err,
-                    "Make sure the page exists and the active identity can delete it.",
-                )
-            })?;
+        let client = self.content_client(&resolved)?;
+        let result = content::delete_page(&client, slug).map_err(content_exit(
+            "page delete",
+            "Make sure the page exists and the active identity can delete it.",
+        ))?;
         self.render_content_result("awiki-cli page delete", &resolved, result)
     }
 
@@ -263,6 +246,18 @@ impl App {
             result.data,
             &result.summary,
             result.warnings,
+        )
+    }
+
+    fn content_client(
+        &self,
+        resolved: &crate::config::Resolved,
+    ) -> Result<im_core::ImClient, ExitError> {
+        let manager = self.identity_manager(resolved);
+        crate::im_core_adapter::build_im_client(
+            resolved,
+            &manager,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )
     }
 }
@@ -308,10 +303,10 @@ fn require_flags(command: &ParsedCommand, names: &[&str]) -> Result<(), ExitErro
         .collect::<Vec<_>>()
         .join(", ");
     Err(ExitError::new(
-        "internal_error",
-        1,
+        "invalid_argument",
+        2,
         format!("required flag(s) {quoted} not set"),
-        "",
+        "Provide all required flags for this page command.",
     ))
 }
 
@@ -335,49 +330,56 @@ fn invalid_page_arg(message: impl Into<String>, hint: impl Into<String>) -> Exit
     ExitError::new("invalid_argument", 2, message, hint)
 }
 
-fn content_exit(err: ContentError, hint: &str) -> ExitError {
-    match err {
-        ContentError::SlugRequired
-        | ContentError::TitleRequired
-        | ContentError::NoUpdateFields
-        | ContentError::VisibilityInvalid => {
-            ExitError::new("invalid_argument", 2, err.to_string(), hint)
+fn content_exit(
+    context: &'static str,
+    hint: &'static str,
+) -> impl FnOnce(im_core::ImError) -> ExitError {
+    move |err| match err {
+        im_core::ImError::IdentityNotFound { selector }
+            if selector == "identity not found: no active identity is configured" =>
+        {
+            identity_exit(crate::identity::IdentityError::NotFound(selector))
         }
-        ContentError::BodySourceConflict => ExitError::new(
-            "invalid_argument",
-            2,
-            err.to_string(),
-            "Choose one content body source and make sure the file is readable.",
-        ),
-        ContentError::AuthIdentityRequired => ExitError::new(
+        im_core::ImError::Service {
+            status_code,
+            code,
+            message,
+        } => service_exit(context, hint, status_code, code, message),
+        err => crate::im_core_adapter::map_im_error(err, context),
+    }
+}
+
+fn service_exit(
+    context: &'static str,
+    hint: &'static str,
+    status_code: Option<u16>,
+    code: Option<String>,
+    message: String,
+) -> ExitError {
+    let rpc_code = code.as_deref().and_then(|value| value.parse::<i64>().ok());
+    match () {
+        _ if status_code == Some(400) || rpc_code == Some(-32602) => {
+            ExitError::new("invalid_argument", 2, message, hint)
+        }
+        _ if status_code == Some(401) || rpc_code == Some(-32000) => ExitError::new(
             "auth_required",
             3,
-            err.to_string(),
-            "Use an identity with a valid JWT, or run `awiki-cli id register` / `awiki-cli id recover` first.",
+            message,
+            "Use an identity with a valid JWT or DID WBA auth material.",
         ),
-        ContentError::Service(service_err) => match () {
-            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
-                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
-            }
-            _ if service_err.status_code == 401 || service_err.rpc_code == -32000 => {
-                ExitError::new(
-                    "auth_required",
-                    3,
-                    service_err.to_string(),
-                    "Use an identity with a valid JWT or DID WBA auth material.",
-                )
-            }
-            _ if service_err.status_code == 404 || service_err.rpc_code == -32002 => {
-                ExitError::new("not_found", 5, service_err.to_string(), hint)
-            }
-            _ if service_err.status_code == 409
-                || matches!(service_err.rpc_code, -32003 | -32004) =>
-            {
-                ExitError::new("conflict", 1, service_err.to_string(), hint)
-            }
-            _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
-        },
-        ContentError::Identity(err) => identity_exit(err),
-        ContentError::Internal(message) => ExitError::new("internal_error", 1, message, hint),
+        _ if status_code == Some(404) || rpc_code == Some(-32002) => {
+            ExitError::new("not_found", 5, message, hint)
+        }
+        _ if status_code == Some(409) || matches!(rpc_code, Some(-32003 | -32004)) => {
+            ExitError::new("conflict", 1, message, hint)
+        }
+        _ => crate::im_core_adapter::map_im_error(
+            im_core::ImError::Service {
+                status_code,
+                code,
+                message,
+            },
+            context,
+        ),
     }
 }

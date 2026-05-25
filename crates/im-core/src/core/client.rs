@@ -44,6 +44,14 @@ impl ImClient {
         crate::directory::DirectoryService::new(self)
     }
 
+    pub fn content(&self) -> crate::content::ContentService<'_> {
+        crate::content::ContentService::new(self)
+    }
+
+    pub fn site(&self) -> crate::site::SiteService<'_> {
+        crate::site::SiteService::new(self)
+    }
+
     pub fn messages(&self) -> crate::messages::MessageService<'_> {
         crate::messages::MessageService::new(self)
     }

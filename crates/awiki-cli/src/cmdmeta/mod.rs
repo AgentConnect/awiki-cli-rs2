@@ -185,12 +185,6 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "future people search API",
         });
     }
-    if has_any_command_prefix(name, &["page", "site"]) {
-        return Some(CutoverStatus::Unsupported {
-            capability: "page-site",
-            phase: "outside current im-core cutover",
-        });
-    }
     if is_one_of(
         name,
         &[
@@ -243,6 +237,24 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "people.contacts",
             "people.contacts.list",
             "people.contacts.save",
+            "page",
+            "page.create",
+            "page.list",
+            "page.get",
+            "page.update",
+            "page.rename",
+            "page.delete",
+            "site",
+            "site.root",
+            "site.root.get",
+            "site.root.set",
+            "site.page",
+            "site.page.list",
+            "site.page.get",
+            "site.page.create",
+            "site.page.update",
+            "site.page.rename",
+            "site.page.delete",
         ],
     ) {
         return Some(CutoverStatus::ImCore);

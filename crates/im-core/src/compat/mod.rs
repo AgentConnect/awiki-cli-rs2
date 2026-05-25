@@ -7,6 +7,7 @@
 //! for semver-stable application code.
 
 pub mod attachments;
+pub mod content;
 pub mod directory;
 pub mod email;
 pub mod groups;
@@ -17,4 +18,5 @@ pub mod profile;
 pub mod proof;
 pub mod realtime;
 pub mod secure;
+pub mod site;
 pub mod wire;

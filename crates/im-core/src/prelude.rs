@@ -3,6 +3,10 @@ pub use crate::attachments::{
     DownloadAttachmentRequest, DownloadedAttachment, DownloadedAttachmentDestination,
 };
 pub use crate::auth::{AuthScope, AuthService, AuthStatus, SessionBundle, SessionUpdate};
+pub use crate::content::{
+    ContentPageQuery, ContentService, PageDeleteResult, PageDocument, PageDraft, PageRef, PageSlug,
+    PageUpdate, Visibility,
+};
 pub use crate::core::{
     CoreBootstrap, ImClient, ImCore, LocalStateStatus, MigrationReport, PathCheck,
     PathValidationReport,
@@ -61,5 +65,9 @@ pub use crate::secure::{
     GroupSecurePendingWork, GroupSecurePrepareResult, GroupSecureRepairResult, GroupSecureState,
     GroupSecureStatus, SecureDelivery, SecureOutboxEntry, SecureOutboxId, SecureOutboxResult,
     SecureOutboxService, SecureOutboxStatus, SecureProblem, SecureProblemCode, SecureService,
+};
+pub use crate::site::{
+    SiteDomain, SitePageDocument, SitePageDraft, SitePageQuery, SitePageRef, SitePageUpdate,
+    SiteRootDocument, SiteRootDraft, SiteService,
 };
 pub use crate::{ImCoreConfig, MessageTransportPolicy, ServiceEndpoint};

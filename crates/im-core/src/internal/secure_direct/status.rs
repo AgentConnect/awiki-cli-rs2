@@ -402,6 +402,7 @@ VALUES ('outbox-1', 'did:example:alice', 'did:example:bob', 'redacted', 'failed'
             did_domain: "awiki.test".to_owned(),
             user_service_endpoint: None,
             message_service_endpoint: None,
+            mail_service_endpoint: None,
             anp_service_endpoint: None,
             anp_service_did: None,
             transport_policy: crate::MessageTransportPolicy::HttpOnly,

@@ -406,16 +406,7 @@ fn default_cutover_boundary_error(command: &str) -> Option<ExitError> {
 }
 
 fn is_default_cutover_blocked_domain(command: &str) -> bool {
-    command == "page"
-        || command
-            .strip_prefix("page.")
-            .is_some_and(|suffix| !suffix.is_empty())
-        || command == "site"
-        || command
-            .strip_prefix("site.")
-            .is_some_and(|suffix| !suffix.is_empty())
-        || command == "debug.db.query"
-        || command == "debug.raw.rpc"
+    command == "debug.db.query" || command == "debug.raw.rpc"
 }
 
 fn go_stub_error(command: &str) -> ExitError {
