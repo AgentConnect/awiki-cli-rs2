@@ -4,24 +4,17 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn site_schema_remains_exactly_queryable_but_outside_default_cutover_surface() {
+fn site_schema_is_supported_on_default_cutover_surface() {
     let workspace = TempDir::new().expect("workspace");
     let output = awiki_cmd(&["schema", "site"], workspace.path());
     assert_success(&output);
     let envelope = success_json(&output);
 
     assert_eq!(envelope["data"]["command"]["name"], "site");
-    assert_eq!(
-        envelope["data"]["command"]["cutover"]["status"],
-        "unsupported"
-    );
-    assert_eq!(
-        envelope["data"]["command"]["cutover"]["capability"],
-        "page-site"
-    );
+    assert_eq!(envelope["data"]["command"]["cutover"]["status"], "im_core");
     assert_eq!(
         envelope["data"]["command"]["cutover"]["default_surface"],
-        false
+        true
     );
 
     let children: Vec<_> = envelope["data"]["children"]
@@ -39,16 +32,24 @@ fn site_schema_remains_exactly_queryable_but_outside_default_cutover_surface() {
 }
 
 #[test]
-fn site_commands_return_cutover_unsupported_instead_of_legacy_plans() {
+fn site_dry_run_plans_keep_cli_envelope_contract() {
     let workspace = TempDir::new().expect("workspace");
-
-    for (args, command) in [
+    let cases = [
         (
-            &["site", "root", "get", "--domain", "tenant.example"][..],
+            vec![
+                "--dry-run",
+                "site",
+                "root",
+                "get",
+                "--domain",
+                "tenant.example",
+            ],
             "site.root.get",
+            "get_root",
+            "Dry run: site root get planned",
         ),
         (
-            &[
+            vec![
                 "--dry-run",
                 "site",
                 "root",
@@ -57,15 +58,26 @@ fn site_commands_return_cutover_unsupported_instead_of_legacy_plans() {
                 "tenant.example",
                 "--markdown",
                 "Body",
-            ][..],
+            ],
             "site.root.set",
+            "set_root",
+            "Dry run: site root set planned",
         ),
         (
-            &["site", "page", "list", "--domain", "tenant.example"][..],
+            vec![
+                "--dry-run",
+                "site",
+                "page",
+                "list",
+                "--domain",
+                "tenant.example",
+            ],
             "site.page.list",
+            "list_pages",
+            "Dry run: site page list planned",
         ),
         (
-            &[
+            vec![
                 "--dry-run",
                 "site",
                 "page",
@@ -74,11 +86,14 @@ fn site_commands_return_cutover_unsupported_instead_of_legacy_plans() {
                 "tenant.example",
                 "--slug",
                 "hello",
-            ][..],
+            ],
             "site.page.get",
+            "get_page",
+            "Dry run: site page get planned",
         ),
         (
-            &[
+            vec![
+                "--dry-run",
                 "site",
                 "page",
                 "create",
@@ -88,11 +103,14 @@ fn site_commands_return_cutover_unsupported_instead_of_legacy_plans() {
                 "hello",
                 "--markdown",
                 "Body",
-            ][..],
+            ],
             "site.page.create",
+            "create_page",
+            "Dry run: site page create planned",
         ),
         (
-            &[
+            vec![
+                "--dry-run",
                 "site",
                 "page",
                 "update",
@@ -102,11 +120,14 @@ fn site_commands_return_cutover_unsupported_instead_of_legacy_plans() {
                 "hello",
                 "--markdown",
                 "Body",
-            ][..],
+            ],
             "site.page.update",
+            "update_page",
+            "Dry run: site page update planned",
         ),
         (
-            &[
+            vec![
+                "--dry-run",
                 "site",
                 "page",
                 "rename",
@@ -116,11 +137,14 @@ fn site_commands_return_cutover_unsupported_instead_of_legacy_plans() {
                 "hello",
                 "--to",
                 "new",
-            ][..],
+            ],
             "site.page.rename",
+            "rename_page",
+            "Dry run: site page rename planned",
         ),
         (
-            &[
+            vec![
+                "--dry-run",
                 "site",
                 "page",
                 "delete",
@@ -128,13 +152,62 @@ fn site_commands_return_cutover_unsupported_instead_of_legacy_plans() {
                 "tenant.example",
                 "--slug",
                 "hello",
-            ][..],
+            ],
             "site.page.delete",
+            "delete_page",
+            "Dry run: site page delete planned",
         ),
-    ] {
-        let output = awiki_cmd(args, workspace.path());
-        assert_cutover_unsupported(&output, command);
+    ];
+
+    for (args, action, rpc_method, summary) in cases {
+        let output = awiki_cmd(&args, workspace.path());
+        assert_success(&output);
+        let envelope = success_json(&output);
+        assert_eq!(envelope["summary"], summary);
+        assert_eq!(envelope["data"]["plan"]["action"], action);
+        assert_eq!(envelope["data"]["plan"]["rpc_endpoint"], "/site/rpc");
+        assert_eq!(envelope["data"]["plan"]["rpc_method"], rpc_method);
     }
+}
+
+#[test]
+fn site_argument_errors_stay_cli_owned() {
+    let workspace = TempDir::new().expect("workspace");
+
+    let missing_domain = awiki_cmd(&["--dry-run", "site", "root", "get"], workspace.path());
+    assert_error_code(&missing_domain, "invalid_argument");
+
+    let missing_body = awiki_cmd(
+        &[
+            "--dry-run",
+            "site",
+            "root",
+            "set",
+            "--domain",
+            "tenant.example",
+        ],
+        workspace.path(),
+    );
+    assert_error_code(&missing_body, "invalid_argument");
+
+    let conflicting_body = awiki_cmd(
+        &[
+            "--dry-run",
+            "site",
+            "page",
+            "create",
+            "--domain",
+            "tenant.example",
+            "--slug",
+            "hello",
+            "--markdown",
+            "Body",
+            "--markdown-file",
+            "body.md",
+        ],
+        workspace.path(),
+    );
+    assert_error_code(&conflicting_body, "invalid_argument");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -175,7 +248,7 @@ fn success_json(output: &Output) -> Value {
     envelope
 }
 
-fn assert_cutover_unsupported(output: &Output, command: &str) {
+fn assert_error_code(output: &Output, code: &str) {
     assert_eq!(
         output.status.code(),
         Some(2),
@@ -183,25 +256,10 @@ fn assert_cutover_unsupported(output: &Output, command: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        output.stdout.is_empty(),
-        "stdout should be empty: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
     let envelope: Value =
         serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
     assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], "page-site");
-    assert_eq!(
-        envelope["error"]["details"]["required_phase"],
-        "outside current im-core cutover"
-    );
-    assert_eq!(
-        envelope["error"]["details"]["cutover_status"],
-        "unsupported"
-    );
+    assert_eq!(envelope["error"]["code"], code);
 }
 
 struct TempDir {

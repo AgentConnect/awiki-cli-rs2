@@ -15,6 +15,7 @@
 pub(crate) mod active_identity;
 pub mod auth;
 pub mod config;
+pub mod content;
 pub mod core;
 pub mod email;
 pub mod error;
@@ -27,6 +28,7 @@ pub mod paths;
 pub mod people;
 pub mod realtime;
 pub mod render;
+pub mod site;
 pub mod unsupported;
 
 pub use auth::auth_scope_from_cli;

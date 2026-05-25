@@ -89,6 +89,8 @@ pub enum CommandOwner {
     ImCoreRealtime,
     ImCoreSecure,
     ImCoreEmail,
+    ImCoreContent,
+    ImCoreSite,
     CliDiagnostic,
     CliMigration,
     ExternalUnsupported,
@@ -107,6 +109,8 @@ impl CommandOwner {
             Self::ImCoreRealtime => "im_core_realtime",
             Self::ImCoreSecure => "im_core_secure",
             Self::ImCoreEmail => "im_core_email",
+            Self::ImCoreContent => "im_core_content",
+            Self::ImCoreSite => "im_core_site",
             Self::CliDiagnostic => "cli_diagnostic",
             Self::CliMigration => "cli_migration",
             Self::ExternalUnsupported => "external_unsupported",
@@ -451,12 +455,6 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             phase: "future people search API",
         });
     }
-    if has_any_command_prefix(name, &["page", "site"]) {
-        return Some(CutoverStatus::Unsupported {
-            capability: "page-site",
-            phase: "outside current im-core cutover",
-        });
-    }
     if is_one_of(
         name,
         &[
@@ -517,6 +515,24 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "people.contacts",
             "people.contacts.list",
             "people.contacts.save",
+            "page",
+            "page.create",
+            "page.list",
+            "page.get",
+            "page.update",
+            "page.rename",
+            "page.delete",
+            "site",
+            "site.root",
+            "site.root.get",
+            "site.root.set",
+            "site.page",
+            "site.page.list",
+            "site.page.get",
+            "site.page.create",
+            "site.page.update",
+            "site.page.rename",
+            "site.page.delete",
         ],
     ) {
         return Some(CutoverStatus::ImCore);
@@ -682,9 +698,7 @@ pub fn primary_owner(raw: &str) -> CommandOwner {
     if has_any_command_prefix(name, &["debug.raw", "group.code"]) {
         return CommandOwner::ExternalUnsupported;
     }
-    if has_any_command_prefix(name, &["page", "site", "runtime.heartbeat"])
-        || name == "people.search"
-    {
+    if has_command_prefix(name, "runtime.heartbeat") || name == "people.search" {
         return CommandOwner::ExternalUnsupported;
     }
     if has_command_prefix(name, "debug") {
@@ -722,6 +736,12 @@ pub fn primary_owner(raw: &str) -> CommandOwner {
     }
     if has_command_prefix(name, "people") {
         return CommandOwner::ImCoreDirectory;
+    }
+    if has_command_prefix(name, "page") {
+        return CommandOwner::ImCoreContent;
+    }
+    if has_command_prefix(name, "site") {
+        return CommandOwner::ImCoreSite;
     }
     if has_command_prefix(name, "runtime.listener.run")
         || has_command_prefix(name, "runtime.listener.service-run")
@@ -890,12 +910,6 @@ pub fn direct_invocation_policy(raw: &str) -> DirectInvocationPolicy {
             phase: "future people search API",
         };
     }
-    if has_any_command_prefix(name, &["page", "site"]) {
-        return DirectInvocationPolicy::StableUnsupported {
-            capability: "page-site",
-            phase: "outside current im-core cutover",
-        };
-    }
     if has_command_prefix(name, "runtime.heartbeat") {
         return DirectInvocationPolicy::StableUnsupported {
             capability: "runtime-heartbeat",
@@ -1058,6 +1072,8 @@ fn default_surface_owner(owner: CommandOwner) -> bool {
             | CommandOwner::ImCoreRealtime
             | CommandOwner::ImCoreSecure
             | CommandOwner::ImCoreEmail
+            | CommandOwner::ImCoreContent
+            | CommandOwner::ImCoreSite
     )
 }
 

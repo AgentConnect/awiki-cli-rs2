@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn site_root_live_command_is_blocked_before_legacy_site_rpc() {
+fn site_root_live_command_dispatches_through_im_core_site_rpc() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_identity(workspace.path(), "alice-site", "alice", "jwt-site");
     let server = TestServer::new(vec![TestResponse::ok(
@@ -32,20 +32,28 @@ fn site_root_live_command_is_blocked_before_legacy_site_rpc() {
         workspace.path(),
     );
 
-    assert_cutover_unsupported(&output, "site.root.get");
-    assert!(
-        server.requests().is_empty(),
-        "site cutover guard must not reach legacy site RPC server"
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["action"], "site_root_get");
+    assert_eq!(envelope["data"]["root"]["domain"], "tenant.example");
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "site root get should reach site RPC once"
     );
+    assert!(requests[0].contains("POST /site/rpc HTTP/1.1"));
+    assert!(requests[0].contains(r#""method":"get_root""#));
+    assert!(requests[0].contains(r#""domain":"tenant.example""#));
     assert_eq!(
         read_identity_auth_token(workspace.path(), "alice-site"),
         "jwt-site",
-        "unsupported site command must not refresh legacy auth"
+        "site root get should not refresh JWT when the first site call succeeds"
     );
 }
 
 #[test]
-fn site_page_live_command_is_blocked_before_legacy_site_rpc() {
+fn site_page_live_command_dispatches_through_im_core_site_rpc() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_identity(workspace.path(), "alice-site", "alice", "jwt-site");
     let server = TestServer::new(vec![TestResponse::ok(
@@ -70,11 +78,20 @@ fn site_page_live_command_is_blocked_before_legacy_site_rpc() {
         workspace.path(),
     );
 
-    assert_cutover_unsupported(&output, "site.page.create");
-    assert!(
-        server.requests().is_empty(),
-        "site page cutover guard must not reach legacy site RPC server"
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["action"], "site_page_create");
+    assert_eq!(envelope["data"]["page"]["slug"], "hello");
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "site page create should reach site RPC once"
     );
+    assert!(requests[0].contains("POST /site/rpc HTTP/1.1"));
+    assert!(requests[0].contains(r#""method":"create_page""#));
+    assert!(requests[0].contains(r#""domain":"tenant.example""#));
+    assert!(requests[0].contains(r#""slug":"hello""#));
 }
 
 fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, jwt_token: &str) {
@@ -175,33 +192,11 @@ fn assert_success(output: &Output) {
     );
 }
 
-fn assert_cutover_unsupported(output: &Output, command: &str) {
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "stdout should be empty: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+fn success_json(output: &Output) -> Value {
     let envelope: Value =
-        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
-    assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], "page-site");
-    assert_eq!(
-        envelope["error"]["details"]["required_phase"],
-        "outside current im-core cutover"
-    );
-    assert_eq!(
-        envelope["error"]["details"]["cutover_status"],
-        "unsupported"
-    );
+        serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
+    assert_eq!(envelope["ok"], true);
+    envelope
 }
 
 #[derive(Clone)]

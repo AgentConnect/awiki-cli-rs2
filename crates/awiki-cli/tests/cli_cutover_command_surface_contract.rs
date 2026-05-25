@@ -98,6 +98,24 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "people.following",
         "people.contacts.list",
         "people.contacts.save",
+        "page",
+        "page.create",
+        "page.list",
+        "page.get",
+        "page.update",
+        "page.rename",
+        "page.delete",
+        "site",
+        "site.root",
+        "site.root.get",
+        "site.root.set",
+        "site.page",
+        "site.page.list",
+        "site.page.get",
+        "site.page.create",
+        "site.page.update",
+        "site.page.rename",
+        "site.page.delete",
     ] {
         assert_eq!(
             cmdmeta::cutover_status(command),
@@ -155,13 +173,6 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
         CutoverStatus::Unsupported {
             capability: "people-directory",
             phase: "future people search API",
-        }
-    );
-    assert_eq!(
-        cmdmeta::cutover_status("page.list"),
-        CutoverStatus::Unsupported {
-            capability: "page-site",
-            phase: "outside current im-core cutover",
         }
     );
     assert_eq!(
@@ -301,6 +312,14 @@ fn schema_serializes_cutover_status_for_commands_and_children() {
     assert_eq!(attachment["cutover"]["status"], "im_core");
     assert_eq!(attachment["cutover"]["default_surface"], true);
 
+    let page_list = schema_value("page.list");
+    assert_eq!(page_list["cutover"]["status"], "im_core");
+    assert_eq!(page_list["cutover"]["default_surface"], true);
+
+    let site_page_list = schema_value("site.page.list");
+    assert_eq!(site_page_list["cutover"]["status"], "im_core");
+    assert_eq!(site_page_list["cutover"]["default_surface"], true);
+
     let runtime = schema_value("runtime.listener");
     let run = schema_child("runtime.listener", "runtime.listener.run");
     assert_eq!(runtime["cutover"]["status"], "cli_owned");
@@ -335,6 +354,10 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "group.secure.repair",
         "people.follow",
         "people.contacts.list",
+        "page.list",
+        "page.create",
+        "site.root.get",
+        "site.page.list",
         "runtime.listener.enable",
         "runtime.host-notify.enable",
     ] {
@@ -350,8 +373,6 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "msg.secure.retry",
         "msg.secure.drop",
         "people.search",
-        "page.list",
-        "site.page.list",
         "runtime.heartbeat.status",
         "group.e2ee.status",
         "group.e2ee.repair",
@@ -500,59 +521,11 @@ fn direct_invocation_policy_is_enforced_before_handlers() {
 
 #[test]
 fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
-    for (args, command, capability) in [
-        (&["page", "list"][..], "page.list", "page-site"),
-        (
-            &["--dry-run", "page", "create", "--slug", "hello"][..],
-            "page.create",
-            "page-site",
-        ),
-        (
-            &["site", "page", "list", "--domain", "tenant.example"][..],
-            "site.page.list",
-            "page-site",
-        ),
-        (
-            &[
-                "--dry-run",
-                "site",
-                "root",
-                "set",
-                "--domain",
-                "tenant.example",
-            ][..],
-            "site.root.set",
-            "page-site",
-        ),
-        (
-            &[
-                "group",
-                "secure",
-                "diagnostics",
-                "--group",
-                "did:wba:awiki.ai:groups:demo:e1",
-            ][..],
-            "group.secure.diagnostics",
-            "group secure diagnostics",
-        ),
-        (
-            &[
-                "group",
-                "secure",
-                "repair",
-                "--group",
-                "did:wba:awiki.ai:groups:demo:e1",
-                "--explain",
-            ][..],
-            "group.secure.repair",
-            "group secure diagnostics",
-        ),
-        (
-            &["debug", "db", "query", "SELECT 1"][..],
-            "debug.db.query",
-            "raw-sql",
-        ),
-    ] {
+    for (args, command, capability) in [(
+        &["debug", "db", "query", "SELECT 1"][..],
+        "debug.db.query",
+        "raw-sql",
+    )] {
         let output = awiki_cmd(args);
         assert_code(&output, 2);
         let envelope = error_json(&output);
