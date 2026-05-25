@@ -68,7 +68,6 @@ impl App {
         let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let mut result = crate::im_core_adapter::messages::send_text_via_im_core(
@@ -118,10 +117,8 @@ impl App {
             );
         }
 
-        let manager = self.identity_manager(resolved);
         let client = crate::im_core_adapter::build_im_client(
             resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let result = crate::im_core_adapter::messages::send_attachment_via_im_core(
@@ -220,10 +217,8 @@ impl App {
             return self.render_msg_attachment_download_plan(command, &resolved);
         }
 
-        let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let result = crate::im_core_adapter::messages::download_attachment_via_im_core(
@@ -306,7 +301,6 @@ impl App {
             let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::messages::read_inbox_via_im_core(
@@ -379,7 +373,6 @@ impl App {
             let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::messages::read_history_via_im_core(
@@ -482,7 +475,6 @@ impl App {
             let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::messages::mark_read_via_im_core(
@@ -528,10 +520,8 @@ impl App {
                 "Dry run: direct secure status planned",
             );
         }
-        let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let result = crate::im_core_adapter::messages::direct_secure_status_via_im_core(
@@ -564,10 +554,8 @@ impl App {
                 "Dry run: direct secure repair planned",
             );
         }
-        let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let result = crate::im_core_adapter::messages::direct_secure_repair_via_im_core(

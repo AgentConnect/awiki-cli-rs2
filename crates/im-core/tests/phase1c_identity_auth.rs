@@ -44,6 +44,29 @@ fn identity_registry_lists_default_and_resolves_selectors() {
 }
 
 #[test]
+fn default_identity_file_overrides_registry_default_flags() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("identities").join("default"), "bob\n").unwrap();
+    let core = fixture.core();
+
+    let default = core.identities().default_identity().unwrap().unwrap();
+    assert_eq!(default.local_alias.as_deref(), Some("bob"));
+    assert!(default.is_default);
+
+    let identities = core.identities().list().unwrap();
+    let alice = identities
+        .iter()
+        .find(|identity| identity.local_alias.as_deref() == Some("alice"))
+        .unwrap();
+    let bob = identities
+        .iter()
+        .find(|identity| identity.local_alias.as_deref() == Some("bob"))
+        .unwrap();
+    assert!(!alice.is_default);
+    assert!(bob.is_default);
+}
+
+#[test]
 fn plan_default_identity_change_returns_previous_and_next() {
     let fixture = Fixture::new();
     let core = fixture.core();

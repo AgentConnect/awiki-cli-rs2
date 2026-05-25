@@ -2,7 +2,7 @@ use im_core::prelude::AuthScope;
 use serde_json::json;
 
 use crate::config::Resolved;
-use crate::identity::{self, Manager};
+use crate::identity;
 use crate::output::ExitError;
 
 pub fn auth_scope_from_cli(value: &str) -> Result<AuthScope, ExitError> {
@@ -21,27 +21,28 @@ pub fn auth_scope_from_cli(value: &str) -> Result<AuthScope, ExitError> {
 
 pub fn refresh_token_via_im_core(
     resolved: &Resolved,
-    manager: &Manager,
     identity_name: &str,
 ) -> Result<identity::CommandResult, ExitError> {
-    let previous = manager
-        .load(&selected_identity_name(resolved, manager, identity_name)?)
-        .map_err(crate::app::identity_exit)?;
-    let identity_name = previous.identity_name.clone();
-    let previous_token_present = !previous.jwt_token.trim().is_empty();
-    let client = super::build_im_client(
-        resolved,
-        manager,
-        super::cli_identity_selector(&identity_name),
-    )?;
+    let selector = super::cli_identity_selector(identity_name);
+    let client = super::build_im_client(resolved, selector)?;
+    let identity_name = super::identity::sdk_identity_name(client.current_identity());
+    let previous_status = client
+        .auth()
+        .status()
+        .map_err(|err| super::map_im_error(err, "id refresh-token"))?;
+    let previous_token_present = previous_status.has_session || !previous_status.needs_refresh;
     client
         .auth()
         .refresh_session()
         .map_err(|err| refresh_token_error_from_im(err, "id refresh-token", &identity_name))?;
-    let refreshed = manager
-        .load(&identity_name)
-        .map_err(crate::app::identity_exit)?;
-    let identity = identity::store::identity_summary_from_record(&refreshed);
+    let status = client
+        .auth()
+        .status()
+        .map_err(|err| super::map_im_error(err, "id refresh-token"))?;
+    let identity = super::identity::cli_identity_summary_from_sdk_with_status(
+        client.current_identity(),
+        &status,
+    );
     Ok(identity::CommandResult {
         data: json!({
             "action": "refresh_token",
@@ -69,14 +70,4 @@ fn refresh_token_error_from_im(
         }
         err => super::map_im_error(err, context),
     }
-}
-
-fn selected_identity_name(
-    resolved: &Resolved,
-    manager: &Manager,
-    requested: &str,
-) -> Result<String, ExitError> {
-    identity::service::load_identity_for_mutation(resolved, manager, requested)
-        .map(|identity| identity.identity_name)
-        .map_err(crate::app::identity_exit)
 }

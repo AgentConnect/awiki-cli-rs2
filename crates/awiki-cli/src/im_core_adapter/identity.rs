@@ -6,8 +6,7 @@ use im_core::prelude::{
     RecoverHandlePlanRequest, RecoverHandleRequest, RegisterHandleRequest, RegistrationMethod,
     VerificationInput,
 };
-use serde_json::json;
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 use crate::cli::ParsedCommand;
 use crate::identity;
@@ -169,33 +168,30 @@ pub fn register_handle_command_request(
 }
 
 pub fn register_handle_plan_via_im_core(
-    manager: &identity::Manager,
-    did_domain: &str,
+    resolved: &crate::config::Resolved,
     command: &ParsedCommand,
     identity_flag: &str,
 ) -> Result<identity::CommandResult, ExitError> {
     let request = register_handle_command_request(command, identity_flag)?;
-    register_handle_plan_command_result(manager, did_domain, request)
+    register_handle_plan_command_result(resolved, request)
 }
 
 pub fn register_handle_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     command: &ParsedCommand,
     identity_flag: &str,
 ) -> Result<identity::CommandResult, ExitError> {
     let request = register_handle_command_request(command, identity_flag)?;
-    let core = super::build_im_core(resolved, manager)?;
+    let core = super::build_im_core(resolved)?;
     let result = core
         .identities()
         .register_handle(request.clone())
         .map_err(|err| super::map_im_error(err, "id register"))?;
-    register_handle_command_result(result, manager, &request)
+    register_handle_command_result(result, &request)
 }
 
 fn register_handle_command_result(
     result: HandleRegistrationResult,
-    manager: &identity::Manager,
     request: &RegisterHandleRequest,
 ) -> Result<identity::CommandResult, ExitError> {
     let full_handle = result.handle.as_str().to_string();
@@ -220,9 +216,7 @@ fn register_handle_command_result(
         "verification_state": verification_state,
     });
     if let Some(identity) = result.identity.as_ref() {
-        data["identity"] = json!(cli_identity_summary_from_sdk_with_manager(
-            identity, manager
-        )?);
+        data["identity"] = json!(cli_identity_summary_from_sdk(identity, &[]));
     }
     if let Some(phone) = registration_phone(&request.verification) {
         data["phone"] = json!(normalize_registration_phone(phone)?);
@@ -239,20 +233,19 @@ fn register_handle_command_result(
 
 pub fn list_identities_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
+    legacy: identity::LegacyScan,
 ) -> Result<identity::CommandResult, ExitError> {
-    let core = super::build_im_core(resolved, manager)?;
+    let core = super::build_im_core(resolved)?;
     let identities = core
         .identities()
         .list()
         .map_err(|err| super::map_im_error(err, "id list"))?;
-    let summaries = cli_identity_summaries_from_sdk(&identities, manager)?;
+    let summaries = cli_identity_summaries_from_sdk(&identities);
     let identity_count = summaries.len();
     let current = identities
         .iter()
         .find(|identity| identity.is_default)
         .map(|identity| cli_identity_summary_from_sdk(identity, &summaries));
-    let legacy = manager.scan_legacy().map_err(crate::app::identity_exit)?;
     let mut warnings = Vec::new();
     if legacy.has_legacy {
         warnings.push(LEGACY_LAYOUT_HINT.to_string());
@@ -279,9 +272,8 @@ pub fn list_identities_via_im_core(
 
 pub fn current_identity_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
 ) -> Result<identity::CommandResult, ExitError> {
-    let core = super::build_im_core(resolved, manager)?;
+    let core = super::build_im_core(resolved)?;
     let default_identity = core
         .identities()
         .default_identity()
@@ -293,7 +285,7 @@ pub fn current_identity_via_im_core(
             warnings: Vec::new(),
         });
     };
-    let current = cli_identity_summary_from_sdk_with_manager(&default_identity, manager)?;
+    let current = cli_identity_summary_from_sdk(&default_identity, &[]);
     let mut summary = format!("Current identity is {}", current.identity_name);
     let mut warnings = Vec::new();
     if !current.user_state.ready_for_messaging {
@@ -311,15 +303,14 @@ pub fn current_identity_via_im_core(
 
 pub fn identity_status_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
+    legacy: identity::LegacyScan,
 ) -> Result<identity::CommandResult, ExitError> {
-    let core = super::build_im_core(resolved, manager)?;
+    let core = super::build_im_core(resolved)?;
     let identities = core
         .identities()
         .list()
         .map_err(|err| super::map_im_error(err, "id status"))?;
-    let summaries = cli_identity_summaries_from_sdk(&identities, manager)?;
-    let legacy = manager.scan_legacy().map_err(crate::app::identity_exit)?;
+    let summaries = cli_identity_summaries_from_sdk(&identities);
     let active_identity = identities
         .iter()
         .find(|identity| identity.is_default)
@@ -358,10 +349,9 @@ pub fn use_identity_plan_via_im_core(identity_name: &str) -> identity::CommandRe
 
 pub fn use_identity_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     identity_name: &str,
 ) -> Result<identity::CommandResult, ExitError> {
-    let core = super::build_im_core(resolved, manager)?;
+    let core = super::build_im_core(resolved)?;
     let change = core
         .identities()
         .plan_default_identity_change(IdentitySelector::LocalAlias(identity_name.to_string()))
@@ -372,9 +362,8 @@ pub fn use_identity_via_im_core(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(identity_name);
-    let summary = manager
-        .set_default(target_name)
-        .map_err(crate::app::identity_exit)?;
+    write_default_identity_file(&resolved.paths.identity_dir, target_name)?;
+    let summary = cli_identity_summary_from_sdk(&change.next, &[]);
     Ok(identity::CommandResult {
         data: json!({
             "action": "set_default_identity",
@@ -435,19 +424,12 @@ pub fn bind_contact_plan_via_im_core(
 
 pub fn bind_contact_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     identity_flag: &str,
     command: &ParsedCommand,
 ) -> Result<identity::CommandResult, ExitError> {
     let request = bind_contact_command_request(command)?;
-    let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
-        .map_err(crate::app::identity_exit)?;
-    let client = super::build_im_client(
-        resolved,
-        manager,
-        cli_identity_selector(&record.identity_name),
-    )?;
-    let identity = identity::store::identity_summary_from_record(&record);
+    let client = super::build_im_client(resolved, cli_identity_selector(identity_flag))?;
+    let identity = cli_identity_summary_from_sdk(client.current_identity(), &[]);
     let result = if request.sdk.wait_for_email_verification
         && matches!(request.sdk.method, ContactBindingMethod::Email { .. })
     {
@@ -457,7 +439,7 @@ pub fn bind_contact_via_im_core(
             .identity()
             .bind_contact(request.sdk)
             .map_err(|err| super::map_im_error(err, "id bind"))?;
-        bind_command_result(&identity, result).map_err(crate::app::identity_exit)?
+        bind_command_result(&identity, result)?
     };
     Ok(result)
 }
@@ -483,7 +465,7 @@ pub fn recover_handle_request(
 fn recover_handle_command_result(
     result: im_core::identity::RecoverHandleResult,
     plan: &im_core::identity::RecoverHandlePlan,
-) -> Result<identity::CommandResult, identity::IdentityError> {
+) -> Result<identity::CommandResult, ExitError> {
     let raw = identity_raw_response(&result);
     if result.state == im_core::identity::RecoverHandleState::OtpSent {
         let full_handle = plan.target_handle.clone();
@@ -491,17 +473,20 @@ fn recover_handle_command_result(
             .split_once('.')
             .map(|(local, _)| local.to_string())
             .unwrap_or_else(|| full_handle.clone());
-        return identity::wire::recover_otp_result(
+        return Ok(recover_otp_command_result(
             &plan.final_identity_name,
             &handle,
             &full_handle,
             &result.phone,
             raw,
-        );
+        )?);
     }
     let Some(local) = result.local_recovery.as_ref() else {
-        return Err(identity::IdentityError::Internal(
-            "recover_handle result is missing local recovery summary".to_string(),
+        return Err(ExitError::new(
+            "internal_error",
+            1,
+            "recover_handle result is missing local recovery summary",
+            "Run `awiki-cli doctor` to inspect configuration and storage paths.",
         ));
     };
     Ok(identity::CommandResult {
@@ -524,10 +509,9 @@ fn recover_handle_command_result(
 
 pub fn recover_handle_plan_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     request: RecoverHandleCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let core = super::build_im_core(resolved, manager)?;
+    let core = super::build_im_core(resolved)?;
     let plan = core
         .identities()
         .recover_handle_plan(RecoverHandlePlanRequest {
@@ -547,7 +531,6 @@ pub fn recover_handle_plan_via_im_core(
 
 pub fn recover_handle_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     request: RecoverHandleCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
     let phone = request.phone.trim().to_string();
@@ -560,7 +543,7 @@ pub fn recover_handle_via_im_core(
         ));
     }
 
-    let core = super::build_im_core(resolved, manager)?;
+    let core = super::build_im_core(resolved)?;
     let plan = core
         .identities()
         .recover_handle_plan(RecoverHandlePlanRequest {
@@ -586,20 +569,19 @@ pub fn recover_handle_via_im_core(
         .identities()
         .recover_handle(sdk_request)
         .map_err(|err| super::map_im_error(err, "id recover"))?;
-    recover_handle_command_result(result, &plan).map_err(crate::app::identity_exit)
+    recover_handle_command_result(result, &plan)
 }
 
 pub fn recover_handle_command_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     request: RecoverHandleCommandRequest,
     dry_run: bool,
     identity_changed: bool,
 ) -> Result<identity::CommandResult, ExitError> {
     let mut result = if dry_run {
-        recover_handle_plan_via_im_core(resolved, manager, request)
+        recover_handle_plan_via_im_core(resolved, request)
     } else {
-        recover_handle_via_im_core(resolved, manager, request)
+        recover_handle_via_im_core(resolved, request)
     }?;
     append_recover_identity_warning(&mut result, identity_changed);
     Ok(result)
@@ -627,10 +609,10 @@ fn bind_email_wait_via_im_core(
         .bind_contact(request.sdk.clone())
         .map_err(|err| super::map_im_error(err, "id bind"))?;
     if result.state == ContactBindingState::Completed {
-        return bind_command_result(identity, result).map_err(crate::app::identity_exit);
+        return bind_command_result(identity, result);
     }
     if result.state != ContactBindingState::Pending {
-        return bind_command_result(identity, result).map_err(crate::app::identity_exit);
+        return bind_command_result(identity, result);
     }
 
     let wait_result = wait_for_email_verification_via_im_core(
@@ -640,7 +622,7 @@ fn bind_email_wait_via_im_core(
         request.poll_interval_seconds,
     )?;
     result = wait_result;
-    bind_command_result(identity, result).map_err(crate::app::identity_exit)
+    bind_command_result(identity, result)
 }
 
 fn wait_for_email_verification_via_im_core(
@@ -671,32 +653,29 @@ fn wait_for_email_verification_via_im_core(
 fn bind_command_result(
     identity: &identity::IdentitySummary,
     result: ContactBindingResult,
-) -> Result<identity::CommandResult, identity::IdentityError> {
+) -> Result<identity::CommandResult, ExitError> {
     match result.state {
-        ContactBindingState::OtpSent => identity::wire::bind_phone_otp_result(
-            identity,
-            &result.target,
-            identity_raw_response(&result),
-        ),
+        ContactBindingState::OtpSent => {
+            bind_phone_otp_command_result(identity, &result.target, identity_raw_response(&result))
+        }
         ContactBindingState::Completed
             if matches!(result.method, ContactBindingMethodKind::Phone) =>
         {
-            identity::wire::bind_phone_completed_result(
+            bind_phone_completed_command_result(
                 identity,
                 &result.target,
                 identity_raw_response(&result),
             )
         }
-        ContactBindingState::EmailSent => Ok(identity::wire::bind_email_sent_result(
+        ContactBindingState::EmailSent => Ok(bind_email_sent_command_result(
             identity,
             &result.target,
             identity_raw_response(&result),
         )),
-        ContactBindingState::Pending => Ok(identity::wire::bind_email_pending_result(
-            identity,
-            &result.target,
-        )),
-        ContactBindingState::Completed => Ok(identity::wire::bind_email_completed_result(
+        ContactBindingState::Pending => {
+            Ok(bind_email_pending_command_result(identity, &result.target))
+        }
+        ContactBindingState::Completed => Ok(bind_email_completed_command_result(
             identity,
             &result.target,
         )),
@@ -716,33 +695,22 @@ pub fn get_profile_request(command: &ParsedCommand) -> GetProfileCommandRequest 
 
 pub fn get_self_profile_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     identity_flag: &str,
 ) -> Result<identity::CommandResult, ExitError> {
-    let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
-        .map_err(crate::app::identity_exit)?;
-    let client = super::build_im_client(
-        resolved,
-        manager,
-        cli_identity_selector(&record.identity_name),
-    )?;
+    let client = super::build_im_client(resolved, cli_identity_selector(identity_flag))?;
     let profile = client
         .identity()
         .profile()
         .map_err(|err| super::map_im_error(err, "id profile get"))?;
-    Ok(identity::wire::profile_self_result(
-        profile.to_wire_profile_value(),
-    ))
+    Ok(profile_self_command_result(profile.to_wire_profile_value()))
 }
 
 pub fn get_public_profile_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     identity_flag: &str,
     request: GetProfileCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let Some(client) =
-        build_optional_directory_client(resolved, manager, identity_flag, "id profile get")?
+    let Some(client) = build_optional_directory_client(resolved, identity_flag, "id profile get")?
     else {
         return Err(super::unsupported_cutover_command(
             "id.profile.get",
@@ -766,7 +734,7 @@ pub fn get_public_profile_via_im_core(
         subject.insert("full_handle".to_string(), Value::String(target.full_handle));
         subject.insert("domain".to_string(), Value::String(target.effective_domain));
         subject.insert("did".to_string(), Value::String(did));
-        return Ok(identity::wire::profile_public_result(
+        return Ok(profile_public_command_result(
             Value::Object(subject),
             result.profile.to_wire_profile_value(),
         ));
@@ -779,7 +747,7 @@ pub fn get_public_profile_via_im_core(
         .directory()
         .public_profile(IdentitySubject::Did(did))
         .map_err(|err| super::map_im_error(err, "id profile get"))?;
-    Ok(identity::wire::profile_public_result(
+    Ok(profile_public_command_result(
         Value::Object(subject),
         result.profile.to_wire_profile_value(),
     ))
@@ -794,7 +762,6 @@ pub fn resolve_request(command: &ParsedCommand) -> ResolveCommandRequest {
 
 pub fn resolve_identity_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     identity_flag: &str,
     request: ResolveCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
@@ -808,8 +775,7 @@ pub fn resolve_identity_via_im_core(
             "Pass either --handle <handle> or --did <did>.",
         ));
     }
-    let Some(client) =
-        build_optional_directory_client(resolved, manager, identity_flag, "id resolve")?
+    let Some(client) = build_optional_directory_client(resolved, identity_flag, "id resolve")?
     else {
         return Err(super::unsupported_cutover_command(
             "id.resolve",
@@ -834,11 +800,10 @@ pub fn resolve_identity_via_im_core(
 
 fn build_optional_directory_client(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     identity_flag: &str,
     context: &'static str,
 ) -> Result<Option<im_core::ImClient>, ExitError> {
-    let core = super::build_im_core(resolved, manager)?;
+    let core = super::build_im_core(resolved)?;
     match core.client(cli_identity_selector(identity_flag)) {
         Ok(client) => Ok(Some(client)),
         Err(im_core::ImError::DefaultIdentityMissing)
@@ -865,25 +830,18 @@ pub fn set_profile_request(
 
 pub fn set_profile_via_im_core(
     resolved: &crate::config::Resolved,
-    manager: &identity::Manager,
     identity_flag: &str,
     request: SetProfileCommandRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let record = identity::service::load_identity_for_mutation(resolved, manager, identity_flag)
-        .map_err(crate::app::identity_exit)?;
     let selector = cli_identity_selector(identity_flag);
-    let client = super::build_im_client(resolved, manager, selector)?;
-    let identity = identity::store::identity_summary_from_record(&record);
+    let client = super::build_im_client(resolved, selector)?;
+    let identity = cli_identity_summary_from_sdk(client.current_identity(), &[]);
     let changed_fields = changed_fields_from_profile_patch(&request.patch);
     let profile = client
         .identity()
         .update_profile(request.patch)
         .map_err(|err| super::map_im_error(err, "id profile set"))?;
-    let display_name = request.display_name.trim();
-    if !display_name.is_empty() {
-        let _ = manager.update_display_name(&record.identity_name, display_name);
-    }
-    Ok(identity::wire::profile_update_result(
+    Ok(profile_update_command_result(
         &identity,
         changed_fields,
         profile.to_wire_profile_value(),
@@ -960,36 +918,189 @@ fn resolve_command_result_from_sdk(resolution: DirectoryResolution) -> identity:
         .profile
         .as_ref()
         .map(im_core::identity::Profile::to_wire_profile_value);
-    identity::wire::resolve_result(resolve, lookup, public_profile, resolution.warnings)
+    resolve_command_result(resolve, lookup, public_profile, resolution.warnings)
+}
+
+fn recover_otp_command_result(
+    identity_name: &str,
+    handle: &str,
+    full_handle: &str,
+    phone: &str,
+    result: Value,
+) -> Result<identity::CommandResult, ExitError> {
+    let phone = normalize_registration_phone(phone)?;
+    let full_handle = full_handle.trim();
+    Ok(identity::CommandResult {
+        data: json!({
+            "action": "send_recover_otp",
+            "identity_name": identity_name,
+            "handle": handle.trim(),
+            "full_handle": full_handle,
+            "method": "phone",
+            "phone": phone,
+            "verification_state": "otp_sent",
+            "result": result,
+        }),
+        summary: format!("OTP sent for handle {full_handle} recovery"),
+        warnings: Vec::new(),
+    })
+}
+
+fn bind_phone_otp_command_result(
+    identity: &identity::IdentitySummary,
+    phone: &str,
+    result: Value,
+) -> Result<identity::CommandResult, ExitError> {
+    Ok(identity::CommandResult {
+        data: json!({
+            "action": "send_bind_phone_otp",
+            "identity": identity,
+            "phone": normalize_registration_phone(phone)?,
+            "verification_state": "otp_sent",
+            "result": result,
+        }),
+        summary: "Phone binding OTP sent".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+fn bind_phone_completed_command_result(
+    identity: &identity::IdentitySummary,
+    phone: &str,
+    result: Value,
+) -> Result<identity::CommandResult, ExitError> {
+    Ok(identity::CommandResult {
+        data: json!({
+            "action": "bind_phone",
+            "identity": identity,
+            "phone": normalize_registration_phone(phone)?,
+            "verification_state": "completed",
+            "result": result,
+        }),
+        summary: "Phone bound successfully".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+fn bind_email_sent_command_result(
+    identity: &identity::IdentitySummary,
+    email: &str,
+    result: Value,
+) -> identity::CommandResult {
+    identity::CommandResult {
+        data: json!({
+            "action": "send_bind_email",
+            "identity": identity,
+            "email": normalize_registration_email(email),
+            "verification_state": "email_sent",
+            "result": result,
+        }),
+        summary: "Binding email sent".to_string(),
+        warnings: Vec::new(),
+    }
+}
+
+fn bind_email_pending_command_result(
+    identity: &identity::IdentitySummary,
+    email: &str,
+) -> identity::CommandResult {
+    identity::CommandResult {
+        data: json!({
+            "action": "wait_for_bind_email",
+            "identity": identity,
+            "email": normalize_registration_email(email),
+            "verification_state": "pending",
+        }),
+        summary: "Email verification is still pending".to_string(),
+        warnings: Vec::new(),
+    }
+}
+
+fn bind_email_completed_command_result(
+    identity: &identity::IdentitySummary,
+    email: &str,
+) -> identity::CommandResult {
+    identity::CommandResult {
+        data: json!({
+            "action": "bind_email",
+            "identity": identity,
+            "email": normalize_registration_email(email),
+            "verification_state": "completed",
+        }),
+        summary: "Email binding verified successfully".to_string(),
+        warnings: Vec::new(),
+    }
+}
+
+fn resolve_command_result(
+    resolve: Option<Value>,
+    lookup: Option<Value>,
+    public_profile: Option<Value>,
+    warnings: Vec<String>,
+) -> identity::CommandResult {
+    let mut data = Map::new();
+    if let Some(resolve) = resolve {
+        data.insert("resolve".to_string(), resolve);
+    }
+    if let Some(lookup) = lookup {
+        data.insert("lookup".to_string(), lookup);
+    }
+    if let Some(public_profile) = public_profile {
+        data.insert("public_profile".to_string(), public_profile);
+    }
+    identity::CommandResult {
+        data: Value::Object(data),
+        summary: "Identity resolved successfully".to_string(),
+        warnings,
+    }
+}
+
+fn profile_self_command_result(profile: Value) -> identity::CommandResult {
+    identity::CommandResult {
+        data: json!({
+            "subject": "self",
+            "profile": profile,
+        }),
+        summary: "Fetched current identity profile".to_string(),
+        warnings: Vec::new(),
+    }
+}
+
+fn profile_public_command_result(subject: Value, profile: Value) -> identity::CommandResult {
+    identity::CommandResult {
+        data: json!({
+            "subject": subject,
+            "profile": profile,
+        }),
+        summary: "Fetched public profile".to_string(),
+        warnings: Vec::new(),
+    }
+}
+
+fn profile_update_command_result(
+    identity: &identity::IdentitySummary,
+    changed_fields: Vec<String>,
+    profile: Value,
+) -> identity::CommandResult {
+    identity::CommandResult {
+        data: json!({
+            "action": "update_profile",
+            "identity": identity,
+            "changed_fields": changed_fields,
+            "profile": profile,
+        }),
+        summary: "Profile updated successfully".to_string(),
+        warnings: Vec::new(),
+    }
 }
 
 fn cli_identity_summaries_from_sdk(
     identities: &[im_core::IdentitySummary],
-    manager: &identity::Manager,
-) -> Result<Vec<identity::IdentitySummary>, ExitError> {
+) -> Vec<identity::IdentitySummary> {
     identities
         .iter()
-        .map(|summary| cli_identity_summary_from_sdk_with_manager(summary, manager))
+        .map(|summary| cli_identity_summary_from_sdk(summary, &[]))
         .collect()
-}
-
-fn cli_identity_summary_from_sdk_with_manager(
-    summary: &im_core::IdentitySummary,
-    manager: &identity::Manager,
-) -> Result<identity::IdentitySummary, ExitError> {
-    let identity_name = sdk_identity_name(summary);
-    match manager.load(&identity_name) {
-        Ok(record) => {
-            let mut cli_summary = identity::store::identity_summary_from_record(&record);
-            cli_summary.is_default = summary.is_default;
-            Ok(cli_summary)
-        }
-        Err(identity::IdentityError::NotFound(_)) => Ok(cli_identity_summary_from_sdk(
-            summary,
-            &manager.list().unwrap_or_default(),
-        )),
-        Err(err) => Err(crate::app::identity_exit(err)),
-    }
 }
 
 fn cli_identity_summary_from_sdk(
@@ -1049,13 +1160,94 @@ fn cli_identity_summary_from_sdk(
     }
 }
 
-fn sdk_identity_name(summary: &im_core::IdentitySummary) -> String {
+pub(crate) fn sdk_identity_name(summary: &im_core::IdentitySummary) -> String {
     summary
         .local_alias
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| summary.id.as_str())
         .to_string()
+}
+
+pub(crate) fn cli_identity_summary_from_sdk_with_status(
+    summary: &im_core::IdentitySummary,
+    status: &im_core::auth::AuthStatus,
+) -> identity::IdentitySummary {
+    let mut value = cli_identity_summary_from_sdk(summary, &[]);
+    value.has_jwt = status.has_session || !status.needs_refresh;
+    value
+}
+
+fn write_default_identity_file(
+    identity_root_dir: &str,
+    identity_name: &str,
+) -> Result<(), ExitError> {
+    let identity_name = identity_name.trim();
+    if identity_name.is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "default identity name must not be empty.",
+            "Run `awiki-cli id list` to inspect available identities.",
+        ));
+    }
+    let root = std::path::Path::new(identity_root_dir);
+    std::fs::create_dir_all(root).map_err(|err| {
+        ExitError::new(
+            "internal_error",
+            1,
+            format!("create identity root {}: {err}", root.display()),
+            "Check workspace identity directory permissions.",
+        )
+    })?;
+    set_private_dir_mode(root)?;
+    let path = root.join("default");
+    std::fs::write(&path, format!("{identity_name}\n")).map_err(|err| {
+        ExitError::new(
+            "internal_error",
+            1,
+            format!("write default identity file {}: {err}", path.display()),
+            "Check workspace identity directory permissions.",
+        )
+    })?;
+    set_private_file_mode(&path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_dir_mode(path: &std::path::Path) -> Result<(), ExitError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|err| {
+        ExitError::new(
+            "internal_error",
+            1,
+            format!("set permissions on {}: {err}", path.display()),
+            "Check workspace identity directory permissions.",
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn set_private_dir_mode(_path: &std::path::Path) -> Result<(), ExitError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_file_mode(path: &std::path::Path) -> Result<(), ExitError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
+        ExitError::new(
+            "internal_error",
+            1,
+            format!("set permissions on {}: {err}", path.display()),
+            "Check workspace identity directory permissions.",
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn set_private_file_mode(_path: &std::path::Path) -> Result<(), ExitError> {
+    Ok(())
 }
 
 struct RegisterPlanTarget {
@@ -1066,12 +1258,16 @@ struct RegisterPlanTarget {
 }
 
 fn register_handle_plan_command_result(
-    manager: &identity::Manager,
-    did_domain: &str,
+    resolved: &crate::config::Resolved,
     request: RegisterHandleRequest,
 ) -> Result<identity::CommandResult, ExitError> {
-    let target = register_plan_target(request.requested_handle.as_str(), did_domain)?;
-    let existing = manager.list().unwrap_or_default();
+    let target = register_plan_target(request.requested_handle.as_str(), &resolved.did_domain)?;
+    let core = super::build_im_core(resolved)?;
+    let existing = core
+        .identities()
+        .list()
+        .map(|items| cli_identity_summaries_from_sdk(&items))
+        .unwrap_or_default();
     let alias_base = if target.explicit_domain {
         target.full_handle.as_str()
     } else {

@@ -24,7 +24,6 @@ impl App {
         let (secure_required, warnings) =
             group_secure_requirement(command, Some(message_security_profile.as_str()))?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let request = crate::im_core_adapter::groups::GroupCreateRequest {
                 identity_name: self.globals.identity.clone(),
                 name,
@@ -50,7 +49,6 @@ impl App {
             };
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let mut result = crate::im_core_adapter::groups::create_group_via_im_core(
@@ -103,10 +101,8 @@ impl App {
             "Usage: awiki-cli group get --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result =
@@ -139,7 +135,6 @@ impl App {
             "Usage: awiki-cli group join --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let request = crate::im_core_adapter::groups::GroupJoinRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
@@ -147,7 +142,6 @@ impl App {
             };
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result =
@@ -207,7 +201,6 @@ impl App {
         )?;
         let (secure_required, warnings) = group_secure_requirement(command, None)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let request = crate::im_core_adapter::groups::GroupMemberRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
@@ -224,7 +217,6 @@ impl App {
             };
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let mut result = if public_action == "add" {
@@ -292,7 +284,6 @@ impl App {
         )?;
         let (secure_required, warnings) = group_secure_requirement(command, None)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let request = crate::im_core_adapter::groups::GroupLeaveRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
@@ -302,7 +293,6 @@ impl App {
             };
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let mut result = crate::im_core_adapter::groups::leave_group_via_im_core(
@@ -343,7 +333,6 @@ impl App {
             "Usage: awiki-cli group update --group <GROUP_DID>",
         )?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let request = crate::im_core_adapter::groups::GroupUpdateRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
@@ -363,7 +352,6 @@ impl App {
             };
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::groups::update_group_via_im_core(
@@ -408,10 +396,8 @@ impl App {
         let resolved = self.resolve_config()?;
         let limit = int_flag(command, "limit", 50)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result =
@@ -448,10 +434,8 @@ impl App {
         )?;
         let limit = int_flag(command, "limit", 100)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::groups::group_members_via_im_core(
@@ -490,11 +474,9 @@ impl App {
         )?;
         let limit = int_flag(command, "limit", 50)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let cursor = string_flag(command, "cursor");
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::groups::group_messages_via_im_core(
@@ -595,10 +577,8 @@ impl App {
                 warnings,
             );
         }
-        let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let mut result = if action == "status" {
