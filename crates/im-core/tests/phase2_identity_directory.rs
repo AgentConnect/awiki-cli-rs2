@@ -148,6 +148,26 @@ fn identity_profile_bridge_updates_current_profile() {
     assert_eq!(result.profile.tags, vec!["rust", "cli"]);
     assert_eq!(result.profile.markdown.as_deref(), Some("## Alice"));
     assert_eq!(result.raw["nick_name"], "Alice Updated");
+    let identity_payload: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .root
+                .join("identities")
+                .join("alice")
+                .join("identity.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(identity_payload["name"], "Alice Updated");
+    let registry_payload: Value = serde_json::from_slice(
+        &fs::read(fixture.root.join("identities").join("registry.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        registry_payload["identities"][0]["display_name"],
+        "Alice Updated"
+    );
 }
 
 #[test]
@@ -563,9 +583,21 @@ impl Fixture {
     }
 }
 
-fn write_identity_runtime(identities: &std::path::Path, alias: &str, _did: &str) {
+fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str) {
     let identity_dir = identities.join(alias);
     fs::create_dir_all(&identity_dir).unwrap();
+    fs::write(
+        identity_dir.join("identity.json"),
+        serde_json::to_vec_pretty(&json!({
+            "did": did,
+            "unique_id": format!("{alias}-id"),
+            "name": "Alice",
+            "handle": format!("{alias}.awiki.test"),
+            "full_handle": format!("{alias}.awiki.test"),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let bundle = anp::authentication::create_did_wba_document(
         "awiki.test",
         anp::authentication::DidDocumentOptions {

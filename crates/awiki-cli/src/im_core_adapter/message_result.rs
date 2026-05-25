@@ -185,17 +185,6 @@ impl std::error::Error for ServiceError {}
 impl std::error::Error for IdentityError {}
 impl std::error::Error for MessageAdapterError {}
 
-impl From<crate::identity::wire::ServiceError> for ServiceError {
-    fn from(value: crate::identity::wire::ServiceError) -> Self {
-        Self {
-            status_code: value.status_code,
-            rpc_code: value.rpc_code,
-            message: value.message,
-            data: value.data,
-        }
-    }
-}
-
 impl From<crate::identity::IdentityError> for IdentityError {
     fn from(value: crate::identity::IdentityError) -> Self {
         match value {
@@ -220,7 +209,7 @@ impl From<crate::identity::IdentityError> for IdentityError {
             crate::identity::IdentityError::Service(error) => {
                 let message = error.to_string();
                 Self {
-                    kind: identity_service_error_kind(&error),
+                    kind: identity_service_error_kind(error.status_code, error.rpc_code),
                     message,
                 }
             }
@@ -240,8 +229,8 @@ impl From<crate::identity::IdentityError> for IdentityError {
     }
 }
 
-fn identity_service_error_kind(error: &crate::identity::wire::ServiceError) -> IdentityErrorKind {
-    match (error.status_code, error.rpc_code) {
+fn identity_service_error_kind(status_code: u16, rpc_code: i64) -> IdentityErrorKind {
+    match (status_code, rpc_code) {
         (400, _) | (_, -32602) => IdentityErrorKind::InvalidInput,
         (401, _) | (_, -32000) => IdentityErrorKind::AuthRequired,
         (404, _) | (_, -32002) => IdentityErrorKind::NotFound,

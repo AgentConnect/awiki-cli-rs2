@@ -310,6 +310,121 @@ impl<'a> IdentityStore<'a> {
         set_private_file_mode(path)?;
         Ok(())
     }
+
+    pub(crate) fn update_display_name_projection(
+        &self,
+        identity: &crate::identity::IdentitySummary,
+        display_name: &str,
+    ) -> crate::ImResult<()> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Ok(());
+        }
+        let Some((alias, dir_name)) = self.local_alias_and_dir_name(identity)? else {
+            return Ok(());
+        };
+        let identity_path = self
+            .paths
+            .identity_root_dir
+            .join(dir_name)
+            .join(IDENTITY_FILE_NAME);
+        match fs::read(&identity_path) {
+            Ok(raw) => {
+                let mut payload: Value =
+                    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+                        detail: err.to_string(),
+                    })?;
+                let object =
+                    payload
+                        .as_object_mut()
+                        .ok_or_else(|| crate::ImError::Serialization {
+                            detail: "identity payload must be a JSON object".to_string(),
+                        })?;
+                object.insert("name".to_string(), Value::String(display_name.to_string()));
+                write_secure_json(&identity_path, &payload)?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+        self.update_registry_display_name(identity, &alias, display_name)?;
+        Ok(())
+    }
+
+    fn local_alias_and_dir_name(
+        &self,
+        identity: &crate::identity::IdentitySummary,
+    ) -> crate::ImResult<Option<(String, String)>> {
+        let index = self.load_index()?;
+        let alias = identity.local_alias.as_deref().unwrap_or_default();
+        if !alias.is_empty() {
+            if let Some(entry) = index.credentials.get(alias) {
+                return Ok(Some((alias.to_string(), entry.dir_name.clone())));
+            }
+        }
+        for (candidate_alias, entry) in &index.credentials {
+            if entry.unique_id == identity.id.as_str() || entry.did == identity.did.as_str() {
+                return Ok(Some((candidate_alias.clone(), entry.dir_name.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    fn update_registry_display_name(
+        &self,
+        identity: &crate::identity::IdentitySummary,
+        alias: &str,
+        display_name: &str,
+    ) -> crate::ImResult<()> {
+        let raw = match fs::read(&self.paths.registry_path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+        let mut registry: Value = match serde_json::from_slice(&raw) {
+            Ok(value) => value,
+            Err(_) => return Ok(()),
+        };
+        let mut changed = false;
+        if let Some(entry) = registry
+            .as_object_mut()
+            .and_then(|object| object.get_mut("credentials"))
+            .and_then(Value::as_object_mut)
+            .and_then(|credentials| credentials.get_mut(alias))
+            .and_then(Value::as_object_mut)
+        {
+            entry.insert("name".to_string(), Value::String(display_name.to_string()));
+            changed = true;
+        } else if let Some(identities) = registry
+            .as_object_mut()
+            .and_then(|object| object.get_mut("identities"))
+            .and_then(Value::as_array_mut)
+        {
+            let local_alias = identity.local_alias.as_deref().unwrap_or_default();
+            for item in identities {
+                let Some(object) = item.as_object_mut() else {
+                    continue;
+                };
+                let id_matches =
+                    object.get("id").and_then(Value::as_str) == Some(identity.id.as_str());
+                let did_matches =
+                    object.get("did").and_then(Value::as_str) == Some(identity.did.as_str());
+                let alias_matches = !local_alias.is_empty()
+                    && object.get("local_alias").and_then(Value::as_str) == Some(local_alias);
+                if id_matches || did_matches || alias_matches {
+                    object.insert(
+                        "display_name".to_string(),
+                        Value::String(display_name.to_string()),
+                    );
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if changed {
+            write_secure_json(&self.paths.registry_path, &registry)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

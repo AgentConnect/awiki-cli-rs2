@@ -36,7 +36,6 @@ pub fn replace_did_plan_via_im_core(
     )?;
     let client = super::build_im_client(
         resolved,
-        manager,
         IdentitySelector::LocalAlias(request.identity_name.clone()),
     )?;
     let plan = client
@@ -77,8 +76,12 @@ fn build_replace_did_plan_command_request(
     role: Option<&str>,
     endpoint_url: Option<&str>,
 ) -> Result<ReplaceDidPlanCommandRequest, ExitError> {
-    let record = identity::service::load_identity_for_mutation(resolved, manager, identity_name)
-        .map_err(crate::app::identity_exit)?;
+    let core = super::build_im_core(resolved)?;
+    let summary = core
+        .identities()
+        .resolve(super::cli_identity_selector(identity_name))
+        .map_err(|err| super::map_im_error(err, "id replace-did"))?;
+    let record = load_local_identity_for_diagnostic_plan(manager, &summary)?;
     let planned_new_did = match planned_new_did_override {
         Some(value) => value,
         None => planned_replace_did(&record)?,
@@ -107,6 +110,20 @@ fn build_replace_did_plan_command_request(
         sdk,
         identity_name: record.identity_name,
     })
+}
+
+fn load_local_identity_for_diagnostic_plan(
+    manager: &identity::Manager,
+    summary: &im_core::IdentitySummary,
+) -> Result<identity::types::StoredIdentity, ExitError> {
+    let identity_name = summary
+        .local_alias
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| summary.id.as_str());
+    manager
+        .load(identity_name)
+        .map_err(crate::app::identity_exit)
 }
 
 fn replace_did_plan_command_result(

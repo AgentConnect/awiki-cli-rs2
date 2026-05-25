@@ -255,9 +255,10 @@ impl IdentityRegistry<'_> {
                 });
             }
         };
-        if snapshot.default_alias.is_none() {
-            snapshot.default_alias =
-                default_alias_from_file(paths.default_identity_path.as_deref())?;
+        if let Some(default_alias) =
+            default_alias_from_file(paths.default_identity_path.as_deref())?
+        {
+            snapshot.default_alias = Some(default_alias);
         }
         snapshot.apply_default_flags();
         Ok(snapshot)
@@ -297,10 +298,9 @@ impl RegistrySnapshot {
     fn apply_default_flags(&mut self) {
         let default_alias = self.default_alias.clone();
         for entry in &mut self.entries {
-            entry.summary.is_default = default_alias
-                .as_deref()
-                .is_some_and(|alias| entry.local_alias.as_deref() == Some(alias))
-                || entry.summary.is_default;
+            if let Some(alias) = default_alias.as_deref() {
+                entry.summary.is_default = entry.local_alias.as_deref() == Some(alias);
+            }
         }
     }
 }

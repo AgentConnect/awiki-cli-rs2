@@ -589,8 +589,8 @@ fn connect_session(
         anyhow::bail!("{}", user_registration_error(&record, &user_state));
     }
     let selector = im_core::IdentitySelector::LocalAlias(record.identity_name.clone());
-    let client = crate::im_core_adapter::build_im_client(resolved, manager, selector)
-        .map_err(anyhow::Error::new)?;
+    let client =
+        crate::im_core_adapter::build_im_client(resolved, selector).map_err(anyhow::Error::new)?;
     let endpoints =
         realtime_client_endpoints(&resolved.service_base_url).map_err(anyhow::Error::msg)?;
     let mut dialer = ListenerRealtimeDialer::new(&resolved.ca_bundle);

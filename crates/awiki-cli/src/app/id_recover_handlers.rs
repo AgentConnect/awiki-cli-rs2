@@ -26,10 +26,8 @@ impl App {
             phone,
             otp: string_flag(command, "otp"),
         };
-        let manager = self.identity_manager(&resolved);
         let result = recover_handle_command_via_im_core(
             &resolved,
-            &manager,
             request,
             self.globals.dry_run,
             self.globals.identity_changed,

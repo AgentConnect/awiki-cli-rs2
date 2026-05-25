@@ -22,10 +22,8 @@ impl App {
             email::inbox_plan(&self.globals.identity, &folder, limit, offset, unread_only)
         } else {
             let query = email::inbox_query(command)?;
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             email::render_inbox(
@@ -53,10 +51,8 @@ impl App {
             email::read_plan(&self.globals.identity, &message_id)
         } else {
             let id = email::read_id(command)?;
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             email::render_read(
@@ -83,10 +79,8 @@ impl App {
             email::mark_read_plan(&self.globals.identity, &command.args)
         } else {
             let request = email::mark_read_request(command)?;
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             email::render_mark_read(
@@ -104,10 +98,8 @@ impl App {
         let result = if self.globals.dry_run {
             email::account_plan(&self.globals.identity)
         } else {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             email::render_account(
@@ -157,10 +149,8 @@ impl App {
             email::send_plan(&self.globals.identity, &to, &cc, &subject, &html)
         } else {
             let request = email::send_request(command)?;
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             email::render_send(
@@ -207,10 +197,8 @@ impl App {
             );
         }
         let request = email::attachment_request(command)?;
-        let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let result = client
@@ -233,10 +221,8 @@ impl App {
             email::notifications_plan(&self.globals.identity, limit)
         } else {
             let query = email::notification_query(command)?;
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             email::render_notifications(

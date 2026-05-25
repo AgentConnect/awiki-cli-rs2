@@ -458,18 +458,15 @@ impl App {
 
     pub fn run_id_register(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             crate::im_core_adapter::identity::register_handle_plan_via_im_core(
-                &manager,
-                &resolved.did_domain,
+                &resolved,
                 command,
                 &self.globals.identity,
             )?
         } else {
             crate::im_core_adapter::identity::register_handle_via_im_core(
                 &resolved,
-                &manager,
                 command,
                 &self.globals.identity,
             )?
@@ -480,16 +477,15 @@ impl App {
     pub fn run_id_list(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let manager = self.identity_manager(&resolved);
+        let legacy = manager.scan_legacy().map_err(identity_exit)?;
         let result =
-            crate::im_core_adapter::identity::list_identities_via_im_core(&resolved, &manager)?;
+            crate::im_core_adapter::identity::list_identities_via_im_core(&resolved, legacy)?;
         self.render_identity_result("awiki-cli id list", &resolved, result)
     }
 
     pub fn run_id_current(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let manager = self.identity_manager(&resolved);
-        let result =
-            crate::im_core_adapter::identity::current_identity_via_im_core(&resolved, &manager)?;
+        let result = crate::im_core_adapter::identity::current_identity_via_im_core(&resolved)?;
         self.render_identity_result("awiki-cli id current", &resolved, result)
     }
 
@@ -503,15 +499,10 @@ impl App {
             ));
         }
         let resolved = self.resolve_config_for_workspace()?;
-        let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             crate::im_core_adapter::identity::use_identity_plan_via_im_core(&command.args[0])
         } else {
-            crate::im_core_adapter::identity::use_identity_via_im_core(
-                &resolved,
-                &manager,
-                &command.args[0],
-            )?
+            crate::im_core_adapter::identity::use_identity_via_im_core(&resolved, &command.args[0])?
         };
         self.render_identity_result("awiki-cli id use", &resolved, result)
     }
@@ -519,8 +510,9 @@ impl App {
     pub fn run_id_status(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
         let manager = self.identity_manager(&resolved);
+        let legacy = manager.scan_legacy().map_err(identity_exit)?;
         let result =
-            crate::im_core_adapter::identity::identity_status_via_im_core(&resolved, &manager)?;
+            crate::im_core_adapter::identity::identity_status_via_im_core(&resolved, legacy)?;
         self.render_identity_result("awiki-cli id status", &resolved, result)
     }
 
@@ -556,16 +548,15 @@ impl App {
 
     pub fn run_id_bind(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let manager = self.identity_manager(&resolved);
         let result = if self.globals.dry_run {
             crate::im_core_adapter::identity::bind_contact_plan_via_im_core(command)?
         } else {
             crate::im_core_adapter::identity::bind_contact_via_im_core(
                 &resolved,
-                &manager,
                 &self.globals.identity,
                 command,
-            )?
+            )
+            .map_err(crate::im_core_adapter::error::map_identity_boundary_error)?
         };
         self.render_identity_result("awiki-cli id bind", &resolved, result)
     }
@@ -578,9 +569,9 @@ impl App {
         } else {
             crate::im_core_adapter::auth::refresh_token_via_im_core(
                 &resolved,
-                &manager,
                 &self.globals.identity,
-            )?
+            )
+            .map_err(crate::im_core_adapter::error::map_identity_boundary_error)?
         };
         self.render_identity_result("awiki-cli id refresh-token", &resolved, result)
     }
@@ -622,7 +613,6 @@ impl App {
                 },
             );
         }
-        let manager = self.identity_manager(&resolved);
         let request = crate::im_core_adapter::identity::set_profile_request(
             display_name,
             bio,
@@ -632,29 +622,27 @@ impl App {
         )?;
         let result = crate::im_core_adapter::identity::set_profile_via_im_core(
             &resolved,
-            &manager,
             &self.globals.identity,
             request,
-        )?;
+        )
+        .map_err(crate::im_core_adapter::error::map_identity_boundary_error)?;
         self.render_identity_result("awiki-cli id profile set", &resolved, result)
     }
 
     pub fn run_id_profile_get(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config_for_workspace()?;
-        let manager = self.identity_manager(&resolved);
         let request = crate::im_core_adapter::identity::get_profile_request(command);
         let self_profile = request.self_profile
             || (request.handle.trim().is_empty() && request.did.trim().is_empty());
         let result = if self_profile {
             crate::im_core_adapter::identity::get_self_profile_via_im_core(
                 &resolved,
-                &manager,
                 &self.globals.identity,
-            )?
+            )
+            .map_err(crate::im_core_adapter::error::map_identity_boundary_error)?
         } else {
             crate::im_core_adapter::identity::get_public_profile_via_im_core(
                 &resolved,
-                &manager,
                 &self.globals.identity,
                 request,
             )?
@@ -666,7 +654,6 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let result = crate::im_core_adapter::identity::resolve_identity_via_im_core(
             &resolved,
-            &self.identity_manager(&resolved),
             &self.globals.identity,
             crate::im_core_adapter::identity::resolve_request(command),
         )?;
@@ -920,7 +907,9 @@ pub(crate) fn identity_exit(err: IdentityError) -> ExitError {
             message,
             "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
         ),
-        IdentityError::Service(err) => identity_service_exit(err),
+        IdentityError::Service(err) => {
+            identity_service_exit(err.status_code, err.rpc_code, err.to_string())
+        }
         IdentityError::Io(err) => ExitError::new(
             "internal_error",
             1,
@@ -942,42 +931,33 @@ pub(crate) fn identity_exit(err: IdentityError) -> ExitError {
     }
 }
 
-fn identity_service_exit(err: identity::wire::ServiceError) -> ExitError {
-    let message = err.to_string();
-    match err {
-        identity::wire::ServiceError {
-            status_code: 400, ..
-        } => ExitError::new(
+fn identity_service_exit(status_code: u16, rpc_code: i64, message: String) -> ExitError {
+    match (status_code, rpc_code) {
+        (400, _) => ExitError::new(
             "invalid_argument",
             2,
             message,
             "Ensure the handle, verification method, and local alias are valid.",
         ),
-        identity::wire::ServiceError {
-            status_code: 401, ..
-        } => ExitError::new(
+        (401, _) => ExitError::new(
             "auth_required",
             3,
             message,
             "Use an identity with valid DID key material, or run `awiki-cli id refresh-token` / `awiki-cli id register` / `awiki-cli id recover` first.",
         ),
-        identity::wire::ServiceError {
-            status_code: 404, ..
-        } => ExitError::new(
+        (404, _) => ExitError::new(
             "not_found",
             5,
             message,
             "Ensure the handle, verification method, and local alias are valid.",
         ),
-        identity::wire::ServiceError {
-            status_code: 409, ..
-        } => ExitError::new(
+        (409, _) => ExitError::new(
             "conflict",
             1,
             message,
             "Ensure the handle, verification method, and local alias are valid.",
         ),
-        identity::wire::ServiceError { rpc_code, .. } if rpc_code != 0 => match rpc_code {
+        (_, rpc_code) if rpc_code != 0 => match rpc_code {
             -32602 => ExitError::new(
                 "invalid_argument",
                 2,

@@ -99,10 +99,8 @@ impl App {
     }
 
     fn people_client(&self, resolved: &Resolved) -> Result<im_core::ImClient, ExitError> {
-        let manager = self.identity_manager(resolved);
         crate::im_core_adapter::build_im_client(
             resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )
     }
