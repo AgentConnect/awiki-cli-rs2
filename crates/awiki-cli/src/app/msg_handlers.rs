@@ -1,7 +1,7 @@
+use super::handle_helpers::complete_bare_handle;
 use super::App;
 use crate::cli::ParsedCommand;
 use crate::config::Resolved;
-use crate::identity;
 use crate::im_core_adapter::message_result::{
     CommandResult, IdentityErrorKind, MessageAdapterError,
 };
@@ -18,6 +18,7 @@ struct MsgSendPlan<'a> {
     file_path: &'a str,
     mime_type: &'a str,
     has_attachment: bool,
+    secure: bool,
 }
 
 impl App {
@@ -42,8 +43,9 @@ impl App {
             return self
                 .run_msg_attachment_send_im_core(command, &resolved, &file_path, &mime_type);
         }
-        let request =
+        let (request, request_warnings) =
             crate::im_core_adapter::messages::send_message_request(command, &resolved.did_domain)?;
+        let secure = message_security_is_required(&request.security);
         let (text, message_type) = send_text_plan_fields(&request)?;
         if self.globals.dry_run {
             return self.render_msg_send_plan(
@@ -57,29 +59,25 @@ impl App {
                     file_path: "",
                     mime_type: "",
                     has_attachment: false,
+                    secure,
                 },
+                request_warnings,
             );
         }
 
-        let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        let result = crate::im_core_adapter::messages::send_text_via_im_core(
-            &resolved,
-            &manager,
-            &self.globals.identity,
-            &client,
-            request,
-        )
-        .map_err(|err| {
-            message_exit(
-                err,
-                "Ensure the active identity is ready and the message service is reachable.",
-            )
-        })?;
+        let mut result =
+            crate::im_core_adapter::messages::send_text_via_im_core(&resolved, &client, request)
+                .map_err(|err| {
+                    message_exit(
+                        err,
+                        "Ensure the active identity is ready and the message service is reachable.",
+                    )
+                })?;
+        result.warnings.extend(request_warnings);
         self.render_message_result("awiki-cli msg send", &resolved, result)
     }
 
@@ -107,25 +105,19 @@ impl App {
                     file_path,
                     mime_type,
                     has_attachment: true,
+                    secure: false,
                 },
+                Vec::new(),
             );
         }
 
-        let manager = self.identity_manager(resolved);
         let client = crate::im_core_adapter::build_im_client(
             resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let result = crate::im_core_adapter::messages::send_attachment_via_im_core(
             resolved, &client, target, request,
         )
-        .or_else(|err| {
-            if !should_fallback_attachment_send(&err) {
-                return Err(err);
-            }
-            legacy_attachment_send(resolved, &manager, command)
-        })
         .map_err(|err| {
             message_exit(
                 err,
@@ -139,6 +131,7 @@ impl App {
         &self,
         resolved: &Resolved,
         input: MsgSendPlan<'_>,
+        warnings: Vec<String>,
     ) -> Result<(), ExitError> {
         let mut plan = Map::new();
         plan.insert(
@@ -183,6 +176,11 @@ impl App {
             }),
         );
         plan.insert("local_writes".to_string(), json!(["messages"]));
+        plan.insert("secure".to_string(), Value::Bool(input.secure));
+        plan.insert(
+            "security".to_string(),
+            Value::String(if input.secure { "required" } else { "off" }.to_string()),
+        );
         if input.has_attachment {
             plan.insert(
                 "attachment".to_string(),
@@ -199,7 +197,7 @@ impl App {
             &resolved,
             json!({ "plan": plan }),
             "Dry run: message send planned",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -213,21 +211,13 @@ impl App {
             return self.render_msg_attachment_download_plan(command, &resolved);
         }
 
-        let manager = self.identity_manager(&resolved);
         let client = crate::im_core_adapter::build_im_client(
             &resolved,
-            &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
         let result = crate::im_core_adapter::messages::download_attachment_via_im_core(
             &resolved, &client, request,
         )
-        .or_else(|err| {
-            if !should_fallback_attachment_download(&err) {
-                return Err(err);
-            }
-            legacy_attachment_download(&resolved, &manager, command)
-        })
         .map_err(|err| {
             message_exit(
                 err,
@@ -302,25 +292,18 @@ impl App {
         let resolved = self.resolve_config_for_workspace()?;
         let query = crate::im_core_adapter::messages::inbox_query(command)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            let result = crate::im_core_adapter::messages::read_inbox_via_im_core(
-                &resolved,
-                &manager,
-                &client,
-                &self.globals.identity,
-                query,
-            )
-            .map_err(|err| {
-                message_exit(
+            let result =
+                crate::im_core_adapter::messages::read_inbox_via_im_core(&resolved, &client, query)
+                    .map_err(|err| {
+                        message_exit(
                     err,
                     "Ensure the active identity is ready and the message service is reachable.",
                 )
-            })?;
+                    })?;
             return self.render_message_result("awiki-cli msg inbox", &resolved, result);
         }
         self.render_msg_inbox_plan(command, &resolved)
@@ -375,19 +358,12 @@ impl App {
         let (thread, query) =
             crate::im_core_adapter::messages::history_request(command, &resolved.did_domain)?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::messages::read_history_via_im_core(
-                &resolved,
-                &manager,
-                &client,
-                &self.globals.identity,
-                thread,
-                query,
+                &resolved, &client, thread, query,
             )
             .map_err(|err| {
                 message_exit(
@@ -478,17 +454,13 @@ impl App {
         }
         let resolved = self.resolve_config_for_workspace()?;
         if !self.globals.dry_run {
-            let manager = self.identity_manager(&resolved);
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
-                &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
             let result = crate::im_core_adapter::messages::mark_read_via_im_core(
                 &resolved,
-                &manager,
                 &client,
-                &self.globals.identity,
                 command.args.clone(),
             )
             .map_err(|err| {
@@ -516,7 +488,33 @@ impl App {
     }
 
     pub fn run_msg_secure_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        unsupported_secure_command(command, "msg.secure.status")
+        let resolved = self.resolve_config_for_workspace()?;
+        let peer = required_peer_flag(command, "msg secure status")?;
+        if self.globals.dry_run {
+            return self.render_msg_secure_plan(
+                "awiki-cli msg secure status",
+                &resolved,
+                "secure.direct.status",
+                &peer,
+                "Dry run: direct secure status planned",
+            );
+        }
+        let client = crate::im_core_adapter::build_im_client(
+            &resolved,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+        )?;
+        let result = crate::im_core_adapter::messages::direct_secure_status_via_im_core(
+            &client,
+            peer,
+            &resolved.did_domain,
+        )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and local secure state is available.",
+            )
+        })?;
+        self.render_message_result("awiki-cli msg secure status", &resolved, result)
     }
 
     pub fn run_msg_secure_init(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -524,7 +522,33 @@ impl App {
     }
 
     pub fn run_msg_secure_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        unsupported_secure_command(command, "msg.secure.repair")
+        let resolved = self.resolve_config_for_workspace()?;
+        let peer = required_peer_flag(command, "msg secure repair")?;
+        if self.globals.dry_run {
+            return self.render_msg_secure_plan(
+                "awiki-cli msg secure repair",
+                &resolved,
+                "secure.direct.repair",
+                &peer,
+                "Dry run: direct secure repair planned",
+            );
+        }
+        let client = crate::im_core_adapter::build_im_client(
+            &resolved,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+        )?;
+        let result = crate::im_core_adapter::messages::direct_secure_repair_via_im_core(
+            &client,
+            peer,
+            &resolved.did_domain,
+        )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and local secure state is available.",
+            )
+        })?;
+        self.render_message_result("awiki-cli msg secure repair", &resolved, result)
     }
 
     pub fn run_msg_secure_failed(&self) -> Result<(), ExitError> {
@@ -557,6 +581,31 @@ impl App {
             result.warnings,
         )
     }
+
+    fn render_msg_secure_plan(
+        &self,
+        command: &str,
+        resolved: &Resolved,
+        action: &str,
+        peer: &str,
+        summary: &str,
+    ) -> Result<(), ExitError> {
+        self.render_success(
+            command,
+            resolved,
+            json!({
+                "plan": {
+                    "action": action,
+                    "identity": self.globals.identity,
+                    "runtime_mode": resolved.runtime_mode,
+                    "with": peer,
+                    "target": target_value(peer, "", resolved),
+                }
+            }),
+            summary,
+            Vec::new(),
+        )
+    }
 }
 
 fn unsupported_secure_command(
@@ -570,133 +619,26 @@ fn unsupported_secure_command(
     ))
 }
 
-fn should_fallback_attachment_send(err: &MessageAdapterError) -> bool {
+fn required_peer_flag(command: &ParsedCommand, command_name: &str) -> Result<String, ExitError> {
+    let peer = string_flag(command, "with");
+    if peer.trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            format!("{command_name} requires --with."),
+            format!("Usage: awiki-cli {command_name} --with <PEER>"),
+        ));
+    }
+    Ok(peer)
+}
+
+fn message_security_is_required(security: &im_core::prelude::MessageSecurityMode) -> bool {
     matches!(
-        err,
-        MessageAdapterError::AttachmentNotSupported | MessageAdapterError::GroupNotSupported
+        security,
+        im_core::prelude::MessageSecurityMode::E2eeRequired
+            | im_core::prelude::MessageSecurityMode::SecureDirect
+            | im_core::prelude::MessageSecurityMode::GroupE2ee
     )
-}
-
-fn should_fallback_attachment_download(err: &MessageAdapterError) -> bool {
-    matches!(err, MessageAdapterError::AttachmentNotSupported)
-}
-
-fn legacy_attachment_send(
-    resolved: &Resolved,
-    manager: &crate::identity::Manager,
-    command: &ParsedCommand,
-) -> Result<CommandResult, MessageAdapterError> {
-    crate::message::send(resolved, manager, legacy_send_request(command))
-        .map(legacy_command_result)
-        .map_err(message_error_to_adapter)
-}
-
-fn legacy_attachment_download(
-    resolved: &Resolved,
-    manager: &crate::identity::Manager,
-    command: &ParsedCommand,
-) -> Result<CommandResult, MessageAdapterError> {
-    crate::message::download_attachment(resolved, manager, legacy_download_request(command))
-        .map(legacy_command_result)
-        .map_err(message_error_to_adapter)
-}
-
-fn legacy_command_result(result: crate::message::CommandResult) -> CommandResult {
-    CommandResult {
-        data: result.data,
-        summary: result.summary,
-        warnings: result.warnings,
-    }
-}
-
-fn legacy_send_request(command: &ParsedCommand) -> crate::message::SendRequest {
-    crate::message::SendRequest {
-        identity_name: command.globals.identity.clone(),
-        target: string_flag(command, "to"),
-        group: string_flag(command, "group"),
-        text: string_flag(command, "text"),
-        message_type: string_flag(command, "type"),
-        secure_mode: string_flag(command, "secure"),
-        file_path: string_flag(command, "file"),
-        mime_type: string_flag(command, "mime-type"),
-    }
-}
-
-fn legacy_download_request(command: &ParsedCommand) -> crate::message::AttachmentDownloadRequest {
-    crate::message::AttachmentDownloadRequest {
-        identity_name: command.globals.identity.clone(),
-        with: string_flag(command, "with"),
-        group: string_flag(command, "group"),
-        message_id: string_flag(command, "message-id"),
-        attachment_id: string_flag(command, "attachment-id"),
-        output_path: string_flag(command, "output"),
-    }
-}
-
-fn message_error_to_adapter(err: crate::message::MessageError) -> MessageAdapterError {
-    match err {
-        crate::message::MessageError::TargetRequired => MessageAdapterError::TargetRequired,
-        crate::message::MessageError::GroupRequired => MessageAdapterError::GroupRequired,
-        crate::message::MessageError::MemberRequired => MessageAdapterError::MemberRequired,
-        crate::message::MessageError::GroupOwnerCannotLeave => {
-            MessageAdapterError::GroupOwnerCannotLeave
-        }
-        crate::message::MessageError::TextRequired => MessageAdapterError::TextRequired,
-        crate::message::MessageError::FilePathRequired => MessageAdapterError::FilePathRequired,
-        crate::message::MessageError::MimeTypeWithoutFile => {
-            MessageAdapterError::MimeTypeWithoutFile
-        }
-        crate::message::MessageError::MessageIdRequired => MessageAdapterError::MessageIdRequired,
-        crate::message::MessageError::OutputPathRequired => MessageAdapterError::OutputPathRequired,
-        crate::message::MessageError::DownloadTargetNeeded => {
-            MessageAdapterError::DownloadTargetNeeded
-        }
-        crate::message::MessageError::DownloadTargetConflict => {
-            MessageAdapterError::DownloadTargetConflict
-        }
-        crate::message::MessageError::AttachmentNotFound => MessageAdapterError::AttachmentNotFound,
-        crate::message::MessageError::AttachmentIdRequired => {
-            MessageAdapterError::AttachmentIdRequired
-        }
-        crate::message::MessageError::AttachmentMessageInvalid => {
-            MessageAdapterError::AttachmentMessageInvalid
-        }
-        crate::message::MessageError::AttachmentSenderRequired => {
-            MessageAdapterError::AttachmentSenderRequired
-        }
-        crate::message::MessageError::TransportUnavailable(detail) => {
-            MessageAdapterError::TransportUnavailable(detail)
-        }
-        crate::message::MessageError::SecureNotSupported => MessageAdapterError::SecureNotSupported,
-        crate::message::MessageError::AttachmentNotSupported => {
-            MessageAdapterError::AttachmentNotSupported
-        }
-        crate::message::MessageError::GroupNotSupported => MessageAdapterError::GroupNotSupported,
-        crate::message::MessageError::GroupE2eeSelfLeaveUnsupported => {
-            MessageAdapterError::GroupE2eeSelfLeaveUnsupported
-        }
-        crate::message::MessageError::MessageNotFound => MessageAdapterError::MessageNotFound,
-        crate::message::MessageError::IdentityRequired(message) => {
-            MessageAdapterError::IdentityRequired(message)
-        }
-        crate::message::MessageError::Service(service) => {
-            MessageAdapterError::Service(service.into())
-        }
-        crate::message::MessageError::Identity(identity) => {
-            MessageAdapterError::Identity(identity.into())
-        }
-        crate::message::MessageError::Internal(message) => MessageAdapterError::Internal(message),
-        crate::message::MessageError::InvalidAttachmentServiceEndpoint(message) => {
-            MessageAdapterError::InvalidAttachmentServiceEndpoint(message)
-        }
-        crate::message::MessageError::MissingMessageServiceDid => {
-            MessageAdapterError::MissingMessageServiceDid
-        }
-        crate::message::MessageError::MissingAttachmentServiceDid => {
-            MessageAdapterError::MissingAttachmentServiceDid
-        }
-        crate::message::MessageError::Json(message) => MessageAdapterError::Json(message),
-    }
 }
 
 fn target_value(to: &str, group: &str, resolved: &Resolved) -> Value {
@@ -720,10 +662,6 @@ fn insert_completed_handle(
     if completed != target.trim() {
         map.insert(key.to_string(), Value::String(completed));
     }
-}
-
-fn complete_bare_handle(target: &str, did_domain: &str) -> String {
-    identity::complete_bare_handle(target, did_domain)
 }
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {

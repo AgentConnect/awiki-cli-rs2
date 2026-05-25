@@ -172,7 +172,10 @@ fn root_preflight_exempts_local_recovery_commands_from_update_check() {
         let output = awiki_cmd_with_workspace(
             &verbose_args,
             workspace.path(),
-            &[("AWIKI_CLI_UPDATE_CACHE_ONLY", "1")],
+            &[
+                ("AWIKI_CLI_UPDATE_CACHE_ONLY", "1"),
+                ("AWIKI_CLI_INTERNAL_ENTRY", "1"),
+            ],
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(

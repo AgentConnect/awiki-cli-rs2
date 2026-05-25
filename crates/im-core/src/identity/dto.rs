@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentitySelector {
@@ -123,6 +124,69 @@ pub struct ProfileAttribute {
     pub value: String,
 }
 
+impl Profile {
+    pub fn to_wire_profile_value(&self) -> serde_json::Value {
+        let mut value = serde_json::Map::new();
+        value.insert(
+            "did".to_string(),
+            serde_json::Value::String(self.subject.as_str().to_string()),
+        );
+        if let Some(handle) = self.handle.as_ref() {
+            value.insert(
+                "handle".to_string(),
+                serde_json::Value::String(handle.as_str().to_string()),
+            );
+        }
+        if let Some(display_name) = self.display_name.as_ref() {
+            value.insert(
+                "nick_name".to_string(),
+                serde_json::Value::String(display_name.clone()),
+            );
+        }
+        if let Some(bio) = self.bio.as_ref() {
+            value.insert("bio".to_string(), serde_json::Value::String(bio.clone()));
+        }
+        if !self.tags.is_empty() {
+            value.insert("tags".to_string(), serde_json::json!(self.tags));
+        }
+        if let Some(markdown) = self.markdown.as_ref() {
+            value.insert(
+                "profile_md".to_string(),
+                serde_json::Value::String(markdown.clone()),
+            );
+        }
+        if let Some(avatar_url) = self.avatar_url.as_ref() {
+            value.insert(
+                "avatar_url".to_string(),
+                serde_json::Value::String(avatar_url.clone()),
+            );
+        }
+        if let Some(updated_at) = self.updated_at.as_ref() {
+            value.insert(
+                "updated_at".to_string(),
+                serde_json::Value::String(updated_at.clone()),
+            );
+        }
+        if !self.metadata.is_empty() {
+            value.insert(
+                "metadata".to_string(),
+                serde_json::Value::Object(
+                    self.metadata
+                        .iter()
+                        .map(|attribute| {
+                            (
+                                attribute.key.clone(),
+                                serde_json::Value::String(attribute.value.clone()),
+                            )
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        serde_json::Value::Object(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProfilePatch {
     pub display_name: Option<String>,
@@ -170,7 +234,7 @@ impl ContactBindingResult {
         }
     }
 
-    pub(crate) fn raw_response(&self) -> Option<&serde_json::Value> {
+    pub fn response_json(&self) -> Option<&serde_json::Value> {
         self.raw_response.as_ref()
     }
 }
@@ -192,9 +256,13 @@ pub enum ContactBindingState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecoverHandleRequest {
     pub handle: crate::ids::Handle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_handle: Option<String>,
     pub phone: String,
     pub otp: Option<String>,
     pub generated_identity: Option<RecoverGeneratedIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_finalize: Option<RecoverHandleLocalFinalizeRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -204,12 +272,48 @@ pub struct RecoverGeneratedIdentity {
     pub did_document: serde_json::Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RecoverHandleLocalFinalizeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_identity_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_file_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoverHandlePlanRequest {
+    pub handle: crate::ids::Handle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_handle: Option<String>,
+    pub phone: String,
+    pub otp: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecoverHandlePlan {
+    pub action: String,
+    pub target_handle: String,
+    pub identity_name: String,
+    pub final_identity_name: String,
+    pub temp_identity_name: String,
+    pub same_handle_candidates: Vec<RecoverLocalIdentitySummary>,
+    pub excluded_identities: Vec<RecoverLocalIdentitySummary>,
+    pub backup_path: String,
+    pub phone: String,
+    pub remote_calls: Vec<String>,
+    pub local_writes: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecoverHandleResult {
     pub handle: crate::ids::Handle,
     pub phone: String,
     pub state: RecoverHandleState,
     pub recovered_identity: Option<RecoveredIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_recovery: Option<RecoverHandleLocalResult>,
     #[serde(skip)]
     raw_response: Option<serde_json::Value>,
     pub warnings: Vec<String>,
@@ -221,6 +325,7 @@ impl RecoverHandleResult {
         phone: String,
         state: RecoverHandleState,
         recovered_identity: Option<RecoveredIdentity>,
+        local_recovery: Option<RecoverHandleLocalResult>,
         raw_response: Option<serde_json::Value>,
         warnings: Vec<String>,
     ) -> Self {
@@ -229,12 +334,13 @@ impl RecoverHandleResult {
             phone,
             state,
             recovered_identity,
+            local_recovery,
             raw_response,
             warnings,
         }
     }
 
-    pub(crate) fn raw_response(&self) -> Option<&serde_json::Value> {
+    pub fn response_json(&self) -> Option<&serde_json::Value> {
         self.raw_response.as_ref()
     }
 }
@@ -250,6 +356,54 @@ pub struct RecoveredIdentity {
     pub identity: IdentitySummary,
     pub user_id: Option<String>,
     pub access_token_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecoverHandleLocalResult {
+    pub identity: RecoverLocalIdentitySummary,
+    pub backup_path: String,
+    pub archived_identities: Vec<String>,
+    pub archived_dids: Vec<String>,
+    pub full_handle: String,
+    pub final_identity_name: String,
+    pub store_merge_counts: BTreeMap<String, i64>,
+    pub e2ee_cleanup_counts: BTreeMap<String, i64>,
+    pub default_updated: bool,
+    pub active_config_updated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RecoverLocalIdentitySummary {
+    pub identity_name: String,
+    pub did: String,
+    pub unique_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub display_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub handle: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub full_handle: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub created_at: String,
+    pub dir_name: String,
+    pub is_default: bool,
+    pub has_jwt: bool,
+    pub has_did_document: bool,
+    pub has_key1_private: bool,
+    pub has_key1_public: bool,
+    pub has_e2ee_signing_private: bool,
+    pub has_e2ee_agreement_private: bool,
+    pub user_state: RecoverLocalUserState,
+    #[serde(skip)]
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RecoverLocalUserState {
+    pub registration_state: String,
+    pub ready_for_messaging: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -367,7 +521,7 @@ mod tests {
         let binding_json = serde_json::to_value(&binding).expect("serialize binding result");
         assert_eq!(
             binding
-                .raw_response()
+                .response_json()
                 .and_then(|raw| raw.get("provider_state")),
             Some(&json!("sent"))
         );
@@ -380,12 +534,13 @@ mod tests {
             "+15551234567".to_string(),
             RecoverHandleState::OtpSent,
             None,
+            None,
             Some(json!({ "sent": true })),
             Vec::new(),
         );
         let recover_json = serde_json::to_value(&recover).expect("serialize recover result");
         assert_eq!(
-            recover.raw_response().and_then(|raw| raw.get("sent")),
+            recover.response_json().and_then(|raw| raw.get("sent")),
             Some(&json!(true))
         );
         assert!(recover_json.get("raw_response").is_none());

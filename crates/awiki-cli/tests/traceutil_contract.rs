@@ -124,195 +124,42 @@ fn trace_disabled_emits_nothing_and_records_no_phases() {
 }
 
 #[test]
-fn direct_message_trace_call_sites_match_go_trace_depth_contract() {
+fn message_cutover_trace_call_sites_stay_in_thin_adapter() {
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let service = source(crate_root, "src/message/service.rs");
-    let inbox = source(crate_root, "src/message/inbox.rs");
-    let history = source(crate_root, "src/message/history.rs");
-    let contact_sync = source(crate_root, "src/message/contact_sync.rs");
+    let adapter = source(crate_root, "src/im_core_adapter/messages.rs");
 
-    for (label, source) in [
-        (
-            "traceutil::handle_lookup_phase(\"target_resolve\")",
-            &service,
-        ),
-        (
-            "traceutil::handle_lookup_phase(\"contact_sync_by_did\")",
-            &contact_sync,
-        ),
-        (
-            "traceutil::local_db_phase(\"persist_direct_send\")",
-            &service,
-        ),
-        (
-            "traceutil::local_db_phase(\"persist_inbox_messages\")",
-            &service,
-        ),
-        (
-            "traceutil::local_db_phase(\"persist_history_messages\")",
-            &service,
-        ),
-        ("traceutil::local_db_phase(\"read_inbox_cache\")", &inbox),
-        (
-            "traceutil::local_db_phase(\"read_unified_direct_inbox_cache\")",
-            &inbox,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_mail_notification_cache\")",
-            &inbox,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_history_cache\")",
-            &history,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_inbox_cache_by_peer_dids\")",
-            &inbox,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_history_cache_by_peer_dids\")",
-            &history,
-        ),
-    ] {
-        assert!(
-            source.contains(label),
-            "direct-message Go trace label is not wired: {label}"
-        );
-    }
-
-    assert_eq!(
-        service
-            .matches("traceutil::start_phase(\"contact_sync\")")
-            .count(),
-        2,
-        "inbox and history persistence should each wrap only contact sync"
+    assert!(
+        adapter.contains("traceutil::rpc_phase(sdk_send_trace_operation(&request))"),
+        "message sends should keep a thin adapter RPC phase"
     );
+    assert!(
+        adapter.contains("traceutil::rpc_phase(\"inbox.get\")"),
+        "message inbox should keep a thin adapter RPC phase"
+    );
+    assert!(
+        !adapter.contains("\"message_fallback_refresh\""),
+        "im-core message adapter should not create a legacy fallback-refresh trace phase"
+    );
+    assert!(
+        !adapter.contains("handle_lookup_phase"),
+        "message adapter should not do direct handle-resolution tracing"
+    );
+    assert!(
+        !adapter.contains("local_db_phase"),
+        "message adapter should not do local projection tracing"
+    );
+}
+
+#[test]
+fn legacy_message_trace_labels_remain_humanized_until_final_cleanup() {
     assert_eq!(
         traceutil::humanize_text("read_unified_direct_inbox_cache"),
         "读取统一直聊收件箱缓存"
     );
-}
-
-#[test]
-fn group_trace_call_sites_match_go_trace_depth_contract() {
-    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let group_service = source(crate_root, "src/message/group_service.rs");
-    let inbox = source(crate_root, "src/message/inbox.rs");
-
-    for (label, source) in [
-        (
-            "traceutil::local_db_phase(\"persist_group_send\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"persist_group_snapshot\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"persist_group_members\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"persist_group_messages\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"touch_group_cache\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"mark_group_left\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_group_snapshot_cache\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_group_members_cache\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_group_messages_cache\")",
-            &group_service,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_group_inbox_cache\")",
-            &inbox,
-        ),
-        (
-            "traceutil::local_db_phase(\"read_all_group_inbox_cache\")",
-            &inbox,
-        ),
-    ] {
-        assert!(
-            source.contains(label),
-            "group Go trace label is not wired: {label}"
-        );
-    }
-
     assert_eq!(
         traceutil::humanize_text("read_all_group_inbox_cache"),
         "读取全部群组收件箱缓存"
     );
-}
-
-#[test]
-fn attachment_trace_call_sites_match_go_trace_depth_contract() {
-    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let attachment_service = source(crate_root, "src/message/attachment_service.rs");
-
-    for label in [
-        "traceutil::local_db_phase(\"persist_direct_send\")",
-        "traceutil::local_db_phase(\"persist_group_send\")",
-        "traceutil::local_db_phase(\"touch_group_cache\")",
-    ] {
-        assert!(
-            attachment_service.contains(label),
-            "attachment Go trace label is not wired: {label}"
-        );
-    }
-
-    for call_site in [
-        "let target = resolve_target(resolved, &request.target)?;",
-        "let peer = resolve_target(resolved, &request.with)?;",
-    ] {
-        assert!(
-            attachment_service.contains(call_site),
-            "attachment direct path should keep shared target_resolve lookup: {call_site}"
-        );
-    }
-}
-
-#[test]
-fn message_jwt_refresh_call_sites_match_go_trace_depth_contract() {
-    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let client = source(crate_root, "src/message/client.rs");
-    let service = source(crate_root, "src/message/service.rs");
-    let inbox = source(crate_root, "src/message/inbox.rs");
-    let history = source(crate_root, "src/message/history.rs");
-    let mark_read = source(crate_root, "src/message/mark_read.rs");
-
-    assert!(
-        client.contains("\"message_service_retry\""),
-        "message transport-level 1401 retry should keep the Go message_service_retry label"
-    );
-    assert!(
-        service.contains("\"message_fallback_refresh\""),
-        "message service fallback refresh should use the Go message_fallback_refresh label"
-    );
-
-    for (label, source) in [
-        ("send_direct_http_with_fallback_refresh", &service),
-        ("inbox_http_with_fallback_refresh", &inbox),
-        ("history_http_with_fallback_refresh", &history),
-        ("mark_read_http_with_fallback_refresh", &mark_read),
-    ] {
-        assert!(
-            source.contains(label),
-            "message fallback refresh wrapper is not wired: {label}"
-        );
-    }
 
     assert_eq!(
         traceutil::humanize_text("message_fallback_refresh"),

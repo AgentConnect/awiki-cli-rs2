@@ -71,7 +71,15 @@ fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
     let workspace = TempDir::new().expect("temp workspace");
     assert_success(&awiki_cmd_with_workspace(&["init"], workspace.path()));
     assert_success(&awiki_cmd_with_workspace(
-        &["id", "create", "--name", "Alice", "--identity", "alice"],
+        &[
+            "--migration",
+            "id",
+            "create",
+            "--name",
+            "Alice",
+            "--identity",
+            "alice",
+        ],
         workspace.path(),
     ));
     seed_contact_handle_binding(workspace.path());
@@ -95,11 +103,11 @@ fn doctor_initialized_workspace_reports_sqlite_and_identity_details() {
     let sqlite = check_by_name(&envelope, "sqlite");
     assert_eq!(
         sqlite["details"]["schema_version"],
-        awiki_cli::store::SCHEMA_VERSION
+        awiki_cli::legacy_store::SCHEMA_VERSION
     );
     assert_eq!(
         sqlite["details"]["target_schema_version"],
-        awiki_cli::store::SCHEMA_VERSION
+        awiki_cli::legacy_store::SCHEMA_VERSION
     );
     assert_eq!(sqlite["details"]["contact_handle_bindings_exists"], true);
     assert_eq!(sqlite["details"]["contact_handle_bindings_count"], 1);
@@ -199,7 +207,7 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
 fn seed_contact_handle_binding(workspace: &Path) {
     let database = workspace.join("data").join("awiki-cli.db");
     let connection = rusqlite::Connection::open(&database).expect("open sqlite database");
-    awiki_cli::store::ensure_schema(&connection).expect("ensure schema");
+    awiki_cli::legacy_store::ensure_schema(&connection).expect("ensure schema");
     connection
         .execute(
             "INSERT INTO contact_handle_bindings (owner_did, handle, did, first_seen_at, last_seen_at, credential_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

@@ -1,7 +1,7 @@
-use awiki_cli::store::{
-    self, get_e2ee_outbox, list_e2ee_outbox, mark_e2ee_outbox_failed, mark_e2ee_outbox_sent,
-    queue_e2ee_outbox, set_e2ee_outbox_failure_by_id, update_e2ee_outbox_status, E2EEOutboxRecord,
-    StoreResult,
+use awiki_cli::legacy_store::{
+    self as store, get_e2ee_outbox, list_e2ee_outbox, mark_e2ee_outbox_failed,
+    mark_e2ee_outbox_sent, queue_e2ee_outbox, set_e2ee_outbox_failure_by_id,
+    update_e2ee_outbox_status, E2EEOutboxRecord, StoreResult,
 };
 use rusqlite::Connection;
 use serde_json::Value;

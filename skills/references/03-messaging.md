@@ -15,14 +15,15 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
   - `msg inbox`
   - `msg history`
   - `msg mark-read`
-- Reserved but not yet implemented:
+- Supported secure surface:
   - `msg secure status`
-  - `msg secure init`
   - `msg secure repair`
+- Unsupported/internal secure diagnostics:
+  - `msg secure init`
   - `msg secure failed`
   - `msg secure retry`
   - `msg secure drop`
-- The contract includes `--secure on`, but the current server returns `unsupported` for secure direct messaging
+- `msg send --secure required` is the canonical secure send flag for direct and group messages; `--secure on/e2ee/secure-direct/group-e2ee` are deprecated aliases and should not be suggested as canonical.
 
 ## When to Use
 
@@ -41,7 +42,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - **inbox**: an aggregated read path across direct and group scopes
 - **history**: the history of the direct-message thread with a single target
 - **read state**: local unread-state tracking
-- **secure messaging contract**: a reserved command family for future direct E2EE flows
+- **secure messaging contract**: high-level direct/group E2EE send, status, and repair flow backed by `im-core`
 - **bare handle completion**: when a direct/group handle input is a bare handle like `alice`, `awiki-cli` completes it to `alice.<did_domain>` before handle lookup; explicit full handles keep their explicit domain, and DIDs pass through unchanged
 
 ## Current Support Matrix
@@ -49,9 +50,9 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 | Scope × Security | Current Status | Notes |
 |---|---|---|
 | direct + plain | Implemented | Use `msg send --to ...` |
-| direct + secure | Planned | The contract includes `--secure on`, but the current server returns `unsupported` |
+| direct + secure | Implemented with capability gates | Use `msg send --to ... --secure required`, `msg secure status`, and `msg secure repair` |
 | group + plain | Implemented | Use `msg send --group ...` |
-| group + secure | Unsupported | Not part of the current repository path |
+| group + secure | Implemented with capability gates | Use `msg send --group ... --secure required`; group lifecycle uses `04-groups.md` |
 
 ## Resource Model
 
@@ -74,6 +75,10 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 
 - `awiki-cli msg send --to <target> --text "Hello"`
 - `awiki-cli msg send --group <group_did> --text "Hello group"`
+- `awiki-cli msg send --to <target> --text "Secret" --secure required`
+- `awiki-cli msg send --group <group_did> --text "Secret group message" --secure required`
+- `awiki-cli msg secure status --with <target>`
+- `awiki-cli msg secure repair --with <target>`
 - `awiki-cli msg send (--to <target> | --group <group_did>) --file ./hello.txt [--text "attachment caption"] [--mime-type text/plain]`
 - `awiki-cli msg attachment download (--with <target> | --group <group_did>) --message-id <message_id> [--attachment-id <attachment_id>] --output ./downloads/file.bin`
 - `awiki-cli msg inbox [--scope all|direct|group] [--with <target>] [--group <group_did>] [--unread] [--limit <n>] [--mark-read]`
@@ -123,14 +128,14 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - The attachment-download command shape is unclear -> check `awiki-cli schema msg attachment download`
 - auth/setup error -> confirm that the active identity has completed registration
 - transport unavailable -> use `05-runtime.md`
-- secure is requested but currently unsupported -> explain that the secure path is still in the planning stage in the current repository
+- secure is requested and fails -> report the stable error from `im-core` capability, identity, local-state, or transport checks; do not suggest legacy outbox or raw E2EE diagnostics
 
 ## Implementation Notes
 
 - Runtime mode is determined by the runtime domain, not by messaging commands
 - `msg send` covers both text sending and attachment sending; attachment sending uses `--file` and can optionally include `--text` as a caption
-- The `msg secure` subcommand is reserved but not yet implemented
-- Do not describe the current repository state as already supporting end-to-end secure direct messaging
+- `msg secure init/failed/retry/drop` and `msg secure outbox *` are not supported product commands in this version.
+- Secure attachments remain fail-closed until `im-core` supports them.
 
 ## Related References
 

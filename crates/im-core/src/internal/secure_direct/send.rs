@@ -144,6 +144,7 @@ where
                     &raw,
                     self.client.did().clone(),
                     peer,
+                    &target_did,
                     text,
                     kind.clone(),
                     warnings,
@@ -182,6 +183,7 @@ where
                     &outbox_id,
                     self.client.did().clone(),
                     peer,
+                    &target_did,
                     text,
                     kind,
                     operation_id,
@@ -331,6 +333,7 @@ fn sdk_result_from_secure_result(
     raw: &Map<String, Value>,
     sender: crate::ids::Did,
     peer: crate::ids::PeerRef,
+    target_did: &str,
     text: &str,
     kind: crate::messages::MessageKind,
     warnings: Vec<String>,
@@ -351,6 +354,7 @@ fn sdk_result_from_secure_result(
             optional_string(&accepted_at),
             Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText),
         );
+    let attributes = secure_direct_attributes(target_did, &peer, Vec::new());
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -382,10 +386,7 @@ fn sdk_result_from_secure_result(
                     .or_else(|| raw.get("server_sequence"))
                     .and_then(Value::as_i64),
                 content_type: Some(content_type_for_kind(&kind).to_owned()),
-                attributes: vec![crate::messages::MessageMetadataAttribute {
-                    key: "security".to_owned(),
-                    value: "direct-e2ee".to_owned(),
-                }],
+                attributes,
             },
         },
         delivery,
@@ -397,6 +398,7 @@ fn queued_sdk_result(
     outbox_id: &str,
     sender: crate::ids::Did,
     peer: crate::ids::PeerRef,
+    target_did: &str,
     text: &str,
     kind: crate::messages::MessageKind,
     operation_id: String,
@@ -414,6 +416,14 @@ fn queued_sdk_result(
             None,
             Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText),
         );
+    let attributes = secure_direct_attributes(
+        target_did,
+        &peer,
+        vec![crate::messages::MessageMetadataAttribute {
+            key: "secure_outbox_id".to_owned(),
+            value: outbox_id.to_owned(),
+        }],
+    );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -435,21 +445,31 @@ fn queued_sdk_result(
                 retry_plan,
                 server_sequence: None,
                 content_type: Some(content_type_for_kind(&kind).to_owned()),
-                attributes: vec![
-                    crate::messages::MessageMetadataAttribute {
-                        key: "security".to_owned(),
-                        value: "direct-e2ee".to_owned(),
-                    },
-                    crate::messages::MessageMetadataAttribute {
-                        key: "secure_outbox_id".to_owned(),
-                        value: outbox_id.to_owned(),
-                    },
-                ],
+                attributes,
             },
         },
         delivery,
         warnings,
     })
+}
+
+fn secure_direct_attributes(
+    target_did: &str,
+    peer: &crate::ids::PeerRef,
+    mut extra: Vec<crate::messages::MessageMetadataAttribute>,
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    let mut attributes = vec![crate::messages::MessageMetadataAttribute {
+        key: "security".to_owned(),
+        value: "direct-e2ee".to_owned(),
+    }];
+    if !target_did.trim().is_empty() && target_did.trim() != peer.as_str().trim() {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "resolved_target_did".to_owned(),
+            value: target_did.to_owned(),
+        });
+    }
+    attributes.append(&mut extra);
+    attributes
 }
 
 fn queue_pending_confirmation_outbox(
@@ -762,8 +782,10 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                     did_domain: "awiki.test".to_owned(),
                     user_service_endpoint: None,
                     message_service_endpoint: None,
+                    mail_service_endpoint: None,
                     anp_service_endpoint: None,
                     anp_service_did: None,
+                    ca_bundle: None,
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 crate::ImCorePaths {

@@ -5,37 +5,9 @@ use crate::output::ExitError;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-const GROUP_E2EE_PROFILE: &str = "anp.group.e2ee.v1";
-const GROUP_E2EE_SECURITY_PROFILE: &str = "group-e2ee";
 const DEFAULT_DEVICE: &str = "default";
-const REPAIR_SCOPE: &str = "compare local MLS status to service head, safely finalize accepted pending commits, replay welcome/commit notices, and fail closed on unrecoverable gaps";
 
 impl App {
-    pub fn run_group_e2ee_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(unsupported_group_e2ee_command("group.e2ee.status"));
-        }
-        let plan = json!({
-            "action": "group.e2ee.status",
-            "identity": self.globals.identity,
-            "runtime_mode": resolved.runtime_mode,
-            "profile": GROUP_E2EE_PROFILE,
-            "security_profile": GROUP_E2EE_SECURITY_PROFILE,
-            "provider": "exec",
-            "binary": provider_binary(),
-            "mls_data_dir": mls_data_dir(&resolved),
-            "group": string_flag(command, "group"),
-            "discovery_advertised": false,
-        });
-        self.render_group_e2ee_plan(
-            "awiki-cli group e2ee status",
-            &resolved,
-            plan,
-            "Dry run: group e2ee status planned",
-        )
-    }
-
     pub fn run_group_e2ee_publish_key_package(
         &self,
         command: &ParsedCommand,
@@ -95,28 +67,6 @@ impl App {
             &resolved,
             plan,
             "Dry run: group e2ee pending planned",
-        )
-    }
-
-    pub fn run_group_e2ee_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(unsupported_group_e2ee_command("group.e2ee.repair"));
-        }
-        let plan = json!({
-            "action": "group.e2ee.repair",
-            "identity": self.globals.identity,
-            "runtime_mode": resolved.runtime_mode,
-            "provider": "exec",
-            "mls_data_dir": mls_data_dir(&resolved),
-            "group": string_flag(command, "group"),
-            "scope": REPAIR_SCOPE,
-        });
-        self.render_group_e2ee_plan(
-            "awiki-cli group e2ee repair",
-            &resolved,
-            plan,
-            "Dry run: group e2ee repair planned",
         )
     }
 

@@ -2,8 +2,8 @@ use super::journal::{load_journal, JournalError};
 use super::meta::{load_meta, MetaError};
 use super::types::{Detection, Inspection, Meta, Paths, LATEST_WORKSPACE_SCHEMA_VERSION};
 use crate::config::Resolved;
-use crate::identity::{self, Manager};
-use crate::store;
+use crate::legacy_identity::{self as identity, Manager};
+use crate::legacy_store as store;
 use std::fmt;
 use std::path::{Path, PathBuf};
 

@@ -27,6 +27,163 @@ pub struct CommandSpec {
     pub flags: &'static [FlagSpec],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CommandSchemaSpec<'a> {
+    spec: &'a CommandSpec,
+    include_deprecated_flags: bool,
+}
+
+impl<'a> CommandSchemaSpec<'a> {
+    pub fn default_surface(spec: &'a CommandSpec) -> Self {
+        Self {
+            spec,
+            include_deprecated_flags: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SchemaSpecList<'a> {
+    All(Vec<CommandSpec>),
+    Default(Vec<CommandSchemaSpec<'a>>),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SchemaCommandSpec<'a> {
+    All(&'a CommandSpec),
+    Default(CommandSchemaSpec<'a>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAudience {
+    DefaultUser,
+    AdvancedUser,
+    Operator,
+    Diagnostic,
+    MigrationOnly,
+    InternalService,
+}
+
+impl CommandAudience {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DefaultUser => "default",
+            Self::AdvancedUser => "advanced",
+            Self::Operator => "operator",
+            Self::Diagnostic => "diagnostic",
+            Self::MigrationOnly => "migration",
+            Self::InternalService => "internal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandOwner {
+    CliShell,
+    ImCoreIdentity,
+    ImCoreAuth,
+    ImCoreDirectory,
+    ImCoreMessages,
+    ImCoreGroups,
+    ImCoreAttachments,
+    ImCoreRealtime,
+    ImCoreSecure,
+    ImCoreEmail,
+    ImCoreContent,
+    ImCoreSite,
+    CliDiagnostic,
+    CliMigration,
+    ExternalUnsupported,
+}
+
+impl CommandOwner {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CliShell => "cli_shell",
+            Self::ImCoreIdentity => "im_core_identity",
+            Self::ImCoreAuth => "im_core_auth",
+            Self::ImCoreDirectory => "im_core_directory",
+            Self::ImCoreMessages => "im_core_messages",
+            Self::ImCoreGroups => "im_core_groups",
+            Self::ImCoreAttachments => "im_core_attachments",
+            Self::ImCoreRealtime => "im_core_realtime",
+            Self::ImCoreSecure => "im_core_secure",
+            Self::ImCoreEmail => "im_core_email",
+            Self::ImCoreContent => "im_core_content",
+            Self::ImCoreSite => "im_core_site",
+            Self::CliDiagnostic => "cli_diagnostic",
+            Self::CliMigration => "cli_migration",
+            Self::ExternalUnsupported => "external_unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliShellRole {
+    None,
+    ParsesInputOnly,
+    WritesDefaultIdentityFile,
+    ReadsUserInputFile,
+    WritesUserOutputFile,
+    RendersDryRunPlan,
+    ManagesLocalService,
+    ManagesHostNotifyConfig,
+}
+
+impl CliShellRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ParsesInputOnly => "parses_input_only",
+            Self::WritesDefaultIdentityFile => "writes_default_identity_file",
+            Self::ReadsUserInputFile => "reads_user_input_file",
+            Self::WritesUserOutputFile => "writes_user_output_file",
+            Self::RendersDryRunPlan => "renders_dry_run_plan",
+            Self::ManagesLocalService => "manages_local_service",
+            Self::ManagesHostNotifyConfig => "manages_host_notify_config",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectInvocationPolicy {
+    Allow,
+    AllowWithWarning,
+    RequireDiagnosticGate,
+    RequireMigrationGate,
+    RequireInternalServiceGate,
+    StableUnsupported {
+        capability: &'static str,
+        phase: &'static str,
+    },
+    Removed {
+        replacement: Option<&'static str>,
+    },
+    DeprecatedAlias {
+        replacement: &'static str,
+        until: &'static str,
+    },
+}
+
+impl DirectInvocationPolicy {
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::AllowWithWarning => "allow_with_warning",
+            Self::RequireDiagnosticGate => "require_diagnostic_gate",
+            Self::RequireMigrationGate => "require_migration_gate",
+            Self::RequireInternalServiceGate => "require_internal_service_gate",
+            Self::StableUnsupported { .. } => "stable_unsupported",
+            Self::Removed { .. } => "removed",
+            Self::DeprecatedAlias { .. } => "deprecated_alias",
+        }
+    }
+
+    pub fn is_default_invocable(self) -> bool {
+        matches!(self, Self::Allow | Self::AllowWithWarning)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CutoverStatus {
     CliOwned,
@@ -71,6 +228,14 @@ impl CutoverStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CommandCutoverView<'a> {
+    status: CutoverStatus,
+    default_surface: bool,
+    capability: Option<&'a str>,
+    required_phase: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCommand {
     pub name: String,
@@ -91,8 +256,38 @@ impl CommandSpec {
         self.use_
     }
 
+    pub fn canonical_name(&self) -> &'static str {
+        self.name
+    }
+
     pub fn cutover_status(&self) -> CutoverStatus {
         cutover_status(self.name)
+    }
+
+    pub fn audience(&self) -> CommandAudience {
+        command_audience(self.name)
+    }
+
+    pub fn primary_owner(&self) -> CommandOwner {
+        primary_owner(self.name)
+    }
+
+    pub fn secondary_owners(&self) -> &'static [CommandOwner] {
+        secondary_owners(self.name)
+    }
+
+    pub fn cli_shell_role(&self) -> CliShellRole {
+        cli_shell_role(self.name)
+    }
+
+    pub fn direct_invocation(&self) -> DirectInvocationPolicy {
+        direct_invocation_policy(self.name)
+    }
+
+    pub fn include_in_default_surface(&self) -> bool {
+        self.audience() == CommandAudience::DefaultUser
+            && default_surface_owner(self.primary_owner())
+            && self.direct_invocation().is_default_invocable()
     }
 }
 
@@ -103,9 +298,67 @@ pub fn specs() -> Vec<CommandSpec> {
 pub fn default_surface_specs() -> Vec<CommandSpec> {
     default_specs()
         .iter()
-        .filter(|spec| spec.cutover_status().include_in_default_surface())
+        .filter(|spec| spec.include_in_default_surface())
         .cloned()
         .collect()
+}
+
+pub fn default_surface_schema_specs() -> Vec<CommandSchemaSpec<'static>> {
+    default_specs()
+        .iter()
+        .filter(|spec| spec.include_in_default_surface())
+        .map(CommandSchemaSpec::default_surface)
+        .collect()
+}
+
+pub fn audience_surface_specs(raw: &str) -> Option<Vec<CommandSpec>> {
+    let audience = match raw.trim().to_ascii_lowercase().as_str() {
+        "default" => return Some(default_surface_specs()),
+        "advanced" => CommandAudience::AdvancedUser,
+        "operator" => CommandAudience::Operator,
+        "diagnostic" => CommandAudience::Diagnostic,
+        "migration" => CommandAudience::MigrationOnly,
+        "internal" => CommandAudience::InternalService,
+        "all" => return Some(specs()),
+        _ => return None,
+    };
+    Some(
+        default_specs()
+            .iter()
+            .filter(|spec| spec.audience() == audience)
+            .cloned()
+            .collect(),
+    )
+}
+
+pub fn audience_schema_specs(raw: &str) -> Option<SchemaSpecList<'static>> {
+    let audience = match raw.trim().to_ascii_lowercase().as_str() {
+        "default" => {
+            return Some(SchemaSpecList::Default(default_surface_schema_specs()));
+        }
+        "advanced" => CommandAudience::AdvancedUser,
+        "operator" => CommandAudience::Operator,
+        "diagnostic" => CommandAudience::Diagnostic,
+        "migration" => CommandAudience::MigrationOnly,
+        "internal" => CommandAudience::InternalService,
+        "all" => return Some(SchemaSpecList::All(specs())),
+        _ => return None,
+    };
+    Some(SchemaSpecList::All(
+        default_specs()
+            .iter()
+            .filter(|spec| spec.audience() == audience)
+            .cloned()
+            .collect(),
+    ))
+}
+
+pub fn schema_spec_for_command(spec: &CommandSpec) -> SchemaCommandSpec<'_> {
+    if spec.include_in_default_surface() {
+        SchemaCommandSpec::Default(CommandSchemaSpec::default_surface(spec))
+    } else {
+        SchemaCommandSpec::All(spec)
+    }
 }
 
 pub fn lookup(raw: &str) -> Option<CommandSpec> {
@@ -140,15 +393,12 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     if has_any_command_prefix(name, &["group.code", "debug.raw"]) {
         return Some(CutoverStatus::Removed);
     }
-    if has_any_command_prefix(name, &["group.e2ee", "runtime.host-notify.openclaw"])
+    if has_any_command_prefix(name, &["runtime.host-notify.openclaw"])
         || is_one_of(
             name,
             &[
                 "id.import-v1",
                 "id.replace-did",
-                "msg.secure.failed",
-                "msg.secure.retry",
-                "msg.secure.drop",
                 "runtime.host-notify.hermes.set",
                 "runtime.host-notify.hermes.set-secret",
                 "runtime.host-notify.hermes.clear-secret",
@@ -161,16 +411,36 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     {
         return Some(CutoverStatus::DiagnosticOnly);
     }
+    if has_command_prefix(name, "group.e2ee")
+        && !is_one_of(name, &["group.e2ee.status", "group.e2ee.repair"])
+    {
+        return Some(CutoverStatus::DiagnosticOnly);
+    }
     if name == "debug.db.query" {
         return Some(CutoverStatus::Unsupported {
             capability: "raw-sql",
             phase: "outside current im-core cutover",
         });
     }
-    if has_command_prefix(name, "msg.secure") {
+    if is_one_of(
+        name,
+        &[
+            "msg.secure.init",
+            "msg.secure.failed",
+            "msg.secure.retry",
+            "msg.secure.drop",
+        ],
+    ) || has_command_prefix(name, "msg.secure.outbox")
+    {
         return Some(CutoverStatus::Unsupported {
             capability: "secure-direct",
             phase: "Phase 6",
+        });
+    }
+    if name == "group.secure.diagnostics" {
+        return Some(CutoverStatus::Unsupported {
+            capability: "group secure diagnostics",
+            phase: "future diagnostics plan",
         });
     }
     if has_command_prefix(name, "runtime.heartbeat") {
@@ -183,12 +453,6 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
         return Some(CutoverStatus::Unsupported {
             capability: "people-directory",
             phase: "future people search API",
-        });
-    }
-    if has_any_command_prefix(name, &["page", "site"]) {
-        return Some(CutoverStatus::Unsupported {
-            capability: "page-site",
-            phase: "outside current im-core cutover",
         });
     }
     if is_one_of(
@@ -214,6 +478,9 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "msg.inbox",
             "msg.history",
             "msg.mark-read",
+            "msg.secure",
+            "msg.secure.status",
+            "msg.secure.repair",
             "mail",
             "mail.account",
             "mail.attachment",
@@ -234,6 +501,11 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "group.list",
             "group.members",
             "group.messages",
+            "group.secure",
+            "group.secure.status",
+            "group.secure.repair",
+            "group.e2ee.status",
+            "group.e2ee.repair",
             "people",
             "people.follow",
             "people.unfollow",
@@ -243,6 +515,24 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
             "people.contacts",
             "people.contacts.list",
             "people.contacts.save",
+            "page",
+            "page.create",
+            "page.list",
+            "page.get",
+            "page.update",
+            "page.rename",
+            "page.delete",
+            "site",
+            "site.root",
+            "site.root.get",
+            "site.root.set",
+            "site.page",
+            "site.page.list",
+            "site.page.get",
+            "site.page.create",
+            "site.page.update",
+            "site.page.rename",
+            "site.page.delete",
         ],
     ) {
         return Some(CutoverStatus::ImCore);
@@ -301,6 +591,334 @@ pub fn try_cutover_status(raw: &str) -> Option<CutoverStatus> {
     None
 }
 
+pub fn command_audience(raw: &str) -> CommandAudience {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if is_one_of(
+        name,
+        &[
+            "runtime.listener.run",
+            "runtime.listener.service-run",
+            "runtime.host-notify.hermes.bridge",
+            "runtime.host-notify.hermes.bridge.service-run",
+        ],
+    ) || has_any_command_prefix(name, &["group.code", "debug.raw"])
+    {
+        return CommandAudience::InternalService;
+    }
+    if has_command_prefix(name, "group.e2ee")
+        && !is_one_of(name, &["group.e2ee.status", "group.e2ee.repair"])
+    {
+        return CommandAudience::InternalService;
+    }
+    if is_one_of(name, &["id.create", "id.import-v1", "debug.db.import-v1"]) {
+        return CommandAudience::MigrationOnly;
+    }
+    if is_one_of(
+        name,
+        &[
+            "id.replace-did",
+            "debug",
+            "debug.db",
+            "debug.db.handle-history",
+            "debug.db.query",
+            "debug.schema-cache",
+            "debug.logs",
+        ],
+    ) {
+        return CommandAudience::Diagnostic;
+    }
+    if is_one_of(
+        name,
+        &[
+            "msg.secure.init",
+            "msg.secure.failed",
+            "msg.secure.retry",
+            "msg.secure.drop",
+            "group.secure.diagnostics",
+        ],
+    ) || has_command_prefix(name, "msg.secure.outbox")
+    {
+        return CommandAudience::AdvancedUser;
+    }
+    if is_one_of(
+        name,
+        &[
+            "runtime.host-notify.hermes.set",
+            "runtime.host-notify.hermes.set-secret",
+            "runtime.host-notify.hermes.clear-secret",
+        ],
+    ) {
+        return CommandAudience::Diagnostic;
+    }
+    if name == "config.set" {
+        return CommandAudience::AdvancedUser;
+    }
+    if has_any_command_prefix(name, &["runtime.host-notify.openclaw"]) {
+        return CommandAudience::Operator;
+    }
+    if has_command_prefix(name, "runtime.host-notify.hermes") {
+        return CommandAudience::Operator;
+    }
+    if has_any_command_prefix(name, &["runtime.setup", "runtime.apply"]) {
+        return CommandAudience::Operator;
+    }
+    if is_one_of(
+        name,
+        &[
+            "runtime.listener.install",
+            "runtime.listener.start",
+            "runtime.listener.stop",
+            "runtime.listener.restart",
+            "runtime.listener.uninstall",
+            "runtime.host-notify.hermes.guide",
+            "runtime.host-notify.hermes.status",
+            "runtime.host-notify.hermes.setup",
+        ],
+    ) {
+        return CommandAudience::Operator;
+    }
+    if has_any_command_prefix(
+        name,
+        &[
+            "runtime.mode",
+            "runtime.listener.config",
+            "runtime.host-notify.config",
+            "runtime.heartbeat",
+        ],
+    ) {
+        return CommandAudience::AdvancedUser;
+    }
+    CommandAudience::DefaultUser
+}
+
+pub fn primary_owner(raw: &str) -> CommandOwner {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if has_any_command_prefix(name, &["debug.raw", "group.code"]) {
+        return CommandOwner::ExternalUnsupported;
+    }
+    if has_command_prefix(name, "runtime.heartbeat") || name == "people.search" {
+        return CommandOwner::ExternalUnsupported;
+    }
+    if has_command_prefix(name, "debug") {
+        return CommandOwner::CliDiagnostic;
+    }
+    if is_one_of(name, &["id.create", "id.import-v1"]) {
+        return CommandOwner::CliMigration;
+    }
+    if name == "id.refresh-token" {
+        return CommandOwner::ImCoreAuth;
+    }
+    if name == "id.resolve" {
+        return CommandOwner::ImCoreDirectory;
+    }
+    if has_command_prefix(name, "id") {
+        return CommandOwner::ImCoreIdentity;
+    }
+    if name == "msg.attachment" || name == "msg.attachment.download" {
+        return CommandOwner::ImCoreAttachments;
+    }
+    if has_command_prefix(name, "msg.secure") || has_command_prefix(name, "group.secure") {
+        return CommandOwner::ImCoreSecure;
+    }
+    if has_command_prefix(name, "msg") {
+        return CommandOwner::ImCoreMessages;
+    }
+    if has_command_prefix(name, "mail") {
+        return CommandOwner::ImCoreEmail;
+    }
+    if has_command_prefix(name, "group.e2ee") {
+        return CommandOwner::ImCoreSecure;
+    }
+    if has_command_prefix(name, "group") {
+        return CommandOwner::ImCoreGroups;
+    }
+    if has_command_prefix(name, "people") {
+        return CommandOwner::ImCoreDirectory;
+    }
+    if has_command_prefix(name, "page") {
+        return CommandOwner::ImCoreContent;
+    }
+    if has_command_prefix(name, "site") {
+        return CommandOwner::ImCoreSite;
+    }
+    if has_command_prefix(name, "runtime.listener.run")
+        || has_command_prefix(name, "runtime.listener.service-run")
+    {
+        return CommandOwner::ImCoreRealtime;
+    }
+    CommandOwner::CliShell
+}
+
+pub fn secondary_owners(raw: &str) -> &'static [CommandOwner] {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if name == "id.status" {
+        return &[CommandOwner::ImCoreAuth];
+    }
+    if name == "id.bind" {
+        return &[CommandOwner::ImCoreDirectory];
+    }
+    if name == "msg.send" || name == "msg.attachment" || name == "msg.attachment.download" {
+        return &[CommandOwner::ImCoreMessages];
+    }
+    if has_command_prefix(name, "group.e2ee") || has_command_prefix(name, "group.secure") {
+        return &[CommandOwner::ImCoreGroups];
+    }
+    &[]
+}
+
+pub fn cli_shell_role(raw: &str) -> CliShellRole {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if name == "id.use" {
+        return CliShellRole::WritesDefaultIdentityFile;
+    }
+    if is_one_of(
+        name,
+        &[
+            "id.register",
+            "id.recover",
+            "id.replace-did",
+            "id.create",
+            "id.import-v1",
+            "debug.db.import-v1",
+            "group.create",
+            "group.join",
+            "group.add",
+            "group.remove",
+            "group.leave",
+            "group.update",
+            "group.e2ee.publish-key-package",
+            "group.e2ee.update-key",
+            "group.e2ee.rejoin",
+            "group.e2ee.recover-member",
+            "group.e2ee.process-leave-request",
+        ],
+    ) {
+        return CliShellRole::RendersDryRunPlan;
+    }
+    if is_one_of(name, &["msg.send", "mail.send"])
+        || has_any_command_prefix(name, &["page", "site"])
+    {
+        return CliShellRole::ReadsUserInputFile;
+    }
+    if is_one_of(
+        name,
+        &["msg.attachment.download", "mail.attachment.download"],
+    ) {
+        return CliShellRole::WritesUserOutputFile;
+    }
+    if has_command_prefix(name, "runtime.listener") {
+        return CliShellRole::ManagesLocalService;
+    }
+    if has_command_prefix(name, "runtime.host-notify") {
+        return CliShellRole::ManagesHostNotifyConfig;
+    }
+    CliShellRole::None
+}
+
+pub fn direct_invocation_policy(raw: &str) -> DirectInvocationPolicy {
+    let name = normalize_name(raw);
+    let name = name.as_str();
+    if has_command_prefix(name, "debug.raw") {
+        return DirectInvocationPolicy::Removed { replacement: None };
+    }
+    if has_command_prefix(name, "group.code") {
+        return DirectInvocationPolicy::Removed {
+            replacement: Some("group join"),
+        };
+    }
+    if has_any_command_prefix(
+        name,
+        &[
+            "runtime.listener.run",
+            "runtime.listener.service-run",
+            "runtime.host-notify.hermes.bridge",
+        ],
+    ) {
+        return DirectInvocationPolicy::RequireInternalServiceGate;
+    }
+    if is_one_of(name, &["id.create", "id.import-v1", "debug.db.import-v1"]) {
+        return DirectInvocationPolicy::RequireMigrationGate;
+    }
+    if is_one_of(
+        name,
+        &[
+            "id.replace-did",
+            "debug",
+            "debug.db",
+            "debug.db.handle-history",
+            "debug.schema-cache",
+            "debug.logs",
+            "runtime.host-notify.hermes.set",
+            "runtime.host-notify.hermes.set-secret",
+            "runtime.host-notify.hermes.clear-secret",
+        ],
+    ) {
+        return DirectInvocationPolicy::RequireDiagnosticGate;
+    }
+    if name == "debug.db.query" {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "raw-sql",
+            phase: "outside current im-core cutover",
+        };
+    }
+    if is_one_of(
+        name,
+        &["msg.secure.status", "msg.secure.repair", "msg.secure"],
+    ) {
+        return DirectInvocationPolicy::Allow;
+    }
+    if name == "group.secure.diagnostics" {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "group secure diagnostics",
+            phase: "future diagnostics plan",
+        };
+    }
+    if has_command_prefix(name, "msg.secure") {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "secure-direct",
+            phase: "Phase 6",
+        };
+    }
+    if is_one_of(
+        name,
+        &["group.secure.status", "group.secure.repair", "group.secure"],
+    ) {
+        return DirectInvocationPolicy::Allow;
+    }
+    if name == "group.e2ee.status" {
+        return DirectInvocationPolicy::DeprecatedAlias {
+            replacement: "group secure status",
+            until: "next-major",
+        };
+    }
+    if name == "group.e2ee.repair" {
+        return DirectInvocationPolicy::DeprecatedAlias {
+            replacement: "group secure repair",
+            until: "next-major",
+        };
+    }
+    if has_command_prefix(name, "group.e2ee") {
+        return DirectInvocationPolicy::RequireInternalServiceGate;
+    }
+    if name == "people.search" {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "people-directory",
+            phase: "future people search API",
+        };
+    }
+    if has_command_prefix(name, "runtime.heartbeat") {
+        return DirectInvocationPolicy::StableUnsupported {
+            capability: "runtime-heartbeat",
+            phase: "outside current im-core cutover",
+        };
+    }
+    DirectInvocationPolicy::Allow
+}
+
 pub fn children_of(parent: &str) -> Vec<CommandSpec> {
     let needle = normalize_name(parent);
     let mut children: Vec<_> = default_specs()
@@ -309,6 +927,18 @@ pub fn children_of(parent: &str) -> Vec<CommandSpec> {
         .cloned()
         .collect();
     children.sort_by_key(|spec| spec.name);
+    children
+}
+
+pub fn default_surface_schema_children_of(parent: &str) -> Vec<CommandSchemaSpec<'static>> {
+    let needle = normalize_name(parent);
+    let mut children: Vec<_> = default_specs()
+        .iter()
+        .filter(|spec| parent_name(spec.name) == needle)
+        .filter(|spec| spec.include_in_default_surface())
+        .map(CommandSchemaSpec::default_surface)
+        .collect();
+    children.sort_by_key(|spec| spec.spec.name);
     children
 }
 
@@ -429,6 +1059,24 @@ fn has_any_command_prefix(name: &str, prefixes: &[&str]) -> bool {
         .any(|prefix| has_command_prefix(name, prefix))
 }
 
+fn default_surface_owner(owner: CommandOwner) -> bool {
+    matches!(
+        owner,
+        CommandOwner::CliShell
+            | CommandOwner::ImCoreIdentity
+            | CommandOwner::ImCoreAuth
+            | CommandOwner::ImCoreDirectory
+            | CommandOwner::ImCoreMessages
+            | CommandOwner::ImCoreGroups
+            | CommandOwner::ImCoreAttachments
+            | CommandOwner::ImCoreRealtime
+            | CommandOwner::ImCoreSecure
+            | CommandOwner::ImCoreEmail
+            | CommandOwner::ImCoreContent
+            | CommandOwner::ImCoreSite
+    )
+}
+
 fn parent_name(name: &str) -> String {
     let normalized = normalize_name(name);
     normalized
@@ -493,6 +1141,28 @@ macro_rules! flag {
             deprecated: false,
         }
     };
+    ($name:expr, $ty:expr, $usage:expr, deprecated) => {
+        FlagSpec {
+            name: $name,
+            flag_type: $ty,
+            usage: $usage,
+            default: "",
+            required: false,
+            choices: &[],
+            deprecated: true,
+        }
+    };
+    ($name:expr, $ty:expr, $usage:expr, default = $default:expr, choices = [$($choice:expr),+ $(,)?], deprecated) => {
+        FlagSpec {
+            name: $name,
+            flag_type: $ty,
+            usage: $usage,
+            default: $default,
+            required: false,
+            choices: &[$($choice),+],
+            deprecated: true,
+        }
+    };
 }
 
 macro_rules! cmd {
@@ -518,7 +1188,6 @@ fn default_specs() -> &'static [CommandSpec] {
     &[
         cmd!("status", "status", "Show the current phase-1 CLI status", "phase1", "status"),
         cmd!("docs", "docs [topic]", "Show built-in documentation topics", "phase1", "docs"),
-        cmd!("schema", "schema [command]", "Show the static command contract", "phase1", "schema"),
         cmd!("doctor", "doctor", "Run baseline environment and storage diagnostics", "phase1", "doctor"),
         cmd!("version", "version", "Show build information", "phase1", "version"),
         CommandSpec { name: "upgrade", use_: "upgrade", short: "Check for newer awiki-cli versions and show upgrade hints", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "upgrade", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
@@ -528,6 +1197,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "completion.zsh", use_: "zsh", short: "Generate Zsh completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.zsh", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.fish", use_: "fish", short: "Generate Fish completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.fish", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "completion.powershell", use_: "powershell", short: "Generate PowerShell completion", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "completion.powershell", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "schema", use_: "schema [COMMAND]", short: "Show static command contracts", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "schema", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("all", "bool", "Show every command surface"), flag!("audience", "string", "Show one command audience", choices = ["default", "advanced", "operator", "diagnostic", "migration", "internal", "all"])] },
         CommandSpec { name: "config", use_: "config", short: "Inspect resolved CLI configuration", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         cmd!("config.show", "show", "Show resolved configuration values", "phase1", "config.show"),
         CommandSpec { name: "config.set", use_: "set", short: "Update persistent CLI configuration", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "config.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("did-domain", "string", "Bare DID provider domain to persist in services.did_domain")] },
@@ -548,7 +1218,7 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "id.profile.set", use_: "set", short: "Update DID profile data", long: "", aliases: &[], phase: "phase3", hidden: false, implemented: true, handler: "id.profile.set", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("display-name", "string", "Profile display name"), flag!("bio", "string", "Profile bio"), flag!("tags", "string", "Comma-separated tags"), flag!("markdown", "string", "Inline markdown body"), flag!("markdown-file", "string", "Markdown file path")] },
         CommandSpec { name: "id.import-v1", use_: "import-v1", short: "Import credentials from the v1 awiki-agent-id-message layout", long: "", aliases: &[], phase: "phase2", hidden: false, implemented: true, handler: "id.import-v1", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("name", "string", "Import one legacy identity by name"), flag!("all", "bool", "Import all detected legacy identities")] },
         CommandSpec { name: "msg", use_: "msg", short: "Messaging commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
-        CommandSpec { name: "msg.send", use_: "send", short: "Send a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.send", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("to", "string", "Direct message target"), flag!("group", "string", "Group target"), flag!("text", "string", "Inline message text or attachment caption"), flag!("text-file", "string", "Message body or attachment caption file path"), flag!("file", "string", "Attachment file path"), flag!("mime-type", "string", "Attachment MIME type override"), flag!("type", "string", "Message type", default = "text"), flag!("secure", "string", "Secure mode", default = "off", choices = ["off", "on"])] },
+        CommandSpec { name: "msg.send", use_: "send", short: "Send a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.send", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("to", "string", "Direct message target"), flag!("group", "string", "Group target"), flag!("text", "string", "Inline message text or attachment caption"), flag!("text-file", "string", "Message body or attachment caption file path"), flag!("file", "string", "Attachment file path"), flag!("mime-type", "string", "Attachment MIME type override"), flag!("type", "string", "Message type", default = "text"), flag!("secure", "string", "Secure mode", default = "off", choices = ["off", "required"])] },
         CommandSpec { name: "msg.attachment", use_: "attachment", short: "Attachment commands", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "msg.attachment.download", use_: "download", short: "Download one attachment from a direct or group message", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.attachment.download", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("with", "string", "Direct peer DID or handle"), flag!("group", "string", "Group DID"), flag!("message-id", "string", "Visible message id or raw message_id", required), flag!("attachment-id", "string", "Attachment id when the message contains multiple attachments"), flag!("output", "string", "Output file path", required)] },
         CommandSpec { name: "msg.inbox", use_: "inbox", short: "Read inbox messages", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.inbox", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("scope", "string", "Message scope", default = "all", choices = ["all", "direct", "group"]), flag!("with", "string", "Direct peer filter"), flag!("group", "string", "Group filter"), flag!("unread", "bool", "Only unread messages"), flag!("limit", "int", "Maximum number of results", default = "20"), flag!("mark-read", "bool", "Mark returned messages as read")] },
@@ -565,31 +1235,35 @@ fn default_specs() -> &'static [CommandSpec] {
         CommandSpec { name: "mail.attachment.download", use_: "download", short: "Download a mail attachment", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "mail.attachment.download", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("message-id", "string", "Message id", required), flag!("attachment-index", "int", "Attachment index (0-based)", default = "0"), flag!("output", "string", "Output file path")] },
         CommandSpec { name: "msg.secure", use_: "secure", short: "Secure direct messaging commands", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "msg.secure.status", use_: "status", short: "Inspect secure messaging status", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.secure.status", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("with", "string", "Target peer DID or handle")] },
-        CommandSpec { name: "msg.secure.init", use_: "init", short: "Initialize a secure session", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.secure.init", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("with", "string", "Target peer DID or handle", required)] },
+        CommandSpec { name: "msg.secure.init", use_: "init", short: "Initialize a secure session", long: "", aliases: &[], phase: "phase5", hidden: true, implemented: true, handler: "msg.secure.init", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("with", "string", "Target peer DID or handle", required)] },
         CommandSpec { name: "msg.secure.repair", use_: "repair", short: "Repair a secure session", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.secure.repair", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("with", "string", "Target peer DID or handle", required)] },
-        CommandSpec { name: "msg.secure.failed", use_: "failed", short: "List failed secure outbox items", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.secure.failed", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
-        CommandSpec { name: "msg.secure.retry", use_: "retry <OUTBOX_ID>", short: "Retry one failed secure outbox item", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.secure.retry", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
-        CommandSpec { name: "msg.secure.drop", use_: "drop <OUTBOX_ID>", short: "Drop one failed secure outbox item", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "msg.secure.drop", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "msg.secure.failed", use_: "failed", short: "List failed secure outbox items", long: "", aliases: &[], phase: "phase5", hidden: true, implemented: true, handler: "msg.secure.failed", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[] },
+        CommandSpec { name: "msg.secure.retry", use_: "retry <OUTBOX_ID>", short: "Retry one failed secure outbox item", long: "", aliases: &[], phase: "phase5", hidden: true, implemented: true, handler: "msg.secure.retry", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
+        CommandSpec { name: "msg.secure.drop", use_: "drop <OUTBOX_ID>", short: "Drop one failed secure outbox item", long: "", aliases: &[], phase: "phase5", hidden: true, implemented: true, handler: "msg.secure.drop", side_effect: true, outputs: &["json", "pretty"], flags: &[] },
         CommandSpec { name: "group", use_: "group", short: "Group lifecycle commands", long: "", aliases: &[], phase: "phase1", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
-        CommandSpec { name: "group.create", use_: "create", short: "Create a new group", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.create", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("name", "string", "Group display name", required), flag!("description", "string", "Group description"), flag!("discoverability", "string", "Discoverability mode", default = "private"), flag!("admission-mode", "string", "Admission mode", default = "open-join"), flag!("message-security-profile", "string", "Message security profile", default = "transport-protected", choices = ["transport-protected", "group-e2ee"]), flag!("e2ee", "bool", "Alias for --message-security-profile group-e2ee"), flag!("slug", "string", "Group slug"), flag!("goal", "string", "Group goal"), flag!("rules", "string", "Group rules"), flag!("message-prompt", "string", "Default group prompt"), flag!("doc-url", "string", "Group document URL"), flag!("attachments-allowed", "bool", "Allow attachments"), flag!("max-members", "string", "Maximum group members"), flag!("member-max-messages", "int", "Per-member message limit"), flag!("member-max-total-chars", "int", "Per-member total char limit")] },
+        CommandSpec { name: "group.create", use_: "create", short: "Create a new group", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.create", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("name", "string", "Group display name", required), flag!("description", "string", "Group description"), flag!("discoverability", "string", "Discoverability mode", default = "private"), flag!("admission-mode", "string", "Admission mode", default = "open-join"), flag!("secure", "string", "Group security requirement", default = "off", choices = ["off", "required"]), flag!("message-security-profile", "string", "Message security profile", default = "transport-protected", choices = ["transport-protected", "group-e2ee"], deprecated), flag!("e2ee", "bool", "Alias for --secure required", deprecated), flag!("slug", "string", "Group slug"), flag!("goal", "string", "Group goal"), flag!("rules", "string", "Group rules"), flag!("message-prompt", "string", "Default group prompt"), flag!("doc-url", "string", "Group document URL"), flag!("attachments-allowed", "bool", "Allow attachments"), flag!("max-members", "string", "Maximum group members"), flag!("member-max-messages", "int", "Per-member message limit"), flag!("member-max-total-chars", "int", "Per-member total char limit")] },
         CommandSpec { name: "group.get", use_: "get", short: "Show group details", long: "", aliases: &["show"], phase: "phase5", hidden: false, implemented: true, handler: "group.get", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required)] },
         CommandSpec { name: "group.join", use_: "join", short: "Join an open group", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.join", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("reason", "string", "Join reason")] },
-        CommandSpec { name: "group.add", use_: "add", short: "Add a member to a group", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.add", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Member DID or handle", required), flag!("role", "string", "Member role", default = "member"), flag!("e2ee", "bool", "Force group E2EE add-member orchestration when cache is unavailable")] },
-        CommandSpec { name: "group.remove", use_: "remove", short: "Remove a member from a group", long: "", aliases: &["kick"], phase: "phase5", hidden: false, implemented: true, handler: "group.remove", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Member DID or handle", required), flag!("reason", "string", "Removal reason"), flag!("e2ee", "bool", "Force group E2EE remove-member orchestration when cache is unavailable")] },
-        CommandSpec { name: "group.leave", use_: "leave", short: "Leave a group", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.leave", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("reason", "string", "Leave reason"), flag!("e2ee", "bool", "Force group E2EE leave-request orchestration when cache is unavailable")] },
+        CommandSpec { name: "group.add", use_: "add", short: "Add a member to a group", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.add", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Member DID or handle", required), flag!("role", "string", "Member role", default = "member"), flag!("secure", "string", "Group security requirement", default = "off", choices = ["off", "required"]), flag!("e2ee", "bool", "Alias for --secure required", deprecated)] },
+        CommandSpec { name: "group.remove", use_: "remove", short: "Remove a member from a group", long: "", aliases: &["kick"], phase: "phase5", hidden: false, implemented: true, handler: "group.remove", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Member DID or handle", required), flag!("reason", "string", "Removal reason"), flag!("secure", "string", "Group security requirement", default = "off", choices = ["off", "required"]), flag!("e2ee", "bool", "Alias for --secure required", deprecated)] },
+        CommandSpec { name: "group.leave", use_: "leave", short: "Leave a group", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.leave", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("reason", "string", "Leave reason"), flag!("secure", "string", "Group security requirement", default = "off", choices = ["off", "required"]), flag!("e2ee", "bool", "Alias for --secure required", deprecated)] },
         CommandSpec { name: "group.update", use_: "update", short: "Update group profile or policy", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.update", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("name", "string", "New group display name"), flag!("description", "string", "New group description"), flag!("discoverability", "string", "Discoverability mode"), flag!("admission-mode", "string", "Admission mode"), flag!("slug", "string", "New group slug"), flag!("goal", "string", "New group goal"), flag!("rules", "string", "New group rules"), flag!("message-prompt", "string", "New group prompt"), flag!("doc-url", "string", "New group document URL"), flag!("attachments-allowed", "bool", "Allow attachments"), flag!("max-members", "string", "Maximum group members"), flag!("member-max-messages", "int", "Per-member message limit"), flag!("member-max-total-chars", "int", "Per-member total char limit")] },
         CommandSpec { name: "group.list", use_: "list", short: "List groups joined by the active identity", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.list", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("limit", "int", "Maximum number of rows", default = "50")] },
         CommandSpec { name: "group.members", use_: "members", short: "List active group members", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.members", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required), flag!("limit", "int", "Maximum number of rows", default = "100")] },
         CommandSpec { name: "group.messages", use_: "messages", short: "List group messages", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: true, handler: "group.messages", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required), flag!("limit", "int", "Maximum number of rows", default = "50"), flag!("cursor", "string", "Pagination cursor")] },
-        CommandSpec { name: "group.e2ee", use_: "e2ee", short: "Inspect test-only group E2EE state", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
-        CommandSpec { name: "group.e2ee.status", use_: "status", short: "Inspect local group E2EE MLS provider status", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.e2ee.status", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID")] },
-        CommandSpec { name: "group.e2ee.publish-key-package", use_: "publish-key-package", short: "Plan a hidden/test-only group E2EE KeyPackage publish", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.e2ee.publish-key-package", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("device", "string", "Local MLS device id", default = "default"), flag!("purpose", "string", "KeyPackage purpose: normal, recovery, or update", default = "normal", choices = ["normal", "recovery", "update"]), flag!("recovery", "bool", "Compatibility alias for --purpose recovery"), flag!("group", "string", "Target group DID for recovery/update KeyPackages"), flag!("contract-test", "bool", "Use non-cryptographic contract-test artifacts")] },
-        CommandSpec { name: "group.e2ee.pending", use_: "pending", short: "Pull pending group E2EE P6 notices", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.e2ee.pending", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Optional group DID filter")] },
-        CommandSpec { name: "group.e2ee.repair", use_: "repair", short: "Replay pending group E2EE P6 notices", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.e2ee.repair", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Optional group DID filter")] },
+        CommandSpec { name: "group.secure", use_: "secure", short: "Group secure messaging commands", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "group.secure.status", use_: "status", short: "Inspect group secure status", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.secure.status", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required)] },
+        CommandSpec { name: "group.secure.repair", use_: "repair", short: "Repair group secure state", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.secure.repair", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("explain", "bool", "Unsupported diagnostics detail mode", deprecated)] },
+        CommandSpec { name: "group.secure.diagnostics", use_: "diagnostics", short: "Unsupported group secure diagnostics", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.secure.diagnostics", side_effect: false, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required)] },
+        CommandSpec { name: "group.e2ee", use_: "e2ee", short: "Deprecated group E2EE aliases and internal tools", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "", side_effect: false, outputs: &[], flags: &[] },
+        CommandSpec { name: "group.e2ee.status", use_: "status", short: "Deprecated alias for group secure status", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.e2ee.status", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required)] },
+        CommandSpec { name: "group.e2ee.publish-key-package", use_: "publish-key-package", short: "Plan a hidden/test-only group E2EE KeyPackage publish", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.e2ee.publish-key-package", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("device", "string", "Local MLS device id", default = "default"), flag!("purpose", "string", "KeyPackage purpose: normal, recovery, or update", default = "normal", choices = ["normal", "recovery", "update"]), flag!("recovery", "bool", "Compatibility alias for --purpose recovery"), flag!("group", "string", "Target group DID for recovery/update KeyPackages"), flag!("contract-test", "bool", "Use non-cryptographic contract-test artifacts")] },
+        CommandSpec { name: "group.e2ee.pending", use_: "pending", short: "Pull pending group E2EE P6 notices", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.e2ee.pending", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Optional group DID filter")] },
+        CommandSpec { name: "group.e2ee.repair", use_: "repair", short: "Deprecated alias for group secure repair", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.e2ee.repair", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required)] },
         CommandSpec { name: "group.e2ee.update-key", use_: "update-key", short: "Rotate an active member group E2EE key using a purpose=update KeyPackage", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.e2ee.update-key", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Active member DID or handle to update", required), flag!("device", "string", "Target MLS device id", default = "default")] },
         CommandSpec { name: "group.e2ee.rejoin", use_: "rejoin", short: "Re-add a removed/left member through group add --e2ee with a fresh normal KeyPackage", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.e2ee.rejoin", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Removed/left member DID or handle to rejoin", required), flag!("role", "string", "Member role", default = "member")] },
-        CommandSpec { name: "group.e2ee.recover-member", use_: "recover-member", short: "Recover an active same-device group E2EE member; not for removed/left rejoin", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.e2ee.recover-member", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Active member DID or handle to recover", required), flag!("device", "string", "Target MLS device id", default = "default")] },
-        CommandSpec { name: "group.e2ee.process-leave-request", use_: "process-leave-request", short: "Process a pending group E2EE leave request", long: "", aliases: &[], phase: "phase6", hidden: false, implemented: true, handler: "group.e2ee.process-leave-request", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Leaving member DID or handle", required), flag!("leave-request-id", "string", "Leave request id to consume"), flag!("reason", "string", "Owner/admin processing reason")] },
+        CommandSpec { name: "group.e2ee.recover-member", use_: "recover-member", short: "Recover an active same-device group E2EE member; not for removed/left rejoin", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.e2ee.recover-member", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Active member DID or handle to recover", required), flag!("device", "string", "Target MLS device id", default = "default")] },
+        CommandSpec { name: "group.e2ee.process-leave-request", use_: "process-leave-request", short: "Process a pending group E2EE leave request", long: "", aliases: &[], phase: "phase6", hidden: true, implemented: true, handler: "group.e2ee.process-leave-request", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required), flag!("member", "string", "Leaving member DID or handle", required), flag!("leave-request-id", "string", "Leave request id to consume"), flag!("reason", "string", "Owner/admin processing reason")] },
         CommandSpec { name: "group.code", use_: "code", short: "Inspect or manage group join codes", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: false, handler: "", side_effect: false, outputs: &[], flags: &[] },
         CommandSpec { name: "group.code.get", use_: "get", short: "Show group join code status", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: false, handler: "stub", side_effect: false, outputs: &["json", "pretty", "table"], flags: &[flag!("group", "string", "Group DID", required)] },
         CommandSpec { name: "group.code.refresh", use_: "refresh", short: "Rotate the current group join code", long: "", aliases: &[], phase: "phase5", hidden: false, implemented: false, handler: "stub", side_effect: true, outputs: &["json", "pretty"], flags: &[flag!("group", "string", "Group DID", required)] },
@@ -716,6 +1390,7 @@ impl Serialize for CommandSpec {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("name", self.name)?;
+        map.serialize_entry("canonical_name", self.canonical_name())?;
         map.serialize_entry("use", self.use_)?;
         map.serialize_entry("short", self.short)?;
         if !self.long.is_empty() {
@@ -739,7 +1414,145 @@ impl Serialize for CommandSpec {
         if !self.flags.is_empty() {
             map.serialize_entry("flags", self.flags)?;
         }
-        map.serialize_entry("cutover", &self.cutover_status())?;
+        map.serialize_entry("audience", &self.audience().as_str())?;
+        map.serialize_entry("primary_owner", &self.primary_owner().as_str())?;
+        let secondary_owners: Vec<_> = self
+            .secondary_owners()
+            .iter()
+            .map(|owner| owner.as_str())
+            .collect();
+        map.serialize_entry("secondary_owners", &secondary_owners)?;
+        map.serialize_entry("cli_shell_role", &self.cli_shell_role().as_str())?;
+        map.serialize_entry("direct_invocation", &self.direct_invocation())?;
+        map.serialize_entry(
+            "cutover",
+            &CommandCutoverView {
+                status: self.cutover_status(),
+                default_surface: self.include_in_default_surface(),
+                capability: self.cutover_status().capability(),
+                required_phase: self.cutover_status().required_phase(),
+            },
+        )?;
+        map.end()
+    }
+}
+
+impl Serialize for CommandSchemaSpec<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("name", self.spec.name)?;
+        map.serialize_entry("canonical_name", self.spec.canonical_name())?;
+        map.serialize_entry("use", self.spec.use_)?;
+        map.serialize_entry("short", self.spec.short)?;
+        if !self.spec.long.is_empty() {
+            map.serialize_entry("long", self.spec.long)?;
+        }
+        if !self.spec.aliases.is_empty() {
+            map.serialize_entry("aliases", self.spec.aliases)?;
+        }
+        map.serialize_entry("phase", self.spec.phase)?;
+        if self.spec.hidden {
+            map.serialize_entry("hidden", &self.spec.hidden)?;
+        }
+        map.serialize_entry("implemented", &self.spec.implemented)?;
+        if !self.spec.handler.is_empty() {
+            map.serialize_entry("handler", self.spec.handler)?;
+        }
+        map.serialize_entry("side_effect", &self.spec.side_effect)?;
+        if !self.spec.outputs.is_empty() {
+            map.serialize_entry("outputs", self.spec.outputs)?;
+        }
+        let flags: Vec<_> = self
+            .spec
+            .flags
+            .iter()
+            .filter(|flag| self.include_deprecated_flags || !flag.deprecated)
+            .collect();
+        if !flags.is_empty() {
+            map.serialize_entry("flags", &flags)?;
+        }
+        map.serialize_entry("audience", &self.spec.audience().as_str())?;
+        map.serialize_entry("primary_owner", &self.spec.primary_owner().as_str())?;
+        let secondary_owners: Vec<_> = self
+            .spec
+            .secondary_owners()
+            .iter()
+            .map(|owner| owner.as_str())
+            .collect();
+        map.serialize_entry("secondary_owners", &secondary_owners)?;
+        map.serialize_entry("cli_shell_role", &self.spec.cli_shell_role().as_str())?;
+        map.serialize_entry("direct_invocation", &self.spec.direct_invocation())?;
+        map.serialize_entry(
+            "cutover",
+            &CommandCutoverView {
+                status: self.spec.cutover_status(),
+                default_surface: self.spec.include_in_default_surface(),
+                capability: self.spec.cutover_status().capability(),
+                required_phase: self.spec.cutover_status().required_phase(),
+            },
+        )?;
+        map.end()
+    }
+}
+
+impl Serialize for SchemaSpecList<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::All(specs) => specs.serialize(serializer),
+            Self::Default(specs) => specs.serialize(serializer),
+        }
+    }
+}
+
+impl Serialize for SchemaCommandSpec<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::All(spec) => spec.serialize(serializer),
+            Self::Default(spec) => spec.serialize(serializer),
+        }
+    }
+}
+
+impl Serialize for DirectInvocationPolicy {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("policy", self.kind())?;
+        match self {
+            DirectInvocationPolicy::StableUnsupported { capability, phase } => {
+                map.serialize_entry("capability", capability)?;
+                map.serialize_entry("required_phase", phase)?;
+            }
+            DirectInvocationPolicy::Removed { replacement } => {
+                if let Some(replacement) = replacement {
+                    map.serialize_entry("replacement", replacement)?;
+                } else {
+                    map.serialize_entry("replacement", &Option::<&str>::None)?;
+                }
+            }
+            DirectInvocationPolicy::DeprecatedAlias { replacement, until } => {
+                map.serialize_entry("replacement", replacement)?;
+                map.serialize_entry("until", until)?;
+            }
+            DirectInvocationPolicy::Allow
+            | DirectInvocationPolicy::AllowWithWarning
+            | DirectInvocationPolicy::RequireDiagnosticGate
+            | DirectInvocationPolicy::RequireMigrationGate
+            | DirectInvocationPolicy::RequireInternalServiceGate => {}
+        }
         map.end()
     }
 }
@@ -749,14 +1562,29 @@ impl Serialize for CutoverStatus {
     where
         S: serde::Serializer,
     {
+        CommandCutoverView {
+            status: *self,
+            default_surface: self.include_in_default_surface(),
+            capability: self.capability(),
+            required_phase: self.required_phase(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl Serialize for CommandCutoverView<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("status", self.kind())?;
-        map.serialize_entry("default_surface", &self.include_in_default_surface())?;
-        if let Some(capability) = self.capability() {
+        map.serialize_entry("status", self.status.kind())?;
+        map.serialize_entry("default_surface", &self.default_surface)?;
+        if let Some(capability) = self.capability {
             map.serialize_entry("capability", capability)?;
         }
-        if let Some(phase) = self.required_phase() {
+        if let Some(phase) = self.required_phase {
             map.serialize_entry("required_phase", phase)?;
         }
         map.end()

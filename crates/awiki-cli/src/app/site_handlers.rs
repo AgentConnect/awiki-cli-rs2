@@ -1,7 +1,7 @@
-use super::{identity_exit, App};
+use super::App;
 use crate::cli::ParsedCommand;
+use crate::im_core_adapter::site::{self, CommandResult};
 use crate::output::ExitError;
-use crate::site::{self, CommandResult, SiteError};
 use serde_json::json;
 use std::fs;
 
@@ -16,9 +16,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.root.get",
+                        "service": "im-core.site",
+                        "operation": "site.root.get",
+                        "remote_call": "site.get_root",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "get_root",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                         },
@@ -28,17 +29,11 @@ impl App {
                 Vec::new(),
             );
         }
-        let result = site::get_root(
-            &resolved,
-            &self.identity_manager(&resolved),
-            &string_flag(command, "domain"),
-        )
-        .map_err(|err| {
-            site_exit(
-                err,
-                "Make sure the active identity is a configured tenant site admin for the requested domain.",
-            )
-        })?;
+        let client = self.site_client(&resolved)?;
+        let result = site::get_root(&client, string_flag(command, "domain")).map_err(site_exit(
+            "site root get",
+            "Make sure the active identity is a configured tenant site admin for the requested domain.",
+        ))?;
         self.render_site_result("awiki-cli site root get", &resolved, result)
     }
 
@@ -53,9 +48,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.root.set",
+                        "service": "im-core.site",
+                        "operation": "site.root.set",
+                        "remote_call": "site.set_root",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "set_root",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "body_bytes": body.len(),
@@ -66,20 +62,13 @@ impl App {
                 Vec::new(),
             );
         }
-        let result = site::set_root(
-            &resolved,
-            &self.identity_manager(&resolved),
-            site::SetRootParams {
-                domain: string_flag(command, "domain"),
-                body,
-            },
-        )
-        .map_err(|err| {
+        let client = self.site_client(&resolved)?;
+        let result = site::set_root(&client, string_flag(command, "domain"), body).map_err(
             site_exit(
-                err,
+                "site root set",
                 "Make sure the active identity is a configured tenant site admin for the requested domain.",
-            )
-        })?;
+            ),
+        )?;
         self.render_site_result("awiki-cli site root set", &resolved, result)
     }
 
@@ -93,9 +82,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.list",
+                        "service": "im-core.site",
+                        "operation": "site.page.list",
+                        "remote_call": "site.list_pages",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "list_pages",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                         },
@@ -105,17 +95,13 @@ impl App {
                 Vec::new(),
             );
         }
-        let result = site::list_pages(
-            &resolved,
-            &self.identity_manager(&resolved),
-            &string_flag(command, "domain"),
-        )
-        .map_err(|err| {
+        let client = self.site_client(&resolved)?;
+        let result = site::list_pages(&client, string_flag(command, "domain")).map_err(
             site_exit(
-                err,
+                "site page list",
                 "Make sure the active identity is a configured tenant site admin for the requested domain.",
-            )
-        })?;
+            ),
+        )?;
         self.render_site_result("awiki-cli site page list", &resolved, result)
     }
 
@@ -129,9 +115,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.get",
+                        "service": "im-core.site",
+                        "operation": "site.page.get",
+                        "remote_call": "site.get_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "get_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "slug": string_flag(command, "slug").trim(),
@@ -142,18 +129,16 @@ impl App {
                 Vec::new(),
             );
         }
+        let client = self.site_client(&resolved)?;
         let result = site::get_page(
-            &resolved,
-            &self.identity_manager(&resolved),
-            &string_flag(command, "domain"),
-            &string_flag(command, "slug"),
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
         )
-        .map_err(|err| {
-            site_exit(
-                err,
-                "Make sure the page exists and the active identity can access it.",
-            )
-        })?;
+        .map_err(site_exit(
+            "site page get",
+            "Make sure the page exists and the active identity can access it.",
+        ))?;
         self.render_site_result("awiki-cli site page get", &resolved, result)
     }
 
@@ -168,9 +153,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.create",
+                        "service": "im-core.site",
+                        "operation": "site.page.create",
+                        "remote_call": "site.create_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "create_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "slug": string_flag(command, "slug").trim(),
@@ -182,21 +168,17 @@ impl App {
                 Vec::new(),
             );
         }
+        let client = self.site_client(&resolved)?;
         let result = site::create_page(
-            &resolved,
-            &self.identity_manager(&resolved),
-            site::CreatePageParams {
-                domain: string_flag(command, "domain"),
-                slug: string_flag(command, "slug"),
-                body,
-            },
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
+            body,
         )
-        .map_err(|err| {
-            site_exit(
-                err,
-                "Make sure the active identity is a configured tenant site admin for the requested domain and the slug is available.",
-            )
-        })?;
+        .map_err(site_exit(
+            "site page create",
+            "Make sure the active identity is a configured tenant site admin for the requested domain and the slug is available.",
+        ))?;
         self.render_site_result("awiki-cli site page create", &resolved, result)
     }
 
@@ -211,9 +193,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.update",
+                        "service": "im-core.site",
+                        "operation": "site.page.update",
+                        "remote_call": "site.update_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "update_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "slug": string_flag(command, "slug").trim(),
@@ -225,21 +208,17 @@ impl App {
                 Vec::new(),
             );
         }
+        let client = self.site_client(&resolved)?;
         let result = site::update_page(
-            &resolved,
-            &self.identity_manager(&resolved),
-            site::UpdatePageParams {
-                domain: string_flag(command, "domain"),
-                slug: string_flag(command, "slug"),
-                body,
-            },
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
+            body,
         )
-        .map_err(|err| {
-            site_exit(
-                err,
-                "Make sure the page exists and the active identity can update it.",
-            )
-        })?;
+        .map_err(site_exit(
+            "site page update",
+            "Make sure the page exists and the active identity can update it.",
+        ))?;
         self.render_site_result("awiki-cli site page update", &resolved, result)
     }
 
@@ -253,9 +232,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.rename",
+                        "service": "im-core.site",
+                        "operation": "site.page.rename",
+                        "remote_call": "site.rename_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "rename_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "old_slug": string_flag(command, "slug").trim(),
@@ -267,21 +247,17 @@ impl App {
                 Vec::new(),
             );
         }
+        let client = self.site_client(&resolved)?;
         let result = site::rename_page(
-            &resolved,
-            &self.identity_manager(&resolved),
-            site::RenamePageParams {
-                domain: string_flag(command, "domain"),
-                slug: string_flag(command, "slug"),
-                to: string_flag(command, "to"),
-            },
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
+            string_flag(command, "to"),
         )
-        .map_err(|err| {
-            site_exit(
-                err,
-                "Make sure the source page exists and the target slug is available.",
-            )
-        })?;
+        .map_err(site_exit(
+            "site page rename",
+            "Make sure the source page exists and the target slug is available.",
+        ))?;
         self.render_site_result("awiki-cli site page rename", &resolved, result)
     }
 
@@ -295,9 +271,10 @@ impl App {
                 json!({
                     "plan": {
                         "action": "site.page.delete",
+                        "service": "im-core.site",
+                        "operation": "site.page.delete",
+                        "remote_call": "site.delete_page",
                         "identity": self.globals.identity,
-                        "rpc_endpoint": "/site/rpc",
-                        "rpc_method": "delete_page",
                         "request": {
                             "domain": string_flag(command, "domain").trim(),
                             "slug": string_flag(command, "slug").trim(),
@@ -308,18 +285,16 @@ impl App {
                 Vec::new(),
             );
         }
+        let client = self.site_client(&resolved)?;
         let result = site::delete_page(
-            &resolved,
-            &self.identity_manager(&resolved),
-            &string_flag(command, "domain"),
-            &string_flag(command, "slug"),
+            &client,
+            string_flag(command, "domain"),
+            string_flag(command, "slug"),
         )
-        .map_err(|err| {
-            site_exit(
-                err,
-                "Make sure the page exists and the active identity can delete it.",
-            )
-        })?;
+        .map_err(site_exit(
+            "site page delete",
+            "Make sure the page exists and the active identity can delete it.",
+        ))?;
         self.render_site_result("awiki-cli site page delete", &resolved, result)
     }
 
@@ -335,6 +310,16 @@ impl App {
             result.data,
             &result.summary,
             result.warnings,
+        )
+    }
+
+    fn site_client(
+        &self,
+        resolved: &crate::config::Resolved,
+    ) -> Result<im_core::ImClient, ExitError> {
+        crate::im_core_adapter::build_im_client(
+            resolved,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )
     }
 }
@@ -391,10 +376,10 @@ fn require_flags(command: &ParsedCommand, names: &[&str]) -> Result<(), ExitErro
         .collect::<Vec<_>>()
         .join(", ");
     Err(ExitError::new(
-        "internal_error",
-        1,
+        "invalid_argument",
+        2,
         format!("required flag(s) {quoted} not set"),
-        "",
+        "Provide all required flags for this site command.",
     ))
 }
 
@@ -406,48 +391,55 @@ fn changed_flag(command: &ParsedCommand, name: &str) -> bool {
     command.changed_flags.iter().any(|flag| flag == name)
 }
 
-fn site_exit(err: SiteError, hint: &str) -> ExitError {
-    match err {
-        SiteError::DomainRequired
-        | SiteError::DomainInvalid(_)
-        | SiteError::SlugRequired
-        | SiteError::NoBodySourceProvided
-        | SiteError::BodySourceConflict => {
-            ExitError::new("invalid_argument", 2, err.to_string(), hint)
+fn site_exit(
+    context: &'static str,
+    hint: &'static str,
+) -> impl FnOnce(im_core::ImError) -> ExitError {
+    move |err| match err {
+        im_core::ImError::Service {
+            status_code,
+            code,
+            message,
+        } => service_exit(context, hint, status_code, code, message),
+        err => crate::im_core_adapter::map_im_error(err, context),
+    }
+}
+
+fn service_exit(
+    context: &'static str,
+    hint: &'static str,
+    status_code: Option<u16>,
+    code: Option<String>,
+    message: String,
+) -> ExitError {
+    let rpc_code = code.as_deref().and_then(|value| value.parse::<i64>().ok());
+    match () {
+        _ if status_code == Some(400) || rpc_code == Some(-32602) => {
+            ExitError::new("invalid_argument", 2, message, hint)
         }
-        SiteError::AuthIdentityRequired => ExitError::new(
+        _ if status_code == Some(401) || rpc_code == Some(-32000) => ExitError::new(
             "auth_required",
             3,
-            err.to_string(),
-            "Use an identity with a valid JWT, or run `awiki-cli id register` / `awiki-cli id recover` first.",
+            message,
+            "Use an identity with a valid JWT or DID WBA auth material.",
         ),
-        SiteError::Service(service_err) => match () {
-            _ if service_err.status_code == 400 || service_err.rpc_code == -32602 => {
-                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
-            }
-            _ if service_err.status_code == 401 || service_err.rpc_code == -32000 => {
-                ExitError::new(
-                    "auth_required",
-                    3,
-                    service_err.to_string(),
-                    "Use an identity with a valid JWT or DID WBA auth material.",
-                )
-            }
-            _ if service_err.status_code == 403 || service_err.rpc_code == -32001 => {
-                ExitError::new("forbidden", 4, service_err.to_string(), hint)
-            }
-            _ if service_err.status_code == 404 || service_err.rpc_code == -32002 => {
-                ExitError::new("not_found", 5, service_err.to_string(), hint)
-            }
-            _ if service_err.status_code == 409 || service_err.rpc_code == -32003 => {
-                ExitError::new("conflict", 1, service_err.to_string(), hint)
-            }
-            _ if service_err.rpc_code == -32004 => {
-                ExitError::new("invalid_argument", 2, service_err.to_string(), hint)
-            }
-            _ => ExitError::new("internal_error", 1, service_err.to_string(), hint),
-        },
-        SiteError::Identity(err) => identity_exit(err),
-        SiteError::Internal(message) => ExitError::new("internal_error", 1, message, hint),
+        _ if status_code == Some(403) || rpc_code == Some(-32001) => {
+            ExitError::new("forbidden", 4, message, hint)
+        }
+        _ if status_code == Some(404) || rpc_code == Some(-32002) => {
+            ExitError::new("not_found", 5, message, hint)
+        }
+        _ if status_code == Some(409) || rpc_code == Some(-32003) => {
+            ExitError::new("conflict", 1, message, hint)
+        }
+        _ if rpc_code == Some(-32004) => ExitError::new("invalid_argument", 2, message, hint),
+        _ => crate::im_core_adapter::map_im_error(
+            im_core::ImError::Service {
+                status_code,
+                code,
+                message,
+            },
+            context,
+        ),
     }
 }

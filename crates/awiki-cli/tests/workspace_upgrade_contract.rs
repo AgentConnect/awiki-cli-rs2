@@ -1,4 +1,5 @@
-use awiki_cli::{config, store, upgrade};
+use awiki_cli::legacy_store as store;
+use awiki_cli::{config, upgrade};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

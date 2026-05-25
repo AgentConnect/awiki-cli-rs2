@@ -6,6 +6,8 @@ pub struct GroupReadResult {
     pub group: Option<GroupSnapshot>,
     pub groups: Vec<GroupSummary>,
     pub members: Vec<GroupMember>,
+    #[serde(default)]
+    pub resolved_member: Option<GroupMemberResolution>,
     pub messages: crate::ids::Page<crate::messages::Message>,
     pub total: Option<u32>,
     pub source: Option<String>,
@@ -40,6 +42,7 @@ impl GroupReadResult {
             group,
             groups,
             members,
+            resolved_member: None,
             messages,
             total: u32_value(raw.get("total")),
             source: optional_string(raw.get("source")),
@@ -48,8 +51,31 @@ impl GroupReadResult {
         }
     }
 
+    pub fn response_json(&self) -> Option<&Value> {
+        self.raw_response.as_ref()
+    }
+
     pub(crate) fn raw_response(&self) -> Option<&Value> {
         self.raw_response.as_ref()
+    }
+
+    pub(crate) fn merge_group_snapshot_from(&mut self, other: &Self) {
+        if other.group.is_some() {
+            self.group = other.group.clone();
+        }
+        self.warnings.extend(other.warnings.iter().cloned());
+    }
+
+    pub(crate) fn merge_group_members_from(&mut self, other: &Self) {
+        self.members = other.members.clone();
+        if other.total.is_some() {
+            self.total = other.total;
+        }
+        self.warnings.extend(other.warnings.iter().cloned());
+    }
+
+    pub(crate) fn push_warning(&mut self, warning: impl Into<String>) {
+        self.warnings.push(warning.into());
     }
 }
 
@@ -60,6 +86,8 @@ pub struct GroupCreateRequest {
     pub discoverability: Option<GroupDiscoverability>,
     pub admission_mode: Option<GroupAdmissionMode>,
     pub message_security_profile: Option<GroupMessageSecurityProfile>,
+    #[serde(default)]
+    pub security: GroupSecurityRequirement,
     pub e2ee: bool,
     pub slug: Option<String>,
     pub goal: Option<String>,
@@ -81,14 +109,75 @@ pub struct GroupJoinRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupLeaveRequest {
     pub group: crate::ids::GroupRef,
+    pub reason_text: Option<String>,
+    #[serde(default)]
+    pub security: GroupSecurityRequirement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupMemberMutationRequest {
     pub group: crate::ids::GroupRef,
-    pub member: crate::ids::Did,
+    pub member: GroupMemberRef,
     pub role: Option<GroupMemberRole>,
     pub reason_text: Option<String>,
+    #[serde(default)]
+    pub security: GroupSecurityRequirement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GroupMemberRef(String);
+
+impl GroupMemberRef {
+    pub fn parse(input: impl AsRef<str>, default_domain: &str) -> crate::ImResult<Self> {
+        let value = input.as_ref().trim();
+        if value.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("member".to_string()),
+                "group member must not be empty",
+            ));
+        }
+        if value.starts_with("did:") {
+            return crate::ids::Did::parse(value).map(Self::from);
+        }
+        crate::ids::Handle::parse(value, default_domain).map(Self::from)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_did(&self) -> bool {
+        self.0.starts_with("did:")
+    }
+
+    pub fn as_did(&self) -> crate::ImResult<crate::ids::Did> {
+        crate::ids::Did::parse(self.as_str())
+    }
+}
+
+impl From<crate::ids::Did> for GroupMemberRef {
+    fn from(did: crate::ids::Did) -> Self {
+        Self(did.as_str().to_string())
+    }
+}
+
+impl From<crate::ids::Handle> for GroupMemberRef {
+    fn from(handle: crate::ids::Handle) -> Self {
+        Self(handle.as_str().to_string())
+    }
+}
+
+impl From<crate::ids::PeerRef> for GroupMemberRef {
+    fn from(peer: crate::ids::PeerRef) -> Self {
+        Self(peer.as_str().to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupMemberResolution {
+    pub did: crate::ids::Did,
+    pub handle: Option<crate::ids::Handle>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -205,6 +294,20 @@ impl GroupMessageSecurityProfile {
             Self::GroupE2ee => "group-e2ee",
             Self::Custom(value) => value.as_str(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupSecurityRequirement {
+    #[default]
+    Default,
+    Required,
+}
+
+impl GroupSecurityRequirement {
+    pub fn required(self) -> bool {
+        matches!(self, Self::Required)
     }
 }
 
@@ -503,6 +606,20 @@ pub struct GroupUpdateProfileRequest {
 pub struct GroupUpdatePolicyRequest {
     pub group: crate::ids::GroupRef,
     pub patch: GroupPolicyPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupUpdateRequest {
+    pub group: crate::ids::GroupRef,
+    pub profile_patch: GroupProfilePatch,
+    pub policy_patch: GroupPolicyPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupUpdateResult {
+    pub deliveries: Vec<GroupReadResult>,
+    pub refreshed: Option<GroupReadResult>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

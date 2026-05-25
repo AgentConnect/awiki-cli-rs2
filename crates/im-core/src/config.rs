@@ -36,6 +36,7 @@ pub struct ImCoreConfig {
     pub mail_service_endpoint: Option<ServiceEndpoint>,
     pub anp_service_endpoint: Option<ServiceEndpoint>,
     pub anp_service_did: Option<crate::ids::Did>,
+    pub ca_bundle: Option<String>,
     pub transport_policy: MessageTransportPolicy,
 }
 
@@ -59,8 +60,16 @@ impl ImCoreConfig {
             mail_service_endpoint: None,
             anp_service_endpoint: None,
             anp_service_did: None,
+            ca_bundle: None,
             transport_policy: MessageTransportPolicy::Auto,
         })
+    }
+
+    pub(crate) fn ca_bundle_path(&self) -> Option<&str> {
+        self.ca_bundle
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
     }
 }
 

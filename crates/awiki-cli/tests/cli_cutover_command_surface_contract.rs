@@ -1,4 +1,6 @@
-use awiki_cli::cmdmeta::{self, CutoverStatus};
+use awiki_cli::cmdmeta::{
+    self, CliShellRole, CommandAudience, CommandOwner, CutoverStatus, DirectInvocationPolicy,
+};
 use serde_json::Value;
 use std::process::{Command, Output};
 
@@ -14,6 +16,33 @@ fn every_command_spec_has_cutover_classification() {
         missing.is_empty(),
         "every current command spec must be classified for CLI cutover: {missing:?}"
     );
+}
+
+#[test]
+fn every_command_spec_has_required_policy_metadata() {
+    for spec in cmdmeta::specs() {
+        assert_eq!(spec.canonical_name(), spec.name);
+        assert!(
+            !spec.audience().as_str().is_empty(),
+            "{} must classify audience",
+            spec.name
+        );
+        assert!(
+            !spec.primary_owner().as_str().is_empty(),
+            "{} must classify primary owner",
+            spec.name
+        );
+        assert!(
+            !spec.cli_shell_role().as_str().is_empty(),
+            "{} must classify CLI shell role",
+            spec.name
+        );
+        assert!(
+            !spec.direct_invocation().kind().is_empty(),
+            "{} must classify direct invocation policy",
+            spec.name
+        );
+    }
 }
 
 #[test]
@@ -35,6 +64,9 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "msg.history",
         "msg.mark-read",
         "msg.attachment.download",
+        "msg.secure",
+        "msg.secure.status",
+        "msg.secure.repair",
         "mail",
         "mail.account",
         "mail.attachment",
@@ -54,6 +86,11 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "group.list",
         "group.members",
         "group.messages",
+        "group.secure",
+        "group.secure.status",
+        "group.secure.repair",
+        "group.e2ee.status",
+        "group.e2ee.repair",
         "people.follow",
         "people.unfollow",
         "people.status",
@@ -61,6 +98,24 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "people.following",
         "people.contacts.list",
         "people.contacts.save",
+        "page",
+        "page.create",
+        "page.list",
+        "page.get",
+        "page.update",
+        "page.rename",
+        "page.delete",
+        "site",
+        "site.root",
+        "site.root.get",
+        "site.root.set",
+        "site.page",
+        "site.page.list",
+        "site.page.get",
+        "site.page.create",
+        "site.page.update",
+        "site.page.rename",
+        "site.page.delete",
     ] {
         assert_eq!(
             cmdmeta::cutover_status(command),
@@ -82,29 +137,12 @@ fn cutover_classifier_keeps_cli_owned_host_commands() {
         "init",
         "completion.bash",
         "config.show",
-        "config.set",
         "runtime.status",
-        "runtime.apply",
-        "runtime.setup",
-        "runtime.mode.get",
-        "runtime.mode.set",
         "runtime.listener.status",
-        "runtime.listener.install",
-        "runtime.listener.start",
-        "runtime.listener.stop",
-        "runtime.listener.restart",
-        "runtime.listener.uninstall",
-        "runtime.listener.config.show",
-        "runtime.listener.config.set",
         "runtime.listener.enable",
         "runtime.listener.disable",
-        "runtime.host-notify.config.show",
-        "runtime.host-notify.config.set",
         "runtime.host-notify.enable",
         "runtime.host-notify.disable",
-        "runtime.host-notify.hermes.guide",
-        "runtime.host-notify.hermes.status",
-        "runtime.host-notify.hermes.setup",
     ] {
         assert_eq!(
             cmdmeta::cutover_status(command),
@@ -117,7 +155,14 @@ fn cutover_classifier_keeps_cli_owned_host_commands() {
 #[test]
 fn cutover_classifier_marks_unsupported_and_internal_commands() {
     assert_eq!(
-        cmdmeta::cutover_status("msg.secure.status"),
+        cmdmeta::cutover_status("msg.secure.init"),
+        CutoverStatus::Unsupported {
+            capability: "secure-direct",
+            phase: "Phase 6",
+        }
+    );
+    assert_eq!(
+        cmdmeta::cutover_status("msg.secure.outbox.list"),
         CutoverStatus::Unsupported {
             capability: "secure-direct",
             phase: "Phase 6",
@@ -131,13 +176,6 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
         }
     );
     assert_eq!(
-        cmdmeta::cutover_status("page.list"),
-        CutoverStatus::Unsupported {
-            capability: "page-site",
-            phase: "outside current im-core cutover",
-        }
-    );
-    assert_eq!(
         cmdmeta::cutover_status("runtime.heartbeat.status"),
         CutoverStatus::Unsupported {
             capability: "runtime-heartbeat",
@@ -147,6 +185,13 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
     assert_eq!(
         cmdmeta::cutover_status("group.e2ee.publish-key-package"),
         CutoverStatus::DiagnosticOnly
+    );
+    assert_eq!(
+        cmdmeta::cutover_status("group.secure.diagnostics"),
+        CutoverStatus::Unsupported {
+            capability: "group secure diagnostics",
+            phase: "future diagnostics plan",
+        }
     );
     assert_eq!(
         cmdmeta::cutover_status("debug.db.query"),
@@ -164,6 +209,10 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
         CutoverStatus::Hidden
     );
     assert_eq!(
+        cmdmeta::direct_invocation_policy("runtime.listener.run"),
+        DirectInvocationPolicy::RequireInternalServiceGate
+    );
+    assert_eq!(
         cmdmeta::cutover_status("group.code.get"),
         CutoverStatus::Removed
     );
@@ -174,19 +223,112 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
 }
 
 #[test]
+fn command_policy_maps_final_cutover_surfaces() {
+    let msg_send = cmdmeta::lookup("msg.send").unwrap();
+    assert_eq!(msg_send.audience(), CommandAudience::DefaultUser);
+    assert_eq!(msg_send.primary_owner(), CommandOwner::ImCoreMessages);
+    assert_eq!(msg_send.cli_shell_role(), CliShellRole::ReadsUserInputFile);
+    assert_eq!(msg_send.direct_invocation(), DirectInvocationPolicy::Allow);
+
+    let listener_start = cmdmeta::lookup("runtime.listener.start").unwrap();
+    assert_eq!(listener_start.audience(), CommandAudience::Operator);
+    assert_eq!(
+        listener_start.cli_shell_role(),
+        CliShellRole::ManagesLocalService
+    );
+    assert_eq!(
+        listener_start.direct_invocation(),
+        DirectInvocationPolicy::Allow
+    );
+
+    let service_run = cmdmeta::lookup("runtime.listener.service-run").unwrap();
+    assert_eq!(service_run.audience(), CommandAudience::InternalService);
+    assert_eq!(
+        service_run.direct_invocation(),
+        DirectInvocationPolicy::RequireInternalServiceGate
+    );
+
+    let diagnostic = cmdmeta::lookup("debug.db.handle-history").unwrap();
+    assert_eq!(diagnostic.audience(), CommandAudience::Diagnostic);
+    assert_eq!(diagnostic.primary_owner(), CommandOwner::CliDiagnostic);
+    assert_eq!(
+        diagnostic.direct_invocation(),
+        DirectInvocationPolicy::RequireDiagnosticGate
+    );
+
+    let migration = cmdmeta::lookup("id.import-v1").unwrap();
+    assert_eq!(migration.audience(), CommandAudience::MigrationOnly);
+    assert_eq!(migration.primary_owner(), CommandOwner::CliMigration);
+    assert_eq!(
+        migration.direct_invocation(),
+        DirectInvocationPolicy::RequireMigrationGate
+    );
+
+    let secure_status = cmdmeta::lookup("msg.secure.status").unwrap();
+    assert_eq!(secure_status.audience(), CommandAudience::DefaultUser);
+    assert_eq!(secure_status.primary_owner(), CommandOwner::ImCoreSecure);
+    assert_eq!(
+        secure_status.direct_invocation(),
+        DirectInvocationPolicy::Allow
+    );
+
+    let group_secure_repair = cmdmeta::lookup("group.secure.repair").unwrap();
+    assert_eq!(group_secure_repair.audience(), CommandAudience::DefaultUser);
+    assert_eq!(
+        group_secure_repair.primary_owner(),
+        CommandOwner::ImCoreSecure
+    );
+    assert_eq!(
+        group_secure_repair.secondary_owners(),
+        &[CommandOwner::ImCoreGroups]
+    );
+    assert_eq!(
+        group_secure_repair.direct_invocation(),
+        DirectInvocationPolicy::Allow
+    );
+
+    let group_e2ee_status = cmdmeta::lookup("group.e2ee.status").unwrap();
+    assert_eq!(group_e2ee_status.audience(), CommandAudience::DefaultUser);
+    assert_eq!(
+        group_e2ee_status.direct_invocation(),
+        DirectInvocationPolicy::DeprecatedAlias {
+            replacement: "group secure status",
+            until: "next-major",
+        }
+    );
+}
+
+#[test]
 fn schema_serializes_cutover_status_for_commands_and_children() {
     let msg_send = schema_value("msg.send");
     assert_eq!(msg_send["cutover"]["status"], "im_core");
     assert_eq!(msg_send["cutover"]["default_surface"], true);
+    assert_eq!(msg_send["audience"], "default");
+    assert_eq!(msg_send["primary_owner"], "im_core_messages");
+    assert_eq!(msg_send["cli_shell_role"], "reads_user_input_file");
+    assert_eq!(msg_send["direct_invocation"]["policy"], "allow");
 
     let attachment = schema_value("msg.attachment.download");
     assert_eq!(attachment["cutover"]["status"], "im_core");
     assert_eq!(attachment["cutover"]["default_surface"], true);
 
+    let page_list = schema_value("page.list");
+    assert_eq!(page_list["cutover"]["status"], "im_core");
+    assert_eq!(page_list["cutover"]["default_surface"], true);
+
+    let site_page_list = schema_value("site.page.list");
+    assert_eq!(site_page_list["cutover"]["status"], "im_core");
+    assert_eq!(site_page_list["cutover"]["default_surface"], true);
+
     let runtime = schema_value("runtime.listener");
     let run = schema_child("runtime.listener", "runtime.listener.run");
     assert_eq!(runtime["cutover"]["status"], "cli_owned");
     assert_eq!(run["cutover"]["status"], "hidden");
+    assert_eq!(run["audience"], "internal");
+    assert_eq!(
+        run["direct_invocation"]["policy"],
+        "require_internal_service_gate"
+    );
 }
 
 #[test]
@@ -203,13 +345,21 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "msg.send",
         "msg.inbox",
         "msg.attachment.download",
+        "msg.secure.status",
+        "msg.secure.repair",
         "mail.inbox",
         "mail.attachment.download",
         "group.create",
+        "group.secure.status",
+        "group.secure.repair",
         "people.follow",
         "people.contacts.list",
-        "runtime.listener.start",
-        "runtime.host-notify.hermes.setup",
+        "page.list",
+        "page.create",
+        "site.root.get",
+        "site.page.list",
+        "runtime.listener.enable",
+        "runtime.host-notify.enable",
     ] {
         assert!(
             names.contains(&command),
@@ -218,14 +368,20 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
     }
 
     for command in [
-        "msg.secure.status",
+        "msg.secure.init",
+        "msg.secure.failed",
+        "msg.secure.retry",
+        "msg.secure.drop",
         "people.search",
-        "page.list",
-        "site.page.list",
         "runtime.heartbeat.status",
+        "group.e2ee.status",
+        "group.e2ee.repair",
         "group.e2ee.publish-key-package",
+        "group.secure.diagnostics",
         "debug.db.query",
         "runtime.host-notify.openclaw.set-token",
+        "runtime.listener.start",
+        "runtime.host-notify.hermes.setup",
         "runtime.listener.run",
         "group.code.get",
         "debug.raw.rpc",
@@ -239,6 +395,22 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
             "{command} should remain queryable by exact schema target"
         );
     }
+}
+
+#[test]
+fn release_artifact_script_documents_e2ee_feature_gate() {
+    let script = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("scripts/release/build-release-artifact.sh"),
+    )
+    .expect("read release artifact script");
+
+    assert!(script.contains("verify_e2ee_feature_graph"));
+    assert!(script.contains("im-core feature \"group-e2ee\""));
+    assert!(script.contains("anp feature \"mls\""));
+    assert!(script.contains("cargo_cmd[@]}\" tree -p awiki-cli -e features --locked"));
+    assert!(script.contains("Windows E2EE package/release validation is deferred"));
 }
 
 #[test]
@@ -293,52 +465,67 @@ fn unsupported_cutover_stub_commands_do_not_enter_legacy_stub_boundary() {
         assert_code(&output, 2);
         let envelope = error_json(&output);
 
-        assert_eq!(envelope["error"]["code"], "unsupported_capability");
-        assert_eq!(envelope["error"]["details"]["command"], command);
-        assert_eq!(envelope["error"]["details"]["capability"], capability);
-        assert_eq!(
-            envelope["error"]["details"]["required_phase"],
-            required_phase
-        );
-        assert_eq!(
-            envelope["error"]["details"]["cutover_status"],
-            "unsupported"
-        );
+        if command == "debug.raw.rpc" {
+            assert_eq!(envelope["error"]["code"], "removed_command");
+            assert_eq!(envelope["error"]["details"]["command"], command);
+        } else {
+            assert_eq!(envelope["error"]["code"], "unsupported_capability");
+            assert_eq!(envelope["error"]["details"]["command"], command);
+            assert_eq!(envelope["error"]["details"]["capability"], capability);
+            assert_eq!(
+                envelope["error"]["details"]["required_phase"],
+                required_phase
+            );
+            assert_eq!(
+                envelope["error"]["details"]["cutover_status"],
+                "unsupported"
+            );
+        }
+    }
+}
+
+#[test]
+fn direct_invocation_policy_is_enforced_before_handlers() {
+    for (args, code) in [
+        (
+            &["debug", "db", "handle-history", "alice"][..],
+            "diagnostic_gate_required",
+        ),
+        (&["id", "import-v1"][..], "migration_gate_required"),
+        (
+            &["runtime", "listener", "service-run"][..],
+            "internal_command",
+        ),
+        (
+            &["group", "e2ee", "publish-key-package"][..],
+            "internal_command",
+        ),
+        (
+            &[
+                "group",
+                "secure",
+                "diagnostics",
+                "--group",
+                "did:wba:awiki.ai:groups:demo:e1",
+            ][..],
+            "unsupported_capability",
+        ),
+        (&["debug", "raw", "rpc"][..], "removed_command"),
+    ] {
+        let output = awiki_cmd(args);
+        assert_code(&output, 2);
+        let envelope = error_json(&output);
+        assert_eq!(envelope["error"]["code"], code);
     }
 }
 
 #[test]
 fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
-    for (args, command, capability) in [
-        (&["page", "list"][..], "page.list", "page-site"),
-        (
-            &["--dry-run", "page", "create", "--slug", "hello"][..],
-            "page.create",
-            "page-site",
-        ),
-        (
-            &["site", "page", "list", "--domain", "tenant.example"][..],
-            "site.page.list",
-            "page-site",
-        ),
-        (
-            &[
-                "--dry-run",
-                "site",
-                "root",
-                "set",
-                "--domain",
-                "tenant.example",
-            ][..],
-            "site.root.set",
-            "page-site",
-        ),
-        (
-            &["debug", "db", "query", "SELECT 1"][..],
-            "debug.db.query",
-            "raw-sql",
-        ),
-    ] {
+    for (args, command, capability) in [(
+        &["debug", "db", "query", "SELECT 1"][..],
+        "debug.db.query",
+        "raw-sql",
+    )] {
         let output = awiki_cmd(args);
         assert_code(&output, 2);
         let envelope = error_json(&output);
@@ -348,7 +535,11 @@ fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
         assert_eq!(envelope["error"]["details"]["capability"], capability);
         assert_eq!(
             envelope["error"]["details"]["required_phase"],
-            "outside current im-core cutover"
+            if capability == "group secure diagnostics" {
+                "future diagnostics plan"
+            } else {
+                "outside current im-core cutover"
+            }
         );
         assert_eq!(
             envelope["error"]["details"]["cutover_status"],

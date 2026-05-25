@@ -352,6 +352,7 @@ impl DartCreateGroupRequest {
                 ),
                 None => None,
             },
+            security: Default::default(),
             e2ee: self.e2ee,
             slug: self.slug,
             goal: self.goal,

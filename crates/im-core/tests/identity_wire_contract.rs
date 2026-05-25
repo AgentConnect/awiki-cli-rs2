@@ -1,4 +1,5 @@
 use im_core::compat::{directory, identity};
+use im_core::prelude::{Did, Handle, Profile, ProfileAttribute};
 use serde_json::{json, Value};
 
 #[test]
@@ -358,6 +359,41 @@ fn identity_profile_update_payload_matches_go_mapping_and_order() {
             .unwrap_err()
             .to_string()
             .contains("no profile fields were provided")
+    );
+}
+
+#[test]
+fn identity_profile_wire_view_matches_cli_compat_shape() {
+    let profile = Profile {
+        subject: Did::parse("did:example:alice").unwrap(),
+        handle: Some(Handle::parse("alice.awiki.test", "").unwrap()),
+        display_name: Some("Alice".to_string()),
+        bio: Some("Rust port".to_string()),
+        tags: vec!["rust".to_string(), "cli".to_string()],
+        markdown: Some("# Profile".to_string()),
+        avatar_url: Some("https://example.test/avatar.png".to_string()),
+        updated_at: Some("2026-05-25T00:00:00Z".to_string()),
+        metadata: vec![ProfileAttribute {
+            key: "source".to_string(),
+            value: "profile".to_string(),
+        }],
+    };
+
+    assert_eq!(
+        profile.to_wire_profile_value(),
+        json!({
+            "did": "did:example:alice",
+            "handle": "alice.awiki.test",
+            "nick_name": "Alice",
+            "bio": "Rust port",
+            "tags": ["rust", "cli"],
+            "profile_md": "# Profile",
+            "avatar_url": "https://example.test/avatar.png",
+            "updated_at": "2026-05-25T00:00:00Z",
+            "metadata": {
+                "source": "profile",
+            },
+        })
     );
 }
 

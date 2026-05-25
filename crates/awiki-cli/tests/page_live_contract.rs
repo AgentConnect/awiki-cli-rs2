@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn page_live_command_is_blocked_before_legacy_content_rpc() {
+fn page_live_command_dispatches_through_im_core_content_rpc() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_identity(workspace.path(), "alice-page", "alice", "jwt-page");
     let server = TestServer::new(vec![TestResponse::ok(
@@ -24,20 +24,23 @@ fn page_live_command_is_blocked_before_legacy_content_rpc() {
         workspace.path(),
     );
 
-    assert_cutover_unsupported(&output, "page.list");
-    assert!(
-        server.requests().is_empty(),
-        "page cutover guard must not reach legacy content RPC server"
-    );
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["action"], "list_pages");
+    assert_eq!(envelope["data"]["count"], 2);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "page list should reach content RPC once");
+    assert!(requests[0].contains("POST /content/rpc HTTP/1.1"));
+    assert!(requests[0].contains(r#""method":"list""#));
     assert_eq!(
         read_identity_auth_token(workspace.path(), "alice-page"),
         "jwt-page",
-        "unsupported page command must not refresh legacy auth"
+        "page list should not refresh JWT when the first content call succeeds"
     );
 }
 
 #[test]
-fn page_create_live_command_is_blocked_before_legacy_content_rpc() {
+fn page_create_live_command_dispatches_through_im_core_content_rpc() {
     let workspace = TempDir::new().expect("workspace");
     register_ready_identity(workspace.path(), "alice-page", "alice", "jwt-page");
     let server = TestServer::new(vec![TestResponse::ok(
@@ -61,16 +64,26 @@ fn page_create_live_command_is_blocked_before_legacy_content_rpc() {
         workspace.path(),
     );
 
-    assert_cutover_unsupported(&output, "page.create");
-    assert!(
-        server.requests().is_empty(),
-        "page create cutover guard must not reach legacy content RPC server"
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["data"]["action"], "create_page");
+    assert_eq!(envelope["data"]["page"]["slug"], "hello");
+    let requests = server.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "page create should reach content RPC once"
     );
+    assert!(requests[0].contains("POST /content/rpc HTTP/1.1"));
+    assert!(requests[0].contains(r#""method":"create""#));
+    assert!(requests[0].contains(r#""slug":"hello""#));
+    assert!(requests[0].contains(r#""title":"Hello""#));
 }
 
 fn register_ready_identity(workspace: &Path, identity_name: &str, handle: &str, jwt_token: &str) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -165,33 +178,11 @@ fn assert_success(output: &Output) {
     );
 }
 
-fn assert_cutover_unsupported(output: &Output, command: &str) {
-    assert_eq!(
-        output.status.code(),
-        Some(2),
-        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "stdout should be empty: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+fn success_json(output: &Output) -> Value {
     let envelope: Value =
-        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
-    assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], "page-site");
-    assert_eq!(
-        envelope["error"]["details"]["required_phase"],
-        "outside current im-core cutover"
-    );
-    assert_eq!(
-        envelope["error"]["details"]["cutover_status"],
-        "unsupported"
-    );
+        serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
+    assert_eq!(envelope["ok"], true);
+    envelope
 }
 
 #[derive(Clone)]

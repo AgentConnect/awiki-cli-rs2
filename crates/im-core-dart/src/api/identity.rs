@@ -112,10 +112,12 @@ pub fn recover_handle(
         inner
             .identities()
             .recover_handle(im_core::identity::RecoverHandleRequest {
-                handle: im_core::ids::Handle::parse(handle, "").map_err(DartImError::from)?,
+                handle: im_core::ids::Handle::parse(&handle, "").map_err(DartImError::from)?,
+                raw_handle: Some(handle),
                 phone,
                 otp,
                 generated_identity: None,
+                local_finalize: None,
             })
             .map(Into::into)
             .map_err(DartImError::from)

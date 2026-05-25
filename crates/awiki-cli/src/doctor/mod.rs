@@ -1,8 +1,8 @@
 use crate::buildinfo::BuildInfo;
 use crate::config::Resolved;
-use crate::identity::{IdentityError, Manager};
+use crate::legacy_identity::{IdentityError, Manager};
+use crate::legacy_store as store;
 use crate::runtime;
-use crate::store;
 use crate::upgrade;
 use serde::Serialize;
 use serde_json::{json, Value};

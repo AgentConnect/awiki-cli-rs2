@@ -1,6 +1,6 @@
 use awiki_cli::config::{Paths, Resolved};
-use awiki_cli::identity::Manager;
-use awiki_cli::runtime::listener_secure_sessions::{
+use awiki_cli::legacy_identity::Manager;
+use awiki_cli::runtime_legacy::listener_secure_sessions::{
     pending_confirmation_peer_dids, pending_confirmation_peer_dids_in_identity_dir, read_json_file,
 };
 use serde_json::json;

@@ -19,6 +19,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - Add or remove members
 - Update group profile or policy fields
 - View members or group messages
+- Check or repair group secure state
 
 ## Core Concepts
 
@@ -27,6 +28,7 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - **discoverability**: visibility and discovery policy
 - **admission mode**: how members join the group
 - **group messages**: the read path for group content; sending still uses `msg send --group`
+- **group secure lifecycle**: create/add/remove/leave operations with `--secure required`, implemented through high-level `im-core` group APIs
 
 ## Resource Model
 
@@ -40,19 +42,21 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 - Need to inspect metadata or policy -> `group get`
 - Need to join an open group -> `group join`
 - Need to add or remove one member -> `group add` / `group remove`
-- Need an E2EE member to leave safely -> `group leave --e2ee` creates a hidden leave request, then the group owner processes it with `group e2ee process-leave-request`
+- Need secure group lifecycle -> use `--secure required` on `group create`, `group add`, `group remove`, or `group leave`
+- Need secure state health or recovery -> `group secure status` / `group secure repair`
 - Need to change the name, description, or policy -> `group update`
 - Need to send text to the group -> use `03-messaging.md`
 
 ## Canonical Commands
 
-- `awiki-cli group create --name "Agent War Room" [...]`
+- `awiki-cli group create --name "Agent War Room" [...] [--secure off|required]`
 - `awiki-cli group get --group <group_did>`
 - `awiki-cli group join --group <group_did> [--reason "..."]`
-- `awiki-cli group add --group <group_did> --member <did|handle> [--role ...]`
-- `awiki-cli group remove --group <group_did> --member <did|handle> [--reason "..."]`
-- `awiki-cli group leave --group <group_did> [--reason "..."] [--e2ee]`
-- `awiki-cli group e2ee process-leave-request --group <group_did> --member <did|handle> [--leave-request-id <id>]`
+- `awiki-cli group add --group <group_did> --member <did|handle> [--role ...] [--secure off|required]`
+- `awiki-cli group remove --group <group_did> --member <did|handle> [--reason "..."] [--secure off|required]`
+- `awiki-cli group leave --group <group_did> [--reason "..."] [--secure off|required]`
+- `awiki-cli group secure status --group <group_did>`
+- `awiki-cli group secure repair --group <group_did>`
 - `awiki-cli group update --group <group_did> [--name ...] [--description ...] [...]`
 - `awiki-cli group members --group <group_did> [--limit <n>]`
 - `awiki-cli group messages --group <group_did> [--limit <n>] [--cursor <cursor>]`
@@ -92,7 +96,8 @@ This file is a **reference**, not an entry skill. Load it only when the task cle
 
 - In the current repository, `group` is an independent domain
 - `group messages` is a read-only inspection path; sending still happens through `msg send --group`
-- The currently public flags for `group add` are only `--group`, `--member`, and `--role`; `--reason` is not part of the current public flag surface
+- `--e2ee` and `--message-security-profile group-e2ee` are deprecated aliases for `--secure required`; prefer the canonical flag.
+- Low-level `group e2ee publish-key-package/pending/process-leave-request/recover-member/update-key/rejoin` commands are hidden/internal or unsupported and should not be recommended as product workflows.
 
 ## Related References
 

@@ -115,9 +115,11 @@ fn recover_handle_request_builds_sdk_request() {
     .unwrap();
 
     assert_eq!(request.handle.as_str(), "alice.awiki.test");
+    assert_eq!(request.raw_handle.as_deref(), Some("Alice"));
     assert_eq!(request.phone, "13800138000");
     assert_eq!(request.otp.as_deref(), Some("12 34 56"));
     assert!(request.generated_identity.is_none());
+    assert!(request.local_finalize.is_none());
 }
 
 #[test]
@@ -202,35 +204,35 @@ fn replace_did_plan_command_request_builds_sdk_plan_request() {
         env_hits: Vec::new(),
         sources: BTreeMap::new(),
     };
-    let manager = crate::identity::Manager::new(paths);
-    let generated = crate::identity::generate_identity_with_path_segments(
-        "awiki.test",
-        ["alice", "e1_old"],
-        "https://example.test/anp-im/rpc",
-        "did:wba:example.test",
-    )
-    .expect("generate identity");
-    let generated_did = generated.did.clone();
-    manager
-        .save(crate::identity::types::SaveInput {
-            identity_name: "alice".to_string(),
-            did: generated.did,
-            unique_id: generated.unique_id,
-            display_name: "Alice".to_string(),
-            handle: "alice".to_string(),
-            full_handle: "alice.awiki.test".to_string(),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            ..Default::default()
+    let generated_did = "did:wba:awiki.test:alice:e1_old".to_string();
+    std::fs::create_dir_all(&resolved.paths.identity_dir).expect("identity dir");
+    std::fs::write(
+        std::path::Path::new(&resolved.paths.identity_dir).join("index.json"),
+        serde_json::json!({
+            "default_identity": "alice",
+            "identities": [{
+                "id": "e1_old",
+                "did": generated_did,
+                "dir_name": "alice",
+                "handle": "alice.awiki.test",
+                "display_name": "Alice",
+                "local_alias": "alice",
+                "is_default": true,
+                "ready_for_auth": true,
+                "ready_for_messaging": true,
+                "missing": [],
+            }]
         })
-        .expect("save identity");
-
+        .to_string(),
+    )
+    .expect("write identity registry");
+    std::fs::write(
+        std::path::Path::new(&resolved.paths.identity_dir).join("default"),
+        "alice\n",
+    )
+    .expect("write default identity");
     let request = identity::replace_did_plan_command_request(
         &resolved,
-        &manager,
         "alice",
         Some(false),
         Some(true),
@@ -262,6 +264,11 @@ fn replace_did_plan_command_request_builds_sdk_plan_request() {
     assert_eq!(request.sdk.is_public, Some(false));
     assert_eq!(request.sdk.is_agent, Some(true));
     assert_eq!(request.sdk.role.as_deref(), Some(""));
+    assert!(request
+        .sdk
+        .affected_local_state
+        .store_rebind_counts
+        .is_empty());
 }
 
 struct TempDir {
@@ -348,6 +355,7 @@ fn build_im_core_config_from_parts_maps_fields() {
         Some("https://mail.example.test"),
         Some("https://anp.example.test/rpc"),
         Some("did:wba:anp.example.test"),
+        Some("/tmp/awiki-ca.pem"),
         "websocket",
     )
     .unwrap();
@@ -373,6 +381,7 @@ fn build_im_core_config_from_parts_maps_fields() {
         cfg.anp_service_did.unwrap().as_str(),
         "did:wba:anp.example.test"
     );
+    assert_eq!(cfg.ca_bundle.as_deref(), Some("/tmp/awiki-ca.pem"));
     assert_eq!(
         cfg.transport_policy,
         im_core::MessageTransportPolicy::RealtimePreferred
@@ -413,7 +422,8 @@ fn build_im_core_paths_from_parts_maps_workspace_paths() {
 #[test]
 fn send_message_request_builds_direct_text_dto() {
     let command = command_with_flags([("to", "bob"), ("text", "hello"), ("type", "text")]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
+    assert!(warnings.is_empty());
     assert!(matches!(request.target, MessageTarget::Direct(_)));
     assert!(matches!(
         request.body,
@@ -425,7 +435,8 @@ fn send_message_request_builds_direct_text_dto() {
 #[test]
 fn send_message_request_builds_group_text_dto() {
     let command = command_with_flags([("group", "did:example:group"), ("text", "hello group")]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
+    assert!(warnings.is_empty());
     assert!(matches!(
         request.target,
         MessageTarget::Group(ref group) if group == &GroupRef::parse("did:example:group").unwrap()
@@ -440,7 +451,7 @@ fn send_message_request_builds_markdown_plain_direct_sdk_dto() {
         ("type", "markdown"),
         ("secure", "plain"),
     ]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
 
     assert!(matches!(
         request.target,
@@ -454,21 +465,35 @@ fn send_message_request_builds_markdown_plain_direct_sdk_dto() {
         } if text == "hello"
     ));
     assert_eq!(request.security, MessageSecurityMode::Plain);
+    assert_eq!(
+        warnings,
+        vec!["--secure plain is deprecated; use --secure off."]
+    );
 }
 
 #[test]
 fn send_message_request_maps_secure_flag_to_e2ee_required_policy() {
     let direct = command_with_flags([("to", "bob"), ("text", "hello"), ("secure", "on")]);
-    let direct_request = messages::send_message_request(&direct, "awiki.test").unwrap();
+    let (direct_request, direct_warnings) =
+        messages::send_message_request(&direct, "awiki.test").unwrap();
     assert_eq!(direct_request.security, MessageSecurityMode::E2eeRequired);
+    assert_eq!(
+        direct_warnings,
+        vec!["--secure on is deprecated; use --secure required."]
+    );
 
     let group = command_with_flags([
         ("group", "did:example:group"),
         ("text", "hello group"),
         ("secure", "e2ee"),
     ]);
-    let group_request = messages::send_message_request(&group, "awiki.test").unwrap();
+    let (group_request, group_warnings) =
+        messages::send_message_request(&group, "awiki.test").unwrap();
     assert_eq!(group_request.security, MessageSecurityMode::E2eeRequired);
+    assert_eq!(
+        group_warnings,
+        vec!["--secure e2ee is deprecated; use --secure required."]
+    );
 }
 
 #[test]
@@ -514,7 +539,8 @@ fn inbox_query_builds_scope_limit_cursor_and_unread_flag() {
 #[test]
 fn send_message_request_builds_attachment_sdk_dto() {
     let command = command_with_flags([("to", "bob"), ("text", "caption"), ("file", "a.png")]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
+    assert!(warnings.is_empty());
 
     assert!(matches!(
         request.target,

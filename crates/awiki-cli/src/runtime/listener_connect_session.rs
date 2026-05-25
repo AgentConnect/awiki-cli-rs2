@@ -228,8 +228,7 @@ pub fn connect_session_bearer_seedings(
     if jwt_token.trim().is_empty() {
         return Vec::new();
     }
-    let Ok(plan) = im_core::compat::realtime::realtime_client_construction_plan(service_base_url)
-    else {
+    let Ok(plan) = im_core::realtime::realtime_client_construction_plan(service_base_url) else {
         return Vec::new();
     };
     plan.remembered_scope_inputs

@@ -37,6 +37,17 @@ pub fn project_notification(notification: &Value) -> NotificationProjection {
     }
 }
 
+pub fn is_direct_secure_wire_notification(notification: &Value) -> bool {
+    if notification.get("method").and_then(Value::as_str) != Some("direct.incoming") {
+        return false;
+    }
+    let content_type = notification
+        .pointer("/params/meta/content_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    anp::direct_e2ee::is_direct_e2ee_wire_content_type(content_type)
+}
+
 fn project_direct_incoming(notification: &Value) -> NotificationProjection {
     let Some(params) = map_value(notification.get("params")) else {
         return unknown_notification(notification, "direct.incoming", "missing params");

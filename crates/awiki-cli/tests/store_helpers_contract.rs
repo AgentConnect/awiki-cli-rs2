@@ -1,4 +1,4 @@
-use awiki_cli::store;
+use awiki_cli::legacy_store as store;
 
 #[test]
 fn make_thread_id_matches_go_direct_group_and_unknown_contracts() {

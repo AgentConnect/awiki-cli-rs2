@@ -50,6 +50,42 @@ class AttachmentSendRequest {
   final bool waitForFinalAcceptance;
 }
 
+class AttachmentSendResult {
+  const AttachmentSendResult({
+    required this.message,
+    required this.targetKind,
+    required this.targetDid,
+    required this.attachment,
+    required this.manifestJson,
+  });
+
+  final SendMessageResult message;
+  final String targetKind;
+  final String targetDid;
+  final UploadedAttachment attachment;
+  final String manifestJson;
+}
+
+class UploadedAttachment {
+  const UploadedAttachment({
+    required this.attachmentId,
+    required this.filename,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.size,
+    required this.digestB64u,
+    required this.objectUri,
+  });
+
+  final String attachmentId;
+  final String filename;
+  final String mimeType;
+  final int sizeBytes;
+  final String size;
+  final String digestB64u;
+  final String objectUri;
+}
+
 sealed class AttachmentDestination {
   const AttachmentDestination();
 

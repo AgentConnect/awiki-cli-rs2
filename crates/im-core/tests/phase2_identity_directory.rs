@@ -148,6 +148,26 @@ fn identity_profile_bridge_updates_current_profile() {
     assert_eq!(result.profile.tags, vec!["rust", "cli"]);
     assert_eq!(result.profile.markdown.as_deref(), Some("## Alice"));
     assert_eq!(result.raw["nick_name"], "Alice Updated");
+    let identity_payload: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .root
+                .join("identities")
+                .join("alice")
+                .join("identity.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(identity_payload["name"], "Alice Updated");
+    let registry_payload: Value = serde_json::from_slice(
+        &fs::read(fixture.root.join("identities").join("registry.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        registry_payload["identities"][0]["display_name"],
+        "Alice Updated"
+    );
 }
 
 #[test]
@@ -263,6 +283,74 @@ fn directory_service_exposes_contact_store_and_resolution_api() {
     assert_eq!(relation.relationship.as_deref(), Some("friend"));
     assert!(!relation.followed);
     assert!(!relation.messaged);
+}
+
+#[test]
+fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
+    let fixture = Fixture::new();
+    let old_did = "did:example:bob-old";
+    seed_contact_binding(
+        &fixture,
+        "did:example:alice",
+        old_did,
+        "bob",
+        "2026-05-20T00:00:00Z",
+    );
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_value(),
+        ),
+        ExpectedRpc::new(
+            "/im/rpc",
+            "direct.get_history",
+            json!({
+                "body": {
+                    "user_did": "did:example:alice",
+                    "peer_did": "did:example:bob",
+                    "limit": 5,
+                }
+            }),
+            json!({
+                "messages": [{
+                    "id": "msg-history-1",
+                    "sender_did": "did:example:bob",
+                    "receiver_did": "did:example:alice",
+                    "content": "hello",
+                    "content_type": "text/plain",
+                    "sent_at": "2026-05-21T00:00:00Z"
+                }],
+                "source": "remote_http"
+            }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    let page = client
+        .messages()
+        .history_with_metadata(
+            ThreadRef::Direct(PeerRef::parse("bob.awiki.test", "").unwrap()),
+            HistoryQuery {
+                limit: PageLimit(5),
+                cursor: None,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(page.source.as_deref(), Some("remote_http"));
+    assert_eq!(
+        page.resolved_dids
+            .iter()
+            .map(Did::as_str)
+            .collect::<Vec<_>>(),
+        vec!["did:example:bob", old_did]
+    );
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].id.as_str(), "msg-history-1");
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
 }
 
 #[test]
@@ -473,6 +561,7 @@ impl Fixture {
                 mail_service_endpoint: None,
                 anp_service_endpoint: None,
                 anp_service_did: None,
+                ca_bundle: None,
                 transport_policy: MessageTransportPolicy::HttpOnly,
             },
             ImCorePaths {
@@ -494,9 +583,21 @@ impl Fixture {
     }
 }
 
-fn write_identity_runtime(identities: &std::path::Path, alias: &str, _did: &str) {
+fn write_identity_runtime(identities: &std::path::Path, alias: &str, did: &str) {
     let identity_dir = identities.join(alias);
     fs::create_dir_all(&identity_dir).unwrap();
+    fs::write(
+        identity_dir.join("identity.json"),
+        serde_json::to_vec_pretty(&json!({
+            "did": did,
+            "unique_id": format!("{alias}-id"),
+            "name": "Alice",
+            "handle": format!("{alias}.awiki.test"),
+            "full_handle": format!("{alias}.awiki.test"),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let bundle = anp::authentication::create_did_wba_document(
         "awiki.test",
         anp::authentication::DidDocumentOptions {
@@ -520,6 +621,36 @@ fn write_identity_runtime(identities: &std::path::Path, alias: &str, _did: &str)
     fs::write(
         identity_dir.join("auth.json"),
         format!(r#"{{"jwt_token":"test-token-for-{alias}"}}"#),
+    )
+    .unwrap();
+}
+
+fn seed_contact_binding(
+    fixture: &Fixture,
+    owner_did: &str,
+    peer_did: &str,
+    handle: &str,
+    seen_at: &str,
+) {
+    let sqlite_path = fixture.root.join("local").join("im.sqlite");
+    if let Some(parent) = sqlite_path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let mut connection = rusqlite::Connection::open(sqlite_path).unwrap();
+    im_core::compat::local_state::ensure_schema(&connection).unwrap();
+    im_core::compat::directory::upsert_contact(
+        &mut connection,
+        im_core::compat::directory::ContactRecord {
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: owner_did.to_owned(),
+            did: peer_did.to_owned(),
+            handle: handle.to_owned(),
+            messaged: Some(true),
+            first_seen_at: seen_at.to_owned(),
+            last_seen_at: seen_at.to_owned(),
+            credential_name: "alice-id".to_owned(),
+            ..im_core::compat::directory::ContactRecord::default()
+        },
     )
     .unwrap();
 }
@@ -718,7 +849,13 @@ impl RpcTestServer {
                 let request = read_rpc_request(&mut stream);
                 assert_eq!(request.path, expected.path);
                 assert_eq!(request.rpc_method, expected.rpc_method);
-                assert_eq!(request.params, expected.params);
+                if request.rpc_method == "direct.get_history" {
+                    assert_eq!(request.params["body"], expected.params["body"]);
+                    assert_eq!(request.params["meta"]["sender_did"], "did:example:alice");
+                    assert_eq!(request.params["meta"]["profile"], "anp.direct.local.v1");
+                } else {
+                    assert_eq!(request.params, expected.params);
+                }
                 write_rpc_response(&mut stream, request.id.clone(), expected.result);
                 captured.push(request);
             }

@@ -1,12 +1,14 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::RngCore;
-use rustls::pki_types::ServerName;
+use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
 use std::fmt;
+use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -88,9 +90,13 @@ impl ReadWrite for StreamOwned<ClientConnection, TcpStream> {
 }
 
 impl WsTransport {
-    pub(crate) fn connect(websocket_url: &str, bearer_token: &str) -> WsResult<Self> {
+    pub(crate) fn connect_with_ca_bundle(
+        websocket_url: &str,
+        bearer_token: &str,
+        ca_bundle: Option<&str>,
+    ) -> WsResult<Self> {
         let parsed = ParsedWsUrl::parse(websocket_url)?;
-        let mut stream = connect_stream(&parsed)?;
+        let mut stream = connect_stream(&parsed, ca_bundle)?;
         let key = websocket_key();
         write_handshake_request(&mut stream, &parsed, bearer_token, &key)?;
         let headers = read_http_headers(&mut stream)?;
@@ -508,7 +514,7 @@ fn default_port(scheme: &str) -> u16 {
     }
 }
 
-fn connect_stream(parsed: &ParsedWsUrl) -> WsResult<Box<dyn ReadWrite>> {
+fn connect_stream(parsed: &ParsedWsUrl, ca_bundle: Option<&str>) -> WsResult<Box<dyn ReadWrite>> {
     let addrs = (parsed.host.as_str(), parsed.port)
         .to_socket_addrs()
         .map_err(ws_error)?;
@@ -523,7 +529,7 @@ fn connect_stream(parsed: &ParsedWsUrl) -> WsResult<Box<dyn ReadWrite>> {
                     .set_write_timeout(Some(WRITE_TIMEOUT))
                     .map_err(ws_error)?;
                 if parsed.scheme == "wss" {
-                    let config = Arc::new(rustls_config());
+                    let config = Arc::new(rustls_config(ca_bundle)?);
                     let server_name = ServerName::try_from(parsed.host.clone())
                         .map_err(|err| ws_message(format!("invalid TLS server name: {err}")))?;
                     let conn = ClientConnection::new(config, server_name)
@@ -542,13 +548,24 @@ fn connect_stream(parsed: &ParsedWsUrl) -> WsResult<Box<dyn ReadWrite>> {
     ))
 }
 
-fn rustls_config() -> ClientConfig {
-    let root_store = RootCertStore {
+fn rustls_config(ca_bundle: Option<&str>) -> WsResult<ClientConfig> {
+    let mut root_store = RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
-    ClientConfig::builder()
+    if let Some(ca_bundle) = ca_bundle.map(str::trim).filter(|value| !value.is_empty()) {
+        let raw = fs::read(Path::new(ca_bundle))
+            .map_err(|err| ws_message(format!("read ca bundle: {err}")))?;
+        let certs = CertificateDer::pem_slice_iter(&raw)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| ws_message(format!("parse ca bundle: {err}")))?;
+        let (valid_count, _) = root_store.add_parsable_certificates(certs);
+        if valid_count == 0 {
+            return Err(ws_message(format!("invalid ca bundle: {ca_bundle}")));
+        }
+    }
+    Ok(ClientConfig::builder()
         .with_root_certificates(root_store)
-        .with_no_client_auth()
+        .with_no_client_auth())
 }
 
 fn write_handshake_request(

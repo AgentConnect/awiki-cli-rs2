@@ -1,6 +1,6 @@
 use awiki_cli::authsdk::{HttpError, RpcError, JSON_RPC_ID, JSON_RPC_VERSION};
-use awiki_cli::identity::types::{IdentitySummary, UserState};
-use awiki_cli::identity::wire::{
+use awiki_cli::legacy_identity::types::{IdentitySummary, UserState};
+use awiki_cli::legacy_identity::wire::{
     bind_email_completed_result, bind_email_pending_result, bind_email_sent_result,
     bind_phone_completed_result, bind_phone_otp_result, build_email_send_rest_call,
     build_email_status_rest_call, build_get_me_profile_rpc_call,

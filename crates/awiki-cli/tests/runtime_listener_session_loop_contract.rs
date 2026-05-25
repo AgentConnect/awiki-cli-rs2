@@ -1,4 +1,4 @@
-use awiki_cli::runtime::listener_session_loop::{
+use awiki_cli::runtime_legacy::listener_session_loop::{
     secure_prekey_retry_decision, session_loop_start_decision, ConnectedSessionAction,
     ConsumeFinishedAction, ConsumeFinishedDecision, ContextSleep, InitialSessionSignal,
     SecurePrekeyRetryDecision, SessionLoopBackoff, SessionLoopRetryDecision, SessionLoopRetryPhase,

@@ -9,20 +9,62 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+// These functions are ignored because they are not marked as `pub`: `page_limit`
 
-            // These functions are ignored because they are not marked as `pub`: `page_limit`
+Future<DartEmailAccount> account({required ArcDartImClient client}) =>
+    RustLib.instance.api.crateApiEmailAccount(client: client);
 
+Future<DartEmailMessageSummaryPage> inbox({
+  required ArcDartImClient client,
+  required String folder,
+  required int limit,
+  required int offset,
+  required bool unreadOnly,
+}) => RustLib.instance.api.crateApiEmailInbox(
+  client: client,
+  folder: folder,
+  limit: limit,
+  offset: offset,
+  unreadOnly: unreadOnly,
+);
 
-            Future<DartEmailAccount>  account({required ArcDartImClient client }) => RustLib.instance.api.crateApiEmailAccount(client: client);
+Future<DartEmailMessage> read({
+  required ArcDartImClient client,
+  required String messageId,
+}) => RustLib.instance.api.crateApiEmailRead(
+  client: client,
+  messageId: messageId,
+);
 
-Future<DartEmailMessageSummaryPage>  inbox({required ArcDartImClient client , required String folder , required int limit , required int offset , required bool unreadOnly }) => RustLib.instance.api.crateApiEmailInbox(client: client, folder: folder, limit: limit, offset: offset, unreadOnly: unreadOnly);
+Future<DartEmailMarkReadResult> markRead({
+  required ArcDartImClient client,
+  required List<String> messageIds,
+  required bool isRead,
+}) => RustLib.instance.api.crateApiEmailMarkRead(
+  client: client,
+  messageIds: messageIds,
+  isRead: isRead,
+);
 
-Future<DartEmailMessage>  read({required ArcDartImClient client , required String messageId }) => RustLib.instance.api.crateApiEmailRead(client: client, messageId: messageId);
+Future<DartSendEmailResult> send({
+  required ArcDartImClient client,
+  required DartSendEmailRequest request,
+}) => RustLib.instance.api.crateApiEmailSend(client: client, request: request);
 
-Future<DartEmailMarkReadResult>  markRead({required ArcDartImClient client , required List<String> messageIds , required bool isRead }) => RustLib.instance.api.crateApiEmailMarkRead(client: client, messageIds: messageIds, isRead: isRead);
+Future<DartEmailAttachmentContent> downloadAttachment({
+  required ArcDartImClient client,
+  required String messageId,
+  required int attachmentIndex,
+}) => RustLib.instance.api.crateApiEmailDownloadAttachment(
+  client: client,
+  messageId: messageId,
+  attachmentIndex: attachmentIndex,
+);
 
-Future<DartSendEmailResult>  send({required ArcDartImClient client , required DartSendEmailRequest request }) => RustLib.instance.api.crateApiEmailSend(client: client, request: request);
-
-Future<DartEmailAttachmentContent>  downloadAttachment({required ArcDartImClient client , required String messageId , required int attachmentIndex }) => RustLib.instance.api.crateApiEmailDownloadAttachment(client: client, messageId: messageId, attachmentIndex: attachmentIndex);
-
-Future<DartEmailNotificationPage>  notifications({required ArcDartImClient client , required int limit }) => RustLib.instance.api.crateApiEmailNotifications(client: client, limit: limit);
+Future<DartEmailNotificationPage> notifications({
+  required ArcDartImClient client,
+  required int limit,
+}) => RustLib.instance.api.crateApiEmailNotifications(
+  client: client,
+  limit: limit,
+);

@@ -265,7 +265,7 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 - `msg send --group` 仍属于 messaging reference
 - 群写入发送路径不迁入 groups reference
-- `--secure on` contract 存在，但当前必须明确标注为未实现
+- `--secure required` 是 secure send 的 canonical flag；`--secure on` 只作为 deprecated alias 说明，不能标注为 canonical 或未实现
 
 ### 7.3 `04-groups.md`
 

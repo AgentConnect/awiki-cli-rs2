@@ -1,48 +1,31 @@
 #![cfg(unix)]
 
-use awiki_cli::runtime::bridge::{self, BridgeRequest};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_inbox_websocket_mode_uses_local_bridge_like_go() {
-    let workspace = TempDir::new("msg-ws-inbox-bridge").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-inbox", "bob", "jwt-bob");
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+fn msg_inbox_websocket_target_filter_is_unsupported_before_legacy_bridge() {
+    let workspace = TempDir::new("msg-ws-inbox-filter-unsupported").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-ws-inbox-filter", "bob", "jwt-bob");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
-    let (_bridge, bridge_requests) = spawn_bridge_server(
-        &socket_path,
-        vec![json!({
-            "messages": [{
-                "id": "msg-ws-inbox-1",
-                "type": "text",
-                "sender_did": alice_did,
-                "receiver_did": bob_did,
-                "content_type": "text/plain",
-                "content": "hello from local inbox bridge",
-                "sent_at": "2026-05-16T01:02:03Z",
-                "is_read": false
-            }],
-            "total": 1
-        })],
-    );
+    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let server = TestServer::new(Vec::new());
     write_msg_ws_config(
         workspace.path(),
-        "https://placeholder.invalid",
-        socket_path.to_str().expect("socket path"),
+        &server.base_url(),
+        missing_socket.to_str().expect("socket path"),
     );
 
     let output = awiki_cmd(
         &[
             "--identity",
-            "bob-ws-inbox",
+            "bob-ws-inbox-filter",
             "msg",
             "inbox",
             "--scope",
@@ -56,56 +39,65 @@ fn msg_inbox_websocket_mode_uses_local_bridge_like_go() {
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Loaded 1 direct inbox messages");
-    assert_eq!(envelope["data"]["source"], "local_ws_cache");
-    assert_eq!(envelope["data"]["with"], alice_did);
-    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-ws-inbox-1");
-    assert_no_http_fallback_warning(&envelope);
-
-    let request = bridge_requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("bridge inbox.get request");
-    assert_eq!(request.method, "inbox.get");
-    assert_eq!(request.identity_name, "bob-ws-inbox");
-    assert_eq!(request.params["with"], alice_did);
-    assert_eq!(request.params["limit"], 5);
-    assert_eq!(request.params["scope"], "direct");
-    assert_eq!(request.params["mark_read"], false);
-    assert_eq!(request.params["unread"], true);
+    assert_unsupported_capability(&output, "msg.inbox", "inbox-target-filters", "Phase 3");
+    assert!(server.requests().is_empty());
 }
 
 #[test]
-fn msg_inbox_websocket_mode_falls_back_to_http_with_warning_like_go() {
-    let workspace = TempDir::new("msg-ws-inbox-http-fallback").expect("workspace");
+fn msg_inbox_websocket_mark_read_side_effect_is_unsupported() {
+    let workspace = TempDir::new("msg-ws-inbox-mark-read-unsupported").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-ws-inbox-mark", "bob", "jwt-bob");
+    let missing_socket = workspace.path().join("runtime").join("missing.sock");
+    let server = TestServer::new(Vec::new());
+    write_msg_ws_config(
+        workspace.path(),
+        &server.base_url(),
+        missing_socket.to_str().expect("socket path"),
+    );
+
+    let output = awiki_cmd(
+        &[
+            "--identity",
+            "bob-ws-inbox-mark",
+            "msg",
+            "inbox",
+            "--mark-read",
+            "--limit",
+            "5",
+        ],
+        workspace.path(),
+    );
+
+    assert_unsupported_capability(
+        &output,
+        "msg.inbox",
+        "inbox-mark-read-side-effect",
+        "Phase 3",
+    );
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn msg_inbox_websocket_mode_uses_im_core_http_not_legacy_bridge_for_default_scope() {
+    let workspace = TempDir::new("msg-ws-inbox-http-cutover").expect("workspace");
     register_ready_msg_identity(workspace.path(), "bob-ws-inbox-http", "bob", "jwt-bob");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "messages": [{
-                "id": "msg-ws-inbox-http-1",
-                "type": "text",
-                "sender_did": alice_did,
-                "receiver_did": bob_did,
-                "content_type": "text/plain",
-                "content": "hello from HTTP inbox fallback",
-                "sent_at": "2026-05-16T02:03:04Z",
-                "is_read": false
-            }],
-            "total": 1,
-            "source": "remote_http"
-        }))),
-        TestResponse::ok(&json_rpc_result(json!({
-            "did": alice_did,
-            "handle": "alice.awiki.ai",
-            "full_handle": "alice.awiki.ai"
-        }))),
-    ]);
+    let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
+        "messages": [{
+            "id": "msg-ws-inbox-http-1",
+            "type": "text",
+            "sender_did": alice_did,
+            "receiver_did": bob_did,
+            "content_type": "text/plain",
+            "content": "hello from HTTP inbox",
+            "sent_at": "2026-05-16T02:03:04Z",
+            "is_read": false
+        }],
+        "total": 1,
+        "source": "remote_http"
+    })))]);
     write_msg_ws_config(
         workspace.path(),
         &server.base_url(),
@@ -119,9 +111,7 @@ fn msg_inbox_websocket_mode_falls_back_to_http_with_warning_like_go() {
             "msg",
             "inbox",
             "--scope",
-            "direct",
-            "--with",
-            alice_did,
+            "all",
             "--limit",
             "7",
             "--unread",
@@ -131,177 +121,34 @@ fn msg_inbox_websocket_mode_falls_back_to_http_with_warning_like_go() {
 
     assert_success(&output);
     let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Loaded 1 direct inbox messages");
+    assert_eq!(envelope["summary"], "Loaded 1 inbox messages");
     assert_eq!(envelope["data"]["source"], "remote_http");
     assert_eq!(envelope["data"]["messages"][0]["id"], "msg-ws-inbox-http-1");
-    assert_has_http_fallback_warning(&envelope);
+    assert_no_legacy_websocket_fallback_warning(&envelope);
 
     let requests = server.requests();
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[1].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[2].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(requests[3].starts_with("POST /user-service/handle/rpc HTTP/1.1"));
-    assert_contains_text(&requests[2], "Authorization: Bearer jwt-bob\r\n");
-    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
+    assert_contains_text(&requests[0], "Authorization: Bearer jwt-bob\r\n");
+    let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["method"], "inbox.get");
     assert_eq!(body["params"]["body"]["user_did"], bob_did);
     assert_eq!(body["params"]["body"]["limit"], 7);
     assert!(body["params"]["body"].get("peer_did").is_none());
     assert!(body["params"]["body"].get("scope").is_none());
     assert!(body["params"]["body"].get("unread").is_none());
+    assert!(body["params"]["body"].get("unread_only").is_none());
     assert!(body["params"]["body"].get("mark_read").is_none());
 }
 
 #[test]
-fn msg_inbox_websocket_mode_uses_local_cache_before_http_like_go() {
-    let workspace = TempDir::new("msg-ws-inbox-cache-fallback").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-inbox-cache", "bob", "jwt-bob");
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
-    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    seed_direct_message(
-        workspace.path(),
-        bob_did,
-        alice_did,
-        "msg-ws-inbox-cache-1",
-        "hello from local inbox cache",
-        "2026-05-16T03:04:05Z",
-    );
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(Vec::new());
-    write_msg_ws_config(
-        workspace.path(),
-        &server.base_url(),
-        missing_socket.to_str().expect("socket path"),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "bob-ws-inbox-cache",
-            "msg",
-            "inbox",
-            "--scope",
-            "direct",
-            "--with",
-            alice_did,
-            "--limit",
-            "5",
-            "--unread",
-        ],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        "Loaded inbox from local websocket cache"
-    );
-    assert_eq!(envelope["data"]["source"], "local_ws_cache_fallback");
-    assert_eq!(envelope["data"]["with"], alice_did);
-    assert_eq!(
-        envelope["data"]["messages"][0]["msg_id"],
-        "msg-ws-inbox-cache-1"
-    );
-    assert_has_cache_fallback_warning(&envelope);
-    assert!(server.requests().is_empty());
-}
-
-#[test]
-fn msg_inbox_websocket_unresolved_handle_uses_local_history_cache_like_go() {
-    let workspace = TempDir::new("msg-ws-inbox-handle-cache").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-inbox-handle", "bob", "jwt-bob");
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
-    let alice_old = "did:wba:awiki.ai:alice:e1_old";
-    seed_contact(
-        workspace.path(),
-        bob_did,
-        alice_old,
-        "alice",
-        "2026-05-16T03:00:00Z",
-    );
-    seed_direct_message(
-        workspace.path(),
-        bob_did,
-        alice_old,
-        "msg-ws-inbox-handle-cache-1",
-        "hello from unresolved inbox handle cache",
-        "2026-05-16T03:04:05Z",
-    );
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::internal_error(
-            r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"handle lookup failed"},"id":"req-1"}"#,
-        ),
-    ]);
-    write_msg_ws_config(
-        workspace.path(),
-        &server.base_url(),
-        missing_socket.to_str().expect("socket path"),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "bob-ws-inbox-handle",
-            "msg",
-            "inbox",
-            "--scope",
-            "direct",
-            "--with",
-            "alice.awiki.ai",
-            "--limit",
-            "5",
-            "--unread",
-        ],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(
-        envelope["summary"],
-        "Loaded inbox from local handle history cache"
-    );
-    assert_eq!(envelope["data"]["source"], "local_handle_history_cache");
-    assert_eq!(envelope["data"]["with"], "alice");
-    assert_eq!(
-        envelope["data"]["messages"][0]["msg_id"],
-        "msg-ws-inbox-handle-cache-1"
-    );
-    assert!(envelope["warnings"]
-        .as_array()
-        .unwrap_or(&Vec::new())
-        .is_empty());
-
-    let requests = server.requests();
-    assert!(!requests.is_empty());
-    assert!(
-        !requests
-            .iter()
-            .any(|request| assert_request_method(request, "inbox.get")),
-        "unresolved handle cache fallback should not call inbox.get HTTP fallback: {requests:?}"
-    );
-}
-
-#[test]
-fn msg_inbox_websocket_mode_double_failure_returns_http_error_like_go() {
-    let workspace = TempDir::new("msg-ws-inbox-double-failure").expect("workspace");
+fn msg_inbox_websocket_mode_reports_http_transport_failure_without_cache_fallback() {
+    let workspace = TempDir::new("msg-ws-inbox-http-failure").expect("workspace");
     register_ready_msg_identity(workspace.path(), "bob-ws-inbox-fail", "bob", "jwt-bob");
-    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(vec![
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::ok(&json_rpc_result(json!({}))),
-        TestResponse::internal_error(
-            r#"{"jsonrpc":"2.0","error":{"code":-32000,"message":"http inbox failed"},"id":"req-1"}"#,
-        ),
-    ]);
     write_msg_ws_config(
         workspace.path(),
-        &server.base_url(),
+        &closed_local_url(),
         missing_socket.to_str().expect("socket path"),
     );
 
@@ -311,184 +158,13 @@ fn msg_inbox_websocket_mode_double_failure_returns_http_error_like_go() {
             "bob-ws-inbox-fail",
             "msg",
             "inbox",
-            "--scope",
-            "direct",
-            "--with",
-            alice_did,
-        ],
-        workspace.path(),
-    );
-
-    assert_failure(&output);
-    let envelope = failure_json(&output);
-    let message = envelope["error"]["message"]
-        .as_str()
-        .expect("error message");
-    assert_contains_text(message, "http inbox failed");
-    assert!(
-        !message.contains("local websocket bridge request failed"),
-        "inbox double failure should return the HTTP error, got: {message}"
-    );
-
-    let requests = server.requests();
-    assert_eq!(requests.len(), 3);
-    let body: Value = serde_json::from_str(request_body(&requests[2])).expect("request body");
-    assert_eq!(body["method"], "inbox.get");
-}
-
-#[test]
-fn msg_inbox_websocket_mark_read_updates_returned_messages_like_go() {
-    let workspace = TempDir::new("msg-ws-inbox-mark-read").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-inbox-mark", "bob", "jwt-bob");
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
-    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
-    let (_bridge, bridge_requests) = spawn_bridge_server(
-        &socket_path,
-        vec![
-            json!({
-                "messages": [{
-                    "id": "msg-ws-inbox-mark-1",
-                    "type": "text",
-                    "sender_did": alice_did,
-                    "receiver_did": bob_did,
-                    "content_type": "text/plain",
-                    "content": "read me through inbox",
-                    "sent_at": "2026-05-16T04:05:06Z",
-                    "is_read": false
-                }],
-                "total": 1
-            }),
-            json!({
-                "updated_count": 1
-            }),
-        ],
-    );
-    write_msg_ws_config(
-        workspace.path(),
-        "https://placeholder.invalid",
-        socket_path.to_str().expect("socket path"),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "bob-ws-inbox-mark",
-            "msg",
-            "inbox",
-            "--scope",
-            "direct",
-            "--with",
-            alice_did,
             "--limit",
             "5",
-            "--mark-read",
         ],
         workspace.path(),
     );
 
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Loaded 1 direct inbox messages");
-    assert_eq!(envelope["data"]["source"], "local_ws_cache");
-    assert_eq!(envelope["data"]["messages"][0]["id"], "msg-ws-inbox-mark-1");
-    assert_eq!(envelope["data"]["messages"][0]["is_read"], true);
-    assert_no_http_fallback_warning(&envelope);
-
-    let inbox_request = bridge_requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("bridge inbox.get request");
-    assert_eq!(inbox_request.method, "inbox.get");
-    assert_eq!(inbox_request.identity_name, "bob-ws-inbox-mark");
-    assert_eq!(inbox_request.params["with"], alice_did);
-    assert_eq!(inbox_request.params["mark_read"], true);
-
-    let mark_read_request = bridge_requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("bridge inbox.mark_read request");
-    assert_eq!(mark_read_request.method, "inbox.mark_read");
-    assert_eq!(mark_read_request.identity_name, "bob-ws-inbox-mark");
-    assert_eq!(
-        mark_read_request.params["message_ids"],
-        json!(["msg-ws-inbox-mark-1"])
-    );
-
-    let rows = query_rows(
-        workspace.path(),
-        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-ws-inbox-mark-1'",
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["is_read"], 1);
-}
-
-fn spawn_bridge_server(
-    socket_path: &Path,
-    results: Vec<Value>,
-) -> (thread::JoinHandle<()>, mpsc::Receiver<BridgeRequest>) {
-    let listener =
-        bridge::listen_bridge(socket_path.to_str().expect("socket path")).expect("listen bridge");
-    listener
-        .set_nonblocking(true)
-        .expect("set bridge listener nonblocking");
-    let (requests_tx, requests_rx) = mpsc::channel();
-    let response_lines = results
-        .into_iter()
-        .map(|result| json!({ "ok": true, "result": result }).to_string() + "\n")
-        .collect::<Vec<_>>();
-
-    let handle = thread::spawn(move || {
-        for response_line in response_lines {
-            loop {
-                let Ok((mut conn, _)) = accept_unix_connection(&listener) else {
-                    return;
-                };
-                conn.set_read_timeout(Some(Duration::from_secs(2)))
-                    .expect("set bridge read timeout");
-                let mut request_line = String::new();
-                let Ok(read) = BufReader::new(conn.try_clone().expect("clone bridge client"))
-                    .read_line(&mut request_line)
-                else {
-                    return;
-                };
-                if read == 0 || request_line.trim().is_empty() {
-                    continue;
-                }
-
-                let request: BridgeRequest =
-                    serde_json::from_str(request_line.trim_end()).expect("decode bridge request");
-                requests_tx.send(request).expect("send bridge request");
-                conn.write_all(response_line.as_bytes())
-                    .expect("write bridge response");
-                break;
-            }
-        }
-    });
-
-    (handle, requests_rx)
-}
-
-fn accept_unix_connection(
-    listener: &std::os::unix::net::UnixListener,
-) -> std::io::Result<(
-    std::os::unix::net::UnixStream,
-    std::os::unix::net::SocketAddr,
-)> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match listener.accept() {
-            Ok(accepted) => return Ok(accepted),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "timed out accepting bridge test connection",
-                    ));
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Err(err),
-        }
-    }
+    assert_transport_unavailable_without_legacy_fallback(&output);
 }
 
 fn register_ready_msg_identity(
@@ -499,6 +175,7 @@ fn register_ready_msg_identity(
 ) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -564,82 +241,14 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
     .unwrap();
 }
 
-fn seed_contact(workspace: &Path, owner_did: &str, peer_did: &str, handle: &str, seen_at: &str) {
-    execute_sql(
-        workspace,
-        format!(
-            "INSERT INTO contacts (owner_did, did, handle, messaged, first_seen_at, last_seen_at) VALUES ('{owner_did}', '{peer_did}', '{handle}', 1, '{seen_at}', '{seen_at}')",
-        ),
-    );
-    execute_sql(
-        workspace,
-        format!(
-            "UPDATE contact_handle_bindings SET is_current = 1, last_seen_at = '{seen_at}', credential_name = 'bob-msg' WHERE owner_did = '{owner_did}' AND handle = '{handle}' AND did = '{peer_did}'",
-        ),
-    );
-}
-
-fn seed_direct_message(
-    workspace: &Path,
-    owner_did: &str,
-    peer_did: &str,
-    msg_id: &str,
-    content: &str,
-    sent_at: &str,
-) {
-    let thread_id = direct_thread_id(owner_did, peer_did);
-    let statement = format!(
-        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', '{thread_id}', 0, '{peer_did}', '{owner_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', 0, 'bob-msg')",
-    );
-    execute_sql(workspace, statement);
-}
-
-fn direct_thread_id(owner_did: &str, peer_did: &str) -> String {
-    let mut pair = [owner_did.to_string(), peer_did.to_string()];
-    pair.sort();
-    format!("dm:{}:{}", pair[0], pair[1])
-}
-
-fn execute_sql(workspace: &Path, statement: String) {
-    assert_success(&awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            statement,
-        ],
-        workspace,
-    ));
-}
-
-fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
-    let query = awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            sql.to_string(),
-        ],
-        workspace,
-    );
-    assert_success(&query);
-    success_json(&query)["data"]["rows"]
-        .as_array()
-        .cloned()
-        .unwrap()
+fn closed_local_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind closed local url");
+    let address = listener.local_addr().expect("local addr");
+    drop(listener);
+    format!("http://{address}")
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
-    awiki_cmd_owned(
-        &args
-            .iter()
-            .map(|arg| (*arg).to_string())
-            .collect::<Vec<_>>(),
-        workspace,
-    )
-}
-
-fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -664,16 +273,6 @@ fn assert_success(output: &Output) {
     );
 }
 
-fn assert_failure(output: &Output) {
-    assert_ne!(
-        output.status.code(),
-        Some(0),
-        "expected failure; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 fn success_json(output: &Output) -> Value {
     assert!(
         output.stderr.is_empty(),
@@ -687,48 +286,78 @@ fn success_json(output: &Output) -> Value {
 }
 
 fn failure_json(output: &Output) -> Value {
-    let raw = if output.stdout.is_empty() {
-        &output.stderr
-    } else {
-        &output.stdout
-    };
-    let envelope: Value =
-        serde_json::from_slice(raw).expect("output should be a JSON error envelope");
-    assert_eq!(envelope["ok"], false);
-    envelope
+    assert!(
+        !output.status.success(),
+        "expected failure; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope")
 }
 
-fn assert_no_http_fallback_warning(envelope: &Value) {
-    let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
-    assert!(
-        warnings.iter().all(|warning| !warning
-            .as_str()
-            .unwrap_or_default()
-            .contains("used HTTP fallback")),
-        "unexpected websocket HTTP fallback warning: {warnings:?}"
+fn assert_unsupported_capability(
+    output: &Output,
+    command: &str,
+    capability: &str,
+    required_phase: &str,
+) {
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = failure_json(output);
+    assert_eq!(envelope["error"]["code"], "unsupported_capability");
+    assert_eq!(envelope["error"]["details"]["command"], command);
+    assert_eq!(envelope["error"]["details"]["capability"], capability);
+    assert_eq!(
+        envelope["error"]["details"]["required_phase"],
+        required_phase
+    );
+    assert_eq!(
+        envelope["error"]["details"]["cutover_status"],
+        "unsupported"
     );
 }
 
-fn assert_has_http_fallback_warning(envelope: &Value) {
-    let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
+fn assert_transport_unavailable_without_legacy_fallback(output: &Output) {
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = failure_json(output);
+    assert_eq!(envelope["error"]["code"], "transport_unavailable");
+    let message = envelope["error"]["message"].as_str().expect("message");
+    assert_contains_text(message, "message transport is unavailable");
     assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.as_str().unwrap_or_default().contains(
-                "WebSocket listener was unavailable for this identity; used HTTP fallback"
-            )),
-        "expected websocket HTTP fallback warning, got: {warnings:?}"
+        !message.contains("local websocket bridge request failed"),
+        "legacy bridge fallback should not be used, got: {message}"
+    );
+    assert!(
+        !message.contains("loaded data from local cache"),
+        "legacy local cache fallback should not be used, got: {message}"
+    );
+    assert!(
+        !message.contains("local history cache"),
+        "legacy local history cache should not be used, got: {message}"
     );
 }
 
-fn assert_has_cache_fallback_warning(envelope: &Value) {
+fn assert_no_legacy_websocket_fallback_warning(envelope: &Value) {
     let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
     assert!(
-        warnings.iter().any(|warning| warning
-            .as_str()
-            .unwrap_or_default()
-            .contains("loaded data from local cache")),
-        "expected websocket cache fallback warning, got: {warnings:?}"
+        warnings.iter().all(|warning| {
+            let warning = warning.as_str().unwrap_or_default();
+            !warning.contains("used HTTP fallback")
+                && !warning.contains("loaded data from local cache")
+                && !warning.contains("local handle history cache")
+        }),
+        "unexpected legacy websocket fallback warning: {warnings:?}"
     );
 }
 
@@ -741,18 +370,6 @@ fn assert_contains_text(haystack: &str, needle: &str) {
         haystack.contains(needle),
         "expected text to contain {needle:?}, got:\n{haystack}"
     );
-}
-
-fn assert_request_method(raw: &str, method: &str) -> bool {
-    serde_json::from_str::<Value>(request_body(raw))
-        .ok()
-        .and_then(|body| {
-            body.get("method")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .map(|actual| actual == method)
-        .unwrap_or(false)
 }
 
 fn json_rpc_result(result: Value) -> String {
@@ -774,13 +391,6 @@ impl TestResponse {
     fn ok(body: &str) -> Self {
         Self {
             status: 200,
-            body: body.to_string(),
-        }
-    }
-
-    fn internal_error(body: &str) -> Self {
-        Self {
-            status: 500,
             body: body.to_string(),
         }
     }

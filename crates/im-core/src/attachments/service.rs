@@ -11,9 +11,9 @@ impl<'a> AttachmentService<'a> {
         &self,
         target: crate::messages::MessageTarget,
         request: super::AttachmentSendRequest,
-    ) -> crate::ImResult<crate::messages::SendMessageResult> {
+    ) -> crate::ImResult<super::AttachmentSendResult> {
         let resolved_target_did = resolve_direct_target_did(self.client, &target)?;
-        crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
+        let mut result = crate::internal::attachment_runtime::upload::AttachmentUploadRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
             crate::internal::transport::CoreHttpTransport::new(self.client),
@@ -25,8 +25,33 @@ impl<'a> AttachmentService<'a> {
                 resolved_target_did,
                 credentials: None,
             },
-        )
-        .map(|result| result.sdk_result)
+        )?;
+        #[cfg(feature = "sqlite")]
+        {
+            let projection = if result.target_kind == "group" {
+                crate::internal::message_runtime::local_projection::persist_group_attachment_outgoing(
+                    self.client,
+                    &result.target_did,
+                    &result.manifest,
+                    &result.sdk_result,
+                )
+            } else {
+                crate::internal::message_runtime::local_projection::persist_direct_attachment_outgoing(
+                    self.client,
+                    &result.target_did,
+                    direct_handle_from_result(&result.sdk_result).as_deref(),
+                    &result.manifest,
+                    &result.sdk_result,
+                )
+            };
+            if let Err(err) = projection {
+                result
+                    .sdk_result
+                    .warnings
+                    .push(format!("Failed to persist local attachment message: {err}"));
+            }
+        }
+        Ok(super::AttachmentSendResult::from_upload_result(result))
     }
 
     pub fn download(
@@ -46,6 +71,15 @@ impl<'a> AttachmentService<'a> {
             },
         )
         .map(|result| result.sdk_result)
+    }
+}
+
+fn direct_handle_from_result(result: &crate::messages::SendMessageResult) -> Option<String> {
+    match &result.message.thread {
+        crate::messages::ThreadRef::Direct(peer) if !peer.as_str().starts_with("did:") => {
+            Some(peer.as_str().to_owned())
+        }
+        _ => None,
     }
 }
 

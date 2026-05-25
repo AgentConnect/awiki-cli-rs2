@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use time::format_description::well_known::Rfc3339;
@@ -48,11 +48,19 @@ pub(crate) struct StoredIdentity {
     pub(crate) display_name: String,
     pub(crate) handle: String,
     pub(crate) full_handle: String,
+    pub(crate) created_at: String,
     pub(crate) jwt_token: String,
     pub(crate) is_default: bool,
     pub(crate) has_did_document: bool,
     pub(crate) has_key1_private: bool,
     pub(crate) has_key1_public: bool,
+    pub(crate) has_e2ee_signing_private: bool,
+    pub(crate) has_e2ee_agreement_private: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoverPromotionResult {
+    pub(crate) default_updated: bool,
 }
 
 impl<'a> IdentityStore<'a> {
@@ -158,7 +166,7 @@ impl<'a> IdentityStore<'a> {
                 name: input.display_name.clone(),
                 handle: input.handle.clone(),
                 full_handle: input.full_handle.clone(),
-                created_at,
+                created_at: created_at.clone(),
                 is_default,
             },
         );
@@ -175,15 +183,93 @@ impl<'a> IdentityStore<'a> {
             display_name: input.display_name,
             handle: input.handle,
             full_handle: input.full_handle,
+            created_at,
             jwt_token: input.jwt_token,
             is_default,
             has_did_document: input.did_document.is_some(),
             has_key1_private: !input.key1_private_pem.trim().is_empty(),
             has_key1_public: !input.key1_public_pem.trim().is_empty(),
+            has_e2ee_signing_private: !input.e2ee_signing_private_pem.trim().is_empty(),
+            has_e2ee_agreement_private: !input.e2ee_agreement_private_pem.trim().is_empty(),
         })
     }
 
-    fn load_index(&self) -> crate::ImResult<IndexPayload> {
+    pub(crate) fn promote_recovered_handle(
+        &self,
+        final_identity_name: &str,
+        temp_identity_name: &str,
+        archived_identity_names: &[String],
+    ) -> crate::ImResult<RecoverPromotionResult> {
+        let final_identity_name = final_identity_name.trim();
+        let temp_identity_name = temp_identity_name.trim();
+        if final_identity_name.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("final_identity_name".to_string()),
+                "final identity name is required",
+            ));
+        }
+        if temp_identity_name.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("temp_identity_name".to_string()),
+                "temporary identity name is required",
+            ));
+        }
+        let mut index = self.load_index()?;
+        let mut temp_entry = index
+            .credentials
+            .get(temp_identity_name)
+            .cloned()
+            .ok_or_else(|| crate::ImError::IdentityNotFound {
+                selector: temp_identity_name.to_string(),
+            })?;
+        let archived_set = archived_identity_names
+            .iter()
+            .filter_map(|name| {
+                let name = name.trim();
+                (!name.is_empty()).then(|| name.to_string())
+            })
+            .collect::<BTreeSet<_>>();
+
+        for name in index.credentials.keys() {
+            if name == temp_identity_name || archived_set.contains(name) {
+                continue;
+            }
+            if name == final_identity_name {
+                return Err(crate::ImError::invalid_input(
+                    Some("final_identity_name".to_string()),
+                    format!(
+                        "identity conflict: identity name {final_identity_name} is already used by another live identity"
+                    ),
+                ));
+            }
+        }
+
+        for name in &archived_set {
+            index.credentials.remove(name);
+        }
+        index.credentials.remove(temp_identity_name);
+        temp_entry.credential_name = final_identity_name.to_string();
+        temp_entry.is_default = false;
+        index
+            .credentials
+            .insert(final_identity_name.to_string(), temp_entry);
+
+        let mut default_updated = false;
+        let current_default = index.default_credential_name.trim().to_string();
+        if !current_default.is_empty()
+            && (current_default == temp_identity_name || archived_set.contains(&current_default))
+        {
+            index.default_credential_name = final_identity_name.to_string();
+            default_updated = true;
+        }
+        self.save_index(index)?;
+        if default_updated {
+            self.write_default_identity(final_identity_name)?;
+        }
+        Ok(RecoverPromotionResult { default_updated })
+    }
+
+    pub(crate) fn load_index(&self) -> crate::ImResult<IndexPayload> {
         match fs::read(&self.paths.registry_path) {
             Ok(raw) => {
                 let payload = parse_index_payload(&raw)?;
@@ -197,7 +283,7 @@ impl<'a> IdentityStore<'a> {
         }
     }
 
-    fn save_index(&self, index: IndexPayload) -> crate::ImResult<()> {
+    pub(crate) fn save_index(&self, index: IndexPayload) -> crate::ImResult<()> {
         if let Some(parent) = self.paths.registry_path.parent() {
             fs::create_dir_all(parent)?;
             set_private_dir_mode(parent)?;
@@ -212,7 +298,7 @@ impl<'a> IdentityStore<'a> {
         Ok(())
     }
 
-    fn write_default_identity(&self, local_alias: &str) -> crate::ImResult<()> {
+    pub(crate) fn write_default_identity(&self, local_alias: &str) -> crate::ImResult<()> {
         let Some(path) = self.paths.default_identity_path.as_deref() else {
             return Ok(());
         };
@@ -224,39 +310,154 @@ impl<'a> IdentityStore<'a> {
         set_private_file_mode(path)?;
         Ok(())
     }
+
+    pub(crate) fn update_display_name_projection(
+        &self,
+        identity: &crate::identity::IdentitySummary,
+        display_name: &str,
+    ) -> crate::ImResult<()> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Ok(());
+        }
+        let Some((alias, dir_name)) = self.local_alias_and_dir_name(identity)? else {
+            return Ok(());
+        };
+        let identity_path = self
+            .paths
+            .identity_root_dir
+            .join(dir_name)
+            .join(IDENTITY_FILE_NAME);
+        match fs::read(&identity_path) {
+            Ok(raw) => {
+                let mut payload: Value =
+                    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+                        detail: err.to_string(),
+                    })?;
+                let object =
+                    payload
+                        .as_object_mut()
+                        .ok_or_else(|| crate::ImError::Serialization {
+                            detail: "identity payload must be a JSON object".to_string(),
+                        })?;
+                object.insert("name".to_string(), Value::String(display_name.to_string()));
+                write_secure_json(&identity_path, &payload)?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+        self.update_registry_display_name(identity, &alias, display_name)?;
+        Ok(())
+    }
+
+    fn local_alias_and_dir_name(
+        &self,
+        identity: &crate::identity::IdentitySummary,
+    ) -> crate::ImResult<Option<(String, String)>> {
+        let index = self.load_index()?;
+        let alias = identity.local_alias.as_deref().unwrap_or_default();
+        if !alias.is_empty() {
+            if let Some(entry) = index.credentials.get(alias) {
+                return Ok(Some((alias.to_string(), entry.dir_name.clone())));
+            }
+        }
+        for (candidate_alias, entry) in &index.credentials {
+            if entry.unique_id == identity.id.as_str() || entry.did == identity.did.as_str() {
+                return Ok(Some((candidate_alias.clone(), entry.dir_name.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    fn update_registry_display_name(
+        &self,
+        identity: &crate::identity::IdentitySummary,
+        alias: &str,
+        display_name: &str,
+    ) -> crate::ImResult<()> {
+        let raw = match fs::read(&self.paths.registry_path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+        let mut registry: Value = match serde_json::from_slice(&raw) {
+            Ok(value) => value,
+            Err(_) => return Ok(()),
+        };
+        let mut changed = false;
+        if let Some(entry) = registry
+            .as_object_mut()
+            .and_then(|object| object.get_mut("credentials"))
+            .and_then(Value::as_object_mut)
+            .and_then(|credentials| credentials.get_mut(alias))
+            .and_then(Value::as_object_mut)
+        {
+            entry.insert("name".to_string(), Value::String(display_name.to_string()));
+            changed = true;
+        } else if let Some(identities) = registry
+            .as_object_mut()
+            .and_then(|object| object.get_mut("identities"))
+            .and_then(Value::as_array_mut)
+        {
+            let local_alias = identity.local_alias.as_deref().unwrap_or_default();
+            for item in identities {
+                let Some(object) = item.as_object_mut() else {
+                    continue;
+                };
+                let id_matches =
+                    object.get("id").and_then(Value::as_str) == Some(identity.id.as_str());
+                let did_matches =
+                    object.get("did").and_then(Value::as_str) == Some(identity.did.as_str());
+                let alias_matches = !local_alias.is_empty()
+                    && object.get("local_alias").and_then(Value::as_str) == Some(local_alias);
+                if id_matches || did_matches || alias_matches {
+                    object.insert(
+                        "display_name".to_string(),
+                        Value::String(display_name.to_string()),
+                    );
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if changed {
+            write_secure_json(&self.paths.registry_path, &registry)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct IndexEntry {
+pub(crate) struct IndexEntry {
     #[serde(default)]
-    credential_name: String,
+    pub(crate) credential_name: String,
     #[serde(default)]
-    dir_name: String,
+    pub(crate) dir_name: String,
     #[serde(default)]
-    did: String,
+    pub(crate) did: String,
     #[serde(default)]
-    unique_id: String,
+    pub(crate) unique_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    user_id: String,
+    pub(crate) user_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    name: String,
+    pub(crate) name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    handle: String,
+    pub(crate) handle: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    full_handle: String,
+    pub(crate) full_handle: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    created_at: String,
+    pub(crate) created_at: String,
     #[serde(default, skip_serializing_if = "is_false")]
-    is_default: bool,
+    pub(crate) is_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct IndexPayload {
-    schema_version: i64,
+pub(crate) struct IndexPayload {
+    pub(crate) schema_version: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    default_credential_name: String,
+    pub(crate) default_credential_name: String,
     #[serde(default)]
-    credentials: BTreeMap<String, IndexEntry>,
+    pub(crate) credentials: BTreeMap<String, IndexEntry>,
 }
 
 impl Default for IndexPayload {

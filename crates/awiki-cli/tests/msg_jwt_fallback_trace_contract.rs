@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn direct_send_http_401_refreshes_with_fallback_trace_like_go() {
+fn direct_send_http_401_refreshes_inside_im_core_transport() {
     let workspace = TempDir::new("msg-jwt-fallback-send").expect("workspace");
     register_ready_msg_identity(workspace.path(), "alice-msg-fallback", "alice", "jwt-stale");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
@@ -49,8 +49,8 @@ fn direct_send_http_401_refreshes_with_fallback_trace_like_go() {
     assert_eq!(envelope["data"]["message"]["id"], "msg-fallback-refresh-1");
 
     let trace = stderr_text(&output);
-    assert_text_contains(&trace, "JWT 续期 / 消息回退时刷新 JWT");
     assert_text_contains(&trace, "远端 RPC / direct send");
+    assert_text_not_contains(&trace, "消息回退时刷新 JWT");
 
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
@@ -69,7 +69,7 @@ fn direct_send_http_401_refreshes_with_fallback_trace_like_go() {
 }
 
 #[test]
-fn inbox_http_1401_refreshes_with_fallback_trace_like_go() {
+fn inbox_http_1401_refreshes_inside_im_core_transport() {
     let workspace = TempDir::new("msg-jwt-fallback-inbox").expect("workspace");
     register_ready_msg_identity(workspace.path(), "bob-msg-fallback", "bob", "jwt-bob-stale");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
@@ -127,8 +127,8 @@ fn inbox_http_1401_refreshes_with_fallback_trace_like_go() {
     );
 
     let trace = stderr_text(&output);
-    assert_text_contains(&trace, "JWT 续期 / 消息回退时刷新 JWT");
     assert_text_contains(&trace, "远端 RPC / inbox get");
+    assert_text_not_contains(&trace, "消息回退时刷新 JWT");
 
     let requests = server.requests();
     assert_eq!(requests.len(), 3);
@@ -153,6 +153,7 @@ fn register_ready_msg_identity(
 ) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -312,6 +313,13 @@ fn assert_text_contains(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
         "expected text to contain {needle:?}, got:\n{haystack}"
+    );
+}
+
+fn assert_text_not_contains(haystack: &str, needle: &str) {
+    assert!(
+        !haystack.contains(needle),
+        "expected text not to contain {needle:?}, got:\n{haystack}"
     );
 }
 

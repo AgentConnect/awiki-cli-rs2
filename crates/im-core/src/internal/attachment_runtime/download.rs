@@ -107,6 +107,7 @@ where
             mime_type,
             size_bytes,
             destination,
+            selection: Some(selection.clone()),
             warnings: Vec::new(),
         };
         Ok(AttachmentDownloadResult {
@@ -1178,6 +1179,7 @@ mod tests {
                     mail_service_endpoint: None,
                     anp_service_endpoint: None,
                     anp_service_did: None,
+                    ca_bundle: None,
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 crate::ImCorePaths {

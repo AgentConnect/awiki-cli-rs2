@@ -1,6 +1,9 @@
 //! Migration-only local state helpers for `awiki-cli` wrappers.
 
 #[cfg(feature = "sqlite")]
+use std::collections::BTreeMap;
+
+#[cfg(feature = "sqlite")]
 pub const SCHEMA_VERSION: i64 = crate::internal::local_state::schema::SCHEMA_VERSION;
 
 #[cfg(feature = "sqlite")]
@@ -144,6 +147,21 @@ pub fn list_email_notifications_for_test(
         owner_did,
         limit,
     )
+}
+
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+pub fn plan_replace_did_local_state_rebind(
+    sqlite_path: &std::path::Path,
+    old_owner_did: &str,
+    new_owner_did: &str,
+) -> crate::ImResult<(BTreeMap<String, i64>, BTreeMap<String, i64>)> {
+    let affected = crate::internal::identity_replace_did_plan::plan_replace_did_local_state_rebind(
+        sqlite_path,
+        old_owner_did,
+        new_owner_did,
+    )?;
+    Ok((affected.store_rebind_counts, affected.e2ee_cleanup_counts))
 }
 
 #[cfg(feature = "sqlite")]

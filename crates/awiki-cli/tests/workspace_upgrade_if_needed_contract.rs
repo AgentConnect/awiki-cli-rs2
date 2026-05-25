@@ -1,4 +1,5 @@
-use awiki_cli::{config, identity, upgrade};
+use awiki_cli::legacy_identity as identity;
+use awiki_cli::{config, upgrade};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -825,7 +826,7 @@ fn seed_current_identity(resolved: &config::Resolved, name: &str, did: &str, jwt
         .expect("generate identity key material");
     let manager = identity::Manager::new(resolved.paths.clone());
     manager
-        .save(awiki_cli::identity::types::SaveInput {
+        .save(awiki_cli::legacy_identity::types::SaveInput {
             identity_name: name.to_string(),
             did: did.to_string(),
             unique_id: did.rsplit(':').next().unwrap_or(did).to_string(),

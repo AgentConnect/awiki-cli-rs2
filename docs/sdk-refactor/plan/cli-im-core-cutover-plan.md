@@ -107,7 +107,7 @@ cutover 完成后应满足：
 4. 不迁 Phase 4 attachment send/download，除非 Phase 4 已经完成。
 5. 不迁 Phase 5' attachment notification enrichment。
 6. 不迁 Phase 6 secure direct / group E2EE。
-7. 不迁 mail/page/site 等不属于当前 im-core public API 的产品域。
+7. 不迁尚未进入当前 im-core public API 的其他产品域；mail 已由 Email 迁移计划单独处理，page/site 由 Content / Site 迁移计划纳入 im-core。
 8. 不保留运行时默认 legacy fallback。
 ```
 
@@ -542,8 +542,8 @@ runtime host-notify target add ...
 | `runtime.heartbeat.*` | removed 或 hidden | 当前是 stub，不应展示。 |
 | `people.follow/unfollow/status/followers/following` | im-core | 已由 `DirectoryService` relationship API 支撑；`people.search` 仍 unsupported。 |
 | `people.contacts.*` | im-core | 已由 `DirectoryService::save_contact/contacts` 支撑。 |
-| `page.*` | hidden 或 unsupported | 不属于当前 im-core IM public API。 |
-| `site.*` | hidden 或 unsupported | 不属于当前 im-core IM public API。 |
+| `page.*` | im-core | 由 `ContentService` 支撑；CLI 保留参数、markdown body、dry-run 和 envelope。 |
+| `site.*` | im-core | 由 `SiteService` 支撑；CLI 保留 domain/body 参数处理、dry-run 和 envelope。 |
 | `debug.db.handle-history` | advanced/diagnostic-only | 可保留给迁移排错，但不进默认 help。 |
 | `debug.db.query` | hidden 或 feature-gated | raw SQL 不应是默认 CLI 产品接口。 |
 | `debug.db.import-v1` | migration-only | 可保留但 hidden。 |
@@ -869,7 +869,7 @@ group.code.*                 -> removed / hidden
 runtime.heartbeat.*          -> removed / hidden
 people.search                -> unsupported until search API exists
 people.follow/status/followers/following/contacts.* -> im-core directory relationship/contact API
-page.* / site.*              -> hidden / unsupported
+page.* / site.*              -> im-core Content/Site service
 debug.raw.*                  -> removed / hidden
 debug.db.query               -> hidden / feature-gated
 provider token/secret/route  -> hidden / advanced
@@ -1071,7 +1071,6 @@ msg secure failed/retry/drop
 runtime heartbeat *
 people.search
 group code stubs
-page/site/mail
 provider token/secret/route internals
 ```
 
@@ -1205,7 +1204,7 @@ cutover 不建议保留默认 runtime fallback。推荐回滚方式：
 3. `runtime listener install/start/stop/restart/uninstall` 仍只在 CLI 管 service。
 4. Phase 4 前附件命令明确 unsupported；Phase 4 后再打开。
 5. Phase 6 前 secure/group E2EE 明确 unsupported 或 hidden。
-6. mail/page/site/people/heartbeat/debug raw 等非当前 im-core 能力不进入默认命令面。
+6. page/site 完成 Content / Site 迁移后进入默认命令面；people.search、heartbeat、debug raw 等非当前 im-core 能力不进入默认命令面。
 7. im_core_adapter 不再把 SDK DTO 转回旧业务 request。
 8. `AWIKI_USE_IM_CORE_MVP` 不再控制默认路径。
 9. schema/docs/completion 和 cutover 后的默认命令面一致。

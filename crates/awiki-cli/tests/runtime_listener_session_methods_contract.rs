@@ -1,4 +1,4 @@
-use awiki_cli::identity::types::StoredIdentity;
+use awiki_cli::legacy_identity::types::StoredIdentity;
 use awiki_cli::runtime::listener_session_methods::{
     ListenerSessionMethods, SecureRpcSource, SessionDisconnectReason, SessionMethodAction,
 };

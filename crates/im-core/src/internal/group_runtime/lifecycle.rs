@@ -248,6 +248,7 @@ mod tests {
                 message_security_profile: Some(
                     crate::groups::GroupMessageSecurityProfile::TransportProtected,
                 ),
+                security: crate::groups::GroupSecurityRequirement::Default,
                 e2ee: false,
                 slug: Some(" demo ".to_string()),
                 goal: Some("ship".to_string()),
@@ -289,7 +290,11 @@ mod tests {
             },
         )
         .leave(
-            crate::groups::GroupLeaveRequest { group },
+            crate::groups::GroupLeaveRequest {
+                group,
+                reason_text: None,
+                security: crate::groups::GroupSecurityRequirement::Default,
+            },
             Some(credentials),
         )
         .unwrap();
@@ -335,7 +340,7 @@ mod tests {
         let client = fixture.client();
         let calls = Rc::new(RefCell::new(Vec::new()));
 
-        let error = GroupLifecycleRuntime::new(
+        GroupLifecycleRuntime::new(
             &client,
             ReadyGroupSessionProvider,
             RecordingTransport {
@@ -350,6 +355,7 @@ mod tests {
                 discoverability: None,
                 admission_mode: None,
                 message_security_profile: None,
+                security: crate::groups::GroupSecurityRequirement::Required,
                 e2ee: true,
                 slug: None,
                 goal: None,
@@ -363,15 +369,19 @@ mod tests {
             },
             Some(fixture.credentials()),
         )
-        .unwrap_err();
+        .unwrap();
 
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.create");
         assert_eq!(
-            error,
-            crate::ImError::UnsupportedCapability {
-                capability: "group-e2ee".to_string()
-            }
+            calls[0].params["body"]["group_policy"]["message_security_profile"],
+            "group-e2ee"
         );
-        assert!(calls.borrow().is_empty());
+        assert_eq!(
+            calls[0].params["body"]["group_policy"]["bootstrap_security_profile"],
+            "group-e2ee"
+        );
     }
 
     #[test]
@@ -380,7 +390,7 @@ mod tests {
         let client = fixture.client();
         let calls = Rc::new(RefCell::new(Vec::new()));
 
-        let error = GroupLifecycleRuntime::new(
+        GroupLifecycleRuntime::new(
             &client,
             ReadyGroupSessionProvider,
             RecordingTransport {
@@ -397,6 +407,7 @@ mod tests {
                 message_security_profile: Some(
                     crate::groups::GroupMessageSecurityProfile::GroupE2ee,
                 ),
+                security: crate::groups::GroupSecurityRequirement::Default,
                 e2ee: false,
                 slug: None,
                 goal: None,
@@ -410,15 +421,15 @@ mod tests {
             },
             Some(fixture.credentials()),
         )
-        .unwrap_err();
+        .unwrap();
 
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.create");
         assert_eq!(
-            error,
-            crate::ImError::UnsupportedCapability {
-                capability: "group-e2ee".to_string()
-            }
+            calls[0].params["body"]["group_policy"]["message_security_profile"],
+            "group-e2ee"
         );
-        assert!(calls.borrow().is_empty());
     }
 
     #[test]
@@ -441,9 +452,10 @@ mod tests {
         .add_member(
             crate::groups::GroupMemberMutationRequest {
                 group: group.clone(),
-                member: member.clone(),
+                member: crate::groups::GroupMemberRef::from(member.clone()),
                 role: Some(crate::groups::GroupMemberRole::Admin),
                 reason_text: Some(" invite ".to_string()),
+                security: crate::groups::GroupSecurityRequirement::Default,
             },
             Some(credentials.clone()),
         )
@@ -460,11 +472,12 @@ mod tests {
         .remove_member(
             crate::groups::GroupMemberMutationRequest {
                 group: group.clone(),
-                member,
+                member: crate::groups::GroupMemberRef::from(member),
                 role: Some(crate::groups::GroupMemberRole::Custom(
                     "ignored".to_string(),
                 )),
                 reason_text: Some(" cleanup ".to_string()),
+                security: crate::groups::GroupSecurityRequirement::Default,
             },
             Some(credentials.clone()),
         )
@@ -642,6 +655,7 @@ mod tests {
                     mail_service_endpoint: None,
                     anp_service_endpoint: None,
                     anp_service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                    ca_bundle: None,
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 crate::ImCorePaths {

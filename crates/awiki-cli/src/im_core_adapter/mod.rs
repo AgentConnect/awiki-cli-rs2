@@ -12,9 +12,9 @@
 //! - Delete remaining bridge exceptions during the default-path cutover and
 //!   cleanup slices: C2, C3, C4, C5, and C7.
 
-pub(crate) mod active_identity;
 pub mod auth;
 pub mod config;
+pub mod content;
 pub mod core;
 pub mod email;
 pub mod error;
@@ -27,6 +27,7 @@ pub mod paths;
 pub mod people;
 pub mod realtime;
 pub mod render;
+pub mod site;
 pub mod unsupported;
 
 pub use auth::auth_scope_from_cli;

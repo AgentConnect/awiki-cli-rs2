@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use im_core::compat::realtime::{
+use im_core::prelude::*;
+use im_core::realtime::{
     connect_realtime_with_transport, realtime_client_construction_plan, realtime_client_endpoints,
     simulate_realtime_connect, RealtimeAuthProvider, RealtimeConnectAction, RealtimeDialOutcome,
     RealtimeRefreshOutcome, RealtimeTransport,
 };
-use im_core::prelude::*;
 
 #[test]
 fn realtime_connect_endpoints_match_legacy_listener_derivation() {
@@ -613,6 +613,7 @@ impl<'a> RuntimeCoreBuilder<'a> {
                 mail_service_endpoint: None,
                 anp_service_endpoint: None,
                 anp_service_did: None,
+                ca_bundle: None,
                 transport_policy: MessageTransportPolicy::Auto,
             },
             ImCorePaths {

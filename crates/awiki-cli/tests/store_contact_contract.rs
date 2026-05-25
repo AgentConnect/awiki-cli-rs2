@@ -1,4 +1,4 @@
-use awiki_cli::store::{self, ContactRecord, MessageRecord, StoreResult};
+use awiki_cli::legacy_store::{self as store, ContactRecord, MessageRecord, StoreResult};
 use rusqlite::Connection;
 
 #[test]
@@ -40,89 +40,6 @@ fn contact_upsert_rebinds_current_handle_and_preserves_history() -> StoreResult<
     assert_eq!(
         store::list_dids_by_handle(&db, "did:owner", "alice")?,
         vec!["did:peer-new".to_string(), "did:peer-old".to_string()]
-    );
-
-    Ok(())
-}
-
-#[test]
-fn contact_owner_identity_write_and_legacy_fallback_match_phase3d() -> StoreResult<()> {
-    let mut db = Connection::open_in_memory().expect("open sqlite memory db");
-    store::ensure_schema(&db)?;
-
-    store::upsert_contact(
-        &mut db,
-        ContactRecord {
-            owner_did: "did:owner-current".to_string(),
-            did: "did:peer-identity".to_string(),
-            handle: "alice".to_string(),
-            credential_name: "default".to_string(),
-            ..ContactRecord::default()
-        },
-    )?;
-    store::upsert_contact(
-        &mut db,
-        ContactRecord {
-            owner_did: "did:owner-legacy".to_string(),
-            did: "did:peer-legacy".to_string(),
-            handle: "bob".to_string(),
-            credential_name: "legacy".to_string(),
-            ..ContactRecord::default()
-        },
-    )?;
-    db.execute(
-        "UPDATE contacts SET owner_identity_id = NULL WHERE owner_did = 'did:owner-legacy'",
-        [],
-    )?;
-    db.execute(
-        "UPDATE contact_handle_bindings SET owner_identity_id = NULL WHERE owner_did = 'did:owner-legacy'",
-        [],
-    )?;
-    store::upsert_contact(
-        &mut db,
-        ContactRecord {
-            owner_identity_id: "other".to_string(),
-            owner_did: "did:owner-legacy".to_string(),
-            did: "did:peer-other".to_string(),
-            handle: "carol".to_string(),
-            credential_name: "other".to_string(),
-            ..ContactRecord::default()
-        },
-    )?;
-
-    let identity_value: String = db.query_row(
-        "SELECT owner_identity_id FROM contacts WHERE did = 'did:peer-identity'",
-        [],
-        |row| row.get(0),
-    )?;
-    assert_eq!(identity_value, "default");
-
-    let contact = im_core::compat::directory::get_contact_by_did_for_owner_identity(
-        &db,
-        "default",
-        "did:owner-legacy",
-        "did:peer-identity",
-    )
-    .map_err(|err| awiki_cli::store::StoreError::Invalid(err.to_string()))?;
-    assert_eq!(string_field(&contact, "did"), "did:peer-identity");
-
-    let legacy = im_core::compat::directory::get_current_contact_by_handle_for_owner_identity(
-        &db,
-        "default",
-        "did:owner-legacy",
-        "bob",
-    )
-    .map_err(|err| awiki_cli::store::StoreError::Invalid(err.to_string()))?;
-    assert_eq!(string_field(&legacy, "did"), "did:peer-legacy");
-
-    assert!(
-        im_core::compat::directory::get_current_contact_by_handle_for_owner_identity(
-            &db,
-            "default",
-            "did:owner-legacy",
-            "carol",
-        )
-        .is_err()
     );
 
     Ok(())

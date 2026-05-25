@@ -1,5 +1,5 @@
-use awiki_cli::identity::types::StoredIdentity;
-use awiki_cli::runtime::listener_secure_ack_in_process::{
+use awiki_cli::legacy_identity::types::StoredIdentity;
+use awiki_cli::runtime_legacy::listener_secure_ack_in_process::{
     deliver_local_secure_ack_in_process_plan, ActiveRecipientSessionOutcome,
     EncryptFollowUpOutcome, LocalSecureAckInProcessAction, LocalSecureAckInProcessDecision,
     LocalSecureAckInProcessOutcomes, LocalSecureAckInProcessSkipReason, ProcessIncomingOutcome,
@@ -114,9 +114,7 @@ fn encrypted_ack_notification_matches_go_shape_and_payload() {
     assert_eq!(message_id, "ack-sess-1");
     assert_eq!(
         payload,
-        &awiki_cli::runtime::listener_secure_ack_delivery::build_secure_ack_payload(
-            " sess-1 ", " msg-1\n"
-        )
+        &im_core::secure::build_secure_ack_payload(" sess-1 ", " msg-1\n")
     );
 
     let LocalSecureAckInProcessAction::ProcessIncoming { notification } = &plan.actions[6] else {
@@ -405,7 +403,7 @@ fn unmanaged_runtime_session_falls_back_to_network_after_runtime_check() {
 
 fn plan(
     outcomes: LocalSecureAckInProcessOutcomes,
-) -> awiki_cli::runtime::listener_secure_ack_in_process::LocalSecureAckInProcessPlan {
+) -> awiki_cli::runtime_legacy::listener_secure_ack_in_process::LocalSecureAckInProcessPlan {
     let sender = record("bob", "did:bob");
     let recipient = record("alice", "did:alice");
     deliver_local_secure_ack_in_process_plan(

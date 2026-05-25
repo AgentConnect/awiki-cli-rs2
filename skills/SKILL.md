@@ -210,7 +210,7 @@ Do not describe capabilities that are "partially implemented" or "planned" as be
 ## Current Product Notes
 
 - The current public binary name is `awiki-cli`.
-- The `msg secure` subcommand is reserved but not yet implemented.
+- `msg secure status` and `msg secure repair` are supported high-level secure-message commands; `msg secure init/failed/retry/drop` remain unsupported/internal.
 - `runtime heartbeat` is planned but not yet implemented.
 - The `people` command is reserved but not yet implemented.
 - If the command shape is unclear, check `awiki-cli schema [command]` before making temporary guesses.

@@ -10,23 +10,70 @@ import '../frb_generated.dart';
 import 'attachments.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+Future<DartDirectSecureStatus> secureDirectStatus({
+  required ArcDartImClient client,
+  required String peer,
+}) => RustLib.instance.api.crateApiSecureSecureDirectStatus(
+  client: client,
+  peer: peer,
+);
 
+Future<DartDirectSecurePrepareResult> secureDirectPrepare({
+  required ArcDartImClient client,
+  required String peer,
+}) => RustLib.instance.api.crateApiSecureSecureDirectPrepare(
+  client: client,
+  peer: peer,
+);
 
+Future<DartDirectSecureRepairResult> secureDirectRepair({
+  required ArcDartImClient client,
+  required String peer,
+}) => RustLib.instance.api.crateApiSecureSecureDirectRepair(
+  client: client,
+  peer: peer,
+);
 
-            Future<DartDirectSecureStatus>  secureDirectStatus({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiSecureSecureDirectStatus(client: client, peer: peer);
+Future<DartGroupSecureStatus> secureGroupStatus({
+  required ArcDartImClient client,
+  required String group,
+}) => RustLib.instance.api.crateApiSecureSecureGroupStatus(
+  client: client,
+  group: group,
+);
 
-Future<DartDirectSecurePrepareResult>  secureDirectPrepare({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiSecureSecureDirectPrepare(client: client, peer: peer);
+Future<DartGroupSecurePrepareResult> secureGroupPrepare({
+  required ArcDartImClient client,
+  required String group,
+}) => RustLib.instance.api.crateApiSecureSecureGroupPrepare(
+  client: client,
+  group: group,
+);
 
-Future<DartDirectSecureRepairResult>  secureDirectRepair({required ArcDartImClient client , required String peer }) => RustLib.instance.api.crateApiSecureSecureDirectRepair(client: client, peer: peer);
+Future<DartGroupSecureRepairResult> secureGroupRepair({
+  required ArcDartImClient client,
+  required String group,
+}) => RustLib.instance.api.crateApiSecureSecureGroupRepair(
+  client: client,
+  group: group,
+);
 
-Future<DartGroupSecureStatus>  secureGroupStatus({required ArcDartImClient client , required String group }) => RustLib.instance.api.crateApiSecureSecureGroupStatus(client: client, group: group);
+Future<List<DartSecureOutboxEntry>> secureOutboxListFailed({
+  required ArcDartImClient client,
+}) => RustLib.instance.api.crateApiSecureSecureOutboxListFailed(client: client);
 
-Future<DartGroupSecurePrepareResult>  secureGroupPrepare({required ArcDartImClient client , required String group }) => RustLib.instance.api.crateApiSecureSecureGroupPrepare(client: client, group: group);
+Future<DartSecureOutboxResult> secureOutboxRetry({
+  required ArcDartImClient client,
+  required String outboxId,
+}) => RustLib.instance.api.crateApiSecureSecureOutboxRetry(
+  client: client,
+  outboxId: outboxId,
+);
 
-Future<DartGroupSecureRepairResult>  secureGroupRepair({required ArcDartImClient client , required String group }) => RustLib.instance.api.crateApiSecureSecureGroupRepair(client: client, group: group);
-
-Future<List<DartSecureOutboxEntry>>  secureOutboxListFailed({required ArcDartImClient client }) => RustLib.instance.api.crateApiSecureSecureOutboxListFailed(client: client);
-
-Future<DartSecureOutboxResult>  secureOutboxRetry({required ArcDartImClient client , required String outboxId }) => RustLib.instance.api.crateApiSecureSecureOutboxRetry(client: client, outboxId: outboxId);
-
-Future<DartSecureOutboxResult>  secureOutboxDrop({required ArcDartImClient client , required String outboxId }) => RustLib.instance.api.crateApiSecureSecureOutboxDrop(client: client, outboxId: outboxId);
+Future<DartSecureOutboxResult> secureOutboxDrop({
+  required ArcDartImClient client,
+  required String outboxId,
+}) => RustLib.instance.api.crateApiSecureSecureOutboxDrop(
+  client: client,
+  outboxId: outboxId,
+);

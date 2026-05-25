@@ -88,14 +88,14 @@ pub fn normalize_email(email: &str) -> String {
 pub fn contact_binding_raw_response(
     result: &crate::identity::ContactBindingResult,
 ) -> Option<&serde_json::Value> {
-    result.raw_response()
+    result.response_json()
 }
 
 #[doc(hidden)]
 pub fn recover_handle_raw_response(
     result: &crate::identity::RecoverHandleResult,
 ) -> Option<&serde_json::Value> {
-    result.raw_response()
+    result.response_json()
 }
 
 #[derive(Debug, Clone, PartialEq)]

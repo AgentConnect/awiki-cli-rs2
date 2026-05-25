@@ -1,5 +1,6 @@
 use super::upgrader::{Context, MigrationError};
-use crate::{identity, store};
+use crate::legacy_identity as identity;
+use crate::legacy_store as store;
 use serde_json::Value;
 
 pub(crate) fn apply_workspace_v2_to_v3_replace_existing_k1_dids(

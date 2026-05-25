@@ -148,7 +148,7 @@ fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
             "delivery_state": "accepted"
         })),
     ]);
-    let core = test_core_with_base_url_ready_identity_and_service_did(
+    let (core, paths) = test_core_with_base_url_ready_identity_and_service_did(
         server.base_url(),
         "did:example:message-service",
     );
@@ -174,12 +174,51 @@ fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
         )
         .expect("public attachment send should resolve handle and run upload");
 
-    assert_eq!(result.message.id.as_str(), "msg-attachment-send-1");
+    assert_eq!(result.message.message.id.as_str(), "msg-attachment-send-1");
     assert_eq!(
-        result.message.receiver.as_ref().unwrap().as_str(),
+        result.message.message.receiver.as_ref().unwrap().as_str(),
         "bob.awiki.info"
     );
-    assert!(matches!(result.delivery, DeliveryState::Accepted));
+    assert!(matches!(result.message.delivery, DeliveryState::Accepted));
+    assert_eq!(result.target_kind, "agent");
+    assert_eq!(result.target_did, "did:example:bob");
+    assert_eq!(result.attachment.attachment_id, "att-1");
+    assert_eq!(result.attachment.filename, "override.bin");
+    assert_eq!(result.attachment.mime_type, "application/custom");
+    assert_eq!(result.attachment.size_bytes, 5);
+    assert_eq!(result.attachment.size, "5");
+    assert_eq!(
+        result.attachment.object_uri,
+        format!("{}/objects/att-1", server.base_url())
+    );
+    assert_eq!(result.manifest["primary_attachment_id"], "att-1");
+    assert_eq!(result.manifest["caption"], "caption");
+    let rows = local_message_rows(
+        &paths,
+        "SELECT msg_id, owner_identity_id, owner_did, receiver_did, content_type, content, is_read, metadata FROM messages WHERE msg_id = 'msg-attachment-send-1'",
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["owner_identity_id"], "alice-id");
+    assert_eq!(rows[0]["owner_did"], "did:example:alice");
+    assert_eq!(rows[0]["receiver_did"], "did:example:bob");
+    assert_eq!(
+        rows[0]["content_type"],
+        im_core::attachments::attachment_manifest_content_type()
+    );
+    assert_eq!(rows[0]["is_read"], 1);
+    let stored_manifest: Value =
+        serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(stored_manifest["primary_attachment_id"], "att-1");
+    assert_eq!(stored_manifest["caption"], "caption");
+    let metadata: Value = serde_json::from_str(rows[0]["metadata"].as_str().unwrap()).unwrap();
+    assert_eq!(metadata["operation_id"], "op-attachment-send-1");
+    assert_eq!(metadata["delivery_state"], "accepted");
+    assert_eq!(metadata["target_handle"], "bob.awiki.info");
+    assert_eq!(metadata["attachment_id"], "att-1");
+    assert_eq!(
+        metadata["object_uri"],
+        format!("{}/objects/att-1", server.base_url())
+    );
 
     let requests = server.join();
     assert_eq!(requests.len(), 5);
@@ -791,13 +830,13 @@ fn test_core() -> ImCore {
 }
 
 fn test_core_with_base_url_and_ready_identity(base_url: &str) -> ImCore {
-    test_core_with_base_url_ready_identity_and_service_did(base_url, "")
+    test_core_with_base_url_ready_identity_and_service_did(base_url, "").0
 }
 
 fn test_core_with_base_url_ready_identity_and_service_did(
     base_url: &str,
     service_did: &str,
-) -> ImCore {
+) -> (ImCore, ImCorePaths) {
     let paths = test_paths();
     write_ready_identity(&paths.identities.identity_root_dir, "alice");
     fs::write(
@@ -829,7 +868,44 @@ fn test_core_with_base_url_ready_identity_and_service_did(
     let mut config = test_config_with_base_url(base_url);
     config.anp_service_did =
         (!service_did.trim().is_empty()).then(|| Did::parse(service_did).unwrap());
-    ImCore::new(config, paths).unwrap()
+    let core = ImCore::new(config, paths.clone()).unwrap();
+    (core, paths)
+}
+
+fn local_message_rows(paths: &ImCorePaths, statement: &str) -> Vec<Value> {
+    let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
+    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    let mut statement = db.prepare(statement).unwrap();
+    let names = statement
+        .column_names()
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    statement
+        .query_map([], |row| {
+            let mut object = serde_json::Map::new();
+            for (index, name) in names.iter().enumerate() {
+                object.insert(name.clone(), sqlite_value_to_json(row.get_ref(index)?));
+            }
+            Ok(Value::Object(object))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
+}
+
+fn sqlite_value_to_json(value: rusqlite::types::ValueRef<'_>) -> Value {
+    match value {
+        rusqlite::types::ValueRef::Null => Value::Null,
+        rusqlite::types::ValueRef::Integer(value) => json!(value),
+        rusqlite::types::ValueRef::Real(value) => json!(value),
+        rusqlite::types::ValueRef::Text(value) => {
+            Value::String(String::from_utf8_lossy(value).into_owned())
+        }
+        rusqlite::types::ValueRef::Blob(value) => {
+            Value::Array(value.iter().copied().map(|byte| json!(byte)).collect())
+        }
+    }
 }
 
 fn write_ready_identity(identities: &Path, alias: &str) {
@@ -896,6 +972,7 @@ fn test_config_with_base_url(base_url: &str) -> ImCoreConfig {
         mail_service_endpoint: None,
         anp_service_endpoint: None,
         anp_service_did: None,
+        ca_bundle: None,
         transport_policy: MessageTransportPolicy::Auto,
     }
 }

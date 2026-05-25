@@ -3494,6 +3494,26 @@ impl SseDecode for crate::dto::attachment::DartAttachmentSendRequest {
     }
 }
 
+impl SseDecode for crate::dto::attachment::DartAttachmentSendResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_message =
+            <crate::dto::message::DartSendMessageResult>::sse_decode(deserializer);
+        let mut var_targetKind = <String>::sse_decode(deserializer);
+        let mut var_targetDid = <String>::sse_decode(deserializer);
+        let mut var_attachment =
+            <crate::dto::attachment::DartUploadedAttachment>::sse_decode(deserializer);
+        let mut var_manifestJson = <String>::sse_decode(deserializer);
+        return crate::dto::attachment::DartAttachmentSendResult {
+            message: var_message,
+            target_kind: var_targetKind,
+            target_did: var_targetDid,
+            attachment: var_attachment,
+            manifest_json: var_manifestJson,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::auth::DartAuthScope {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -4909,6 +4929,28 @@ impl SseDecode for crate::dto::message::DartThreadRef {
     }
 }
 
+impl SseDecode for crate::dto::attachment::DartUploadedAttachment {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_attachmentId = <String>::sse_decode(deserializer);
+        let mut var_filename = <String>::sse_decode(deserializer);
+        let mut var_mimeType = <String>::sse_decode(deserializer);
+        let mut var_sizeBytes = <u64>::sse_decode(deserializer);
+        let mut var_size = <String>::sse_decode(deserializer);
+        let mut var_digestB64U = <String>::sse_decode(deserializer);
+        let mut var_objectUri = <String>::sse_decode(deserializer);
+        return crate::dto::attachment::DartUploadedAttachment {
+            attachment_id: var_attachmentId,
+            filename: var_filename,
+            mime_type: var_mimeType,
+            size_bytes: var_sizeBytes,
+            size: var_size,
+            digest_b64u: var_digestB64U,
+            object_uri: var_objectUri,
+        };
+    }
+}
+
 impl SseDecode for crate::dto::profile::DartUserProfile {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -5611,6 +5653,30 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::attachment::DartAttachmentSen
     for crate::dto::attachment::DartAttachmentSendRequest
 {
     fn into_into_dart(self) -> crate::dto::attachment::DartAttachmentSendRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::attachment::DartAttachmentSendResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.message.into_into_dart().into_dart(),
+            self.target_kind.into_into_dart().into_dart(),
+            self.target_did.into_into_dart().into_dart(),
+            self.attachment.into_into_dart().into_dart(),
+            self.manifest_json.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::attachment::DartAttachmentSendResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::attachment::DartAttachmentSendResult>
+    for crate::dto::attachment::DartAttachmentSendResult
+{
+    fn into_into_dart(self) -> crate::dto::attachment::DartAttachmentSendResult {
         self
     }
 }
@@ -7440,6 +7506,32 @@ impl flutter_rust_bridge::IntoIntoDart<crate::dto::message::DartThreadRef>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::dto::attachment::DartUploadedAttachment {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.attachment_id.into_into_dart().into_dart(),
+            self.filename.into_into_dart().into_dart(),
+            self.mime_type.into_into_dart().into_dart(),
+            self.size_bytes.into_into_dart().into_dart(),
+            self.size.into_into_dart().into_dart(),
+            self.digest_b64u.into_into_dart().into_dart(),
+            self.object_uri.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::dto::attachment::DartUploadedAttachment
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::dto::attachment::DartUploadedAttachment>
+    for crate::dto::attachment::DartUploadedAttachment
+{
+    fn into_into_dart(self) -> crate::dto::attachment::DartUploadedAttachment {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::dto::profile::DartUserProfile {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -7614,6 +7706,17 @@ impl SseEncode for crate::dto::attachment::DartAttachmentSendRequest {
         <Option<String>>::sse_encode(self.filename, serializer);
         <Option<String>>::sse_encode(self.idempotency_key, serializer);
         <bool>::sse_encode(self.wait_for_final_acceptance, serializer);
+    }
+}
+
+impl SseEncode for crate::dto::attachment::DartAttachmentSendResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::dto::message::DartSendMessageResult>::sse_encode(self.message, serializer);
+        <String>::sse_encode(self.target_kind, serializer);
+        <String>::sse_encode(self.target_did, serializer);
+        <crate::dto::attachment::DartUploadedAttachment>::sse_encode(self.attachment, serializer);
+        <String>::sse_encode(self.manifest_json, serializer);
     }
 }
 
@@ -8597,6 +8700,19 @@ impl SseEncode for crate::dto::message::DartThreadRef {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseEncode for crate::dto::attachment::DartUploadedAttachment {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.attachment_id, serializer);
+        <String>::sse_encode(self.filename, serializer);
+        <String>::sse_encode(self.mime_type, serializer);
+        <u64>::sse_encode(self.size_bytes, serializer);
+        <String>::sse_encode(self.size, serializer);
+        <String>::sse_encode(self.digest_b64u, serializer);
+        <String>::sse_encode(self.object_uri, serializer);
     }
 }
 

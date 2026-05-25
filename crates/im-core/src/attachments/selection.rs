@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-pub(crate) const ERR_ATTACHMENT_NOT_FOUND: &str = "attachment not found in message content";
-pub(crate) const ERR_ATTACHMENT_ID_REQUIRED: &str =
+pub const ERR_ATTACHMENT_NOT_FOUND: &str = "attachment not found in message content";
+pub const ERR_ATTACHMENT_ID_REQUIRED: &str =
     "attachment_id is required for messages with multiple attachments";
-pub(crate) const ERR_ATTACHMENT_MESSAGE_INVALID: &str = "message is not an attachment manifest";
+pub const ERR_ATTACHMENT_MESSAGE_INVALID: &str = "message is not an attachment manifest";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentSelection {

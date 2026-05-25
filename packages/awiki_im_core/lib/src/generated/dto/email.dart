@@ -6,327 +6,387 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-
-
-
-
-
-            class DartEmailAccount  {
-                final String? mailboxAddress;
-final String? displayName;
-final String? status;
-final List<DartEmailAttribute> attributes;
-
-                const DartEmailAccount({this.mailboxAddress ,this.displayName ,this.status ,required this.attributes ,});
-
-
-
-
-
-        @override
-        int get hashCode => mailboxAddress.hashCode^displayName.hashCode^status.hashCode^attributes.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailAccount &&
-                runtimeType == other.runtimeType
-                && mailboxAddress == other.mailboxAddress&& displayName == other.displayName&& status == other.status&& attributes == other.attributes;
-
-            }
-
-class DartEmailAttachmentContent  {
-                final String messageId;
-final int attachmentIndex;
-final String filename;
-final String contentType;
-final BigInt? size;
-final Uint8List bytes;
-
-                const DartEmailAttachmentContent({required this.messageId ,required this.attachmentIndex ,required this.filename ,required this.contentType ,this.size ,required this.bytes ,});
-
-
-
-
-
-        @override
-        int get hashCode => messageId.hashCode^attachmentIndex.hashCode^filename.hashCode^contentType.hashCode^size.hashCode^bytes.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailAttachmentContent &&
-                runtimeType == other.runtimeType
-                && messageId == other.messageId&& attachmentIndex == other.attachmentIndex&& filename == other.filename&& contentType == other.contentType&& size == other.size&& bytes == other.bytes;
-
-            }
-
-class DartEmailAttachmentMetadata  {
-                final int index;
-final String? filename;
-final String? contentType;
-final BigInt? size;
-
-                const DartEmailAttachmentMetadata({required this.index ,this.filename ,this.contentType ,this.size ,});
-
-
-
-
-
-        @override
-        int get hashCode => index.hashCode^filename.hashCode^contentType.hashCode^size.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailAttachmentMetadata &&
-                runtimeType == other.runtimeType
-                && index == other.index&& filename == other.filename&& contentType == other.contentType&& size == other.size;
-
-            }
-
-class DartEmailAttribute  {
-                final String key;
-final String value;
-
-                const DartEmailAttribute({required this.key ,required this.value ,});
-
-
-
-
-
-        @override
-        int get hashCode => key.hashCode^value.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailAttribute &&
-                runtimeType == other.runtimeType
-                && key == other.key&& value == other.value;
-
-            }
-
-class DartEmailMarkReadResult  {
-                final int updated;
-
-                const DartEmailMarkReadResult({required this.updated ,});
-
-
-
-
-
-        @override
-        int get hashCode => updated.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailMarkReadResult &&
-                runtimeType == other.runtimeType
-                && updated == other.updated;
-
-            }
-
-class DartEmailMessage  {
-                final DartEmailMessageSummary summary;
-final String? bodyText;
-final String? bodyHtml;
-final List<DartEmailAttachmentMetadata> attachments;
-
-                const DartEmailMessage({required this.summary ,this.bodyText ,this.bodyHtml ,required this.attachments ,});
-
-
-
-
-
-        @override
-        int get hashCode => summary.hashCode^bodyText.hashCode^bodyHtml.hashCode^attachments.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailMessage &&
-                runtimeType == other.runtimeType
-                && summary == other.summary&& bodyText == other.bodyText&& bodyHtml == other.bodyHtml&& attachments == other.attachments;
-
-            }
-
-class DartEmailMessageSummary  {
-                final String id;
-final String? folder;
-final List<String> from;
-final List<String> to;
-final List<String> cc;
-final String subject;
-final String? preview;
-final String? receivedAt;
-final String? sentAt;
-final bool unread;
-final bool hasAttachments;
-final int? attachmentCount;
-final List<DartEmailAttribute> attributes;
-
-                const DartEmailMessageSummary({required this.id ,this.folder ,required this.from ,required this.to ,required this.cc ,required this.subject ,this.preview ,this.receivedAt ,this.sentAt ,required this.unread ,required this.hasAttachments ,this.attachmentCount ,required this.attributes ,});
-
-
-
-
-
-        @override
-        int get hashCode => id.hashCode^folder.hashCode^from.hashCode^to.hashCode^cc.hashCode^subject.hashCode^preview.hashCode^receivedAt.hashCode^sentAt.hashCode^unread.hashCode^hasAttachments.hashCode^attachmentCount.hashCode^attributes.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailMessageSummary &&
-                runtimeType == other.runtimeType
-                && id == other.id&& folder == other.folder&& from == other.from&& to == other.to&& cc == other.cc&& subject == other.subject&& preview == other.preview&& receivedAt == other.receivedAt&& sentAt == other.sentAt&& unread == other.unread&& hasAttachments == other.hasAttachments&& attachmentCount == other.attachmentCount&& attributes == other.attributes;
-
-            }
-
-class DartEmailMessageSummaryPage  {
-                final List<DartEmailMessageSummary> items;
-final String? nextCursor;
-final bool hasMore;
-
-                const DartEmailMessageSummaryPage({required this.items ,this.nextCursor ,required this.hasMore ,});
-
-
-
-
-
-        @override
-        int get hashCode => items.hashCode^nextCursor.hashCode^hasMore.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailMessageSummaryPage &&
-                runtimeType == other.runtimeType
-                && items == other.items&& nextCursor == other.nextCursor&& hasMore == other.hasMore;
-
-            }
-
-class DartEmailNotification  {
-                final String id;
-final String? mailboxAddress;
-final String? fromAddr;
-final String subject;
-final String? preview;
-final bool hasAttachments;
-final String? receivedAt;
-final List<DartEmailAttribute> attributes;
-
-                const DartEmailNotification({required this.id ,this.mailboxAddress ,this.fromAddr ,required this.subject ,this.preview ,required this.hasAttachments ,this.receivedAt ,required this.attributes ,});
-
-
-
-
-
-        @override
-        int get hashCode => id.hashCode^mailboxAddress.hashCode^fromAddr.hashCode^subject.hashCode^preview.hashCode^hasAttachments.hashCode^receivedAt.hashCode^attributes.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailNotification &&
-                runtimeType == other.runtimeType
-                && id == other.id&& mailboxAddress == other.mailboxAddress&& fromAddr == other.fromAddr&& subject == other.subject&& preview == other.preview&& hasAttachments == other.hasAttachments&& receivedAt == other.receivedAt&& attributes == other.attributes;
-
-            }
-
-class DartEmailNotificationPage  {
-                final List<DartEmailNotification> items;
-final String? nextCursor;
-final bool hasMore;
-
-                const DartEmailNotificationPage({required this.items ,this.nextCursor ,required this.hasMore ,});
-
-
-
-
-
-        @override
-        int get hashCode => items.hashCode^nextCursor.hashCode^hasMore.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartEmailNotificationPage &&
-                runtimeType == other.runtimeType
-                && items == other.items&& nextCursor == other.nextCursor&& hasMore == other.hasMore;
-
-            }
-
-class DartSendEmailRequest  {
-                final List<String> to;
-final List<String> cc;
-final String subject;
-final String bodyText;
-final String? bodyHtml;
-
-                const DartSendEmailRequest({required this.to ,required this.cc ,required this.subject ,required this.bodyText ,this.bodyHtml ,});
-
-
-
-
-
-        @override
-        int get hashCode => to.hashCode^cc.hashCode^subject.hashCode^bodyText.hashCode^bodyHtml.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartSendEmailRequest &&
-                runtimeType == other.runtimeType
-                && to == other.to&& cc == other.cc&& subject == other.subject&& bodyText == other.bodyText&& bodyHtml == other.bodyHtml;
-
-            }
-
-class DartSendEmailResult  {
-                final bool accepted;
-final String? messageId;
-final List<String> warnings;
-
-                const DartSendEmailResult({required this.accepted ,this.messageId ,required this.warnings ,});
-
-
-
-
-
-        @override
-        int get hashCode => accepted.hashCode^messageId.hashCode^warnings.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartSendEmailResult &&
-                runtimeType == other.runtimeType
-                && accepted == other.accepted&& messageId == other.messageId&& warnings == other.warnings;
-
-            }
+class DartEmailAccount {
+  final String? mailboxAddress;
+  final String? displayName;
+  final String? status;
+  final List<DartEmailAttribute> attributes;
+
+  const DartEmailAccount({
+    this.mailboxAddress,
+    this.displayName,
+    this.status,
+    required this.attributes,
+  });
+
+  @override
+  int get hashCode =>
+      mailboxAddress.hashCode ^
+      displayName.hashCode ^
+      status.hashCode ^
+      attributes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailAccount &&
+          runtimeType == other.runtimeType &&
+          mailboxAddress == other.mailboxAddress &&
+          displayName == other.displayName &&
+          status == other.status &&
+          attributes == other.attributes;
+}
+
+class DartEmailAttachmentContent {
+  final String messageId;
+  final int attachmentIndex;
+  final String filename;
+  final String contentType;
+  final BigInt? size;
+  final Uint8List bytes;
+
+  const DartEmailAttachmentContent({
+    required this.messageId,
+    required this.attachmentIndex,
+    required this.filename,
+    required this.contentType,
+    this.size,
+    required this.bytes,
+  });
+
+  @override
+  int get hashCode =>
+      messageId.hashCode ^
+      attachmentIndex.hashCode ^
+      filename.hashCode ^
+      contentType.hashCode ^
+      size.hashCode ^
+      bytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailAttachmentContent &&
+          runtimeType == other.runtimeType &&
+          messageId == other.messageId &&
+          attachmentIndex == other.attachmentIndex &&
+          filename == other.filename &&
+          contentType == other.contentType &&
+          size == other.size &&
+          bytes == other.bytes;
+}
+
+class DartEmailAttachmentMetadata {
+  final int index;
+  final String? filename;
+  final String? contentType;
+  final BigInt? size;
+
+  const DartEmailAttachmentMetadata({
+    required this.index,
+    this.filename,
+    this.contentType,
+    this.size,
+  });
+
+  @override
+  int get hashCode =>
+      index.hashCode ^ filename.hashCode ^ contentType.hashCode ^ size.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailAttachmentMetadata &&
+          runtimeType == other.runtimeType &&
+          index == other.index &&
+          filename == other.filename &&
+          contentType == other.contentType &&
+          size == other.size;
+}
+
+class DartEmailAttribute {
+  final String key;
+  final String value;
+
+  const DartEmailAttribute({required this.key, required this.value});
+
+  @override
+  int get hashCode => key.hashCode ^ value.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailAttribute &&
+          runtimeType == other.runtimeType &&
+          key == other.key &&
+          value == other.value;
+}
+
+class DartEmailMarkReadResult {
+  final int updated;
+
+  const DartEmailMarkReadResult({required this.updated});
+
+  @override
+  int get hashCode => updated.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailMarkReadResult &&
+          runtimeType == other.runtimeType &&
+          updated == other.updated;
+}
+
+class DartEmailMessage {
+  final DartEmailMessageSummary summary;
+  final String? bodyText;
+  final String? bodyHtml;
+  final List<DartEmailAttachmentMetadata> attachments;
+
+  const DartEmailMessage({
+    required this.summary,
+    this.bodyText,
+    this.bodyHtml,
+    required this.attachments,
+  });
+
+  @override
+  int get hashCode =>
+      summary.hashCode ^
+      bodyText.hashCode ^
+      bodyHtml.hashCode ^
+      attachments.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailMessage &&
+          runtimeType == other.runtimeType &&
+          summary == other.summary &&
+          bodyText == other.bodyText &&
+          bodyHtml == other.bodyHtml &&
+          attachments == other.attachments;
+}
+
+class DartEmailMessageSummary {
+  final String id;
+  final String? folder;
+  final List<String> from;
+  final List<String> to;
+  final List<String> cc;
+  final String subject;
+  final String? preview;
+  final String? receivedAt;
+  final String? sentAt;
+  final bool unread;
+  final bool hasAttachments;
+  final int? attachmentCount;
+  final List<DartEmailAttribute> attributes;
+
+  const DartEmailMessageSummary({
+    required this.id,
+    this.folder,
+    required this.from,
+    required this.to,
+    required this.cc,
+    required this.subject,
+    this.preview,
+    this.receivedAt,
+    this.sentAt,
+    required this.unread,
+    required this.hasAttachments,
+    this.attachmentCount,
+    required this.attributes,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      folder.hashCode ^
+      from.hashCode ^
+      to.hashCode ^
+      cc.hashCode ^
+      subject.hashCode ^
+      preview.hashCode ^
+      receivedAt.hashCode ^
+      sentAt.hashCode ^
+      unread.hashCode ^
+      hasAttachments.hashCode ^
+      attachmentCount.hashCode ^
+      attributes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailMessageSummary &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          folder == other.folder &&
+          from == other.from &&
+          to == other.to &&
+          cc == other.cc &&
+          subject == other.subject &&
+          preview == other.preview &&
+          receivedAt == other.receivedAt &&
+          sentAt == other.sentAt &&
+          unread == other.unread &&
+          hasAttachments == other.hasAttachments &&
+          attachmentCount == other.attachmentCount &&
+          attributes == other.attributes;
+}
+
+class DartEmailMessageSummaryPage {
+  final List<DartEmailMessageSummary> items;
+  final String? nextCursor;
+  final bool hasMore;
+
+  const DartEmailMessageSummaryPage({
+    required this.items,
+    this.nextCursor,
+    required this.hasMore,
+  });
+
+  @override
+  int get hashCode => items.hashCode ^ nextCursor.hashCode ^ hasMore.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailMessageSummaryPage &&
+          runtimeType == other.runtimeType &&
+          items == other.items &&
+          nextCursor == other.nextCursor &&
+          hasMore == other.hasMore;
+}
+
+class DartEmailNotification {
+  final String id;
+  final String? mailboxAddress;
+  final String? fromAddr;
+  final String subject;
+  final String? preview;
+  final bool hasAttachments;
+  final String? receivedAt;
+  final List<DartEmailAttribute> attributes;
+
+  const DartEmailNotification({
+    required this.id,
+    this.mailboxAddress,
+    this.fromAddr,
+    required this.subject,
+    this.preview,
+    required this.hasAttachments,
+    this.receivedAt,
+    required this.attributes,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      mailboxAddress.hashCode ^
+      fromAddr.hashCode ^
+      subject.hashCode ^
+      preview.hashCode ^
+      hasAttachments.hashCode ^
+      receivedAt.hashCode ^
+      attributes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailNotification &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          mailboxAddress == other.mailboxAddress &&
+          fromAddr == other.fromAddr &&
+          subject == other.subject &&
+          preview == other.preview &&
+          hasAttachments == other.hasAttachments &&
+          receivedAt == other.receivedAt &&
+          attributes == other.attributes;
+}
+
+class DartEmailNotificationPage {
+  final List<DartEmailNotification> items;
+  final String? nextCursor;
+  final bool hasMore;
+
+  const DartEmailNotificationPage({
+    required this.items,
+    this.nextCursor,
+    required this.hasMore,
+  });
+
+  @override
+  int get hashCode => items.hashCode ^ nextCursor.hashCode ^ hasMore.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartEmailNotificationPage &&
+          runtimeType == other.runtimeType &&
+          items == other.items &&
+          nextCursor == other.nextCursor &&
+          hasMore == other.hasMore;
+}
+
+class DartSendEmailRequest {
+  final List<String> to;
+  final List<String> cc;
+  final String subject;
+  final String bodyText;
+  final String? bodyHtml;
+
+  const DartSendEmailRequest({
+    required this.to,
+    required this.cc,
+    required this.subject,
+    required this.bodyText,
+    this.bodyHtml,
+  });
+
+  @override
+  int get hashCode =>
+      to.hashCode ^
+      cc.hashCode ^
+      subject.hashCode ^
+      bodyText.hashCode ^
+      bodyHtml.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendEmailRequest &&
+          runtimeType == other.runtimeType &&
+          to == other.to &&
+          cc == other.cc &&
+          subject == other.subject &&
+          bodyText == other.bodyText &&
+          bodyHtml == other.bodyHtml;
+}
+
+class DartSendEmailResult {
+  final bool accepted;
+  final String? messageId;
+  final List<String> warnings;
+
+  const DartSendEmailResult({
+    required this.accepted,
+    this.messageId,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      accepted.hashCode ^ messageId.hashCode ^ warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSendEmailResult &&
+          runtimeType == other.runtimeType &&
+          accepted == other.accepted &&
+          messageId == other.messageId &&
+          warnings == other.warnings;
+}

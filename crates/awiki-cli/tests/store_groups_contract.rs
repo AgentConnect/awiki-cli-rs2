@@ -1,5 +1,5 @@
-use awiki_cli::store::{
-    self, GroupMemberRecord, GroupRecord, MessageRecord, StoreError, StoreResult,
+use awiki_cli::legacy_store::{
+    self as store, GroupMemberRecord, GroupRecord, MessageRecord, StoreError, StoreResult,
 };
 use rusqlite::Connection;
 use serde_json::Value;

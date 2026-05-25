@@ -1,4 +1,4 @@
-use crate::identity::types::StoredIdentity;
+use crate::legacy_identity::types::StoredIdentity;
 use crate::runtime::bridge::{handle_bridge_connection_once, BridgeRequest};
 use crate::runtime::listener_bridge_dispatch::build_bridge_rpc_call;
 use crate::runtime::listener_service_did::disconnected_websocket_session_error;

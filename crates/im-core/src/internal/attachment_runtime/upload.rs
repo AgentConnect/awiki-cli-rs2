@@ -26,7 +26,7 @@ pub(crate) struct AttachmentUploadCredentials {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct AttachmentUploadResult {
+pub struct AttachmentUploadResult {
     pub sdk_result: crate::messages::SendMessageResult,
     pub target_kind: &'static str,
     pub target_did: String,
@@ -1225,6 +1225,7 @@ mod tests {
                         .map(crate::ids::Did::parse)
                         .transpose()
                         .unwrap(),
+                    ca_bundle: None,
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 crate::ImCorePaths {

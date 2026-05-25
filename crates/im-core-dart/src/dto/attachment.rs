@@ -1,4 +1,4 @@
-use crate::dto::message::{DartMessageTarget, DartThreadRef};
+use crate::dto::message::{DartMessageTarget, DartSendMessageResult, DartThreadRef};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DartAttachmentInput {
@@ -21,6 +21,26 @@ pub struct DartAttachmentSendRequest {
     pub filename: Option<String>,
     pub idempotency_key: Option<String>,
     pub wait_for_final_acceptance: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartAttachmentSendResult {
+    pub message: DartSendMessageResult,
+    pub target_kind: String,
+    pub target_did: String,
+    pub attachment: DartUploadedAttachment,
+    pub manifest_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartUploadedAttachment {
+    pub attachment_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    pub size: String,
+    pub digest_b64u: String,
+    pub object_uri: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

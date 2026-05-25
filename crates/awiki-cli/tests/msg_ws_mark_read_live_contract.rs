@@ -1,89 +1,27 @@
 #![cfg(unix)]
 
-use awiki_cli::runtime::bridge::{self, BridgeRequest};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_mark_read_websocket_mode_uses_local_bridge_like_go() {
-    let workspace = TempDir::new("msg-ws-mark-read-bridge").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-mark", "bob", "jwt-bob");
+fn msg_mark_read_websocket_mode_uses_im_core_http_not_legacy_bridge() {
+    let workspace = TempDir::new("msg-ws-mark-read-http-cutover").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-ws-mark-http", "bob", "jwt-bob");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
         bob_did,
         alice_did,
-        "msg-ws-read-1",
-        "hello over websocket cache",
+        "msg-ws-read-http",
+        "hello over HTTP cutover",
         "2026-05-16T01:02:03Z",
-    );
-    let socket_path = workspace.path().join("runtime").join("message-daemon.sock");
-    let (_bridge, bridge_requests) = spawn_bridge_server(
-        &socket_path,
-        json!({
-            "updated_count": 1
-        }),
-    );
-    write_msg_ws_config(
-        workspace.path(),
-        "https://placeholder.invalid",
-        socket_path.to_str().expect("socket path"),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "bob-ws-mark",
-            "msg",
-            "mark-read",
-            "msg-ws-read-1",
-        ],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Marked 1 messages as read");
-    assert_eq!(envelope["data"]["action"], "mark_read");
-    assert_eq!(envelope["data"]["updated_count"], 1);
-    assert_eq!(envelope["data"]["message_ids"], json!(["msg-ws-read-1"]));
-    assert_no_http_fallback_warning(&envelope);
-
-    let request = bridge_requests
-        .recv_timeout(Duration::from_secs(2))
-        .expect("bridge inbox.mark_read request");
-    assert_eq!(request.method, "inbox.mark_read");
-    assert_eq!(request.identity_name, "bob-ws-mark");
-    assert_eq!(request.params["message_ids"], json!(["msg-ws-read-1"]));
-
-    let rows = query_rows(
-        workspace.path(),
-        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-ws-read-1'",
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["is_read"], 1);
-}
-
-#[test]
-fn msg_mark_read_websocket_mode_falls_back_to_http_with_warning_like_go() {
-    let workspace = TempDir::new("msg-ws-mark-read-http-fallback").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-fallback", "bob", "jwt-bob");
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
-    let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    seed_direct_message(
-        workspace.path(),
-        bob_did,
-        alice_did,
-        "msg-ws-read-2",
-        "hello over HTTP fallback",
-        "2026-05-16T02:03:04Z",
     );
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
@@ -98,10 +36,10 @@ fn msg_mark_read_websocket_mode_falls_back_to_http_with_warning_like_go() {
     let output = awiki_cmd(
         &[
             "--identity",
-            "bob-ws-fallback",
+            "bob-ws-mark-http",
             "msg",
             "mark-read",
-            "msg-ws-read-2",
+            "msg-ws-read-http",
         ],
         workspace.path(),
     );
@@ -111,8 +49,9 @@ fn msg_mark_read_websocket_mode_falls_back_to_http_with_warning_like_go() {
     assert_eq!(envelope["summary"], "Marked 1 messages as read");
     assert_eq!(envelope["data"]["action"], "mark_read");
     assert_eq!(envelope["data"]["updated_count"], 1);
-    assert_eq!(envelope["data"]["message_ids"], json!(["msg-ws-read-2"]));
-    assert_has_http_fallback_warning(&envelope);
+    assert_eq!(envelope["data"]["message_ids"], json!(["msg-ws-read-http"]));
+    assert_no_legacy_websocket_fallback_warning(&envelope);
+    assert_eq!(is_read(workspace.path(), bob_did, "msg-ws-read-http"), 1);
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
@@ -120,32 +59,27 @@ fn msg_mark_read_websocket_mode_falls_back_to_http_with_warning_like_go() {
     assert_contains_text(&requests[0], "Authorization: Bearer jwt-bob\r\n");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["method"], "inbox.mark_read");
+    assert_eq!(body["params"]["meta"]["sender_did"], bob_did);
+    assert_eq!(body["params"]["body"]["user_did"], bob_did);
     assert_eq!(
         body["params"]["body"]["message_ids"],
-        json!(["msg-ws-read-2"])
+        json!(["msg-ws-read-http"])
     );
-
-    let rows = query_rows(
-        workspace.path(),
-        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-ws-read-2'",
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["is_read"], 1);
 }
 
 #[test]
-fn msg_mark_read_websocket_mode_http_fallback_failure_returns_http_error_like_go() {
-    let workspace = TempDir::new("msg-ws-mark-read-double-failure").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-double-fail", "bob", "jwt-bob");
+fn msg_mark_read_websocket_mode_reports_http_failure_without_bridge_fallback() {
+    let workspace = TempDir::new("msg-ws-mark-read-http-failure").expect("workspace");
+    register_ready_msg_identity(workspace.path(), "bob-ws-mark-fail", "bob", "jwt-bob");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
         bob_did,
         alice_did,
-        "msg-ws-read-3",
+        "msg-ws-read-fail",
         "still unread after transport failure",
-        "2026-05-16T03:04:05Z",
+        "2026-05-16T02:03:04Z",
     );
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
     let server = TestServer::new(vec![TestResponse::internal_error(
@@ -160,10 +94,10 @@ fn msg_mark_read_websocket_mode_http_fallback_failure_returns_http_error_like_go
     let output = awiki_cmd(
         &[
             "--identity",
-            "bob-ws-double-fail",
+            "bob-ws-mark-fail",
             "msg",
             "mark-read",
-            "msg-ws-read-3",
+            "msg-ws-read-fail",
         ],
         workspace.path(),
     );
@@ -176,93 +110,77 @@ fn msg_mark_read_websocket_mode_http_fallback_failure_returns_http_error_like_go
     assert_contains_text(message, "http mark-read failed");
     assert!(
         !message.contains("local websocket bridge request failed"),
-        "HTTP fallback failure should mask the original bridge error after fallback starts, got: {message}"
+        "legacy bridge fallback should not be used, got: {message}"
     );
+    assert_eq!(is_read(workspace.path(), bob_did, "msg-ws-read-fail"), 0);
 
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request body");
     assert_eq!(body["method"], "inbox.mark_read");
-
-    let rows = query_rows(
-        workspace.path(),
-        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-ws-read-3'",
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["is_read"], 0);
 }
 
 #[test]
-fn msg_mark_read_websocket_mode_keeps_bridge_error_when_http_prepare_fails_like_go() {
-    let workspace = TempDir::new("msg-ws-mark-read-http-prepare").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-http-prepare", "bob", "jwt-bob");
+fn msg_mark_read_websocket_mode_reports_transport_unavailable_without_cache_fallback() {
+    let workspace = TempDir::new("msg-ws-mark-read-transport-unavailable").expect("workspace");
+    register_ready_msg_identity(
+        workspace.path(),
+        "bob-ws-mark-unavailable",
+        "bob",
+        "jwt-bob",
+    );
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     seed_direct_message(
         workspace.path(),
         bob_did,
         alice_did,
-        "msg-ws-read-prepare",
-        "still unread after HTTP prepare failure",
-        "2026-05-16T03:14:15Z",
+        "msg-ws-read-unavailable",
+        "still unread after unavailable transport",
+        "2026-05-16T03:04:05Z",
     );
     let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let missing_ca = workspace.path().join("missing-ca.pem");
-    write_msg_ws_config_with_ca_bundle(
+    write_msg_ws_config(
         workspace.path(),
-        "http://127.0.0.1:9",
+        &closed_local_url(),
         missing_socket.to_str().expect("socket path"),
-        missing_ca.to_str().expect("ca bundle path"),
     );
 
     let output = awiki_cmd(
         &[
             "--identity",
-            "bob-ws-http-prepare",
+            "bob-ws-mark-unavailable",
             "msg",
             "mark-read",
-            "msg-ws-read-prepare",
+            "msg-ws-read-unavailable",
         ],
         workspace.path(),
     );
 
-    assert_failure(&output);
-    let envelope = failure_json(&output);
-    let message = envelope["error"]["message"]
-        .as_str()
-        .expect("error message");
-    assert_contains_text(message, "message transport is unavailable");
-    assert_contains_text(message, "local websocket bridge request failed");
-    assert!(
-        !message.contains("read ca bundle"),
-        "HTTP preparation failure should not mask the original bridge error, got: {message}"
+    assert_transport_unavailable_without_legacy_fallback(&output);
+    assert_eq!(
+        is_read(workspace.path(), bob_did, "msg-ws-read-unavailable"),
+        0
     );
-
-    let rows = query_rows(
-        workspace.path(),
-        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-ws-read-prepare'",
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["is_read"], 0);
 }
 
 #[test]
-fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_like_go() {
+fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_only() {
     let workspace = TempDir::new("msg-ws-mark-read-local-only").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-local", "bob", "jwt-bob");
+    register_ready_msg_identity(workspace.path(), "bob-ws-mark-local", "bob", "jwt-bob");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     seed_group_message(
         workspace.path(),
         bob_did,
         "did:wba:awiki.ai:groups:demo:e1_group",
-        "msg-group-read-1",
+        "msg-group-read-local",
         "group hello",
         "2026-05-16T04:05:06Z",
     );
     seed_mail_notification(
         workspace.path(),
         bob_did,
-        "msg-mail-read-1",
+        "msg-mail-read-local",
         "mail hello",
         "2026-05-16T04:06:07Z",
     );
@@ -277,11 +195,11 @@ fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_like_go() {
     let output = awiki_cmd(
         &[
             "--identity",
-            "bob-ws-local",
+            "bob-ws-mark-local",
             "msg",
             "mark-read",
-            "msg-group-read-1",
-            "msg-mail-read-1",
+            "msg-group-read-local",
+            "msg-mail-read-local",
         ],
         workspace.path(),
     );
@@ -293,136 +211,15 @@ fn msg_mark_read_websocket_mode_keeps_group_and_mail_rows_local_like_go() {
     assert_eq!(envelope["data"]["updated_count"], 2);
     assert_eq!(
         envelope["data"]["message_ids"],
-        json!(["msg-group-read-1", "msg-mail-read-1"])
+        json!(["msg-group-read-local", "msg-mail-read-local"])
     );
-    assert_no_http_fallback_warning(&envelope);
+    assert_no_legacy_websocket_fallback_warning(&envelope);
     assert!(server.requests().is_empty());
-
-    let rows = query_rows(
-        workspace.path(),
-        "SELECT msg_id, is_read FROM messages WHERE msg_id IN ('msg-group-read-1', 'msg-mail-read-1') ORDER BY msg_id",
-    );
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["msg_id"], "msg-group-read-1");
-    assert_eq!(rows[0]["is_read"], 1);
-    assert_eq!(rows[1]["msg_id"], "msg-mail-read-1");
-    assert_eq!(rows[1]["is_read"], 1);
-}
-
-#[test]
-fn msg_mark_read_websocket_mode_keeps_group_rows_local_like_go() {
-    let workspace = TempDir::new("msg-ws-mark-read-group-local").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-ws-group-local", "bob", "jwt-bob");
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
-    seed_group_message(
-        workspace.path(),
-        bob_did,
-        "did:wba:awiki.ai:groups:demo:e1_group",
-        "msg-group-read-local",
-        "group hello",
-        "2026-05-16T04:05:06Z",
-    );
-    let missing_socket = workspace.path().join("runtime").join("missing.sock");
-    let server = TestServer::new(Vec::new());
-    write_msg_ws_config(
-        workspace.path(),
-        &server.base_url(),
-        missing_socket.to_str().expect("socket path"),
-    );
-
-    let output = awiki_cmd(
-        &[
-            "--identity",
-            "bob-ws-group-local",
-            "msg",
-            "mark-read",
-            "msg-group-read-local",
-        ],
-        workspace.path(),
-    );
-
-    assert_success(&output);
-    let envelope = success_json(&output);
-    assert_eq!(envelope["summary"], "Marked 1 messages as read");
-    assert_eq!(envelope["data"]["action"], "mark_read");
-    assert_eq!(envelope["data"]["updated_count"], 1);
     assert_eq!(
-        envelope["data"]["message_ids"],
-        json!(["msg-group-read-local"])
+        is_read(workspace.path(), bob_did, "msg-group-read-local"),
+        1
     );
-    assert_no_http_fallback_warning(&envelope);
-    assert!(server.requests().is_empty());
-
-    let rows = query_rows(
-        workspace.path(),
-        "SELECT msg_id, is_read FROM messages WHERE msg_id = 'msg-group-read-local'",
-    );
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["msg_id"], "msg-group-read-local");
-    assert_eq!(rows[0]["is_read"], 1);
-}
-
-fn spawn_bridge_server(
-    socket_path: &Path,
-    result: Value,
-) -> (thread::JoinHandle<()>, mpsc::Receiver<BridgeRequest>) {
-    let listener =
-        bridge::listen_bridge(socket_path.to_str().expect("socket path")).expect("listen bridge");
-    listener
-        .set_nonblocking(true)
-        .expect("set bridge listener nonblocking");
-    let (requests_tx, requests_rx) = mpsc::channel();
-    let response_line = json!({ "ok": true, "result": result }).to_string() + "\n";
-
-    let handle = thread::spawn(move || loop {
-        let Ok((mut conn, _)) = accept_unix_connection(&listener) else {
-            return;
-        };
-        conn.set_read_timeout(Some(Duration::from_secs(2)))
-            .expect("set bridge read timeout");
-        let mut request_line = String::new();
-        let Ok(read) = BufReader::new(conn.try_clone().expect("clone bridge client"))
-            .read_line(&mut request_line)
-        else {
-            return;
-        };
-        if read == 0 || request_line.trim().is_empty() {
-            continue;
-        }
-
-        let request: BridgeRequest =
-            serde_json::from_str(request_line.trim_end()).expect("decode bridge request");
-        requests_tx.send(request).expect("send bridge request");
-        conn.write_all(response_line.as_bytes())
-            .expect("write bridge response");
-        break;
-    });
-
-    (handle, requests_rx)
-}
-
-fn accept_unix_connection(
-    listener: &std::os::unix::net::UnixListener,
-) -> std::io::Result<(
-    std::os::unix::net::UnixStream,
-    std::os::unix::net::SocketAddr,
-)> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match listener.accept() {
-            Ok(accepted) => return Ok(accepted),
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                if std::time::Instant::now() >= deadline {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "timed out accepting bridge test connection",
-                    ));
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) => return Err(err),
-        }
-    }
+    assert_eq!(is_read(workspace.path(), bob_did, "msg-mail-read-local"), 1);
 }
 
 fn register_ready_msg_identity(
@@ -433,6 +230,7 @@ fn register_ready_msg_identity(
 ) {
     let create = awiki_cmd(
         &[
+            "--migration",
             "id",
             "create",
             "--name",
@@ -498,21 +296,6 @@ fn write_msg_ws_config(workspace: &Path, base_url: &str, socket_path: &str) {
     .unwrap();
 }
 
-fn write_msg_ws_config_with_ca_bundle(
-    workspace: &Path,
-    base_url: &str,
-    socket_path: &str,
-    ca_bundle: &str,
-) {
-    std::fs::write(
-        workspace.join("config.yaml"),
-        format!(
-            "runtime:\n  mode: websocket\n  socket_path: {socket_path}\nservices:\n  service_base_url: {base_url}\n  ca_bundle: {ca_bundle}\n"
-        ),
-    )
-    .unwrap();
-}
-
 fn seed_direct_message(
     workspace: &Path,
     owner_did: &str,
@@ -522,10 +305,15 @@ fn seed_direct_message(
     sent_at: &str,
 ) {
     let thread_id = format!("dm:{owner_did}:{peer_did}");
-    let statement = format!(
-        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', '{thread_id}', 0, '{peer_did}', '{owner_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', 0, 'alice-msg')",
+    execute_sql(
+        workspace,
+        r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content,
+     sent_at, stored_at, is_read, credential_name)
+VALUES (?1, ?2, ?3, 0, ?4, ?2, 'text/plain', ?5, ?6, ?6, 0, 'bob-msg')"#,
+        (msg_id, owner_did, thread_id, peer_did, content, sent_at),
     );
-    execute_sql(workspace, statement);
 }
 
 fn seed_group_message(
@@ -536,10 +324,23 @@ fn seed_group_message(
     content: &str,
     sent_at: &str,
 ) {
-    let statement = format!(
-        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, group_id, group_did, content_type, content, sent_at, stored_at, is_read, credential_name) VALUES ('{msg_id}', '{owner_did}', 'group:{group_did}', 0, 'did:wba:awiki.ai:alice:e1_alice', '{group_did}', '{group_did}', 'text/plain', '{content}', '{sent_at}', '{sent_at}', 0, 'bob-msg')",
+    execute_sql(
+        workspace,
+        r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, sender_did, group_id, group_did, content_type,
+     content, sent_at, stored_at, is_read, credential_name)
+VALUES (?1, ?2, ?3, 0, 'did:wba:awiki.ai:alice:e1_alice', ?4, ?4, 'text/plain',
+        ?5, ?6, ?6, 0, 'bob-msg')"#,
+        (
+            msg_id,
+            owner_did,
+            format!("group:{group_did}"),
+            group_did,
+            content,
+            sent_at,
+        ),
     );
-    execute_sql(workspace, statement);
 }
 
 fn seed_mail_notification(
@@ -549,52 +350,55 @@ fn seed_mail_notification(
     content: &str,
     sent_at: &str,
 ) {
-    let statement = format!(
-        "INSERT INTO messages (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content, sent_at, stored_at, is_read, metadata, credential_name) VALUES ('{msg_id}', '{owner_did}', 'mail:{owner_did}', 0, 'did:wba:mail:system', '{owner_did}', 'mail.notification', '{content}', '{sent_at}', '{sent_at}', 0, '{{\"source_kind\":\"mail\"}}', 'bob-msg')",
+    execute_sql(
+        workspace,
+        r#"
+INSERT INTO messages
+    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, content_type, content,
+     sent_at, stored_at, is_read, metadata, credential_name)
+VALUES (?1, ?2, ?3, 0, 'did:wba:mail:system', ?2, 'mail.notification', ?4,
+        ?5, ?5, 0, '{"source_kind":"mail"}', 'bob-msg')"#,
+        (
+            msg_id,
+            owner_did,
+            format!("mail:{owner_did}"),
+            content,
+            sent_at,
+        ),
     );
-    execute_sql(workspace, statement);
 }
 
-fn execute_sql(workspace: &Path, statement: String) {
-    assert_success(&awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            statement,
-        ],
-        workspace,
-    ));
+fn execute_sql<P>(workspace: &Path, statement: &str, params: P)
+where
+    P: rusqlite::Params,
+{
+    let connection = rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db"))
+        .expect("open test database");
+    connection
+        .execute(statement, params)
+        .expect("execute test sql");
 }
 
-fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
-    let query = awiki_cmd_owned(
-        &[
-            "debug".to_string(),
-            "db".to_string(),
-            "query".to_string(),
-            sql.to_string(),
-        ],
-        workspace,
-    );
-    assert_success(&query);
-    success_json(&query)["data"]["rows"]
-        .as_array()
-        .cloned()
-        .unwrap()
+fn is_read(workspace: &Path, owner_did: &str, message_id: &str) -> i64 {
+    let connection = rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db"))
+        .expect("open test database");
+    connection
+        .query_row(
+            "SELECT is_read FROM messages WHERE owner_did = ?1 AND msg_id = ?2",
+            (owner_did, message_id),
+            |row| row.get(0),
+        )
+        .expect("read message is_read")
+}
+
+fn closed_local_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind closed local url");
+    let address = listener.local_addr().expect("local addr");
+    drop(listener);
+    format!("http://{address}")
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
-    awiki_cmd_owned(
-        &args
-            .iter()
-            .map(|arg| (*arg).to_string())
-            .collect::<Vec<_>>(),
-        workspace,
-    )
-}
-
-fn awiki_cmd_owned(args: &[String], workspace: &Path) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_awiki-cli"));
     command
         .args(args)
@@ -653,26 +457,37 @@ fn failure_json(output: &Output) -> Value {
     envelope
 }
 
-fn assert_no_http_fallback_warning(envelope: &Value) {
-    let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
+fn assert_transport_unavailable_without_legacy_fallback(output: &Output) {
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope = failure_json(output);
+    assert_eq!(envelope["error"]["code"], "transport_unavailable");
+    let message = envelope["error"]["message"].as_str().expect("message");
+    assert_contains_text(message, "message transport is unavailable");
     assert!(
-        warnings.iter().all(|warning| !warning
-            .as_str()
-            .unwrap_or_default()
-            .contains("used HTTP fallback")),
-        "unexpected websocket HTTP fallback warning: {warnings:?}"
+        !message.contains("local websocket bridge request failed"),
+        "legacy bridge fallback should not be used, got: {message}"
+    );
+    assert!(
+        !message.contains("loaded data from local cache"),
+        "legacy cache fallback should not be used, got: {message}"
     );
 }
 
-fn assert_has_http_fallback_warning(envelope: &Value) {
+fn assert_no_legacy_websocket_fallback_warning(envelope: &Value) {
     let warnings = envelope["warnings"].as_array().cloned().unwrap_or_default();
     assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.as_str().unwrap_or_default().contains(
-                "WebSocket listener was unavailable for this identity; used HTTP fallback"
-            )),
-        "expected websocket HTTP fallback warning, got: {warnings:?}"
+        warnings.iter().all(|warning| {
+            let warning = warning.as_str().unwrap_or_default();
+            !warning.contains("used HTTP fallback")
+                && !warning.contains("loaded data from local cache")
+        }),
+        "unexpected legacy websocket fallback warning: {warnings:?}"
     );
 }
 

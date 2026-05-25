@@ -12,6 +12,8 @@ pub(crate) mod group_runtime;
 pub(crate) mod http;
 pub(crate) mod identity_bind_runtime;
 pub(crate) mod identity_generation;
+pub(crate) mod identity_recover_local_state;
+pub(crate) mod identity_recovery_local;
 pub(crate) mod identity_recovery_runtime;
 pub(crate) mod identity_registration_runtime;
 pub(crate) mod identity_replace_did_execution;

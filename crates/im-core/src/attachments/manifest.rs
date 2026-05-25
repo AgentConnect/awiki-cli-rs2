@@ -64,7 +64,7 @@ impl AttachmentDescriptor {
     }
 }
 
-pub(crate) fn attachment_manifest_content_type() -> &'static str {
+pub fn attachment_manifest_content_type() -> &'static str {
     ATTACHMENT_MANIFEST_CONTENT_TYPE
 }
 
@@ -107,7 +107,7 @@ pub(crate) fn build_attachment_manifest(descriptor: &AttachmentDescriptor, capti
     manifest_to_value(&manifest)
 }
 
-pub(crate) fn manifest_content_string(manifest: &Value) -> String {
+pub fn manifest_content_string(manifest: &Value) -> String {
     serde_json::to_string(manifest).unwrap_or_default()
 }
 

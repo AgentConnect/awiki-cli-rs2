@@ -55,6 +55,7 @@ where
         patch: crate::identity::ProfilePatch,
     ) -> crate::ImResult<ProfileUpdateResult> {
         let params = update_profile_params_from_patch(patch);
+        let requested_display_name = params.display_name.trim().to_string();
         let update_call =
             crate::internal::identity_wire::profile::build_update_me_profile_rpc_call(params)?;
         self.session_provider
@@ -65,6 +66,23 @@ where
             update_call.call.params,
         )?;
         let profile = profile_from_value(self.client, &raw)?;
+        if update_call
+            .changed_fields
+            .iter()
+            .any(|field| field == "display_name")
+        {
+            let display_name = profile
+                .display_name
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(requested_display_name.as_str());
+            if !display_name.is_empty() {
+                let _ = crate::internal::identity_store::IdentityStore::new(
+                    &self.client.core_inner().sdk_paths().identities,
+                )
+                .update_display_name_projection(self.client.current_identity(), display_name);
+            }
+        }
         Ok(ProfileUpdateResult {
             profile,
             raw,

@@ -9,17 +9,21 @@ import '../dto/message.dart';
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+Future<DartAttachmentSendResult> sendAttachment({
+  required ArcDartImClient client,
+  required DartAttachmentSendRequest request,
+}) => RustLib.instance.api.crateApiAttachmentsSendAttachment(
+  client: client,
+  request: request,
+);
 
+Future<DartDownloadedAttachment> downloadAttachment({
+  required ArcDartImClient client,
+  required DartDownloadAttachmentRequest request,
+}) => RustLib.instance.api.crateApiAttachmentsDownloadAttachment(
+  client: client,
+  request: request,
+);
 
-
-            Future<DartSendMessageResult>  sendAttachment({required ArcDartImClient client , required DartAttachmentSendRequest request }) => RustLib.instance.api.crateApiAttachmentsSendAttachment(client: client, request: request);
-
-Future<DartDownloadedAttachment>  downloadAttachment({required ArcDartImClient client , required DartDownloadAttachmentRequest request }) => RustLib.instance.api.crateApiAttachmentsDownloadAttachment(client: client, request: request);
-
-
-                // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImClient >>>
-                abstract class ArcDartImClient implements RustOpaqueInterface {
-
-
-
-                }
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Arc < DartImClient >>>
+abstract class ArcDartImClient implements RustOpaqueInterface {}

@@ -7,10 +7,55 @@ const NOTIFY_URL: &str = "http://127.0.0.1:8765/notify/host-event";
 const SECRET: &str = "secret-contract-value";
 
 #[test]
+fn hermes_config_write_commands_require_diagnostic_gate_before_handler() {
+    let workspace = TempDir::new("diagnostic-gate").expect("temp workspace");
+
+    for (args, command) in [
+        (
+            vec![
+                "runtime",
+                "host-notify",
+                "hermes",
+                "set",
+                "--deliver",
+                "telegram",
+            ],
+            "runtime.host-notify.hermes.set",
+        ),
+        (
+            vec![
+                "runtime",
+                "host-notify",
+                "hermes",
+                "set-secret",
+                "--value",
+                SECRET,
+            ],
+            "runtime.host-notify.hermes.set-secret",
+        ),
+        (
+            vec!["runtime", "host-notify", "hermes", "clear-secret"],
+            "runtime.host-notify.hermes.clear-secret",
+        ),
+    ] {
+        let output = awiki_cmd(&args, workspace.path());
+        assert_code(&output, 2);
+        let envelope = error_json(&output);
+
+        assert_eq!(envelope["error"]["code"], "diagnostic_gate_required");
+        assert_eq!(envelope["error"]["details"]["command"], command);
+        assert_eq!(
+            envelope["error"]["details"]["required_gate"],
+            "--diagnostic"
+        );
+    }
+}
+
+#[test]
 fn hermes_set_requires_at_least_one_changed_flag_like_go_contract() {
     let workspace = TempDir::new("set-missing-flags").expect("temp workspace");
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &["runtime", "host-notify", "hermes", "set"],
         workspace.path(),
     );
@@ -29,7 +74,7 @@ fn hermes_set_requires_at_least_one_changed_flag_like_go_contract() {
 fn hermes_set_rejects_unsupported_deliver_like_go_contract() {
     let workspace = TempDir::new("set-invalid-deliver").expect("temp workspace");
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &[
             "runtime",
             "host-notify",
@@ -54,7 +99,7 @@ fn hermes_set_rejects_unsupported_deliver_like_go_contract() {
 fn hermes_set_dry_run_reports_plan_like_go_contract() {
     let workspace = TempDir::new("set-dry-run").expect("temp workspace");
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &[
             "--dry-run",
             "runtime",
@@ -96,7 +141,7 @@ fn hermes_set_dry_run_reports_plan_like_go_contract() {
 fn hermes_set_dry_run_allows_unsupported_deliver_like_go_contract() {
     let workspace = TempDir::new("set-dry-run-invalid-deliver").expect("temp workspace");
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &[
             "--dry-run",
             "runtime",
@@ -123,7 +168,7 @@ fn hermes_set_dry_run_allows_unsupported_deliver_like_go_contract() {
 fn hermes_set_live_writes_config_without_requiring_secret_like_go_contract() {
     let workspace = TempDir::new("set-live").expect("temp workspace");
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &[
             "runtime",
             "host-notify",
@@ -194,7 +239,7 @@ fn hermes_set_live_reports_runtime_config_when_sink_is_hermes_like_go_contract()
     );
     assert_success(&sink);
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &[
             "runtime",
             "host-notify",
@@ -247,7 +292,7 @@ fn hermes_set_live_reports_runtime_config_when_sink_is_hermes_like_go_contract()
 fn hermes_set_secret_dry_run_reports_redacted_plan_like_go_contract() {
     let workspace = TempDir::new("set-secret-dry-run").expect("temp workspace");
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &[
             "--dry-run",
             "runtime",
@@ -287,7 +332,7 @@ fn hermes_set_secret_dry_run_reports_redacted_plan_like_go_contract() {
 fn hermes_set_secret_live_writes_redacted_status_like_go_contract() {
     let workspace = TempDir::new("set-secret-live").expect("temp workspace");
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &[
             "runtime",
             "host-notify",
@@ -341,7 +386,7 @@ fn hermes_set_secret_requires_non_blank_value_like_go_contract() {
             "   ",
         ],
     ] {
-        let output = awiki_cmd(&args, workspace.path());
+        let output = awiki_cmd_diagnostic(&args, workspace.path());
         assert_code(&output, 2);
         let envelope = error_json(&output);
 
@@ -358,7 +403,7 @@ fn hermes_set_secret_requires_non_blank_value_like_go_contract() {
 fn hermes_clear_secret_dry_run_reports_plan_like_go_contract() {
     let workspace = TempDir::new("clear-secret-dry-run").expect("temp workspace");
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &[
             "--dry-run",
             "runtime",
@@ -394,7 +439,7 @@ fn hermes_clear_secret_dry_run_reports_plan_like_go_contract() {
 fn hermes_clear_secret_live_clears_secret_like_go_contract() {
     let workspace = TempDir::new("clear-secret-live").expect("temp workspace");
 
-    let set_secret = awiki_cmd(
+    let set_secret = awiki_cmd_diagnostic(
         &[
             "runtime",
             "host-notify",
@@ -408,7 +453,7 @@ fn hermes_clear_secret_live_clears_secret_like_go_contract() {
     assert_success(&set_secret);
     assert_not_contains(&String::from_utf8_lossy(&set_secret.stdout), SECRET);
 
-    let output = awiki_cmd(
+    let output = awiki_cmd_diagnostic(
         &["runtime", "host-notify", "hermes", "clear-secret"],
         workspace.path(),
     );
@@ -438,6 +483,13 @@ fn hermes_clear_secret_live_clears_secret_like_go_contract() {
         envelope["data"]["host_notify"]["hermes"]["secret_configured"],
         false
     );
+}
+
+fn awiki_cmd_diagnostic(args: &[&str], workspace: &Path) -> Output {
+    let mut gated_args = Vec::with_capacity(args.len() + 1);
+    gated_args.push("--diagnostic");
+    gated_args.extend_from_slice(args);
+    awiki_cmd(&gated_args, workspace)
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

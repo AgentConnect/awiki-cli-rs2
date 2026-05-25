@@ -23,6 +23,8 @@ Options:
 Environment:
   CARGO                         Cargo binary (default: cargo)
   AWIKI_CLI_RUST_TOOLCHAIN      Cargo toolchain without leading + (default: 1.79.0)
+  AWIKI_CLI_SKIP_E2EE_RELEASE_FEATURE_CHECK
+                                Set to 1 to skip the local feature graph check.
   AWIKI_CLI_BUILD_DATE          Build date override for buildinfo.
   AWIKI_CLI_COMMIT              Commit override for buildinfo.
 USAGE
@@ -71,6 +73,38 @@ target_for() {
     windows/arm64) printf '%s\n' "aarch64-pc-windows-msvc" ;;
     *) die "unsupported release target ${os_name}/${arch_name}" ;;
   esac
+}
+
+verify_e2ee_feature_graph() {
+  if [[ "${AWIKI_CLI_SKIP_E2EE_RELEASE_FEATURE_CHECK:-0}" == "1" ]]; then
+    echo "Skipping E2EE release feature graph check."
+    return
+  fi
+
+  case "${OS_NAME}" in
+    linux|darwin)
+      ;;
+    windows)
+      echo "Windows E2EE package/release validation is deferred for this stage; artifact build continues without an E2EE release gate."
+      return
+      ;;
+    *)
+      return
+      ;;
+  esac
+
+  local tree_output
+  tree_output="$("${cargo_cmd[@]}" tree -p awiki-cli -e features --locked)"
+  for required in \
+    'im-core feature "group-e2ee"' \
+    'anp feature "mls"'
+  do
+    if ! grep -Fq "${required}" <<<"${tree_output}"; then
+      echo "${tree_output}" >&2
+      die "release feature graph is missing ${required}"
+    fi
+  done
+  echo "Verified Linux/macOS E2EE release feature graph: im-core/group-e2ee and anp/mls."
 }
 
 VERSION=""
@@ -166,10 +200,13 @@ fi
 if [[ "${DRY_RUN}" == "1" ]]; then
   cat <<EOF
 Would run: AWIKI_CLI_VERSION=${VERSION} AWIKI_CLI_COMMIT=${commit} AWIKI_CLI_BUILD_DATE=${build_date} AWIKI_CLI_CGO_ENABLED=0 ${cargo_cmd[*]} build -p awiki-cli --bin awiki-cli --release --locked --target ${TARGET_TRIPLE}
+Would verify: ${cargo_cmd[*]} tree -p awiki-cli -e features --locked includes im-core/group-e2ee and anp/mls on Linux/macOS
 Would archive: ${build_bin} -> ${archive_path}
 EOF
   exit 0
 fi
+
+verify_e2ee_feature_graph
 
 AWIKI_CLI_VERSION="${VERSION}" \
 AWIKI_CLI_COMMIT="${commit}" \

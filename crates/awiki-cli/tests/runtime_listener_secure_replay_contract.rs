@@ -1,4 +1,4 @@
-use awiki_cli::runtime::listener_secure_replay::{
+use awiki_cli::runtime_legacy::listener_secure_replay::{
     secure_pending_history_replay_candidates, secure_unread_replay_candidates, ReplayStoreLookup,
 };
 use serde_json::{json, Value};

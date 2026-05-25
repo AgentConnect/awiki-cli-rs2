@@ -238,8 +238,13 @@ fn connect_native_websocket_session_with_token(
     current_jwt: &str,
 ) -> crate::ImResult<super::ws_transport::WsTransport> {
     let current_jwt = current_jwt.trim();
+    let ca_bundle = client.core_inner().sdk_config().ca_bundle_path();
     if !current_jwt.is_empty() {
-        match super::ws_transport::WsTransport::connect(&endpoints.websocket_url, current_jwt) {
+        match super::ws_transport::WsTransport::connect_with_ca_bundle(
+            &endpoints.websocket_url,
+            current_jwt,
+            ca_bundle,
+        ) {
             Ok(transport) => return Ok(transport),
             Err(err) if err.status_code == Some(401) => {}
             Err(err) => {
@@ -268,11 +273,14 @@ fn connect_native_websocket_session_with_token(
         });
     }
 
-    super::ws_transport::WsTransport::connect(&endpoints.websocket_url, &refreshed_token).map_err(
-        |err| crate::ImError::TransportUnavailable {
-            detail: err.message,
-        },
+    super::ws_transport::WsTransport::connect_with_ca_bundle(
+        &endpoints.websocket_url,
+        &refreshed_token,
+        ca_bundle,
     )
+    .map_err(|err| crate::ImError::TransportUnavailable {
+        detail: err.message,
+    })
 }
 
 pub fn bearer_authorization_header(token: &str) -> String {

@@ -870,8 +870,10 @@ mod tests {
                     did_domain: "awiki.test".to_owned(),
                     user_service_endpoint: None,
                     message_service_endpoint: None,
+                    mail_service_endpoint: None,
                     anp_service_endpoint: None,
                     anp_service_did: None,
+                    ca_bundle: None,
                     transport_policy: crate::MessageTransportPolicy::HttpOnly,
                 },
                 crate::ImCorePaths {

@@ -441,11 +441,16 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
     let people = schema_for(&["people"]);
     assert_eq!(schema_command(&people)["name"], "people");
     assert_eq!(schema_command(&people)["implemented"], true);
-    assert_go_stub_schema(
-        schema_child(&people, "people.search"),
-        "people.search",
-        "phase8",
+    assert!(
+        people["data"]["children"]
+            .as_array()
+            .expect("people children should be an array")
+            .iter()
+            .all(|command| command["name"] != "people.search"),
+        "unsupported people.search should stay off the default schema surface: {people:?}"
     );
+    let people_search = schema_all_command("people.search");
+    assert_go_stub_schema(&people_search, "people.search", "phase8");
 
     let contacts = schema_for(&["people", "contacts"]);
     assert_eq!(schema_command(&contacts)["implemented"], true);
@@ -493,49 +498,37 @@ fn schema_exposes_go_stub_command_families_and_stub_errors() {
         assert_stdout_empty(&output);
         let envelope = error_json(&output);
 
-        assert_eq!(envelope["error"]["code"], "unsupported_capability");
-        assert_eq!(envelope["error"]["details"]["command"], command);
-        assert_eq!(envelope["error"]["details"]["capability"], capability);
-        assert_eq!(
-            envelope["error"]["details"]["required_phase"],
-            required_phase
-        );
-        assert_eq!(
-            envelope["error"]["details"]["cutover_status"],
-            "unsupported"
-        );
+        if command == "debug.raw.rpc" {
+            assert_eq!(envelope["error"]["code"], "removed_command");
+            assert_eq!(envelope["error"]["details"]["command"], command);
+        } else {
+            assert_eq!(envelope["error"]["code"], "unsupported_capability");
+            assert_eq!(envelope["error"]["details"]["command"], command);
+            assert_eq!(envelope["error"]["details"]["capability"], capability);
+            assert_eq!(
+                envelope["error"]["details"]["required_phase"],
+                required_phase
+            );
+            assert_eq!(
+                envelope["error"]["details"]["cutover_status"],
+                "unsupported"
+            );
+        }
     }
 
-    for (args, name, phase, command_path) in [
-        (
-            &["group", "code", "get", "--group", "did:group"][..],
-            "group.code.get",
-            "PHASE5",
-            "awiki-cli group code get",
-        ),
-        (
-            &["debug", "logs", "--follow"][..],
-            "debug.logs",
-            "PHASE7",
-            "awiki-cli debug logs",
-        ),
-    ] {
-        let output = awiki_cmd(args);
-        assert_code(&output, 1);
-        assert_stdout_empty(&output);
-        let envelope = error_json(&output);
+    let output = awiki_cmd(&["debug", "logs", "--follow"]);
+    assert_code(&output, 2);
+    assert_stdout_empty(&output);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "diagnostic_gate_required");
+    assert_eq!(envelope["error"]["details"]["command"], "debug.logs");
 
-        assert_eq!(envelope["error"]["code"], "internal_error");
-        assert_contains(
-            &envelope["error"]["message"],
-            &format!("{command_path} is not implemented yet."),
-        );
-        assert_contains(&envelope["error"]["hint"], &format!("planned for {phase}"));
-        assert_contains(
-            &envelope["error"]["hint"],
-            &format!("awiki-cli schema {name}"),
-        );
-    }
+    let group_code = awiki_cmd(&["group", "code", "get", "--group", "did:group"]);
+    assert_code(&group_code, 2);
+    assert_stdout_empty(&group_code);
+    let envelope = error_json(&group_code);
+    assert_eq!(envelope["error"]["code"], "removed_command");
+    assert_eq!(envelope["error"]["details"]["command"], "group.code.get");
 }
 
 #[test]
@@ -603,7 +596,7 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
     let msg_send = schema_for(&["msg", "send"]);
     assert_eq!(
         schema_flag(schema_command(&msg_send), "secure")["choices"],
-        serde_json::json!(["off", "on"])
+        serde_json::json!(["off", "required"])
     );
     let msg_inbox = schema_for(&["msg", "inbox"]);
     assert_eq!(
@@ -612,8 +605,17 @@ fn schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes() {
     );
 
     let group_create = schema_for(&["group", "create"]);
+    assert!(
+        schema_command(&group_create)["flags"]
+            .as_array()
+            .expect("group.create flags should be an array")
+            .iter()
+            .all(|flag| flag["name"] != "message-security-profile"),
+        "deprecated message-security-profile should stay off the default schema surface: {group_create:?}"
+    );
+    let group_create_all = schema_all_command("group.create");
     assert_eq!(
-        schema_flag(schema_command(&group_create), "message-security-profile")["choices"],
+        schema_flag(&group_create_all, "message-security-profile")["choices"],
         serde_json::json!(["transport-protected", "group-e2ee"])
     );
     let publish = schema_for(&["group", "e2ee", "publish-key-package"]);
@@ -837,7 +839,7 @@ fn debug_db_query_returns_stable_unsupported_capability() {
     let workspace = TempDir::new().expect("temp workspace");
 
     let output = awiki_cmd_with_workspace(
-        &["debug", "db", "query", "SELECT 1 AS value"],
+        &["--diagnostic", "debug", "db", "query", "SELECT 1 AS value"],
         workspace.path().to_str().unwrap(),
     );
     assert_code(&output, 2);
@@ -886,6 +888,11 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
     assert_eq!(envelope["command"], "awiki-cli people contacts save");
     assert_eq!(envelope["meta"]["dry_run"], true);
     assert_eq!(envelope["data"]["plan"]["action"], "contacts.save");
+    assert_eq!(envelope["data"]["plan"]["service"], "im-core.directory");
+    assert_eq!(
+        envelope["data"]["plan"]["operation"],
+        "people.contacts.save"
+    );
     assert_eq!(envelope["data"]["plan"]["did"], "did:example:alice");
     assert_eq!(envelope["data"]["plan"]["handle"], "alice.awiki.ai");
     assert_eq!(envelope["data"]["plan"]["note"], "migration smoke");
@@ -896,11 +903,124 @@ fn people_contacts_save_dry_run_uses_im_core_handler() {
 }
 
 #[test]
+fn people_follow_write_dry_run_plans_hide_relationship_wire_names() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let cases = [
+        (
+            &["--dry-run", "people", "follow", "alice"][..],
+            "awiki-cli people follow",
+            "follow",
+            "people.follow",
+            "directory.follow",
+            "Dry run: follow planned",
+        ),
+        (
+            &["--dry-run", "people", "unfollow", "alice"][..],
+            "awiki-cli people unfollow",
+            "unfollow",
+            "people.unfollow",
+            "directory.unfollow",
+            "Dry run: unfollow planned",
+        ),
+    ];
+
+    for (args, command, action, operation, remote_call, summary) in cases {
+        let output = awiki_cmd_with_workspace(args, workspace.path().to_str().unwrap());
+        assert_success(&output);
+        let envelope = success_json(&output);
+        assert_eq!(envelope["command"], command);
+        assert_eq!(envelope["summary"], summary);
+        assert_eq!(envelope["data"]["plan"]["action"], action);
+        assert_eq!(envelope["data"]["plan"]["service"], "im-core.directory");
+        assert_eq!(envelope["data"]["plan"]["operation"], operation);
+        assert_eq!(envelope["data"]["plan"]["remote_call"], remote_call);
+        assert_eq!(
+            envelope["data"]["plan"]["status_refresh"],
+            "directory.relationship_status"
+        );
+        assert!(envelope["data"]["plan"].get("remote_calls").is_none());
+    }
+}
+
+#[test]
+fn people_read_dry_run_commands_use_im_core_plans_without_identity() {
+    let workspace = TempDir::new().expect("temp workspace");
+    let cases = [
+        (
+            &["--dry-run", "people", "status", "alice"][..],
+            "awiki-cli people status",
+            "relationship.status",
+            "im-core.directory",
+            "people.status",
+            "directory.relationship_status",
+            "Dry run: relationship status planned",
+        ),
+        (
+            &[
+                "--dry-run",
+                "people",
+                "followers",
+                "--limit",
+                "2",
+                "--offset",
+                "1",
+                "--profile",
+            ][..],
+            "awiki-cli people followers",
+            "relationships.followers",
+            "im-core.directory",
+            "people.followers",
+            "directory.followers",
+            "Dry run: followers list planned",
+        ),
+        (
+            &["--dry-run", "people", "following", "--limit", "3"][..],
+            "awiki-cli people following",
+            "relationships.following",
+            "im-core.directory",
+            "people.following",
+            "directory.following",
+            "Dry run: following list planned",
+        ),
+        (
+            &["--dry-run", "people", "contacts", "list", "--limit", "4"][..],
+            "awiki-cli people contacts list",
+            "contacts.list",
+            "im-core.directory",
+            "people.contacts.list",
+            "",
+            "Dry run: contacts list planned",
+        ),
+    ];
+
+    for (args, command, action, service, operation, remote_call, summary) in cases {
+        let output = awiki_cmd_with_workspace(args, workspace.path().to_str().unwrap());
+        assert_success(&output);
+        let envelope = success_json(&output);
+        assert_eq!(envelope["command"], command);
+        assert_eq!(envelope["summary"], summary);
+        assert_eq!(envelope["meta"]["dry_run"], true);
+        assert_eq!(envelope["data"]["plan"]["action"], action);
+        assert_eq!(envelope["data"]["plan"]["service"], service);
+        assert_eq!(envelope["data"]["plan"]["operation"], operation);
+        if remote_call.is_empty() {
+            assert!(envelope["data"]["plan"].get("remote_call").is_none());
+        } else {
+            assert_eq!(envelope["data"]["plan"]["remote_call"], remote_call);
+        }
+        assert!(
+            !workspace.path().join("identities").exists(),
+            "dry-run people read command should not require or create identity state"
+        );
+    }
+}
+
+#[test]
 fn debug_db_import_v1_supports_dry_run_and_missing_path_errors() {
     let workspace = TempDir::new().expect("temp workspace");
 
     let dry_run = awiki_cmd_with_workspace(
-        &["debug", "db", "import-v1", "--dry-run"],
+        &["--migration", "debug", "db", "import-v1", "--dry-run"],
         workspace.path().to_str().unwrap(),
     );
     assert_success(&dry_run);
@@ -911,6 +1031,7 @@ fn debug_db_import_v1_supports_dry_run_and_missing_path_errors() {
     let missing = workspace.path().join("missing-legacy-root");
     let missing = awiki_cmd_with_workspace(
         &[
+            "--migration",
             "debug",
             "db",
             "import-v1",
@@ -1060,6 +1181,19 @@ fn schema_for(path: &[&str]) -> Value {
     let output = awiki_cmd(&args);
     assert_success(&output);
     success_json(&output)
+}
+
+fn schema_all_command(name: &str) -> Value {
+    let output = awiki_cmd(&["schema", "--all"]);
+    assert_success(&output);
+    let schema = success_json(&output);
+    schema["data"]["commands"]
+        .as_array()
+        .unwrap_or_else(|| panic!("schema --all commands should be an array: {schema:?}"))
+        .iter()
+        .find(|command| command["name"] == name)
+        .unwrap_or_else(|| panic!("missing schema --all command {name:?}: {schema:?}"))
+        .clone()
 }
 
 fn schema_command(schema: &Value) -> &Value {

@@ -6,73 +6,90 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+class DartImCoreConfig {
+  final String serviceBaseUrl;
+  final String didDomain;
+  final String? userServiceEndpoint;
+  final String? messageServiceEndpoint;
+  final String? mailServiceEndpoint;
+  final String? anpServiceEndpoint;
+  final String? anpServiceDid;
+  final DartMessageTransportPolicy transportPolicy;
 
+  const DartImCoreConfig({
+    required this.serviceBaseUrl,
+    required this.didDomain,
+    this.userServiceEndpoint,
+    this.messageServiceEndpoint,
+    this.mailServiceEndpoint,
+    this.anpServiceEndpoint,
+    this.anpServiceDid,
+    required this.transportPolicy,
+  });
 
+  @override
+  int get hashCode =>
+      serviceBaseUrl.hashCode ^
+      didDomain.hashCode ^
+      userServiceEndpoint.hashCode ^
+      messageServiceEndpoint.hashCode ^
+      mailServiceEndpoint.hashCode ^
+      anpServiceEndpoint.hashCode ^
+      anpServiceDid.hashCode ^
+      transportPolicy.hashCode;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartImCoreConfig &&
+          runtimeType == other.runtimeType &&
+          serviceBaseUrl == other.serviceBaseUrl &&
+          didDomain == other.didDomain &&
+          userServiceEndpoint == other.userServiceEndpoint &&
+          messageServiceEndpoint == other.messageServiceEndpoint &&
+          mailServiceEndpoint == other.mailServiceEndpoint &&
+          anpServiceEndpoint == other.anpServiceEndpoint &&
+          anpServiceDid == other.anpServiceDid &&
+          transportPolicy == other.transportPolicy;
+}
 
+class DartImCorePaths {
+  final String identityRootDir;
+  final String registryPath;
+  final String? defaultIdentityPath;
+  final String sqlitePath;
+  final String cacheDir;
+  final String tempDir;
 
-            class DartImCoreConfig  {
-                final String serviceBaseUrl;
-final String didDomain;
-final String? userServiceEndpoint;
-final String? messageServiceEndpoint;
-final String? mailServiceEndpoint;
-final String? anpServiceEndpoint;
-final String? anpServiceDid;
-final DartMessageTransportPolicy transportPolicy;
+  const DartImCorePaths({
+    required this.identityRootDir,
+    required this.registryPath,
+    this.defaultIdentityPath,
+    required this.sqlitePath,
+    required this.cacheDir,
+    required this.tempDir,
+  });
 
-                const DartImCoreConfig({required this.serviceBaseUrl ,required this.didDomain ,this.userServiceEndpoint ,this.messageServiceEndpoint ,this.mailServiceEndpoint ,this.anpServiceEndpoint ,this.anpServiceDid ,required this.transportPolicy ,});
+  @override
+  int get hashCode =>
+      identityRootDir.hashCode ^
+      registryPath.hashCode ^
+      defaultIdentityPath.hashCode ^
+      sqlitePath.hashCode ^
+      cacheDir.hashCode ^
+      tempDir.hashCode;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartImCorePaths &&
+          runtimeType == other.runtimeType &&
+          identityRootDir == other.identityRootDir &&
+          registryPath == other.registryPath &&
+          defaultIdentityPath == other.defaultIdentityPath &&
+          sqlitePath == other.sqlitePath &&
+          cacheDir == other.cacheDir &&
+          tempDir == other.tempDir;
+}
 
-
-
-
-        @override
-        int get hashCode => serviceBaseUrl.hashCode^didDomain.hashCode^userServiceEndpoint.hashCode^messageServiceEndpoint.hashCode^mailServiceEndpoint.hashCode^anpServiceEndpoint.hashCode^anpServiceDid.hashCode^transportPolicy.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartImCoreConfig &&
-                runtimeType == other.runtimeType
-                && serviceBaseUrl == other.serviceBaseUrl&& didDomain == other.didDomain&& userServiceEndpoint == other.userServiceEndpoint&& messageServiceEndpoint == other.messageServiceEndpoint&& mailServiceEndpoint == other.mailServiceEndpoint&& anpServiceEndpoint == other.anpServiceEndpoint&& anpServiceDid == other.anpServiceDid&& transportPolicy == other.transportPolicy;
-
-            }
-
-class DartImCorePaths  {
-                final String identityRootDir;
-final String registryPath;
-final String? defaultIdentityPath;
-final String sqlitePath;
-final String cacheDir;
-final String tempDir;
-
-                const DartImCorePaths({required this.identityRootDir ,required this.registryPath ,this.defaultIdentityPath ,required this.sqlitePath ,required this.cacheDir ,required this.tempDir ,});
-
-
-
-
-
-        @override
-        int get hashCode => identityRootDir.hashCode^registryPath.hashCode^defaultIdentityPath.hashCode^sqlitePath.hashCode^cacheDir.hashCode^tempDir.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartImCorePaths &&
-                runtimeType == other.runtimeType
-                && identityRootDir == other.identityRootDir&& registryPath == other.registryPath&& defaultIdentityPath == other.defaultIdentityPath&& sqlitePath == other.sqlitePath&& cacheDir == other.cacheDir&& tempDir == other.tempDir;
-
-            }
-
-enum DartMessageTransportPolicy {
-                    auto,
-httpOnly,
-realtimePreferred,
-                    ;
-
-                }
+enum DartMessageTransportPolicy { auto, httpOnly, realtimePreferred }

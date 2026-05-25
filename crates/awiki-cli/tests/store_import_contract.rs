@@ -1,5 +1,5 @@
 use awiki_cli::config::Paths;
-use awiki_cli::store::{self, LegacyOwnerLookup};
+use awiki_cli::legacy_store::{self as store, LegacyOwnerLookup};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 

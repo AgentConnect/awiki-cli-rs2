@@ -2,6 +2,7 @@ pub(crate) mod attachment_projection;
 pub(crate) mod dispatch;
 pub(crate) mod frame;
 pub(crate) mod heartbeat;
+pub(crate) mod local_projection;
 pub(crate) mod notification;
 pub(crate) mod projection;
 pub(crate) mod reconnect;

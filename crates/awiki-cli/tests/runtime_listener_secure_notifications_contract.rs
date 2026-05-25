@@ -1,4 +1,4 @@
-use awiki_cli::runtime::listener_secure_notifications::{
+use awiki_cli::runtime_legacy::listener_secure_notifications::{
     is_direct_secure_incoming_notification, is_secure_direct_wire_content_type,
     plaintext_body_to_notification_body, secure_notification_from_message_view,
 };

@@ -1,5 +1,5 @@
 use awiki_cli::anpsdk::PrivateKeyMaterial;
-use awiki_cli::identity::types::SaveInput;
+use awiki_cli::legacy_identity::types::SaveInput;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -153,8 +153,8 @@ fn assert_file_contains(path: &str, needle: &str) {
     );
 }
 
-fn identity_manager(workspace: &Path) -> awiki_cli::identity::Manager {
-    awiki_cli::identity::Manager::new(awiki_cli::config::Paths {
+fn identity_manager(workspace: &Path) -> awiki_cli::legacy_identity::Manager {
+    awiki_cli::legacy_identity::Manager::new(awiki_cli::config::Paths {
         workspace_home_dir: path_string(workspace),
         root_dir: path_string(workspace),
         config_dir: path_string(&workspace.join("config")),
