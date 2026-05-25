@@ -228,7 +228,6 @@ fn replace_did_plan_command_request_builds_sdk_plan_request() {
             ..Default::default()
         })
         .expect("save identity");
-
     let request = identity::replace_did_plan_command_request(
         &resolved,
         &manager,
@@ -263,6 +262,11 @@ fn replace_did_plan_command_request_builds_sdk_plan_request() {
     assert_eq!(request.sdk.is_public, Some(false));
     assert_eq!(request.sdk.is_agent, Some(true));
     assert_eq!(request.sdk.role.as_deref(), Some(""));
+    assert!(request
+        .sdk
+        .affected_local_state
+        .store_rebind_counts
+        .is_empty());
 }
 
 struct TempDir {

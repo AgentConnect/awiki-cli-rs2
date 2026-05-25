@@ -1,3 +1,4 @@
+use super::host_notify::HostNotificationEvent;
 use super::host_notify::{apply_host_notification_handles, normalize_host_notification};
 use super::listener_contact_sync::normalize_listener_handle;
 use super::listener_message_records::{
@@ -5,7 +6,6 @@ use super::listener_message_records::{
     message_record_from_mail_notification, records_from_group_state_changed,
 };
 use super::listener_secure_notifications::is_direct_secure_incoming_notification;
-use crate::runtime::host_notify::HostNotificationEvent;
 use crate::store::{GroupMemberRecord, GroupRecord, MessageRecord};
 use serde_json::Value;
 use time::OffsetDateTime;

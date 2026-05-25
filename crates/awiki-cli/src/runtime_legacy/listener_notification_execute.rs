@@ -1,11 +1,11 @@
 use super::host_notify_sink::HostNotifySink;
+use super::listener::Status;
 use super::listener::{clear_host_notify_error_if_present, write_host_notify_error_if_changed};
 use super::listener_contact_sync::{sync_incoming_contact, IncomingContactLookup};
 use super::listener_notification_plan::{
     handle_notification_plan, NotificationRoute, NotificationSessionContext,
     NotificationSideEffect, SecureNotificationEffect, SecureNotificationNormalization,
 };
-use crate::runtime::listener::Status;
 use crate::store::{store_message, upsert_group, upsert_group_member};
 use rusqlite::Connection;
 use serde_json::Value;

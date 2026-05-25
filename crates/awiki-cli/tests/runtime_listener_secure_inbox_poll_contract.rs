@@ -1,4 +1,4 @@
-use awiki_cli::runtime::listener_secure_inbox_poll::{
+use awiki_cli::runtime_legacy::listener_secure_inbox_poll::{
     poll_unread_secure_direct_inbox_step, SecureInboxPollAction, SecureInboxPollDecision,
     SecureInboxPollEvent, SECURE_DIRECT_INBOX_POLL_INTERVAL,
 };

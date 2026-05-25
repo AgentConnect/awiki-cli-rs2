@@ -8,7 +8,6 @@ use serde_json::json;
 
 use crate::identity;
 use crate::output::ExitError;
-use crate::store;
 
 #[derive(Debug, Clone)]
 pub struct ReplaceDidPlanCommandRequest {
@@ -83,9 +82,6 @@ fn build_replace_did_plan_command_request(
         Some(value) => value,
         None => planned_replace_did(&record)?,
     };
-    let (store_rebind_counts, e2ee_cleanup_counts) =
-        store::plan_rebind_local_identity_state(&resolved.paths, &record.did, &planned_new_did)
-            .map_err(|err| super::map_im_error(store_error_to_im_error(err), "id replace-did"))?;
     let summary = identity::store::identity_summary_from_record(&record);
     let sdk = ReplaceDidPlanRequest {
         identity: sdk_identity_summary(&summary)?,
@@ -98,10 +94,7 @@ fn build_replace_did_plan_command_request(
         is_agent,
         role: role.map(str::to_string),
         endpoint_url: endpoint_url.map(str::to_string),
-        affected_local_state: ReplaceDidAffectedLocalState {
-            store_rebind_counts,
-            e2ee_cleanup_counts,
-        },
+        affected_local_state: ReplaceDidAffectedLocalState::default(),
     };
     Ok(ReplaceDidPlanCommandRequest {
         sdk,
@@ -254,16 +247,4 @@ fn first_non_empty<const N: usize>(values: [&str; N]) -> String {
 fn trimmed_optional(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-fn store_error_to_im_error(err: store::StoreError) -> im_core::ImError {
-    match err {
-        store::StoreError::Invalid(message) => im_core::ImError::invalid_input(None, message),
-        store::StoreError::NotFound(message) => {
-            im_core::ImError::LocalStateUnavailable { detail: message }
-        }
-        err => im_core::ImError::LocalStateUnavailable {
-            detail: err.to_string(),
-        },
-    }
 }

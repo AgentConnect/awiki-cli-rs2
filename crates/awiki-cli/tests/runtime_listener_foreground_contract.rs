@@ -8,7 +8,7 @@ use awiki_cli::runtime::listener_foreground::{
 };
 use awiki_cli::{
     config::{Paths, Resolved},
-    runtime::listener_handle_lookup::lookup_listener_handle_by_did,
+    runtime_legacy::listener_handle_lookup::lookup_listener_handle_by_did,
 };
 use serde_json::{json, Value};
 use std::io::{Read, Write};

@@ -1,4 +1,4 @@
-use awiki_cli::runtime::listener_secure_normalize::{
+use awiki_cli::runtime_legacy::listener_secure_normalize::{
     normalize_direct_secure_notification_plan, LocalSecureInitAckOutcome,
     NormalizeDirectSecureAction, NormalizeDirectSecureDecision, SecureProcessOutcome,
 };
