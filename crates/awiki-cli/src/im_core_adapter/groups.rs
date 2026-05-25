@@ -1,6 +1,6 @@
 use im_core::groups::{
     GroupAdmissionMode, GroupDiscoverability, GroupMemberLimit, GroupMemberRole,
-    GroupMessageSecurityProfile, GroupReadResult,
+    GroupMessageSecurityProfile, GroupReadResult, GroupSecurityRequirement,
 };
 use im_core::prelude::{
     Cursor, Did, GroupCreateRequest as SdkGroupCreateRequest,
@@ -31,6 +31,7 @@ pub struct GroupCreateRequest {
     pub discoverability: String,
     pub admission_mode: String,
     pub message_security_profile: String,
+    pub secure_required: bool,
     pub e2ee: bool,
     pub slug: String,
     pub goal: String,
@@ -57,6 +58,7 @@ pub struct GroupMemberRequest {
     pub member: String,
     pub role: String,
     pub reason_text: String,
+    pub secure_required: bool,
     pub e2ee: bool,
     pub leave_request_id: String,
 }
@@ -66,6 +68,7 @@ pub struct GroupLeaveRequest {
     pub identity_name: String,
     pub group: String,
     pub reason_text: String,
+    pub secure_required: bool,
     pub e2ee: bool,
 }
 
@@ -161,13 +164,12 @@ pub fn leave_group_via_im_core(
     if request.group.trim().is_empty() {
         return Err(MessageAdapterError::GroupRequired);
     }
-    if request.e2ee {
-        return Err(MessageAdapterError::GroupNotSupported);
-    }
     let result = client
         .groups()
         .leave(SdkGroupLeaveRequest {
             group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            reason_text: optional_string(&request.reason_text),
+            security: group_security_requirement(request.secure_required || request.e2ee),
         })
         .map_err(im_error_to_message_error)?;
     let raw = group_raw_response(&result);
@@ -210,15 +212,13 @@ fn mutate_group_member_via_im_core(
     if request.member.trim().is_empty() {
         return Err(MessageAdapterError::MemberRequired);
     }
-    if request.e2ee {
-        return Err(MessageAdapterError::GroupNotSupported);
-    }
     let member = resolve_group_member_via_directory(resolved, client, &request.member)?;
     let sdk_request = GroupMemberMutationRequest {
         group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
         member: Did::parse(&member.did).map_err(im_error_to_message_error)?,
         role: GroupMemberRole::parse_optional(&request.role).map_err(im_error_to_message_error)?,
         reason_text: optional_string(&request.reason_text),
+        security: group_security_requirement(request.secure_required || request.e2ee),
     };
     let result = if action == "add" {
         client.groups().add_member(sdk_request)
@@ -409,9 +409,52 @@ pub fn group_messages_via_im_core(
     })
 }
 
+pub fn group_secure_status_via_im_core(
+    client: &im_core::ImClient,
+    group: String,
+) -> Result<CommandResult, MessageAdapterError> {
+    let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
+    let status = client
+        .secure()
+        .group(group_ref)
+        .status()
+        .map_err(im_error_to_message_error)?;
+    let warnings = status.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "status": serde_json::to_value(&status).unwrap_or(Value::Null),
+        }),
+        summary: "Loaded group secure status".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub fn group_secure_repair_via_im_core(
+    client: &im_core::ImClient,
+    group: String,
+) -> Result<CommandResult, MessageAdapterError> {
+    let group_ref = GroupRef::parse(&group).map_err(im_error_to_message_error)?;
+    let repair = client
+        .secure()
+        .group(group_ref)
+        .repair()
+        .map_err(im_error_to_message_error)?;
+    let warnings = repair.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "repair": serde_json::to_value(&repair).unwrap_or(Value::Null),
+        }),
+        summary: "Repaired group secure state".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
 fn group_create_request(
     request: GroupCreateRequest,
 ) -> Result<SdkGroupCreateRequest, MessageAdapterError> {
+    let secure_required = request.secure_required
+        || request.e2ee
+        || request.message_security_profile.trim() == GROUP_E2EE_SECURITY_PROFILE;
     Ok(SdkGroupCreateRequest {
         name: request.name,
         description: optional_string(&request.description),
@@ -419,11 +462,14 @@ fn group_create_request(
             .map_err(im_error_to_message_error)?,
         admission_mode: GroupAdmissionMode::parse_optional(&request.admission_mode)
             .map_err(im_error_to_message_error)?,
-        message_security_profile: GroupMessageSecurityProfile::parse_optional(
-            &request.message_security_profile,
-        )
+        message_security_profile: GroupMessageSecurityProfile::parse_optional(if secure_required {
+            GROUP_E2EE_SECURITY_PROFILE
+        } else {
+            &request.message_security_profile
+        })
         .map_err(im_error_to_message_error)?,
-        e2ee: request.e2ee,
+        security: group_security_requirement(secure_required),
+        e2ee: secure_required,
         slug: optional_string(&request.slug),
         goal: optional_string(&request.goal),
         rules: optional_string(&request.rules),
@@ -435,6 +481,14 @@ fn group_create_request(
         member_max_messages: request.member_max_messages,
         member_max_total_chars: request.member_max_total_chars,
     })
+}
+
+fn group_security_requirement(required: bool) -> GroupSecurityRequirement {
+    if required {
+        GroupSecurityRequirement::Required
+    } else {
+        GroupSecurityRequirement::Default
+    }
 }
 
 fn resolve_group_member_via_directory(

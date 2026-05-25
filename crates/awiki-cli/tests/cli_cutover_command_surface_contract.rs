@@ -64,6 +64,9 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "msg.history",
         "msg.mark-read",
         "msg.attachment.download",
+        "msg.secure",
+        "msg.secure.status",
+        "msg.secure.repair",
         "mail",
         "mail.account",
         "mail.attachment",
@@ -83,6 +86,11 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "group.list",
         "group.members",
         "group.messages",
+        "group.secure",
+        "group.secure.status",
+        "group.secure.repair",
+        "group.e2ee.status",
+        "group.e2ee.repair",
         "people.follow",
         "people.unfollow",
         "people.status",
@@ -129,7 +137,14 @@ fn cutover_classifier_keeps_cli_owned_host_commands() {
 #[test]
 fn cutover_classifier_marks_unsupported_and_internal_commands() {
     assert_eq!(
-        cmdmeta::cutover_status("msg.secure.status"),
+        cmdmeta::cutover_status("msg.secure.init"),
+        CutoverStatus::Unsupported {
+            capability: "secure-direct",
+            phase: "Phase 6",
+        }
+    );
+    assert_eq!(
+        cmdmeta::cutover_status("msg.secure.outbox.list"),
         CutoverStatus::Unsupported {
             capability: "secure-direct",
             phase: "Phase 6",
@@ -159,6 +174,13 @@ fn cutover_classifier_marks_unsupported_and_internal_commands() {
     assert_eq!(
         cmdmeta::cutover_status("group.e2ee.publish-key-package"),
         CutoverStatus::DiagnosticOnly
+    );
+    assert_eq!(
+        cmdmeta::cutover_status("group.secure.diagnostics"),
+        CutoverStatus::Unsupported {
+            capability: "group secure diagnostics",
+            phase: "future diagnostics plan",
+        }
     );
     assert_eq!(
         cmdmeta::cutover_status("debug.db.query"),
@@ -230,6 +252,39 @@ fn command_policy_maps_final_cutover_surfaces() {
         migration.direct_invocation(),
         DirectInvocationPolicy::RequireMigrationGate
     );
+
+    let secure_status = cmdmeta::lookup("msg.secure.status").unwrap();
+    assert_eq!(secure_status.audience(), CommandAudience::DefaultUser);
+    assert_eq!(secure_status.primary_owner(), CommandOwner::ImCoreSecure);
+    assert_eq!(
+        secure_status.direct_invocation(),
+        DirectInvocationPolicy::Allow
+    );
+
+    let group_secure_repair = cmdmeta::lookup("group.secure.repair").unwrap();
+    assert_eq!(group_secure_repair.audience(), CommandAudience::DefaultUser);
+    assert_eq!(
+        group_secure_repair.primary_owner(),
+        CommandOwner::ImCoreSecure
+    );
+    assert_eq!(
+        group_secure_repair.secondary_owners(),
+        &[CommandOwner::ImCoreGroups]
+    );
+    assert_eq!(
+        group_secure_repair.direct_invocation(),
+        DirectInvocationPolicy::Allow
+    );
+
+    let group_e2ee_status = cmdmeta::lookup("group.e2ee.status").unwrap();
+    assert_eq!(group_e2ee_status.audience(), CommandAudience::DefaultUser);
+    assert_eq!(
+        group_e2ee_status.direct_invocation(),
+        DirectInvocationPolicy::DeprecatedAlias {
+            replacement: "group secure status",
+            until: "next-major",
+        }
+    );
 }
 
 #[test]
@@ -271,9 +326,13 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
         "msg.send",
         "msg.inbox",
         "msg.attachment.download",
+        "msg.secure.status",
+        "msg.secure.repair",
         "mail.inbox",
         "mail.attachment.download",
         "group.create",
+        "group.secure.status",
+        "group.secure.repair",
         "people.follow",
         "people.contacts.list",
         "runtime.listener.enable",
@@ -286,12 +345,18 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
     }
 
     for command in [
-        "msg.secure.status",
+        "msg.secure.init",
+        "msg.secure.failed",
+        "msg.secure.retry",
+        "msg.secure.drop",
         "people.search",
         "page.list",
         "site.page.list",
         "runtime.heartbeat.status",
+        "group.e2ee.status",
+        "group.e2ee.repair",
         "group.e2ee.publish-key-package",
+        "group.secure.diagnostics",
         "debug.db.query",
         "runtime.host-notify.openclaw.set-token",
         "runtime.listener.start",
@@ -309,6 +374,22 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
             "{command} should remain queryable by exact schema target"
         );
     }
+}
+
+#[test]
+fn release_artifact_script_documents_e2ee_feature_gate() {
+    let script = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("scripts/release/build-release-artifact.sh"),
+    )
+    .expect("read release artifact script");
+
+    assert!(script.contains("verify_e2ee_feature_graph"));
+    assert!(script.contains("im-core feature \"group-e2ee\""));
+    assert!(script.contains("anp feature \"mls\""));
+    assert!(script.contains("cargo_cmd[@]}\" tree -p awiki-cli -e features --locked"));
+    assert!(script.contains("Windows E2EE package/release validation is deferred"));
 }
 
 #[test]
@@ -398,6 +479,16 @@ fn direct_invocation_policy_is_enforced_before_handlers() {
             &["group", "e2ee", "publish-key-package"][..],
             "internal_command",
         ),
+        (
+            &[
+                "group",
+                "secure",
+                "diagnostics",
+                "--group",
+                "did:wba:awiki.ai:groups:demo:e1",
+            ][..],
+            "unsupported_capability",
+        ),
         (&["debug", "raw", "rpc"][..], "removed_command"),
     ] {
         let output = awiki_cmd(args);
@@ -434,6 +525,29 @@ fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
             "page-site",
         ),
         (
+            &[
+                "group",
+                "secure",
+                "diagnostics",
+                "--group",
+                "did:wba:awiki.ai:groups:demo:e1",
+            ][..],
+            "group.secure.diagnostics",
+            "group secure diagnostics",
+        ),
+        (
+            &[
+                "group",
+                "secure",
+                "repair",
+                "--group",
+                "did:wba:awiki.ai:groups:demo:e1",
+                "--explain",
+            ][..],
+            "group.secure.repair",
+            "group secure diagnostics",
+        ),
+        (
             &["debug", "db", "query", "SELECT 1"][..],
             "debug.db.query",
             "raw-sql",
@@ -448,7 +562,11 @@ fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
         assert_eq!(envelope["error"]["details"]["capability"], capability);
         assert_eq!(
             envelope["error"]["details"]["required_phase"],
-            "outside current im-core cutover"
+            if capability == "group secure diagnostics" {
+                "future diagnostics plan"
+            } else {
+                "outside current im-core cutover"
+            }
         );
         assert_eq!(
             envelope["error"]["details"]["cutover_status"],

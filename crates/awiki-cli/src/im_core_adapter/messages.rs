@@ -26,17 +26,20 @@ struct TargetResolution {
 pub fn send_message_request(
     command: &ParsedCommand,
     default_domain: &str,
-) -> Result<SendMessageRequest, ExitError> {
+) -> Result<(SendMessageRequest, Vec<String>), ExitError> {
     let target = message_target(command, default_domain)?;
     let body = message_body(command)?;
-    let security = message_security(command, &target)?;
-    Ok(SendMessageRequest {
-        target,
-        body,
-        security,
-        client_message_id: None,
-        delivery: MessageDeliveryOptions::default(),
-    })
+    let (security, warnings) = message_security(command, &target)?;
+    Ok((
+        SendMessageRequest {
+            target,
+            body,
+            security,
+            client_message_id: None,
+            delivery: MessageDeliveryOptions::default(),
+        },
+        warnings,
+    ))
 }
 
 pub fn send_attachment_request(
@@ -185,6 +188,12 @@ pub fn send_text_via_im_core(
     }
     let before_jwt = stored_jwt_token(manager, identity_name);
     let mut rpc_phase = crate::traceutil::rpc_phase(sdk_send_trace_operation(&request));
+    let secure = matches!(
+        request.security,
+        MessageSecurityMode::E2eeRequired
+            | MessageSecurityMode::SecureDirect
+            | MessageSecurityMode::GroupE2ee
+    );
     let result = _client.messages().send(request).map_err(|err| {
         rpc_phase.finish();
         im_error_to_message_error(err)
@@ -194,9 +203,9 @@ pub fn send_text_via_im_core(
     match &result.message.thread {
         ThreadRef::Direct(_) => {
             let target = direct_target.unwrap_or_else(|| direct_target_from_result(&result));
-            render_send_result(&target, &result)
+            render_send_result(&target, &result, secure)
         }
-        ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result),
+        ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result, secure),
         ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread send results are not supported by the CLI renderer".to_string(),
         )),
@@ -476,6 +485,48 @@ pub fn mark_read_via_im_core(
     })
 }
 
+pub fn direct_secure_status_via_im_core(
+    client: &im_core::ImClient,
+    peer: String,
+    default_domain: &str,
+) -> Result<CommandResult, MessageAdapterError> {
+    let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
+    let status = client
+        .secure()
+        .direct(peer_ref)
+        .status()
+        .map_err(im_error_to_message_error)?;
+    let warnings = status.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "status": serde_json::to_value(&status).unwrap_or(Value::Null),
+        }),
+        summary: "Loaded direct secure status".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub fn direct_secure_repair_via_im_core(
+    client: &im_core::ImClient,
+    peer: String,
+    default_domain: &str,
+) -> Result<CommandResult, MessageAdapterError> {
+    let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
+    let repair = client
+        .secure()
+        .direct(peer_ref)
+        .repair()
+        .map_err(im_error_to_message_error)?;
+    let warnings = repair.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "repair": serde_json::to_value(&repair).unwrap_or(Value::Null),
+        }),
+        summary: "Repaired direct secure state".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
 fn message_target(
     command: &ParsedCommand,
     default_domain: &str,
@@ -560,7 +611,7 @@ fn validate_attachment_security(
         .as_str()
     {
         "" | "default" | "plain" | "off" | "false" => Ok(()),
-        "direct" | "secure-direct" | "on" | "true" => match target {
+        "direct" | "secure-direct" | "on" | "true" | "required" => match target {
             MessageTarget::Direct(_) => Err(ExitError::new(
                 "unsupported_capability",
                 2,
@@ -574,12 +625,20 @@ fn validate_attachment_security(
                 "Use --secure off for attachment messages.",
             )),
         },
-        "group-e2ee" | "e2ee" => Err(ExitError::new(
-            "unsupported_capability",
-            2,
-            "group E2EE attachments are not supported by the Phase 4 IM Core adapter.",
-            "Use --secure off for attachment messages.",
-        )),
+        "group-e2ee" | "e2ee" => match target {
+            MessageTarget::Direct(_) => Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "--secure group-e2ee can only be used with --group.",
+                "Use --secure required for direct E2EE text messages.",
+            )),
+            MessageTarget::Group(_) => Err(ExitError::new(
+                "unsupported_capability",
+                2,
+                "group E2EE attachments are not supported by the Phase 4 IM Core adapter.",
+                "Use --secure off for attachment messages.",
+            )),
+        },
         value => Err(ExitError::new(
             "invalid_argument",
             2,
@@ -604,24 +663,49 @@ fn message_kind(raw: &str) -> Result<MessageKind, ExitError> {
 
 fn message_security(
     command: &ParsedCommand,
-    _target: &MessageTarget,
-) -> Result<MessageSecurityMode, ExitError> {
-    match string_flag(command, "secure")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "" | "default" => Ok(MessageSecurityMode::DefaultPlain),
-        "plain" | "off" | "false" => Ok(MessageSecurityMode::Plain),
-        "direct" | "secure-direct" | "on" | "true" | "group-e2ee" | "e2ee" => {
-            Ok(MessageSecurityMode::E2eeRequired)
-        }
+    target: &MessageTarget,
+) -> Result<(MessageSecurityMode, Vec<String>), ExitError> {
+    let raw = string_flag(command, "secure");
+    let normalized = raw.trim().to_ascii_lowercase();
+    let warnings = secure_alias_warnings(normalized.as_str());
+    match normalized.as_str() {
+        "" | "default" => Ok((MessageSecurityMode::DefaultPlain, Vec::new())),
+        "plain" | "off" | "false" => Ok((MessageSecurityMode::Plain, warnings)),
+        "required" | "on" | "true" | "e2ee" => Ok((MessageSecurityMode::E2eeRequired, warnings)),
+        "direct" | "secure-direct" => match target {
+            MessageTarget::Direct(_) => Ok((MessageSecurityMode::E2eeRequired, warnings)),
+            MessageTarget::Group(_) => Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "--secure secure-direct can only be used with --to.",
+                "Use --secure required for group E2EE text messages.",
+            )),
+        },
+        "group-e2ee" => match target {
+            MessageTarget::Group(_) => Ok((MessageSecurityMode::E2eeRequired, warnings)),
+            MessageTarget::Direct(_) => Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "--secure group-e2ee can only be used with --group.",
+                "Use --secure required for direct E2EE text messages.",
+            )),
+        },
         value => Err(ExitError::new(
             "invalid_argument",
             2,
             format!("unsupported --secure value {value:?}."),
-            "Use --secure plain, --secure off, or leave it unset for Phase 1.",
+            "Use --secure required, --secure off, or leave it unset.",
         )),
+    }
+}
+
+fn secure_alias_warnings(value: &str) -> Vec<String> {
+    match value {
+        "on" | "true" | "e2ee" | "direct" | "secure-direct" | "group-e2ee" => vec![format!(
+            "--secure {value} is deprecated; use --secure required."
+        )],
+        "plain" | "false" => vec![format!("--secure {value} is deprecated; use --secure off.")],
+        _ => Vec::new(),
     }
 }
 
@@ -1273,6 +1357,7 @@ impl GroupSendResult {
 fn render_send_result(
     target: &TargetResolution,
     sdk_result: &SendMessageResult,
+    secure: bool,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = DirectSendResult::from_sdk_result(sdk_result, target);
     let (_text, message_type) = message_text_and_type(&sdk_result.message.body)?;
@@ -1288,7 +1373,7 @@ fn render_send_result(
             "message": {
                 "id": result.message_id,
                 "type": message_type,
-                "secure": false,
+                "secure": secure,
                 "sent_at": result.accepted_at,
             },
             "delivery": result,
@@ -1301,6 +1386,7 @@ fn render_send_result(
 fn render_group_send_result(
     group_did: &str,
     sdk_result: &SendMessageResult,
+    secure: bool,
 ) -> Result<CommandResult, MessageAdapterError> {
     let result = GroupSendResult::from_sdk_result(sdk_result, group_did);
     let (_text, message_type) = message_text_and_type(&sdk_result.message.body)?;
@@ -1315,7 +1401,7 @@ fn render_group_send_result(
             "message": {
                 "id": group_send_message_id(group_did, &result),
                 "type": message_type,
-                "secure": false,
+                "secure": secure,
                 "sent_at": result.accepted_at,
             },
             "delivery": result,
@@ -1409,6 +1495,9 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         }
         im_core::ImError::MessageNotFound { .. } => MessageAdapterError::MessageNotFound,
         im_core::ImError::UnsupportedCapability { capability } if capability == "group-send" => {
+            MessageAdapterError::GroupNotSupported
+        }
+        im_core::ImError::UnsupportedCapability { capability } if capability == "group-e2ee" => {
             MessageAdapterError::GroupNotSupported
         }
         im_core::ImError::UnsupportedCapability { capability } if capability == "attachments" => {

@@ -38,17 +38,21 @@ fn msg_schema_exposes_go_command_surface() {
         .iter()
         .map(|child| child["name"].as_str().unwrap())
         .collect();
-    for expected in [
-        "msg.secure.drop",
-        "msg.secure.failed",
-        "msg.secure.init",
-        "msg.secure.repair",
-        "msg.secure.retry",
-        "msg.secure.status",
-    ] {
+    for expected in ["msg.secure.repair", "msg.secure.status"] {
         assert!(
             secure_children.contains(&expected),
             "msg secure children should include {expected}: {secure_children:?}"
+        );
+    }
+    for hidden in [
+        "msg.secure.drop",
+        "msg.secure.failed",
+        "msg.secure.init",
+        "msg.secure.retry",
+    ] {
+        assert!(
+            !secure_children.contains(&hidden),
+            "msg secure default schema children should hide {hidden}: {secure_children:?}"
         );
     }
 }
@@ -83,7 +87,7 @@ fn msg_dry_run_plans_match_go_contracts() {
         json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
     );
 
-    let secure_direct = awiki_cmd(
+    let secure_direct = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -98,21 +102,16 @@ fn msg_dry_run_plans_match_go_contracts() {
             "on",
         ],
         workspace.path(),
-    );
-    assert_code(&secure_direct, 2);
-    let secure_direct = error_json(&secure_direct);
-    assert_eq!(secure_direct["error"]["code"], "unsupported_capability");
-    assert_eq!(secure_direct["error"]["details"]["command"], "msg.send");
-    assert_eq!(
-        secure_direct["error"]["details"]["capability"],
-        "secure-direct"
-    );
-    assert_eq!(
-        secure_direct["error"]["details"]["required_phase"],
-        "Phase 6"
+    ));
+    assert_eq!(secure_direct["data"]["plan"]["action"], "direct.send");
+    assert_eq!(secure_direct["data"]["plan"]["secure"], true);
+    assert_eq!(secure_direct["data"]["plan"]["security"], "required");
+    assert_warning_contains(
+        &secure_direct,
+        "--secure on is deprecated; use --secure required.",
     );
 
-    let secure_direct_equals = awiki_cmd(
+    let secure_direct_equals = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -126,12 +125,14 @@ fn msg_dry_run_plans_match_go_contracts() {
             "--secure=on",
         ],
         workspace.path(),
-    );
-    assert_code(&secure_direct_equals, 2);
-    let secure_direct_equals = error_json(&secure_direct_equals);
+    ));
     assert_eq!(
-        secure_direct_equals["error"]["message"],
-        secure_direct["error"]["message"]
+        secure_direct_equals["data"]["plan"],
+        secure_direct["data"]["plan"]
+    );
+    assert_warning_contains(
+        &secure_direct_equals,
+        "--secure on is deprecated; use --secure required.",
     );
 
     let attachment_send = awiki_cmd(
@@ -383,7 +384,7 @@ fn msg_send_default_cutover_dry_run_routes_direct_and_group_text() {
 }
 
 #[test]
-fn msg_send_default_cutover_supports_attachment_dry_run_and_rejects_secure_direct() {
+fn msg_send_default_cutover_supports_attachment_dry_run_and_secure_direct_alias() {
     let workspace = TempDir::new().expect("workspace");
 
     let attachment = awiki_cmd(
@@ -410,7 +411,7 @@ fn msg_send_default_cutover_supports_attachment_dry_run_and_rejects_secure_direc
         "/tmp/demo.txt"
     );
 
-    let secure = awiki_cmd(
+    let secure = success_json(&awiki_cmd(
         &[
             "--dry-run",
             "--identity",
@@ -425,13 +426,11 @@ fn msg_send_default_cutover_supports_attachment_dry_run_and_rejects_secure_direc
             "on",
         ],
         workspace.path(),
-    );
-    assert_code(&secure, 2);
-    let secure = error_json(&secure);
-    assert_eq!(secure["error"]["code"], "unsupported_capability");
-    assert_eq!(secure["error"]["details"]["command"], "msg.send");
-    assert_eq!(secure["error"]["details"]["capability"], "secure-direct");
-    assert_eq!(secure["error"]["details"]["required_phase"], "Phase 6");
+    ));
+    assert_eq!(secure["data"]["plan"]["action"], "direct.send");
+    assert_eq!(secure["data"]["plan"]["secure"], true);
+    assert_eq!(secure["data"]["plan"]["security"], "required");
+    assert_warning_contains(&secure, "--secure on is deprecated; use --secure required.");
 }
 
 #[test]
@@ -553,8 +552,45 @@ fn msg_inbox_default_cutover_rejects_filters_and_mark_read_side_effect() {
 }
 
 #[test]
-fn msg_secure_commands_are_cutover_unsupported() {
+fn msg_secure_status_and_repair_are_supported_while_low_level_commands_remain_unsupported() {
     let workspace = TempDir::new().expect("workspace");
+
+    for (args, action) in [
+        (
+            vec![
+                "--dry-run",
+                "--identity",
+                "alice",
+                "msg",
+                "secure",
+                "status",
+                "--with",
+                "bob",
+            ],
+            "secure.direct.status",
+        ),
+        (
+            vec![
+                "--dry-run",
+                "--identity",
+                "alice",
+                "msg",
+                "secure",
+                "repair",
+                "--with",
+                "bob",
+            ],
+            "secure.direct.repair",
+        ),
+    ] {
+        let output = success_json(&awiki_cmd(&args, workspace.path()));
+        assert_eq!(output["data"]["plan"]["action"], action);
+        assert_eq!(output["data"]["plan"]["with"], "bob");
+        assert_eq!(
+            output["data"]["plan"]["target"],
+            json!({ "did": "bob", "handle": "bob.awiki.ai", "kind": "direct" })
+        );
+    }
 
     for args in [
         vec![
@@ -563,27 +599,7 @@ fn msg_secure_commands_are_cutover_unsupported() {
             "alice",
             "msg",
             "secure",
-            "status",
-            "--with",
-            "bob",
-        ],
-        vec![
-            "--dry-run",
-            "--identity",
-            "alice",
-            "msg",
-            "secure",
             "init",
-            "--with",
-            "bob",
-        ],
-        vec![
-            "--dry-run",
-            "--identity",
-            "alice",
-            "msg",
-            "secure",
-            "repair",
             "--with",
             "bob",
         ],
@@ -798,9 +814,11 @@ fn msg_required_flag_errors_match_go_cobra_boundary() {
     let repair = awiki_cmd(&["--dry-run", "msg", "secure", "repair"], workspace.path());
     assert_code(&repair, 2);
     let envelope = error_json(&repair);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], "msg.secure.repair");
-    assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
+    assert_eq!(envelope["error"]["code"], "invalid_argument");
+    assert_contains(
+        &envelope["error"]["message"],
+        "msg secure repair requires --with.",
+    );
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -828,6 +846,16 @@ fn awiki_cmd_with_env(args: &[&str], workspace: &Path, envs: &[(&str, &str)]) ->
 fn success_json(output: &Output) -> Value {
     assert_success(output);
     serde_json::from_slice(&output.stdout).expect("success JSON")
+}
+
+fn assert_warning_contains(envelope: &Value, expected: &str) {
+    let warnings = envelope["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|value| value.contains(expected))),
+        "expected warning {expected:?}; got {warnings:?}"
+    );
 }
 
 fn error_json(output: &Output) -> Value {

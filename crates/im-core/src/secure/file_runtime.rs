@@ -44,8 +44,8 @@ pub struct DirectSecureFileRuntimeClient {
 }
 
 impl DirectSecureFileRuntimeClient {
-    pub fn publish_prekey_bundle(&mut self) -> crate::ImResult<Map<String, Value>> {
-        self.inner.publish_prekey_bundle()
+    pub fn prepare_prekey_bundle(&mut self) -> crate::ImResult<()> {
+        self.inner.publish_prekey_bundle().map(|_| ())
     }
 
     pub fn send_text(

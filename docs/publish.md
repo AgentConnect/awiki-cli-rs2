@@ -101,6 +101,13 @@ npm view @awiki/cli version
 
 确认 registry 上的版本号与刚刚发布的一致。
 
+### 2.3.1 E2EE release gate
+
+- Linux/macOS artifact 构建必须经过 `scripts/release/build-release-artifact.sh`；脚本会在构建前检查 feature graph，确认 `awiki-cli -> im-core/group-e2ee -> anp/mls` 已启用。
+- 该检查只验证本地构建依赖图和 artifact 构建入口，不连接真实 E2EE 服务。
+- Windows E2EE package/release 验收本阶段暂缓；Windows artifact 构建可以继续，但 Windows E2EE package 验收不阻塞 Linux/macOS E2EE 打开。
+- 默认 CLI surface 只开放高层 E2EE 产品命令；`msg secure outbox *`、`group secure diagnostics`、低层 `group e2ee *` 仍为 hidden/internal 或 stable unsupported。
+
 ### 2.4 在本地同步 Gitee Release
 
 > Gitee Release 产物同步不再放在 GitHub hosted runner 上执行，避免跨境上传导致的长时间阻塞。

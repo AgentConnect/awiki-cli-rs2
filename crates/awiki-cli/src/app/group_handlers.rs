@@ -5,6 +5,8 @@ use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError}
 use crate::output::ExitError;
 use serde_json::{json, Value};
 
+const GROUP_E2EE_PROFILE: &str = crate::im_core_adapter::groups::GROUP_E2EE_SECURITY_PROFILE;
+
 impl App {
     pub fn run_group_create(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
@@ -19,12 +21,8 @@ impl App {
         }
         let message_security_profile =
             string_flag_or(command, "message-security-profile", "transport-protected");
-        let create_uses_e2ee = bool_flag(command, "e2ee")?.unwrap_or(false)
-            || message_security_profile.trim()
-                == crate::im_core_adapter::groups::GROUP_E2EE_SECURITY_PROFILE;
-        if create_uses_e2ee {
-            return Err(unsupported_group_e2ee_command("group.create"));
-        }
+        let (secure_required, warnings) =
+            group_secure_requirement(command, Some(message_security_profile.as_str()))?;
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
             let request = crate::im_core_adapter::groups::GroupCreateRequest {
@@ -33,8 +31,13 @@ impl App {
                 description: string_flag(command, "description"),
                 discoverability: string_flag_or(command, "discoverability", "private"),
                 admission_mode: string_flag_or(command, "admission-mode", "open-join"),
-                message_security_profile: message_security_profile.clone(),
-                e2ee: false,
+                message_security_profile: if secure_required {
+                    GROUP_E2EE_PROFILE.to_string()
+                } else {
+                    message_security_profile.clone()
+                },
+                secure_required,
+                e2ee: secure_required,
                 slug: string_flag(command, "slug"),
                 goal: string_flag(command, "goal"),
                 rules: string_flag(command, "rules"),
@@ -50,10 +53,11 @@ impl App {
                 &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            let result = crate::im_core_adapter::groups::create_group_via_im_core(
+            let mut result = crate::im_core_adapter::groups::create_group_via_im_core(
                 &resolved, &client, request,
             )
             .map_err(|err| group_cutover_exit(err, "group.create"))?;
+            result.warnings.extend(warnings);
             return self.render_group_result("awiki-cli group create", &resolved, result);
         }
         self.render_success(
@@ -70,8 +74,9 @@ impl App {
                         "Description": string_flag(command, "description"),
                         "Discoverability": string_flag_or(command, "discoverability", "private"),
                         "AdmissionMode": string_flag_or(command, "admission-mode", "open-join"),
-                        "MessageSecurityProfile": message_security_profile,
-                        "E2EE": false,
+                        "MessageSecurityProfile": if secure_required { GROUP_E2EE_PROFILE } else { message_security_profile.as_str() },
+                        "Secure": if secure_required { "required" } else { "off" },
+                        "E2EE": secure_required,
                         "Slug": string_flag(command, "slug"),
                         "Goal": string_flag(command, "goal"),
                         "Rules": string_flag(command, "rules"),
@@ -85,7 +90,7 @@ impl App {
                 }
             }),
             "Dry run: group create planned",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -200,10 +205,7 @@ impl App {
             command_name,
             &format!("Usage: awiki-cli {command_name} --group <GROUP_DID> --member <MEMBER>"),
         )?;
-        let e2ee = bool_flag(command, "e2ee")?.unwrap_or(false);
-        if e2ee {
-            return Err(unsupported_group_e2ee_command(command_id));
-        }
+        let (secure_required, warnings) = group_secure_requirement(command, None)?;
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
             let request = crate::im_core_adapter::groups::GroupMemberRequest {
@@ -216,7 +218,8 @@ impl App {
                 } else {
                     String::new()
                 },
-                e2ee,
+                secure_required,
+                e2ee: secure_required,
                 leave_request_id: String::new(),
             };
             let client = crate::im_core_adapter::build_im_client(
@@ -234,6 +237,7 @@ impl App {
                 )
             }
             .map_err(|err| group_membership_cutover_exit(err, command_id))?;
+            result.warnings.extend(warnings);
             result.summary = if public_action == "add" {
                 "Added member to group".to_string()
             } else {
@@ -260,7 +264,8 @@ impl App {
                 "Member": member,
                 "Role": string_flag_or(command, "role", role_fallback),
                 "ReasonText": reason,
-                "E2EE": e2ee,
+                "Secure": if secure_required { "required" } else { "off" },
+                "E2EE": secure_required,
                 "LeaveRequestID": "",
             },
         });
@@ -273,7 +278,7 @@ impl App {
             &resolved,
             json!({ "plan": plan }),
             "Dry run: group membership change planned",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -285,27 +290,26 @@ impl App {
             "group leave",
             "Usage: awiki-cli group leave --group <GROUP_DID>",
         )?;
-        let e2ee = bool_flag(command, "e2ee")?.unwrap_or(false);
-        if e2ee {
-            return Err(unsupported_group_e2ee_command("group.leave"));
-        }
+        let (secure_required, warnings) = group_secure_requirement(command, None)?;
         if !self.globals.dry_run {
             let manager = self.identity_manager(&resolved);
             let request = crate::im_core_adapter::groups::GroupLeaveRequest {
                 identity_name: self.globals.identity.clone(),
                 group,
                 reason_text: string_flag(command, "reason"),
-                e2ee,
+                secure_required,
+                e2ee: secure_required,
             };
             let client = crate::im_core_adapter::build_im_client(
                 &resolved,
                 &manager,
                 crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
             )?;
-            let result = crate::im_core_adapter::groups::leave_group_via_im_core(
+            let mut result = crate::im_core_adapter::groups::leave_group_via_im_core(
                 &resolved, &client, request,
             )
             .map_err(|err| group_cutover_exit(err, "group.leave"))?;
+            result.warnings.extend(warnings);
             return self.render_group_result("awiki-cli group leave", &resolved, result);
         }
         self.render_success(
@@ -320,12 +324,13 @@ impl App {
                         "IdentityName": self.globals.identity,
                         "Group": group,
                         "ReasonText": string_flag(command, "reason"),
-                        "E2EE": e2ee,
+                        "Secure": if secure_required { "required" } else { "off" },
+                        "E2EE": secure_required,
                     },
                 }
             }),
             "Dry run: group leave planned",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -520,6 +525,96 @@ impl App {
         )
     }
 
+    pub fn run_group_secure_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.run_group_secure(command, "status", false, false)
+    }
+
+    pub fn run_group_secure_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if bool_flag(command, "explain")?.unwrap_or(false) {
+            return Err(super::unsupported::unsupported_cutover_command(
+                "group.secure.repair",
+                "group secure diagnostics",
+                "future diagnostics plan",
+            ));
+        }
+        self.run_group_secure(command, "repair", true, false)
+    }
+
+    pub fn run_group_secure_diagnostics(&self) -> Result<(), ExitError> {
+        Err(super::unsupported::unsupported_cutover_command(
+            "group.secure.diagnostics",
+            "group secure diagnostics",
+            "future diagnostics plan",
+        ))
+    }
+
+    pub fn run_group_e2ee_status_alias(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.run_group_secure(command, "status", false, true)
+    }
+
+    pub fn run_group_e2ee_repair_alias(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        self.run_group_secure(command, "repair", true, true)
+    }
+
+    fn run_group_secure(
+        &self,
+        command: &ParsedCommand,
+        action: &str,
+        side_effect: bool,
+        deprecated_alias: bool,
+    ) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        let group = required_string_flag(
+            command,
+            "group",
+            &format!("group secure {action}"),
+            &format!("Usage: awiki-cli group secure {action} --group <GROUP_DID>"),
+        )?;
+        let warnings = if deprecated_alias {
+            vec![format!(
+                "group e2ee {action} is deprecated; use group secure {action}."
+            )]
+        } else {
+            Vec::new()
+        };
+        if self.globals.dry_run {
+            let mut plan = json!({
+                "action": format!("secure.group.{action}"),
+                "identity": self.globals.identity,
+                "runtime_mode": resolved.runtime_mode,
+                "group": group,
+            });
+            if side_effect {
+                plan["local_writes"] = json!(["group_mls_state"]);
+            }
+            return self.render_success(
+                &format!("awiki-cli group secure {action}"),
+                &resolved,
+                json!({ "plan": plan }),
+                &format!("Dry run: group secure {action} planned"),
+                warnings,
+            );
+        }
+        let manager = self.identity_manager(&resolved);
+        let client = crate::im_core_adapter::build_im_client(
+            &resolved,
+            &manager,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+        )?;
+        let mut result = if action == "status" {
+            crate::im_core_adapter::groups::group_secure_status_via_im_core(&client, group)
+        } else {
+            crate::im_core_adapter::groups::group_secure_repair_via_im_core(&client, group)
+        }
+        .map_err(|err| group_cutover_exit(err, &format!("group.secure.{action}")))?;
+        result.warnings.extend(warnings);
+        self.render_group_result(
+            &format!("awiki-cli group secure {action}"),
+            &resolved,
+            result,
+        )
+    }
+
     fn render_group_result(
         &self,
         command: &str,
@@ -545,7 +640,7 @@ fn group_exit(err: MessageAdapterError) -> ExitError {
 
 fn group_cutover_exit(err: MessageAdapterError, command: &str) -> ExitError {
     match err {
-        MessageAdapterError::GroupNotSupported => unsupported_group_e2ee_command(command),
+        MessageAdapterError::GroupNotSupported => group_e2ee_unavailable(command),
         err => group_exit(err),
     }
 }
@@ -559,13 +654,66 @@ fn group_membership_exit(err: MessageAdapterError) -> ExitError {
 
 fn group_membership_cutover_exit(err: MessageAdapterError, command: &str) -> ExitError {
     match err {
-        MessageAdapterError::GroupNotSupported => unsupported_group_e2ee_command(command),
+        MessageAdapterError::GroupNotSupported => group_e2ee_unavailable(command),
         err => group_membership_exit(err),
     }
 }
 
-fn unsupported_group_e2ee_command(command: &str) -> ExitError {
-    super::unsupported::unsupported_cutover_command(command, "group e2ee", "Phase 6")
+fn group_e2ee_unavailable(command: &str) -> ExitError {
+    ExitError {
+        exit_code: 2,
+        detail: crate::output::ErrorDetail {
+            code: "unsupported_capability".to_string(),
+            message: format!("group E2EE is unavailable for {command}."),
+            hint: "Use --secure required only when group E2EE is available for this identity, workspace, and service.".to_string(),
+            retryable: false,
+            details: json!({
+                "command": command,
+                "capability": "group-e2ee",
+                "cutover_status": "im_core",
+            }),
+        },
+    }
+}
+
+fn group_secure_requirement(
+    command: &ParsedCommand,
+    message_security_profile: Option<&str>,
+) -> Result<(bool, Vec<String>), ExitError> {
+    let mut warnings = Vec::new();
+    let secure = string_flag(command, "secure");
+    let secure_required = match secure.trim().to_ascii_lowercase().as_str() {
+        "" | "off" | "false" | "default" => false,
+        "required" => true,
+        "on" | "true" | "e2ee" | "group-e2ee" => {
+            warnings.push(format!(
+                "--secure {} is deprecated; use --secure required.",
+                secure.trim()
+            ));
+            true
+        }
+        value => {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                format!("unsupported --secure value {value:?}."),
+                "Use --secure required or leave it unset.",
+            ))
+        }
+    };
+    let e2ee = bool_flag(command, "e2ee")?.unwrap_or(false);
+    if e2ee {
+        warnings.push("--e2ee is deprecated; use --secure required.".to_string());
+    }
+    let profile_e2ee =
+        message_security_profile.is_some_and(|profile| profile.trim() == GROUP_E2EE_PROFILE);
+    if profile_e2ee {
+        warnings.push(
+            "--message-security-profile group-e2ee is deprecated; use --secure required."
+                .to_string(),
+        );
+    }
+    Ok((secure_required || e2ee || profile_e2ee, warnings))
 }
 
 fn string_flag(command: &ParsedCommand, name: &str) -> String {

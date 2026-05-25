@@ -264,6 +264,11 @@ pub fn build_bridge_group_create_rpc_params(
             message_security_profile: crate::groups::GroupMessageSecurityProfile::parse_optional(
                 request.message_security_profile,
             )?,
+            security: if request.e2ee {
+                crate::groups::GroupSecurityRequirement::Required
+            } else {
+                crate::groups::GroupSecurityRequirement::Default
+            },
             e2ee: request.e2ee,
             slug: optional_trimmed(request.slug),
             goal: optional_trimmed(request.goal),
@@ -353,6 +358,8 @@ pub fn build_bridge_group_leave_rpc_params(
         &identity.did,
         &crate::groups::GroupLeaveRequest {
             group: crate::ids::GroupRef::parse(group_did)?,
+            reason_text: None,
+            security: crate::groups::GroupSecurityRequirement::Default,
         },
     )?;
     signed_bridge_params(identity, payload)
@@ -502,6 +509,7 @@ fn group_member_mutation_request(
             None => None,
         },
         reason_text: optional_trimmed(reason_text),
+        security: crate::groups::GroupSecurityRequirement::Default,
     })
 }
 

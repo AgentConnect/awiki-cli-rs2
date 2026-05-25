@@ -109,7 +109,7 @@ awiki-cli --identity alice id replace-did [--is-public] [--is-agent] [--role <ro
 awiki-cli id profile get [--self | --handle alice | --did did:wba:...]
 awiki-cli id profile set [--display-name "Alice"] [--bio "..."] [--tags "ai,did,agent"] [--markdown "# About Me"] [--markdown-file ./profile.md]
 
-awiki-cli msg send (--to TARGET | --group GROUP_DID) [--text "Hello"] [--text-file ./message.txt] [--file ./hello.txt] [--mime-type text/plain] [--type text|event] [--secure off|on] [--identity alice]
+awiki-cli msg send (--to TARGET | --group GROUP_DID) [--text "Hello"] [--text-file ./message.txt] [--file ./hello.txt] [--mime-type text/plain] [--type text|event] [--secure off|required] [--identity alice]
 awiki-cli msg attachment download (--with TARGET | --group GROUP_DID) --message-id MSG_ID [--attachment-id ATTACHMENT_ID] --output ./downloads/file.bin [--identity alice]
 awiki-cli msg inbox [--scope all|direct|group] [--with TARGET] [--group GROUP_DID] [--unread] [--limit 20] [--mark-read] [--identity alice]
 awiki-cli msg history --with TARGET [--limit 50] [--cursor CURSOR] [--identity alice]
@@ -117,19 +117,17 @@ awiki-cli msg mark-read MSG_ID...
 
 `msg attachment download` 会按 `message_id` 分页扫描 direct history 或 group messages，直到命中目标附件消息，而不是只检查最新一页结果。
 
-awiki-cli group create --name "Agent War Room" [--description "..."] [--discoverability private|listed|public] [--admission-mode admin-add|open-join] [--message-security-profile transport-protected|group-e2ee] [--e2ee] [--slug agent-war-room] [--goal "..."] [--rules "..."] [--message-prompt "..."] [--doc-url "https://..."] [--attachments-allowed] [--max-members 500] [--member-max-messages 10] [--member-max-total-chars 2000] [--identity alice]
+awiki-cli group create --name "Agent War Room" [--description "..."] [--discoverability private|listed|public] [--admission-mode admin-add|open-join] [--secure off|required] [--slug agent-war-room] [--goal "..."] [--rules "..."] [--message-prompt "..."] [--doc-url "https://..."] [--attachments-allowed] [--max-members 500] [--member-max-messages 10] [--member-max-total-chars 2000] [--identity alice]
 awiki-cli group get --group GROUP_DID [--identity alice]
 awiki-cli group join --group GROUP_DID [--reason "..."] [--identity alice]
-awiki-cli group add --group GROUP_DID --member did:wba:... [--role member|admin] [--reason "..."] [--e2ee] [--identity alice]
-awiki-cli group remove --group GROUP_DID --member did:wba:... [--reason "..."] [--e2ee] [--identity alice]
+awiki-cli group add --group GROUP_DID --member did:wba:... [--role member|admin] [--reason "..."] [--secure off|required] [--identity alice]
+awiki-cli group remove --group GROUP_DID --member did:wba:... [--reason "..."] [--secure off|required] [--identity alice]
 awiki-cli group members --group GROUP_DID [--limit 100] [--identity alice]
 awiki-cli group messages --group GROUP_DID [--limit 50] [--cursor CURSOR] [--identity alice]
 awiki-cli group update --group GROUP_DID [--name "..."] [--description "..."] [--discoverability private|listed|public] [--admission-mode admin-add|open-join] [--slug "..."] [--goal "..."] [--rules "..."] [--message-prompt "..."] [--doc-url "https://..."] [--attachments-allowed=true|false] [--max-members 500] [--member-max-messages 10] [--member-max-total-chars 2000] [--identity alice]
-awiki-cli group leave --group GROUP_DID [--reason "..."] [--e2ee] [--identity alice]
-awiki-cli group e2ee publish-key-package [--purpose normal|recovery|update] [--group GROUP_DID] [--device default] [--identity alice]
-awiki-cli group e2ee update-key --group GROUP_DID --member did:wba:... [--device default] [--identity alice]
-awiki-cli group e2ee rejoin --group GROUP_DID --member did:wba:... [--role member] [--identity alice]
-awiki-cli group e2ee process-leave-request --group GROUP_DID --member did:wba:... [--leave-request-id LR_ID] [--reason "..."] [--identity alice]
+awiki-cli group leave --group GROUP_DID [--reason "..."] [--secure off|required] [--identity alice]
+awiki-cli group secure status --group GROUP_DID [--identity alice]
+awiki-cli group secure repair --group GROUP_DID [--identity alice]
 
 测试与示例约定：
 
@@ -137,11 +135,9 @@ awiki-cli group e2ee process-leave-request --group GROUP_DID --member did:wba:..
 - 不再新增裸 `:e1` 的测试 fixture 或命令示例。
 
 awiki-cli msg secure status [--with TARGET] [--identity alice]
-awiki-cli msg secure init --with TARGET [--identity alice]
 awiki-cli msg secure repair --with TARGET [--identity alice]
-awiki-cli msg secure failed [--identity alice]
-awiki-cli msg secure retry OUTBOX_ID [--identity alice]
-awiki-cli msg secure drop OUTBOX_ID [--identity alice]
+
+兼容入口：`msg send --secure on/e2ee/secure-direct/group-e2ee`、`group create/add/remove/leave --e2ee`、`group create --message-security-profile group-e2ee`、`group e2ee status/repair` 只作为 deprecated alias 保留；默认 schema/help/completion 应展示 canonical `--secure required`、`msg secure status/repair`、`group secure status/repair`。`msg secure init/failed/retry/drop`、`msg secure outbox *`、`group secure diagnostics`、低层 `group e2ee publish-key-package/pending/process-leave-request/recover-member/update-key/rejoin` 不属于 supported 默认产品命令面。
 
 awiki-cli runtime status [--identity NAME]
 awiki-cli runtime apply
@@ -247,7 +243,7 @@ awiki-cli register ...          # = awiki-cli id register ...
 awiki-cli whoami                # = awiki-cli id current
 awiki-cli inbox                 # = awiki-cli msg inbox
 awiki-cli dm alice "hello"      # = awiki-cli msg send --to alice --text "hello"
-awiki-cli secure alice "secret" # = awiki-cli msg send --to alice --text "secret" --secure on
+awiki-cli secure alice "secret" # = awiki-cli msg send --to alice --text "secret" --secure required
 awiki-cli group get --group did:wba:... # top-level canonical group lifecycle entry
 awiki-cli history alice         # = awiki-cli msg history --with alice
 ```
@@ -826,7 +822,7 @@ scripts/recover_handle.py                -> awiki-cli id recover
 scripts/get_profile.py                   -> awiki-cli id profile get
 scripts/update_profile.py                -> awiki-cli id profile set
 scripts/send_message.py                  -> awiki-cli msg send --secure off
-scripts/e2ee_messaging.py --send         -> awiki-cli msg send --secure on
+scripts/e2ee_messaging.py --send         -> awiki-cli msg send --secure required
 scripts/check_inbox.py                   -> awiki-cli msg inbox / msg history / msg mark-read
 scripts/manage_group.py                  -> awiki-cli msg group ...
 scripts/manage_group.py --post-message   -> awiki-cli msg send --group ...

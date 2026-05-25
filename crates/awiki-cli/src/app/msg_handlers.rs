@@ -18,6 +18,7 @@ struct MsgSendPlan<'a> {
     file_path: &'a str,
     mime_type: &'a str,
     has_attachment: bool,
+    secure: bool,
 }
 
 impl App {
@@ -42,18 +43,9 @@ impl App {
             return self
                 .run_msg_attachment_send_im_core(command, &resolved, &file_path, &mime_type);
         }
-        let request =
+        let (request, request_warnings) =
             crate::im_core_adapter::messages::send_message_request(command, &resolved.did_domain)?;
-        if matches!(
-            request.security,
-            im_core::prelude::MessageSecurityMode::E2eeRequired
-        ) {
-            return Err(super::unsupported::unsupported_cutover_command(
-                "msg.send",
-                "secure-direct",
-                "Phase 6",
-            ));
-        }
+        let secure = message_security_is_required(&request.security);
         let (text, message_type) = send_text_plan_fields(&request)?;
         if self.globals.dry_run {
             return self.render_msg_send_plan(
@@ -67,7 +59,9 @@ impl App {
                     file_path: "",
                     mime_type: "",
                     has_attachment: false,
+                    secure,
                 },
+                request_warnings,
             );
         }
 
@@ -77,7 +71,7 @@ impl App {
             &manager,
             crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
         )?;
-        let result = crate::im_core_adapter::messages::send_text_via_im_core(
+        let mut result = crate::im_core_adapter::messages::send_text_via_im_core(
             &resolved,
             &manager,
             &self.globals.identity,
@@ -90,6 +84,7 @@ impl App {
                 "Ensure the active identity is ready and the message service is reachable.",
             )
         })?;
+        result.warnings.extend(request_warnings);
         self.render_message_result("awiki-cli msg send", &resolved, result)
     }
 
@@ -117,7 +112,9 @@ impl App {
                     file_path,
                     mime_type,
                     has_attachment: true,
+                    secure: false,
                 },
+                Vec::new(),
             );
         }
 
@@ -143,6 +140,7 @@ impl App {
         &self,
         resolved: &Resolved,
         input: MsgSendPlan<'_>,
+        warnings: Vec<String>,
     ) -> Result<(), ExitError> {
         let mut plan = Map::new();
         plan.insert(
@@ -187,6 +185,11 @@ impl App {
             }),
         );
         plan.insert("local_writes".to_string(), json!(["messages"]));
+        plan.insert("secure".to_string(), Value::Bool(input.secure));
+        plan.insert(
+            "security".to_string(),
+            Value::String(if input.secure { "required" } else { "off" }.to_string()),
+        );
         if input.has_attachment {
             plan.insert(
                 "attachment".to_string(),
@@ -203,7 +206,7 @@ impl App {
             &resolved,
             json!({ "plan": plan }),
             "Dry run: message send planned",
-            Vec::new(),
+            warnings,
         )
     }
 
@@ -514,7 +517,35 @@ impl App {
     }
 
     pub fn run_msg_secure_status(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        unsupported_secure_command(command, "msg.secure.status")
+        let resolved = self.resolve_config_for_workspace()?;
+        let peer = required_peer_flag(command, "msg secure status")?;
+        if self.globals.dry_run {
+            return self.render_msg_secure_plan(
+                "awiki-cli msg secure status",
+                &resolved,
+                "secure.direct.status",
+                &peer,
+                "Dry run: direct secure status planned",
+            );
+        }
+        let manager = self.identity_manager(&resolved);
+        let client = crate::im_core_adapter::build_im_client(
+            &resolved,
+            &manager,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+        )?;
+        let result = crate::im_core_adapter::messages::direct_secure_status_via_im_core(
+            &client,
+            peer,
+            &resolved.did_domain,
+        )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and local secure state is available.",
+            )
+        })?;
+        self.render_message_result("awiki-cli msg secure status", &resolved, result)
     }
 
     pub fn run_msg_secure_init(&self, command: &ParsedCommand) -> Result<(), ExitError> {
@@ -522,7 +553,35 @@ impl App {
     }
 
     pub fn run_msg_secure_repair(&self, command: &ParsedCommand) -> Result<(), ExitError> {
-        unsupported_secure_command(command, "msg.secure.repair")
+        let resolved = self.resolve_config_for_workspace()?;
+        let peer = required_peer_flag(command, "msg secure repair")?;
+        if self.globals.dry_run {
+            return self.render_msg_secure_plan(
+                "awiki-cli msg secure repair",
+                &resolved,
+                "secure.direct.repair",
+                &peer,
+                "Dry run: direct secure repair planned",
+            );
+        }
+        let manager = self.identity_manager(&resolved);
+        let client = crate::im_core_adapter::build_im_client(
+            &resolved,
+            &manager,
+            crate::im_core_adapter::cli_identity_selector(&self.globals.identity),
+        )?;
+        let result = crate::im_core_adapter::messages::direct_secure_repair_via_im_core(
+            &client,
+            peer,
+            &resolved.did_domain,
+        )
+        .map_err(|err| {
+            message_exit(
+                err,
+                "Ensure the active identity is ready and local secure state is available.",
+            )
+        })?;
+        self.render_message_result("awiki-cli msg secure repair", &resolved, result)
     }
 
     pub fn run_msg_secure_failed(&self) -> Result<(), ExitError> {
@@ -555,6 +614,31 @@ impl App {
             result.warnings,
         )
     }
+
+    fn render_msg_secure_plan(
+        &self,
+        command: &str,
+        resolved: &Resolved,
+        action: &str,
+        peer: &str,
+        summary: &str,
+    ) -> Result<(), ExitError> {
+        self.render_success(
+            command,
+            resolved,
+            json!({
+                "plan": {
+                    "action": action,
+                    "identity": self.globals.identity,
+                    "runtime_mode": resolved.runtime_mode,
+                    "with": peer,
+                    "target": target_value(peer, "", resolved),
+                }
+            }),
+            summary,
+            Vec::new(),
+        )
+    }
 }
 
 fn unsupported_secure_command(
@@ -566,6 +650,28 @@ fn unsupported_secure_command(
         "secure-direct",
         "Phase 6",
     ))
+}
+
+fn required_peer_flag(command: &ParsedCommand, command_name: &str) -> Result<String, ExitError> {
+    let peer = string_flag(command, "with");
+    if peer.trim().is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            format!("{command_name} requires --with."),
+            format!("Usage: awiki-cli {command_name} --with <PEER>"),
+        ));
+    }
+    Ok(peer)
+}
+
+fn message_security_is_required(security: &im_core::prelude::MessageSecurityMode) -> bool {
+    matches!(
+        security,
+        im_core::prelude::MessageSecurityMode::E2eeRequired
+            | im_core::prelude::MessageSecurityMode::SecureDirect
+            | im_core::prelude::MessageSecurityMode::GroupE2ee
+    )
 }
 
 fn target_value(to: &str, group: &str, resolved: &Resolved) -> Value {

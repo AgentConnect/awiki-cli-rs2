@@ -786,7 +786,7 @@ fn publish_runtime_secure_prekeys(
             )])
         }
     };
-    match client.publish_prekey_bundle() {
+    match client.prepare_prekey_bundle() {
         Ok(_) => Vec::new(),
         Err(err) => compact_warnings(vec![format!("Failed to publish secure prekeys: {err}")]),
     }

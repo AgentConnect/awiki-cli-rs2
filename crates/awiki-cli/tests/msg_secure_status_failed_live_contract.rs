@@ -7,8 +7,8 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_secure_status_failed_retry_and_drop_return_cutover_unsupported_without_local_mutation() {
-    let workspace = TempDir::new("msg-secure-cutover-unsupported").expect("workspace");
+fn msg_secure_status_uses_im_core_while_failed_retry_and_drop_remain_unsupported() {
+    let workspace = TempDir::new("msg-secure-status-im-core").expect("workspace");
     let manager = Manager::new(test_paths(workspace.path()));
     let alice = save_ready_identity(&manager, "alice-secure", "alice");
     let bob = save_ready_identity(&manager, "bob-secure", "bob");
@@ -49,19 +49,30 @@ fn msg_secure_status_failed_retry_and_drop_return_cutover_unsupported_without_lo
         },
     );
 
+    let status = awiki_cmd(
+        &[
+            "--identity",
+            "alice-secure",
+            "msg",
+            "secure",
+            "status",
+            "--with",
+            peer_did,
+        ],
+        workspace.path(),
+    );
+    let status = success_json(&status);
+    assert_eq!(status["summary"], "Loaded direct secure status");
+    assert_eq!(status["data"]["status"]["peer"], peer_did);
+    assert_eq!(status["data"]["status"]["state"], "Preparing");
+    assert_eq!(status["data"]["status"]["can_send_secure"], false);
+    assert_eq!(status["data"]["status"]["pending_outbox_count"], 1);
+    assert_eq!(
+        status["data"]["status"]["problem"]["code"],
+        "PeerKeysUnavailable"
+    );
+
     for (args, command) in [
-        (
-            &[
-                "--identity",
-                "alice-secure",
-                "msg",
-                "secure",
-                "status",
-                "--with",
-                peer_did,
-            ][..],
-            "msg.secure.status",
-        ),
         (
             &["--identity", "alice-secure", "msg", "secure", "failed"][..],
             "msg.secure.failed",
@@ -191,6 +202,22 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
         .env_remove("AWIKI_FORMAT")
         .env_remove("AVIKI_FORMAT");
     command.output().expect("run awiki-cli")
+}
+
+fn success_json(output: &Output) -> Value {
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "unexpected exit status; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "stderr should be empty: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope")
 }
 
 fn assert_secure_direct_unsupported(output: &Output, command: &str) {

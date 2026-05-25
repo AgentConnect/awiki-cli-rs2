@@ -24,7 +24,7 @@ fn schema_flags_omit_empty_fields_like_go_catalog() {
     let msg_send = schema_for(&["msg", "send"]);
     let secure = schema_flag(schema_command(&msg_send), "secure");
     assert_eq!(secure["default"], "off");
-    assert_eq!(secure["choices"], serde_json::json!(["off", "on"]));
+    assert_eq!(secure["choices"], serde_json::json!(["off", "required"]));
     assert!(secure.get("required").is_none());
     assert!(secure.get("deprecated").is_none());
 }
@@ -87,6 +87,55 @@ fn schema_audience_views_expose_non_default_surfaces() {
     let all_names = schema_names(&all);
     assert!(all_names.contains(&"runtime.listener.service-run"));
     assert!(all_names.contains(&"debug.raw.rpc"));
+}
+
+#[test]
+fn default_schema_hides_deprecated_e2ee_alias_flags_but_all_keeps_metadata() {
+    let default = success_json(&awiki_cmd(&["schema"]));
+    let create = default["data"]["commands"]
+        .as_array()
+        .expect("default commands")
+        .iter()
+        .find(|command| command["name"] == "group.create")
+        .expect("group.create default schema entry");
+    let default_flags = schema_flag_names(create);
+    assert!(default_flags.contains(&"secure"));
+    assert!(!default_flags.contains(&"e2ee"));
+    assert!(!default_flags.contains(&"message-security-profile"));
+
+    let group = success_json(&awiki_cmd(&["schema", "group"]));
+    let child_create = group["data"]["children"]
+        .as_array()
+        .expect("group children")
+        .iter()
+        .find(|command| command["name"] == "group.create")
+        .expect("group.create child schema entry");
+    let child_flags = schema_flag_names(child_create);
+    assert!(child_flags.contains(&"secure"));
+    assert!(!child_flags.contains(&"e2ee"));
+    assert!(!child_flags.contains(&"message-security-profile"));
+
+    let exact_create = schema_for(&["group", "create"]);
+    let exact_flags = schema_flag_names(schema_command(&exact_create));
+    assert!(exact_flags.contains(&"secure"));
+    assert!(!exact_flags.contains(&"e2ee"));
+    assert!(!exact_flags.contains(&"message-security-profile"));
+
+    let all = success_json(&awiki_cmd(&["schema", "--all"]));
+    let all_create = all["data"]["commands"]
+        .as_array()
+        .expect("all commands")
+        .iter()
+        .find(|command| command["name"] == "group.create")
+        .expect("group.create all schema entry");
+    let e2ee = schema_flag(all_create, "e2ee");
+    let profile = schema_flag(all_create, "message-security-profile");
+    assert_eq!(e2ee["deprecated"], true);
+    assert_eq!(profile["deprecated"], true);
+    assert_eq!(
+        profile["choices"],
+        serde_json::json!(["transport-protected", "group-e2ee"])
+    );
 }
 
 #[test]
@@ -239,6 +288,9 @@ fn cli_dispatch_names() -> BTreeSet<&'static str> {
         "group.list",
         "group.members",
         "group.messages",
+        "group.secure.status",
+        "group.secure.repair",
+        "group.secure.diagnostics",
         "group.e2ee.status",
         "group.e2ee.publish-key-package",
         "group.e2ee.pending",
@@ -331,6 +383,15 @@ fn schema_flag<'a>(command: &'a Value, name: &str) -> &'a Value {
         .iter()
         .find(|flag| flag["name"] == name)
         .unwrap_or_else(|| panic!("missing schema flag {name:?}: {command:?}"))
+}
+
+fn schema_flag_names(command: &Value) -> Vec<&str> {
+    command["flags"]
+        .as_array()
+        .expect("schema flags should be an array")
+        .iter()
+        .map(|flag| flag["name"].as_str().expect("flag name"))
+        .collect()
 }
 
 fn assert_subsequence(actual: &[&str], expected: &[&str]) {

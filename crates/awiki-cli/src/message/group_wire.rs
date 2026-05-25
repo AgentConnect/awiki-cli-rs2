@@ -156,7 +156,28 @@ pub fn build_group_leave_rpc_params(
     record: &StoredIdentity,
     request: GroupLeaveRequest,
 ) -> Result<Value, MessageError> {
-    build_group_mutation_rpc_params(record, &request.group, "group.leave", json!({}))
+    let payload = im_core::compat::wire::build_group_leave_payload(
+        &record.did,
+        &im_core::groups::GroupLeaveRequest {
+            group: im_core::ids::GroupRef::parse(&request.group)
+                .map_err(group_mutation_wire_error)?,
+            reason_text: optional_trimmed(request.reason_text),
+            security: if request.e2ee {
+                im_core::groups::GroupSecurityRequirement::Required
+            } else {
+                im_core::groups::GroupSecurityRequirement::Default
+            },
+        },
+    )
+    .map_err(group_mutation_wire_error)?;
+    signed_params(
+        record,
+        DirectPayload {
+            method: payload.method,
+            meta: payload.meta,
+            body: payload.body,
+        },
+    )
 }
 
 pub fn build_group_update_profile_rpc_params(
@@ -336,6 +357,11 @@ fn group_member_mutation_request(
         role: im_core::groups::GroupMemberRole::parse_optional(request.role)
             .map_err(group_mutation_wire_error)?,
         reason_text: optional_trimmed(request.reason_text),
+        security: if request.e2ee {
+            im_core::groups::GroupSecurityRequirement::Required
+        } else {
+            im_core::groups::GroupSecurityRequirement::Default
+        },
     })
 }
 

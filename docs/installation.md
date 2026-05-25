@@ -119,7 +119,7 @@ awiki-cli 默认采用单根目录工作区模型，默认路径如下：
 | runtime 目录 | `~/.awiki-cli/runtime/` | 无 |
 | 缓存目录 | `~/.awiki-cli/cache/` | 无 |
 | 日志目录 | `~/.awiki-cli/logs/` | 无 |
-| MLS 状态目录（P6 group E2EE / `anp-mls`） | `~/.awiki-cli/mls/` | 无 |
+| MLS 状态目录（Group E2EE / `im-core` native provider） | `~/.awiki-cli/mls/` | 无 |
 
 > 说明：`~/.awiki-cli/` 是跨平台固定的工作区目录（Windows 对应 `%USERPROFILE%\.awiki-cli\`），也是默认唯一入口。
 > `AWIKI_CLI_WORKSPACE_HOME_DIR` 只负责切换整个工作区根目录；`config / data / runtime / cache` 不再允许分别配置。
@@ -132,45 +132,26 @@ awiki-cli 默认采用单根目录工作区模型，默认路径如下：
 > - `data/awiki-cli.db`
 > - `cache/`
 > - `runtime/`
-> - `mls/`（由 `anp-mls` exec provider 使用；MLS 私有状态不写入主业务 SQLite）
+> - `mls/`（由 `im-core` group E2EE native provider 使用；MLS 私有状态不写入主业务 SQLite）
 > - `logs/`
 > - workspace upgrade 元数据
 > - upgrade lock / journal
 > - 备份快照
 
 
-### 3.3 `anp-mls` binary discovery and release staging
+### 3.3 Group E2EE release staging
 
-Group E2EE commands keep the Rust CLI port decoupled from MLS private state by invoking the Rust `anp-mls` binary as a one-shot process. See [`docs/architecture/group-e2ee-operations.md`](architecture/group-e2ee-operations.md) for the full hidden/test-only CLI orchestration, repair, recovery, update-key, and rejoin model. Discovery order is:
+Supported Group E2EE is now part of the `im-core` public API path. `awiki-cli` only parses user intent such as `--secure required` and calls `client.messages()`, `client.groups()`, or `client.secure().group()`. MLS state, KeyPackage handling, notice processing, and repair are owned by `im-core`; the default supported product path does not invoke an `anp-mls` process and does not use `AWIKI_ANP_MLS_BINARY`.
 
-1. `AWIKI_ANP_MLS_BINARY` absolute path override.
-2. Runtime/test injected provider path.
-3. `PATH` lookup for `anp-mls`.
+For Linux/macOS release artifacts, the build must include:
 
-Plain direct/group messaging does not require this binary. `awiki-cli doctor` reports an informational `anp_mls` check when the binary is missing; group E2EE commands return an actionable remediation error.
-
-`awiki-cli doctor` also probes compatibility with the stable machine-readable contract:
-
-```bash
-anp-mls system version --json-in -
+```text
+awiki-cli -> im-core feature "group-e2ee" -> anp feature "mls"
 ```
 
-The response must include `api_version`, `binary_name`, `binary_version` or `build_version`, and `supported_commands`. The supported API for this CLI build is `anp-mls/v1`; a mismatch is reported as a warning with remediation instead of breaking plain messaging.
+The release artifact script checks this feature graph before building Linux/macOS archives. Windows E2EE package/release validation is explicitly deferred for this stage; Windows artifacts may still be built, but Windows E2EE package validation is not a blocker for Linux/macOS rollout.
 
-For local release preparation, stage the Rust helper from the sibling ANP repository:
-
-```bash
-scripts/release/build-anp-mls.sh --dry-run
-scripts/release/build-anp-mls.sh
-```
-
-By default the script builds `../anp/anp/rust` with Cargo and copies `anp-mls` to `dist/anp-mls/<os>-<arch>/anp-mls`. Release jobs can bundle that file beside the `awiki-cli` archive, or users can place it on `PATH`. If a deployment keeps the helper outside the archive, set:
-
-```bash
-export AWIKI_ANP_MLS_BINARY=/absolute/path/to/anp-mls
-```
-
-The MLS private state root remains `~/.awiki-cli/mls/` (or the current `AWIKI_CLI_WORKSPACE_HOME_DIR` equivalent). Runtime OpenMLS state is agent/device-scoped under that root (`mls/agents/<agent-hash>/<device>/state.db`) so two local identities do not share private KeyPackage storage. Incoming decrypt first tries the default device and then scans the local agent-scoped device directories, allowing one-shot CLI commands to restore state for KeyPackages published with a named device. `group e2ee pending` / `repair` use the hidden/test-only P6 `group.e2ee.notice` pull path to list and replay durable welcome and commit-delivery notices; repair passes `welcome_b64u + ratchet_tree_b64u` or opaque `commit_b64u` public commit artifacts back to `anp-mls` and marks only successfully processed notices delivered. E2EE group removal uses local pending commit prepare plus hidden `group.e2ee.remove`, finalizing local MLS state only after service acceptance and aborting pending commits on deterministic service rejection. E2EE `group leave` now creates a hidden/test-only `group.e2ee.leave_request` control-plane record instead of preparing a local-terminal self-leave; the owner processes it with `group e2ee process-leave-request --group <group_did> --member <did|handle> [--leave-request-id <id>]`, which reuses the epoch-advancing remove-member orchestration. Hidden/test-only update-key uses `group e2ee publish-key-package --purpose update --group <group_did>` from the target member and `group e2ee update-key --group <group_did> --member <did|handle>` from the owner; removed/left rejoin is not `recover-member`, and uses a fresh normal KeyPackage plus the canonical `group add --e2ee` path (or the hidden `group e2ee rejoin` wrapper). `doctor` reports the root directory permissions plus state file status, including warnings when cached group-E2EE groups exist but MLS state is missing.
+The MLS private state root remains `~/.awiki-cli/mls/` (or the current `AWIKI_CLI_WORKSPACE_HOME_DIR` equivalent). Runtime OpenMLS state is agent/device-scoped under that root (`mls/agents/<agent-hash>/<device>/state.db`) so two local identities do not share private KeyPackage storage. User-facing recovery should use `group secure status` and `group secure repair`; low-level `group e2ee *` commands are hidden/internal or stable unsupported and are not part of the default schema/help/completion surface.
 
 ### 3.2 config.yaml
 
@@ -351,6 +332,13 @@ cargo fetch --locked
 ```bash
 cargo build -p awiki-cli --bin awiki-cli --release --locked
 cp target/release/awiki-cli ./awiki-cli
+```
+
+Linux/macOS release artifacts should be built through the release script so the E2EE feature graph check runs:
+
+```bash
+scripts/release/build-release-artifact.sh --os linux --arch amd64
+scripts/release/build-release-artifact.sh --os darwin --arch arm64
 ```
 
 ### 4.3 验证

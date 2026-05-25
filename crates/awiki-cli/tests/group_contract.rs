@@ -197,7 +197,7 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
     assert_eq!(join_request["Group"], group);
     assert_eq!(join_request["ReasonText"], "joinable group");
 
-    let add = awiki_cmd(
+    let add = success_json(&awiki_cmd(
         &[
             "--identity",
             "alice",
@@ -211,8 +211,12 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
             "--e2ee",
         ],
         workspace.path(),
-    );
-    assert_group_e2ee_unsupported(&add, "group.add");
+    ));
+    assert_eq!(add["summary"], "Dry run: group membership change planned");
+    assert_eq!(add["data"]["plan"]["action"], "group.add");
+    assert_eq!(add["data"]["plan"]["request"]["Secure"], "required");
+    assert_eq!(add["data"]["plan"]["request"]["E2EE"], true);
+    assert_warning_contains(&add, "--e2ee is deprecated; use --secure required.");
 
     let empty_membership = success_json(&awiki_cmd(
         &["group", "add", "--dry-run", "--group=", "--member="],
@@ -222,7 +226,7 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
     assert_eq!(empty_membership_request["Group"], "");
     assert_eq!(empty_membership_request["Member"], "");
 
-    let remove = awiki_cmd(
+    let remove = success_json(&awiki_cmd(
         &[
             "--identity",
             "alice",
@@ -238,8 +242,15 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
             "--e2ee",
         ],
         workspace.path(),
+    ));
+    assert_eq!(
+        remove["summary"],
+        "Dry run: group membership change planned"
     );
-    assert_group_e2ee_unsupported(&remove, "group.remove");
+    assert_eq!(remove["data"]["plan"]["action"], "group.kick");
+    assert_eq!(remove["data"]["plan"]["request"]["Secure"], "required");
+    assert_eq!(remove["data"]["plan"]["request"]["E2EE"], true);
+    assert_warning_contains(&remove, "--e2ee is deprecated; use --secure required.");
 
     let kick = success_json(&awiki_cmd(
         &[
@@ -258,7 +269,7 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
     assert_eq!(kick["data"]["plan"]["action"], "group.kick");
     assert_eq!(kick["data"]["plan"]["member_handle"], Value::Null);
 
-    let leave = awiki_cmd(
+    let leave = success_json(&awiki_cmd(
         &[
             "--identity",
             "bob",
@@ -272,8 +283,12 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
             "--e2ee",
         ],
         workspace.path(),
-    );
-    assert_group_e2ee_unsupported(&leave, "group.leave");
+    ));
+    assert_eq!(leave["summary"], "Dry run: group leave planned");
+    assert_eq!(leave["data"]["plan"]["action"], "group.leave");
+    assert_eq!(leave["data"]["plan"]["request"]["Secure"], "required");
+    assert_eq!(leave["data"]["plan"]["request"]["E2EE"], true);
+    assert_warning_contains(&leave, "--e2ee is deprecated; use --secure required.");
 
     let list = success_json(&awiki_cmd(
         &[
@@ -632,7 +647,10 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         bodies[3]["params"]["meta"]["target"],
         json!({"kind":"group","did":group_did})
     );
-    assert_eq!(bodies[6]["params"]["body"], json!({}));
+    assert_eq!(
+        bodies[6]["params"]["body"],
+        json!({"reason_text":"ignored by plain leave"})
+    );
     assert_eq!(
         bodies[6]["params"]["auth"]["scheme"],
         "anp-rfc9421-origin-proof-v1"
@@ -645,13 +663,10 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
 }
 
 #[test]
-fn group_lifecycle_default_cutover_rejects_e2ee_create() {
+fn group_lifecycle_dry_run_maps_e2ee_create_alias_to_secure_required() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
-    register_generated_group_identity(&manager, "alice-group-e2ee-cutover", "alice", "jwt-alice");
-    write_group_config(workspace.path(), "http://127.0.0.1:9");
 
-    let output = awiki_cmd(
+    let output = success_json(&awiki_cmd(
         &[
             "--identity",
             "alice-group-e2ee-cutover",
@@ -660,11 +675,20 @@ fn group_lifecycle_default_cutover_rejects_e2ee_create() {
             "--name",
             "Secure Group",
             "--e2ee",
+            "--dry-run",
         ],
         workspace.path(),
-    );
+    ));
 
-    assert_group_e2ee_unsupported(&output, "group.create");
+    assert_eq!(output["summary"], "Dry run: group create planned");
+    assert_eq!(output["data"]["plan"]["action"], "group.create");
+    assert_eq!(
+        output["data"]["plan"]["request"]["MessageSecurityProfile"],
+        "group-e2ee"
+    );
+    assert_eq!(output["data"]["plan"]["request"]["Secure"], "required");
+    assert_eq!(output["data"]["plan"]["request"]["E2EE"], true);
+    assert_warning_contains(&output, "--e2ee is deprecated; use --secure required.");
 }
 
 #[test]
@@ -706,26 +730,11 @@ fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
 }
 
 #[test]
-fn group_mutation_default_cutover_rejects_e2ee_member_paths() {
+fn group_mutation_dry_run_maps_e2ee_member_aliases_to_secure_required() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
-    let alice = register_generated_group_identity(
-        &manager,
-        "alice-group-e2ee-mutation-cutover",
-        "alice",
-        "jwt-alice",
-    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group_e2ee_cached";
     let bob_did = "did:wba:awiki.ai:user:bob:e1_bob";
-    write_group_config(workspace.path(), "http://127.0.0.1:9");
-    seed_e2ee_group_snapshot(
-        workspace.path(),
-        &alice.did,
-        &alice.identity_name,
-        group_did,
-        "owner",
-    );
-    let add = awiki_cmd(
+    let add = success_json(&awiki_cmd(
         &[
             "--identity",
             "alice-group-e2ee-mutation-cutover",
@@ -736,12 +745,17 @@ fn group_mutation_default_cutover_rejects_e2ee_member_paths() {
             "--member",
             bob_did,
             "--e2ee",
+            "--dry-run",
         ],
         workspace.path(),
-    );
-    assert_group_e2ee_unsupported(&add, "group.add");
+    ));
+    assert_eq!(add["summary"], "Dry run: group membership change planned");
+    assert_eq!(add["data"]["plan"]["action"], "group.add");
+    assert_eq!(add["data"]["plan"]["request"]["Secure"], "required");
+    assert_eq!(add["data"]["plan"]["request"]["E2EE"], true);
+    assert_warning_contains(&add, "--e2ee is deprecated; use --secure required.");
 
-    let cached_e2ee_add = awiki_cmd(
+    let canonical_secure_add = success_json(&awiki_cmd(
         &[
             "--identity",
             "alice-group-e2ee-mutation-cutover",
@@ -751,10 +765,24 @@ fn group_mutation_default_cutover_rejects_e2ee_member_paths() {
             group_did,
             "--member",
             bob_did,
+            "--secure",
+            "required",
+            "--dry-run",
         ],
         workspace.path(),
+    ));
+    assert_eq!(
+        canonical_secure_add["summary"],
+        "Dry run: group membership change planned"
     );
-    assert_group_e2ee_unsupported(&cached_e2ee_add, "group.add");
+    assert_eq!(
+        canonical_secure_add["data"]["plan"]["request"]["Secure"],
+        "required"
+    );
+    assert_eq!(
+        canonical_secure_add["data"]["plan"]["request"]["E2EE"],
+        true
+    );
 }
 
 #[test]
@@ -989,7 +1017,7 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
 }
 
 #[test]
-fn group_e2ee_leave_is_cutover_unsupported_before_identity_lookup() {
+fn group_e2ee_leave_reaches_supported_path_before_identity_lookup() {
     let workspace = TempDir::new().expect("workspace");
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
 
@@ -1006,7 +1034,10 @@ fn group_e2ee_leave_is_cutover_unsupported_before_identity_lookup() {
         workspace.path(),
     );
 
-    assert_group_e2ee_unsupported(&output, "group.leave");
+    assert_code(&output, 3);
+    let envelope = error_json(&output);
+    assert_eq!(envelope["error"]["code"], "identity_required");
+    assert_eq!(envelope["error"]["message"], "authentication is required");
 }
 
 #[test]
@@ -1062,19 +1093,15 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
         ],
         workspace.path(),
     ));
-    assert_eq!(status["summary"], "Dry run: group e2ee status planned");
+    assert_eq!(status["summary"], "Dry run: group secure status planned");
     let status_plan = &status["data"]["plan"];
-    assert_eq!(status_plan["action"], "group.e2ee.status");
-    assert_eq!(status_plan["profile"], "anp.group.e2ee.v1");
-    assert_eq!(status_plan["security_profile"], "group-e2ee");
-    assert_eq!(status_plan["provider"], "exec");
-    assert_eq!(status_plan["binary"], "");
-    assert_eq!(status_plan["discovery_advertised"], false);
-    assert_eq!(status_plan["artifact_mode"], Value::Null);
-    assert!(status_plan["mls_data_dir"]
-        .as_str()
-        .unwrap()
-        .ends_with("/mls"));
+    assert_eq!(status_plan["action"], "secure.group.status");
+    assert_eq!(status_plan["group"], group);
+    assert_eq!(status_plan["runtime_mode"], "websocket");
+    assert_warning_contains(
+        &status,
+        "group e2ee status is deprecated; use group secure status.",
+    );
 
     let publish = success_json(&awiki_internal_cmd(
         &[
@@ -1151,12 +1178,16 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
         ],
         workspace.path(),
     ));
-    assert_eq!(repair["summary"], "Dry run: group e2ee repair planned");
-    assert_eq!(repair["data"]["plan"]["action"], "group.e2ee.repair");
-    assert!(repair["data"]["plan"]["scope"]
-        .as_str()
-        .unwrap()
-        .contains("replay welcome/commit notices"));
+    assert_eq!(repair["summary"], "Dry run: group secure repair planned");
+    assert_eq!(repair["data"]["plan"]["action"], "secure.group.repair");
+    assert_eq!(
+        repair["data"]["plan"]["local_writes"],
+        json!(["group_mls_state"])
+    );
+    assert_warning_contains(
+        &repair,
+        "group e2ee repair is deprecated; use group secure repair.",
+    );
 
     let process_leave = success_json(&awiki_internal_cmd(
         &[
@@ -1277,20 +1308,12 @@ fn group_e2ee_live_commands_are_cutover_unsupported() {
     let group = "did:wba:awiki.ai:groups:demo:e1_group";
     let commands = [
         (
-            "group.e2ee.status",
-            vec!["group", "e2ee", "status", "--group", group],
-        ),
-        (
             "group.e2ee.publish-key-package",
             vec!["group", "e2ee", "publish-key-package", "--group", group],
         ),
         (
             "group.e2ee.pending",
             vec!["group", "e2ee", "pending", "--group", group],
-        ),
-        (
-            "group.e2ee.repair",
-            vec!["group", "e2ee", "repair", "--group", group],
         ),
         (
             "group.e2ee.process-leave-request",
@@ -1501,34 +1524,6 @@ fn seed_group_snapshot(
     .expect("seed group snapshot");
 }
 
-fn seed_e2ee_group_snapshot(
-    workspace: &Path,
-    owner_did: &str,
-    credential_name: &str,
-    group_did: &str,
-    role: &str,
-) {
-    let paths = test_paths(workspace);
-    let db = store::open(&paths).expect("open group store");
-    store::ensure_schema(&db).expect("ensure group schema");
-    store::upsert_group(
-        &db,
-        GroupRecord {
-            owner_did: owner_did.to_string(),
-            group_id: group_did.to_string(),
-            group_did: group_did.to_string(),
-            name: "Cached E2EE Group".to_string(),
-            group_owner_did: owner_did.to_string(),
-            my_role: role.to_string(),
-            membership_status: "active".to_string(),
-            metadata: json!({ "message_security_profile": "group-e2ee" }).to_string(),
-            credential_name: credential_name.to_string(),
-            ..GroupRecord::default()
-        },
-    )
-    .expect("seed E2EE group snapshot");
-}
-
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -1547,6 +1542,16 @@ fn success_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("success JSON")
+}
+
+fn assert_warning_contains(envelope: &Value, expected: &str) {
+    let warnings = envelope["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|value| value.contains(expected))),
+        "expected warning {expected:?}; got {warnings:?}"
+    );
 }
 
 fn error_json(output: &Output) -> Value {

@@ -149,10 +149,13 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "group.list" => app.run_group_list(command),
         "group.members" => app.run_group_members(command),
         "group.messages" => app.run_group_messages(command),
-        "group.e2ee.status" => app.run_group_e2ee_status(command),
+        "group.secure.status" => app.run_group_secure_status(command),
+        "group.secure.repair" => app.run_group_secure_repair(command),
+        "group.secure.diagnostics" => app.run_group_secure_diagnostics(),
+        "group.e2ee.status" => app.run_group_e2ee_status_alias(command),
         "group.e2ee.publish-key-package" => app.run_group_e2ee_publish_key_package(command),
         "group.e2ee.pending" => app.run_group_e2ee_pending(command),
-        "group.e2ee.repair" => app.run_group_e2ee_repair(command),
+        "group.e2ee.repair" => app.run_group_e2ee_repair_alias(command),
         "group.e2ee.update-key" => app.run_group_e2ee_update_key(command),
         "group.e2ee.rejoin" => app.run_group_e2ee_rejoin(command),
         "group.e2ee.recover-member" => app.run_group_e2ee_recover_member(command),
@@ -425,9 +428,7 @@ fn enforce_command_policy(command: &ParsedCommand) -> Result<(), ExitError> {
         cmdmeta::DirectInvocationPolicy::Removed { replacement } => {
             Err(removed_command(&command.name, replacement))
         }
-        cmdmeta::DirectInvocationPolicy::DeprecatedAlias { replacement, .. } => {
-            Err(removed_command(&command.name, Some(replacement)))
-        }
+        cmdmeta::DirectInvocationPolicy::DeprecatedAlias { .. } => Ok(()),
     }
 }
 

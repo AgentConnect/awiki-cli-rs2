@@ -118,7 +118,11 @@ pub fn leave_group(
         let group = im_core::ids::GroupRef::parse(group_did).map_err(DartImError::from)?;
         inner
             .groups()
-            .leave(im_core::groups::GroupLeaveRequest { group })
+            .leave(im_core::groups::GroupLeaveRequest {
+                group,
+                reason_text: None,
+                security: Default::default(),
+            })
             .map(Into::into)
             .map_err(DartImError::from)
     })

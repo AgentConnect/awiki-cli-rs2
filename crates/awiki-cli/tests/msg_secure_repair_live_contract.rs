@@ -7,8 +7,8 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn msg_secure_repair_returns_cutover_unsupported_without_remote_or_local_repair() {
-    let workspace = TempDir::new("msg-live-secure-repair-unsupported").expect("workspace");
+fn msg_secure_repair_uses_im_core_and_requeues_peer_failed_outbox() {
+    let workspace = TempDir::new("msg-live-secure-repair-im-core").expect("workspace");
     write_msg_config(workspace.path());
     let manager = Manager::new(test_paths(workspace.path()));
     let alice = save_ready_identity(&manager, "alice-repair", "alice");
@@ -46,8 +46,20 @@ fn msg_secure_repair_returns_cutover_unsupported_without_remote_or_local_repair(
         workspace.path(),
     );
 
-    assert_secure_direct_unsupported(&output, "msg.secure.repair");
-    assert_single_established_session(&manager, "alice-repair", &bob.did);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Repaired direct secure state");
+    assert_eq!(envelope["data"]["repair"]["peer"], bob.did);
+    assert_eq!(envelope["data"]["repair"]["repaired"], true);
+    assert_eq!(envelope["data"]["repair"]["state"], "Preparing");
+    assert_eq!(
+        envelope["data"]["repair"]["problem"]["code"],
+        "PeerKeysUnavailable"
+    );
+    assert_warning_contains(
+        &envelope,
+        "1 failed secure outbox item(s) were moved back to queued",
+    );
+    assert_legacy_session_file_unchanged(&manager, "alice-repair", &bob.did);
 
     let rows = query_rows(
         workspace.path(),
@@ -55,7 +67,7 @@ fn msg_secure_repair_returns_cutover_unsupported_without_remote_or_local_repair(
     );
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["outbox_id"], "repair-failed-bob");
-    assert_eq!(rows[0]["local_status"], "failed");
+    assert_eq!(rows[0]["local_status"], "queued");
     assert_eq!(rows[0]["peer_did"], bob.did);
     assert_eq!(rows[1]["outbox_id"], "repair-failed-carol");
     assert_eq!(rows[1]["local_status"], "failed");
@@ -162,12 +174,13 @@ fn seed_secure_outbox_row(
     .expect("seed secure outbox row");
 }
 
-fn assert_single_established_session(manager: &Manager, identity_name: &str, peer_did: &str) {
+fn assert_legacy_session_file_unchanged(manager: &Manager, identity_name: &str, peer_did: &str) {
     let paths = manager
         .paths_for_identity(identity_name)
         .expect("identity paths");
-    let sessions = std::fs::read_dir(Path::new(&paths.identity_dir).join("p5-e2ee-sessions"))
-        .expect("read session root")
+    let session_root = Path::new(&paths.identity_dir).join("p5-e2ee-sessions");
+    let sessions = std::fs::read_dir(&session_root)
+        .unwrap_or_else(|err| panic!("read session root {session_root:?}: {err}"))
         .filter_map(Result::ok)
         .map(|entry| {
             serde_json::from_slice::<Value>(&std::fs::read(entry.path()).expect("read session"))
@@ -220,29 +233,29 @@ fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
     rows.map(|row| row.expect("read row")).collect()
 }
 
-fn assert_secure_direct_unsupported(output: &Output, command: &str) {
+fn success_json(output: &Output) -> Value {
     assert_eq!(
         output.status.code(),
-        Some(2),
+        Some(0),
         "unexpected exit status; stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        output.stdout.is_empty(),
-        "stdout should be empty: {}",
-        String::from_utf8_lossy(&output.stdout)
+        output.stderr.is_empty(),
+        "stderr should be empty: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let envelope: Value =
-        serde_json::from_slice(&output.stderr).expect("stderr should be a JSON error envelope");
-    assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["error"]["code"], "unsupported_capability");
-    assert_eq!(envelope["error"]["details"]["command"], command);
-    assert_eq!(envelope["error"]["details"]["capability"], "secure-direct");
-    assert_eq!(envelope["error"]["details"]["required_phase"], "Phase 6");
-    assert_eq!(
-        envelope["error"]["details"]["cutover_status"],
-        "unsupported"
+    serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope")
+}
+
+fn assert_warning_contains(envelope: &Value, expected: &str) {
+    let warnings = envelope["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|value| value.contains(expected))),
+        "expected warning {expected:?}; got {warnings:?}"
     );
 }
 

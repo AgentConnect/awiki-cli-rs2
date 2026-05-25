@@ -34,8 +34,6 @@ pub(crate) fn build_group_create_payload(
     request: &crate::groups::GroupCreateRequest,
     service_did: &crate::ids::Did,
 ) -> crate::ImResult<DirectPayload> {
-    reject_unsupported_group_e2ee(request.e2ee, request.message_security_profile.as_ref())?;
-
     let mut profile = Map::new();
     insert_required_trimmed_string(&mut profile, "display_name", &request.name, "name")?;
     insert_optional_trimmed_string(&mut profile, "description", request.description.as_deref());
@@ -70,9 +68,10 @@ pub(crate) fn build_group_create_payload(
         policy.insert("max_members".to_string(), Value::String("500".to_string()));
         enrich_group_policy_defaults(&mut policy);
     }
-    if let Some(security_profile) =
-        normalized_security_profile(request.e2ee, request.message_security_profile.as_ref())
-    {
+    if let Some(security_profile) = normalized_security_profile(
+        request.e2ee || request.security.required(),
+        request.message_security_profile.as_ref(),
+    ) {
         policy.insert(
             "message_security_profile".to_string(),
             Value::String(security_profile.clone()),
@@ -117,7 +116,14 @@ pub(crate) fn build_group_leave_payload(
     sender_did: &str,
     request: &crate::groups::GroupLeaveRequest,
 ) -> crate::ImResult<DirectPayload> {
-    build_group_lifecycle_payload(sender_did, request.group.as_str(), "group.leave", json!({}))
+    let mut body = group_security_body(request.security.required());
+    insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
+    build_group_lifecycle_payload(
+        sender_did,
+        request.group.as_str(),
+        "group.leave",
+        Value::Object(body),
+    )
 }
 
 pub(crate) fn build_group_add_member_payload(
@@ -135,6 +141,7 @@ pub(crate) fn build_group_add_member_payload(
         request.role.as_ref().map(|role| role.as_str()),
     );
     insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
+    insert_group_security(&mut body, request.security.required());
     build_group_lifecycle_payload(
         sender_did,
         request.group.as_str(),
@@ -153,6 +160,7 @@ pub(crate) fn build_group_remove_member_payload(
         Value::String(request.member.as_str().to_string()),
     );
     insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
+    insert_group_security(&mut body, request.security.required());
     build_group_lifecycle_payload(
         sender_did,
         request.group.as_str(),
@@ -422,9 +430,12 @@ fn enrich_group_policy_defaults(patch: &mut Map<String, Value>) {
 }
 
 fn normalized_security_profile(
-    _e2ee: bool,
+    e2ee: bool,
     message_security_profile: Option<&crate::groups::GroupMessageSecurityProfile>,
 ) -> Option<String> {
+    if e2ee {
+        return Some("group-e2ee".to_string());
+    }
     match message_security_profile
         .map(|value| value.as_str())
         .unwrap_or_default()
@@ -434,19 +445,20 @@ fn normalized_security_profile(
     }
 }
 
-fn reject_unsupported_group_e2ee(
-    e2ee: bool,
-    message_security_profile: Option<&crate::groups::GroupMessageSecurityProfile>,
-) -> crate::ImResult<()> {
-    if e2ee
-        || matches!(
-            message_security_profile,
-            Some(crate::groups::GroupMessageSecurityProfile::GroupE2ee)
-        )
-    {
-        return Err(crate::ImError::unsupported("group-e2ee"));
+fn group_security_body(required: bool) -> Map<String, Value> {
+    let mut body = Map::new();
+    insert_group_security(&mut body, required);
+    body
+}
+
+fn insert_group_security(body: &mut Map<String, Value>, required: bool) {
+    if required {
+        body.insert(
+            "message_security_profile".to_string(),
+            Value::String("group-e2ee".to_string()),
+        );
+        body.insert("secure".to_string(), Value::String("required".to_string()));
     }
-    Ok(())
 }
 
 fn insert_required_trimmed_string(

@@ -296,7 +296,7 @@ impl App {
             );
         }
         if let Some(audience) = command.flags.get("audience") {
-            let Some(commands) = cmdmeta::audience_surface_specs(audience) else {
+            let Some(commands) = cmdmeta::audience_schema_specs(audience) else {
                 return Err(ExitError::new(
                     "invalid_argument",
                     2,
@@ -316,7 +316,7 @@ impl App {
             return self.render_success(
                 "awiki-cli schema",
                 &resolved,
-                json!({ "commands": cmdmeta::default_surface_specs(), "phase": "phase1-shell" }),
+                json!({ "commands": cmdmeta::default_surface_schema_specs(), "phase": "phase1-shell" }),
                 "Static command contract",
                 Vec::new(),
             );
@@ -333,7 +333,14 @@ impl App {
         self.render_success(
             "awiki-cli schema",
             &resolved,
-            json!({ "command": spec, "children": cmdmeta::children_of(spec.name) }),
+            json!({
+                "command": cmdmeta::schema_spec_for_command(&spec),
+                "children": if spec.include_in_default_surface() {
+                    cmdmeta::SchemaSpecList::Default(cmdmeta::default_surface_schema_children_of(spec.name))
+                } else {
+                    cmdmeta::SchemaSpecList::All(cmdmeta::children_of(spec.name))
+                },
+            }),
             &format!("Static contract for {}", spec.name),
             Vec::new(),
         )

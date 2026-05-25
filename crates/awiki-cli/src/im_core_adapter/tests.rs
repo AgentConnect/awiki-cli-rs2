@@ -416,7 +416,8 @@ fn build_im_core_paths_from_parts_maps_workspace_paths() {
 #[test]
 fn send_message_request_builds_direct_text_dto() {
     let command = command_with_flags([("to", "bob"), ("text", "hello"), ("type", "text")]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
+    assert!(warnings.is_empty());
     assert!(matches!(request.target, MessageTarget::Direct(_)));
     assert!(matches!(
         request.body,
@@ -428,7 +429,8 @@ fn send_message_request_builds_direct_text_dto() {
 #[test]
 fn send_message_request_builds_group_text_dto() {
     let command = command_with_flags([("group", "did:example:group"), ("text", "hello group")]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
+    assert!(warnings.is_empty());
     assert!(matches!(
         request.target,
         MessageTarget::Group(ref group) if group == &GroupRef::parse("did:example:group").unwrap()
@@ -443,7 +445,7 @@ fn send_message_request_builds_markdown_plain_direct_sdk_dto() {
         ("type", "markdown"),
         ("secure", "plain"),
     ]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
 
     assert!(matches!(
         request.target,
@@ -457,21 +459,35 @@ fn send_message_request_builds_markdown_plain_direct_sdk_dto() {
         } if text == "hello"
     ));
     assert_eq!(request.security, MessageSecurityMode::Plain);
+    assert_eq!(
+        warnings,
+        vec!["--secure plain is deprecated; use --secure off."]
+    );
 }
 
 #[test]
 fn send_message_request_maps_secure_flag_to_e2ee_required_policy() {
     let direct = command_with_flags([("to", "bob"), ("text", "hello"), ("secure", "on")]);
-    let direct_request = messages::send_message_request(&direct, "awiki.test").unwrap();
+    let (direct_request, direct_warnings) =
+        messages::send_message_request(&direct, "awiki.test").unwrap();
     assert_eq!(direct_request.security, MessageSecurityMode::E2eeRequired);
+    assert_eq!(
+        direct_warnings,
+        vec!["--secure on is deprecated; use --secure required."]
+    );
 
     let group = command_with_flags([
         ("group", "did:example:group"),
         ("text", "hello group"),
         ("secure", "e2ee"),
     ]);
-    let group_request = messages::send_message_request(&group, "awiki.test").unwrap();
+    let (group_request, group_warnings) =
+        messages::send_message_request(&group, "awiki.test").unwrap();
     assert_eq!(group_request.security, MessageSecurityMode::E2eeRequired);
+    assert_eq!(
+        group_warnings,
+        vec!["--secure e2ee is deprecated; use --secure required."]
+    );
 }
 
 #[test]
@@ -517,7 +533,8 @@ fn inbox_query_builds_scope_limit_cursor_and_unread_flag() {
 #[test]
 fn send_message_request_builds_attachment_sdk_dto() {
     let command = command_with_flags([("to", "bob"), ("text", "caption"), ("file", "a.png")]);
-    let request = messages::send_message_request(&command, "awiki.test").unwrap();
+    let (request, warnings) = messages::send_message_request(&command, "awiki.test").unwrap();
+    assert!(warnings.is_empty());
 
     assert!(matches!(
         request.target,

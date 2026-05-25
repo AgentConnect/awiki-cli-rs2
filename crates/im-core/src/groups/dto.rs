@@ -83,6 +83,8 @@ pub struct GroupCreateRequest {
     pub discoverability: Option<GroupDiscoverability>,
     pub admission_mode: Option<GroupAdmissionMode>,
     pub message_security_profile: Option<GroupMessageSecurityProfile>,
+    #[serde(default)]
+    pub security: GroupSecurityRequirement,
     pub e2ee: bool,
     pub slug: Option<String>,
     pub goal: Option<String>,
@@ -104,6 +106,9 @@ pub struct GroupJoinRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupLeaveRequest {
     pub group: crate::ids::GroupRef,
+    pub reason_text: Option<String>,
+    #[serde(default)]
+    pub security: GroupSecurityRequirement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,6 +117,8 @@ pub struct GroupMemberMutationRequest {
     pub member: crate::ids::Did,
     pub role: Option<GroupMemberRole>,
     pub reason_text: Option<String>,
+    #[serde(default)]
+    pub security: GroupSecurityRequirement,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -228,6 +235,20 @@ impl GroupMessageSecurityProfile {
             Self::GroupE2ee => "group-e2ee",
             Self::Custom(value) => value.as_str(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupSecurityRequirement {
+    #[default]
+    Default,
+    Required,
+}
+
+impl GroupSecurityRequirement {
+    pub fn required(self) -> bool {
+        matches!(self, Self::Required)
     }
 }
 

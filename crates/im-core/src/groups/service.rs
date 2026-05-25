@@ -11,6 +11,17 @@ impl<'a> GroupService<'a> {
         &self,
         request: super::GroupCreateRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
+        let secure_required = group_create_uses_e2ee(&request);
+        #[cfg(not(feature = "group-e2ee"))]
+        if secure_required {
+            return Err(crate::ImError::unsupported("group-e2ee"));
+        }
+        #[cfg(feature = "group-e2ee")]
+        let secure_provider = if secure_required {
+            Some(crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?)
+        } else {
+            None
+        };
         let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
             self.client,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -19,6 +30,27 @@ impl<'a> GroupService<'a> {
         .create(request, None)?;
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state(&mut result, true);
+        #[cfg(feature = "group-e2ee")]
+        if secure_required {
+            let group =
+                group_did(&result).ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                    detail: "group E2EE create requires created group DID".to_owned(),
+                })?;
+            let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                secure_provider.expect("secure provider initialized when secure_required"),
+            )
+            .create_secure_group(
+                crate::internal::group_e2ee::lifecycle::GroupE2eeCreateInput {
+                    group: crate::ids::GroupRef::parse(&group)?,
+                    credentials: None,
+                    service_did: None,
+                },
+            )?;
+            result.warnings.extend(secure.warnings);
+        }
         Ok(result)
     }
 
@@ -43,6 +75,16 @@ impl<'a> GroupService<'a> {
         request: super::GroupLeaveRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
         let group = request.group.as_str().to_string();
+        #[cfg(not(feature = "group-e2ee"))]
+        if request.security.required() {
+            return Err(crate::ImError::unsupported("group-e2ee"));
+        }
+        #[cfg(feature = "group-e2ee")]
+        let secure_provider = if request.security.required() {
+            Some(crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?)
+        } else {
+            None
+        };
         if let Ok(Some(snapshot)) =
             crate::internal::group_runtime::cache::cached_group_snapshot(self.client, &group)
         {
@@ -52,8 +94,34 @@ impl<'a> GroupService<'a> {
                     "group owner cannot leave the group",
                 ));
             }
-            if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot) {
+            if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot)
+                && !request.security.required()
+            {
                 return Err(crate::ImError::unsupported("group-e2ee"));
+            }
+        }
+        if request.security.required() {
+            #[cfg(feature = "group-e2ee")]
+            {
+                let secure =
+                    crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
+                        self.client,
+                        crate::internal::auth::session::FileSessionProvider::new(self.client),
+                        crate::internal::transport::CoreHttpTransport::new(self.client),
+                        secure_provider.expect("secure provider initialized when secure_required"),
+                    )
+                    .leave_secure_group(
+                        crate::internal::group_e2ee::lifecycle::GroupE2eeLeaveInput {
+                            group: request.group,
+                            reason_text: request.reason_text,
+                            owner_leave_commit: false,
+                            credentials: None,
+                        },
+                    )?;
+                return Ok(super::GroupReadResult::from_raw_response(
+                    secure.delivery,
+                    secure.warnings,
+                ));
             }
         }
         let result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
@@ -71,11 +139,27 @@ impl<'a> GroupService<'a> {
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
         let group = request.group.as_str().to_string();
+        #[cfg(feature = "group-e2ee")]
+        let member = request.member.as_str().to_string();
+        #[cfg(feature = "group-e2ee")]
+        let reason_text = request.reason_text.clone();
+        #[cfg(not(feature = "group-e2ee"))]
+        if request.security.required() {
+            return Err(crate::ImError::unsupported("group-e2ee"));
+        }
+        #[cfg(feature = "group-e2ee")]
+        let secure_provider = if request.security.required() {
+            Some(crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?)
+        } else {
+            None
+        };
         if let Ok(Some(snapshot)) = crate::internal::group_runtime::cache::cached_group_snapshot(
             self.client,
             request.group.as_str(),
         ) {
-            if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot) {
+            if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot)
+                && !request.security.required()
+            {
                 return Err(crate::ImError::unsupported("group-e2ee"));
             }
         }
@@ -87,6 +171,26 @@ impl<'a> GroupService<'a> {
         .add_member(request, None)?;
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state_for(&mut result, &group, true);
+        #[cfg(feature = "group-e2ee")]
+        if let Some(secure_provider) = secure_provider {
+            let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                secure_provider,
+            )
+            .add_secure_member(
+                crate::internal::group_e2ee::lifecycle::GroupE2eeMemberMutationInput {
+                    group: crate::ids::GroupRef::parse(&group)?,
+                    member: crate::ids::Did::parse(&member)?,
+                    reason_text,
+                    leave_request_id: None,
+                    credentials: None,
+                    service_did: None,
+                },
+            )?;
+            result.warnings.extend(secure.warnings);
+        }
         Ok(result)
     }
 
@@ -95,12 +199,50 @@ impl<'a> GroupService<'a> {
         request: super::GroupMemberMutationRequest,
     ) -> crate::ImResult<super::GroupReadResult> {
         let group = request.group.as_str().to_string();
+        #[cfg(not(feature = "group-e2ee"))]
+        if request.security.required() {
+            return Err(crate::ImError::unsupported("group-e2ee"));
+        }
+        #[cfg(feature = "group-e2ee")]
+        let secure_provider = if request.security.required() {
+            Some(crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?)
+        } else {
+            None
+        };
         if let Ok(Some(snapshot)) = crate::internal::group_runtime::cache::cached_group_snapshot(
             self.client,
             request.group.as_str(),
         ) {
-            if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot) {
+            if crate::internal::group_runtime::cache::group_snapshot_uses_e2ee(&snapshot)
+                && !request.security.required()
+            {
                 return Err(crate::ImError::unsupported("group-e2ee"));
+            }
+        }
+        if request.security.required() {
+            #[cfg(feature = "group-e2ee")]
+            {
+                let secure =
+                    crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
+                        self.client,
+                        crate::internal::auth::session::FileSessionProvider::new(self.client),
+                        crate::internal::transport::CoreHttpTransport::new(self.client),
+                        secure_provider.expect("secure provider initialized when secure_required"),
+                    )
+                    .remove_secure_member(
+                        crate::internal::group_e2ee::lifecycle::GroupE2eeMemberMutationInput {
+                            group: request.group,
+                            member: request.member,
+                            reason_text: request.reason_text,
+                            leave_request_id: None,
+                            credentials: None,
+                            service_did: None,
+                        },
+                    )?;
+                let mut result =
+                    super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
+                self.refresh_group_state_for(&mut result, &group, true);
+                return Ok(result);
             }
         }
         let mut result = crate::internal::group_runtime::lifecycle::GroupLifecycleRuntime::new(
@@ -359,4 +501,18 @@ fn group_did(result: &super::GroupReadResult) -> Option<String> {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
+}
+
+fn group_create_uses_e2ee(request: &super::GroupCreateRequest) -> bool {
+    request.security.required()
+        || request.e2ee
+        || matches!(
+            request.message_security_profile,
+            Some(super::GroupMessageSecurityProfile::GroupE2ee)
+        )
+        || matches!(
+            request.message_security_profile.as_ref(),
+            Some(super::GroupMessageSecurityProfile::Custom(value))
+                if value.trim() == "group-e2ee"
+        )
 }

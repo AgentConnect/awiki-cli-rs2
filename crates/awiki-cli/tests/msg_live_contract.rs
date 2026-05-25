@@ -79,14 +79,9 @@ fn msg_send_live_posts_direct_rpc_and_persists_outbound_row_like_go() {
 }
 
 #[test]
-fn msg_send_secure_on_is_stable_unsupported_without_secure_direct_legacy_path() {
+fn msg_send_secure_on_alias_dry_run_reaches_im_core_secure_plan() {
     let workspace = TempDir::new("msg-live-secure-send").expect("workspace");
-    write_msg_config(workspace.path(), "https://placeholder.invalid");
-    let manager = Manager::new(test_paths(workspace.path()));
-    register_generated_msg_identity(&manager, "alice-secure", "alice", "jwt-alice");
-    let bob = register_generated_msg_identity(&manager, "bob-secure", "bob", "jwt-bob");
-    let server = TestServer::new(vec![]);
-    write_msg_config(workspace.path(), &server.base_url());
+    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
 
     let output = awiki_cmd(
         &[
@@ -95,17 +90,27 @@ fn msg_send_secure_on_is_stable_unsupported_without_secure_direct_legacy_path() 
             "msg",
             "send",
             "--to",
-            &bob.did,
+            bob_did,
             "--text",
             "hello secure live",
             "--secure",
             "on",
+            "--dry-run",
         ],
         workspace.path(),
     );
 
-    assert_secure_direct_unsupported(&output, "msg.send");
-    assert_eq!(server.requests().len(), 0);
+    assert_success(&output);
+    let envelope = success_json(&output);
+    assert_eq!(envelope["summary"], "Dry run: message send planned");
+    assert_eq!(envelope["data"]["plan"]["action"], "direct.send");
+    assert_eq!(envelope["data"]["plan"]["target"]["did"], bob_did);
+    assert_eq!(envelope["data"]["plan"]["secure"], true);
+    assert_eq!(envelope["data"]["plan"]["security"], "required");
+    assert_warning_contains(
+        &envelope,
+        "--secure on is deprecated; use --secure required.",
+    );
 }
 
 #[test]
@@ -690,6 +695,16 @@ fn success_json(output: &Output) -> Value {
         serde_json::from_slice(&output.stdout).expect("stdout should be a JSON success envelope");
     assert_eq!(envelope["ok"], true);
     envelope
+}
+
+fn assert_warning_contains(envelope: &Value, expected: &str) {
+    let warnings = envelope["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|value| value.contains(expected))),
+        "expected warning {expected:?}; got {warnings:?}"
+    );
 }
 
 fn error_json(output: &Output) -> Value {
