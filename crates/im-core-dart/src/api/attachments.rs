@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use crate::dto::{
     attachment::{
-        DartAttachmentSendRequest, DartDownloadAttachmentRequest, DartDownloadedAttachment,
+        DartAttachmentSendRequest, DartAttachmentSendResult, DartDownloadAttachmentRequest,
+        DartDownloadedAttachment,
     },
     error::DartImError,
-    message::DartSendMessageResult,
 };
 
 pub fn send_attachment(
     client: Arc<crate::api::client::DartImClient>,
     request: DartAttachmentSendRequest,
-) -> Result<DartSendMessageResult, DartImError> {
+) -> Result<DartAttachmentSendResult, DartImError> {
     client.with_inner(|inner| {
         let (target, request) = request.into_core()?;
         inner

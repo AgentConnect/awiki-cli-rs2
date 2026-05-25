@@ -6,94 +6,101 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+enum DartAuthScope { userProfile, messaging, groupMessaging }
 
+class DartAuthStatus {
+  final String subject;
+  final bool hasSession;
+  final String? expiresAt;
+  final bool needsRefresh;
+  final List<String> warnings;
 
+  const DartAuthStatus({
+    required this.subject,
+    required this.hasSession,
+    this.expiresAt,
+    required this.needsRefresh,
+    required this.warnings,
+  });
 
+  @override
+  int get hashCode =>
+      subject.hashCode ^
+      hasSession.hashCode ^
+      expiresAt.hashCode ^
+      needsRefresh.hashCode ^
+      warnings.hashCode;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartAuthStatus &&
+          runtimeType == other.runtimeType &&
+          subject == other.subject &&
+          hasSession == other.hasSession &&
+          expiresAt == other.expiresAt &&
+          needsRefresh == other.needsRefresh &&
+          warnings == other.warnings;
+}
 
-            enum DartAuthScope {
-                    userProfile,
-messaging,
-groupMessaging,
-                    ;
+class DartSessionBundle {
+  final String subject;
+  final DartAuthScope scope;
+  final String? expiresAt;
+  final bool refreshed;
 
-                }
+  const DartSessionBundle({
+    required this.subject,
+    required this.scope,
+    this.expiresAt,
+    required this.refreshed,
+  });
 
-class DartAuthStatus  {
-                final String subject;
-final bool hasSession;
-final String? expiresAt;
-final bool needsRefresh;
-final List<String> warnings;
+  @override
+  int get hashCode =>
+      subject.hashCode ^
+      scope.hashCode ^
+      expiresAt.hashCode ^
+      refreshed.hashCode;
 
-                const DartAuthStatus({required this.subject ,required this.hasSession ,this.expiresAt ,required this.needsRefresh ,required this.warnings ,});
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSessionBundle &&
+          runtimeType == other.runtimeType &&
+          subject == other.subject &&
+          scope == other.scope &&
+          expiresAt == other.expiresAt &&
+          refreshed == other.refreshed;
+}
 
+class DartSessionUpdate {
+  final String subject;
+  final String? previousExpiresAt;
+  final String? newExpiresAt;
+  final bool refreshed;
 
+  const DartSessionUpdate({
+    required this.subject,
+    this.previousExpiresAt,
+    this.newExpiresAt,
+    required this.refreshed,
+  });
 
+  @override
+  int get hashCode =>
+      subject.hashCode ^
+      previousExpiresAt.hashCode ^
+      newExpiresAt.hashCode ^
+      refreshed.hashCode;
 
-
-        @override
-        int get hashCode => subject.hashCode^hasSession.hashCode^expiresAt.hashCode^needsRefresh.hashCode^warnings.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartAuthStatus &&
-                runtimeType == other.runtimeType
-                && subject == other.subject&& hasSession == other.hasSession&& expiresAt == other.expiresAt&& needsRefresh == other.needsRefresh&& warnings == other.warnings;
-
-            }
-
-class DartSessionBundle  {
-                final String subject;
-final DartAuthScope scope;
-final String? expiresAt;
-final bool refreshed;
-
-                const DartSessionBundle({required this.subject ,required this.scope ,this.expiresAt ,required this.refreshed ,});
-
-
-
-
-
-        @override
-        int get hashCode => subject.hashCode^scope.hashCode^expiresAt.hashCode^refreshed.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartSessionBundle &&
-                runtimeType == other.runtimeType
-                && subject == other.subject&& scope == other.scope&& expiresAt == other.expiresAt&& refreshed == other.refreshed;
-
-            }
-
-class DartSessionUpdate  {
-                final String subject;
-final String? previousExpiresAt;
-final String? newExpiresAt;
-final bool refreshed;
-
-                const DartSessionUpdate({required this.subject ,this.previousExpiresAt ,this.newExpiresAt ,required this.refreshed ,});
-
-
-
-
-
-        @override
-        int get hashCode => subject.hashCode^previousExpiresAt.hashCode^newExpiresAt.hashCode^refreshed.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartSessionUpdate &&
-                runtimeType == other.runtimeType
-                && subject == other.subject&& previousExpiresAt == other.previousExpiresAt&& newExpiresAt == other.newExpiresAt&& refreshed == other.refreshed;
-
-            }
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartSessionUpdate &&
+          runtimeType == other.runtimeType &&
+          subject == other.subject &&
+          previousExpiresAt == other.previousExpiresAt &&
+          newExpiresAt == other.newExpiresAt &&
+          refreshed == other.refreshed;
+}

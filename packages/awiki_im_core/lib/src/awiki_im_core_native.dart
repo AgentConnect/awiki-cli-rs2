@@ -513,7 +513,7 @@ class AttachmentApi {
 
   final AwikiImClient _client;
 
-  Future<SendMessageResult> send(AttachmentSendRequest request) async {
+  Future<AttachmentSendResult> send(AttachmentSendRequest request) async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
       () => gen_attachments.sendAttachment(
@@ -1324,6 +1324,28 @@ extension on DownloadAttachmentRequest {
         destination: destination._toGen(),
         overwrite: overwrite,
       );
+}
+
+extension on gen_attachment.DartUploadedAttachment {
+  UploadedAttachment _toModel() => UploadedAttachment(
+    attachmentId: attachmentId,
+    filename: filename,
+    mimeType: mimeType,
+    sizeBytes: sizeBytes.toInt(),
+    size: size,
+    digestB64u: digestB64U,
+    objectUri: objectUri,
+  );
+}
+
+extension on gen_attachment.DartAttachmentSendResult {
+  AttachmentSendResult _toModel() => AttachmentSendResult(
+    message: message._toModel(),
+    targetKind: targetKind,
+    targetDid: targetDid,
+    attachment: attachment._toModel(),
+    manifestJson: manifestJson,
+  );
 }
 
 extension on gen_attachment.DartDownloadedAttachmentDestination {

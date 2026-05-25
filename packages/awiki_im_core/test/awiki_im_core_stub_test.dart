@@ -59,6 +59,39 @@ void main() {
     expect(page.items.single.id, 'mail-1');
   });
 
+  test('attachment send model exposes upload metadata', () {
+    const result = AttachmentSendResult(
+      message: SendMessageResult(
+        message: Message(
+          id: 'msg-1',
+          threadKind: 'direct',
+          threadId: 'did:example:bob',
+          direction: MessageDirection.outgoing,
+          sender: 'did:example:alice',
+          body: MessageBodyView(unsupportedContentType: 'application/json'),
+          metadata: MessageMetadata(),
+        ),
+        deliveryState: 'sent',
+      ),
+      targetKind: 'direct',
+      targetDid: 'did:example:bob',
+      attachment: UploadedAttachment(
+        attachmentId: 'att-1',
+        filename: 'note.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 5,
+        size: '5',
+        digestB64u: 'digest',
+        objectUri: 'object://att-1',
+      ),
+      manifestJson: '{"attachments":[{"id":"att-1"}]}',
+    );
+
+    expect(result.message.message.id, 'msg-1');
+    expect(result.attachment.attachmentId, 'att-1');
+    expect(result.manifestJson, contains('att-1'));
+  });
+
   test('secure e2ee API shape is stable', () {
     const request = SendTextRequest(
       target: MessageTarget.direct('did:example:bob'),

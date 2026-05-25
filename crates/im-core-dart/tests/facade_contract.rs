@@ -47,6 +47,74 @@ fn attachment_request_maps_bytes_input_without_bytes_len_placeholder() {
 }
 
 #[test]
+fn attachment_send_result_preserves_upload_metadata_for_dart() {
+    let core = im_core::attachments::AttachmentSendResult {
+        message: im_core::messages::SendMessageResult {
+            message: im_core::messages::Message {
+                id: im_core::ids::MessageId::parse("msg-1").expect("message id"),
+                thread: im_core::messages::ThreadRef::Direct(
+                    im_core::ids::PeerRef::parse("did:example:bob", "example.com")
+                        .expect("peer ref"),
+                ),
+                direction: im_core::messages::MessageDirection::Outgoing,
+                sender: im_core::ids::PeerRef::parse("did:example:alice", "example.com")
+                    .expect("sender ref"),
+                receiver: Some(
+                    im_core::ids::PeerRef::parse("did:example:bob", "example.com")
+                        .expect("receiver ref"),
+                ),
+                group: None,
+                body: im_core::messages::MessageBodyView::Unsupported {
+                    content_type: Some(
+                        im_core::attachments::attachment_manifest_content_type().to_string(),
+                    ),
+                },
+                sent_at: Some("2026-05-24T00:00:00Z".to_string()),
+                received_at: None,
+                metadata: im_core::messages::MessageMetadata::default(),
+            },
+            delivery: im_core::messages::DeliveryState::Sent,
+            warnings: vec!["message warning".to_string()],
+        },
+        target_kind: "direct".to_string(),
+        target_did: "did:example:bob".to_string(),
+        attachment: im_core::attachments::UploadedAttachment {
+            attachment_id: "att-1".to_string(),
+            filename: "note.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 5,
+            size: "5".to_string(),
+            digest_b64u: "digest".to_string(),
+            object_uri: "object://att-1".to_string(),
+        },
+        manifest: serde_json::json!({
+            "attachments": [{
+                "id": "att-1",
+                "filename": "note.txt"
+            }]
+        }),
+    };
+
+    let dart: awiki_im_core::dto::attachment::DartAttachmentSendResult = core.into();
+    assert_eq!(dart.message.message.id, "msg-1");
+    assert_eq!(dart.message.delivery_state, "sent");
+    assert_eq!(dart.message.warnings, vec!["message warning"]);
+    assert_eq!(dart.target_kind, "direct");
+    assert_eq!(dart.target_did, "did:example:bob");
+    assert_eq!(dart.attachment.attachment_id, "att-1");
+    assert_eq!(dart.attachment.filename, "note.txt");
+    assert_eq!(dart.attachment.mime_type, "text/plain");
+    assert_eq!(dart.attachment.size_bytes, 5);
+    assert_eq!(dart.attachment.size, "5");
+    assert_eq!(dart.attachment.digest_b64u, "digest");
+    assert_eq!(dart.attachment.object_uri, "object://att-1");
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&dart.manifest_json).expect("manifest json is preserved");
+    assert_eq!(manifest["attachments"][0]["id"], "att-1");
+}
+
+#[test]
 fn dart_message_security_exposes_target_independent_e2ee_required() {
     let mode = awiki_im_core::dto::message::DartMessageSecurityMode::E2eeRequired;
     let mapped: im_core::messages::MessageSecurityMode = mode.into();

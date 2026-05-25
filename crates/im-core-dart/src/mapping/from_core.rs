@@ -1,5 +1,8 @@
 use crate::dto::{
-    attachment::{DartDownloadedAttachment, DartDownloadedAttachmentDestination},
+    attachment::{
+        DartAttachmentSendResult, DartDownloadedAttachment, DartDownloadedAttachmentDestination,
+        DartUploadedAttachment,
+    },
     auth::{DartAuthScope, DartAuthStatus, DartSessionBundle, DartSessionUpdate},
     directory::{DartDirectoryResolution, DartRelationStatus},
     email::{
@@ -538,9 +541,29 @@ impl From<im_core::messages::SendMessageResult> for DartSendMessageResult {
     }
 }
 
-impl From<im_core::attachments::AttachmentSendResult> for DartSendMessageResult {
+impl From<im_core::attachments::UploadedAttachment> for DartUploadedAttachment {
+    fn from(value: im_core::attachments::UploadedAttachment) -> Self {
+        Self {
+            attachment_id: value.attachment_id,
+            filename: value.filename,
+            mime_type: value.mime_type,
+            size_bytes: value.size_bytes,
+            size: value.size,
+            digest_b64u: value.digest_b64u,
+            object_uri: value.object_uri,
+        }
+    }
+}
+
+impl From<im_core::attachments::AttachmentSendResult> for DartAttachmentSendResult {
     fn from(value: im_core::attachments::AttachmentSendResult) -> Self {
-        value.message.into()
+        Self {
+            message: value.message.into(),
+            target_kind: value.target_kind,
+            target_did: value.target_did,
+            attachment: value.attachment.into(),
+            manifest_json: value.manifest.to_string(),
+        }
     }
 }
 

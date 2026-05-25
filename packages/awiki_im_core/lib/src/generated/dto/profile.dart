@@ -6,63 +6,77 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+class DartProfilePatch {
+  final String? displayName;
+  final String? bio;
+  final List<String>? tags;
+  final String? markdown;
 
+  const DartProfilePatch({
+    this.displayName,
+    this.bio,
+    this.tags,
+    this.markdown,
+  });
 
+  @override
+  int get hashCode =>
+      displayName.hashCode ^ bio.hashCode ^ tags.hashCode ^ markdown.hashCode;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartProfilePatch &&
+          runtimeType == other.runtimeType &&
+          displayName == other.displayName &&
+          bio == other.bio &&
+          tags == other.tags &&
+          markdown == other.markdown;
+}
 
+class DartUserProfile {
+  final String subject;
+  final String? handle;
+  final String? displayName;
+  final String? bio;
+  final List<String> tags;
+  final String? markdown;
+  final String? avatarUrl;
+  final String? updatedAt;
 
-            class DartProfilePatch  {
-                final String? displayName;
-final String? bio;
-final List<String>? tags;
-final String? markdown;
+  const DartUserProfile({
+    required this.subject,
+    this.handle,
+    this.displayName,
+    this.bio,
+    required this.tags,
+    this.markdown,
+    this.avatarUrl,
+    this.updatedAt,
+  });
 
-                const DartProfilePatch({this.displayName ,this.bio ,this.tags ,this.markdown ,});
+  @override
+  int get hashCode =>
+      subject.hashCode ^
+      handle.hashCode ^
+      displayName.hashCode ^
+      bio.hashCode ^
+      tags.hashCode ^
+      markdown.hashCode ^
+      avatarUrl.hashCode ^
+      updatedAt.hashCode;
 
-
-
-
-
-        @override
-        int get hashCode => displayName.hashCode^bio.hashCode^tags.hashCode^markdown.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartProfilePatch &&
-                runtimeType == other.runtimeType
-                && displayName == other.displayName&& bio == other.bio&& tags == other.tags&& markdown == other.markdown;
-
-            }
-
-class DartUserProfile  {
-                final String subject;
-final String? handle;
-final String? displayName;
-final String? bio;
-final List<String> tags;
-final String? markdown;
-final String? avatarUrl;
-final String? updatedAt;
-
-                const DartUserProfile({required this.subject ,this.handle ,this.displayName ,this.bio ,required this.tags ,this.markdown ,this.avatarUrl ,this.updatedAt ,});
-
-
-
-
-
-        @override
-        int get hashCode => subject.hashCode^handle.hashCode^displayName.hashCode^bio.hashCode^tags.hashCode^markdown.hashCode^avatarUrl.hashCode^updatedAt.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartUserProfile &&
-                runtimeType == other.runtimeType
-                && subject == other.subject&& handle == other.handle&& displayName == other.displayName&& bio == other.bio&& tags == other.tags&& markdown == other.markdown&& avatarUrl == other.avatarUrl&& updatedAt == other.updatedAt;
-
-            }
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartUserProfile &&
+          runtimeType == other.runtimeType &&
+          subject == other.subject &&
+          handle == other.handle &&
+          displayName == other.displayName &&
+          bio == other.bio &&
+          tags == other.tags &&
+          markdown == other.markdown &&
+          avatarUrl == other.avatarUrl &&
+          updatedAt == other.updatedAt;
+}

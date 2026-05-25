@@ -7,158 +7,241 @@ import '../frb_generated.dart';
 import 'message.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
+class DartCreateGroupRequest {
+  final String name;
+  final String? description;
+  final String? discoverability;
+  final String? admissionMode;
+  final String? messageSecurityProfile;
+  final bool e2Ee;
+  final String? slug;
+  final String? goal;
+  final String? rules;
+  final String? messagePrompt;
+  final String? docUrl;
+  final bool? attachmentsAllowed;
+  final String? maxMembers;
+  final PlatformInt64? memberMaxMessages;
+  final PlatformInt64? memberMaxTotalChars;
 
+  const DartCreateGroupRequest({
+    required this.name,
+    this.description,
+    this.discoverability,
+    this.admissionMode,
+    this.messageSecurityProfile,
+    required this.e2Ee,
+    this.slug,
+    this.goal,
+    this.rules,
+    this.messagePrompt,
+    this.docUrl,
+    this.attachmentsAllowed,
+    this.maxMembers,
+    this.memberMaxMessages,
+    this.memberMaxTotalChars,
+  });
 
+  @override
+  int get hashCode =>
+      name.hashCode ^
+      description.hashCode ^
+      discoverability.hashCode ^
+      admissionMode.hashCode ^
+      messageSecurityProfile.hashCode ^
+      e2Ee.hashCode ^
+      slug.hashCode ^
+      goal.hashCode ^
+      rules.hashCode ^
+      messagePrompt.hashCode ^
+      docUrl.hashCode ^
+      attachmentsAllowed.hashCode ^
+      maxMembers.hashCode ^
+      memberMaxMessages.hashCode ^
+      memberMaxTotalChars.hashCode;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartCreateGroupRequest &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          description == other.description &&
+          discoverability == other.discoverability &&
+          admissionMode == other.admissionMode &&
+          messageSecurityProfile == other.messageSecurityProfile &&
+          e2Ee == other.e2Ee &&
+          slug == other.slug &&
+          goal == other.goal &&
+          rules == other.rules &&
+          messagePrompt == other.messagePrompt &&
+          docUrl == other.docUrl &&
+          attachmentsAllowed == other.attachmentsAllowed &&
+          maxMembers == other.maxMembers &&
+          memberMaxMessages == other.memberMaxMessages &&
+          memberMaxTotalChars == other.memberMaxTotalChars;
+}
 
+class DartGroupMember {
+  final String? did;
+  final String? handle;
+  final String? role;
+  final String? status;
+  final String? joinedAt;
 
-            class DartCreateGroupRequest  {
-                final String name;
-final String? description;
-final String? discoverability;
-final String? admissionMode;
-final String? messageSecurityProfile;
-final bool e2Ee;
-final String? slug;
-final String? goal;
-final String? rules;
-final String? messagePrompt;
-final String? docUrl;
-final bool? attachmentsAllowed;
-final String? maxMembers;
-final PlatformInt64? memberMaxMessages;
-final PlatformInt64? memberMaxTotalChars;
+  const DartGroupMember({
+    this.did,
+    this.handle,
+    this.role,
+    this.status,
+    this.joinedAt,
+  });
 
-                const DartCreateGroupRequest({required this.name ,this.description ,this.discoverability ,this.admissionMode ,this.messageSecurityProfile ,required this.e2Ee ,this.slug ,this.goal ,this.rules ,this.messagePrompt ,this.docUrl ,this.attachmentsAllowed ,this.maxMembers ,this.memberMaxMessages ,this.memberMaxTotalChars ,});
+  @override
+  int get hashCode =>
+      did.hashCode ^
+      handle.hashCode ^
+      role.hashCode ^
+      status.hashCode ^
+      joinedAt.hashCode;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartGroupMember &&
+          runtimeType == other.runtimeType &&
+          did == other.did &&
+          handle == other.handle &&
+          role == other.role &&
+          status == other.status &&
+          joinedAt == other.joinedAt;
+}
 
+class DartGroupReadResult {
+  final DartGroupSnapshot? group;
+  final List<DartGroupSummary> groups;
+  final List<DartGroupMember> members;
+  final DartMessagePage messages;
+  final int? total;
+  final String? source;
+  final List<String> warnings;
 
+  const DartGroupReadResult({
+    this.group,
+    required this.groups,
+    required this.members,
+    required this.messages,
+    this.total,
+    this.source,
+    required this.warnings,
+  });
 
+  @override
+  int get hashCode =>
+      group.hashCode ^
+      groups.hashCode ^
+      members.hashCode ^
+      messages.hashCode ^
+      total.hashCode ^
+      source.hashCode ^
+      warnings.hashCode;
 
-        @override
-        int get hashCode => name.hashCode^description.hashCode^discoverability.hashCode^admissionMode.hashCode^messageSecurityProfile.hashCode^e2Ee.hashCode^slug.hashCode^goal.hashCode^rules.hashCode^messagePrompt.hashCode^docUrl.hashCode^attachmentsAllowed.hashCode^maxMembers.hashCode^memberMaxMessages.hashCode^memberMaxTotalChars.hashCode;
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartGroupReadResult &&
+          runtimeType == other.runtimeType &&
+          group == other.group &&
+          groups == other.groups &&
+          members == other.members &&
+          messages == other.messages &&
+          total == other.total &&
+          source == other.source &&
+          warnings == other.warnings;
+}
 
+class DartGroupSnapshot {
+  final String? id;
+  final String did;
+  final String? name;
+  final String? description;
+  final String? myRole;
+  final String? membershipStatus;
+  final int? memberCount;
+  final String? lastMessageAt;
 
+  const DartGroupSnapshot({
+    this.id,
+    required this.did,
+    this.name,
+    this.description,
+    this.myRole,
+    this.membershipStatus,
+    this.memberCount,
+    this.lastMessageAt,
+  });
 
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartCreateGroupRequest &&
-                runtimeType == other.runtimeType
-                && name == other.name&& description == other.description&& discoverability == other.discoverability&& admissionMode == other.admissionMode&& messageSecurityProfile == other.messageSecurityProfile&& e2Ee == other.e2Ee&& slug == other.slug&& goal == other.goal&& rules == other.rules&& messagePrompt == other.messagePrompt&& docUrl == other.docUrl&& attachmentsAllowed == other.attachmentsAllowed&& maxMembers == other.maxMembers&& memberMaxMessages == other.memberMaxMessages&& memberMaxTotalChars == other.memberMaxTotalChars;
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      did.hashCode ^
+      name.hashCode ^
+      description.hashCode ^
+      myRole.hashCode ^
+      membershipStatus.hashCode ^
+      memberCount.hashCode ^
+      lastMessageAt.hashCode;
 
-            }
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartGroupSnapshot &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          did == other.did &&
+          name == other.name &&
+          description == other.description &&
+          myRole == other.myRole &&
+          membershipStatus == other.membershipStatus &&
+          memberCount == other.memberCount &&
+          lastMessageAt == other.lastMessageAt;
+}
 
-class DartGroupMember  {
-                final String? did;
-final String? handle;
-final String? role;
-final String? status;
-final String? joinedAt;
+class DartGroupSummary {
+  final String? id;
+  final String did;
+  final String? name;
+  final String? membershipStatus;
+  final int? memberCount;
+  final String? lastMessageAt;
 
-                const DartGroupMember({this.did ,this.handle ,this.role ,this.status ,this.joinedAt ,});
+  const DartGroupSummary({
+    this.id,
+    required this.did,
+    this.name,
+    this.membershipStatus,
+    this.memberCount,
+    this.lastMessageAt,
+  });
 
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      did.hashCode ^
+      name.hashCode ^
+      membershipStatus.hashCode ^
+      memberCount.hashCode ^
+      lastMessageAt.hashCode;
 
-
-
-
-        @override
-        int get hashCode => did.hashCode^handle.hashCode^role.hashCode^status.hashCode^joinedAt.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartGroupMember &&
-                runtimeType == other.runtimeType
-                && did == other.did&& handle == other.handle&& role == other.role&& status == other.status&& joinedAt == other.joinedAt;
-
-            }
-
-class DartGroupReadResult  {
-                final DartGroupSnapshot? group;
-final List<DartGroupSummary> groups;
-final List<DartGroupMember> members;
-final DartMessagePage messages;
-final int? total;
-final String? source;
-final List<String> warnings;
-
-                const DartGroupReadResult({this.group ,required this.groups ,required this.members ,required this.messages ,this.total ,this.source ,required this.warnings ,});
-
-
-
-
-
-        @override
-        int get hashCode => group.hashCode^groups.hashCode^members.hashCode^messages.hashCode^total.hashCode^source.hashCode^warnings.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartGroupReadResult &&
-                runtimeType == other.runtimeType
-                && group == other.group&& groups == other.groups&& members == other.members&& messages == other.messages&& total == other.total&& source == other.source&& warnings == other.warnings;
-
-            }
-
-class DartGroupSnapshot  {
-                final String? id;
-final String did;
-final String? name;
-final String? description;
-final String? myRole;
-final String? membershipStatus;
-final int? memberCount;
-final String? lastMessageAt;
-
-                const DartGroupSnapshot({this.id ,required this.did ,this.name ,this.description ,this.myRole ,this.membershipStatus ,this.memberCount ,this.lastMessageAt ,});
-
-
-
-
-
-        @override
-        int get hashCode => id.hashCode^did.hashCode^name.hashCode^description.hashCode^myRole.hashCode^membershipStatus.hashCode^memberCount.hashCode^lastMessageAt.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartGroupSnapshot &&
-                runtimeType == other.runtimeType
-                && id == other.id&& did == other.did&& name == other.name&& description == other.description&& myRole == other.myRole&& membershipStatus == other.membershipStatus&& memberCount == other.memberCount&& lastMessageAt == other.lastMessageAt;
-
-            }
-
-class DartGroupSummary  {
-                final String? id;
-final String did;
-final String? name;
-final String? membershipStatus;
-final int? memberCount;
-final String? lastMessageAt;
-
-                const DartGroupSummary({this.id ,required this.did ,this.name ,this.membershipStatus ,this.memberCount ,this.lastMessageAt ,});
-
-
-
-
-
-        @override
-        int get hashCode => id.hashCode^did.hashCode^name.hashCode^membershipStatus.hashCode^memberCount.hashCode^lastMessageAt.hashCode;
-
-
-
-        @override
-        bool operator ==(Object other) =>
-            identical(this, other) ||
-            other is DartGroupSummary &&
-                runtimeType == other.runtimeType
-                && id == other.id&& did == other.did&& name == other.name&& membershipStatus == other.membershipStatus&& memberCount == other.memberCount&& lastMessageAt == other.lastMessageAt;
-
-            }
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartGroupSummary &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          did == other.did &&
+          name == other.name &&
+          membershipStatus == other.membershipStatus &&
+          memberCount == other.memberCount &&
+          lastMessageAt == other.lastMessageAt;
+}

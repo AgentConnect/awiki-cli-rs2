@@ -7,7 +7,5 @@ import '../dto/error.dart';
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-
-
-
-            Future<void>  unsupported({required String capability }) => RustLib.instance.api.crateApiUnsupportedUnsupported(capability: capability);
+Future<void> unsupported({required String capability}) =>
+    RustLib.instance.api.crateApiUnsupportedUnsupported(capability: capability);
