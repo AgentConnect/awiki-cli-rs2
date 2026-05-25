@@ -131,9 +131,10 @@ pub(crate) fn build_group_add_member_payload(
     request: &crate::groups::GroupMemberMutationRequest,
 ) -> crate::ImResult<DirectPayload> {
     let mut body = Map::new();
+    let member = request.member.as_did()?;
     body.insert(
         "member_did".to_string(),
-        Value::String(request.member.as_str().to_string()),
+        Value::String(member.as_str().to_string()),
     );
     insert_optional_trimmed_string(
         &mut body,
@@ -155,9 +156,10 @@ pub(crate) fn build_group_remove_member_payload(
     request: &crate::groups::GroupMemberMutationRequest,
 ) -> crate::ImResult<DirectPayload> {
     let mut body = Map::new();
+    let member = request.member.as_did()?;
     body.insert(
         "member_did".to_string(),
-        Value::String(request.member.as_str().to_string()),
+        Value::String(member.as_str().to_string()),
     );
     insert_optional_trimmed_string(&mut body, "reason_text", request.reason_text.as_deref());
     insert_group_security(&mut body, request.security.required());

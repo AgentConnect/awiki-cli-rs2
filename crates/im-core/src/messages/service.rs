@@ -18,8 +18,9 @@ impl<'a> MessageService<'a> {
             (
                 super::MessageTarget::Direct(_),
                 super::MessageSecurityMode::E2eeRequired | super::MessageSecurityMode::SecureDirect,
-            ) => self.send_direct_e2ee(request),
+            ) => self.send_direct_e2ee(resolve_send_request(self.client, request)?),
             (super::MessageTarget::Direct(_), _) => {
+                let resolved = resolve_send_request(self.client, request)?;
                 let mut result = crate::internal::message_runtime::direct::DirectTextSender::new(
                     self.client,
                     crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -27,8 +28,8 @@ impl<'a> MessageService<'a> {
                 )
                 .send(
                     crate::internal::message_runtime::direct::DirectTextSend {
-                        request,
-                        resolved_target_did: None,
+                        request: resolved.request,
+                        resolved_target_did: resolved.target_did,
                         credentials: None,
                     },
                 )?;
@@ -86,7 +87,7 @@ impl<'a> MessageService<'a> {
 
     fn send_direct_e2ee(
         &self,
-        request: super::SendMessageRequest,
+        resolved: ResolvedSendRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
         #[cfg(feature = "sqlite")]
         {
@@ -97,14 +98,14 @@ impl<'a> MessageService<'a> {
                 crate::internal::transport::CoreHttpTransport::new(self.client),
             )
             .send(crate::internal::secure_direct::send::DirectSecureTextSend {
-                request,
-                resolved_target_did: None,
+                request: resolved.request,
+                resolved_target_did: resolved.target_did,
             })
             .map(|result| result.sdk_result)
         }
         #[cfg(not(feature = "sqlite"))]
         {
-            let _ = request;
+            let _ = resolved;
             Err(crate::ImError::unsupported("secure-direct"))
         }
     }
@@ -236,6 +237,40 @@ impl<'a> MessageService<'a> {
         )
         .conversations(query)
     }
+}
+
+struct ResolvedSendRequest {
+    request: super::SendMessageRequest,
+    target_did: Option<String>,
+}
+
+fn resolve_send_request(
+    client: &crate::core::ImClient,
+    request: super::SendMessageRequest,
+) -> crate::ImResult<ResolvedSendRequest> {
+    let target_did = match &request.target {
+        super::MessageTarget::Direct(peer) => resolve_direct_peer_did(client, peer)?,
+        super::MessageTarget::Group(_) => None,
+    };
+    Ok(ResolvedSendRequest {
+        request,
+        target_did,
+    })
+}
+
+fn resolve_direct_peer_did(
+    client: &crate::core::ImClient,
+    peer: &crate::ids::PeerRef,
+) -> crate::ImResult<Option<String>> {
+    let raw = peer.as_str().trim();
+    if raw.is_empty() || raw.starts_with("did:") {
+        return Ok(None);
+    }
+    let handle = crate::ids::Handle::parse(raw, "")?;
+    client
+        .directory()
+        .lookup_handle(handle)
+        .map(|lookup| Some(lookup.did.as_str().to_owned()))
 }
 
 fn validate_send_mode(

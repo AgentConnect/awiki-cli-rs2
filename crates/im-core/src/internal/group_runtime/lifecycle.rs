@@ -452,7 +452,7 @@ mod tests {
         .add_member(
             crate::groups::GroupMemberMutationRequest {
                 group: group.clone(),
-                member: member.clone(),
+                member: crate::groups::GroupMemberRef::from(member.clone()),
                 role: Some(crate::groups::GroupMemberRole::Admin),
                 reason_text: Some(" invite ".to_string()),
                 security: crate::groups::GroupSecurityRequirement::Default,
@@ -472,7 +472,7 @@ mod tests {
         .remove_member(
             crate::groups::GroupMemberMutationRequest {
                 group: group.clone(),
-                member,
+                member: crate::groups::GroupMemberRef::from(member),
                 role: Some(crate::groups::GroupMemberRole::Custom(
                     "ignored".to_string(),
                 )),

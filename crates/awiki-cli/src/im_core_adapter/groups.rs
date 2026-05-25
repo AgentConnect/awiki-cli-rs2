@@ -5,9 +5,10 @@ use im_core::groups::{
 use im_core::prelude::{
     Cursor, Did, GroupCreateRequest as SdkGroupCreateRequest,
     GroupJoinRequest as SdkGroupJoinRequest, GroupLeaveRequest as SdkGroupLeaveRequest,
-    GroupListRequest, GroupMember, GroupMemberMutationRequest, GroupMembersRequest,
-    GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch, GroupRef, GroupSnapshot,
-    GroupSummary, GroupUpdateRequest as SdkGroupUpdateRequest, Handle, Message, PageLimit,
+    GroupListRequest, GroupMember, GroupMemberMutationRequest, GroupMemberRef,
+    GroupMemberResolution, GroupMembersRequest, GroupMessagesRequest, GroupPolicyPatch,
+    GroupProfilePatch, GroupRef, GroupSnapshot, GroupSummary,
+    GroupUpdateRequest as SdkGroupUpdateRequest, Handle, Message, PageLimit,
 };
 use serde_json::{json, Value};
 
@@ -16,12 +17,6 @@ use crate::im_core_adapter::message_result::{CommandResult, MessageAdapterError,
 use crate::runtime;
 
 pub const GROUP_E2EE_SECURITY_PROFILE: &str = "group-e2ee";
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TargetResolution {
-    did: String,
-    handle: String,
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupCreateRequest {
@@ -212,10 +207,11 @@ fn mutate_group_member_via_im_core(
     if request.member.trim().is_empty() {
         return Err(MessageAdapterError::MemberRequired);
     }
-    let member = resolve_group_member_via_directory(resolved, client, &request.member)?;
+    let member = GroupMemberRef::parse(&request.member, &resolved.did_domain)
+        .map_err(im_error_to_message_error)?;
     let sdk_request = GroupMemberMutationRequest {
         group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
-        member: Did::parse(&member.did).map_err(im_error_to_message_error)?,
+        member,
         role: GroupMemberRole::parse_optional(&request.role).map_err(im_error_to_message_error)?,
         reason_text: optional_string(&request.reason_text),
         security: group_security_requirement(request.secure_required || request.e2ee),
@@ -231,15 +227,13 @@ fn mutate_group_member_via_im_core(
     let snapshot = group_snapshot_result_json(&result, &raw)
         .unwrap_or_else(|| json!({ "group_did": request.group }));
     let members = group_members_to_cli_json(&result, &raw);
+    let resolved_member = group_member_resolution_json(result.resolved_member.as_ref());
     Ok(CommandResult {
         data: json!({
             "group": snapshot,
             "members": members,
             "delivery": raw,
-            "member": {
-                "did": member.did,
-                "handle": member.handle,
-            },
+            "member": resolved_member,
         }),
         summary: format!("Updated group membership via {action}"),
         warnings: compact_warnings(warnings),
@@ -491,32 +485,6 @@ fn group_security_requirement(required: bool) -> GroupSecurityRequirement {
     }
 }
 
-fn resolve_group_member_via_directory(
-    resolved: &Resolved,
-    client: &im_core::ImClient,
-    member: &str,
-) -> Result<TargetResolution, MessageAdapterError> {
-    let member = member.trim();
-    if member.is_empty() {
-        return Err(MessageAdapterError::MemberRequired);
-    }
-    if member.starts_with("did:") {
-        return Ok(TargetResolution {
-            did: member.to_string(),
-            handle: String::new(),
-        });
-    }
-    let handle = Handle::parse(member, &resolved.did_domain).map_err(im_error_to_message_error)?;
-    let lookup = client
-        .directory()
-        .lookup_handle(handle)
-        .map_err(im_error_to_message_error)?;
-    Ok(TargetResolution {
-        did: lookup.did.as_str().to_string(),
-        handle: normalize_handle_value(lookup.handle.as_str()),
-    })
-}
-
 fn group_profile_patch(
     request: &GroupUpdateRequest,
 ) -> Result<GroupProfilePatch, MessageAdapterError> {
@@ -673,6 +641,24 @@ fn group_member_to_json(member: &GroupMember) -> Value {
         "status": member.status,
         "joined_at": member.joined_at,
     })
+}
+
+fn group_member_resolution_json(member: Option<&GroupMemberResolution>) -> Value {
+    match member {
+        Some(member) => json!({
+            "did": member.did.as_str(),
+            "handle": member
+                .handle
+                .as_ref()
+                .map(Handle::as_str)
+                .map(normalize_handle_value)
+                .unwrap_or_default(),
+        }),
+        None => json!({
+            "did": "",
+            "handle": "",
+        }),
+    }
 }
 
 fn normalize_group_member_json(mut member: Value) -> Value {

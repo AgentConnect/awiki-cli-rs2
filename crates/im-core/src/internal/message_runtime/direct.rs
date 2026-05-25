@@ -230,6 +230,7 @@ fn sdk_result_from_direct_result(
         .unwrap_or_else(|| {
             crate::internal::message_runtime::state::send_state_label(&send_state.state).to_string()
         });
+    let attributes = resolved_target_attributes(&result.target_did, &peer);
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
             id: message_id,
@@ -252,12 +253,25 @@ fn sdk_result_from_direct_result(
                 retry_plan,
                 server_sequence: None,
                 content_type: Some(content_type_for_message_type(message_type(&kind)).to_string()),
-                attributes: Vec::new(),
+                attributes,
             },
         },
         delivery,
         warnings: Vec::new(),
     })
+}
+
+fn resolved_target_attributes(
+    target_did: &str,
+    peer: &crate::ids::PeerRef,
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    if target_did.trim().is_empty() || target_did.trim() == peer.as_str().trim() {
+        return Vec::new();
+    }
+    vec![crate::messages::MessageMetadataAttribute {
+        key: "resolved_target_did".to_string(),
+        value: target_did.to_string(),
+    }]
 }
 
 fn delivery_state(result: &DirectRpcResult) -> crate::messages::DeliveryState {

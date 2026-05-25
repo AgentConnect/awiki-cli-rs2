@@ -503,7 +503,7 @@ fn group_member_mutation_request(
 ) -> crate::ImResult<crate::groups::GroupMemberMutationRequest> {
     Ok(crate::groups::GroupMemberMutationRequest {
         group: crate::ids::GroupRef::parse(group_did)?,
-        member: crate::ids::Did::parse(member_did.trim())?,
+        member: crate::groups::GroupMemberRef::parse(member_did, "")?,
         role: match role {
             Some(role) => crate::groups::GroupMemberRole::parse_optional(role)?,
             None => None,

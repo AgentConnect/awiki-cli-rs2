@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use im_core::prelude::{
     AttachmentDestination, AttachmentInput, AttachmentSelection, AttachmentSendRequest,
     AttachmentSendResult, Cursor, DeliveryState, DownloadAttachmentRequest,
-    DownloadedAttachmentDestination, GroupRef, Handle, HistoryQuery, InboxQuery, InboxScope,
-    MessageBody, MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageId, MessageKind,
+    DownloadedAttachmentDestination, GroupRef, HistoryQuery, InboxQuery, InboxScope, MessageBody,
+    MessageBodyView, MessageDeliveryOptions, MessageDirection, MessageId, MessageKind,
     MessageMetadataAttribute, MessagePage, MessageSecurityMode, MessageTarget, PageLimit, PeerRef,
     SendMessageRequest, SendMessageResult, ThreadRef, UploadedAttachment,
 };
@@ -175,18 +175,11 @@ pub fn history_request(
 
 pub fn send_text_via_im_core(
     _resolved: &Resolved,
-    manager: &crate::identity::Manager,
-    identity_name: &str,
-    _client: &im_core::ImClient,
-    mut request: SendMessageRequest,
+    _manager: &crate::identity::Manager,
+    _identity_name: &str,
+    client: &im_core::ImClient,
+    request: SendMessageRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let direct_target = resolve_direct_target_for_sdk(_client, &request)?;
-    if let Some(target) = &direct_target {
-        request.target = MessageTarget::Direct(
-            PeerRef::parse(&target.did, "").map_err(im_error_to_message_error)?,
-        );
-    }
-    let before_jwt = stored_jwt_token(manager, identity_name);
     let mut rpc_phase = crate::traceutil::rpc_phase(sdk_send_trace_operation(&request));
     let secure = matches!(
         request.security,
@@ -194,15 +187,14 @@ pub fn send_text_via_im_core(
             | MessageSecurityMode::SecureDirect
             | MessageSecurityMode::GroupE2ee
     );
-    let result = _client.messages().send(request).map_err(|err| {
+    let result = client.messages().send(request).map_err(|err| {
         rpc_phase.finish();
         im_error_to_message_error(err)
     })?;
     rpc_phase.finish();
-    mark_sdk_jwt_refresh_if_changed(manager, identity_name, before_jwt.as_deref());
     match &result.message.thread {
         ThreadRef::Direct(_) => {
-            let target = direct_target.unwrap_or_else(|| direct_target_from_result(&result));
+            let target = direct_target_from_result(&result);
             render_send_result(&target, &result, secure)
         }
         ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result, secure),
@@ -214,24 +206,17 @@ pub fn send_text_via_im_core(
 
 pub fn send_attachment_via_im_core(
     resolved: &Resolved,
-    _client: &im_core::ImClient,
-    mut target: MessageTarget,
+    client: &im_core::ImClient,
+    target: MessageTarget,
     request: AttachmentSendRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
-    let direct_target = resolve_direct_target_for_target(_client, &target)?;
-    if let Some(target_resolution) = &direct_target {
-        target = MessageTarget::Direct(
-            PeerRef::parse(&target_resolution.did, "").map_err(im_error_to_message_error)?,
-        );
-    }
-    let result = _client
+    let result = client
         .attachments()
         .send(target, request)
         .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
         ThreadRef::Direct(_) => {
-            let target =
-                direct_target.unwrap_or_else(|| direct_target_from_result(&result.message));
+            let target = direct_target_from_attachment_result(&result);
             render_direct_attachment_result(resolved, &target, &result)
         }
         ThreadRef::Group(group) => {
@@ -249,8 +234,7 @@ pub fn download_attachment_via_im_core(
     request: DownloadAttachmentRequest,
 ) -> Result<CommandResult, MessageAdapterError> {
     prepare_download_destination(&request)?;
-    let resolved_peer = resolve_direct_thread_for_sdk(client, &request.thread)?;
-    let target = download_target_value(&request.thread, resolved_peer.as_ref());
+    let thread = request.thread.clone();
     let downloaded = client
         .attachments()
         .download(request)
@@ -270,6 +254,7 @@ pub fn download_attachment_via_im_core(
     let selection = downloaded
         .selection
         .ok_or(MessageAdapterError::AttachmentMessageInvalid)?;
+    let target = download_target_value(&thread, Some(&selection));
     Ok(CommandResult {
         data: json!({
             "action": "download_attachment",
@@ -308,12 +293,12 @@ fn prepare_download_destination(
     Ok(())
 }
 
-fn download_target_value(thread: &ThreadRef, resolved_peer: Option<&TargetResolution>) -> Value {
+fn download_target_value(thread: &ThreadRef, selection: Option<&AttachmentSelection>) -> Value {
     match thread {
         ThreadRef::Direct(peer) => json!({
             "kind": "direct",
-            "did": resolved_peer
-                .map(|target| target.did.as_str())
+            "did": selection
+                .map(|selection| selection.sender_did.as_str())
                 .unwrap_or_else(|| peer.as_str()),
         }),
         ThreadRef::Group(group) => json!({
@@ -335,7 +320,6 @@ pub fn read_inbox_via_im_core(
     query: InboxQuery,
 ) -> Result<CommandResult, MessageAdapterError> {
     let _record = active_identity::require_active_identity(resolved, manager, identity_name)?;
-    let before_jwt = stored_jwt_token(manager, identity_name);
     let mut rpc_phase = crate::traceutil::rpc_phase("inbox.get");
     let page = client
         .messages()
@@ -345,7 +329,6 @@ pub fn read_inbox_via_im_core(
             im_error_to_message_error(err)
         })?;
     rpc_phase.finish();
-    mark_sdk_jwt_refresh_if_changed(manager, identity_name, before_jwt.as_deref());
     let raw = message_page_to_cli_raw(&page);
     let mut messages = messages_from_raw(&raw);
     let source = source_with_default(&raw);
@@ -723,57 +706,6 @@ fn inbox_scope(raw: &str) -> Result<InboxScope, ExitError> {
     }
 }
 
-fn resolve_direct_target_for_sdk(
-    client: &im_core::ImClient,
-    request: &SendMessageRequest,
-) -> Result<Option<TargetResolution>, MessageAdapterError> {
-    let MessageTarget::Direct(peer) = &request.target else {
-        return Ok(None);
-    };
-    resolve_direct_peer_for_sdk(client, peer)
-}
-
-fn resolve_direct_target_for_target(
-    client: &im_core::ImClient,
-    target: &MessageTarget,
-) -> Result<Option<TargetResolution>, MessageAdapterError> {
-    let MessageTarget::Direct(peer) = target else {
-        return Ok(None);
-    };
-    resolve_direct_peer_for_sdk(client, peer)
-}
-
-fn resolve_direct_thread_for_sdk(
-    client: &im_core::ImClient,
-    thread: &ThreadRef,
-) -> Result<Option<TargetResolution>, MessageAdapterError> {
-    let ThreadRef::Direct(peer) = thread else {
-        return Ok(None);
-    };
-    resolve_direct_peer_for_sdk(client, peer)
-}
-
-fn resolve_direct_peer_for_sdk(
-    client: &im_core::ImClient,
-    peer: &PeerRef,
-) -> Result<Option<TargetResolution>, MessageAdapterError> {
-    if peer.as_str().starts_with("did:") {
-        return Ok(Some(TargetResolution {
-            did: peer.as_str().to_string(),
-            handle: String::new(),
-        }));
-    }
-    let handle = Handle::parse(peer.as_str(), "").map_err(im_error_to_message_error)?;
-    let lookup = client
-        .directory()
-        .lookup_handle(handle)
-        .map_err(im_error_to_message_error)?;
-    Ok(Some(TargetResolution {
-        did: lookup.did.as_str().to_string(),
-        handle: lookup.handle.as_str().to_string(),
-    }))
-}
-
 fn message_page_to_cli_raw(page: &MessagePage) -> Value {
     json!({
         "messages": page.items.iter().map(message_to_cli_json).collect::<Vec<_>>(),
@@ -855,35 +787,6 @@ fn sdk_send_trace_operation(request: &SendMessageRequest) -> &'static str {
     }
 }
 
-fn stored_jwt_token(manager: &crate::identity::Manager, identity_name: &str) -> Option<String> {
-    let paths = manager.paths_for_identity(identity_name).ok()?;
-    let raw = std::fs::read(paths.auth_path).ok()?;
-    let value: Value = serde_json::from_slice(&raw).ok()?;
-    value
-        .get("jwt_token")
-        .or_else(|| value.get("token"))
-        .or_else(|| value.get("access_token"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn mark_sdk_jwt_refresh_if_changed(
-    manager: &crate::identity::Manager,
-    identity_name: &str,
-    before_jwt: Option<&str>,
-) {
-    let Some(after_jwt) = stored_jwt_token(manager, identity_name) else {
-        return;
-    };
-    if before_jwt.is_some_and(|token| token == after_jwt) {
-        return;
-    }
-    let mut phase = crate::traceutil::ensure_jwt_phase("message_fallback_refresh");
-    phase.finish();
-}
-
 fn source_default() -> &'static str {
     "remote_http"
 }
@@ -897,19 +800,37 @@ fn source_with_default(raw: &Value) -> String {
 }
 
 fn direct_target_from_result(result: &SendMessageResult) -> TargetResolution {
-    let did = result
+    let raw_peer = result
         .message
         .receiver
         .as_ref()
-        .or_else(|| match &result.message.thread {
-            ThreadRef::Direct(peer) => Some(peer),
-            _ => None,
-        })
-        .map(|peer| peer.as_str().to_string())
+        .or_else(|| direct_thread_peer(result))
+        .map(|peer| peer.as_str())
         .unwrap_or_default();
+    let did = message_attribute(&result.message.metadata.attributes, "resolved_target_did")
+        .unwrap_or_else(|| raw_peer.to_string());
     TargetResolution {
         did,
-        handle: String::new(),
+        handle: if raw_peer.starts_with("did:") {
+            String::new()
+        } else {
+            raw_peer.to_string()
+        },
+    }
+}
+
+fn direct_target_from_attachment_result(result: &AttachmentSendResult) -> TargetResolution {
+    let mut target = direct_target_from_result(&result.message);
+    if target.did.trim().is_empty() {
+        target.did = result.target_did.clone();
+    }
+    target
+}
+
+fn direct_thread_peer(result: &SendMessageResult) -> Option<&PeerRef> {
+    match &result.message.thread {
+        ThreadRef::Direct(peer) => Some(peer),
+        _ => None,
     }
 }
 
