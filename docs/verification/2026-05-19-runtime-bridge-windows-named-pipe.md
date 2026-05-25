@@ -41,7 +41,7 @@ The Rust implementation adds target-gated Windows bridge I/O in
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --test runtime_listener_bridge_connection_contract --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --test host_runtime_listener_bridge_connection_contract --test host_runtime_listener_bridge_dispatch_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 AWIKI_CLI_UNDER_TEST=rust \
@@ -61,9 +61,9 @@ cargo +1.79.0 tree -p awiki-cli --locked | rg -n "openssl|native-tls|openssl-sys
 - `cargo +1.79.0 check -p awiki-cli --locked` passed without warnings after
   the Windows-only `Instant` import was cfg-gated.
 - Focused Rust bridge tests passed 37 tests:
-  - `runtime_bridge_contract`: 17 passed.
-  - `runtime_listener_bridge_connection_contract`: 10 passed.
-  - `runtime_listener_bridge_dispatch_contract`: 10 passed.
+  - `host_runtime_bridge_contract`: 17 passed.
+  - `host_runtime_listener_bridge_connection_contract`: 10 passed.
+  - `host_runtime_listener_bridge_dispatch_contract`: 10 passed.
 - `cargo +1.79.0 run --bin xtask --locked -- check-structure` passed with
   `structure ok: no undocumented Rust files over 1200 lines`.
 - `git diff --check` passed.

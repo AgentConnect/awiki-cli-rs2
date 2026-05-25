@@ -16,7 +16,7 @@ mail selectors.
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `awiki-cli/internal/cli/runtime.go`, `awiki-cli/internal/runtime/listener/service.go` | `refreshListenerForHostNotifyChange` restarts a running service-managed listener after host-notify config changes; Linux service commands install/start/restart/stop/uninstall via user service manager. | `crates/awiki-cli/src/app/runtime_host_notify_refresh.rs`, `crates/awiki-cli/src/runtime/{listener_systemd,listener_service,mod}.rs` | `system_verified` on Linux user-systemd | `runtime_host_notify_enable_disable_contract`, `runtime_listener_service_contract`, `runtime_contract` | `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_change_restarts_service_managed_listener` plus lifecycle/apply selectors | macOS launchd and Windows Service Manager remain deferred platform lanes. |
+| `awiki-cli/internal/cli/runtime.go`, `awiki-cli/internal/runtime/listener/service.go` | `refreshListenerForHostNotifyChange` restarts a running service-managed listener after host-notify config changes; Linux service commands install/start/restart/stop/uninstall via user service manager. | `crates/awiki-cli/src/app/runtime_host_notify_refresh.rs`, `crates/awiki-cli/src/runtime/{listener_systemd,listener_service,mod}.rs` | `system_verified` on Linux user-systemd | `host_runtime_notify_enable_disable_contract`, `host_runtime_listener_service_contract`, `host_runtime_contract` | `tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_change_restarts_service_managed_listener` plus lifecycle/apply selectors | macOS launchd and Windows Service Manager remain deferred platform lanes. |
 
 ## Commands
 

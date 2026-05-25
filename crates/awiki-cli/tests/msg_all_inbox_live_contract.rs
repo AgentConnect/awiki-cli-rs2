@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::open_local_state;
+
 #[test]
 fn msg_inbox_default_scope_all_does_not_fallback_to_legacy_local_cache() {
     let workspace = TempDir::new("msg-all-inbox-no-legacy-cache").expect("workspace");
@@ -373,16 +377,14 @@ fn direct_thread_id(owner_did: &str, peer_did: &str) -> String {
 }
 
 fn execute_sql(workspace: &Path, statement: String) {
-    let connection = rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db"))
-        .expect("open test database");
+    let connection = open_local_state(workspace);
     connection
         .execute_batch(&statement)
         .expect("execute test sql");
 }
 
 fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
-    let connection = rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db"))
-        .expect("open test database");
+    let connection = open_local_state(workspace);
     let mut statement = connection.prepare(sql).expect("prepare test query");
     let names = statement
         .column_names()

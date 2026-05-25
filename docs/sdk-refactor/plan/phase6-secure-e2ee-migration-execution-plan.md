@@ -730,7 +730,7 @@ cargo test -p awiki-cli --test group_contract
 cargo test -p awiki-cli --test message_contract
 cargo test -p awiki-cli --test store_messages_contract
 cargo test -p awiki-cli --test store_groups_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 ### 8.3 Manual / live / system：默认不跑
@@ -1320,7 +1320,7 @@ cargo test -p awiki-cli --test msg_contract
 #### Optional integration
 
 ```bash
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 #### 完成标准
@@ -1761,7 +1761,7 @@ public raw notification API
 cargo test -p im-core realtime
 cargo test -p im-core secure_direct_incoming
 cargo test -p im-core group_e2ee_notices
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 #### Manual / live

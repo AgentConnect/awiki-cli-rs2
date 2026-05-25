@@ -307,8 +307,8 @@ secure-outbox/local-queue cluster. The batch added a focused
 `runtime_listener_secure_normalize_contract`,
 `runtime_listener_secure_ack_in_process_contract`,
 `runtime_listener_secure_outbox_flush_contract`,
-`runtime_listener_local_notifications_contract`, and
-`runtime_listener_local_notification_flush_contract` targets without pulling in
+`host_runtime_listener_local_notifications_contract`, and
+`host_runtime_listener_local_notification_flush_contract` targets without pulling in
 the broader 20-target session/secure-replay/host-notify wrapper. Existing core
 selectors passed with 2 tests, 0 failed, 0 skipped in 32.43s; the new focused
 selector passed with 1 test, 0 failed, 0 skipped in 0.50s; syntax,
@@ -757,7 +757,7 @@ no production Rust gap in the scoped deterministic helpers, then added a
 focused Rust-only `awiki-system-test` selector for the existing
 `runtime_listener_secure_inbox_poll_contract`,
 `runtime_listener_secure_sessions_contract`, and
-`runtime_listener_local_notifications_contract` targets. Rust direct validation
+`host_runtime_listener_local_notifications_contract` targets. Rust direct validation
 passed 13 tests; wrapper syntax passed; the new non-mail selector passed with
 1 test; `listener_supervisor_run.rs` was an existing 2334-line integration
 hub under the current 2500-line source limit at the time of that selector
@@ -814,9 +814,9 @@ Gap table:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `internal/cmdmeta/catalog.go` | `schema` command list preserves Go catalog order and flag JSON omits empty `default`, `required`, `choices`, and `deprecated` fields | `src/cmdmeta/mod.rs`, `tests/cmdmeta_schema_contract.rs` | fixed in this batch | `cmdmeta_schema_contract`; `core_contract` schema metadata focused test | `tests_v2/core/test_basic_commands.py`, `tests_v2/core/test_output_contracts_cli.py` passed in the broad static batch | low after real Go/Rust schema diff reached zero |
-| `internal/docs/topics.go` | `docs` topic names, summaries, references, lookup, and list output | `src/docs/mod.rs`, `docs/**`, `skills/**` | already implemented | `core_contract` docs tests | core docs/schema selectors passed | low; Go/Rust docs output diff reached zero after volatile meta normalization |
-| `config.template.yaml`, `internal/config/config.go`, `internal/config/write.go` | static template, config resolution, deprecated field guard, quoted `#` parsing, durable writes, DID-domain mutation | `config.template.yaml`, `src/config/{mod,write}.rs` | already implemented for this batch scope | `config_policy_contract`, `config_writer_contract`, `core_contract` | core/config and multi-tenant selectors passed | medium for full `yaml.v3` edge parity; no new gap in this batch |
+| `internal/cmdmeta/catalog.go` | `schema` command list preserves Go catalog order and flag JSON omits empty `default`, `required`, `choices`, and `deprecated` fields | `src/cmdmeta/mod.rs`, `tests/command_catalog_schema_contract.rs` | fixed in this batch | `command_catalog_schema_contract`; `cli_shell_core_contract` schema metadata focused test | `tests_v2/core/test_basic_commands.py`, `tests_v2/core/test_output_contracts_cli.py` passed in the broad static batch | low after real Go/Rust schema diff reached zero |
+| `internal/docs/topics.go` | `docs` topic names, summaries, references, lookup, and list output | `src/docs/mod.rs`, `docs/**`, `skills/**` | already implemented | `cli_shell_core_contract` docs tests | core docs/schema selectors passed | low; Go/Rust docs output diff reached zero after volatile meta normalization |
+| `config.template.yaml`, `internal/config/config.go`, `internal/config/write.go` | static template, config resolution, deprecated field guard, quoted `#` parsing, durable writes, DID-domain mutation | `config.template.yaml`, `src/config/{mod,write}.rs` | already implemented for this batch scope | `workspace_config_policy_contract`, `workspace_config_writer_contract`, `cli_shell_core_contract` | core/config and multi-tenant selectors passed | medium for full `yaml.v3` edge parity; no new gap in this batch |
 | `scripts/install.js`, `scripts/run.js`, Hermes/OpenClaw helper scripts | shared JS/Python helper assets match Go for installed binary and host-notify helper surfaces | `scripts/install.js`, `scripts/run.js`, `scripts/hermes_notify_adapter.py`, `scripts/host_notify_webhook_server.py` | already copied byte-for-byte for shared assets | script asset probes remain in system tests | `tests_v2/update/test_install_script.py` passed | low for shared assets; Go-only release/test helper scripts remain outside CLI behavior unless a release parity batch scopes them in |
 | `package.json` | npm package metadata and install wrapper wiring | `package.json` | byte-identical to Go in this batch | not a Rust unit target | install-script selectors passed | low |
 
@@ -833,8 +833,8 @@ cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 build -p awiki-cli 
 /tmp/awiki-cli-go docs --format json > /tmp/awiki-docs-go.json
 /home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli docs --format json > /tmp/awiki-docs-rust.json
 python3 <normalization script comparing Go/Rust schema and docs after dropping volatile meta.generated_at and meta.identity>
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test cmdmeta_schema_contract --test core_contract --test config_policy_contract --test config_writer_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test command_catalog_schema_contract --test cli_shell_core_contract --test workspace_config_policy_contract --test workspace_config_writer_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cmdmeta ./internal/docs ./internal/config ./internal/cli -run 'Test.*Catalog|Test.*Schema|Test.*Docs|Test.*Config|Test.*Write|Test.*Completion' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py tests_v2/core/test_output_contracts_cli.py tests_v2/update/test_update_policy.py tests_v2/update/test_install_script.py tests_v2/multi_tenant/test_awiki_cli_tenant_config.py -ra -q
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
@@ -852,16 +852,16 @@ Observed results:
   field omission and command catalog order. After the patch, real Go/Rust
   `schema` and `docs` outputs had zero diff after volatile meta normalization.
 - Focused Rust schema/config/core tests passed 33 tests:
-  `cmdmeta_schema_contract` 2, `config_policy_contract` 4,
-  `config_writer_contract` 7, and `core_contract` 20.
+  `command_catalog_schema_contract` 2, `workspace_config_policy_contract` 4,
+  `workspace_config_writer_contract` 7, and `cli_shell_core_contract` 20.
 - Focused Go guard passed for `internal/cmdmeta`, `internal/docs`,
   `internal/config`, and `internal/cli`.
 - Focused non-mail `awiki-system-test` batch passed with 31 passed in 8.65s.
 - `cargo fmt --check`, `cargo check -p awiki-cli --locked`, `xtask
   check-structure`, and `git diff --check` passed.
 - File sizes stayed within the current constraints: `cmdmeta/mod.rs` is 379
-  lines, new `cmdmeta_schema_contract.rs` is 178 lines, and the already-near-cap
-  `core_contract.rs` did not grow.
+  lines, new `command_catalog_schema_contract.rs` is 178 lines, and the already-near-cap
+  `cli_shell_core_contract.rs` did not grow.
 
 Boundary note: this batch covers static docs/scripts/schema/config metadata and
 asset parity. It does not implement Go-only release helper scripts, broaden
@@ -909,7 +909,7 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test message_secure_client_contract --test message_secure_send_contract --test message_secure_commands_contract --test message_secure_incoming_contract --test message_secure_outbox_flush_contract --test msg_secure_status_failed_live_contract --test msg_secure_repair_live_contract --test msg_secure_prekey_read_live_contract --test store_e2ee_outbox_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_normalize_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_secure_ack_delivery_contract --test runtime_listener_secure_replay_contract --test runtime_listener_secure_sync_contract --test runtime_listener_secure_inbox_poll_contract --test runtime_listener_secure_outbox_flush_contract --test runtime_listener_bridge_dispatch_contract --test runtime_listener_foreground_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_normalize_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_secure_ack_delivery_contract --test runtime_listener_secure_replay_contract --test runtime_listener_secure_sync_contract --test runtime_listener_secure_inbox_poll_contract --test runtime_listener_secure_outbox_flush_contract --test host_runtime_listener_bridge_dispatch_contract --test host_runtime_listener_foreground_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/message ./internal/runtime/listener ./internal/store -run 'TestServiceSendSecureDirectUsesP5KeyServiceTargetAndPersistsPendingSession|TestServiceSendSecureDirectQueuesFollowUpWhilePendingConfirmation|TestPollingInboxDecryptsDirectInitAndSendsSecureAck|TestServiceSecureStatusReturnsSessionAndOutboxSummary|TestServiceSecureFailedAndDropOperateOnOutbox|TestServiceSecureRetryMarksQueuedRecordSent|TestServiceSecureRepairResetsFailedOutboxAndStartsNewInit|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestStoreMessageUpdatesCachedRawWireWithDecryptedContent|TestStoreMessagePreservesDecryptedContentWhenRawWireArrivesLater|TestListDirectMessagesByPeerDIDsFiltersUnreadInboxOnlyAndDeduplicates' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_lifecycle_reader_error_shutdown_contracts -ra -q
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_failed_and_drop_use_local_outbox_without_services tests_v2/cli/test_awiki_cli_direct_local.py::test_awiki_cli_msg_secure_status_migrates_legacy_config_json_before_local_outbox_read -ra -q
@@ -1130,17 +1130,17 @@ Gap table:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `internal/runtime/listener/server.go` `startKnownSessions` | list all identities, call `ensureSession` for each, wait for the first session bootstrap result, record per-session startup errors, continue startup, then refresh status | `src/runtime/listener_supervisor_run.rs`, `src/runtime/listener_known_sessions.rs` | implemented in live foreground supervisor path | `runtime_listener_known_sessions_contract`; adjacent foreground/bootstrap/identity-watch contracts | host-notify selectors depend on the live listener sessions; current run blocked by remote WS 502 | medium until live selector reruns against a healthy message-service WebSocket |
-| `internal/runtime/listener/server.go` `ensureSession` | skip already-known sessions; new sessions start the loop and wait up to 15s; initial errors/timeouts are surfaced to the caller | `src/runtime/listener_known_sessions.rs`, `src/runtime/listener_supervisor_run.rs`, existing `listener_bridge_runtime.rs` bootstrap signal helpers | implemented for startup-discovered sessions; bridge-created session behavior preserved separately | `runtime_listener_known_sessions_contract`, `runtime_listener_session_bootstrap_contract`, `runtime_listener_bridge_runtime_contract` | same selectors | low for helper/foreground wiring; WebSocket stack health remains external |
-| `internal/runtime/listener/server.go` `recordSessionError` | missing session status is created disconnected; existing DID is preserved unless empty; last error is updated; status is refreshed | `src/runtime/listener_known_sessions.rs`, `src/runtime/listener_supervisor_run.rs` | implemented; status file write called after mutation | `runtime_listener_known_sessions_contract` | same selectors | low |
+| `internal/runtime/listener/server.go` `startKnownSessions` | list all identities, call `ensureSession` for each, wait for the first session bootstrap result, record per-session startup errors, continue startup, then refresh status | `src/runtime/listener_supervisor_run.rs`, `src/runtime/listener_known_sessions.rs` | implemented in live foreground supervisor path | `host_runtime_listener_known_sessions_contract`; adjacent foreground/bootstrap/identity-watch contracts | host-notify selectors depend on the live listener sessions; current run blocked by remote WS 502 | medium until live selector reruns against a healthy message-service WebSocket |
+| `internal/runtime/listener/server.go` `ensureSession` | skip already-known sessions; new sessions start the loop and wait up to 15s; initial errors/timeouts are surfaced to the caller | `src/runtime/listener_known_sessions.rs`, `src/runtime/listener_supervisor_run.rs`, existing `listener_bridge_runtime.rs` bootstrap signal helpers | implemented for startup-discovered sessions; bridge-created session behavior preserved separately | `host_runtime_listener_known_sessions_contract`, `host_runtime_listener_session_bootstrap_contract`, `runtime_listener_bridge_host_runtime_contract` | same selectors | low for helper/foreground wiring; WebSocket stack health remains external |
+| `internal/runtime/listener/server.go` `recordSessionError` | missing session status is created disconnected; existing DID is preserved unless empty; last error is updated; status is refreshed | `src/runtime/listener_known_sessions.rs`, `src/runtime/listener_supervisor_run.rs` | implemented; status file write called after mutation | `host_runtime_listener_known_sessions_contract` | same selectors | low |
 | Host-notify foreground selectors | direct, group-state, and group incoming delivery should be observable for Hermes and OpenClaw sinks | `awiki-system-test/tests_v2/cli/probes/run_awiki_cli_host_notify_{hermes,openclaw}_local_probe.py` | probe assertions expanded; acceptance not yet passed in current environment | Python compile and diff checks passed | `test_awiki_cli_host_notify_hermes_local_probe_succeeds`; `test_awiki_cli_host_notify_openclaw_local_probe_succeeds` | medium; both live runs failed before assertions at WebSocket HTTP 502 |
 
 Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_known_sessions_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --test runtime_listener_bridge_runtime_contract --test runtime_listener_session_bootstrap_contract --test runtime_listener_identity_watch_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_known_sessions_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --test runtime_listener_bridge_host_runtime_contract --test host_runtime_listener_session_bootstrap_contract --test host_runtime_listener_identity_watch_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
@@ -1194,7 +1194,7 @@ below the active 2500-line source limit but still documented as a large runtime
 owner to keep future listener work biased toward focused helper modules. New
 helper/test files are small:
 `listener_known_sessions.rs` 74 lines and
-`runtime_listener_known_sessions_contract.rs` 137 lines.
+`host_runtime_listener_known_sessions_contract.rs` 137 lines.
 
 Operational cleanup note: disposable `__pycache__`/`.pytest_cache` directories
 and `target/debug/incremental` were cleaned where permissions allowed. A small
@@ -1339,9 +1339,9 @@ Gap table:
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
 | `internal/runtime/listener/wsclient.go` | `readLoop` stores the terminal reader error, fails pending RPC waiters, closes notifications, and lets `consumeNotifications` return `ReaderError()` before reconnect. | `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`, `crates/awiki-cli/src/runtime/listener_ws_transport.rs` | Strengthened: real session loop preserves reader/transport errors in disconnected status while pending RPC failure remains on the shared session loop path. | `cargo +1.79.0 test -p awiki-cli --lib runtime::listener_supervisor_run::tests --locked`; lifecycle contract targets listed below. | `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_lifecycle_reader_error_shutdown_contracts` | Low for the covered contract path; live remote reader failure system probing remains later broad acceptance. |
-| `internal/runtime/listener/server.go` | `markDisconnected(err)` closes the current client, marks disconnected, and records `lastError` only when the error is non-nil and not `context.Canceled`. | `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`, `crates/awiki-cli/src/runtime/listener_session_methods.rs`, `crates/awiki-cli/src/runtime/listener_session_state.rs` | Translated in live supervisor status updates and already covered in helper/session-state contracts. Shutdown/context-canceled disconnects now write disconnected status without overwriting the prior error. | `runtime_listener_session_methods_contract`, `runtime_listener_session_state_contract`, and the new supervisor lib contract. | Same lifecycle selector. | Low for status mutation semantics; foreground cleanup artifact removal remains covered by the existing signal selector. |
-| `internal/runtime/listener/server.go` | `consumeNotifications` ping uses a context with 15s timeout derived from the session context, so session shutdown can cancel an in-flight ping wait. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs`, `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Strengthened: `WsTransport::ping_with_timeout_until` still uses the Go 15s total timeout and Go-style payloads, but polls the socket in short intervals so the supervisor shutdown flag can return `context canceled` promptly. | `cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked`; `runtime_listener_notification_consume_contract`. | Same lifecycle selector. | Low for shutdown-aware ping wait; full live shutdown under every network timing remains later broad acceptance. |
-| `internal/runtime/listener/server.go` | `Supervisor.Close` cancels sessions, closes current clients, then closes listener/host notify/database without treating normal cancellation as a session error. | `crates/awiki-cli/src/runtime/listener_supervisor_shutdown.rs`, `crates/awiki-cli/src/runtime/listener_shutdown_signal.rs`, `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Existing shutdown-order and signal helpers are now grouped with the live status/ping changes under one focused system selector. | `runtime_listener_supervisor_shutdown_contract`, `runtime_listener_shutdown_signal_contract`, supervisor lib contract. | Same lifecycle selector. | Medium residual risk only for non-Linux service manager and Windows named-pipe runtime I/O. |
+| `internal/runtime/listener/server.go` | `markDisconnected(err)` closes the current client, marks disconnected, and records `lastError` only when the error is non-nil and not `context.Canceled`. | `crates/awiki-cli/src/runtime/listener_supervisor_run.rs`, `crates/awiki-cli/src/runtime/listener_session_methods.rs`, `crates/awiki-cli/src/runtime/listener_session_state.rs` | Translated in live supervisor status updates and already covered in helper/session-state contracts. Shutdown/context-canceled disconnects now write disconnected status without overwriting the prior error. | `host_runtime_listener_session_methods_contract`, `host_runtime_listener_session_state_contract`, and the new supervisor lib contract. | Same lifecycle selector. | Low for status mutation semantics; foreground cleanup artifact removal remains covered by the existing signal selector. |
+| `internal/runtime/listener/server.go` | `consumeNotifications` ping uses a context with 15s timeout derived from the session context, so session shutdown can cancel an in-flight ping wait. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs`, `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Strengthened: `WsTransport::ping_with_timeout_until` still uses the Go 15s total timeout and Go-style payloads, but polls the socket in short intervals so the supervisor shutdown flag can return `context canceled` promptly. | `cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked`; `host_runtime_listener_notification_consume_contract`. | Same lifecycle selector. | Low for shutdown-aware ping wait; full live shutdown under every network timing remains later broad acceptance. |
+| `internal/runtime/listener/server.go` | `Supervisor.Close` cancels sessions, closes current clients, then closes listener/host notify/database without treating normal cancellation as a session error. | `crates/awiki-cli/src/runtime/listener_supervisor_shutdown.rs`, `crates/awiki-cli/src/runtime/listener_shutdown_signal.rs`, `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Existing shutdown-order and signal helpers are now grouped with the live status/ping changes under one focused system selector. | `host_runtime_listener_supervisor_shutdown_contract`, `host_runtime_listener_shutdown_signal_contract`, supervisor lib contract. | Same lifecycle selector. | Medium residual risk only for non-Linux service manager and Windows named-pipe runtime I/O. |
 
 Commands run:
 
@@ -1349,7 +1349,7 @@ Commands run:
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib runtime::listener_supervisor_run::tests --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --test runtime_listener_session_loop_contract --test runtime_listener_session_methods_contract --test runtime_listener_supervisor_shutdown_contract --test runtime_listener_shutdown_signal_contract --test runtime_listener_session_state_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_notification_consume_contract --test runtime_listener_session_loop_contract --test host_runtime_listener_session_methods_contract --test host_runtime_listener_supervisor_shutdown_contract --test host_runtime_listener_shutdown_signal_contract --test host_runtime_listener_session_state_contract --locked
 cd /home/ecs-user/awiki-space/awiki-system-test && uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_lifecycle_reader_error_shutdown_contracts -ra -q
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
@@ -1434,7 +1434,7 @@ Gap table:
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
 | `internal/runtime/listener/wsclient.go` | `WSClient.Ping(ctx)` delegates to `coder/websocket.Conn.Ping(ctx)`, which writes a Ping and waits for the matching Pong or context timeout. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs` | Translated: `WsTransport::ping()` now sends a Go-style incrementing string payload and waits up to 15s for the matching Pong. | `cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked`; `cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked` | `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts` | Low. Real network selector remains non-mail focused; broader repository acceptance remains later. |
-| `internal/runtime/listener/server.go` | `consumeNotifications` uses 60s ping cadence and wraps a 15s ping timeout error as `websocket ping failed: <err>`. | `crates/awiki-cli/src/runtime/listener_notification_consume.rs`; `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Already wired before this batch; this batch closes the transport wait-for-Pong nuance underneath the existing cadence. The later lifecycle batch covers reader-error status propagation and shutdown cancellation during ping waits. | `cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked` | Same non-mail Batch 1 selector. | Medium residual runtime risk: broader live reader-failure injection is not full repository-wide acceptance. |
+| `internal/runtime/listener/server.go` | `consumeNotifications` uses 60s ping cadence and wraps a 15s ping timeout error as `websocket ping failed: <err>`. | `crates/awiki-cli/src/runtime/listener_notification_consume.rs`; `crates/awiki-cli/src/runtime/listener_supervisor_run.rs` | Already wired before this batch; this batch closes the transport wait-for-Pong nuance underneath the existing cadence. The later lifecycle batch covers reader-error status propagation and shutdown cancellation during ping waits. | `cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_notification_consume_contract --locked` | Same non-mail Batch 1 selector. | Medium residual runtime risk: broader live reader-failure injection is not full repository-wide acceptance. |
 | `github.com/coder/websocket@v1.8.12/conn.go` | Ping payload is the incrementing string counter, and unrelated frames can still be read by the active reader while Ping waits. | `crates/awiki-cli/src/runtime/listener_ws_transport.rs` | Translated locally without adding a WebSocket crate: first payload is `"1"`, inbound peer Ping auto-Pongs, Text/Binary frames read while waiting are deferred and replayed to `read_json_message`. | Source tests assert timeout restoration, Go-style payload, auto-Pong during ping wait, and deferred-message replay. Integration test asserts delayed-Pong waiting. | Same non-mail Batch 1 selector. | Low. Uses blocking std/Rustls transport already accepted by foreground runtime. |
 
 Commands run:
@@ -1443,7 +1443,7 @@ Commands run:
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib runtime::listener_ws_transport::tests --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_notification_consume_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
@@ -1456,7 +1456,7 @@ Observed results:
 
 - Rust `listener_ws_transport` unit tests: 6 passed, 0 failed.
 - Rust `runtime_listener_wsclient_contract`: 31 passed, 0 failed.
-- Rust `runtime_listener_notification_consume_contract`: 7 passed, 0 failed.
+- Rust `host_runtime_listener_notification_consume_contract`: 7 passed, 0 failed.
 - Rust `cargo check -p awiki-cli --locked`: passed.
 - Rust `xtask check-structure`: passed; no undocumented Rust source file over
   1200 lines.
@@ -1515,10 +1515,10 @@ Gap table:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `awiki-cli/internal/runtime/hermesbridge/service.go` | `StatusFor` resolves config, inspects service status, and probes health only when running | `crates/awiki-cli/src/runtime/hermes_bridge/service.rs` | implemented for gated Linux user-systemd; passive `rust-local` when unsupported | `runtime_hermes_bridge_service_contract` | `test_runtime_host_notify_hermes_bridge_platform_service_contracts` | medium; non-Linux managers deferred |
+| `awiki-cli/internal/runtime/hermesbridge/service.go` | `StatusFor` resolves config, inspects service status, and probes health only when running | `crates/awiki-cli/src/runtime/hermes_bridge/service.rs` | implemented for gated Linux user-systemd; passive `rust-local` when unsupported | `host_runtime_hermes_bridge_service_contract` | `test_runtime_host_notify_hermes_bridge_platform_service_contracts` | medium; non-Linux managers deferred |
 | `awiki-cli/internal/runtime/hermesbridge/service.go` | `EnsureInstalled`, `StartService`, `StopService`, `RestartService`, `Uninstall`, and `Apply` branching | same | implemented through fakeable `BridgeServiceBackend` plus real `systemctl --user` backend | same | same | medium; live systemd install not run in CI selector |
 | `awiki-cli/internal/runtime/hermesbridge/service.go` | user-service config shape and bridge service command | same | implemented as generated user unit with `runtime host-notify hermes bridge service-run` | same | same | low |
-| `awiki-cli/internal/cli/runtime.go` | `runtime host-notify hermes setup` calls bridge `Apply` after config write, route ensure, and listener refresh | `crates/awiki-cli/src/app/runtime_hermes_handlers.rs` | implemented when `AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE=1` and user systemd is available; gate-off path reports passive status with explicit warning | `runtime_hermes_setup_dry_run_contract` focused non-dry-run tests | same | medium; staged parity differs from Go default service-manager availability |
+| `awiki-cli/internal/cli/runtime.go` | `runtime host-notify hermes setup` calls bridge `Apply` after config write, route ensure, and listener refresh | `crates/awiki-cli/src/app/runtime_hermes_handlers.rs` | implemented when `AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE=1` and user systemd is available; gate-off path reports passive status with explicit warning | `host_runtime_hermes_setup_dry_run_contract` focused non-dry-run tests | same | medium; staged parity differs from Go default service-manager availability |
 | `awiki-system-test/tests_v2/runtime/test_runtime_cli.py` | focused selector can validate the Rust Hermes platform contracts quickly | `tests_v2/runtime/test_runtime_cli.py` | updated to guard 27 Rust contracts and run by target/filter | pytest focused selector | same | low |
 
 Rust repository changes:
@@ -1533,10 +1533,10 @@ Rust repository changes:
 - `crates/awiki-cli/src/app/runtime_hermes_handlers.rs`: setup now delegates to
   `apply_service` when the systemd gate is supported, otherwise keeps the
   no-side-effect passive bridge status and emits the explicit gate warning.
-- `crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs`: added
+- `crates/awiki-cli/tests/host_runtime_hermes_bridge_service_contract.rs`: added
   fake backend/systemctl tests for the new status and lifecycle execution
   branches without live systemd.
-- `crates/awiki-cli/tests/runtime_hermes_setup_dry_run_contract.rs`: updated
+- `crates/awiki-cli/tests/host_runtime_hermes_setup_dry_run_contract.rs`: updated
   the default non-dry-run expectation from a generic deferred warning to the
   explicit systemd gate warning.
 
@@ -1544,16 +1544,16 @@ System-test repository change:
 
 - `tests_v2/runtime/test_runtime_cli.py`: the focused Rust selector now guards
   27 Hermes bridge/platform contract names, runs the full
-  `runtime_hermes_bridge_service_contract` target plus focused service-run and
+  `host_runtime_hermes_bridge_service_contract` target plus focused service-run and
   setup targets, and expects the systemd gate warning in default setup output.
 
 Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract hermes_setup_non_dry_run --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract hermes_bridge_service_run --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_setup_dry_run_contract hermes_setup_non_dry_run --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract hermes_bridge_service_run --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
@@ -1601,7 +1601,7 @@ on the approved `rusqlite + bundled` path, and TLS choices remain Rustls-first.
 
 File-size note: changed Rust source/test files remain under the default
 1200-line cap after formatting. The largest touched Rust files are
-`service.rs` at 1193 lines and `runtime_hermes_bridge_service_contract.rs` at
+`service.rs` at 1193 lines and `host_runtime_hermes_bridge_service_contract.rs` at
 1147 lines, so no file-size exception is needed. The system-test runtime file is
 1324 lines; that Python test module was already over the Rust source-file cap
 scope and is not a Rust-source exception.
@@ -1853,7 +1853,7 @@ Commands run:
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib runtime::listener_supervisor_run::tests --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --test runtime_listener_secure_normalize_contract --test runtime_listener_secure_notifications_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_secure_outbox_flush_contract --test runtime_listener_session_bootstrap_contract --test runtime_listener_bridge_dispatch_contract --test runtime_listener_foreground_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --test runtime_listener_secure_normalize_contract --test runtime_listener_secure_notifications_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_secure_outbox_flush_contract --test host_runtime_listener_session_bootstrap_contract --test host_runtime_listener_bridge_dispatch_contract --test host_runtime_listener_foreground_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestSessionLoopReconnectsAndStoresNotifications|TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
@@ -1924,8 +1924,8 @@ Rust repository change:
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --test runtime_listener_bridge_runtime_contract --test runtime_listener_wsclient_contract --test runtime_listener_notification_consume_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --test runtime_listener_session_loop_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_connection_contract --test runtime_listener_bridge_host_runtime_contract --test runtime_listener_wsclient_contract --test host_runtime_listener_notification_consume_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --test runtime_listener_session_loop_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -2083,7 +2083,7 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --lib listener_ws_transport --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --test runtime_listener_foreground_contract --test runtime_listener_session_loop_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_notification_consume_contract --test host_runtime_listener_foreground_contract --test runtime_listener_session_loop_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
@@ -2169,9 +2169,9 @@ Rust repository change:
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --test runtime_listener_bridge_connection_contract --test runtime_listener_bridge_runtime_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --test host_runtime_listener_bridge_connection_contract --test runtime_listener_bridge_host_runtime_contract --locked
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_batch1_non_mail_contracts -ra -q
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --test runtime_listener_bridge_connection_contract --test runtime_listener_bridge_runtime_contract --test runtime_listener_session_loop_contract --test runtime_listener_notification_consume_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --test host_runtime_listener_bridge_connection_contract --test runtime_listener_bridge_host_runtime_contract --test runtime_listener_session_loop_contract --test host_runtime_listener_notification_consume_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleNotificationDispatchesHostNotificationToSink|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
@@ -2240,13 +2240,13 @@ Rust repository change:
   foreground wait loop promotes that request into the existing supervisor
   `shutdown` flag so existing listener/session loops unwind through the same
   cleanup path.
-- Added `runtime_listener_shutdown_signal_contract` helper tests and
-  Unix-only `runtime_listener_signal_cli_contract` subprocess tests.
+- Added `host_runtime_listener_shutdown_signal_contract` helper tests and
+  Unix-only `host_runtime_listener_signal_cli_contract` subprocess tests.
 
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_shutdown_signal_contract --test runtime_listener_signal_cli_contract --test runtime_listener_foreground_contract --test runtime_listener_service_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_shutdown_signal_contract --test host_runtime_listener_signal_cli_contract --test host_runtime_listener_foreground_contract --test host_runtime_listener_service_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -2311,7 +2311,7 @@ Rust repository change:
   queue clone helper mirroring the existing host-notify bridge-created-session
   helper, keeping shared queue selection testable outside the oversized
   supervisor file.
-- `crates/awiki-cli/tests/runtime_listener_bridge_runtime_contract.rs`: added
+- `crates/awiki-cli/tests/runtime_listener_bridge_host_runtime_contract.rs`: added
   focused shared-queue `Arc` coverage for bridge-created sessions.
 - `docs/file-size-exceptions.md`: refreshed the existing documented
   `listener_supervisor_run.rs` exception line count from 1530 to 1771 and
@@ -2321,7 +2321,7 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_runtime_contract --test runtime_listener_local_notifications_contract --test runtime_listener_local_notification_flush_contract --test runtime_listener_secure_ack_delivery_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_session_loop_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_host_runtime_contract --test host_runtime_listener_local_notifications_contract --test host_runtime_listener_local_notification_flush_contract --test runtime_listener_secure_ack_delivery_contract --test runtime_listener_secure_ack_in_process_contract --test runtime_listener_session_loop_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
@@ -2377,7 +2377,7 @@ Rust repository change:
   passes an initial signal into `spawn_session_loop` and waits for success,
   error, or timeout before returning. Startup/watch-created sessions pass
   `None` and keep their existing background behavior.
-- `crates/awiki-cli/tests/runtime_listener_bridge_runtime_contract.rs`: added
+- `crates/awiki-cli/tests/runtime_listener_bridge_host_runtime_contract.rs`: added
   focused one-shot success, error, and timeout coverage.
 - `docs/file-size-exceptions.md`: refreshed the existing documented
   `listener_supervisor_run.rs` exception line count from 1515 to 1530.
@@ -2386,8 +2386,8 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_runtime_contract --test runtime_listener_session_bootstrap_contract --test runtime_listener_bridge_connection_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --test runtime_listener_session_methods_contract --test runtime_listener_foreground_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_host_runtime_contract --test host_runtime_listener_session_bootstrap_contract --test host_runtime_listener_bridge_connection_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --test host_runtime_listener_session_methods_contract --test host_runtime_listener_foreground_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
@@ -2436,7 +2436,7 @@ Rust repository change:
 - `crates/awiki-cli/src/runtime/listener_bridge_runtime.rs`: added a small
   helper that clones the shared sink for bridge-created sessions, keeping the
   behavior testable outside the oversized supervisor file.
-- `crates/awiki-cli/tests/runtime_listener_bridge_runtime_contract.rs`: locks
+- `crates/awiki-cli/tests/runtime_listener_bridge_host_runtime_contract.rs`: locks
   the shared-`Arc` contract and prevents a regression back to fresh noop sink
   replacement.
 - `docs/file-size-exceptions.md`: refreshed the existing documented
@@ -2447,8 +2447,8 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_runtime_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --test runtime_listener_notification_execute_contract --test runtime_listener_notification_handler_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_host_runtime_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_connection_contract --test runtime_listener_notification_execute_contract --test runtime_listener_notification_handler_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
@@ -2646,12 +2646,12 @@ Rust repository change:
 - `crates/awiki-cli/src/app/runtime_handlers.rs`:
   `run_runtime_host_notify_openclaw_set` now returns the dry-run plan before
   calling `runtime::validate_openclaw_hook_url`.
-- `crates/awiki-cli/tests/runtime_openclaw_cli_contract.rs`: added
+- `crates/awiki-cli/tests/host_runtime_openclaw_cli_contract.rs`: added
   `openclaw_set_dry_run_echoes_remote_hook_url_before_live_validation_like_go`
   to prove the non-loopback hook URL succeeds in dry-run, echoes the raw
   `hook_url`, writes no `config.yaml`, and still fails with `invalid_argument`
   in live mode before persistence.
-- `crates/awiki-cli/tests/runtime_contract.rs`: kept the broader runtime
+- `crates/awiki-cli/tests/host_runtime_contract.rs`: kept the broader runtime
   validation contract under the 1200-line source-file cap by moving this
   focused OpenClaw CLI ordering assertion into its own small test file.
 - `docs/parity-matrix.md`, `docs/known-go-issues.md`, and
@@ -2671,8 +2671,8 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_cli_contract openclaw_set_dry_run_echoes_remote_hook_url_before_live_validation_like_go --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_validation_and_dry_run_plans_match_go_contracts --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_openclaw_cli_contract openclaw_set_dry_run_echoes_remote_hook_url_before_live_validation_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_contract host_notify_validation_and_dry_run_plans_match_go_contracts --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli && AWIKI_CLI_UPDATE_CACHE_ONLY=1 go run ./cmd/awiki-cli --dry-run runtime host-notify openclaw set --hook-url http://10.0.0.1:18789/hooks/agent
@@ -2695,8 +2695,8 @@ Observed results:
 - Rust `cargo check -p awiki-cli --locked`: passed.
 - `xtask check-structure`: passed; no undocumented Rust source file over 1200
   lines. Relevant line counts after the split:
-  `runtime_handlers.rs` 762 lines, `runtime_contract.rs` 1173 lines, and
-  `runtime_openclaw_cli_contract.rs` 158 lines.
+  `runtime_handlers.rs` 762 lines, `host_runtime_contract.rs` 1173 lines, and
+  `host_runtime_openclaw_cli_contract.rs` 158 lines.
 - Go direct dry-run probe: exit 0, summary
   `Dry run: OpenClaw host notify config change planned`, action
   `host_notify_openclaw_set`, and raw hook URL
@@ -2769,7 +2769,7 @@ Rust repository change:
   WebSocket consumption, secure backlog replay, and local secure-ack delivery
   now pass `Some(&mut lookup)` into `handle_listener_notification` instead of
   `None`.
-- `crates/awiki-cli/tests/runtime_listener_foreground_contract.rs`: added
+- `crates/awiki-cli/tests/host_runtime_listener_foreground_contract.rs`: added
   focused local HTTP-server tests for the request path/body, raw handle return,
   HTTP 404 and RPC `-32002` not-found handling, blank handle/DID results, and
   blank DID validation before HTTP.
@@ -2795,7 +2795,7 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract listener_handle_lookup --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract listener_handle_lookup --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract direct_notification_stores_syncs_enriches_and_dispatches_after_storage --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract handler_applies_host_notify_status_outcomes_like_go_supervisor --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
@@ -2966,7 +2966,7 @@ Rust repository change:
   quote-aware inline-comment stripping. `#` inside simple single-quoted and
   double-quoted scalar values is preserved; `#` outside quotes still starts an
   inline comment.
-- `crates/awiki-cli/tests/config_policy_contract.rs`: added
+- `crates/awiki-cli/tests/workspace_config_policy_contract.rs`: added
   `config_show_preserves_hash_inside_quoted_yaml_scalars_like_go` to verify
   `config show` preserves quoted `#` for `service_base_url`, `did_domain`, and
   `ca_bundle`, and still drops the real inline comment after `ca_bundle`.
@@ -2985,7 +2985,7 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test config_policy_contract config_show_preserves_hash_inside_quoted_yaml_scalars_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test workspace_config_policy_contract config_show_preserves_hash_inside_quoted_yaml_scalars_like_go --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/config ./internal/cli -run 'Test.*Config|TestRunConfig' -count=1
@@ -3154,7 +3154,7 @@ Rust repository evidence:
 
 - `crates/awiki-cli/src/cmdmeta/mod.rs` exposes the matching static metadata.
 - `crates/awiki-cli/src/cli/mod.rs` resolves the planned stub command paths.
-- `crates/awiki-cli/tests/core_contract.rs` already verifies schema exposure
+- `crates/awiki-cli/tests/cli_shell_core_contract.rs` already verifies schema exposure
   and Go-shaped stub envelopes for representative commands.
 - `docs/parity-matrix.md` now links this row to the system selector below.
 
@@ -3173,7 +3173,7 @@ Commands run:
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_go_planned_stub_commands_return_frozen_contract_hints -ra -q
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract schema_exposes_go_stub_command_families_and_stub_errors --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract schema_exposes_go_stub_command_families_and_stub_errors --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli ./internal/cmdmeta -run 'Test.*Stub|TestCatalog|TestBuildRoot|TestCommandFromSpec' -count=1
@@ -3186,7 +3186,7 @@ Observed results:
 - Python compile check for `tests_v2/core/test_basic_commands.py`: passed.
 - Focused core system selector: 1 passed, 0 failed, 0 skipped in 0.18s.
 - Rust formatting check: passed.
-- Rust focused `core_contract`
+- Rust focused `cli_shell_core_contract`
   `schema_exposes_go_stub_command_families_and_stub_errors`: 1 passed, 0
   failed, 0 ignored, 19 filtered out in 0.04s.
 - Rust `cargo check -p awiki-cli --locked`: passed.
@@ -3247,7 +3247,7 @@ Rust repository change:
 - `crates/awiki-cli/src/app/runtime_handlers.rs`: `run_runtime_host_notify_config_show`
   now passes `host_notify_guidance_warnings_for(&resolved, "")` into the
   success envelope instead of an empty warnings list.
-- `crates/awiki-cli/tests/runtime_hermes_cli_contract.rs`: added
+- `crates/awiki-cli/tests/host_runtime_hermes_cli_contract.rs`: added
   `host_notify_config_show_includes_go_hermes_guidance_warnings`, which seeds
   `sink: hermes` and `deliver: telegram`, runs `runtime host-notify config
   show`, and asserts the three Go warning texts. The same test rewrites the
@@ -3269,7 +3269,7 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract host_notify_config_show_includes_go_hermes_guidance_warnings --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract host_notify_config_show_includes_go_hermes_guidance_warnings --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli -run 'TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue|TestRuntimeDryRunPlansCoverStableActions' -count=1
@@ -3342,10 +3342,10 @@ Rust repository change:
 - `crates/awiki-cli/src/cli/mod.rs`: maps
   `runtime host-notify webhook bridge service-run` to canonical
   `runtime.host-notify.hermes.bridge.service-run`.
-- `crates/awiki-cli/tests/runtime_hermes_cli_contract.rs`: verifies both
+- `crates/awiki-cli/tests/host_runtime_hermes_cli_contract.rs`: verifies both
   canonical `hermes bridge service-run` and alias `webhook bridge service-run`
   reach the missing-secret preflight boundary.
-- `crates/awiki-cli/tests/update_contract.rs`: verifies both Hermes bridge
+- `crates/awiki-cli/tests/self_update_contract.rs`: verifies both Hermes bridge
   service-run command forms stay update-preflight exempt without verbose
   update-check noise. The long-running `runtime listener service-run`
   subprocess case remains covered by the pure `app::update_preflight` unit
@@ -3365,8 +3365,8 @@ Commands run:
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract hermes_bridge_service_run_validates_bridge_config_before_deferred_boundary --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test update_contract root_preflight_exempts_local_recovery_commands_from_update_check --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract hermes_bridge_service_run_validates_bridge_config_before_deferred_boundary --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test self_update_contract root_preflight_exempts_local_recovery_commands_from_update_check --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli app::update_preflight --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -3465,7 +3465,7 @@ Rust repository change:
 - `crates/awiki-cli/src/app/runtime_handlers.rs`: `run_runtime_status` and
   `run_runtime_listener_status` now render the already-computed listener status
   once and promote its `warnings` array into the top-level success envelope.
-- `crates/awiki-cli/tests/runtime_contract.rs`: the saved-status contract now
+- `crates/awiki-cli/tests/host_runtime_contract.rs`: the saved-status contract now
   asserts top-level warning propagation for both `runtime listener status` and
   `runtime status`.
 - `docs/parity-matrix.md`: added/updated a scoped `system_verified` row for public
@@ -3478,7 +3478,7 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener ./internal/cli -run 'TestSessionWarnings|TestHasDisconnectedSessions|TestMergeSavedRuntimeStatus|TestRuntimeDryRunPlans' -count=1
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli listener --locked
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_listener_status_merges_saved_sessions_and_host_notify_without_service_manager -ra -q
@@ -3532,7 +3532,7 @@ Coverage:
   saved `host_notify.sink`, `file_path`, and `hook_url` do not override
   configured status unless current listener status is running.
 - Running-only saved host-notify override remains covered by the Rust
-  `runtime_contract` and Go focused tests, not this offline system selector.
+  `host_runtime_contract` and Go focused tests, not this offline system selector.
 
 Boundary note: this slice does not claim PID mismatch public system coverage,
 running-only saved sink/file_path/hook override through system tests, helper
@@ -3574,7 +3574,7 @@ for path in [Path('docs/architecture/contracts/notify-hermes-v1.openapi.yaml')]:
         yaml.safe_load(f)
 print('yaml ok')
 PY
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_docs_and_schema_support_listing_lookup_jq_and_table tests_v2/core/test_basic_commands.py::test_docs_unknown_topic_returns_not_found tests_v2/core/test_basic_commands.py::test_docs_rejects_extra_arguments -ra -q
 ```
@@ -3628,7 +3628,7 @@ Rust change:
   `services.message_service_url`, and `services.message_service_ws_url` before
   normal config parsing. The check is limited to these deprecated fields and
   keeps the existing tolerant behavior for other unknown fields.
-- `crates/awiki-cli/tests/config_policy_contract.rs`: added focused subprocess
+- `crates/awiki-cli/tests/workspace_config_policy_contract.rs`: added focused subprocess
   contracts proving all three deprecated fields fail and supported
   `services.service_base_url` still resolves normally.
 
@@ -3642,8 +3642,8 @@ Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test config_policy_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test workspace_config_policy_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/config -run 'TestResolveRejectsDeprecatedServiceURLFieldsInConfigYAML|TestResolveLoadsFileConfigAndOverrides|TestResolveAllowsLegacyConfigJSONForUpgrade' -count=1
@@ -3654,8 +3654,8 @@ cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWI
 
 Observed results:
 
-- Rust focused `config_policy_contract`: 3 passed, 0 failed.
-- Rust `core_contract`: 20 passed, 0 failed.
+- Rust focused `workspace_config_policy_contract`: 3 passed, 0 failed.
+- Rust `cli_shell_core_contract`: 20 passed, 0 failed.
 - Rust package check: passed.
 - `xtask check-structure`: passed; no undocumented Rust file over the
   1200-line soft cap.
@@ -3709,8 +3709,8 @@ through this selector.
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test core_contract init_creates_real_sqlite_schema --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test debug_contract debug_db_query_migrates_legacy_config_json_before_opening_store_like_go --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract init_creates_real_sqlite_schema --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test diagnostic_debug_contract debug_db_query_migrates_legacy_config_json_before_opening_store_like_go --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/store -run 'TestEnsureSchemaCreatesVersionAndTables' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/debug/test_debug_cli.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/debug/test_debug_cli.py::test_debug_db_query_migrates_legacy_config_json_before_opening_store -ra -q
@@ -3718,9 +3718,9 @@ cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWI
 
 Observed results:
 
-- Rust `core_contract` focused `init_creates_real_sqlite_schema`: 1 passed,
+- Rust `cli_shell_core_contract` focused `init_creates_real_sqlite_schema`: 1 passed,
   0 failed.
-- Rust `debug_contract` focused
+- Rust `diagnostic_debug_contract` focused
   `debug_db_query_migrates_legacy_config_json_before_opening_store_like_go`:
   1 passed, 0 failed.
 - Go focused store reference test: passed for `internal/store` in 0.065s.
@@ -3772,8 +3772,8 @@ cases not exercised through these selectors.
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test config_writer_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test workspace_config_writer_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/config ./internal/cli -run 'Test.*Config|TestHostNotify|TestConfigureHermesHostNotify|TestUpdateHostNotify|TestRuntimeHostNotify|TestRefreshListenerForHostNotifyChange' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/core/test_basic_commands.py tests_v2/runtime/test_runtime_cli.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/core/test_basic_commands.py::test_config_set_did_domain_persists_normalized_domain_and_rejects_invalid_inputs tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_enable_disable_round_trip tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_validates_inputs_and_supports_dry_run tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_setup_writes_local_files -ra -q
@@ -3781,8 +3781,8 @@ cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWI
 
 Observed results:
 
-- `config_writer_contract`: 7 passed, 0 failed.
-- `runtime_host_notify_enable_disable_contract`: 5 passed, 0 failed.
+- `workspace_config_writer_contract`: 7 passed, 0 failed.
+- `host_runtime_notify_enable_disable_contract`: 5 passed, 0 failed.
 - Go focused config/CLI reference tests: passed for `internal/config` and
   `internal/cli`.
 - Python compile check for the core and runtime system-test files: passed.
@@ -3836,8 +3836,8 @@ named-pipe validation.
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime -run 'TestResolveShortensLongSocketPath|TestResolveKeepsShortSocketPath|TestResolveDefaultsToWebSocketMode' -count=1
@@ -3849,8 +3849,8 @@ cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check -- docs/parity-m
 
 Observed results:
 
-- `runtime_bridge_contract`: 17 passed, 0 failed.
-- `runtime_contract`: 12 passed, 0 failed.
+- `host_runtime_bridge_contract`: 17 passed, 0 failed.
+- `host_runtime_contract`: 12 passed, 0 failed.
 - `cargo check -p awiki-cli --locked`: passed.
 - `xtask check-structure`: passed.
 - Go focused runtime bridge reference tests: passed.
@@ -3908,8 +3908,8 @@ unsupported methods, coercion, error, group, and injected edge cases.
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_connection_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener -run 'TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/probes/run_awiki_cli_runtime_listener_local_probe.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_local_probe_succeeds -ra -q
@@ -3917,8 +3917,8 @@ cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWI
 
 Observed results:
 
-- `runtime_listener_bridge_dispatch_contract`: 10 passed, 0 failed.
-- `runtime_listener_bridge_connection_contract`: 10 passed, 0 failed.
+- `host_runtime_listener_bridge_dispatch_contract`: 10 passed, 0 failed.
+- `host_runtime_listener_bridge_connection_contract`: 10 passed, 0 failed.
 - Go focused runtime listener bridge reference test: passed.
 - Python compile check for the listener wrapper and probe: passed.
 - Focused runtime listener system selector: 1 passed, 0 failed, 0 skipped in
@@ -4109,8 +4109,8 @@ Commands run:
 ```text
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/runtime/test_runtime_cli.py::test_runtime_host_notify_hermes_setup_writes_local_files -ra -q
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_ensure_route_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_setup_dry_run_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/hermesbridge -count=1
@@ -4122,8 +4122,8 @@ Observed results:
 
 - Python compile check: passed.
 - Focused Hermes setup selector: 1 passed, 0 failed, 0 skipped in 1.95s.
-- `runtime_hermes_ensure_route_contract`: 8 passed, 0 failed.
-- `runtime_hermes_setup_dry_run_contract`: 12 passed, 0 failed.
+- `host_runtime_hermes_ensure_route_contract`: 8 passed, 0 failed.
+- `host_runtime_hermes_setup_dry_run_contract`: 12 passed, 0 failed.
 - `cargo check`, structure check, Go Hermes bridge reference tests, and
   whitespace checks passed.
 - Generated `tests_v2/runtime/__pycache__` was removed after the pytest run as a
@@ -6324,7 +6324,7 @@ Rust change:
   `run_debug_db_import_v1`, and `run_debug_db_handle_history` now call
   `resolve_config_for_workspace()` before `open_store`, matching Go
   `internal/cli/debug.go` where all three commands call `openStore()`.
-- `crates/awiki-cli/tests/debug_contract.rs`: added
+- `crates/awiki-cli/tests/diagnostic_debug_contract.rs`: added
   `debug_db_query_migrates_legacy_config_json_before_opening_store_like_go`.
 
 System-test change:
@@ -6341,12 +6341,12 @@ cd /home/ecs-user/awiki-space/awiki-cli-rs2
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test debug_contract debug_db_query_migrates_legacy_config_json_before_opening_store_like_go --locked
-cargo +1.79.0 test -p awiki-cli --test debug_contract --locked
+cargo +1.79.0 test -p awiki-cli --test diagnostic_debug_contract debug_db_query_migrates_legacy_config_json_before_opening_store_like_go --locked
+cargo +1.79.0 test -p awiki-cli --test diagnostic_debug_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
-wc -l crates/awiki-cli/src/app/debug_handlers.rs crates/awiki-cli/tests/debug_contract.rs docs/parity-matrix.md docs/verification/README.md
+wc -l crates/awiki-cli/src/app/debug_handlers.rs crates/awiki-cli/tests/diagnostic_debug_contract.rs docs/parity-matrix.md docs/verification/README.md
 ```
 
 ```text
@@ -6369,7 +6369,7 @@ Observed results:
 - Focused Rust selector:
   `debug_db_query_migrates_legacy_config_json_before_opening_store_like_go`
   passed: 1 passed, 0 failed.
-- Full Rust `debug_contract` passed: 5 passed, 0 failed.
+- Full Rust `diagnostic_debug_contract` passed: 5 passed, 0 failed.
 - `xtask check-structure` passed with no undocumented Rust file over the
   1200-line soft cap.
 - Rust `git diff --check` passed.
@@ -6390,7 +6390,7 @@ Observed results:
   `libsqlite3-sys` paths. No OpenSSL, `native-tls`, reqwest, hyper, platform
   service-manager crate, WebSocket crate, YAML crate, or alternate SQLite path
   was introduced.
-- File-size check: `debug_handlers.rs` 253 lines, `debug_contract.rs` 426
+- File-size check: `debug_handlers.rs` 253 lines, `diagnostic_debug_contract.rs` 426
   lines, `tests_v2/debug/test_debug_cli.py` 515 lines, and
   `tests_v2/debug/CLAUDE.md` 13 lines. All touched Rust/Python source and test
   files stay under the default 1200-line cap. `docs/verification/README.md`
@@ -6454,7 +6454,7 @@ Rust change:
 - `crates/awiki-cli/src/app.rs`: `run_config_set` now calls
   `resolve_config_for_workspace()` before validation/dry-run planning and again
   after `config::update_did_domain`, matching Go `internal/cli/config.go`.
-- `crates/awiki-cli/tests/core_contract.rs`: added
+- `crates/awiki-cli/tests/cli_shell_core_contract.rs`: added
   `config_set_migrates_legacy_config_json_before_writing_like_go`.
 
 System-test change:
@@ -6470,11 +6470,11 @@ Commands run:
 cd /home/ecs-user/awiki-space/awiki-cli-rs2
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract config_set --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
-cargo +1.79.0 test -p awiki-cli --test config_writer_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract config_set --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_config_writer_contract --locked
 cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
-cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_trace_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/cli ./internal/upgrade -run 'Test.*Config|TestUpgradeIfNeededMigratesLegacyConfigJSON|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
 ```
@@ -6489,11 +6489,11 @@ AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-c
 Observed results:
 
 - Rust formatting and package check passed.
-- Focused `core_contract config_set`: 3 passed, 0 failed.
-- Full `core_contract`: 20 passed, 0 failed.
-- `config_writer_contract`: 7 passed, 0 failed.
+- Focused `cli_shell_core_contract config_set`: 3 passed, 0 failed.
+- Full `cli_shell_core_contract`: 20 passed, 0 failed.
+- `workspace_config_writer_contract`: 7 passed, 0 failed.
 - `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed.
-- `traceutil_contract`: 9 passed, 0 failed.
+- `cli_trace_contract`: 9 passed, 0 failed.
 - `xtask check-structure` passed with no undocumented Rust file over the
   1200-line soft cap.
 - Rust `git diff --check` passed.
@@ -6513,7 +6513,7 @@ Observed results:
   `libsqlite3-sys` paths. No OpenSSL, `native-tls`, reqwest, hyper, platform
   service-manager crate, WebSocket crate, YAML crate, or alternate SQLite path
   was introduced.
-- File-size check: `app.rs` 1045 lines, `core_contract.rs` 1183 lines,
+- File-size check: `app.rs` 1045 lines, `cli_shell_core_contract.rs` 1183 lines,
   `tests_v2/core/test_basic_commands.py` 352 lines, and
   `tests_v2/core/CLAUDE.md` 14 lines. All touched Rust/Python source and test
   files stay under the default 1200-line cap. `docs/verification/README.md`
@@ -6574,9 +6574,9 @@ Commands run:
 cd /home/ecs-user/awiki-space/awiki-cli-rs2
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract trace_timing --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_trace_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract trace_timing --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_if_needed_contract --locked
 cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
 cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
@@ -6598,9 +6598,9 @@ wc -l tests_v2/runtime/test_runtime_cli.py tests_v2/runtime/CLAUDE.md
 Observed results:
 
 - Rust formatting and package check passed.
-- `traceutil_contract`: 9 passed, 0 failed.
-- `core_contract trace_timing`: 3 passed, 0 failed.
-- `runtime_contract`: 12 passed, 0 failed.
+- `cli_trace_contract`: 9 passed, 0 failed.
+- `cli_shell_core_contract trace_timing`: 3 passed, 0 failed.
+- `host_runtime_contract`: 12 passed, 0 failed.
 - `workspace_upgrade_if_needed_contract`: 13 passed, 0 failed, including the
   focused legacy `config.json` migration contract.
 - `workspace_migration_v0_to_v1_contract`: 25 passed, 0 failed.
@@ -6679,11 +6679,11 @@ cd /home/ecs-user/awiki-space/awiki-cli-rs2
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --test runtime_contract --test runtime_host_notify_enable_disable_contract --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --test host_runtime_contract --test host_runtime_notify_enable_disable_contract --test host_runtime_listener_foreground_contract --locked
 git diff --check
 ```
 
@@ -6702,10 +6702,10 @@ Observed results:
 
 - Rust formatting, package check, binary build, and whitespace checks passed.
 - Rust test counts:
-  - `runtime_contract`: 12 passed.
-  - `runtime_listener_service_contract`: 18 passed.
-  - `runtime_host_notify_enable_disable_contract`: 5 passed.
-  - `runtime_listener_foreground_contract`: 10 passed.
+  - `host_runtime_contract`: 12 passed.
+  - `host_runtime_listener_service_contract`: 18 passed.
+  - `host_runtime_notify_enable_disable_contract`: 5 passed.
+  - `host_runtime_listener_foreground_contract`: 10 passed.
   - combined focused command passed.
 - Go focused runtime listener/CLI tests passed for both packages:
   `internal/runtime/listener` and `internal/cli`.
@@ -7526,8 +7526,8 @@ Commands run:
 
 ```text
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_ENABLE_LISTENER_SERVICE_TESTS=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest tests_v2/runtime/test_runtime_cli.py -ra -q
-cd . && cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
-cd . && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
 cd . && cargo +1.79.0 test -p awiki-cli openclaw_routes --locked
 cd . && cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
 cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestRuntimeValidationErrorsUseStableCodes|TestHostNotifyConfigViewRedactsOpenClawTokenValue|TestRefreshListenerForHostNotifyChange' -count=1
@@ -7537,8 +7537,8 @@ cd ../awiki-cli && go test ./internal/runtime/openclawnotify -count=1
 Observed results:
 
 - System-test runtime CLI file: 14 passed, 0 failed, 0 skipped in 14.09s.
-- Rust `runtime_contract`: 12 passed, 0 failed.
-- Rust `runtime_host_notify_enable_disable_contract`: 5 passed, 0 failed.
+- Rust `host_runtime_contract`: 12 passed, 0 failed.
+- Rust `host_runtime_notify_enable_disable_contract`: 5 passed, 0 failed.
 - Rust `openclaw_routes` filter: 4 passed, 0 failed.
 - Rust `openclaw_webhook` filter: 1 passed, 0 failed.
 - Go focused `internal/cli` runtime tests: passed.
@@ -7641,7 +7641,7 @@ Commands run:
 
 ```text
 cd ../awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/probes/run_awiki_cli_host_notify_file_sink_local_probe.py tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py
-cd . && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py::test_awiki_cli_host_notify_file_sink_local_probe_succeeds -ra -q
 cd ../awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/probes/run_awiki_cli_host_notify_hermes_local_probe.py tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py::test_awiki_cli_host_notify_hermes_local_probe_succeeds -ra -q
@@ -7651,8 +7651,8 @@ cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/e
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py tests_v2/cli/test_awiki_cli_host_notify_openclaw_local.py tests_v2/cli/test_awiki_cli_host_notify_file_sink_local.py tests_v2/cli/test_awiki_cli_host_notify_hermes_local.py tests_v2/cli/test_awiki_cli_host_notify_failure_local.py -ra -q
 cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
 cd . && cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
-cd . && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
-cd . && cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_host_notify_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_host_notify_contract --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test host_runtime_openclaw_host_notify_contract --locked
 cd . && cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
 cd ../awiki-cli && go test ./internal/runtime/listener ./internal/store -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestHandleNotificationDispatchesMailNotificationToSink|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage|TestStoreMessageAndThreadView|Test.*Contact' -count=1
 cd ../awiki-cli && go test ./internal/runtime/listener -run 'Test(BuildOpenClawHookRequestIncludesChannelDelivery|BuildOpenClawEventTextUsesMainAgentSessionFormat|BuildOpenClawEventTextUsesMailFormat|BuildOpenClawHookRequestIncludesMailPrompt|NewOpenClawHostNotifySinkRejectsNonLoopbackHookURL|NewOpenClawHostNotifySinkAllowsEmptyToken|OpenClawHostNotifySinkNotifyUsesRouteRegistry)' -count=1
@@ -7662,7 +7662,7 @@ cd ../awiki-cli && go test ./internal/runtime/listener -run 'Test(NewHermesHostN
 Observed results:
 
 - Python compile check for the new file-sink probe and wrapper: passed.
-- Rust `runtime_host_notify_sink_contract`: 10 passed, 0 failed.
+- Rust `host_runtime_notify_sink_contract`: 10 passed, 0 failed.
 - Focused file-sink system selector: 1 passed, 0 failed, 0 skipped in 3.38s.
 - Focused file-sink refresh after adding group/group-state assertions: 1 passed,
   0 failed, 0 skipped in 4.25s.
@@ -7679,8 +7679,8 @@ Observed results:
   failure-status selectors: 6 passed, 0 failed, 0 skipped in 28.91s.
 - Rust `runtime_listener_notification_execute_contract`: 6 passed, 0 failed.
 - Rust `runtime_listener_notification_handler_contract`: 3 passed, 0 failed.
-- Rust `runtime_hermes_host_notify_contract`: 8 passed, 0 failed.
-- Rust `runtime_openclaw_host_notify_contract`: 11 passed, 0 failed.
+- Rust `host_runtime_hermes_host_notify_contract`: 8 passed, 0 failed.
+- Rust `host_runtime_openclaw_host_notify_contract`: 11 passed, 0 failed.
 - Rust `openclaw_webhook` filter: 1 passed, 0 failed.
 - Go focused listener/store tests: passed.
 - Go focused OpenClaw host-notify tests: passed.
@@ -7747,8 +7747,8 @@ Commands run:
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/update/test_update_policy.py -ra -q
 cd ../awiki-cli && go test ./internal/update -count=1
 cd . && cargo +1.79.0 test -p awiki-cli --lib 'update::' --locked
-cd . && cargo +1.79.0 test -p awiki-cli --test update_contract upgrade_cache_only_uses_seeded_metadata_for_dev_builds --locked
-cd . && cargo +1.79.0 test -p awiki-cli --test update_contract upgrade_strict_disable_follows_config_and_env_override --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test self_update_contract upgrade_cache_only_uses_seeded_metadata_for_dev_builds --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test self_update_contract upgrade_strict_disable_follows_config_and_env_override --locked
 ```
 
 Observed results:
@@ -7756,8 +7756,8 @@ Observed results:
 - System-test update policy file: 4 passed, 0 failed, 0 skipped in 0.18s.
 - Go `internal/update`: passed.
 - Rust update library tests: 12 passed, 0 failed.
-- Rust `update_contract` cache-only seeded metadata selector: 1 passed, 0 failed.
-- Rust `update_contract` strict-disable selector: 1 passed, 0 failed.
+- Rust `self_update_contract` cache-only seeded metadata selector: 1 passed, 0 failed.
+- Rust `self_update_contract` strict-disable selector: 1 passed, 0 failed.
 
 Boundary note: the system-test update file is intentionally offline and
 deterministic. It seeds metadata and does not contact the real npm registry.
@@ -7961,7 +7961,7 @@ cd ../awiki-system-test && git diff --check -- tests_v2/runtime/test_runtime_cli
 cd . && cargo +1.79.0 fmt --check
 cd . && cargo +1.79.0 test -p awiki-cli openclaw_routes --locked
 cd . && cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
-cd . && cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_openclaw --locked
+cd . && cargo +1.79.0 test -p awiki-cli --test host_runtime_contract host_notify_openclaw --locked
 cd . && cargo +1.79.0 check -p awiki-cli --locked
 cd . && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd . && cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|kardianos|service-manager|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
@@ -7976,7 +7976,7 @@ Observed results:
 - Rust format check: passed.
 - Rust OpenClaw route helper tests: 4 passed, 0 failed.
 - Rust OpenClaw webhook helper tests: 1 passed, 0 failed.
-- Rust `runtime_contract host_notify_openclaw`: 8 passed, 0 failed,
+- Rust `host_runtime_contract host_notify_openclaw`: 8 passed, 0 failed,
   4 filtered out.
 - Rust package check: passed.
 - Structure check: `structure ok: no undocumented Rust files over 1200 lines`.
@@ -8775,7 +8775,7 @@ Commands run:
 
 ```text
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test core_contract group_e2ee_unknown_subcommands_match_go_cobra_boundary --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract group_e2ee_unknown_subcommands_match_go_cobra_boundary --locked
 cargo +1.79.0 test -p awiki-cli --test group_contract --locked
 cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 AWIKI_GROUP_E2EE_CONTRACT_TEST=1 uv run pytest tests_v2/cli/test_awiki_cli_group_e2ee_negative_local.py -q
@@ -8791,7 +8791,7 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 
 Observed results:
 
-- `core_contract` focused unknown-subcommand regression: 1 passed, 0 failed.
+- `cli_shell_core_contract` focused unknown-subcommand regression: 1 passed, 0 failed.
 - `group_contract`: 6 passed, 0 failed.
 - `group_live_contract`: 4 passed, 0 failed.
 - `test_awiki_cli_group_e2ee_negative_local.py`: 3 passed, 0 failed, 0 skipped.
@@ -8880,10 +8880,10 @@ cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_normalize_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_sync_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_connection_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
 git diff --check
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/cli/test_awiki_cli_runtime_listener_local.py -q
 cd ../awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 uv run pytest tests_v2/cli/test_awiki_cli_service_run_local.py -q
@@ -8898,10 +8898,10 @@ Observed results:
 - `runtime_listener_secure_normalize_contract`: 10 passed.
 - `runtime_listener_notification_handler_contract`: 3 passed.
 - `runtime_listener_secure_sync_contract`: 7 passed.
-- `runtime_listener_service_contract`: 16 passed.
-- `runtime_bridge_contract`: 17 passed.
-- `runtime_listener_bridge_connection_contract`: 10 passed.
-- `runtime_listener_foreground_contract`: 10 passed.
+- `host_runtime_listener_service_contract`: 16 passed.
+- `host_runtime_bridge_contract`: 17 passed.
+- `host_runtime_listener_bridge_connection_contract`: 10 passed.
+- `host_runtime_listener_foreground_contract`: 10 passed.
 - `git diff --check` passed.
 - `awiki-system-test` runtime listener local selector: 2 passed.
 - `awiki-system-test` service-run local selector: 1 passed.
@@ -8944,7 +8944,7 @@ Boundary note:
 - Source/test files touched by this slice are below the default 1200-line
   review-size cap: `service.rs` 1125 lines, `inbox.rs` 820 lines,
   `history.rs` 349 lines, `mark_read.rs` 221 lines,
-  `traceutil_contract.rs` 329 lines,
+  `cli_trace_contract.rs` 329 lines,
   `msg_jwt_fallback_trace_contract.rs` 546 lines,
   `msg_ws_mark_read_live_contract.rs` 812 lines, and
   `msg_ws_proxy_live_contract.rs` 524 lines.
@@ -8954,7 +8954,7 @@ Commands run:
 ```text
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_trace_contract --locked
 cargo +1.79.0 test -p awiki-cli --test msg_jwt_fallback_trace_contract --locked
 cargo +1.79.0 test -p awiki-cli --test msg_ws_proxy_live_contract --locked
 cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
@@ -8971,7 +8971,7 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 Observed results:
 
 - Format check passed.
-- `traceutil_contract`: 9 passed, 0 failed.
+- `cli_trace_contract`: 9 passed, 0 failed.
 - `msg_jwt_fallback_trace_contract`: 2 passed, 0 failed.
 - `msg_ws_proxy_live_contract`: 2 passed, 0 failed.
 - `msg_ws_inbox_live_contract`: 5 passed, 0 failed.
@@ -9022,7 +9022,7 @@ Boundary note:
   call sites stay as separate parity slices.
 - No dependency was added. Cargo manifests and lockfile remain unchanged.
 - `crates/awiki-cli/src/message/attachment_service.rs` is 884 lines and
-  `crates/awiki-cli/tests/traceutil_contract.rs` is 289 lines after this slice,
+  `crates/awiki-cli/tests/cli_trace_contract.rs` is 289 lines after this slice,
   both below the default 1200-line review-size cap, so no file-size exception is
   needed.
 
@@ -9031,7 +9031,7 @@ Commands run:
 ```text
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_trace_contract --locked
 cargo +1.79.0 test -p awiki-cli --test attachment_live_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -9043,7 +9043,7 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 Observed results:
 
 - Format check passed.
-- `traceutil_contract`: 8 passed, 0 failed.
+- `cli_trace_contract`: 8 passed, 0 failed.
 - `attachment_live_contract`: 4 passed, 0 failed.
 - `cargo check -p awiki-cli --locked` passed.
 - Structure check passed with no undocumented Rust files over the 1200-line
@@ -9094,7 +9094,7 @@ Commands run:
 ```text
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_trace_contract --locked
 cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
 cargo +1.79.0 test -p awiki-cli --test store_groups_contract --locked
 cargo +1.79.0 test -p awiki-cli --test msg_all_inbox_live_contract --locked
@@ -9109,7 +9109,7 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 Observed results:
 
 - Format check passed.
-- `traceutil_contract`: 7 passed, 0 failed.
+- `cli_trace_contract`: 7 passed, 0 failed.
 - `group_live_contract`: 3 passed, 0 failed.
 - `store_groups_contract`: 2 passed, 0 failed.
 - `msg_all_inbox_live_contract`: 9 passed, 0 failed.
@@ -9166,7 +9166,7 @@ Commands run:
 ```text
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_trace_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
 cargo +1.79.0 test -p awiki-cli --test msg_ws_inbox_live_contract --locked
@@ -9183,7 +9183,7 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 Observed results:
 
 - Format check passed.
-- `traceutil_contract`: 6 passed, 0 failed.
+- `cli_trace_contract`: 6 passed, 0 failed.
 - `msg_contract`: 6 passed, 0 failed.
 - `msg_ws_inbox_live_contract`: 5 passed, 0 failed.
 - `msg_ws_history_live_contract`: 4 passed, 0 failed.
@@ -9202,7 +9202,7 @@ Observed results:
   direct-message trace labels.
 - Source/test files remain below the default 1200-line review-size cap:
   `service.rs` 1040 lines, `inbox.rs` 792 lines, `history.rs` 331 lines,
-  `contact_sync.rs` 196 lines, and `traceutil_contract.rs` 198 lines.
+  `contact_sync.rs` 196 lines, and `cli_trace_contract.rs` 198 lines.
 
 ## 2026-05-17 ANP Registry PascalCase Facade Slice
 
@@ -9291,7 +9291,7 @@ What changed:
   metadata or Go's default `dev` / `unknown` values for `BuildInfo::current`.
 - A separate unit test locks the Go default metadata snapshot without depending
   on the process build environment.
-- `core_contract` version assertions now compare public CLI output with the
+- `cli_shell_core_contract` version assertions now compare public CLI output with the
   compile-time metadata embedded in the test binary, preserving both ordinary
   and injected build contracts.
 - No `build.rs`, dependency, or git/Cargo auto-probing behavior was added.
@@ -9303,9 +9303,9 @@ cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 test -p awiki-cli buildinfo --locked
 AWIKI_CLI_VERSION=9.9.9 AWIKI_CLI_COMMIT=abc AWIKI_CLI_BUILD_DATE=2026-05-17T00:00:00Z AWIKI_CLI_CGO_ENABLED=0 cargo +1.79.0 test -p awiki-cli buildinfo --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract version_reports_current_build_info --locked -- --exact
-cargo +1.79.0 test -p awiki-cli --test core_contract status_reports_phase_version_paths_state_and_config --locked -- --exact
-cargo +1.79.0 test -p awiki-cli --test doctor_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract version_reports_current_build_info --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract status_reports_phase_version_paths_state_and_config --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test diagnostics_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/buildinfo
@@ -9398,13 +9398,13 @@ Commands run:
 ```text
 cmp -s ../awiki-cli/docs/architecture/参考文档/output-format.md docs/architecture/output-format.md
 cargo +1.79.0 fmt
-cargo +1.79.0 test -p awiki-cli --test core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 stat -c '%a %n' docs/architecture/output-format.md
-wc -l docs/architecture/output-format.md crates/awiki-cli/tests/core_contract.rs docs/parity-matrix.md docs/verification/README.md
+wc -l docs/architecture/output-format.md crates/awiki-cli/tests/cli_shell_core_contract.rs docs/parity-matrix.md docs/verification/README.md
 ```
 
 Observed results:
@@ -9412,10 +9412,10 @@ Observed results:
 - The copied output-format asset compares byte-identical with the Go source
   document and has mode `664`.
 - Focused docs topic contract passed.
-- Full `core_contract`, format check, structure check, and whitespace check
+- Full `cli_shell_core_contract`, format check, structure check, and whitespace check
   passed during the slice.
 - `docs/architecture/output-format.md` is 407 lines and
-  `core_contract.rs` is 1081 lines, both below the default 1200-line cap.
+  `cli_shell_core_contract.rs` is 1081 lines, both below the default 1200-line cap.
 - No Rust dependency was added.
 
 Boundary note: this is source documentation asset parity only. The copied
@@ -9452,22 +9452,22 @@ Commands run:
 
 ```text
 cargo +1.79.0 fmt
-cargo +1.79.0 test -p awiki-cli --test core_contract schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes --locked -- --exact
-cargo +1.79.0 test -p awiki-cli --test update_contract upgrade_schema_exposes_go_contract --locked -- --exact
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
-cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract schema_metadata_matches_go_catalog_for_choices_and_grouping_nodes --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test self_update_contract upgrade_schema_exposes_go_contract --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test self_update_contract --locked
 cargo +1.79.0 test -p awiki-cli --test msg_contract msg_schema_exposes_go_command_surface --locked -- --exact
 cargo +1.79.0 test -p awiki-cli --test group_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/cmdmeta ./internal/cli -run 'TestCatalog|TestCommandFromSpec|TestBuildRoot' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
-wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/core_contract.rs crates/awiki-cli/tests/update_contract.rs
+wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/cli_shell_core_contract.rs crates/awiki-cli/tests/self_update_contract.rs
 ```
 
 Observed results:
@@ -9476,7 +9476,7 @@ Observed results:
   grouping-node assertions.
 - Focused `upgrade` schema contract passed with Go-compatible
   `side_effect=false`.
-- Full `core_contract` and `update_contract` suites passed during the slice.
+- Full `cli_shell_core_contract` and `self_update_contract` suites passed during the slice.
 - Focused message, group, runtime, identity, and Hermes contract suites passed
   during the slice.
 - `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
@@ -9488,8 +9488,8 @@ Observed results:
   `native-tls`, bundled OpenSSL, platform service, WebSocket, YAML, or new HTTP
   dependency was added.
 - Touched Rust source/test files remain below the default 1200-line cap:
-  `cmdmeta/mod.rs` 354 lines, `core_contract.rs` 1050 lines, and
-  `update_contract.rs` 290 lines. No file-size exception is needed.
+  `cmdmeta/mod.rs` 354 lines, `cli_shell_core_contract.rs` 1050 lines, and
+  `self_update_contract.rs` 290 lines. No file-size exception is needed.
 
 Boundary note: this slice intentionally changes static schema metadata only.
 It does not implement or alter runtime listener, host notification, identity,
@@ -9528,7 +9528,7 @@ What changed:
   `awiki-cli <path> is not implemented yet.`, and hint
   `awiki-cli <path> is planned for PHASE. Use \`awiki-cli schema <name>\` to
   inspect the frozen contract.`
-- Added focused `core_contract` coverage for schema metadata and representative
+- Added focused `cli_shell_core_contract` coverage for schema metadata and representative
   executable stub leaves across `group.code`, `runtime.heartbeat`, `people`,
   `people.contacts`, `debug.raw`, and `debug.logs`.
 
@@ -9536,21 +9536,21 @@ Commands run:
 
 ```text
 cargo +1.79.0 fmt
-cargo +1.79.0 test -p awiki-cli --test core_contract schema_exposes_go_stub_command_families_and_stub_errors --locked -- --exact
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract schema_exposes_go_stub_command_families_and_stub_errors --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/cmdmeta ./internal/cli -run 'TestCatalog|TestCommandFromSpec|TestBuildRoot' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
-wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/tests/core_contract.rs
+wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/tests/cli_shell_core_contract.rs
 ```
 
 Observed results:
 
 - Focused Go stub command schema/error contract passed.
-- Full `core_contract`: 17 passed.
+- Full `cli_shell_core_contract`: 17 passed.
 - Go focused `internal/cmdmeta` and `internal/cli` tests passed.
 - `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
   check-structure`, and `git diff --check` passed.
@@ -9561,7 +9561,7 @@ Observed results:
   dependency was added.
 - Touched Rust source/test files remain below the default 1200-line cap:
   `cmdmeta/mod.rs` 332 lines, `cli/mod.rs` 519 lines, and
-  `core_contract.rs` 909 lines. No file-size exception is needed.
+  `cli_shell_core_contract.rs` 909 lines. No file-size exception is needed.
 
 Boundary note: this slice intentionally does not implement group join-code,
 heartbeat, people/contact, raw RPC, schema-cache, or log-follow business
@@ -9593,7 +9593,7 @@ What changed:
   `runtime.host-notify.hermes.bridge.service-run` command spec with handler
   `runtime.host-notify.hermes.bridge.service-run`, matching the parser and app
   handler already present in Rust.
-- Added a focused `core_contract` test that queries both
+- Added a focused `cli_shell_core_contract` test that queries both
   `schema runtime host-notify hermes bridge` and
   `schema runtime host-notify hermes bridge service-run`.
 - Kept visible grouping-node metadata unchanged: Go also keeps
@@ -9605,23 +9605,23 @@ Commands run:
 
 ```text
 cargo +1.79.0 fmt
-cargo +1.79.0 test -p awiki-cli --test core_contract schema_exposes_hidden_hermes_bridge_service_run_like_go_catalog --locked -- --exact
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract schema_exposes_hidden_hermes_bridge_service_run_like_go_catalog --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|libc'
 cd ../awiki-cli && go test ./internal/cmdmeta ./internal/cli -run 'TestCatalog|TestCommandFromSpec|TestBuildRoot|TestIsUpdateExemptCommandAllowsListenerServiceRun' -count=1
-wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/core_contract.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
+wc -l crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/cli_shell_core_contract.rs crates/awiki-cli/tests/host_runtime_hermes_cli_contract.rs
 ```
 
 Observed results:
 
 - Focused hidden Hermes bridge schema test passed.
-- Full `core_contract`: 16 passed.
-- `runtime_hermes_cli_contract`: 7 passed, preserving the hidden
+- Full `cli_shell_core_contract`: 16 passed.
+- `host_runtime_hermes_cli_contract`: 7 passed, preserving the hidden
   `service-run` executable behavior.
 - Go focused `internal/cmdmeta` and `internal/cli` tests passed.
 - `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
@@ -9632,8 +9632,8 @@ Observed results:
   `native-tls`, bundled OpenSSL, platform service, WebSocket, YAML, or new HTTP
   dependency was added.
 - Touched Rust source/test files remain below the default 1200-line cap:
-  `cmdmeta/mod.rs` 310 lines, `core_contract.rs` 752 lines, and
-  `runtime_hermes_cli_contract.rs` 475 lines. No file-size exception is
+  `cmdmeta/mod.rs` 310 lines, `cli_shell_core_contract.rs` 752 lines, and
+  `host_runtime_hermes_cli_contract.rs` 475 lines. No file-size exception is
   needed.
 
 Boundary note: this is schema/catalog metadata only. It does not implement
@@ -9899,7 +9899,7 @@ cmp -s ../awiki-cli/skills/references/11-site-pages.md skills/references/11-site
 stat -c '%a %n' <copied files>
 wc -l <copied files>
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract docs_list_and_topic_lookup_preserve_go_topic_contracts --locked -- --exact
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 ```
@@ -9951,15 +9951,15 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_openclaw --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract host_notify_openclaw --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/cli -run 'TestRefreshListenerForHostNotifyChange|TestRuntimeDryRunPlansCoverStableActions' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/app.rs crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/src/app/runtime_host_notify_refresh.rs crates/awiki-cli/tests/runtime_host_notify_enable_disable_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+wc -l crates/awiki-cli/src/app.rs crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/src/app/runtime_host_notify_refresh.rs crates/awiki-cli/tests/host_runtime_notify_enable_disable_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
 ```
 
 Observed results:
@@ -9975,7 +9975,7 @@ Observed results:
   `app.rs` 1026 lines, `runtime_handlers.rs` 737 lines,
   `runtime_hermes_handlers.rs` 737 lines,
   `runtime_host_notify_refresh.rs` 40 lines, and
-  `runtime_host_notify_enable_disable_contract.rs` 288 lines.
+  `host_runtime_notify_enable_disable_contract.rs` 288 lines.
 
 Boundary note: this slice only applies Go refresh semantics through the current
 local listener state helpers. It does not implement real platform
@@ -10011,21 +10011,21 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/host_runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_service_contract` passed with 16 tests, including the new
+- `host_runtime_listener_service_contract` passed with 16 tests, including the new
   `RunService` outer sequencing assertion.
 - Adjacent listener supervisor-init and foreground contracts passed.
 - Go focused listener service readiness/start guards passed.
@@ -10035,7 +10035,7 @@ Observed results:
   SQLite remains on the accepted `rusqlite` plus `libsqlite3-sys` path.
 - Changed Rust source/test files remain below the default 1200-line cap:
   `listener_service.rs` 778 lines and
-  `runtime_listener_service_contract.rs` 953 lines.
+  `host_runtime_listener_service_contract.rs` 953 lines.
 
 Boundary note: this slice models `RunService` outer ordering only. It does not
 call `servicepkg.New`, call `svc.Run`, execute a real `serviceProgram`, run the
@@ -10067,21 +10067,21 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/host_runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_service_contract` passed with the new `EnsureInstalled`
+- `host_runtime_listener_service_contract` passed with the new `EnsureInstalled`
   install-error tolerance assertions.
 - Adjacent listener supervisor-init and foreground contracts passed.
 - Go focused listener service readiness/start guards passed.
@@ -10123,21 +10123,21 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/host_runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_service_contract` passed with the new `serviceStatusFor`
+- `host_runtime_listener_service_contract` passed with the new `serviceStatusFor`
   mapping assertions.
 - Adjacent listener supervisor-init and foreground contracts passed.
 - Go focused listener service readiness/start guards passed.
@@ -10185,21 +10185,21 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/host_runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_service_contract` passed with the new `newService` config
+- `host_runtime_listener_service_contract` passed with the new `newService` config
   shape assertions.
 - Adjacent listener supervisor-init and foreground contracts passed.
 - Go focused listener service readiness/start guards passed.
@@ -10247,21 +10247,21 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_shutdown_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/host_runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md docs/known-go-issues.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_service_contract` passed with the new service-program
+- `host_runtime_listener_service_contract` passed with the new service-program
   start/stop planner assertions.
 - Adjacent listener supervisor-shutdown and foreground contracts passed.
 - Go focused listener service readiness/start guards passed.
@@ -10311,21 +10311,21 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_init_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestStartServiceAutoInstallsWhenMissing' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_service.rs crates/awiki-cli/tests/host_runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_service_contract` passed all 10 tests.
+- `host_runtime_listener_service_contract` passed all 10 tests.
 - Adjacent listener foreground and supervisor-init contracts passed.
 - Go listener service readiness/start guard passed.
 - Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
@@ -10425,8 +10425,8 @@ cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_connect_session_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_connect_session_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_notification_consume_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestNewWSClientDerivesIMWebSocketEndpointFromServiceBaseURL|TestWSClientConnectRefreshesExpiredBearerBeforeRetryingWebSocket|TestWSClientConnectBootstrapsBearerBeforeOpeningWebSocket' -count=1
@@ -10440,8 +10440,8 @@ Observed results:
   `git diff --check` passed.
 - `runtime_listener_wsclient_contract` passed all 25 tests.
 - Adjacent listener guards passed:
-  `runtime_listener_connect_session_contract` all 9 tests and
-  `runtime_listener_notification_consume_contract` all 7 tests.
+  `host_runtime_listener_connect_session_contract` all 9 tests and
+  `host_runtime_listener_notification_consume_contract` all 7 tests.
 - Adjacent Go listener wsclient guard passed. Go has focused tests for
   construction/connect behavior; `wsjsonWrite`/`wsjsonRead` remain source-parity
   verified because Go does not expose standalone helper tests for them.
@@ -10488,24 +10488,24 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_did_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_did_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_connection_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_service_did.rs crates/awiki-cli/tests/runtime_listener_service_did_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_service_did.rs crates/awiki-cli/tests/host_runtime_listener_service_did_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_service_did_contract` passed all 9 tests.
+- `host_runtime_listener_service_did_contract` passed all 9 tests.
 - Adjacent bridge guards passed:
-  `runtime_listener_bridge_connection_contract` all 10 tests and
-  `runtime_listener_bridge_dispatch_contract` all 10 tests.
+  `host_runtime_listener_bridge_connection_contract` all 10 tests and
+  `host_runtime_listener_bridge_dispatch_contract` all 10 tests.
 - Adjacent Go listener bridge guard passed.
 - Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
   Rustls/webpki/ring remain present for TLS; SQLite remains on the accepted
@@ -10546,7 +10546,7 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_json_helpers_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_json_helpers_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_in_process_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_ack_delivery_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_notifications_contract --locked
@@ -10555,14 +10555,14 @@ git diff --check
 go test ./internal/runtime/listener -run 'TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
 go run /tmp/struct_to_map_probe_*.go
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_json_helpers.rs crates/awiki-cli/tests/runtime_listener_json_helpers_contract.rs crates/awiki-cli/src/runtime/listener_secure_ack_in_process.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_json_helpers.rs crates/awiki-cli/tests/host_runtime_listener_json_helpers_contract.rs crates/awiki-cli/src/runtime/listener_secure_ack_in_process.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_json_helpers_contract` passed all 4 tests.
+- `host_runtime_listener_json_helpers_contract` passed all 4 tests.
 - Adjacent `runtime_listener_secure_ack_in_process_contract` passed all 13 tests.
 - Adjacent secure-notification guards passed:
   `runtime_listener_secure_ack_delivery_contract` all 6 tests and
@@ -10613,24 +10613,24 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_methods_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_state_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_session_methods_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_session_state_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_connection_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages|TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_session_methods.rs crates/awiki-cli/tests/runtime_listener_session_methods_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_session_methods.rs crates/awiki-cli/tests/host_runtime_listener_session_methods_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check` and `cargo check` passed.
-- `runtime_listener_session_methods_contract` passed all 8 tests.
-- Adjacent Rust guards passed: `runtime_listener_session_state_contract`,
+- `host_runtime_listener_session_methods_contract` passed all 8 tests.
+- Adjacent Rust guards passed: `host_runtime_listener_session_state_contract`,
   `runtime_listener_session_loop_contract`, and
-  `runtime_listener_bridge_connection_contract`.
+  `host_runtime_listener_bridge_connection_contract`.
 - `xtask check-structure` reported no undocumented Rust files over 1200 lines.
 - `git diff --check` passed.
 - Adjacent Go listener guard passed.
@@ -10674,21 +10674,21 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_local_notification_flush_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_local_notifications_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_local_notification_flush_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_local_notifications_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestDeliverLocalSecureAckInProcessPromotesPendingInitiatorSession|TestHandleNotificationDecryptsSecureDirectIncomingAndStoresPlaintext' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_local_notification_flush.rs crates/awiki-cli/tests/runtime_listener_local_notification_flush_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_local_notification_flush.rs crates/awiki-cli/tests/host_runtime_listener_local_notification_flush_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check` and `cargo check` passed.
-- `runtime_listener_local_notification_flush_contract` passed all 5 tests.
-- Adjacent Rust guards passed: `runtime_listener_local_notifications_contract`
+- `host_runtime_listener_local_notification_flush_contract` passed all 5 tests.
+- Adjacent Rust guards passed: `host_runtime_listener_local_notifications_contract`
   all 5 tests and `runtime_listener_notification_handler_contract` all 3 tests.
 - `xtask check-structure` reported no undocumented Rust files over 1200 lines.
 - `git diff --check` passed.
@@ -10734,24 +10734,24 @@ Commands run:
 ```text
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_connection_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_did_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_connection_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_did_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages|TestStartSocketPersistsBridgeAvailability' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_bridge_connection.rs crates/awiki-cli/tests/runtime_listener_bridge_connection_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_bridge_connection.rs crates/awiki-cli/tests/host_runtime_listener_bridge_connection_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check` passed.
-- `runtime_listener_bridge_connection_contract` passed all 10 tests.
-- Adjacent Rust guards passed: `runtime_bridge_contract` all 17 tests,
-  `runtime_listener_bridge_dispatch_contract` all 10 tests, and
-  `runtime_listener_service_did_contract` all 5 tests.
+- `host_runtime_listener_bridge_connection_contract` passed all 10 tests.
+- Adjacent Rust guards passed: `host_runtime_bridge_contract` all 17 tests,
+  `host_runtime_listener_bridge_dispatch_contract` all 10 tests, and
+  `host_runtime_listener_service_did_contract` all 5 tests.
 - `xtask check-structure` reported no undocumented Rust files over 1200 lines.
 - `git diff --check` passed.
 - Adjacent Go listener guard passed:
@@ -10796,25 +10796,25 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_init_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_init_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_shutdown_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestNewSupervisor|TestStartSocketPersistsBridgeAvailability' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_supervisor_init.rs crates/awiki-cli/tests/runtime_listener_supervisor_init_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_supervisor_init.rs crates/awiki-cli/tests/host_runtime_listener_supervisor_init_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_supervisor_init_contract` passed all 5 tests.
-- Adjacent Rust guards passed: `runtime_listener_service_contract` all 8 tests,
-  `runtime_host_notify_sink_contract` all 10 tests, and
-  `runtime_listener_supervisor_shutdown_contract` all 5 tests.
+- `host_runtime_listener_supervisor_init_contract` passed all 5 tests.
+- Adjacent Rust guards passed: `host_runtime_listener_service_contract` all 8 tests,
+  `host_runtime_notify_sink_contract` all 10 tests, and
+  `host_runtime_listener_supervisor_shutdown_contract` all 5 tests.
 - Adjacent Go listener guard passed:
   `ok github.com/agentconnect/awiki-cli/internal/runtime/listener 0.142s`.
 - Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
@@ -10861,25 +10861,25 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_bootstrap_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_did_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_session_bootstrap_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_did_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_bridge_dispatch.rs crates/awiki-cli/tests/runtime_listener_bridge_dispatch_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_bridge_dispatch.rs crates/awiki-cli/tests/host_runtime_listener_bridge_dispatch_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_bridge_dispatch_contract` passed all 10 tests.
-- Adjacent Rust guards passed: `runtime_bridge_contract` all 17 tests,
-  `runtime_listener_session_bootstrap_contract` all 7 tests, and
-  `runtime_listener_service_did_contract` all 5 tests.
+- `host_runtime_listener_bridge_dispatch_contract` passed all 10 tests.
+- Adjacent Rust guards passed: `host_runtime_bridge_contract` all 17 tests,
+  `host_runtime_listener_session_bootstrap_contract` all 7 tests, and
+  `host_runtime_listener_service_did_contract` all 5 tests.
 - Adjacent Go listener guard passed:
   `ok github.com/agentconnect/awiki-cli/internal/runtime/listener 0.004s`.
 - Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
@@ -10888,7 +10888,7 @@ Observed results:
 - Read-only Native Agent parity review found no issues and approved the slice.
 - No Cargo manifests or lockfiles changed.
 - `listener_bridge_dispatch.rs` is 503 lines and
-  `runtime_listener_bridge_dispatch_contract.rs` is 658 lines, below the
+  `host_runtime_listener_bridge_dispatch_contract.rs` is 658 lines, below the
   default 1200-line cap; project structure check reported no undocumented Rust
   files over 1200 lines.
 
@@ -10924,23 +10924,23 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_shutdown_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestStartSocketPersistsBridgeAvailability|TestHandleBridgeRequestPreservesSkipForHistoryAndGroupMessages' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_foreground.rs crates/awiki-cli/tests/runtime_listener_foreground_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_foreground.rs crates/awiki-cli/tests/host_runtime_listener_foreground_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_foreground_contract` passed all 10 tests.
-- Adjacent Rust guards passed: `runtime_bridge_contract` all 17 tests and
-  `runtime_listener_supervisor_shutdown_contract` all 5 tests.
+- `host_runtime_listener_foreground_contract` passed all 10 tests.
+- Adjacent Rust guards passed: `host_runtime_bridge_contract` all 17 tests and
+  `host_runtime_listener_supervisor_shutdown_contract` all 5 tests.
 - Adjacent Go listener guard passed:
   `ok github.com/agentconnect/awiki-cli/internal/runtime/listener 0.072s`.
 - Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
@@ -10949,7 +10949,7 @@ Observed results:
 - Read-only Native Agent parity review found no issues and approved the slice.
 - No Cargo manifests or lockfiles changed.
 - `listener_foreground.rs` is 167 lines and
-  `runtime_listener_foreground_contract.rs` is 236 lines, below the default
+  `host_runtime_listener_foreground_contract.rs` is 236 lines, below the default
   1200-line cap; project structure check reported no undocumented Rust files
   over 1200 lines.
 
@@ -10987,27 +10987,27 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_foreground_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_identity_watch_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_bootstrap_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_foreground_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_identity_watch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_session_bootstrap_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_shutdown_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestStartSocketPersistsBridgeAvailability|TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID|TestSessionLoopReconnectsAndStoresNotifications' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_foreground.rs crates/awiki-cli/tests/runtime_listener_foreground_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_foreground.rs crates/awiki-cli/tests/host_runtime_listener_foreground_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_foreground_contract` passed all 8 tests.
-- Adjacent Rust guards passed: `runtime_listener_service_contract` all 8 tests,
-  `runtime_listener_identity_watch_contract` all 8 tests,
-  `runtime_listener_session_bootstrap_contract` all 7 tests, and
-  `runtime_listener_supervisor_shutdown_contract` all 5 tests.
+- `host_runtime_listener_foreground_contract` passed all 8 tests.
+- Adjacent Rust guards passed: `host_runtime_listener_service_contract` all 8 tests,
+  `host_runtime_listener_identity_watch_contract` all 8 tests,
+  `host_runtime_listener_session_bootstrap_contract` all 7 tests, and
+  `host_runtime_listener_supervisor_shutdown_contract` all 5 tests.
 - Adjacent Go listener guard passed:
   `ok github.com/agentconnect/awiki-cli/internal/runtime/listener 1.208s`.
 - Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
@@ -11055,23 +11055,23 @@ Commands run:
 ```text
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_supervisor_shutdown_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|Test.*HostNotify|TestNewHermesHostNotifySinkRejectsInvalidNotifyURL|TestHermesHostNotifySinkNotifySignsRequest' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_supervisor_shutdown.rs crates/awiki-cli/tests/runtime_listener_supervisor_shutdown_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_supervisor_shutdown.rs crates/awiki-cli/tests/host_runtime_listener_supervisor_shutdown_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check`, `xtask check-structure`, and
   `git diff --check` passed.
-- `runtime_listener_supervisor_shutdown_contract` passed all 5 tests.
+- `host_runtime_listener_supervisor_shutdown_contract` passed all 5 tests.
 - Adjacent Rust guards passed: `runtime_listener_session_loop_contract` all 10
-  tests and `runtime_host_notify_sink_contract` all 10 tests.
+  tests and `host_runtime_notify_sink_contract` all 10 tests.
 - Adjacent Go listener guard passed:
   `ok github.com/agentconnect/awiki-cli/internal/runtime/listener 1.203s`.
 - Dependency audit matched existing policy: no OpenSSL or `native-tls` surfaced;
@@ -11122,20 +11122,20 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_bootstrap_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_identity_watch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_session_bootstrap_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_identity_watch_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_connect_session_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_connect_session_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestWSClientConnectRefreshesExpiredBearerBeforeRetryingWebSocket|TestWSClientConnectBootstrapsBearerBeforeOpeningWebSocket' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_session_bootstrap.rs crates/awiki-cli/tests/runtime_listener_session_bootstrap_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_session_bootstrap.rs crates/awiki-cli/tests/host_runtime_listener_session_bootstrap_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
-- `runtime_listener_session_bootstrap_contract` passed all 7 tests.
+- `host_runtime_listener_session_bootstrap_contract` passed all 7 tests.
 - Adjacent identity-watch, session-loop, and connect-session contracts passed,
   and `cargo check` passed for `awiki-cli`.
 - Focused Go listener session/connect guard tests passed.
@@ -11183,19 +11183,19 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_identity_watch_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_state_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_identity_watch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_session_state_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_loop_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestSessionLoopReconnectsAndStoresNotifications|TestSessionWarnings|TestHasDisconnectedSessions|TestMergeSavedRuntimeStatus' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener_identity_watch.rs crates/awiki-cli/tests/runtime_listener_identity_watch_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener_identity_watch.rs crates/awiki-cli/tests/host_runtime_listener_identity_watch_contract.rs crates/awiki-cli/src/runtime/mod.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
-- `runtime_listener_identity_watch_contract` passed all 8 tests.
+- `host_runtime_listener_identity_watch_contract` passed all 8 tests.
 - Adjacent listener session-state and session-loop contracts passed, and
   `cargo check` passed for `awiki-cli`.
 - Focused Go listener session/reconnect/status guard tests passed.
@@ -11243,7 +11243,7 @@ cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_handler_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/runtime/listener ./internal/store -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestHandleNotificationDispatchesMailNotificationToSink|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage|TestStoreMessageAndThreadView|Test.*Contact' -count=1
@@ -11300,7 +11300,7 @@ Commands run:
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/runtime/listener ./internal/store -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestHandleNotificationDispatchesMailNotificationToSink|TestRecordsFromGroupStateChangedBuildsMemberAndSystemMessage|TestStoreMessageAndThreadView|Test.*Contact' -count=1
@@ -11312,7 +11312,7 @@ Observed results:
 
 - `runtime_listener_notification_execute_contract` passed all 6 tests,
   including the new execute-with-status contract.
-- `runtime_listener_service_contract` passed all 8 adjacent listener status
+- `host_runtime_listener_service_contract` passed all 8 adjacent listener status
   tests, and `cargo check` passed for `awiki-cli`.
 - `xtask check-structure` reported no undocumented Rust files over 1200 lines;
   the touched Rust files are 231 and 581 lines.
@@ -11407,24 +11407,24 @@ Commands run:
 ```text
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestHandleNotificationDispatchesHostNotificationToSink|TestHandleNotificationStoresMessageWhenHostNotifyFails|TestMergeSavedRuntimeStatus|TestSessionWarnings|TestHasDisconnectedSessions' -count=1
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
-wc -l crates/awiki-cli/src/runtime/listener.rs crates/awiki-cli/tests/runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
+wc -l crates/awiki-cli/src/runtime/listener.rs crates/awiki-cli/tests/host_runtime_listener_service_contract.rs docs/parity-matrix.md docs/dependency-decisions.md docs/known-go-issues.md docs/verification/README.md
 ```
 
 Observed results:
 
-- `runtime_listener_service_contract` passed all 8 tests, including the new
+- `host_runtime_listener_service_contract` passed all 8 tests, including the new
   changed-only host-notify status mutation test.
 - `runtime_listener_notification_execute_contract` still passed, preserving the
   single-notification side-effect executor behavior while foreground status
   wiring remains deferred.
-- `runtime_contract` confirmed saved `host_notify.last_error` still merges into
+- `host_runtime_contract` confirmed saved `host_notify.last_error` still merges into
   listener status output.
 - Focused Go listener tests passed for host-notify dispatch/failure behavior and
   adjacent saved-status/session warning helpers.
@@ -11476,7 +11476,7 @@ cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --l
 cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
 cargo +1.79.0 test -p awiki-cli --test identity_replace_did_live_contract --locked
 cargo +1.79.0 test -p awiki-cli --test store_rebind_contract --locked
-cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_http_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/upgrade -run 'TestUpgradeIfNeededReplacesAllImportedLegacyK1Handles|TestUpgradeIfNeededReplacesExistingWorkspaceK1Handles|TestUpgradeIfNeededStampsCurrentWorkspaceMetadata' -count=1
@@ -11947,12 +11947,12 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_config_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_host_notify_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_openclaw_config_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_openclaw_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_host_notify_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
@@ -11964,18 +11964,18 @@ Result: passed for the commands listed above.
 
 Observed results:
 
-- `runtime_host_notify_enable_disable_contract`: 2 passed.
-- `runtime_contract`: 12 passed.
-- `runtime_openclaw_config_contract`: 5 passed.
-- `runtime_host_notify_sink_contract`: 10 passed.
-- `runtime_openclaw_host_notify_contract`: 11 passed.
-- `runtime_hermes_host_notify_contract`: 8 passed.
+- `host_runtime_notify_enable_disable_contract`: 2 passed.
+- `host_runtime_contract`: 12 passed.
+- `host_runtime_openclaw_config_contract`: 5 passed.
+- `host_runtime_notify_sink_contract`: 10 passed.
+- `host_runtime_openclaw_host_notify_contract`: 11 passed.
+- `host_runtime_hermes_host_notify_contract`: 8 passed.
 - Go focused config and runtime dry-run selectors passed.
 - `cargo check`, structure check, whitespace check, and dependency audit passed.
 - Changed Rust source/test files remain below the default 1200-line
   review-size cap: `runtime_handlers.rs` 721 lines, `cli/mod.rs` 451 lines,
   `cmdmeta/mod.rs` 301 lines, and
-  `runtime_host_notify_enable_disable_contract.rs` 186 lines.
+  `host_runtime_notify_enable_disable_contract.rs` 186 lines.
 
 Scope:
 
@@ -12015,8 +12015,8 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test debug_contract --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test diagnostic_debug_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/cli -run 'TestNormalizeDebugHandleTrimsPrefixesAndDomains|TestBuildHandleHistoryOwnersAggregatesByOwner' -count=1
@@ -12026,12 +12026,12 @@ Result: passed for the commands listed above.
 
 Observed results:
 
-- `debug_contract`: 4 passed.
-- `core_contract`: 15 passed.
+- `diagnostic_debug_contract`: 4 passed.
+- `cli_shell_core_contract`: 15 passed.
 - Go focused `internal/cli` selector passed.
 - Changed Rust source/test files remain below the default 1200-line
   review-size cap: `app.rs` 1024 lines, `app/debug_handlers.rs` 253 lines,
-  `store/contacts.rs` 444 lines, and `debug_contract.rs` 310 lines.
+  `store/contacts.rs` 444 lines, and `diagnostic_debug_contract.rs` 310 lines.
 
 Scope:
 
@@ -13309,7 +13309,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_consume_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_notification_consume_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
@@ -13432,7 +13432,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_connect_session_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_connect_session_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
@@ -13993,7 +13993,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_lookup_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_session_lookup_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
@@ -14048,7 +14048,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_local_notifications_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_local_notifications_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
@@ -14256,8 +14256,8 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_session_state_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_session_state_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
@@ -14315,9 +14315,9 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
 cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
@@ -14348,7 +14348,7 @@ Scope:
 - Keeps extra bytes after the first newline out of the dispatch boundary, as Go
   handles only one request per connection.
 - Keeps the files under the default review-size cap: `bridge.rs` is 444 lines
-  and `runtime_bridge_contract.rs` is 732 lines before subsequent
+  and `host_runtime_bridge_contract.rs` is 732 lines before subsequent
   formatting-independent changes.
 
 Boundary note: this is an injected-dispatch helper-only slice. It does not
@@ -14371,8 +14371,8 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_did_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_did_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -14426,7 +14426,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_wsclient_contract --locked
 cargo +1.79.0 test -p awiki-cli --test message_contract --locked
 cargo +1.79.0 test -p awiki-cli --test message_group_wire_contract --locked
@@ -14485,7 +14485,7 @@ Local Rust verification:
 cargo +1.79.0 fmt --check
 cargo +1.79.0 test -p awiki-cli --test message_ws_proxy_contract --locked
 cargo +1.79.0 test -p awiki-cli --test message_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -14683,7 +14683,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -14728,7 +14728,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_host_notify_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -14780,7 +14780,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -14829,9 +14829,9 @@ Status: unit verified.
 Local Rust verification:
 
 ```bash
-rustfmt +1.79.0 --edition 2021 --check crates/awiki-cli/src/runtime/openclaw_host_notify.rs crates/awiki-cli/src/runtime/openclaw_webhook.rs crates/awiki-cli/tests/runtime_openclaw_host_notify_contract.rs
+rustfmt +1.79.0 --edition 2021 --check crates/awiki-cli/src/runtime/openclaw_host_notify.rs crates/awiki-cli/src/runtime/openclaw_webhook.rs crates/awiki-cli/tests/host_runtime_openclaw_host_notify_contract.rs
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_openclaw_host_notify_contract --locked
 cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
 ```
 
@@ -14880,7 +14880,7 @@ Local Rust verification:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -15073,8 +15073,8 @@ Local Rust verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test traceutil_contract --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract trace_timing --locked
+cargo +1.79.0 test -p awiki-cli --test cli_trace_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract trace_timing --locked
 cargo +1.79.0 test -p awiki-cli --test mail_live_contract mail_inbox_trace_timing_reports_remote_rpc_phase --locked -- --exact
 cargo +1.79.0 test -p awiki-cli --test mail_live_contract mail_inbox_trace_timing_reports_bootstrap_jwt_without_nested_get_me_rpc --locked -- --exact
 cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
@@ -15144,7 +15144,7 @@ cargo +1.79.0 test -p awiki-cli --test msg_contract --locked
 cargo +1.79.0 test -p awiki-cli --test message_contract --locked
 cargo +1.79.0 test -p awiki-cli --test msg_live_contract --locked
 cargo +1.79.0 test -p awiki-cli --test group_live_contract --locked
-cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_http_contract --locked
 cargo +1.79.0 test -p awiki-cli --lib transportcfg::http::tests::close_delimited_response_is_complete_after_headers_like_go_net_http --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 test -p awiki-cli --locked
@@ -16091,7 +16091,7 @@ cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli --test identity_live_contract --locked
 cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
-cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_http_contract --locked
 cargo +1.79.0 test -p awiki-cli --test page_live_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -16205,8 +16205,8 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 git diff --check
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -16259,8 +16259,8 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 git diff --check
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -16300,7 +16300,7 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_bridge_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/runtime -run 'TestResolveShortensLongSocketPath|TestResolveKeepsShortSocketPath|TestResolveDefaultsToWebSocketMode' -count=1
@@ -16358,8 +16358,8 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 git diff --check
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -16971,7 +16971,7 @@ Local Rust and Go reference verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli durablefs --locked
-cargo +1.79.0 test -p awiki-cli --test config_writer_contract config_writer_uses_go_style_tempfile_permissions_and_cleanup --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_config_writer_contract config_writer_uses_go_style_tempfile_permissions_and_cleanup --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -16997,7 +16997,7 @@ Scope:
 Structure note: changed Rust files remain below the default 1200-line source
 limit: `crates/awiki-cli/src/durablefs.rs` is 76 lines,
 `crates/awiki-cli/src/config/write.rs` is 445 lines, and
-`crates/awiki-cli/tests/config_writer_contract.rs` is 264 lines. No file-size
+`crates/awiki-cli/tests/workspace_config_writer_contract.rs` is 264 lines. No file-size
 exception is needed.
 
 Boundary note: this slice does not implement Go `runtime/openclawnotify` route
@@ -17018,7 +17018,7 @@ Local Rust and Go reference verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli openclaw_routes --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -17073,14 +17073,14 @@ Local Rust verification:
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli openclaw_webhook --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_openclaw --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract host_notify_openclaw --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
 ```
 
-Result: passed locally. `runtime_contract` route tests cover successful
+Result: passed locally. `host_runtime_contract` route tests cover successful
 confirmation POST, bearer token forwarding, Go-shaped JSON request body,
 auto-detected `OPENCLAW_GATEWAY_PORT` hook URLs, duplicate-route no-send
 behavior, Go-style loopback URL validation, validation, and post-persistence
@@ -17122,9 +17122,9 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_openclaw_config_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify_openclaw --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_openclaw_config_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract host_notify_openclaw --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|base64'
@@ -17138,7 +17138,7 @@ JSON silent fallback, Go positive-`int` port behavior above `65535`, Go
 typed-JSON unmarshal all-or-nothing fallback, Go-style `path.Clean`
 normalization for hook paths including `/`, `.`, `..`, and `/a/../b/.`, token
 source redaction, and auto-detected hook URL construction. The focused
-`runtime_contract` OpenClaw tests continue to cover route confirmation with
+`host_runtime_contract` OpenClaw tests continue to cover route confirmation with
 config-probed path/token settings.
 
 Scope:
@@ -17166,8 +17166,8 @@ Local Rust and Go reference verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli listener --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -17271,9 +17271,9 @@ Local Rust and Go reference verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli buildinfo --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract version_reports_current_build_info --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract status_reports_phase_version_paths_state_and_config --locked
-cargo +1.79.0 test -p awiki-cli --test doctor_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract version_reports_current_build_info --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract status_reports_phase_version_paths_state_and_config --locked
+cargo +1.79.0 test -p awiki-cli --test diagnostics_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -17312,7 +17312,7 @@ Scope:
 
 Structure note: changed Rust files remain below the default 1200-line source
 limit: `crates/awiki-cli/src/buildinfo.rs` is 174 lines and
-`crates/awiki-cli/tests/core_contract.rs` is 589 lines. No file-size exception
+`crates/awiki-cli/tests/cli_shell_core_contract.rs` is 589 lines. No file-size exception
 is needed.
 
 Boundary note: this slice does not implement release pipeline metadata wiring,
@@ -17425,7 +17425,7 @@ Local Rust verification in `awiki-cli-rs2`:
 ```bash
 cargo +1.79.0 fmt --check
 git diff --check
-cargo +1.79.0 test -p awiki-cli --test traceutil_contract --test transportcfg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_trace_contract --test cli_http_profile_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -17443,8 +17443,8 @@ Result: passed. Focused Rust contract tests: 9 passed. Full Rust package
 verification: 118 local tests passed. Go reference tests for both source
 packages passed. Structure check reported no undocumented Rust files over 1200
 lines; current slice files are `traceutil.rs` 298 lines,
-`transportcfg.rs` 320 lines, `traceutil_contract.rs` 123 lines, and
-`transportcfg_contract.rs` 128 lines. Build passed. Dependency audit showed
+`transportcfg.rs` 320 lines, `cli_trace_contract.rs` 123 lines, and
+`cli_http_profile_contract.rs` 128 lines. Build passed. Dependency audit showed
 only the existing Rustls/ring update path and approved `rusqlite + bundled`
 SQLite path; this slice added no dependency and did not introduce OpenSSL,
 `native-tls`, `reqwest`, `hyper`, or WebSocket crates.
@@ -18504,9 +18504,9 @@ Local Rust verification in `awiki-cli-rs2`:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test doctor_contract --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test diagnostics_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 test -p awiki-cli --test identity_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -18520,7 +18520,7 @@ service configuration, SQLite contact-handle binding diagnostics, and a fake
 `anp-mls system version --json-in -` compatibility probe with scoped MLS state.
 The full `awiki-cli` crate test suite reported 76 tests passing after this
 slice. Structure check reported no undocumented Rust files over 1200 lines;
-`doctor/mod.rs` is 1002 lines and `tests/doctor_contract.rs` is 271 lines.
+`doctor/mod.rs` is 1002 lines and `tests/diagnostics_contract.rs` is 271 lines.
 Dependency audit remained unchanged: only the approved
 `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
 present, with no OpenSSL/native-tls/HTTP/TLS client path.
@@ -18547,9 +18547,9 @@ Local Rust verification in `awiki-cli-rs2`:
 
 ```bash
 cargo +1.79.0 fmt --check
-cargo +1.79.0 test -p awiki-cli --test config_writer_contract --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_config_writer_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -18560,7 +18560,7 @@ Result: passed for the focused helper tests plus existing core/runtime contract
 tests. The full `awiki-cli` crate suite reported 82 tests passing after this
 slice. Structure check reported no undocumented Rust files over 1200 lines;
 after the follow-up file split, `config/mod.rs` is 829 lines,
-`config/write.rs` is 453 lines, and `tests/config_writer_contract.rs` is 264
+`config/write.rs` is 453 lines, and `tests/workspace_config_writer_contract.rs` is 264
 lines. Dependency audit remained unchanged: only the approved
 `rusqlite -> libsqlite3-sys -> cc/pkg-config/vcpkg` bundled SQLite path was
 present, with no OpenSSL/native-tls/HTTP/TLS client path.
@@ -18627,12 +18627,12 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 test -p awiki-cli update --locked
-cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test self_update_contract --locked
 cd ../awiki-cli && go test ./internal/update
 ```
 
 Result: passed. The Rust update-focused run covered 9 update module tests plus
-the existing filtered contract tests; `update_contract` reported 3 passed. The
+the existing filtered contract tests; `self_update_contract` reported 3 passed. The
 Go reference `internal/update` tests passed.
 
 Live smoke on this host, using the configured proxy/VPN environment:
@@ -18844,7 +18844,7 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 test -p awiki-cli --test store_import_contract --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract debug_db_import_v1 --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract debug_db_import_v1 --locked
 cd ../awiki-cli && go test ./internal/store
 cd ../awiki-system-test && \
   AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=../awiki-cli-rs2 \
@@ -18896,8 +18896,8 @@ Local Rust and Go reference verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
-cargo +1.79.0 test -p awiki-cli --test doctor_contract --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract config_show_reports_resolved_configuration_snapshot --locked
+cargo +1.79.0 test -p awiki-cli --test diagnostics_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract config_show_reports_resolved_configuration_snapshot --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -19252,7 +19252,7 @@ Local Rust and Go reference verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli --test workspace_migration_v0_to_v1_contract --locked
-cargo +1.79.0 test -p awiki-cli --test config_writer_contract --locked
+cargo +1.79.0 test -p awiki-cli --test workspace_config_writer_contract --locked
 cargo +1.79.0 test -p awiki-cli upgrade::migration_v0_to_v1 --locked
 cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
@@ -19555,8 +19555,8 @@ cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli app::update_preflight --locked
 cargo +1.79.0 test -p awiki-cli update --locked
-cargo +1.79.0 test -p awiki-cli --test update_contract --locked
-cargo +1.79.0 test -p awiki-cli --test core_contract --locked
+cargo +1.79.0 test -p awiki-cli --test self_update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_shell_core_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -19935,10 +19935,10 @@ Local Rust verification:
 ```bash
 cargo +1.79.0 fmt --check
 git diff --check
-cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
-cargo +1.79.0 test -p awiki-cli --test transportcfg_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_http_profile_contract --locked
 cargo +1.79.0 test -p awiki-cli update --locked
-cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test self_update_contract --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 build -p awiki-cli --bin awiki-cli --locked
@@ -19993,7 +19993,7 @@ Local Rust verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
-cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_http_contract --locked
 cargo +1.79.0 test -p awiki-cli update --locked
 cargo +1.79.0 test -p awiki-cli --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
@@ -20107,7 +20107,7 @@ Local Rust verification:
 cargo +1.79.0 fmt --check
 git diff --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test transportcfg_http_contract --locked
+cargo +1.79.0 test -p awiki-cli --test cli_http_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 test -p awiki-cli --test authsdk_contract --locked
 cargo +1.79.0 test -p awiki-cli --test mail_live_contract --locked
@@ -20126,7 +20126,7 @@ Result: passed. Formatting, whitespace, package check, structure check,
 focused transport/authsdk/service live contract tests, binary build, and
 dependency audit all passed. The full `cargo +1.79.0 test -p awiki-cli
 --locked` suite also passed with no failed tests. Focused test counts:
-`transportcfg_http_contract` 10,
+`cli_http_contract` 10,
 `authsdk_contract` 15, `mail_live_contract` 3, `page_live_contract` 4,
 `site_live_contract` 4, `identity_live_contract` 15, `msg_live_contract` 2,
 `group_live_contract` 3, and `attachment_live_contract` 4 all passed with zero
@@ -20158,7 +20158,7 @@ caps to the response read path. Go context deadlines also cover dial,
 TLS handshake, and request write; exact cross-phase deadline cancellation plus
 trace phase emission remain later transport/trace parity work.
 
-Parallelism note: the focused `transportcfg_http_contract` tests were added by
+Parallelism note: the focused `cli_http_contract` tests were added by
 a code-writing Native Agent launched with GPT-5.5 and xhigh reasoning under a
 test-only write scope, satisfying the recorded parallel-development constraint.
 
@@ -21550,37 +21550,37 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/cli -run 'TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue|TestRuntimeDryRunPlansCoverStableActions' -count=1
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/mod.rs crates/awiki-cli/src/runtime/hermes_host_notify.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs crates/awiki-cli/tests/runtime_hermes_bridge_contract.rs
+wc -l crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/mod.rs crates/awiki-cli/src/runtime/hermes_host_notify.rs crates/awiki-cli/tests/host_runtime_hermes_cli_contract.rs crates/awiki-cli/tests/host_runtime_hermes_bridge_contract.rs
 ```
 
 Result: passed for the commands listed above.
 
 Observed results:
 
-- `runtime_hermes_cli_contract`: 5 passed.
-- `runtime_hermes_bridge_contract`: 10 passed.
-- `runtime_hermes_host_notify_contract`: 8 passed.
-- `runtime_contract`: 12 passed.
-- `runtime_host_notify_sink_contract`: 10 passed.
-- `runtime_host_notify_enable_disable_contract`: 2 passed.
+- `host_runtime_hermes_cli_contract`: 5 passed.
+- `host_runtime_hermes_bridge_contract`: 10 passed.
+- `host_runtime_hermes_host_notify_contract`: 8 passed.
+- `host_runtime_contract`: 12 passed.
+- `host_runtime_notify_sink_contract`: 10 passed.
+- `host_runtime_notify_enable_disable_contract`: 2 passed.
 - `cargo check`, structure check, whitespace check, dependency audit, and Go
   focused reference tests passed.
 - Changed Rust source/test files remain below the default 1200-line review-size
   cap: `runtime_handlers.rs` 1003 lines, `hermes_bridge.rs` 878 lines,
   `runtime/mod.rs` 505 lines, `hermes_host_notify.rs` 267 lines,
-  `runtime_hermes_cli_contract.rs` 336 lines, and
-  `runtime_hermes_bridge_contract.rs` 370 lines. No file-size exception is
+  `host_runtime_hermes_cli_contract.rs` 336 lines, and
+  `host_runtime_hermes_bridge_contract.rs` 370 lines. No file-size exception is
   needed.
 - No active `awiki-system-test` selector currently covers
   `runtime host-notify hermes guide/status`; `rg` under `tests_v2` found no
@@ -21641,38 +21641,38 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
 cd ../awiki-cli && go test ./internal/config -run 'TestUpdateHermesSettingsDualWritesLegacyWebhook|TestSetAndClearHermesSecretDualWritesLegacyWebhook|TestHostNotifyMutatorsWriteSinkAndHermesConfig' -count=1
-wc -l crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/runtime/mod.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/runtime_hermes_config_write_contract.rs
+wc -l crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/runtime/mod.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/src/cmdmeta/mod.rs crates/awiki-cli/tests/host_runtime_hermes_config_write_contract.rs
 ```
 
 Result: passed for the commands listed above.
 
 Observed results:
 
-- `runtime_hermes_config_write_contract`: 11 passed.
-- `runtime_hermes_cli_contract`: 5 passed.
-- `runtime_hermes_bridge_contract`: 10 passed.
-- `runtime_hermes_host_notify_contract`: 8 passed.
-- `runtime_contract`: 12 passed.
-- `runtime_host_notify_sink_contract`: 10 passed.
-- `runtime_host_notify_enable_disable_contract`: 2 passed.
+- `host_runtime_hermes_config_write_contract`: 11 passed.
+- `host_runtime_hermes_cli_contract`: 5 passed.
+- `host_runtime_hermes_bridge_contract`: 10 passed.
+- `host_runtime_hermes_host_notify_contract`: 8 passed.
+- `host_runtime_contract`: 12 passed.
+- `host_runtime_notify_sink_contract`: 10 passed.
+- `host_runtime_notify_enable_disable_contract`: 2 passed.
 - `cargo check`, structure check, whitespace check, dependency audit, and Go
   focused reference tests passed.
 - Changed Rust source/test files remain below the default 1200-line review-size
   cap: `runtime_handlers.rs` 1134 lines, `runtime/mod.rs` 521 lines,
   `cli/mod.rs` 475 lines, `cmdmeta/mod.rs` 307 lines, and
-  `runtime_hermes_config_write_contract.rs` 542 lines. No file-size exception
+  `host_runtime_hermes_config_write_contract.rs` 542 lines. No file-size exception
   is needed.
 - No active `awiki-system-test` selector currently covers
   `runtime host-notify hermes set/set-secret/clear-secret`; `rg` under
@@ -21731,40 +21731,40 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
 cd ../awiki-cli && go test ./internal/config -run 'TestUpdateHermesSettingsDualWritesLegacyWebhook|TestSetAndClearHermesSecretDualWritesLegacyWebhook|TestHostNotifyMutatorsWriteSinkAndHermesConfig' -count=1
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/runtime_hermes_setup_dry_run_contract.rs crates/awiki-cli/src/app.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/src/cmdmeta/mod.rs
+wc -l crates/awiki-cli/src/app/runtime_handlers.rs crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/host_runtime_hermes_setup_dry_run_contract.rs crates/awiki-cli/src/app.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/src/cmdmeta/mod.rs
 ```
 
 Result: passed for the commands listed above.
 
 Observed results:
 
-- `runtime_hermes_setup_dry_run_contract`: 11 passed.
-- `runtime_hermes_config_write_contract`: 11 passed.
-- `runtime_hermes_cli_contract`: 5 passed.
-- `runtime_hermes_bridge_contract`: 10 passed.
-- `runtime_hermes_host_notify_contract`: 8 passed.
-- `runtime_contract`: 12 passed.
-- `runtime_host_notify_sink_contract`: 10 passed.
-- `runtime_host_notify_enable_disable_contract`: 2 passed.
+- `host_runtime_hermes_setup_dry_run_contract`: 11 passed.
+- `host_runtime_hermes_config_write_contract`: 11 passed.
+- `host_runtime_hermes_cli_contract`: 5 passed.
+- `host_runtime_hermes_bridge_contract`: 10 passed.
+- `host_runtime_hermes_host_notify_contract`: 8 passed.
+- `host_runtime_contract`: 12 passed.
+- `host_runtime_notify_sink_contract`: 10 passed.
+- `host_runtime_notify_enable_disable_contract`: 2 passed.
 - `cargo check`, structure check, whitespace check, dependency audit, and Go
   focused reference tests passed.
 - Changed Rust source/test files remain below the default 1200-line review-size
   cap: `runtime_handlers.rs` 721 lines, `runtime_hermes_handlers.rs` 616
-  lines, `runtime_hermes_setup_dry_run_contract.rs` 472 lines, `app.rs` 1025
+  lines, `host_runtime_hermes_setup_dry_run_contract.rs` 472 lines, `app.rs` 1025
   lines, `cli/mod.rs` 479 lines, and `cmdmeta/mod.rs` 308 lines. No file-size
   exception is needed.
 - `rg` under `/home/ecs-user/awiki-space/awiki-system-test` found OpenClaw
@@ -21831,41 +21831,41 @@ Local Rust and Go reference verification:
 ```bash
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_host_notify_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_enable_disable_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_ensure_route_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_host_notify_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_enable_disable_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/tests/runtime_hermes_ensure_route_contract.rs
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/tests/host_runtime_hermes_ensure_route_contract.rs
 ```
 
 Result: passed for the commands listed above.
 
 Observed results:
 
-- `runtime_hermes_ensure_route_contract`: 8 passed.
-- `runtime_hermes_bridge_contract`: 10 passed.
-- `runtime_hermes_setup_dry_run_contract`: 11 passed.
-- `runtime_hermes_config_write_contract`: 11 passed.
-- `runtime_hermes_cli_contract`: 5 passed.
-- `runtime_hermes_host_notify_contract`: 8 passed.
-- `runtime_contract`: 12 passed.
-- `runtime_host_notify_sink_contract`: 10 passed.
-- `runtime_host_notify_enable_disable_contract`: 2 passed.
+- `host_runtime_hermes_ensure_route_contract`: 8 passed.
+- `host_runtime_hermes_bridge_contract`: 10 passed.
+- `host_runtime_hermes_setup_dry_run_contract`: 11 passed.
+- `host_runtime_hermes_config_write_contract`: 11 passed.
+- `host_runtime_hermes_cli_contract`: 5 passed.
+- `host_runtime_hermes_host_notify_contract`: 8 passed.
+- `host_runtime_contract`: 12 passed.
+- `host_runtime_notify_sink_contract`: 10 passed.
+- `host_runtime_notify_enable_disable_contract`: 2 passed.
 - `cargo check`, structure check, whitespace check, dependency audit, and Go
   Hermes bridge reference tests passed.
 - Changed Rust source/test files remain below the default 1200-line review-size
   cap: `runtime/hermes_bridge.rs` 882 lines,
   `runtime/hermes_bridge/route.rs` 686 lines, and
-  `runtime_hermes_ensure_route_contract.rs` 401 lines. No file-size exception
+  `host_runtime_hermes_ensure_route_contract.rs` 401 lines. No file-size exception
   is needed.
 
 Scope:
@@ -21934,36 +21934,36 @@ Commands run:
 ```text
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_ensure_route_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/host_runtime_hermes_bridge_service_contract.rs
 ```
 
 Observed results:
 
 - `cargo fmt --check` passed.
 - `cargo check -p awiki-cli --locked` passed.
-- `runtime_hermes_bridge_service_contract`: 7 passed.
-- `runtime_hermes_bridge_contract`: 10 passed.
-- `runtime_hermes_ensure_route_contract`: 8 passed.
-- `runtime_hermes_cli_contract`: 5 passed.
-- `runtime_hermes_setup_dry_run_contract`: 11 passed.
-- `runtime_contract`: 12 passed.
+- `host_runtime_hermes_bridge_service_contract`: 7 passed.
+- `host_runtime_hermes_bridge_contract`: 10 passed.
+- `host_runtime_hermes_ensure_route_contract`: 8 passed.
+- `host_runtime_hermes_cli_contract`: 5 passed.
+- `host_runtime_hermes_setup_dry_run_contract`: 11 passed.
+- `host_runtime_contract`: 12 passed.
 - Go `./internal/runtime/hermesbridge`: passed.
 - Structure check, whitespace check, and dependency audit passed.
 - Changed Rust source/test files remain below the default 1200-line review-size
   cap: `runtime/hermes_bridge.rs` 879 lines,
   `runtime/hermes_bridge/route.rs` 686 lines,
   `runtime/hermes_bridge/service.rs` 156 lines, and
-  `runtime_hermes_bridge_service_contract.rs` 291 lines. No file-size
+  `host_runtime_hermes_bridge_service_contract.rs` 291 lines. No file-size
   exception is needed.
 
 Implemented behavior:
@@ -22027,28 +22027,28 @@ Commands run:
 ```text
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/host_runtime_hermes_bridge_service_contract.rs
 ```
 
 Observed results:
 
 - `cargo fmt --check` passed.
 - `cargo check -p awiki-cli --locked` passed.
-- `runtime_hermes_bridge_service_contract`: 8 passed.
-- `runtime_hermes_bridge_contract`: 10 passed.
+- `host_runtime_hermes_bridge_service_contract`: 8 passed.
+- `host_runtime_hermes_bridge_contract`: 10 passed.
 - Go `./internal/runtime/hermesbridge`: passed.
 - Structure check, whitespace check, and dependency audit passed.
 - Changed Rust source/test files remain below the default 1200-line review-size
   cap: `runtime/hermes_bridge.rs` 880 lines,
   `runtime/hermes_bridge/route.rs` 686 lines,
   `runtime/hermes_bridge/service.rs` 189 lines, and
-  `runtime_hermes_bridge_service_contract.rs` 367 lines. No file-size
+  `host_runtime_hermes_bridge_service_contract.rs` 367 lines. No file-size
   exception is needed.
 
 Implemented behavior:
@@ -22088,28 +22088,28 @@ Commands run:
 ```text
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/host_runtime_hermes_bridge_service_contract.rs
 ```
 
 Observed results:
 
 - `cargo fmt --check` passed after formatting.
 - `cargo check -p awiki-cli --locked` passed.
-- `runtime_hermes_bridge_service_contract`: 12 passed.
-- `runtime_hermes_cli_contract`: 5 passed.
+- `host_runtime_hermes_bridge_service_contract`: 12 passed.
+- `host_runtime_hermes_cli_contract`: 5 passed.
 - Go `./internal/runtime/hermesbridge`: passed.
 - Structure check, whitespace check, and dependency audit passed.
 - Changed Rust source/test files remain below the default 1200-line review-size
   cap: `runtime/hermes_bridge.rs` 865 lines,
   `runtime/hermes_bridge/route.rs` 686 lines,
   `runtime/hermes_bridge/service.rs` 248 lines, and
-  `runtime_hermes_bridge_service_contract.rs` 488 lines. No file-size
+  `host_runtime_hermes_bridge_service_contract.rs` 488 lines. No file-size
   exception is needed.
 
 Implemented behavior:
@@ -22155,27 +22155,27 @@ Commands run:
 ```text
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_ensure_route_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_setup_dry_run_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/route.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/host_runtime_hermes_bridge_service_contract.rs
 ```
 
 Observed results:
 
 - `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
   check-structure`, and `git diff --check` passed.
-- `runtime_hermes_bridge_service_contract`: 14 passed.
-- `runtime_hermes_bridge_contract`: 10 passed.
-- `runtime_hermes_ensure_route_contract`: 8 passed.
-- `runtime_hermes_cli_contract`: 5 passed.
-- `runtime_hermes_setup_dry_run_contract`: 11 passed.
+- `host_runtime_hermes_bridge_service_contract`: 14 passed.
+- `host_runtime_hermes_bridge_contract`: 10 passed.
+- `host_runtime_hermes_ensure_route_contract`: 8 passed.
+- `host_runtime_hermes_cli_contract`: 5 passed.
+- `host_runtime_hermes_setup_dry_run_contract`: 11 passed.
 - Go `internal/runtime/hermesbridge` tests passed.
 - Dependency audit output showed only existing allowed hits: Rustls/ring
   transport dependencies, `base64`/`sha2`, and the approved
@@ -22186,7 +22186,7 @@ Observed results:
   cap: `runtime/hermes_bridge.rs` 867 lines,
   `runtime/hermes_bridge/route.rs` 686 lines,
   `runtime/hermes_bridge/service.rs` 336 lines, and
-  `runtime_hermes_bridge_service_contract.rs` 581 lines. No file-size
+  `host_runtime_hermes_bridge_service_contract.rs` 581 lines. No file-size
   exception is needed.
 
 Implemented behavior:
@@ -22234,28 +22234,28 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_setup_dry_run_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_ensure_route_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_setup_dry_run_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_config_write_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_ensure_route_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/cli -run 'TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue|TestRuntimeDryRunPlansCoverStableActions' -count=1
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/runtime_hermes_setup_dry_run_contract.rs
+wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/host_runtime_hermes_setup_dry_run_contract.rs
 ```
 
 Observed results:
 
 - `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
   check-structure`, and `git diff --check` passed.
-- `runtime_hermes_setup_dry_run_contract`: 12 passed.
-- `runtime_hermes_config_write_contract`: 11 passed.
-- `runtime_hermes_ensure_route_contract`: 8 passed.
-- `runtime_hermes_bridge_service_contract`: 14 passed.
-- `runtime_hermes_cli_contract`: 5 passed.
+- `host_runtime_hermes_setup_dry_run_contract`: 12 passed.
+- `host_runtime_hermes_config_write_contract`: 11 passed.
+- `host_runtime_hermes_ensure_route_contract`: 8 passed.
+- `host_runtime_hermes_bridge_service_contract`: 14 passed.
+- `host_runtime_hermes_cli_contract`: 5 passed.
 - Go focused `internal/cli` Hermes tests passed.
 - Go `internal/runtime/hermesbridge` tests passed.
 - Dependency audit output showed only existing allowed hits: Rustls/ring
@@ -22265,7 +22265,7 @@ Observed results:
   platform service, YAML, WebSocket, or new HTTP-client dependency was added.
 - Changed Rust source/test files remain below the default 1200-line review-size
   cap: `runtime_hermes_handlers.rs` 705 lines and
-  `runtime_hermes_setup_dry_run_contract.rs` 612 lines. No file-size exception
+  `host_runtime_hermes_setup_dry_run_contract.rs` 612 lines. No file-size exception
   is needed.
 
 Implemented behavior:
@@ -22317,7 +22317,7 @@ cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli runtime::hermes_bridge::tests --lib --locked
 cargo +1.79.0 test -p awiki-cli hermes_bridge::tests --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
 wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs
@@ -22331,7 +22331,7 @@ Observed results:
 - Broader filtered `hermes_bridge::tests` run passed the same 2 focused library
   tests; integration test binaries were compiled and had all unrelated tests
   filtered.
-- `runtime_hermes_bridge_service_contract`: 14 passed.
+- `host_runtime_hermes_bridge_service_contract`: 14 passed.
 - Go `internal/runtime/hermesbridge` tests passed.
 - `runtime/hermes_bridge.rs` is 975 lines, below the default 1200-line
   review-size cap. No file-size exception is needed.
@@ -22369,7 +22369,7 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 test -p awiki-cli runtime::hermes_bridge::tests --lib --locked
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
@@ -22382,7 +22382,7 @@ Observed results:
   check-structure` passed.
 - Focused library `runtime::hermes_bridge::tests`: 4 passed, including the
   existing Python lookup tests plus adapter script candidate-order tests.
-- `runtime_hermes_bridge_service_contract`: 14 passed.
+- `host_runtime_hermes_bridge_service_contract`: 14 passed.
 - Go `internal/runtime/hermesbridge` tests passed.
 - Dependency audit output showed only existing allowed hits: Rustls/ring
   transport dependencies, `base64`/`sha2`, and the approved
@@ -22427,26 +22427,26 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test update_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test self_update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 git diff --check
 cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
+wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/src/cli/mod.rs crates/awiki-cli/tests/host_runtime_hermes_cli_contract.rs
 ```
 
 Observed results:
 
 - `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
   check-structure`, and `git diff --check` passed.
-- `runtime_hermes_cli_contract`: 6 passed, including the new hidden
+- `host_runtime_hermes_cli_contract`: 6 passed, including the new hidden
   service-run dispatch test.
-- `update_contract`: 6 passed, preserving the update-preflight exemptions for
+- `self_update_contract`: 6 passed, preserving the update-preflight exemptions for
   hidden service commands.
-- `runtime_hermes_bridge_service_contract`: 14 passed.
+- `host_runtime_hermes_bridge_service_contract`: 14 passed.
 - Go focused `internal/cli` Hermes tests passed.
 - Go `internal/runtime/hermesbridge` tests passed.
 - Dependency audit output showed only existing allowed hits: Rustls/ring
@@ -22456,7 +22456,7 @@ Observed results:
   platform service, YAML, WebSocket, or new HTTP-client dependency was added.
 - Touched source/test files remain below the default 1200-line review-size
   cap: `runtime_hermes_handlers.rs` 722 lines, `cli/mod.rs` 482 lines, and
-  `runtime_hermes_cli_contract.rs` 366 lines. No file-size exception is needed.
+  `host_runtime_hermes_cli_contract.rs` 366 lines. No file-size exception is needed.
 
 Implemented behavior:
 
@@ -22495,20 +22495,20 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
 cargo +1.79.0 test -p awiki-cli runtime::hermes_bridge::tests --lib --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 git diff --check
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/tests/host_runtime_hermes_bridge_service_contract.rs
 ```
 
 Observed results:
 
 - `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
   check-structure`, and `git diff --check` passed.
-- `runtime_hermes_bridge_service_contract`: 16 passed, including adapter
+- `host_runtime_hermes_bridge_service_contract`: 16 passed, including adapter
   process env/argument consumption and stop/kill behavior tests.
 - Focused library `runtime::hermes_bridge::tests`: 4 passed.
 - Go `internal/runtime/hermesbridge` tests passed.
@@ -22519,7 +22519,7 @@ Observed results:
   platform service, YAML, WebSocket, or new HTTP-client dependency was added.
 - Source/test files remain below the default 1200-line review-size cap:
   `runtime/hermes_bridge.rs` 1025 lines, `runtime/hermes_bridge/service.rs`
-  471 lines, and `runtime_hermes_bridge_service_contract.rs` 674 lines. No
+  471 lines, and `host_runtime_hermes_bridge_service_contract.rs` 674 lines. No
   file-size exception is needed.
 
 Implemented behavior:
@@ -22562,27 +22562,27 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test update_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test self_update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64'
 git diff --check
 cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
-wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
+wc -l crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/host_runtime_hermes_cli_contract.rs
 ```
 
 Observed results:
 
 - `cargo fmt`, `cargo fmt --check`, `cargo check -p awiki-cli`, `xtask
   check-structure`, and `git diff --check` passed.
-- `runtime_hermes_cli_contract`: 7 passed, including missing-secret preflight
+- `host_runtime_hermes_cli_contract`: 7 passed, including missing-secret preflight
   before the deferred boundary and the configured preflight path that reaches
   the dedicated `not_implemented` boundary.
-- `update_contract`: 6 passed, preserving update-preflight exemptions for
+- `self_update_contract`: 6 passed, preserving update-preflight exemptions for
   hidden service commands.
-- `runtime_hermes_bridge_service_contract`: 16 passed.
+- `host_runtime_hermes_bridge_service_contract`: 16 passed.
 - Go focused `internal/cli` Hermes tests passed.
 - Go `internal/runtime/hermesbridge` tests passed.
 - Dependency audit output showed only existing allowed hits: Rustls/ring
@@ -22592,7 +22592,7 @@ Observed results:
   platform service, YAML, WebSocket, or new HTTP-client dependency was added.
 - Touched source/test files remain below the default 1200-line review-size
   cap: `runtime_hermes_handlers.rs` 725 lines and
-  `runtime_hermes_cli_contract.rs` 445 lines. No file-size exception is needed.
+  `host_runtime_hermes_cli_contract.rs` 445 lines. No file-size exception is needed.
 
 Implemented behavior:
 
@@ -22634,8 +22634,8 @@ stat -c '%a %n' scripts/hermes_notify_adapter.py scripts/test_hermes_notify_adap
 wc -l scripts/hermes_notify_adapter.py scripts/test_hermes_notify_adapter.py
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
 python3 -m py_compile scripts/hermes_notify_adapter.py
 python3 -m unittest discover -s scripts -p 'test_hermes_notify_adapter.py'
 cd ../awiki-cli && python3 -m py_compile scripts/hermes_notify_adapter.py
@@ -22694,33 +22694,33 @@ Commands run:
 cargo +1.79.0 fmt
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_service_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_hermes_cli_contract --locked
-cargo +1.79.0 test -p awiki-cli --test update_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_cli_contract --locked
+cargo +1.79.0 test -p awiki-cli --test self_update_contract --locked
 cargo +1.79.0 test -p awiki-cli runtime::hermes_bridge::tests --lib --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|openssl-probe|openssl-src|reqwest|hyper|rustls|webpki|aws-lc|ring|libsqlite3-sys|sqlite|pkg-config|vcpkg|cc |systemd|dbus|launchd|tungstenite|websocket|serde_yaml|yaml|hmac|sha2|base64|libc'
 cd ../awiki-cli && go test ./internal/runtime/hermesbridge -count=1
 cd ../awiki-cli && go test ./internal/cli -run 'TestRuntimeDryRunPlansCoverStableActions|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHostNotifyConfigViewRedactsHermesSecretValue' -count=1
-wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/runtime_hermes_bridge_service_contract.rs crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
+wc -l crates/awiki-cli/src/runtime/hermes_bridge.rs crates/awiki-cli/src/runtime/hermes_bridge/service.rs crates/awiki-cli/src/app/runtime_hermes_handlers.rs crates/awiki-cli/tests/host_runtime_hermes_bridge_service_contract.rs crates/awiki-cli/tests/host_runtime_hermes_cli_contract.rs
 ```
 
 Observed results:
 
 - `cargo check`, formatting, whitespace, structure check, focused Rust
   Hermes/update tests, focused Go Hermes tests, and dependency audit passed.
-- `runtime_hermes_bridge_service_contract`: 17 passed, including the new
+- `host_runtime_hermes_bridge_service_contract`: 17 passed, including the new
   injected stop-condition service-run helper test.
-- `runtime_hermes_cli_contract`: 7 passed, including a subprocess test that
+- `host_runtime_hermes_cli_contract`: 7 passed, including a subprocess test that
   starts the hidden CLI service-run path with a fake `python3`, observes the
   adapter marker file, sends SIGTERM to the CLI, and verifies clean exit with
   no success/error envelope.
 - Source/test files remain below the default 1200-line cap:
   `hermes_bridge.rs` 1025 lines, `hermes_bridge/service.rs` 537 lines,
   `runtime_hermes_handlers.rs` 721 lines,
-  `runtime_hermes_bridge_service_contract.rs` 716 lines, and
-  `runtime_hermes_cli_contract.rs` 475 lines.
+  `host_runtime_hermes_bridge_service_contract.rs` 716 lines, and
+  `host_runtime_hermes_cli_contract.rs` 475 lines.
 
 Implemented behavior:
 
@@ -23088,7 +23088,7 @@ Commands run:
 ```text
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 cd ../awiki-cli && go test ./internal/runtime/listener -run 'TestWaitForServiceStatusWithWaitsForBridgeAvailability|TestWaitForServiceStatusWithWaitsForExpectedBootID' -count=1
@@ -23097,7 +23097,7 @@ cargo +1.79.0 tree --workspace --locked | rg -i 'openssl|native-tls|openssl-sys|
 
 Observed results:
 
-- `runtime_listener_service_contract` passed all 7 tests, including the new
+- `host_runtime_listener_service_contract` passed all 7 tests, including the new
   foreground signal and child-process platform-plan contracts.
 - `cargo check`, structure check, whitespace check, and the focused Go listener
   service readiness tests passed.
@@ -23106,7 +23106,7 @@ Observed results:
   `libsqlite3-sys` paths; no OpenSSL, `native-tls`, WebSocket, YAML, or
   platform service-manager dependency path appeared.
 - The touched files remain below the default 1200-line review-size cap:
-  `listener_service.rs` and `runtime_listener_service_contract.rs`.
+  `listener_service.rs` and `host_runtime_listener_service_contract.rs`.
 
 Boundary note: this is helper parity only. It does not implement real
 `signal.NotifyContext`, supervisor execution under a cancellation context,
@@ -23135,7 +23135,7 @@ cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_execute_contract --locked
 cargo +1.79.0 test -p awiki-cli --test runtime_listener_notification_plan_contract --locked
 cargo +1.79.0 test -p awiki-cli listener_contact_sync --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --locked
 cargo +1.79.0 test -p awiki-cli --test store_contact_contract --locked
 cargo +1.79.0 test -p awiki-cli --test store_groups_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure

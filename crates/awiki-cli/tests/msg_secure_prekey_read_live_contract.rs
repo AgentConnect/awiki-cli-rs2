@@ -1,5 +1,5 @@
-use awiki_cli::config::Paths;
-use awiki_cli::legacy_identity::{generate_identity, types::SaveInput, Manager};
+mod support;
+
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -8,6 +8,7 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use support::{write_ready_identity, TestIdentity, TestIdentityOptions};
 
 #[test]
 fn msg_inbox_target_filter_is_unsupported_before_legacy_secure_prekey_side_effects() {
@@ -35,8 +36,8 @@ fn msg_inbox_target_filter_is_unsupported_before_legacy_secure_prekey_side_effec
 #[test]
 fn msg_history_live_reads_without_legacy_secure_prekey_publish_side_effect() {
     let workspace = TempDir::new("msg-secure-prekey-history").expect("workspace");
-    let manager = Manager::new(test_paths(workspace.path()));
-    let bob = register_generated_msg_identity(&manager, "bob-secure-history", "bob", "jwt-bob");
+    let bob =
+        register_generated_msg_identity(workspace.path(), "bob-secure-history", "bob", "jwt-bob");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let message = json!({
         "id": "msg-secure-prekey-history-1",
@@ -87,8 +88,8 @@ fn msg_history_live_reads_without_legacy_secure_prekey_publish_side_effect() {
 #[test]
 fn msg_history_live_keeps_read_success_without_legacy_secure_prekey_warning() {
     let workspace = TempDir::new("msg-secure-prekey-history-success").expect("workspace");
-    let manager = Manager::new(test_paths(workspace.path()));
-    let bob = register_generated_msg_identity(&manager, "bob-secure-success", "bob", "jwt-bob");
+    let bob =
+        register_generated_msg_identity(workspace.path(), "bob-secure-success", "bob", "jwt-bob");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
     let message = json!({
         "id": "msg-secure-prekey-success-1",
@@ -134,35 +135,21 @@ fn msg_history_live_keeps_read_success_without_legacy_secure_prekey_warning() {
 }
 
 fn register_generated_msg_identity(
-    manager: &Manager,
+    workspace: &Path,
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) -> awiki_cli::legacy_identity::types::StoredIdentity {
-    let generated = generate_identity(
-        "awiki.ai",
-        "https://awiki.ai/anp-im/rpc",
-        "did:wba:awiki.ai",
+) -> TestIdentity {
+    write_ready_identity(
+        workspace,
+        TestIdentityOptions {
+            identity_name,
+            handle,
+            display_name: identity_name,
+            jwt_token,
+            make_default: true,
+        },
     )
-    .expect("generate identity");
-    manager
-        .save(SaveInput {
-            identity_name: identity_name.to_string(),
-            did: generated.did,
-            unique_id: generated.unique_id,
-            user_id: format!("user-{handle}"),
-            display_name: identity_name.to_string(),
-            handle: handle.to_string(),
-            full_handle: format!("{handle}.awiki.ai"),
-            jwt_token: jwt_token.to_string(),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            ..SaveInput::default()
-        })
-        .expect("save generated message identity")
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
@@ -171,26 +158,6 @@ fn write_msg_config(workspace: &Path, base_url: &str) {
         format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
     )
     .unwrap();
-}
-
-fn test_paths(workspace: &Path) -> Paths {
-    for directory in ["data", "runtime", "cache", "logs"] {
-        std::fs::create_dir_all(workspace.join(directory)).expect("create workspace subdir");
-    }
-    Paths {
-        workspace_home_dir: path_string(workspace),
-        root_dir: path_string(workspace),
-        config_dir: path_string(workspace),
-        data_dir: path_string(&workspace.join("data")),
-        state_dir: path_string(&workspace.join("runtime")),
-        cache_dir: path_string(&workspace.join("cache")),
-        logs_dir: path_string(&workspace.join("logs")),
-        config_file: path_string(&workspace.join("config.yaml")),
-        identity_dir: path_string(&workspace.join("identities")),
-        database_file: path_string(&workspace.join("data").join("awiki-cli.db")),
-        legacy_credentials_dir: path_string(&workspace.join("legacy-credentials")),
-        legacy_data_dir: path_string(&workspace.join("legacy-data")),
-    }
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -279,10 +246,6 @@ fn rpc_methods(bodies: &[Value]) -> Vec<&str> {
         .iter()
         .map(|body| body["method"].as_str().expect("rpc method"))
         .collect()
-}
-
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 fn json_rpc_result(result: Value) -> String {

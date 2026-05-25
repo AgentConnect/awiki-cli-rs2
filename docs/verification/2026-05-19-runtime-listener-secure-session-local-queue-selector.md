@@ -29,13 +29,13 @@ Gap table:
 | --- | --- | --- | --- | --- | --- | --- |
 | `internal/runtime/listener/server.go` | secure unread inbox polling runs both unread replay and pending-confirmation history sync before starting the 2s ticker, then repeats both syncs on each tick until context shutdown | `crates/awiki-cli/src/runtime/listener_secure_inbox_poll.rs` | implemented; selector visibility added | `runtime_listener_secure_inbox_poll_contract` passed 4 tests | `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_secure_session_local_queue_contracts` | low for deterministic poll ordering; live reconnect/backlog replay remains separate |
 | `internal/runtime/listener/server.go` | pending-confirmation peer discovery reads secure session files under the selected identity, ignores malformed/missing inputs, and returns peer DIDs for pending-confirmation sessions | `crates/awiki-cli/src/runtime/listener_secure_sessions.rs` | implemented; selector visibility added | `runtime_listener_secure_sessions_contract` passed 4 tests | same focused selector | low for local file-scan helper behavior; live secure session mutation remains broader listener work |
-| `internal/runtime/listener/server.go` | local notifications for managed-but-not-yet-active recipients are queued by exact DID, skip blank/nil analogs, preserve order, and are deleted on flush | `crates/awiki-cli/src/runtime/listener_local_notifications.rs` | implemented; selector visibility added | `runtime_listener_local_notifications_contract` passed 5 tests | same focused selector | low for queue semantics; end-to-end inactive-recipient secure ACK delivery remains separate |
+| `internal/runtime/listener/server.go` | local notifications for managed-but-not-yet-active recipients are queued by exact DID, skip blank/nil analogs, preserve order, and are deleted on flush | `crates/awiki-cli/src/runtime/listener_local_notifications.rs` | implemented; selector visibility added | `host_runtime_listener_local_notifications_contract` passed 5 tests | same focused selector | low for queue semantics; end-to-end inactive-recipient secure ACK delivery remains separate |
 
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_inbox_poll_contract --test runtime_listener_secure_sessions_contract --test runtime_listener_local_notifications_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && wc -l crates/awiki-cli/src/runtime/listener_supervisor_run.rs crates/awiki-cli/src/runtime/listener_secure_inbox_poll.rs crates/awiki-cli/src/runtime/listener_secure_sessions.rs crates/awiki-cli/src/runtime/listener_local_notifications.rs crates/awiki-cli/tests/runtime_listener_secure_inbox_poll_contract.rs crates/awiki-cli/tests/runtime_listener_secure_sessions_contract.rs crates/awiki-cli/tests/runtime_listener_local_notifications_contract.rs
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_secure_inbox_poll_contract --test runtime_listener_secure_sessions_contract --test host_runtime_listener_local_notifications_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && wc -l crates/awiki-cli/src/runtime/listener_supervisor_run.rs crates/awiki-cli/src/runtime/listener_secure_inbox_poll.rs crates/awiki-cli/src/runtime/listener_secure_sessions.rs crates/awiki-cli/src/runtime/listener_local_notifications.rs crates/awiki-cli/tests/runtime_listener_secure_inbox_poll_contract.rs crates/awiki-cli/tests/runtime_listener_secure_sessions_contract.rs crates/awiki-cli/tests/host_runtime_listener_local_notifications_contract.rs
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_secure_session_local_queue_contracts -ra -q
 ```
@@ -51,7 +51,7 @@ Observed results:
   `listener_secure_sessions.rs` 68 lines, `listener_local_notifications.rs`
   42 lines, `runtime_listener_secure_inbox_poll_contract.rs` 49 lines,
   `runtime_listener_secure_sessions_contract.rs` 184 lines, and
-  `runtime_listener_local_notifications_contract.rs` 104 lines.
+  `host_runtime_listener_local_notifications_contract.rs` 104 lines.
 - `listener_supervisor_run.rs` remains 2334 lines. It is above the default
   1200-line review target but below the active 2500-line source
   limit. The file is the Rust integration hub for Go `server.go`, which is

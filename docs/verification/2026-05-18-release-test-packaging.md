@@ -41,10 +41,10 @@ cd /home/ecs-user/awiki-space/awiki-cli-rs2 && scripts/release/build-anp-mls.sh 
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && node <installer artifact-name and run.js binary path contract probe>
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/update/test_install_script.py -ra -q
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_BINARY=/home/ecs-user/awiki-space/awiki-cli-rs2/target/debug/awiki-cli PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/update/test_install_script.py tests_v2/update/test_update_policy.py::test_root_preflight_soft_fails_non_exempt_update_checks_and_exempts_local_commands tests_v2/core/test_basic_commands.py::test_core_query_commands_return_structured_success tests_v2/core/test_basic_commands.py::test_completion_commands_generate_shell_scripts -ra -q
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract new_host_notify_sink_hermes_status_and_constructor_errors_match_go --locked -- --exact --nocapture
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract new_host_notify_sink_hermes_status_and_constructor_errors_match_go --locked -- --exact --nocapture
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli runtime::listener::tests::status_for_hermes_host_notify_includes_notify_url_like_go_manager --locked -- --exact
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener ./internal/runtime -run 'Test.*HostNotify|Test.*Hermes|TestResolve' -count=1
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_sink_contract --test runtime_contract --test runtime_hermes_host_notify_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_sink_contract --test host_runtime_contract --test host_runtime_hermes_host_notify_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 ```

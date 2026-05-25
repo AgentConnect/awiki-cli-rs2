@@ -9,6 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::open_local_state;
+
 #[test]
 fn msg_mark_read_websocket_mode_uses_im_core_http_not_legacy_bridge() {
     let workspace = TempDir::new("msg-ws-mark-read-http-cutover").expect("workspace");
@@ -372,16 +376,14 @@ fn execute_sql<P>(workspace: &Path, statement: &str, params: P)
 where
     P: rusqlite::Params,
 {
-    let connection = rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db"))
-        .expect("open test database");
+    let connection = open_local_state(workspace);
     connection
         .execute(statement, params)
         .expect("execute test sql");
 }
 
 fn is_read(workspace: &Path, owner_did: &str, message_id: &str) -> i64 {
-    let connection = rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db"))
-        .expect("open test database");
+    let connection = open_local_state(workspace);
     connection
         .query_row(
             "SELECT is_read FROM messages WHERE owner_did = ?1 AND msg_id = ?2",

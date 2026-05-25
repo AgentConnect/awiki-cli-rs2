@@ -560,8 +560,8 @@ crates/awiki-cli/src/im_core_adapter/realtime.rs
 
 ```bash
 cargo test -p im-core realtime_runner
-cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_connection_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 完成标准：

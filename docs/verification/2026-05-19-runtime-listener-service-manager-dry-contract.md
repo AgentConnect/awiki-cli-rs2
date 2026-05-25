@@ -41,18 +41,18 @@ Not implemented or claimed in this batch:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `internal/runtime/listener/service.go` | `RestartService` checks installed state and returns `listener service is not installed` when missing; it does not auto-install | `crates/awiki-cli/src/runtime/mod.rs` | implemented for non-systemd local fallback | `runtime_contract::listener_restart_requires_installed_service_like_go_contract` | `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_service_foreground_status_contracts` | low for fallback semantics; live service managers remain separate |
-| `internal/runtime/listener/service.go` launchd backend via `kardianos/service` | per-workspace launch agent identity, `runtime listener service-run`, env vars, RunAtLoad, KeepAlive, working directory, logs, status parsing | `crates/awiki-cli/src/runtime/listener_launchd.rs` | dry-contract implemented | `runtime_listener_launchd_contract` | same non-mail listener selector for adjacent entrypoint health | medium until live macOS launchctl acceptance |
-| `internal/runtime/listener/service.go` Windows backend via `kardianos/service` | per-workspace Windows service identity, empty working directory, service-run args, env vars, automatic start, restart-on-failure, logs/PID projection, state mapping | `crates/awiki-cli/src/runtime/listener_windows_service.rs` | dry-contract implemented | `runtime_listener_windows_service_contract` | same non-mail listener selector for adjacent entrypoint health | medium until live Windows SCM acceptance |
+| `internal/runtime/listener/service.go` | `RestartService` checks installed state and returns `listener service is not installed` when missing; it does not auto-install | `crates/awiki-cli/src/runtime/mod.rs` | implemented for non-systemd local fallback | `host_runtime_contract::listener_restart_requires_installed_service_like_go_contract` | `tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_service_foreground_status_contracts` | low for fallback semantics; live service managers remain separate |
+| `internal/runtime/listener/service.go` launchd backend via `kardianos/service` | per-workspace launch agent identity, `runtime listener service-run`, env vars, RunAtLoad, KeepAlive, working directory, logs, status parsing | `crates/awiki-cli/src/runtime/listener_launchd.rs` | dry-contract implemented | `host_runtime_listener_launchd_contract` | same non-mail listener selector for adjacent entrypoint health | medium until live macOS launchctl acceptance |
+| `internal/runtime/listener/service.go` Windows backend via `kardianos/service` | per-workspace Windows service identity, empty working directory, service-run args, env vars, automatic start, restart-on-failure, logs/PID projection, state mapping | `crates/awiki-cli/src/runtime/listener_windows_service.rs` | dry-contract implemented | `host_runtime_listener_windows_service_contract` | same non-mail listener selector for adjacent entrypoint health | medium until live Windows SCM acceptance |
 
 ## Files
 
 - `crates/awiki-cli/src/runtime/listener_launchd.rs`
 - `crates/awiki-cli/src/runtime/listener_windows_service.rs`
 - `crates/awiki-cli/src/runtime/mod.rs`
-- `crates/awiki-cli/tests/runtime_listener_launchd_contract.rs`
-- `crates/awiki-cli/tests/runtime_listener_windows_service_contract.rs`
-- `crates/awiki-cli/tests/runtime_contract.rs`
+- `crates/awiki-cli/tests/host_runtime_listener_launchd_contract.rs`
+- `crates/awiki-cli/tests/host_runtime_listener_windows_service_contract.rs`
+- `crates/awiki-cli/tests/host_runtime_contract.rs`
 - `docs/parity-matrix.md`
 - `docs/verification/README.md`
 - `docs/verification/2026-05-19-runtime-listener-service-manager-dry-contract.md`
@@ -60,12 +60,12 @@ Not implemented or claimed in this batch:
 ## Commands
 
 ```bash
-cargo +1.79.0 test -p awiki-cli --test runtime_contract listener_restart_requires_installed_service_like_go_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_launchd_contract --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_windows_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_contract listener_restart_requires_installed_service_like_go_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_launchd_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_windows_service_contract --locked
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_launchd_contract --test runtime_listener_windows_service_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_launchd_contract --test host_runtime_listener_windows_service_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 AWIKI_CLI_UNDER_TEST=rust \
@@ -79,10 +79,10 @@ uv run pytest -p no:cacheprovider \
 
 ## Observed Results
 
-- `runtime_contract::listener_restart_requires_installed_service_like_go_contract`
+- `host_runtime_contract::listener_restart_requires_installed_service_like_go_contract`
   passed.
-- `runtime_listener_launchd_contract` passed 3 tests.
-- `runtime_listener_windows_service_contract` passed 3 tests.
+- `host_runtime_listener_launchd_contract` passed 3 tests.
+- `host_runtime_listener_windows_service_contract` passed 3 tests.
 - `cargo +1.79.0 fmt --check` passed after formatting.
 - `cargo +1.79.0 check -p awiki-cli --locked` passed.
 - `cargo +1.79.0 run --bin xtask --locked -- check-structure` passed:
@@ -94,10 +94,10 @@ uv run pytest -p no:cacheprovider \
 
 - `listener_launchd.rs`: 281 lines.
 - `listener_windows_service.rs`: 187 lines.
-- `runtime_listener_launchd_contract.rs`: 225 lines.
-- `runtime_listener_windows_service_contract.rs`: 253 lines.
+- `host_runtime_listener_launchd_contract.rs`: 225 lines.
+- `host_runtime_listener_windows_service_contract.rs`: 253 lines.
 - `runtime/mod.rs`: 604 lines.
-- `runtime_contract.rs`: 1187 lines after formatting.
+- `host_runtime_contract.rs`: 1187 lines after formatting.
 
 No new file-size exception is needed.
 

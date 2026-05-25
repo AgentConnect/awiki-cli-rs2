@@ -21,16 +21,16 @@ Gap table:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `internal/runtime/listener/service.go` | service install/start/stop/restart/uninstall plans, wait-for-status, boot-id handoff, artifact cleanup, service-mode detection, service-program start/stop ordering | `src/runtime/listener_service.rs`, `src/runtime/listener_systemd.rs` | implemented; selector added | `runtime_listener_service_contract` | `test_awiki_cli_runtime_listener_service_foreground_status_contracts` | low for deterministic service planner behavior; real service-manager execution remains broader runtime work |
-| `internal/runtime/listener/run_foreground_unix.go`, `run_foreground_windows.go`, `sysproc_unix.go`, `sysproc_windows.go` | platform foreground signal and child-process setup intent | `src/runtime/listener_service.rs`, `src/runtime/listener_foreground.rs` | implemented; selector added | `runtime_listener_service_contract`, `runtime_listener_foreground_contract` | same selector | low for helper parity; non-Linux process-control acceptance remains separate |
-| `internal/runtime/listener/server.go` | foreground startup ordering, non-websocket rejection before side effects, PID/status write order, socket startup, bridge availability, accept-loop behavior | `src/runtime/listener_foreground.rs` | implemented; selector added | `runtime_listener_foreground_contract` | same selector | low for helper behavior; live WebSocket service health is external |
-| `internal/runtime/listener/manager.go`, `files.go`, supervisor initialization paths | store open/schema/boot-id/path/host-notify initialization order, cleanup order, supplied host-notify status preservation, saved listener status merge | `src/runtime/listener_supervisor_init.rs`, `src/runtime/listener.rs` | implemented; selector added | `runtime_listener_supervisor_init_contract`, focused `runtime_contract` saved-status merge test | same selector | low for local deterministic behavior; full live listener acceptance remains separate |
+| `internal/runtime/listener/service.go` | service install/start/stop/restart/uninstall plans, wait-for-status, boot-id handoff, artifact cleanup, service-mode detection, service-program start/stop ordering | `src/runtime/listener_service.rs`, `src/runtime/listener_systemd.rs` | implemented; selector added | `host_runtime_listener_service_contract` | `test_awiki_cli_runtime_listener_service_foreground_status_contracts` | low for deterministic service planner behavior; real service-manager execution remains broader runtime work |
+| `internal/runtime/listener/run_foreground_unix.go`, `run_foreground_windows.go`, `sysproc_unix.go`, `sysproc_windows.go` | platform foreground signal and child-process setup intent | `src/runtime/listener_service.rs`, `src/runtime/listener_foreground.rs` | implemented; selector added | `host_runtime_listener_service_contract`, `host_runtime_listener_foreground_contract` | same selector | low for helper parity; non-Linux process-control acceptance remains separate |
+| `internal/runtime/listener/server.go` | foreground startup ordering, non-websocket rejection before side effects, PID/status write order, socket startup, bridge availability, accept-loop behavior | `src/runtime/listener_foreground.rs` | implemented; selector added | `host_runtime_listener_foreground_contract` | same selector | low for helper behavior; live WebSocket service health is external |
+| `internal/runtime/listener/manager.go`, `files.go`, supervisor initialization paths | store open/schema/boot-id/path/host-notify initialization order, cleanup order, supplied host-notify status preservation, saved listener status merge | `src/runtime/listener_supervisor_init.rs`, `src/runtime/listener.rs` | implemented; selector added | `host_runtime_listener_supervisor_init_contract`, focused `host_runtime_contract` saved-status merge test | same selector | low for local deterministic behavior; full live listener acceptance remains separate |
 
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_listener_service_contract --test runtime_listener_foreground_contract --test runtime_listener_supervisor_init_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_service_contract --test host_runtime_listener_foreground_contract --test host_runtime_listener_supervisor_init_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_contract listener_status_merges_saved_sessions_and_host_notify_state --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener ./internal/runtime -run 'Test.*(Service|Foreground|Status|Supervisor|Boot|Runtime|Listener|Systemd|Signal|Sysproc|Install|Policy|PID|Pid|Bridge|HostNotify)' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tests_v2/cli/test_awiki_cli_runtime_listener_local.py
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/cli/test_awiki_cli_runtime_listener_local.py::test_awiki_cli_runtime_listener_service_foreground_status_contracts -ra -q
@@ -39,8 +39,8 @@ cd /home/ecs-user/awiki-space/awiki-system-test && wc -l tests_v2/cli/test_awiki
 
 Observed results:
 
-- `runtime_listener_service_contract`, `runtime_listener_foreground_contract`,
-  and `runtime_listener_supervisor_init_contract` passed 36 tests total.
+- `host_runtime_listener_service_contract`, `host_runtime_listener_foreground_contract`,
+  and `host_runtime_listener_supervisor_init_contract` passed 36 tests total.
 - The focused saved-status merge contract passed.
 - The focused Go runtime/listener guard passed.
 - Python compile and whitespace checks for the system-test wrapper passed. The

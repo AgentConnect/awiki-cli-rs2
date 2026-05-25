@@ -1,51 +1,48 @@
-use awiki_cli::config::Paths;
-use awiki_cli::legacy_identity::{types::SaveInput, Manager};
-use awiki_cli::legacy_store::{self as store, E2EEOutboxRecord};
+mod support;
+
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
+use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
 
 #[test]
 fn msg_secure_status_uses_im_core_while_failed_retry_and_drop_remain_unsupported() {
     let workspace = TempDir::new("msg-secure-status-im-core").expect("workspace");
-    let manager = Manager::new(test_paths(workspace.path()));
-    let alice = save_ready_identity(&manager, "alice-secure", "alice");
-    let bob = save_ready_identity(&manager, "bob-secure", "bob");
+    let alice = save_ready_identity(workspace.path(), "alice-secure", "alice", true);
+    let bob = save_ready_identity(workspace.path(), "bob-secure", "bob", false);
     let peer_did = "did:wba:awiki.ai:user:peer:e1_peer";
 
     seed_secure_outbox(
         workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "alice-failed".to_string(),
-            owner_did: alice.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-alice".to_string(),
-            original_type: "text".to_string(),
-            plaintext: "failed plaintext".to_string(),
-            local_status: "failed".to_string(),
-            last_error_code: "send_failed".to_string(),
-            retry_hint: "retry".to_string(),
-            created_at: "2026-05-17T01:00:00Z".to_string(),
-            updated_at: "2026-05-17T01:00:00Z".to_string(),
-            credential_name: "alice-secure".to_string(),
-            ..E2EEOutboxRecord::default()
+        SecureOutboxSeed {
+            outbox_id: "alice-failed",
+            owner_did: &alice.did,
+            peer_did,
+            session_id: "session-alice",
+            plaintext: "failed plaintext",
+            local_status: "failed",
+            last_error_code: "send_failed",
+            retry_hint: "retry",
+            created_at: "2026-05-17T01:00:00Z",
+            updated_at: "2026-05-17T01:00:00Z",
+            credential_name: "alice-secure",
         },
     );
     seed_secure_outbox(
         workspace.path(),
-        E2EEOutboxRecord {
-            outbox_id: "bob-failed".to_string(),
-            owner_did: bob.did.clone(),
-            peer_did: peer_did.to_string(),
-            session_id: "session-bob".to_string(),
-            original_type: "text".to_string(),
-            plaintext: "other owner plaintext".to_string(),
-            local_status: "failed".to_string(),
-            created_at: "2026-05-17T01:01:00Z".to_string(),
-            updated_at: "2026-05-17T01:01:00Z".to_string(),
-            credential_name: "bob-secure".to_string(),
-            ..E2EEOutboxRecord::default()
+        SecureOutboxSeed {
+            outbox_id: "bob-failed",
+            owner_did: &bob.did,
+            peer_did,
+            session_id: "session-bob",
+            plaintext: "other owner plaintext",
+            local_status: "failed",
+            last_error_code: "",
+            retry_hint: "",
+            created_at: "2026-05-17T01:01:00Z",
+            updated_at: "2026-05-17T01:01:00Z",
+            credential_name: "bob-secure",
         },
     );
 
@@ -118,35 +115,67 @@ fn msg_secure_status_uses_im_core_while_failed_retry_and_drop_remain_unsupported
 }
 
 fn save_ready_identity(
-    manager: &Manager,
+    workspace: &Path,
     identity_name: &str,
     handle: &str,
-) -> awiki_cli::legacy_identity::types::StoredIdentity {
-    manager
-        .save(SaveInput {
-            identity_name: identity_name.to_string(),
-            did: format!("did:wba:awiki.ai:user:{handle}:e1_{handle}"),
-            unique_id: format!("e1_{handle}_{identity_name}"),
-            user_id: format!("user-{handle}"),
-            display_name: identity_name.to_string(),
-            handle: handle.to_string(),
-            full_handle: format!("{handle}.awiki.ai"),
-            jwt_token: format!("jwt-{handle}"),
-            ..SaveInput::default()
-        })
-        .expect("save ready identity")
+    make_default: bool,
+) -> TestIdentity {
+    write_ready_identity(
+        workspace,
+        TestIdentityOptions {
+            identity_name,
+            handle,
+            display_name: identity_name,
+            jwt_token: &format!("jwt-{handle}"),
+            make_default,
+        },
+    )
 }
 
-fn seed_secure_outbox(workspace: &Path, record: E2EEOutboxRecord) {
-    let paths = test_paths(workspace);
-    let connection = store::open(&paths).expect("open store");
-    store::ensure_schema(&connection).expect("ensure store schema");
-    store::queue_e2ee_outbox(&connection, record).expect("seed secure outbox");
+struct SecureOutboxSeed<'a> {
+    outbox_id: &'a str,
+    owner_did: &'a str,
+    peer_did: &'a str,
+    session_id: &'a str,
+    plaintext: &'a str,
+    local_status: &'a str,
+    last_error_code: &'a str,
+    retry_hint: &'a str,
+    created_at: &'a str,
+    updated_at: &'a str,
+    credential_name: &'a str,
+}
+
+fn seed_secure_outbox(workspace: &Path, record: SecureOutboxSeed<'_>) {
+    let connection = open_local_state(workspace);
+    connection
+        .execute(
+            r#"
+INSERT INTO e2ee_outbox (
+    outbox_id, owner_did, peer_did, session_id, original_type, plaintext,
+    local_status, attempt_count, last_error_code, retry_hint, created_at,
+    updated_at, credential_name
+) VALUES (?1, ?2, ?3, ?4, 'text', ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11)
+"#,
+            rusqlite::params![
+                record.outbox_id,
+                record.owner_did,
+                record.peer_did,
+                record.session_id,
+                record.plaintext,
+                record.local_status,
+                record.last_error_code,
+                record.retry_hint,
+                record.created_at,
+                record.updated_at,
+                record.credential_name,
+            ],
+        )
+        .expect("seed secure outbox");
 }
 
 fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
-    let paths = test_paths(workspace);
-    let connection = store::open(&paths).expect("open store");
+    let connection = open_local_state(workspace);
     let mut statement = connection.prepare(sql).expect("prepare query");
     let columns = statement
         .column_names()
@@ -163,30 +192,6 @@ fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
         })
         .expect("query rows");
     rows.map(|row| row.expect("read row")).collect()
-}
-
-fn test_paths(workspace: &Path) -> Paths {
-    for directory in ["data", "runtime", "cache", "logs"] {
-        std::fs::create_dir_all(workspace.join(directory)).expect("create workspace subdir");
-    }
-    Paths {
-        workspace_home_dir: path_string(workspace),
-        root_dir: path_string(workspace),
-        config_dir: path_string(workspace),
-        data_dir: path_string(&workspace.join("data")),
-        state_dir: path_string(&workspace.join("runtime")),
-        cache_dir: path_string(&workspace.join("cache")),
-        logs_dir: path_string(&workspace.join("logs")),
-        config_file: path_string(&workspace.join("config.yaml")),
-        identity_dir: path_string(&workspace.join("identities")),
-        database_file: path_string(&workspace.join("data").join("awiki-cli.db")),
-        legacy_credentials_dir: path_string(&workspace.join("legacy-credentials")),
-        legacy_data_dir: path_string(&workspace.join("legacy-data")),
-    }
-}
-
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {

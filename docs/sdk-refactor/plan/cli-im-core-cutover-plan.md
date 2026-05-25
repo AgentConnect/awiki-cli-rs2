@@ -845,9 +845,9 @@ runtime listener enable/disable
 
 ```bash
 cargo test -p im-core realtime
-cargo test -p awiki-cli --test runtime_listener_foreground_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_foreground_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_connection_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 rg "listener_session_loop|run_listener_session|legacy.*listener" crates/awiki-cli/src/runtime crates/awiki-cli/src/app crates/awiki-cli/src/im_core_adapter
 ```
 
@@ -983,7 +983,7 @@ rg "attachment_slot|commit_object|download_ticket|message::attachment" crates/aw
 
 ```bash
 cargo test -p im-core realtime attachments
-cargo test -p awiki-cli --test runtime_listener_foreground_contract
+cargo test -p awiki-cli --test host_runtime_listener_foreground_contract
 cargo test -p awiki-cli --test runtime_host_notify_local_contracts
 ```
 
@@ -1093,9 +1093,9 @@ cargo test -p awiki-cli
 cargo test -p awiki-cli --test identity_im_core_mvp_contract
 cargo test -p awiki-cli --test msg_contract
 cargo test -p awiki-cli --test group_contract
-cargo test -p awiki-cli --test runtime_listener_foreground_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_foreground_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_connection_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 ### 10.2 Unsupported contract 测试

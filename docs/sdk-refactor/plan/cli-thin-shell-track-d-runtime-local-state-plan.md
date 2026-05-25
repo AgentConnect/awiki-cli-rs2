@@ -243,7 +243,7 @@ rg "crate::store::|use crate::store\\b|store_message|upsert_group|upsert_contact
 ```bash
 cargo test -p im-core --test realtime_contract
 cargo test -p im-core --test local_state_contract
-cargo test -p awiki-cli --test runtime_contract
+cargo test -p awiki-cli --test host_runtime_contract
 cargo test -p awiki-cli --test runtime_listener_contract
 ```
 

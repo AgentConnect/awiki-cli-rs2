@@ -1,5 +1,5 @@
-use awiki_cli::legacy_identity as identity;
-use awiki_cli::{config, upgrade};
+use anp::authentication::{create_did_wba_document, DidDocumentOptions, DidProfile};
+use awiki_cli::{workspace_config, workspace_upgrade};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,12 +12,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn workspace_upgrade_if_needed_skips_empty_workspace_and_captures_inspection_like_go() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-empty").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let mut context = upgrade::new_context(&resolved, "1.0.0");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.0.0");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("empty workspace upgrade should be a no-op");
 
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     assert!(!Path::new(&paths.meta_path).exists());
     assert!(!Path::new(&paths.journal_path).exists());
     assert_eq!(context.current_meta, None);
@@ -32,10 +32,10 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
     let empty_workspace =
         TempDir::new("workspace-upgrade-if-needed-empty-journal").expect("temp workspace");
     let empty_resolved = test_resolved(empty_workspace.path());
-    let empty_paths = upgrade::resolve_paths(&empty_resolved);
-    upgrade::save_journal(
+    let empty_paths = workspace_upgrade::resolve_paths(&empty_resolved);
+    workspace_upgrade::save_journal(
         &empty_paths.journal_path,
-        &upgrade::Journal {
+        &workspace_upgrade::Journal {
             upgrade_id: "upgrade-empty".to_string(),
             from_version: 0,
             to_version: 1,
@@ -47,7 +47,8 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
         },
     )
     .expect("save empty journal");
-    upgrade::upgrade_if_needed(&empty_resolved, "1.0.0").expect("empty workspace clears journal");
+    workspace_upgrade::upgrade_if_needed(&empty_resolved, "1.0.0")
+        .expect("empty workspace clears journal");
     assert!(!Path::new(&empty_paths.journal_path).exists());
     assert!(!Path::new(&empty_paths.meta_path).exists());
 
@@ -60,10 +61,10 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
         "schema_version: 1\n",
     )
     .expect("write config");
-    let latest_paths = upgrade::resolve_paths(&latest_resolved);
-    upgrade::save_meta(
+    let latest_paths = workspace_upgrade::resolve_paths(&latest_resolved);
+    workspace_upgrade::save_meta(
         &latest_paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 3,
             app_version: "1.2.3".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
@@ -73,9 +74,9 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
         },
     )
     .expect("save latest meta");
-    upgrade::save_journal(
+    workspace_upgrade::save_journal(
         &latest_paths.journal_path,
-        &upgrade::Journal {
+        &workspace_upgrade::Journal {
             upgrade_id: "upgrade-latest".to_string(),
             from_version: 2,
             to_version: 3,
@@ -87,12 +88,12 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
         },
     )
     .expect("save latest journal");
-    let mut latest_context = upgrade::new_context(&latest_resolved, "1.2.4");
-    upgrade::new_default_upgrader()
+    let mut latest_context = workspace_upgrade::new_context(&latest_resolved, "1.2.4");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut latest_context)
         .expect("latest workspace clears journal");
     assert!(!Path::new(&latest_paths.journal_path).exists());
-    let meta = upgrade::load_meta(&latest_paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&latest_paths.meta_path)
         .expect("load latest meta")
         .expect("meta remains");
     assert_eq!(meta.workspace_schema_version, 3);
@@ -109,10 +110,10 @@ fn workspace_upgrade_if_needed_clears_journal_for_empty_or_latest_workspace_like
 fn workspace_upgrade_if_needed_reports_newer_workspace_like_go() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-newer").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
-    upgrade::save_meta(
+    let paths = workspace_upgrade::resolve_paths(&resolved);
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 4,
             app_version: "9.9.9".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
@@ -123,7 +124,7 @@ fn workspace_upgrade_if_needed_reports_newer_workspace_like_go() {
     )
     .expect("save newer meta");
 
-    let err = upgrade::upgrade_if_needed(&resolved, "1.2.3")
+    let err = workspace_upgrade::upgrade_if_needed(&resolved, "1.2.3")
         .expect_err("newer schema should be rejected");
     assert_eq!(
         err.to_string(),
@@ -136,12 +137,12 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() 
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-v0-v1-local").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
     std::fs::write(&paths.legacy_config_file, "{\"legacy\":true}\n").expect("write legacy config");
 
-    let mut context = upgrade::new_context(&resolved, "1.2.3");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.3");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("no-k1 v2 to v3 migration should complete locally");
     assert!(
@@ -152,7 +153,7 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() 
     assert_eq!(lock["lock_scheme"], "os_file_lock_v1");
     assert_eq!(lock["app_version"], "1.2.3");
 
-    let guard = upgrade::acquire_file_lock(&paths.lock_path, "1.2.4")
+    let guard = workspace_upgrade::acquire_file_lock(&paths.lock_path, "1.2.4")
         .expect("upgrade_if_needed should release the OS lock after completed v2 to v3");
     guard.release().expect("release lock");
 
@@ -175,7 +176,7 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() 
         "{\"legacy\":true}\n"
     );
 
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved after v2 to v3");
     assert_eq!(meta.workspace_schema_version, 3);
@@ -190,7 +191,7 @@ fn workspace_upgrade_if_needed_applies_local_v0_to_v3_without_current_k1_dids() 
         3
     );
     assert!(
-        upgrade::load_journal(&paths.journal_path)
+        workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
         "journal should be cleared after completed v2 to v3"
@@ -202,15 +203,15 @@ fn workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-legacy-config").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(
         &paths.legacy_config_file,
         r#"{"schema_version":1,"services":{"service_base_url":"https://legacy.example","did_domain":"legacy.example"},"runtime":{"mode":"http"}}"#,
     )
     .expect("write legacy config");
 
-    let mut context = upgrade::new_context(&resolved, "1.2.7");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.7");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("legacy config migration should complete through no-k1 v2 to v3");
 
@@ -223,12 +224,12 @@ fn workspace_upgrade_if_needed_migrates_legacy_config_json_through_v0_to_v1_loop
     assert_contains(&config, "  mode: http\n");
     assert_contains(&config, "  service_base_url: https://legacy.example\n");
     assert_contains(&config, "  did_domain: legacy.example\n");
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta after v2 to v3");
     assert_eq!(meta.workspace_schema_version, 3);
     assert!(
-        upgrade::load_journal(&paths.journal_path)
+        workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
         "journal should be cleared after completed migration"
@@ -240,14 +241,14 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-reuse-backup").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
     let existing_backup = Path::new(&paths.backup_root).join("existing-backup");
     std::fs::create_dir_all(&existing_backup).expect("create existing backup");
     std::fs::write(existing_backup.join("sentinel.txt"), "keep\n").expect("write sentinel");
-    upgrade::save_journal(
+    workspace_upgrade::save_journal(
         &paths.journal_path,
-        &upgrade::Journal {
+        &workspace_upgrade::Journal {
             upgrade_id: "upgrade-existing".to_string(),
             from_version: 0,
             to_version: 1,
@@ -260,8 +261,8 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
     )
     .expect("save journal with backup dir");
 
-    let mut context = upgrade::new_context(&resolved, "1.2.4");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.4");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("no-k1 v2 to v3 migration should complete with reused backup");
     assert_eq!(context.backup_dir, path_string(&existing_backup));
@@ -278,13 +279,13 @@ fn workspace_upgrade_if_needed_reuses_journal_backup_before_migration_like_go() 
         1,
         "journal backup dir should be reused without creating a new backup"
     );
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta after reused backup migration");
     assert_eq!(meta.workspace_schema_version, 3);
     assert_eq!(meta.last_backup_dir, path_string(&existing_backup));
     assert!(
-        upgrade::load_journal(&paths.journal_path)
+        workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
         "journal should be cleared after completed reused-backup migration"
@@ -299,7 +300,7 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
     )]);
     let mut resolved = test_resolved(workspace.path());
     resolved.service_base_url = server.base_url();
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::create_dir_all(Path::new(&paths.legacy_settings_path).parent().unwrap())
         .expect("create legacy settings dir");
     std::fs::write(
@@ -311,20 +312,20 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
         ),
     )
     .expect("write legacy settings");
-    seed_flat_legacy_identity(&paths, "legacy", "did:wba:example.test:legacy:k1_legacy");
+    let old_did = seed_flat_legacy_identity(&paths, "legacy");
 
-    let mut context = upgrade::new_context(&resolved, "1.2.5");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.5");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("imported handle k1 replacement should complete like Go");
 
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta after imported k1 replacement");
     assert_eq!(meta.workspace_schema_version, 3);
     assert!(meta.warnings.is_empty());
     assert!(
-        upgrade::load_journal(&paths.journal_path)
+        workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
         "journal should clear after imported k1 replacement"
@@ -352,10 +353,7 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
     assert_eq!(auth["jwt_token"], "jwt-replaced");
     let backup_manifest = read_single_replace_did_backup_manifest(&resolved);
     assert_eq!(backup_manifest["identity_name"], "legacy");
-    assert_eq!(
-        backup_manifest["old_did"],
-        "did:wba:example.test:legacy:k1_legacy"
-    );
+    assert_eq!(backup_manifest["old_did"], old_did);
     assert_eq!(backup_manifest["planned_new_did"], new_did);
 }
 
@@ -363,11 +361,11 @@ fn workspace_upgrade_if_needed_replaces_imported_v0_to_v1_k1_dids_like_go() {
 fn workspace_upgrade_if_needed_applies_v1_to_v3_without_current_k1_dids() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-v1-v2").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
-    upgrade::save_meta(
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 1,
             app_version: "1.0.0".to_string(),
             updated_at: "2026-05-15T00:00:00Z".to_string(),
@@ -398,15 +396,15 @@ fn workspace_upgrade_if_needed_applies_v1_to_v3_without_current_k1_dids() {
     .expect("write heartbeat");
     let _home_guard = EnvGuard::set("HOME", Some(path_string(&home)));
 
-    let mut context = upgrade::new_context(&resolved, "1.2.6");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.6");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("v1 to v2 cleanup should continue through no-k1 v2 to v3");
 
     assert!(!skill_dir.exists());
     let heartbeat_text = std::fs::read_to_string(&heartbeat).expect("read heartbeat");
     assert!(!heartbeat_text.contains("awiki-agent-id-message"));
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved after v2 to v3");
     assert_eq!(meta.workspace_schema_version, 3);
@@ -421,7 +419,7 @@ fn workspace_upgrade_if_needed_applies_v1_to_v3_without_current_k1_dids() {
         3
     );
     assert!(
-        upgrade::load_journal(&paths.journal_path)
+        workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
         "journal should be cleared after completed v2 to v3"
@@ -436,7 +434,7 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v3_current_k1_dids_like_go() {
     )]);
     let mut resolved = test_resolved(workspace.path());
     resolved.service_base_url = server.base_url();
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(
         &paths.config_file,
         format!(
@@ -445,9 +443,9 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v3_current_k1_dids_like_go() {
         ),
     )
     .expect("write config");
-    upgrade::save_meta(
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 2,
             app_version: "1.0.0".to_string(),
             updated_at: "2026-05-15T00:00:00Z".to_string(),
@@ -457,19 +455,14 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v3_current_k1_dids_like_go() {
         },
     )
     .expect("save v2 meta");
-    seed_current_identity(
-        &resolved,
-        "legacy",
-        "did:wba:example.test:legacy:k1_legacy",
-        "jwt-legacy",
-    );
+    let old_did = seed_current_identity(&resolved, "legacy", "jwt-legacy");
 
-    let mut context = upgrade::new_context(&resolved, "1.2.8");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.8");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("current k1 identities should be replaced during v2 to v3");
 
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved after replacement");
     assert_eq!(meta.workspace_schema_version, 3);
@@ -484,7 +477,7 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v3_current_k1_dids_like_go() {
         3
     );
     assert!(
-        upgrade::load_journal(&paths.journal_path)
+        workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
         "journal should be cleared after successful v2 to v3"
@@ -512,13 +505,10 @@ fn workspace_upgrade_if_needed_replaces_v2_to_v3_current_k1_dids_like_go() {
     assert_eq!(auth["jwt_token"], "jwt-replaced");
     let backup_manifest = read_single_replace_did_backup_manifest(&resolved);
     assert_eq!(backup_manifest["identity_name"], "legacy");
-    assert_eq!(
-        backup_manifest["old_did"],
-        "did:wba:example.test:legacy:k1_legacy"
-    );
+    assert_eq!(backup_manifest["old_did"], old_did);
     assert_eq!(backup_manifest["planned_new_did"], new_did);
 
-    let guard = upgrade::acquire_file_lock(&paths.lock_path, "1.2.9")
+    let guard = workspace_upgrade::acquire_file_lock(&paths.lock_path, "1.2.9")
         .expect("upgrade_if_needed should release the OS lock after v2 to v3 replacement");
     guard.release().expect("release lock");
 }
@@ -533,7 +523,7 @@ fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warni
     }]);
     let mut resolved = test_resolved(workspace.path());
     resolved.service_base_url = server.base_url();
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(
         &paths.config_file,
         format!(
@@ -542,9 +532,9 @@ fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warni
         ),
     )
     .expect("write config");
-    upgrade::save_meta(
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 2,
             app_version: "1.0.0".to_string(),
             updated_at: "2026-05-15T00:00:00Z".to_string(),
@@ -554,26 +544,21 @@ fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warni
         },
     )
     .expect("save v2 meta");
-    seed_current_identity(
-        &resolved,
-        "legacy",
-        "did:wba:example.test:legacy:k1_legacy",
-        "jwt-legacy",
-    );
+    let old_did = seed_current_identity(&resolved, "legacy", "jwt-legacy");
 
-    let mut context = upgrade::new_context(&resolved, "1.2.11");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.11");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("replacement failure should be captured as a warning");
 
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved despite warning");
     assert_eq!(meta.workspace_schema_version, 3);
     assert_eq!(meta.warnings.len(), 1);
     assert_contains(
         &meta.warnings[0],
-        "Automatic DID replacement failed for identity legacy (did:wba:example.test:legacy:k1_legacy):",
+        &format!("Automatic DID replacement failed for identity legacy ({old_did}):"),
     );
     assert_contains(&meta.warnings[0], "service http error 500");
     assert_eq!(
@@ -585,7 +570,7 @@ fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warni
         meta.warnings
     );
     let stored = read_stored_identity(&resolved, "legacy");
-    assert_eq!(stored["did"], "did:wba:example.test:legacy:k1_legacy");
+    assert_eq!(stored["did"], old_did);
     assert!(Path::new(&paths.journal_path).exists() == false);
 }
 
@@ -593,11 +578,11 @@ fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warni
 fn workspace_upgrade_if_needed_completes_v2_to_v3_when_current_identity_index_has_only_e1_dids() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-v2-v3-e1").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
-    upgrade::save_meta(
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 2,
             app_version: "1.0.0".to_string(),
             updated_at: "2026-05-15T00:00:00Z".to_string(),
@@ -614,12 +599,12 @@ fn workspace_upgrade_if_needed_completes_v2_to_v3_when_current_identity_index_ha
     )
     .expect("write e1 identity index");
 
-    let mut context = upgrade::new_context(&resolved, "1.2.10");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.10");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("current non-k1 identities should complete v2 to v3 locally");
 
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved after v2 to v3");
     assert_eq!(meta.workspace_schema_version, 3);
@@ -634,7 +619,7 @@ fn workspace_upgrade_if_needed_completes_v2_to_v3_when_current_identity_index_ha
         3
     );
     assert!(
-        upgrade::load_journal(&paths.journal_path)
+        workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
         "journal should be cleared after completed v2 to v3"
@@ -646,7 +631,7 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
     let workspace =
         TempDir::new("workspace-upgrade-if-needed-v2-v3-e1-ca").expect("temp workspace");
     let mut resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     let invalid_ca = workspace.path().join("invalid-ca.pem");
     std::fs::write(&invalid_ca, "not a certificate").expect("write invalid ca");
     resolved.ca_bundle = path_string(&invalid_ca);
@@ -658,9 +643,9 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
         ),
     )
     .expect("write config");
-    upgrade::save_meta(
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 2,
             app_version: "1.0.0".to_string(),
             updated_at: "2026-05-15T00:00:00Z".to_string(),
@@ -677,12 +662,12 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
     )
     .expect("write e1 identity index");
 
-    let mut context = upgrade::new_context(&resolved, "1.2.12");
-    upgrade::new_default_upgrader()
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.12");
+    workspace_upgrade::new_default_upgrader()
         .upgrade_if_needed(&mut context)
         .expect("service-construction failure should be captured as a warning");
 
-    let meta = upgrade::load_meta(&paths.meta_path)
+    let meta = workspace_upgrade::load_meta(&paths.meta_path)
         .expect("load meta")
         .expect("meta saved after v2 to v3");
     assert_eq!(meta.workspace_schema_version, 3);
@@ -702,7 +687,7 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
         meta.warnings
     );
     assert!(
-        upgrade::load_journal(&paths.journal_path)
+        workspace_upgrade::load_journal(&paths.journal_path)
             .expect("load cleared journal")
             .is_none(),
         "journal should be cleared after completed v2 to v3 with warning"
@@ -713,11 +698,11 @@ fn workspace_upgrade_if_needed_warns_when_non_k1_identity_service_preflight_fail
 fn workspace_upgrade_if_needed_rejects_concurrent_lock_before_migration_like_go() {
     let workspace = TempDir::new("workspace-upgrade-if-needed-lock-held").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
-    upgrade::save_journal(
+    workspace_upgrade::save_journal(
         &paths.journal_path,
-        &upgrade::Journal {
+        &workspace_upgrade::Journal {
             upgrade_id: "upgrade-race".to_string(),
             from_version: 1,
             to_version: 2,
@@ -730,9 +715,9 @@ fn workspace_upgrade_if_needed_rejects_concurrent_lock_before_migration_like_go(
     )
     .expect("save stale journal");
 
-    let guard =
-        upgrade::acquire_file_lock(&paths.lock_path, "preflight").expect("pre-acquire lock");
-    let err = upgrade::upgrade_if_needed(&resolved, "1.2.5")
+    let guard = workspace_upgrade::acquire_file_lock(&paths.lock_path, "preflight")
+        .expect("pre-acquire lock");
+    let err = workspace_upgrade::upgrade_if_needed(&resolved, "1.2.5")
         .expect_err("held upgrade lock should reject migration execution");
     assert_eq!(
         err.to_string(),
@@ -745,9 +730,9 @@ fn workspace_upgrade_if_needed_rejects_concurrent_lock_before_migration_like_go(
     guard.release().expect("release preflight lock");
 }
 
-fn test_resolved(root: &Path) -> config::Resolved {
-    config::Resolved {
-        paths: config::Paths {
+fn test_resolved(root: &Path) -> workspace_config::Resolved {
+    workspace_config::Resolved {
+        paths: workspace_config::Paths {
             workspace_home_dir: path_string(root),
             root_dir: path_string(root),
             config_dir: path_string(root),
@@ -797,16 +782,15 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn seed_flat_legacy_identity(paths: &upgrade::Paths, name: &str, did: &str) {
+fn seed_flat_legacy_identity(paths: &workspace_upgrade::Paths, name: &str) -> String {
     std::fs::create_dir_all(Path::new(&paths.legacy_credentials_dir))
         .expect("create legacy credentials dir");
-    let generated = identity::generate_identity("example.test", "", "")
-        .expect("generate legacy identity key material");
+    let generated = generate_k1_identity("example.test", name);
     std::fs::write(
         Path::new(&paths.legacy_credentials_dir).join(format!("{name}.json")),
         serde_json::to_vec_pretty(&json!({
-            "did": did,
-            "unique_id": did.rsplit(':').next().unwrap_or(did),
+            "did": generated.did,
+            "unique_id": generated.unique_id,
             "name": "Legacy User",
             "handle": name,
             "jwt_token": "legacy-token",
@@ -814,57 +798,212 @@ fn seed_flat_legacy_identity(paths: &upgrade::Paths, name: &str, did: &str) {
             "public_key_pem": generated.key1_public_pem,
             "e2ee_signing_private_pem": generated.e2ee_signing_private_pem,
             "e2ee_agreement_private_pem": generated.e2ee_agreement_private_pem,
-            "did_document": {"id": did}
+            "did_document": generated.did_document
         }))
         .expect("legacy identity json"),
     )
     .expect("write legacy identity");
+    generated.did
 }
 
-fn seed_current_identity(resolved: &config::Resolved, name: &str, did: &str, jwt_token: &str) {
-    let generated = identity::generate_identity("example.test", "", "")
-        .expect("generate identity key material");
-    let manager = identity::Manager::new(resolved.paths.clone());
-    manager
-        .save(awiki_cli::legacy_identity::types::SaveInput {
-            identity_name: name.to_string(),
-            did: did.to_string(),
-            unique_id: did.rsplit(':').next().unwrap_or(did).to_string(),
-            user_id: format!("user-{name}"),
-            display_name: "Legacy User".to_string(),
-            handle: name.to_string(),
-            full_handle: format!("{name}.example.test"),
-            jwt_token: jwt_token.to_string(),
-            did_document: Some(json!({ "id": did })),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            replace_existing: true,
-        })
-        .expect("save current identity");
+fn seed_current_identity(
+    resolved: &workspace_config::Resolved,
+    name: &str,
+    jwt_token: &str,
+) -> String {
+    let generated = generate_k1_identity("example.test", name);
+    let identity_root = Path::new(&resolved.paths.identity_dir);
+    let dir_name = sanitize_component(&generated.unique_id);
+    let identity_dir = identity_root.join(&dir_name);
+    std::fs::create_dir_all(&identity_dir).expect("create identity dir");
+    write_json(
+        &identity_dir.join("identity.json"),
+        &json!({
+            "did": generated.did,
+            "unique_id": generated.unique_id,
+            "created_at": "2026-05-15T00:00:00Z",
+            "user_id": format!("user-{name}"),
+            "name": "Legacy User",
+            "handle": name,
+            "full_handle": format!("{name}.example.test"),
+        }),
+    );
+    write_json(
+        &identity_dir.join("auth.json"),
+        &json!({ "jwt_token": jwt_token }),
+    );
+    write_json(
+        &identity_dir.join("did_document.json"),
+        &generated.did_document,
+    );
+    std::fs::write(
+        identity_dir.join("key-1-private.pem"),
+        &generated.key1_private_pem,
+    )
+    .expect("write key-1 private");
+    std::fs::write(
+        identity_dir.join("key-1-public.pem"),
+        &generated.key1_public_pem,
+    )
+    .expect("write key-1 public");
+    if !generated.e2ee_signing_private_pem.is_empty() {
+        std::fs::write(
+            identity_dir.join("e2ee-signing-private.pem"),
+            &generated.e2ee_signing_private_pem,
+        )
+        .expect("write e2ee signing private");
+    }
+    if !generated.e2ee_agreement_private_pem.is_empty() {
+        std::fs::write(
+            identity_dir.join("e2ee-agreement-private.pem"),
+            &generated.e2ee_agreement_private_pem,
+        )
+        .expect("write e2ee agreement private");
+    }
+    write_json(
+        &identity_root.join("index.json"),
+        &json!({
+            "schema_version": 3,
+            "default_credential_name": name,
+            "credentials": {
+                name: {
+                    "credential_name": name,
+                    "dir_name": dir_name,
+                    "did": generated.did,
+                    "unique_id": generated.unique_id,
+                    "user_id": format!("user-{name}"),
+                    "name": "Legacy User",
+                    "handle": name,
+                    "full_handle": format!("{name}.example.test"),
+                    "created_at": "2026-05-15T00:00:00Z",
+                    "is_default": true
+                }
+            }
+        }),
+    );
+    generated.did
 }
 
-fn read_stored_identity(resolved: &config::Resolved, name: &str) -> Value {
-    let manager = identity::Manager::new(resolved.paths.clone());
-    let record = manager.load(name).expect("load stored identity");
+fn read_stored_identity(resolved: &workspace_config::Resolved, name: &str) -> Value {
+    let (entry, identity) = read_identity_payload(resolved, name);
     json!({
-        "did": record.did,
-        "handle": record.handle,
-        "full_handle": record.full_handle,
+        "did": string_field(&identity, "did").unwrap_or_else(|| string_field(&entry, "did").unwrap_or_default()),
+        "handle": string_field(&identity, "handle").unwrap_or_else(|| string_field(&entry, "handle").unwrap_or_default()),
+        "full_handle": string_field(&identity, "full_handle").unwrap_or_else(|| string_field(&entry, "full_handle").unwrap_or_default()),
     })
 }
 
-fn read_stored_auth(resolved: &config::Resolved, name: &str) -> Value {
-    let manager = identity::Manager::new(resolved.paths.clone());
-    let record = manager.load(name).expect("load stored identity");
+fn read_stored_auth(resolved: &workspace_config::Resolved, name: &str) -> Value {
+    let (entry, _) = read_identity_payload(resolved, name);
+    let dir_name = entry["dir_name"].as_str().expect("identity dir_name");
     let auth_path = Path::new(&resolved.paths.identity_dir)
-        .join(record.dir_name)
+        .join(dir_name)
         .join("auth.json");
     serde_json::from_slice(&std::fs::read(auth_path).expect("read auth")).expect("parse auth")
 }
 
-fn read_single_replace_did_backup_manifest(resolved: &config::Resolved) -> Value {
+fn read_identity_payload(resolved: &workspace_config::Resolved, name: &str) -> (Value, Value) {
+    let index_path = Path::new(&resolved.paths.identity_dir).join("index.json");
+    let index: Value =
+        serde_json::from_slice(&std::fs::read(&index_path).expect("read identity index"))
+            .expect("parse identity index");
+    let entry = index["credentials"][name].clone();
+    assert!(entry.is_object(), "missing identity index entry {name}");
+    let dir_name = entry["dir_name"].as_str().expect("identity dir_name");
+    let identity_path = Path::new(&resolved.paths.identity_dir)
+        .join(dir_name)
+        .join("identity.json");
+    let identity: Value =
+        serde_json::from_slice(&std::fs::read(identity_path).expect("read identity payload"))
+            .expect("parse identity payload");
+    (entry, identity)
+}
+
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+struct GeneratedIdentityFixture {
+    did: String,
+    unique_id: String,
+    did_document: Value,
+    key1_private_pem: String,
+    key1_public_pem: String,
+    e2ee_signing_private_pem: String,
+    e2ee_agreement_private_pem: String,
+}
+
+fn generate_k1_identity(domain: &str, handle: &str) -> GeneratedIdentityFixture {
+    let bundle = create_did_wba_document(
+        domain,
+        DidDocumentOptions {
+            path_segments: vec![handle.to_string()],
+            domain: Some(domain.to_string()),
+            challenge: Some(format!("{handle}-k1-fixture")),
+            did_profile: DidProfile::K1,
+            ..DidDocumentOptions::default()
+        },
+    )
+    .expect("generate k1 fixture DID document");
+    let did = bundle.did().expect("generated DID").to_string();
+    let key1_private_pem = bundle
+        .private_key_pem("key-1")
+        .expect("key-1 private")
+        .to_string();
+    let key1_public_pem = bundle
+        .public_key_pem("key-1")
+        .expect("key-1 public")
+        .to_string();
+    let e2ee_signing_private_pem = bundle
+        .private_key_pem("key-2")
+        .unwrap_or_default()
+        .to_string();
+    let e2ee_agreement_private_pem = bundle
+        .private_key_pem("key-3")
+        .unwrap_or_default()
+        .to_string();
+    GeneratedIdentityFixture {
+        unique_id: did.rsplit(':').next().unwrap_or(&did).to_string(),
+        did,
+        did_document: bundle.did_document,
+        key1_private_pem,
+        key1_public_pem,
+        e2ee_signing_private_pem,
+        e2ee_agreement_private_pem,
+    }
+}
+
+fn sanitize_component(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches(['.', '_', '-'])
+        .to_string()
+}
+
+fn write_json(path: &Path, value: &Value) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create json parent");
+    }
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(value).expect("serialize json"),
+    )
+    .unwrap_or_else(|err| panic!("write {path:?}: {err}"));
+}
+
+fn read_single_replace_did_backup_manifest(resolved: &workspace_config::Resolved) -> Value {
     let backup_root = Path::new(&resolved.paths.identity_dir)
         .join(".legacy-backup")
         .join("replace-did");

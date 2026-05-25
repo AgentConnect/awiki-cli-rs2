@@ -63,7 +63,7 @@ raw WebSocket frame public API
 ```bash
 cargo test -p im-core realtime
 cargo test -p im-core attachments
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 cargo test -p awiki-cli --test msg_contract
 rg "ParsedCommand|ExitError|GlobalOptions|config::Resolved|awiki_cli" crates/im-core/src crates/im-core/tests
 ```
@@ -245,7 +245,7 @@ CLI --output 推导
 
 ```bash
 cargo test -p im-core realtime_attachment_projection
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 ### 6.4 完成标准
@@ -333,8 +333,8 @@ download output path
 
 ```bash
 cargo test -p im-core realtime_attachment_projection
-cargo test -p awiki-cli --test runtime_host_notify_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_notify_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 ### 8.4 Manual / live / system

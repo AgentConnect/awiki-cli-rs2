@@ -465,7 +465,7 @@ cargo test -p awiki-cli --test message_contract
 ### 10.5 Optional integration
 
 ```bash
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 ### 10.6 完成标准

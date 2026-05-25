@@ -619,7 +619,7 @@ im_core::compat::attachments::* in default CLI path
 ```bash
 cargo test -p im-core attachments
 cargo test -p awiki-cli --test msg_attachment_contract
-cargo test -p awiki-cli --test im_core_adapter_policy_contract
+cargo test -p awiki-cli --test m_core_cli_adapter_policy_contract
 
 rg 'legacy_attachment|crate::message::send|download_attachment\('   crates/awiki-cli/src/app/msg_handlers.rs   crates/awiki-cli/src/im_core_adapter/messages.rs
 
@@ -872,9 +872,9 @@ bridge request -> im-core RealtimeControl / RequestRouter
 
 ```bash
 cargo test -p im-core realtime
-cargo test -p awiki-cli --test runtime_listener_foreground_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_foreground_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_connection_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 
 rg 'use crate::message|crate::message::|authsdk::Session|listener_session_loop|listener_notification_consume'   crates/awiki-cli/src/runtime/listener_supervisor_run.rs
 ```
@@ -1705,7 +1705,7 @@ crates/awiki-cli/src/im_core_adapter/realtime.rs
 
 ```bash
 cargo test -p im-core realtime
-cargo test -p awiki-cli --test runtime_listener_foreground_contract
+cargo test -p awiki-cli --test host_runtime_listener_foreground_contract
 ```
 
 ---
@@ -1760,7 +1760,7 @@ legacy error mapping from old MessageError where no longer needed
 验收：
 
 ```bash
-cargo test -p awiki-cli --test im_core_adapter_policy_contract
+cargo test -p awiki-cli --test m_core_cli_adapter_policy_contract
 
 rg 'im_core::compat|crate::message::|message::|identity::register\(|identity::refresh_token\('   crates/awiki-cli/src/im_core_adapter
 ```
@@ -1804,15 +1804,15 @@ cargo test -p awiki-cli --test cli_command_surface_contract
 crates/awiki-cli/src/cmdmeta/mod.rs
 crates/awiki-cli/src/cli/mod.rs
 crates/awiki-cli/src/app/runtime_handlers.rs
-crates/awiki-cli/tests/runtime_host_notify_contract.rs
-crates/awiki-cli/tests/runtime_hermes_cli_contract.rs
-crates/awiki-cli/tests/runtime_openclaw_cli_contract.rs
+crates/awiki-cli/tests/host_runtime_notify_contract.rs
+crates/awiki-cli/tests/host_runtime_hermes_cli_contract.rs
+crates/awiki-cli/tests/host_runtime_openclaw_cli_contract.rs
 ```
 
 验收：
 
 ```bash
-cargo test -p awiki-cli --test runtime_host_notify_contract
+cargo test -p awiki-cli --test host_runtime_notify_contract
 cargo test -p awiki-cli --test cli_command_surface_contract
 
 awiki-cli runtime host-notify status

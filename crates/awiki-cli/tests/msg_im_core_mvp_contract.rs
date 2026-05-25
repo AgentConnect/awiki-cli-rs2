@@ -1,5 +1,3 @@
-use awiki_cli::config::Paths;
-use awiki_cli::legacy_identity::{generate_identity, types::SaveInput, Manager};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -9,11 +7,15 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
+
 #[test]
 fn msg_send_default_cutover_direct_text_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
-    let alice = register_generated_msg_identity(&manager, "alice-cutover", "alice", "jwt-alice");
+    let alice =
+        register_generated_msg_identity(workspace.path(), "alice-cutover", "alice", "jwt-alice");
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "accepted": true,
@@ -79,9 +81,12 @@ fn msg_send_default_cutover_direct_text_posts_im_core_rpc() {
 #[test]
 fn msg_send_default_cutover_group_text_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
-    let alice =
-        register_generated_msg_identity(&manager, "alice-group-cutover", "alice", "jwt-alice");
+    let alice = register_generated_msg_identity(
+        workspace.path(),
+        "alice-group-cutover",
+        "alice",
+        "jwt-alice",
+    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "accepted": true,
@@ -152,9 +157,12 @@ fn msg_send_default_cutover_group_text_posts_im_core_rpc() {
 #[test]
 fn msg_inbox_default_cutover_direct_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
-    let alice =
-        register_generated_read_identity(&manager, "alice-inbox-cutover", "alice", "jwt-alice");
+    let alice = register_generated_read_identity(
+        workspace.path(),
+        "alice-inbox-cutover",
+        "alice",
+        "jwt-alice",
+    );
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "messages": [{
@@ -211,9 +219,12 @@ fn msg_inbox_default_cutover_direct_posts_im_core_rpc() {
 #[test]
 fn msg_history_default_cutover_direct_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
-    let alice =
-        register_generated_read_identity(&manager, "alice-history-cutover", "alice", "jwt-alice");
+    let alice = register_generated_read_identity(
+        workspace.path(),
+        "alice-history-cutover",
+        "alice",
+        "jwt-alice",
+    );
     let bob_did = "did:wba:awiki.ai:bob:e1_bob";
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "messages": [{
@@ -276,9 +287,8 @@ fn msg_history_default_cutover_direct_posts_im_core_rpc() {
 #[test]
 fn msg_history_default_cutover_group_posts_im_core_rpc() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
     let alice = register_generated_read_identity(
-        &manager,
+        workspace.path(),
         "alice-group-history-cutover",
         "alice",
         "jwt-alice",
@@ -347,9 +357,12 @@ fn msg_history_default_cutover_group_posts_im_core_rpc() {
 #[test]
 fn msg_mark_read_default_cutover_posts_im_core_rpc_and_updates_local_cache() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
-    let alice =
-        register_generated_read_identity(&manager, "alice-mark-cutover", "alice", "jwt-alice");
+    let alice = register_generated_read_identity(
+        workspace.path(),
+        "alice-mark-cutover",
+        "alice",
+        "jwt-alice",
+    );
     let server = TestServer::new(vec![TestResponse::ok(&json_rpc_result(json!({
         "updated_count": 4
     })))]);
@@ -408,9 +421,8 @@ fn msg_mark_read_default_cutover_posts_im_core_rpc_and_updates_local_cache() {
 #[test]
 fn msg_mark_read_default_cutover_keeps_group_and_mail_local_only() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
     let alice = register_generated_read_identity(
-        &manager,
+        workspace.path(),
         "alice-local-mark-cutover",
         "alice",
         "jwt-alice",
@@ -476,89 +488,39 @@ fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
 }
 
 fn register_generated_msg_identity(
-    manager: &Manager,
+    workspace: &Path,
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) -> awiki_cli::legacy_identity::types::StoredIdentity {
-    let generated = generate_identity(
-        "awiki.ai",
-        "https://awiki.ai/anp-im/rpc",
-        "did:wba:awiki.ai",
+) -> TestIdentity {
+    write_ready_identity(
+        workspace,
+        TestIdentityOptions {
+            identity_name,
+            handle,
+            display_name: identity_name,
+            jwt_token,
+            make_default: true,
+        },
     )
-    .expect("generate identity");
-    manager
-        .save(SaveInput {
-            identity_name: identity_name.to_string(),
-            did: generated.did,
-            unique_id: generated.unique_id,
-            user_id: format!("user-{handle}"),
-            display_name: identity_name.to_string(),
-            handle: handle.to_string(),
-            full_handle: format!("{handle}.awiki.ai"),
-            jwt_token: jwt_token.to_string(),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            ..SaveInput::default()
-        })
-        .expect("save generated message identity")
 }
 
 fn register_generated_read_identity(
-    manager: &Manager,
+    workspace: &Path,
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) -> awiki_cli::legacy_identity::types::StoredIdentity {
-    let generated = generate_identity(
-        "awiki.ai",
-        "https://awiki.ai/anp-im/rpc",
-        "did:wba:awiki.ai",
+) -> TestIdentity {
+    write_ready_identity(
+        workspace,
+        TestIdentityOptions {
+            identity_name,
+            handle,
+            display_name: identity_name,
+            jwt_token,
+            make_default: true,
+        },
     )
-    .expect("generate identity");
-    manager
-        .save(SaveInput {
-            identity_name: identity_name.to_string(),
-            did: generated.did,
-            unique_id: generated.unique_id,
-            user_id: format!("user-{handle}"),
-            display_name: identity_name.to_string(),
-            handle: handle.to_string(),
-            full_handle: format!("{handle}.awiki.ai"),
-            jwt_token: jwt_token.to_string(),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            ..SaveInput::default()
-        })
-        .expect("save generated read identity")
-}
-
-fn identity_manager(workspace: &Path) -> Manager {
-    Manager::new(test_paths(workspace))
-}
-
-fn test_paths(workspace: &Path) -> Paths {
-    for directory in ["data", "runtime", "cache", "logs"] {
-        std::fs::create_dir_all(workspace.join(directory)).expect("create workspace subdir");
-    }
-    Paths {
-        workspace_home_dir: path_string(workspace),
-        root_dir: path_string(workspace),
-        config_dir: path_string(workspace),
-        data_dir: path_string(&workspace.join("data")),
-        state_dir: path_string(&workspace.join("runtime")),
-        cache_dir: path_string(&workspace.join("cache")),
-        logs_dir: path_string(&workspace.join("logs")),
-        config_file: path_string(&workspace.join("config.yaml")),
-        identity_dir: path_string(&workspace.join("identities")),
-        database_file: path_string(&workspace.join("data").join("awiki-cli.db")),
-        legacy_credentials_dir: path_string(&workspace.join("legacy-credentials")),
-        legacy_data_dir: path_string(&workspace.join("legacy-data")),
-    }
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
@@ -577,9 +539,7 @@ fn seed_message(
     content_type: &str,
     metadata: &str,
 ) {
-    let connection =
-        rusqlite::Connection::open(workspace.join("data").join("awiki-cli.db")).unwrap();
-    awiki_cli::legacy_store::ensure_schema(&connection).unwrap();
+    let connection = open_local_state(workspace);
     connection
         .execute(
             r#"
@@ -765,10 +725,6 @@ fn request_complete(raw: &[u8]) -> bool {
         .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or_default();
     body.len() >= content_length
-}
-
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 struct TempDir {

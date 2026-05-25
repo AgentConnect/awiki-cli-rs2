@@ -26,13 +26,13 @@ Gap table:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `internal/runtime/hermesbridge/hermes_config.go`, `internal/cli/runtime.go`, Hermes bridge helpers | Hermes bridge defaults, local notify URL loopback validation, deliver target helpers, home-channel env/display names, `.env` line parsing, route status inspection, fixed target cleanup, legacy notify skill cleanup, and migration predicates | `crates/awiki-cli/src/runtime/hermes_bridge/*`, `src/app/runtime_handlers.rs` | implemented and focused-contract tested | `runtime_hermes_bridge_contract` passed 10 tests | `tests_v2/runtime/test_runtime_cli.py::test_runtime_small_rust_contracts` | low; pure local helper target |
-| `internal/runtime/listener` JSON marshal/unmarshal helper behavior | `structToMap`-style JSON object projection, marshal failure fallback, non-object fallback, and JSON null preservation as nil-map equivalent | `crates/awiki-cli/src/runtime/listener/*` | implemented and focused-contract tested | `runtime_listener_json_helpers_contract` passed 4 tests | same Rust-only selector | low; pure local helper target |
+| `internal/runtime/hermesbridge/hermes_config.go`, `internal/cli/runtime.go`, Hermes bridge helpers | Hermes bridge defaults, local notify URL loopback validation, deliver target helpers, home-channel env/display names, `.env` line parsing, route status inspection, fixed target cleanup, legacy notify skill cleanup, and migration predicates | `crates/awiki-cli/src/runtime/hermes_bridge/*`, `src/app/runtime_handlers.rs` | implemented and focused-contract tested | `host_runtime_hermes_bridge_contract` passed 10 tests | `tests_v2/runtime/test_runtime_cli.py::test_runtime_small_rust_contracts` | low; pure local helper target |
+| `internal/runtime/listener` JSON marshal/unmarshal helper behavior | `structToMap`-style JSON object projection, marshal failure fallback, non-object fallback, and JSON null preservation as nil-map equivalent | `crates/awiki-cli/src/runtime/listener/*` | implemented and focused-contract tested | `host_runtime_listener_json_helpers_contract` passed 4 tests | same Rust-only selector | low; pure local helper target |
 
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_bridge_contract --test runtime_listener_json_helpers_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_bridge_contract --test host_runtime_listener_json_helpers_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/hermesbridge ./internal/runtime/listener ./internal/cli -run 'TestEnsureRouteCreatesWebhookNotifyRouteAndUsesHomeChannel|TestValidateLocalNotifyURLRejectsRemoteHost|TestEnsureRouteKeepsCustomNonNotifySkills|TestHostNotifyConfigViewRedactsHermesSecretValue|TestResolveHermesNotifyURLFallsBackToConfigFileWhenSinkIsNotHermes|TestBuildHermesHostNotifyGuideViewPrefersHomeChannelGuidance|TestHermesHostNotifySinkNotifySignsRequest|TestNewHermesHostNotifySinkRejectsInvalidNotifyURL|TestRuntimeValidationErrorsUseStableCodes' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && PYTHONDONTWRITEBYTECODE=1 uv run python -m py_compile tests_v2/runtime/test_runtime_cli.py
 cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check -- tests_v2/runtime/test_runtime_cli.py tests_v2/runtime/CLAUDE.md
@@ -46,8 +46,8 @@ cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
 Observed results:
 
 - Rust direct runtime small targets passed 14 tests total:
-  `runtime_hermes_bridge_contract` 10 and
-  `runtime_listener_json_helpers_contract` 4.
+  `host_runtime_hermes_bridge_contract` 10 and
+  `host_runtime_listener_json_helpers_contract` 4.
 - Focused Go runtime guards passed for `internal/runtime/hermesbridge`,
   `internal/runtime/listener`, and `internal/cli`.
 - System-test wrapper syntax and whitespace checks passed.
@@ -56,8 +56,8 @@ Observed results:
   functions exist and runs the two Cargo targets once.
 - Rust formatting, package check, structure check, and whitespace check passed.
 - File-size evidence: the scoped Rust target files are
-  `runtime_hermes_bridge_contract.rs` 370 lines and
-  `runtime_listener_json_helpers_contract.rs` 70 lines. The system-test file
+  `host_runtime_hermes_bridge_contract.rs` 370 lines and
+  `host_runtime_listener_json_helpers_contract.rs` 70 lines. The system-test file
   `tests_v2/runtime/test_runtime_cli.py` is a pre-existing runtime aggregation
   file and is now 1630 lines; this batch added 70 lines there to reuse existing
   runtime selector helpers instead of creating another runtime wrapper.

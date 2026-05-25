@@ -16,8 +16,8 @@ fi
 tests=(
   legacy_path_cutover_contract
   cli_cutover_command_surface_contract
-  cmdmeta_schema_contract
-  im_core_adapter_policy_contract
+  command_catalog_schema_contract
+  m_core_cli_adapter_policy_contract
   group_e2ee_cutover_policy_contract
 )
 

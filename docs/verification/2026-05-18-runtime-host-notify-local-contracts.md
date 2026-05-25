@@ -23,17 +23,17 @@ Gap table:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `internal/runtime/listener/host_notify.go` | host event normalization, ID fallbacks, handle merge, file/noop/log/OpenClaw/Hermes sink construction and status | `src/runtime/host_notify.rs`, `host_notify_sink.rs` | implemented; selector added | `runtime_host_notify_sink_contract`; selected non-mail `runtime_host_notify_contract` tests | `test_runtime_host_notify_local_rust_contracts` | low; live mail selectors deferred |
-| `internal/runtime/listener/hermes_host_notify.go`, `internal/cli/runtime.go` Hermes paths | Hermes URL validation, secret precedence, HMAC signing, POST error mapping, config writes, route-file setup helpers | `src/runtime/hermes_host_notify.rs`, `src/app/runtime_hermes_handlers.rs`, Hermes route/config helpers | implemented; selector added | `runtime_hermes_host_notify_contract`, `runtime_hermes_config_write_contract`, `runtime_hermes_ensure_route_contract` | same selector | low; real Hermes bridge/service-manager/live delivery remains separate |
-| `internal/runtime/listener/openclaw_host_notify.go`, `internal/runtime/openclawnotify/{config,routes,webhook}.go`, `internal/cli/runtime_host_notify_routes.go` | OpenClaw config probe, hook URL validation, route fan-out, failure aggregation, route CLI surface, dry-run validation order | `src/runtime/openclaw_host_notify.rs`, `openclaw_routes.rs`, `openclaw_webhook.rs`, OpenClaw config helpers, `src/app/runtime_handlers.rs` | implemented; selector added | `runtime_openclaw_config_contract`, `runtime_openclaw_cli_contract`, selected non-mail `runtime_openclaw_host_notify_contract` tests, `runtime_contract host_notify` | same selector | low; live WebSocket probes remain environment-risky |
-| `internal/cli/runtime.go` host-notify enable/disable/config set | enable/disable persistence, sink preservation, dry-run, listener refresh/restart warnings, offline status view | `src/app/runtime_handlers.rs`, `runtime_host_notify_refresh.rs`, `runtime/mod.rs` | implemented; selector added | `runtime_host_notify_enable_disable_contract`, `runtime_contract host_notify` | same selector | low |
+| `internal/runtime/listener/host_notify.go` | host event normalization, ID fallbacks, handle merge, file/noop/log/OpenClaw/Hermes sink construction and status | `src/runtime/host_notify.rs`, `host_notify_sink.rs` | implemented; selector added | `host_runtime_notify_sink_contract`; selected non-mail `host_runtime_notify_contract` tests | `test_runtime_host_notify_local_rust_contracts` | low; live mail selectors deferred |
+| `internal/runtime/listener/hermes_host_notify.go`, `internal/cli/runtime.go` Hermes paths | Hermes URL validation, secret precedence, HMAC signing, POST error mapping, config writes, route-file setup helpers | `src/runtime/hermes_host_notify.rs`, `src/app/runtime_hermes_handlers.rs`, Hermes route/config helpers | implemented; selector added | `host_runtime_hermes_host_notify_contract`, `host_runtime_hermes_config_write_contract`, `host_runtime_hermes_ensure_route_contract` | same selector | low; real Hermes bridge/service-manager/live delivery remains separate |
+| `internal/runtime/listener/openclaw_host_notify.go`, `internal/runtime/openclawnotify/{config,routes,webhook}.go`, `internal/cli/runtime_host_notify_routes.go` | OpenClaw config probe, hook URL validation, route fan-out, failure aggregation, route CLI surface, dry-run validation order | `src/runtime/openclaw_host_notify.rs`, `openclaw_routes.rs`, `openclaw_webhook.rs`, OpenClaw config helpers, `src/app/runtime_handlers.rs` | implemented; selector added | `host_runtime_openclaw_config_contract`, `host_runtime_openclaw_cli_contract`, selected non-mail `host_runtime_openclaw_host_notify_contract` tests, `host_runtime_contract host_notify` | same selector | low; live WebSocket probes remain environment-risky |
+| `internal/cli/runtime.go` host-notify enable/disable/config set | enable/disable persistence, sink preservation, dry-run, listener refresh/restart warnings, offline status view | `src/app/runtime_handlers.rs`, `runtime_host_notify_refresh.rs`, `runtime/mod.rs` | implemented; selector added | `host_runtime_notify_enable_disable_contract`, `host_runtime_contract host_notify` | same selector | low |
 
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_host_notify_contract --test runtime_host_notify_sink_contract --test runtime_hermes_host_notify_contract --test runtime_openclaw_host_notify_contract --test runtime_openclaw_config_contract --test runtime_openclaw_cli_contract --test runtime_host_notify_enable_disable_contract --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_contract host_notify --locked
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test runtime_hermes_config_write_contract --test runtime_hermes_ensure_route_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_notify_contract --test host_runtime_notify_sink_contract --test host_runtime_hermes_host_notify_contract --test host_runtime_openclaw_host_notify_contract --test host_runtime_openclaw_config_contract --test host_runtime_openclaw_cli_contract --test host_runtime_notify_enable_disable_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_contract host_notify --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test host_runtime_hermes_config_write_contract --test host_runtime_hermes_ensure_route_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/runtime/listener ./internal/runtime/openclawnotify ./internal/cli ./internal/config -run 'Test.*(HostNotify|OpenClaw|Hermes|Webhook)' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && python3 -m py_compile tests_v2/runtime/test_runtime_cli.py
 cd /home/ecs-user/awiki-space/awiki-system-test && git diff --check -- tests_v2/runtime/test_runtime_cli.py
@@ -44,7 +44,7 @@ Observed results:
 
 - Host-notify/OpenClaw/Hermes local Rust contract targets passed 50 tests in
   the initial direct validation batch.
-- `runtime_contract host_notify` passed 10 filtered tests.
+- `host_runtime_contract host_notify` passed 10 filtered tests.
 - Additional local Hermes config-write and route-file contracts passed 19
   tests before selector integration.
 - The focused Go guard passed for listener host-notify, OpenClaw runtime,

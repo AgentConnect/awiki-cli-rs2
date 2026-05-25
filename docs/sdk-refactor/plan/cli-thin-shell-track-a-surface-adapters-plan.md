@@ -198,7 +198,7 @@ default schema 不展示 raw RPC / SQL / stub。
 检查：
 
 ```bash
-cargo test -p awiki-cli --test core_contract
+cargo test -p awiki-cli --test cli_shell_core_contract
 cargo run -p awiki-cli -- schema --format json
 ```
 

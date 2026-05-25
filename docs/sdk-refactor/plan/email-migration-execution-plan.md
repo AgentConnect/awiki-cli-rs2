@@ -478,8 +478,8 @@ cargo test -p im-core --test email_notification_contract --locked
 cargo test -p awiki-cli --test mail_contract --locked
 cargo test -p awiki-cli --test mail_live_contract --locked
 cargo test -p awiki-cli --test cli_cutover_command_surface_contract --locked
-cargo test -p awiki-cli --test cmdmeta_schema_contract --locked
-cargo test -p awiki-cli --test im_core_adapter_policy_contract --locked
+cargo test -p awiki-cli --test command_catalog_schema_contract --locked
+cargo test -p awiki-cli --test m_core_cli_adapter_policy_contract --locked
 ```
 
 每个 PR 至少跑：

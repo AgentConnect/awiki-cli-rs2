@@ -42,7 +42,7 @@ acceptance, or mail selector acceptance.
 cargo +1.79.0 fmt --check
 cargo +1.79.0 check -p awiki-cli --locked
 cargo +1.79.0 test -p awiki-cli listener_session_rpc --locked
-cargo +1.79.0 test -p awiki-cli --test runtime_listener_bridge_dispatch_contract --test runtime_listener_wsclient_contract --test runtime_listener_secure_replay_contract --test runtime_listener_notification_consume_contract --test runtime_listener_secure_inbox_poll_contract --locked
+cargo +1.79.0 test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract --test runtime_listener_wsclient_contract --test runtime_listener_secure_replay_contract --test host_runtime_listener_notification_consume_contract --test runtime_listener_secure_inbox_poll_contract --locked
 cargo +1.79.0 run --bin xtask --locked -- check-structure
 git diff --check
 AWIKI_CLI_UNDER_TEST=rust \
@@ -61,10 +61,10 @@ uv run pytest -p no:cacheprovider \
 - `cargo +1.79.0 test -p awiki-cli listener_session_rpc --locked` passed 3
   moved session-RPC unit tests.
 - Focused Rust regression targets passed 57 tests:
-  - `runtime_listener_bridge_dispatch_contract`: 10 passed.
+  - `host_runtime_listener_bridge_dispatch_contract`: 10 passed.
   - `runtime_listener_wsclient_contract`: 31 passed.
   - `runtime_listener_secure_replay_contract`: 5 passed.
-  - `runtime_listener_notification_consume_contract`: 7 passed.
+  - `host_runtime_listener_notification_consume_contract`: 7 passed.
   - `runtime_listener_secure_inbox_poll_contract`: 4 passed.
 - `cargo +1.79.0 run --bin xtask --locked -- check-structure` passed.
 - `git diff --check` passed.

@@ -24,14 +24,14 @@ Gap table:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `internal/config/config.go`, `internal/config/write.go`, `internal/cli/config.go` | config resolution, deprecated service URL guards, `config show` snapshot, `config set --did-domain`, atomic config write and mutators | `crates/awiki-cli/src/config/mod.rs`, `src/config/write.rs`, `src/app.rs` | implemented and focused-contract tested | `config_policy_contract` passed 4 tests; `config_writer_contract` passed 7 tests | `tests_v2/cli/test_awiki_cli_workspace_config_update_rust_contracts.py::test_awiki_cli_workspace_config_update_rust_contracts` | low after selector exposure |
-| `internal/update/update.go`, `internal/cli/root.go`, `internal/cli/upgrade.go` | update cache-only policy, strict disable/minimum-version handling, root preflight exemptions, `upgrade` status/install decision path | `crates/awiki-cli/src/update/*`, `src/app/update_preflight.rs`, `src/app/update_handlers.rs` | implemented and focused-contract tested | `update_contract` passed 6 tests | same Rust-only selector | low for deterministic update/preflight behavior; live npm install/registry path remains out of scope |
+| `internal/config/config.go`, `internal/config/write.go`, `internal/cli/config.go` | config resolution, deprecated service URL guards, `config show` snapshot, `config set --did-domain`, atomic config write and mutators | `crates/awiki-cli/src/config/mod.rs`, `src/config/write.rs`, `src/app.rs` | implemented and focused-contract tested | `workspace_config_policy_contract` passed 4 tests; `workspace_config_writer_contract` passed 7 tests | `tests_v2/cli/test_awiki_cli_workspace_config_update_rust_contracts.py::test_awiki_cli_workspace_config_update_rust_contracts` | low after selector exposure |
+| `internal/update/update.go`, `internal/cli/root.go`, `internal/cli/upgrade.go` | update cache-only policy, strict disable/minimum-version handling, root preflight exemptions, `upgrade` status/install decision path | `crates/awiki-cli/src/update/*`, `src/app/update_preflight.rs`, `src/app/update_handlers.rs` | implemented and focused-contract tested | `self_update_contract` passed 6 tests | same Rust-only selector | low for deterministic update/preflight behavior; live npm install/registry path remains out of scope |
 | `internal/upgrade/*`, `internal/cli/app.go`, `internal/cli/init.go` | workspace schema detection, automatic `upgrade_if_needed`, backup, lock, journal, meta, migration chain 0->1->2->3, config-show/doctor status surface | `crates/awiki-cli/src/upgrade/*`, `src/app.rs`, `src/doctor/mod.rs` | implemented and focused-contract tested | `workspace_upgrade_contract` passed 20 tests; `workspace_upgrade_if_needed_contract` passed 13 tests; `workspace_migration_v0_to_v1_contract` passed 25 tests | same Rust-only selector | low after selector exposure; no standalone workspace-upgrade CLI command is claimed |
 
 Commands run:
 
 ```text
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test update_contract --test config_policy_contract --test config_writer_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test self_update_contract --test workspace_config_policy_contract --test workspace_config_writer_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test workspace_upgrade_contract --test workspace_upgrade_if_needed_contract --test workspace_migration_v0_to_v1_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/config ./internal/upgrade ./internal/cli -run 'Test.*(Config|Upgrade|Update|Preflight|Workspace|Migration|Strict|Deprecated|Durable|Write)' -count=1
 cd /home/ecs-user/awiki-space/awiki-system-test && AWIKI_CLI_UNDER_TEST=rust AWIKI_CLI_RUST_REPO=/home/ecs-user/awiki-space/awiki-cli-rs2 AWIKI_CLI_UPDATE_CACHE_ONLY=1 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider tests_v2/update/test_update_policy.py -ra -q
@@ -47,8 +47,8 @@ cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
 Observed results:
 
 - Rust direct workspace/config/update targets passed 75 tests total:
-  `update_contract` 6, `config_policy_contract` 4,
-  `config_writer_contract` 7, `workspace_upgrade_contract` 20,
+  `self_update_contract` 6, `workspace_config_policy_contract` 4,
+  `workspace_config_writer_contract` 7, `workspace_upgrade_contract` 20,
   `workspace_upgrade_if_needed_contract` 13, and
   `workspace_migration_v0_to_v1_contract` 25.
 - Focused Go `internal/config`, `internal/upgrade`, and `internal/cli` guard:

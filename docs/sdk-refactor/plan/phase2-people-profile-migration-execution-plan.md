@@ -613,7 +613,7 @@ crates/awiki-cli/src/im_core_adapter/people.rs
 crates/awiki-cli/src/app/people_handlers.rs
 crates/awiki-cli/src/app.rs
 crates/awiki-cli/src/cmdmeta/mod.rs
-crates/awiki-cli/tests/core_contract.rs
+crates/awiki-cli/tests/cli_shell_core_contract.rs
 crates/awiki-cli/tests/cli_cutover_command_surface_contract.rs
 ```
 
@@ -622,7 +622,7 @@ crates/awiki-cli/tests/cli_cutover_command_surface_contract.rs
 ```bash
 cargo test -p im-core contacts
 cargo test -p awiki-cli --test store_contact_contract
-cargo test -p awiki-cli --test core_contract people
+cargo test -p awiki-cli --test cli_shell_core_contract people
 cargo test -p awiki-cli --test cli_cutover_command_surface_contract people
 ```
 
@@ -680,7 +680,7 @@ CLI 输出可以保留 command envelope：
 ### 验收
 
 ```bash
-cargo test -p awiki-cli --test core_contract people
+cargo test -p awiki-cli --test cli_shell_core_contract people
 cargo test -p awiki-cli --test cli_cutover_command_surface_contract people
 ```
 
@@ -768,7 +768,7 @@ crates/im-core/src/compat/directory.rs
 
 ```bash
 cargo test -p im-core
-cargo test -p awiki-cli --test core_contract
+cargo test -p awiki-cli --test cli_shell_core_contract
 cargo test -p awiki-cli --test cli_cutover_command_surface_contract
 rg "people.*stub|relationship-remote-mutation|reserved but currently unimplemented" docs/sdk-refactor/public-api.md docs/sdk-refactor/modules/06-directory.md docs/sdk-refactor/plan/cli-im-core-cutover-plan.md docs/sdk-refactor/plan/awiki_im_core_flutter_plan.md skills/references/09-people-planned.md crates/awiki-cli/src crates/awiki-cli/tests
 ```
@@ -829,7 +829,7 @@ cargo test -p im-core phase2_identity_directory
 cargo test -p im-core phase2_relationship_directory
 cargo test -p im-core identity_wire_contract
 cargo test -p awiki-cli --test store_contact_contract
-cargo test -p awiki-cli --test core_contract people
+cargo test -p awiki-cli --test cli_shell_core_contract people
 cargo test -p awiki-cli --test cli_cutover_command_surface_contract people
 ```
 

@@ -25,17 +25,17 @@ Gap table:
 
 | Go file | Go behavior | Rust file | Rust status | Rust test | System selector | Risk |
 | --- | --- | --- | --- | --- | --- | --- |
-| `internal/config/config.go` | Go `yaml.v3` decodes quoted scalars, common double-quoted escapes, single-quoted scalar quoting, and null-like scalar values before normal config resolution | `crates/awiki-cli/src/config/mod.rs` | improved for common scalar cases in the existing hand-written parser | `config_policy_contract` passed 6 tests | core quoted-scalar selector passed | medium; full YAML anchors/sequences/tags/block scalars remain outside this focused slice |
-| `internal/config/config.go` | Malformed YAML is reported through the resolved `config_error` field while `config show` still returns the default resolved snapshot | `crates/awiki-cli/src/config/mod.rs` | preserved and now regression-tested for malformed quoted scalar input | `config_policy_contract::config_show_reports_malformed_yaml_in_config_error_like_go` | same config/update selector batch passed | low for covered public shape |
-| `internal/config/write.go` | Go YAML marshal quotes scalars that would break round-trip parsing, including inline-comment markers and embedded quotes | `crates/awiki-cli/src/config/write.rs` | writer now quotes/escapes scalar values that contain comment markers, quotes, backslashes, tabs, newlines, or null/boolean-like plain values | `config_writer_contract` passed 8 tests | config set/system wrapper selectors passed | medium; comments/ordering/arbitrary unknown YAML nodes are still not preserved |
-| `internal/config/write.go` | Go writer keeps durable same-directory replacement and schema-version stamping | `crates/awiki-cli/src/config/write.rs` | unchanged; existing durable writer tests remain passing | `config_writer_contract` | existing config set selector passed | low |
+| `internal/config/config.go` | Go `yaml.v3` decodes quoted scalars, common double-quoted escapes, single-quoted scalar quoting, and null-like scalar values before normal config resolution | `crates/awiki-cli/src/config/mod.rs` | improved for common scalar cases in the existing hand-written parser | `workspace_config_policy_contract` passed 6 tests | core quoted-scalar selector passed | medium; full YAML anchors/sequences/tags/block scalars remain outside this focused slice |
+| `internal/config/config.go` | Malformed YAML is reported through the resolved `config_error` field while `config show` still returns the default resolved snapshot | `crates/awiki-cli/src/config/mod.rs` | preserved and now regression-tested for malformed quoted scalar input | `workspace_config_policy_contract::config_show_reports_malformed_yaml_in_config_error_like_go` | same config/update selector batch passed | low for covered public shape |
+| `internal/config/write.go` | Go YAML marshal quotes scalars that would break round-trip parsing, including inline-comment markers and embedded quotes | `crates/awiki-cli/src/config/write.rs` | writer now quotes/escapes scalar values that contain comment markers, quotes, backslashes, tabs, newlines, or null/boolean-like plain values | `workspace_config_writer_contract` passed 8 tests | config set/system wrapper selectors passed | medium; comments/ordering/arbitrary unknown YAML nodes are still not preserved |
+| `internal/config/write.go` | Go writer keeps durable same-directory replacement and schema-version stamping | `crates/awiki-cli/src/config/write.rs` | unchanged; existing durable writer tests remain passing | `workspace_config_writer_contract` | existing config set selector passed | low |
 
 Commands run:
 
 ```text
 cd /home/ecs-user/awiki-space/awiki-cli && go test ./internal/config -run 'TestResolveRejectsDeprecatedServiceURLFieldsInConfigYAML|TestResolveHonorsExplicitFalseBoolFromConfigFile|TestUpdateDIDDomainCreatesConfigAndNormalizesValue' -count=1
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 fmt --check
-cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test config_policy_contract --test config_writer_contract --locked
+cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 test -p awiki-cli --test workspace_config_policy_contract --test workspace_config_writer_contract --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 check -p awiki-cli --locked
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && cargo +1.79.0 run --bin xtask --locked -- check-structure
 cd /home/ecs-user/awiki-space/awiki-cli-rs2 && git diff --check
@@ -75,8 +75,8 @@ File-size note:
 
 - `crates/awiki-cli/src/config/mod.rs`: 1031 lines.
 - `crates/awiki-cli/src/config/write.rs`: 488 lines.
-- `crates/awiki-cli/tests/config_policy_contract.rs`: 229 lines.
-- `crates/awiki-cli/tests/config_writer_contract.rs`: 306 lines.
+- `crates/awiki-cli/tests/workspace_config_policy_contract.rs`: 229 lines.
+- `crates/awiki-cli/tests/workspace_config_writer_contract.rs`: 306 lines.
 - No file-size exception is needed.
 
 Coverage boundary:

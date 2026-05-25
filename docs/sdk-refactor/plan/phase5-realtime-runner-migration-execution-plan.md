@@ -365,8 +365,8 @@ cargo test -p awiki-cli --test runtime_listener_session_loop_contract
 ### 9.2 Optional integration：合并前或本地补跑
 
 ```text
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_connection_contract
 cargo test -p awiki-cli --test msg_contract
 cargo test -p awiki-cli --test group_contract
 ```
@@ -494,7 +494,7 @@ cargo test -p awiki-cli --test runtime_listener_wsclient_contract
 ### 11.5 Optional integration
 
 ```bash
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 ### 11.6 完成标准
@@ -567,7 +567,7 @@ cargo test -p awiki-cli --test runtime_listener_session_loop_contract
 ### 12.5 Optional integration
 
 ```bash
-cargo test -p awiki-cli --test runtime_listener_supervisor_shutdown_contract
+cargo test -p awiki-cli --test host_runtime_listener_supervisor_shutdown_contract
 ```
 
 ### 12.6 完成标准
@@ -641,8 +641,8 @@ cargo test -p awiki-cli --test group_contract
 ### 13.5 Optional integration
 
 ```bash
-cargo test -p awiki-cli --test runtime_listener_notification_consume_contract
-cargo test -p awiki-cli --test runtime_host_notify_contract
+cargo test -p awiki-cli --test host_runtime_listener_notification_consume_contract
+cargo test -p awiki-cli --test host_runtime_notify_contract
 ```
 
 ### 13.6 完成标准
@@ -776,7 +776,7 @@ cargo test -p im-core realtime_runner
 ### 15.5 Optional integration
 
 ```bash
-cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_connection_contract
 ```
 
 ### 15.6 完成标准
@@ -832,8 +832,8 @@ crates/awiki-cli/src/im_core_adapter/realtime.rs
 
 ```bash
 cargo test -p im-core realtime_runner
-cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_connection_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 ```
 
 ### 16.5 Manual / live / system
@@ -885,7 +885,7 @@ attachment notification enrichment
 
 ```bash
 cargo test -p im-core realtime_projection
-cargo test -p awiki-cli --test runtime_listener_bridge_dispatch_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_dispatch_contract
 cargo test -p awiki-cli --test store_messages_contract
 cargo test -p awiki-cli --test store_groups_contract
 ```
@@ -893,7 +893,7 @@ cargo test -p awiki-cli --test store_groups_contract
 ### 17.4 Optional integration
 
 ```bash
-cargo test -p awiki-cli --test runtime_host_notify_contract
+cargo test -p awiki-cli --test host_runtime_notify_contract
 ```
 
 ### 17.5 完成标准

@@ -775,11 +775,11 @@ raw KeyPackage / MLS notice / provider stdout/stderr in CLI output
 建议测试文件：
 
 ```text
-msg_secure_send_im_core_contract.rs
+msg_secure_send_im_cli_shell_core_contract.rs
 msg_secure_command_surface_contract.rs
-group_secure_send_im_core_contract.rs
+group_secure_send_im_cli_shell_core_contract.rs
 group_secure_command_surface_contract.rs
-group_secure_lifecycle_im_core_contract.rs
+group_secure_lifecycle_im_cli_shell_core_contract.rs
 e2ee_deprecated_alias_contract.rs
 e2ee_hidden_internal_command_contract.rs
 ```

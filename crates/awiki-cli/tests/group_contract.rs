@@ -1,6 +1,3 @@
-use awiki_cli::config::Paths;
-use awiki_cli::legacy_identity::{generate_identity, types::SaveInput, Manager};
-use awiki_cli::legacy_store::{self as store, GroupRecord};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -10,6 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod support;
+
+use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
 
 #[test]
 fn group_create_and_update_dry_run_match_go_policy_contracts() {
@@ -348,9 +349,12 @@ fn group_lifecycle_dry_run_plans_match_go_contracts() {
 #[test]
 fn group_reads_default_cutover_route_through_group_service_bridge() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
-    let alice =
-        register_generated_group_identity(&manager, "alice-group-cutover", "alice", "jwt-alice");
+    let alice = register_generated_group_identity(
+        workspace.path(),
+        "alice-group-cutover",
+        "alice",
+        "jwt-alice",
+    );
     let group_did = "did:wba:awiki.ai:groups:demo:e1_group";
     let server = TestServer::new(vec![
         TestResponse::ok(&json_rpc_result(json!({
@@ -492,9 +496,8 @@ fn group_reads_default_cutover_route_through_group_service_bridge() {
 #[test]
 fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
     let alice = register_generated_group_identity(
-        &manager,
+        workspace.path(),
         "alice-group-life-cutover",
         "alice",
         "jwt-alice",
@@ -656,10 +659,15 @@ fn group_lifecycle_default_cutover_routes_plain_create_join_and_leave() {
         "anp-rfc9421-origin-proof-v1"
     );
 
-    let db = store::open(&test_paths(workspace.path())).expect("open group store");
-    let snapshot = store::get_group_snapshot(&db, &alice.did, group_did)
+    let db = open_local_state(workspace.path());
+    let membership_status: String = db
+        .query_row(
+            "SELECT membership_status FROM groups WHERE owner_did = ?1 AND (group_id = ?2 OR group_did = ?2)",
+            rusqlite::params![alice.did, group_did],
+            |row| row.get(0),
+        )
         .expect("cached group snapshot after leave");
-    assert_eq!(snapshot["membership_status"], "left");
+    assert_eq!(membership_status, "left");
 }
 
 #[test]
@@ -694,9 +702,8 @@ fn group_lifecycle_dry_run_maps_e2ee_create_alias_to_secure_required() {
 #[test]
 fn group_lifecycle_default_cutover_preserves_owner_cannot_leave_guard() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
     let alice = register_generated_group_identity(
-        &manager,
+        workspace.path(),
         "alice-owner-guard-cutover",
         "alice",
         "jwt-alice",
@@ -788,9 +795,8 @@ fn group_mutation_dry_run_maps_e2ee_member_aliases_to_secure_required() {
 #[test]
 fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
     let workspace = TempDir::new().expect("workspace");
-    let manager = identity_manager(workspace.path());
     let alice = register_generated_group_identity(
-        &manager,
+        workspace.path(),
         "alice-group-mutation-cutover",
         "alice",
         "jwt-alice",
@@ -1006,14 +1012,24 @@ fn group_mutation_default_cutover_routes_plain_member_and_update_paths() {
             "anp.group.base.v1"
         );
     }
-    let db = store::open(&test_paths(workspace.path())).expect("open group store");
-    let snapshot = store::get_group_snapshot(&db, &alice.did, group_did)
+    let db = open_local_state(workspace.path());
+    let (name, member_count): (String, i64) = db
+        .query_row(
+            "SELECT name, member_count FROM groups WHERE owner_did = ?1 AND (group_id = ?2 OR group_did = ?2)",
+            rusqlite::params![alice.did, group_did],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .expect("cached group snapshot after mutation");
-    assert_eq!(snapshot["name"], "Renamed Mutation Group");
-    assert_eq!(snapshot["member_count"], 1);
-    let members = store::list_cached_group_members(&db, &alice.did, group_did, 100)
+    assert_eq!(name, "Renamed Mutation Group");
+    assert_eq!(member_count, 1);
+    let member_rows: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM group_members WHERE owner_did = ?1 AND group_id = ?2",
+            rusqlite::params![alice.did, group_did],
+            |row| row.get(0),
+        )
         .expect("cached group members after remove");
-    assert!(members.is_empty());
+    assert_eq!(member_rows, 0);
 }
 
 #[test]
@@ -1434,59 +1450,21 @@ fn awiki_command(args: &[&str], workspace: &Path) -> Command {
 }
 
 fn register_generated_group_identity(
-    manager: &Manager,
+    workspace: &Path,
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) -> awiki_cli::legacy_identity::types::StoredIdentity {
-    let generated = generate_identity(
-        "awiki.ai",
-        "https://awiki.ai/anp-im/rpc",
-        "did:wba:awiki.ai",
+) -> TestIdentity {
+    write_ready_identity(
+        workspace,
+        TestIdentityOptions {
+            identity_name,
+            handle,
+            display_name: identity_name,
+            jwt_token,
+            make_default: true,
+        },
     )
-    .expect("generate identity");
-    manager
-        .save(SaveInput {
-            identity_name: identity_name.to_string(),
-            did: generated.did,
-            unique_id: generated.unique_id,
-            user_id: format!("user-{handle}"),
-            display_name: identity_name.to_string(),
-            handle: handle.to_string(),
-            full_handle: format!("{handle}.awiki.ai"),
-            jwt_token: jwt_token.to_string(),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            ..SaveInput::default()
-        })
-        .expect("save generated group identity")
-}
-
-fn identity_manager(workspace: &Path) -> Manager {
-    Manager::new(test_paths(workspace))
-}
-
-fn test_paths(workspace: &Path) -> Paths {
-    for directory in ["data", "runtime", "cache", "logs"] {
-        std::fs::create_dir_all(workspace.join(directory)).expect("create workspace subdir");
-    }
-    Paths {
-        workspace_home_dir: path_string(workspace),
-        root_dir: path_string(workspace),
-        config_dir: path_string(workspace),
-        data_dir: path_string(&workspace.join("data")),
-        state_dir: path_string(&workspace.join("runtime")),
-        cache_dir: path_string(&workspace.join("cache")),
-        logs_dir: path_string(&workspace.join("logs")),
-        config_file: path_string(&workspace.join("config.yaml")),
-        identity_dir: path_string(&workspace.join("identities")),
-        database_file: path_string(&workspace.join("data").join("awiki-cli.db")),
-        legacy_credentials_dir: path_string(&workspace.join("legacy-credentials")),
-        legacy_data_dir: path_string(&workspace.join("legacy-data")),
-    }
 }
 
 fn write_group_config(workspace: &Path, base_url: &str) {
@@ -1504,28 +1482,26 @@ fn seed_group_snapshot(
     group_did: &str,
     role: &str,
 ) {
-    let paths = test_paths(workspace);
-    let db = store::open(&paths).expect("open group store");
-    store::ensure_schema(&db).expect("ensure group schema");
-    store::upsert_group(
-        &db,
-        GroupRecord {
-            owner_did: owner_did.to_string(),
-            group_id: group_did.to_string(),
-            group_did: group_did.to_string(),
-            name: "Guard Group".to_string(),
-            group_owner_did: owner_did.to_string(),
-            my_role: role.to_string(),
-            membership_status: "active".to_string(),
-            credential_name: credential_name.to_string(),
-            ..GroupRecord::default()
-        },
+    let db = open_local_state(workspace);
+    db.execute(
+        r#"
+INSERT INTO groups (
+    owner_did, group_id, group_did, name, group_owner_did, group_mode,
+    my_role, membership_status, stored_at, credential_name
+) VALUES (?1, ?2, ?2, 'Guard Group', ?1, 'general', ?3, 'active',
+          '2026-05-25T00:00:00Z', ?4)
+ON CONFLICT(owner_did, group_id)
+DO UPDATE SET
+    group_did = excluded.group_did,
+    name = excluded.name,
+    group_owner_did = excluded.group_owner_did,
+    my_role = excluded.my_role,
+    membership_status = excluded.membership_status,
+    credential_name = excluded.credential_name
+"#,
+        rusqlite::params![owner_did, group_did, role, credential_name],
     )
     .expect("seed group snapshot");
-}
-
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 fn success_json(output: &Output) -> Value {

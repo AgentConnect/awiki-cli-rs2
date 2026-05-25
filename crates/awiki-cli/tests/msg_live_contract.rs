@@ -1,6 +1,3 @@
-use awiki_cli::config::Paths;
-use awiki_cli::legacy_identity::{generate_identity, types::SaveInput, Manager};
-use awiki_cli::legacy_store::{self as store, E2EEOutboxRecord};
 use rusqlite::types::ValueRef;
 use serde_json::{json, Map, Value};
 use std::io::{Read, Write};
@@ -10,6 +7,10 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+mod support;
+
+use support::{open_local_state, write_ready_identity, TestIdentity, TestIdentityOptions};
 
 #[test]
 fn msg_send_live_posts_direct_rpc_and_persists_outbound_row_like_go() {
@@ -117,9 +118,8 @@ fn msg_send_secure_on_alias_dry_run_reaches_im_core_secure_plan() {
 fn msg_secure_init_is_stable_unsupported_without_secure_direct_legacy_path() {
     let workspace = TempDir::new("msg-live-secure-init").expect("workspace");
     write_msg_config(workspace.path(), "https://placeholder.invalid");
-    let manager = Manager::new(test_paths(workspace.path()));
-    register_generated_msg_identity(&manager, "alice-init", "alice", "jwt-alice");
-    let bob = register_generated_msg_identity(&manager, "bob-init", "bob", "jwt-bob");
+    register_generated_msg_identity(workspace.path(), "alice-init", "alice", "jwt-alice");
+    let bob = register_generated_msg_identity(workspace.path(), "bob-init", "bob", "jwt-bob");
     let server = TestServer::new(vec![]);
     write_msg_config(workspace.path(), &server.base_url());
 
@@ -144,20 +144,8 @@ fn msg_secure_init_is_stable_unsupported_without_secure_direct_legacy_path() {
 fn msg_secure_retry_is_stable_unsupported_without_secure_direct_legacy_path() {
     let workspace = TempDir::new("msg-live-secure-retry").expect("workspace");
     write_msg_config(workspace.path(), "https://placeholder.invalid");
-    let manager = Manager::new(test_paths(workspace.path()));
-    let alice = register_generated_msg_identity(&manager, "alice-retry", "alice", "jwt-alice");
-    let bob = register_generated_msg_identity(&manager, "bob-retry", "bob", "jwt-bob");
-    seed_established_secure_session(&manager, "alice-retry", &alice, &bob);
-    seed_secure_outbox_row(
-        workspace.path(),
-        &alice.did,
-        &bob.did,
-        "retry-live-1",
-        "failed",
-        "hello retry live",
-        "2026-05-16T00:00:00Z",
-        "alice-retry",
-    );
+    register_generated_msg_identity(workspace.path(), "alice-retry", "alice", "jwt-alice");
+    register_generated_msg_identity(workspace.path(), "bob-retry", "bob", "jwt-bob");
     let server = TestServer::new(vec![]);
     write_msg_config(workspace.path(), &server.base_url());
 
@@ -180,9 +168,9 @@ fn msg_secure_retry_is_stable_unsupported_without_secure_direct_legacy_path() {
 #[test]
 fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
     let workspace = TempDir::new("msg-live-read").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
+    let bob = register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
     let alice_did = "did:wba:awiki.ai:alice:e1_alice";
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let bob_did = bob.did.as_str();
     let message = json!({
         "id": "msg-direct-1",
         "type": "text",
@@ -298,8 +286,8 @@ fn msg_inbox_history_and_mark_read_live_match_go_output_shape() {
 #[test]
 fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
     let workspace = TempDir::new("msg-live-handle-history").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let bob = register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
+    let bob_did = bob.did.as_str();
     let alice_old = "did:wba:awiki.ai:alice:e1_old";
     let alice_new = "did:wba:awiki.ai:alice:e1_new";
     seed_contact(
@@ -376,8 +364,8 @@ fn msg_history_with_handle_merges_local_handle_history_cache_like_go() {
 #[test]
 fn msg_history_with_handle_filters_secure_wire_rows_from_local_handle_history_cache_like_go() {
     let workspace = TempDir::new("msg-live-secure-handle-history").expect("workspace");
-    register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
-    let bob_did = "did:wba:awiki.ai:bob:e1_bob";
+    let bob = register_ready_msg_identity(workspace.path(), "bob-msg", "bob", "jwt-bob");
+    let bob_did = bob.did.as_str();
     let alice_old = "did:wba:awiki.ai:alice:e1_old";
     let alice_new = "did:wba:awiki.ai:alice:e1_new";
     seed_contact(
@@ -461,95 +449,26 @@ fn register_ready_msg_identity(
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) {
-    let create = awiki_cmd(
-        &[
-            "--migration",
-            "id",
-            "create",
-            "--name",
-            "Message User",
-            "--identity",
-            identity_name,
-        ],
-        workspace,
-    );
-    assert_success(&create);
-
-    let index_path = workspace.join("identities").join("index.json");
-    let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
-    let did = format!("did:wba:awiki.ai:{handle}:e1_{handle}");
-    index["credentials"][identity_name]["did"] = json!(did);
-    index["credentials"][identity_name]["handle"] = json!(handle);
-    index["credentials"][identity_name]["full_handle"] = json!(format!("{handle}.awiki.ai"));
-    index["credentials"][identity_name]["user_id"] = json!(format!("user-{handle}"));
-    std::fs::write(&index_path, serde_json::to_vec_pretty(&index).unwrap()).unwrap();
-
-    let dir_name = index["credentials"][identity_name]["dir_name"]
-        .as_str()
-        .unwrap();
-    let identity_dir = workspace.join("identities").join(dir_name);
-    let identity_path = identity_dir.join("identity.json");
-    let mut identity: Value =
-        serde_json::from_slice(&std::fs::read(&identity_path).unwrap()).unwrap();
-    let original_did = identity["did"].as_str().unwrap().to_string();
-    identity["did"] = json!(did);
-    identity["handle"] = json!(handle);
-    identity["full_handle"] = json!(format!("{handle}.awiki.ai"));
-    identity["user_id"] = json!(format!("user-{handle}"));
-    std::fs::write(
-        &identity_path,
-        serde_json::to_vec_pretty(&identity).unwrap(),
-    )
-    .unwrap();
-
-    let document_path = identity_dir.join("did_document.json");
-    let mut document: Value =
-        serde_json::from_slice(&std::fs::read(&document_path).unwrap()).unwrap();
-    document["id"] = json!(original_did);
-    std::fs::write(
-        &document_path,
-        serde_json::to_vec_pretty(&document).unwrap(),
-    )
-    .unwrap();
-
-    std::fs::write(
-        identity_dir.join("auth.json"),
-        serde_json::to_vec_pretty(&json!({ "jwt_token": jwt_token })).unwrap(),
-    )
-    .unwrap();
+) -> TestIdentity {
+    register_generated_msg_identity(workspace, identity_name, handle, jwt_token)
 }
 
 fn register_generated_msg_identity(
-    manager: &Manager,
+    workspace: &Path,
     identity_name: &str,
     handle: &str,
     jwt_token: &str,
-) -> awiki_cli::legacy_identity::types::StoredIdentity {
-    let generated = generate_identity(
-        "awiki.ai",
-        "https://awiki.ai/anp-im/rpc",
-        "did:wba:awiki.ai",
+) -> TestIdentity {
+    write_ready_identity(
+        workspace,
+        TestIdentityOptions {
+            identity_name,
+            handle,
+            display_name: identity_name,
+            jwt_token,
+            make_default: true,
+        },
     )
-    .expect("generate identity");
-    manager
-        .save(SaveInput {
-            identity_name: identity_name.to_string(),
-            did: generated.did,
-            unique_id: generated.unique_id,
-            user_id: format!("user-{handle}"),
-            display_name: identity_name.to_string(),
-            handle: handle.to_string(),
-            full_handle: format!("{handle}.awiki.ai"),
-            jwt_token: jwt_token.to_string(),
-            did_document: Some(generated.did_document),
-            key1_private_pem: generated.key1_private_pem,
-            key1_public_pem: generated.key1_public_pem,
-            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
-            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
-            ..SaveInput::default()
-        })
-        .expect("save generated message identity")
 }
 
 fn write_msg_config(workspace: &Path, base_url: &str) {
@@ -558,96 +477,6 @@ fn write_msg_config(workspace: &Path, base_url: &str) {
         format!("runtime:\n  mode: http\nservices:\n  service_base_url: {base_url}\n"),
     )
     .unwrap();
-}
-
-fn test_paths(workspace: &Path) -> Paths {
-    for directory in ["data", "runtime", "cache", "logs"] {
-        std::fs::create_dir_all(workspace.join(directory)).expect("create workspace subdir");
-    }
-    Paths {
-        workspace_home_dir: path_string(workspace),
-        root_dir: path_string(workspace),
-        config_dir: path_string(workspace),
-        data_dir: path_string(&workspace.join("data")),
-        state_dir: path_string(&workspace.join("runtime")),
-        cache_dir: path_string(&workspace.join("cache")),
-        logs_dir: path_string(&workspace.join("logs")),
-        config_file: path_string(&workspace.join("config.yaml")),
-        identity_dir: path_string(&workspace.join("identities")),
-        database_file: path_string(&workspace.join("data").join("awiki-cli.db")),
-        legacy_credentials_dir: path_string(&workspace.join("legacy-credentials")),
-        legacy_data_dir: path_string(&workspace.join("legacy-data")),
-    }
-}
-
-fn seed_established_secure_session(
-    manager: &Manager,
-    identity_name: &str,
-    owner: &awiki_cli::legacy_identity::types::StoredIdentity,
-    peer: &awiki_cli::legacy_identity::types::StoredIdentity,
-) {
-    let paths = manager
-        .paths_for_identity(identity_name)
-        .expect("identity paths");
-    let root = Path::new(&paths.identity_dir).join("p5-e2ee-sessions");
-    let mut store = awiki_cli::anpsdk::FileSessionStore::new(&root).expect("session store");
-    store
-        .save_session(&awiki_cli::anpsdk::DirectSessionState {
-            session_id: "session-retry-live".to_string(),
-            suite: "ANP-DIRECT-E2EE-X3DH-25519-CHACHA20POLY1305-SHA256-V1".to_string(),
-            peer_did: peer.did.clone(),
-            local_key_agreement_id: format!("{}#key-3", owner.did),
-            peer_key_agreement_id: format!("{}#key-3", peer.did),
-            root_key_b64u: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
-            send_chain_key_b64u: Some("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".to_string()),
-            recv_chain_key_b64u: Some("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI".to_string()),
-            ratchet_private_key_b64u: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM".to_string(),
-            ratchet_public_key_b64u: "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ".to_string(),
-            peer_ratchet_public_key_b64u: Some(
-                "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU".to_string(),
-            ),
-            send_n: 0,
-            recv_n: 0,
-            previous_send_chain_length: 0,
-            skipped_message_keys: Vec::new(),
-            is_initiator: true,
-            status: "established".to_string(),
-        })
-        .expect("save established session");
-}
-
-fn seed_secure_outbox_row(
-    workspace: &Path,
-    owner_did: &str,
-    peer_did: &str,
-    outbox_id: &str,
-    local_status: &str,
-    plaintext: &str,
-    created_at: &str,
-    credential_name: &str,
-) {
-    let paths = test_paths(workspace);
-    let connection = store::open(&paths).expect("open store");
-    store::ensure_schema(&connection).expect("ensure store schema");
-    store::queue_e2ee_outbox(
-        &connection,
-        E2EEOutboxRecord {
-            outbox_id: outbox_id.to_string(),
-            owner_did: owner_did.to_string(),
-            peer_did: peer_did.to_string(),
-            session_id: "old-session".to_string(),
-            original_type: "text".to_string(),
-            plaintext: plaintext.to_string(),
-            local_status: local_status.to_string(),
-            last_error_code: "send_failed".to_string(),
-            retry_hint: "retry".to_string(),
-            created_at: created_at.to_string(),
-            updated_at: created_at.to_string(),
-            credential_name: credential_name.to_string(),
-            ..E2EEOutboxRecord::default()
-        },
-    )
-    .expect("seed secure outbox row");
 }
 
 fn awiki_cmd(args: &[&str], workspace: &Path) -> Output {
@@ -752,10 +581,6 @@ fn request_body(raw: &str) -> &str {
     raw.split("\r\n\r\n").nth(1).unwrap_or_default()
 }
 
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
 fn assert_contains_text(haystack: &str, needle: &str) {
     assert!(
         haystack.contains(needle),
@@ -764,8 +589,7 @@ fn assert_contains_text(haystack: &str, needle: &str) {
 }
 
 fn query_rows(workspace: &Path, sql: &str) -> Vec<Value> {
-    let connection = rusqlite::Connection::open(test_paths(workspace).database_file)
-        .expect("open test database");
+    let connection = open_local_state(workspace);
     let mut statement = connection.prepare(sql).expect("prepare test query");
     let names = statement
         .column_names()
@@ -836,8 +660,7 @@ fn seed_direct_message_with_type(
 }
 
 fn execute_sql(workspace: &Path, statement: String) {
-    let connection = rusqlite::Connection::open(test_paths(workspace).database_file)
-        .expect("open test database");
+    let connection = open_local_state(workspace);
     connection
         .execute_batch(&statement)
         .expect("execute test sql");

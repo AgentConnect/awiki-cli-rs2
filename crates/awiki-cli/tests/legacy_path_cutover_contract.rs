@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 const BASELINE: &str = include_str!("../../../docs/sdk-refactor/legacy-path-baseline.md");
 const SCAN_ROOTS: &[&str] = &[
-    "crates/awiki-cli/src/app",
-    "crates/awiki-cli/src/im_core_adapter",
-    "crates/awiki-cli/src/runtime",
+    "crates/awiki-cli/src/cli_shell",
+    "crates/awiki-cli/src/m_core_cli_adapter",
+    "crates/awiki-cli/src/host_runtime",
 ];
 const NEEDLES: &[&str] = &[
     "should_fallback_attachment_send",

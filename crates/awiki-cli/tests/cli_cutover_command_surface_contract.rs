@@ -1,4 +1,4 @@
-use awiki_cli::cmdmeta::{
+use awiki_cli::command_catalog::{
     self, CliShellRole, CommandAudience, CommandOwner, CutoverStatus, DirectInvocationPolicy,
 };
 use serde_json::Value;
@@ -6,9 +6,9 @@ use std::process::{Command, Output};
 
 #[test]
 fn every_command_spec_has_cutover_classification() {
-    let missing: Vec<_> = cmdmeta::specs()
+    let missing: Vec<_> = command_catalog::specs()
         .into_iter()
-        .filter(|spec| cmdmeta::try_cutover_status(spec.name).is_none())
+        .filter(|spec| command_catalog::try_cutover_status(spec.name).is_none())
         .map(|spec| spec.name)
         .collect();
 
@@ -20,7 +20,7 @@ fn every_command_spec_has_cutover_classification() {
 
 #[test]
 fn every_command_spec_has_required_policy_metadata() {
-    for spec in cmdmeta::specs() {
+    for spec in command_catalog::specs() {
         assert_eq!(spec.canonical_name(), spec.name);
         assert!(
             !spec.audience().as_str().is_empty(),
@@ -118,7 +118,7 @@ fn cutover_classifier_marks_supported_im_core_commands() {
         "site.page.delete",
     ] {
         assert_eq!(
-            cmdmeta::cutover_status(command),
+            command_catalog::cutover_status(command),
             CutoverStatus::ImCore,
             "{command} should be on the im-core cutover path"
         );
@@ -145,7 +145,7 @@ fn cutover_classifier_keeps_cli_owned_host_commands() {
         "runtime.host-notify.disable",
     ] {
         assert_eq!(
-            cmdmeta::cutover_status(command),
+            command_catalog::cutover_status(command),
             CutoverStatus::CliOwned,
             "{command} should remain CLI-owned"
         );
@@ -155,82 +155,82 @@ fn cutover_classifier_keeps_cli_owned_host_commands() {
 #[test]
 fn cutover_classifier_marks_unsupported_and_internal_commands() {
     assert_eq!(
-        cmdmeta::cutover_status("msg.secure.init"),
+        command_catalog::cutover_status("msg.secure.init"),
         CutoverStatus::Unsupported {
             capability: "secure-direct",
             phase: "Phase 6",
         }
     );
     assert_eq!(
-        cmdmeta::cutover_status("msg.secure.outbox.list"),
+        command_catalog::cutover_status("msg.secure.outbox.list"),
         CutoverStatus::Unsupported {
             capability: "secure-direct",
             phase: "Phase 6",
         }
     );
     assert_eq!(
-        cmdmeta::cutover_status("people.search"),
+        command_catalog::cutover_status("people.search"),
         CutoverStatus::Unsupported {
             capability: "people-directory",
             phase: "future people search API",
         }
     );
     assert_eq!(
-        cmdmeta::cutover_status("runtime.heartbeat.status"),
+        command_catalog::cutover_status("runtime.heartbeat.status"),
         CutoverStatus::Unsupported {
             capability: "runtime-heartbeat",
             phase: "outside current im-core cutover",
         }
     );
     assert_eq!(
-        cmdmeta::cutover_status("group.e2ee.publish-key-package"),
+        command_catalog::cutover_status("group.e2ee.publish-key-package"),
         CutoverStatus::DiagnosticOnly
     );
     assert_eq!(
-        cmdmeta::cutover_status("group.secure.diagnostics"),
+        command_catalog::cutover_status("group.secure.diagnostics"),
         CutoverStatus::Unsupported {
             capability: "group secure diagnostics",
             phase: "future diagnostics plan",
         }
     );
     assert_eq!(
-        cmdmeta::cutover_status("debug.db.query"),
+        command_catalog::cutover_status("debug.db.query"),
         CutoverStatus::Unsupported {
             capability: "raw-sql",
             phase: "outside current im-core cutover",
         }
     );
     assert_eq!(
-        cmdmeta::cutover_status("runtime.host-notify.openclaw.set-token"),
+        command_catalog::cutover_status("runtime.host-notify.openclaw.set-token"),
         CutoverStatus::DiagnosticOnly
     );
     assert_eq!(
-        cmdmeta::cutover_status("runtime.listener.run"),
+        command_catalog::cutover_status("runtime.listener.run"),
         CutoverStatus::Hidden
     );
     assert_eq!(
-        cmdmeta::direct_invocation_policy("runtime.listener.run"),
+        command_catalog::direct_invocation_policy("runtime.listener.run"),
         DirectInvocationPolicy::RequireInternalServiceGate
     );
     assert_eq!(
-        cmdmeta::cutover_status("group.code.get"),
+        command_catalog::cutover_status("group.code.get"),
         CutoverStatus::Removed
     );
     assert_eq!(
-        cmdmeta::cutover_status("debug.raw.rpc"),
+        command_catalog::cutover_status("debug.raw.rpc"),
         CutoverStatus::Removed
     );
 }
 
 #[test]
 fn command_policy_maps_final_cutover_surfaces() {
-    let msg_send = cmdmeta::lookup("msg.send").unwrap();
+    let msg_send = command_catalog::lookup("msg.send").unwrap();
     assert_eq!(msg_send.audience(), CommandAudience::DefaultUser);
     assert_eq!(msg_send.primary_owner(), CommandOwner::ImCoreMessages);
     assert_eq!(msg_send.cli_shell_role(), CliShellRole::ReadsUserInputFile);
     assert_eq!(msg_send.direct_invocation(), DirectInvocationPolicy::Allow);
 
-    let listener_start = cmdmeta::lookup("runtime.listener.start").unwrap();
+    let listener_start = command_catalog::lookup("runtime.listener.start").unwrap();
     assert_eq!(listener_start.audience(), CommandAudience::Operator);
     assert_eq!(
         listener_start.cli_shell_role(),
@@ -241,14 +241,14 @@ fn command_policy_maps_final_cutover_surfaces() {
         DirectInvocationPolicy::Allow
     );
 
-    let service_run = cmdmeta::lookup("runtime.listener.service-run").unwrap();
+    let service_run = command_catalog::lookup("runtime.listener.service-run").unwrap();
     assert_eq!(service_run.audience(), CommandAudience::InternalService);
     assert_eq!(
         service_run.direct_invocation(),
         DirectInvocationPolicy::RequireInternalServiceGate
     );
 
-    let diagnostic = cmdmeta::lookup("debug.db.handle-history").unwrap();
+    let diagnostic = command_catalog::lookup("debug.db.handle-history").unwrap();
     assert_eq!(diagnostic.audience(), CommandAudience::Diagnostic);
     assert_eq!(diagnostic.primary_owner(), CommandOwner::CliDiagnostic);
     assert_eq!(
@@ -256,7 +256,7 @@ fn command_policy_maps_final_cutover_surfaces() {
         DirectInvocationPolicy::RequireDiagnosticGate
     );
 
-    let migration = cmdmeta::lookup("id.import-v1").unwrap();
+    let migration = command_catalog::lookup("id.import-v1").unwrap();
     assert_eq!(migration.audience(), CommandAudience::MigrationOnly);
     assert_eq!(migration.primary_owner(), CommandOwner::CliMigration);
     assert_eq!(
@@ -264,7 +264,7 @@ fn command_policy_maps_final_cutover_surfaces() {
         DirectInvocationPolicy::RequireMigrationGate
     );
 
-    let secure_status = cmdmeta::lookup("msg.secure.status").unwrap();
+    let secure_status = command_catalog::lookup("msg.secure.status").unwrap();
     assert_eq!(secure_status.audience(), CommandAudience::DefaultUser);
     assert_eq!(secure_status.primary_owner(), CommandOwner::ImCoreSecure);
     assert_eq!(
@@ -272,7 +272,7 @@ fn command_policy_maps_final_cutover_surfaces() {
         DirectInvocationPolicy::Allow
     );
 
-    let group_secure_repair = cmdmeta::lookup("group.secure.repair").unwrap();
+    let group_secure_repair = command_catalog::lookup("group.secure.repair").unwrap();
     assert_eq!(group_secure_repair.audience(), CommandAudience::DefaultUser);
     assert_eq!(
         group_secure_repair.primary_owner(),
@@ -287,7 +287,7 @@ fn command_policy_maps_final_cutover_surfaces() {
         DirectInvocationPolicy::Allow
     );
 
-    let group_e2ee_status = cmdmeta::lookup("group.e2ee.status").unwrap();
+    let group_e2ee_status = command_catalog::lookup("group.e2ee.status").unwrap();
     assert_eq!(group_e2ee_status.audience(), CommandAudience::DefaultUser);
     assert_eq!(
         group_e2ee_status.direct_invocation(),
@@ -333,7 +333,7 @@ fn schema_serializes_cutover_status_for_commands_and_children() {
 
 #[test]
 fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
-    let names: Vec<_> = cmdmeta::default_surface_specs()
+    let names: Vec<_> = command_catalog::default_surface_specs()
         .into_iter()
         .map(|spec| spec.name)
         .collect();
@@ -391,7 +391,7 @@ fn default_schema_surface_includes_only_cli_owned_and_im_core_commands() {
             "{command} should not be advertised on the default schema/help surface"
         );
         assert!(
-            cmdmeta::lookup(command).is_some(),
+            command_catalog::lookup(command).is_some(),
             "{command} should remain queryable by exact schema target"
         );
     }
@@ -415,7 +415,7 @@ fn release_artifact_script_documents_e2ee_feature_gate() {
 
 #[test]
 fn unsupported_cutover_error_has_stable_contract() {
-    let err = awiki_cli::app::unsupported::unsupported_cutover_command(
+    let err = awiki_cli::cli_shell::unsupported::unsupported_cutover_command(
         "msg.send",
         "attachments",
         "Phase 4",
@@ -549,12 +549,12 @@ fn unsupported_non_im_domains_do_not_enter_legacy_handlers() {
 }
 
 fn schema_value(command: &str) -> Value {
-    serde_json::to_value(cmdmeta::lookup(command).expect("command schema exists"))
+    serde_json::to_value(command_catalog::lookup(command).expect("command schema exists"))
         .expect("schema serializes")
 }
 
 fn schema_child(parent: &str, child: &str) -> Value {
-    cmdmeta::children_of(parent)
+    command_catalog::children_of(parent)
         .into_iter()
         .find(|spec| spec.name == child)
         .map(|spec| serde_json::to_value(spec).expect("schema serializes"))

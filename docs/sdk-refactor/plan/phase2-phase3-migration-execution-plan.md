@@ -1340,7 +1340,7 @@ cargo test -p awiki-cli --test msg_contract
 
 ```bash
 cargo test -p awiki-cli --test msg_ws_mark_read_live_contract
-cargo test -p awiki-cli --test runtime_listener_bridge_connection_contract
+cargo test -p awiki-cli --test host_runtime_listener_bridge_connection_contract
 ```
 
 ### 21.6 完成标准

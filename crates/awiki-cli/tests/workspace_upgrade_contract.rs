@@ -1,5 +1,4 @@
-use awiki_cli::legacy_store as store;
-use awiki_cli::{config, upgrade};
+use awiki_cli::{workspace_config, workspace_upgrade};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -9,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 fn workspace_upgrade_empty_detection_matches_go_contract() {
     let temp = TempDir::new("workspace-upgrade-empty").expect("temp dir");
     let resolved = test_resolved(temp.path());
-    let paths = upgrade::resolve_paths(&resolved);
-    let inspection = upgrade::inspect(&resolved, "dev").expect("inspect empty workspace");
+    let paths = workspace_upgrade::resolve_paths(&resolved);
+    let inspection = workspace_upgrade::inspect(&resolved, "dev").expect("inspect empty workspace");
 
     assert_eq!(
         paths.meta_path,
@@ -71,8 +70,7 @@ fn workspace_upgrade_loads_meta_journal_and_detects_local_state() {
         r#"{"schema_version":3,"default_credential_name":"","credentials":{}}"#,
     )
     .expect("write index");
-    let db = store::open(&resolved.paths).expect("open db");
-    store::ensure_schema(&db).expect("ensure schema");
+    let db = open_local_state(&resolved.paths).expect("open db");
     drop(db);
     std::fs::create_dir_all(temp.path().join("legacy-data").join("config"))
         .expect("create legacy settings dir");
@@ -85,10 +83,10 @@ fn workspace_upgrade_loads_meta_journal_and_detects_local_state() {
     )
     .expect("write legacy settings");
 
-    let paths = upgrade::resolve_paths(&resolved);
-    upgrade::save_meta(
+    let paths = workspace_upgrade::resolve_paths(&resolved);
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 2,
             app_version: "1.0.0".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
@@ -98,9 +96,9 @@ fn workspace_upgrade_loads_meta_journal_and_detects_local_state() {
         },
     )
     .expect("save meta");
-    upgrade::save_journal(
+    workspace_upgrade::save_journal(
         &paths.journal_path,
-        &upgrade::Journal {
+        &workspace_upgrade::Journal {
             upgrade_id: "upgrade-2".to_string(),
             from_version: 1,
             to_version: 2,
@@ -113,7 +111,7 @@ fn workspace_upgrade_loads_meta_journal_and_detects_local_state() {
     )
     .expect("save journal");
 
-    let inspection = upgrade::inspect(&resolved, "dev").expect("inspect state");
+    let inspection = workspace_upgrade::inspect(&resolved, "dev").expect("inspect state");
 
     let meta = inspection.meta.expect("meta");
     assert_eq!(meta.workspace_schema_version, 2);
@@ -131,7 +129,7 @@ fn workspace_upgrade_loads_meta_journal_and_detects_local_state() {
     assert_eq!(inspection.detection.database_exists, true);
     assert_eq!(
         inspection.detection.database_schema_version,
-        store::SCHEMA_VERSION
+        im_core::compat::local_state::SCHEMA_VERSION
     );
     assert_eq!(inspection.detection.legacy_settings_exists, true);
     assert_eq!(inspection.detection.has_workspace, true);
@@ -146,14 +144,14 @@ fn workspace_upgrade_meta_and_journal_accept_go_zero_value_json() {
     std::fs::write(&meta_path, "{}\n").expect("write empty meta object");
     std::fs::write(&journal_path, "{}\n").expect("write empty journal object");
 
-    let meta = upgrade::load_meta(&path_string(&meta_path))
+    let meta = workspace_upgrade::load_meta(&path_string(&meta_path))
         .expect("load meta")
         .expect("meta present");
     assert_eq!(meta.workspace_schema_version, 0);
     assert_eq!(meta.updated_at, "");
     assert!(meta.warnings.is_empty());
 
-    let journal = upgrade::load_journal(&path_string(&journal_path))
+    let journal = workspace_upgrade::load_journal(&path_string(&journal_path))
         .expect("load journal")
         .expect("journal present");
     assert_eq!(journal.from_version, 0);
@@ -164,7 +162,7 @@ fn workspace_upgrade_meta_and_journal_accept_go_zero_value_json() {
 
 #[test]
 fn workspace_upgrade_legacy_settings_parser_matches_go_contract() {
-    let settings = upgrade::parse_legacy_settings(
+    let settings = workspace_upgrade::parse_legacy_settings(
         br#"{
           "user_service_url": " https://awiki.example/// ",
           "molt_message_url": "https://awiki.example",
@@ -177,7 +175,7 @@ fn workspace_upgrade_legacy_settings_parser_matches_go_contract() {
     assert_eq!(settings.did_domain, "tenant.example");
     assert_eq!(settings.runtime_mode, "websocket");
 
-    let message_only = upgrade::parse_legacy_settings(
+    let message_only = workspace_upgrade::parse_legacy_settings(
         br#"{
           "molt_message_url": "https://message.example/",
           "did_domain": "message.example",
@@ -188,7 +186,7 @@ fn workspace_upgrade_legacy_settings_parser_matches_go_contract() {
     assert_eq!(message_only.service_base_url, "https://message.example");
     assert_eq!(message_only.runtime_mode, "http");
 
-    let split = upgrade::parse_legacy_settings(
+    let split = workspace_upgrade::parse_legacy_settings(
         br#"{
           "user_service_url": "https://auth.example",
           "molt_message_url": "https://message.example",
@@ -214,20 +212,21 @@ fn workspace_upgrade_legacy_settings_parser_matches_go_contract() {
 #[test]
 fn workspace_upgrade_load_legacy_settings_wraps_io_and_parse_errors_like_go() {
     let temp = TempDir::new("workspace-upgrade-settings-errors").expect("temp dir");
-    let missing = upgrade::load_legacy_settings(&path_string(&temp.path().join("missing.json")))
-        .expect_err("missing settings should fail");
+    let missing =
+        workspace_upgrade::load_legacy_settings(&path_string(&temp.path().join("missing.json")))
+            .expect_err("missing settings should fail");
     assert!(missing.to_string().starts_with("read legacy settings:"));
 
     let invalid = temp.path().join("settings.json");
     std::fs::write(&invalid, "{not-json").expect("write invalid settings");
-    let err = upgrade::load_legacy_settings(&path_string(&invalid))
+    let err = workspace_upgrade::load_legacy_settings(&path_string(&invalid))
         .expect_err("invalid settings should fail");
     assert!(err.to_string().starts_with("parse legacy settings:"));
 }
 
 #[test]
 fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
-    let upgrader = upgrade::new_default_upgrader();
+    let upgrader = workspace_upgrade::new_default_upgrader();
     assert_eq!(upgrader.latest_version(), 3);
 
     let plan = upgrader.plan(0, 3).expect("default 0 to latest plan");
@@ -260,7 +259,7 @@ fn workspace_upgrade_default_upgrader_plan_matches_go_migration_chain() {
 
 #[test]
 fn workspace_upgrade_plan_errors_match_go_messages() {
-    let upgrader = upgrade::new_default_upgrader();
+    let upgrader = workspace_upgrade::new_default_upgrader();
     let newer = upgrader
         .plan(4, 3)
         .expect_err("newer source version should fail");
@@ -279,8 +278,8 @@ fn workspace_upgrade_plan_errors_match_go_messages() {
 fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
     let workspace = TempDir::new("workspace-upgrade-context").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let mut context = upgrade::new_context(&resolved, "1.2.3");
-    let paths = upgrade::resolve_paths(&resolved);
+    let mut context = workspace_upgrade::new_context(&resolved, "1.2.3");
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     assert_eq!(context.paths, paths);
     assert_eq!(context.app_version, "1.2.3");
     assert!(context.inspection.is_none());
@@ -288,16 +287,16 @@ fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
     assert_eq!(context.current_meta, None);
     assert!(context.warnings.is_empty());
 
-    let upgrader = upgrade::new_default_upgrader();
+    let upgrader = workspace_upgrade::new_default_upgrader();
     let plan = upgrader.plan(0, 3).expect("default plan");
     assert_eq!(
         plan[0].is_done(&context).expect("missing meta is not done"),
         false
     );
 
-    upgrade::save_meta(
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 1,
             app_version: "1.2.3".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
@@ -327,9 +326,9 @@ fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
         apply_err.to_string(),
         "workspace upgrade inspection is required"
     );
-    context.inspection = Some(upgrade::Inspection {
+    context.inspection = Some(workspace_upgrade::Inspection {
         paths: context.paths.clone(),
-        detection: upgrade::Detection::default(),
+        detection: workspace_upgrade::Detection::default(),
         ..Default::default()
     });
     plan[0]
@@ -350,8 +349,8 @@ fn workspace_upgrade_context_and_is_done_use_go_paths_and_meta_version() {
 fn workspace_upgrade_file_lock_leaves_persistent_metadata() {
     let temp = TempDir::new("workspace-upgrade-lock-metadata").expect("temp dir");
     let lock_path = temp.path().join("upgrade").join("upgrade.lock");
-    let guard =
-        upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3").expect("acquire lock");
+    let guard = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+        .expect("acquire lock");
     let metadata = read_upgrade_lock_metadata(&lock_path);
     assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
     assert_eq!(metadata["pid"], std::process::id());
@@ -378,7 +377,7 @@ fn workspace_upgrade_file_lock_leaves_persistent_metadata() {
         "upgrade.lock should remain as persistent OS lock anchor"
     );
 
-    let guard = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.4")
+    let guard = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.4")
         .expect("reacquire lock after release");
     guard.release().expect("release second lock");
 }
@@ -387,10 +386,10 @@ fn workspace_upgrade_file_lock_leaves_persistent_metadata() {
 fn workspace_upgrade_file_lock_rejects_concurrent_os_lock() {
     let temp = TempDir::new("workspace-upgrade-lock-concurrent").expect("temp dir");
     let lock_path = temp.path().join("upgrade").join("upgrade.lock");
-    let guard =
-        upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3").expect("acquire first lock");
+    let guard = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+        .expect("acquire first lock");
 
-    let err = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+    let err = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
         .expect_err("second lock should fail");
     assert!(err.is_locked(), "unexpected lock error: {err}");
     assert_eq!(
@@ -418,7 +417,8 @@ fn workspace_upgrade_file_lock_ignores_residual_os_lock_metadata() {
         }),
     );
 
-    let guard = upgrade::acquire_file_lock(&path_string(&lock_path), "new").expect("acquire lock");
+    let guard = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "new")
+        .expect("acquire lock");
     let metadata = read_upgrade_lock_metadata(&lock_path);
     assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
     assert_eq!(metadata["app_version"], "new");
@@ -433,8 +433,8 @@ fn workspace_upgrade_file_lock_ignores_corrupt_legacy_lock() {
     std::fs::create_dir_all(lock_path.parent().expect("lock parent")).expect("create lock dir");
     std::fs::write(&lock_path, "not-json\n").expect("write corrupt lock");
 
-    let guard =
-        upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3").expect("acquire lock");
+    let guard = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+        .expect("acquire lock");
     let metadata = read_upgrade_lock_metadata(&lock_path);
     assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
     guard.release().expect("release lock");
@@ -453,7 +453,7 @@ fn workspace_upgrade_file_lock_ignores_dead_legacy_pid() {
         }),
     );
 
-    let guard = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+    let guard = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
         .expect("dead legacy pid should be ignored");
     let metadata = read_upgrade_lock_metadata(&lock_path);
     assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
@@ -473,7 +473,7 @@ fn workspace_upgrade_file_lock_ignores_old_legacy_live_pid() {
         }),
     );
 
-    let guard = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+    let guard = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
         .expect("old live legacy lock should be ignored");
     let metadata = read_upgrade_lock_metadata(&lock_path);
     assert_eq!(metadata["lock_scheme"], "os_file_lock_v1");
@@ -493,7 +493,7 @@ fn workspace_upgrade_file_lock_rejects_recent_legacy_live_pid() {
         }),
     );
 
-    let err = upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
+    let err = workspace_upgrade::acquire_file_lock(&path_string(&lock_path), "1.2.3")
         .expect_err("recent live legacy lock should fail");
     assert!(err.is_locked(), "unexpected lock error: {err}");
     let metadata = read_upgrade_lock_metadata(&lock_path);
@@ -507,10 +507,10 @@ fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
     let resolved = test_resolved(workspace.path());
     std::fs::write(workspace.path().join("config.yaml"), "schema_version: 1\n")
         .expect("write config");
-    let paths = upgrade::resolve_paths(&resolved);
-    upgrade::save_meta(
+    let paths = workspace_upgrade::resolve_paths(&resolved);
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 3,
             app_version: "1.0.0".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
@@ -537,9 +537,9 @@ fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
         "meta"
     );
 
-    upgrade::save_journal(
+    workspace_upgrade::save_journal(
         &paths.journal_path,
-        &upgrade::Journal {
+        &workspace_upgrade::Journal {
             upgrade_id: "upgrade-3".to_string(),
             from_version: 2,
             to_version: 3,
@@ -568,10 +568,10 @@ fn doctor_workspace_upgrade_uses_meta_journal_and_go_warning_rules() {
 fn config_show_embeds_upgrade_inspection_instead_of_stub_snapshot() {
     let workspace = TempDir::new("workspace-upgrade-config-show").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
-    upgrade::save_meta(
+    let paths = workspace_upgrade::resolve_paths(&resolved);
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 3,
             app_version: "dev".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
@@ -598,7 +598,7 @@ fn config_show_embeds_upgrade_inspection_instead_of_stub_snapshot() {
 fn workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup() {
     let workspace = TempDir::new("workspace-upgrade-backup").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
     std::fs::write(&paths.legacy_config_file, "{\"legacy\":true}\n").expect("write legacy config");
     std::fs::create_dir_all(Path::new(&paths.identity_dir).join("alice"))
@@ -610,9 +610,9 @@ fn workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup() {
         "{\"name\":\"alice\"}\n",
     )
     .expect("write identity");
-    upgrade::save_meta(
+    workspace_upgrade::save_meta(
         &paths.meta_path,
-        &upgrade::Meta {
+        &workspace_upgrade::Meta {
             workspace_schema_version: 3,
             app_version: "1.2.3".to_string(),
             updated_at: "2026-05-14T00:00:00Z".to_string(),
@@ -622,9 +622,9 @@ fn workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup() {
         },
     )
     .expect("save meta");
-    upgrade::save_journal(
+    workspace_upgrade::save_journal(
         &paths.journal_path,
-        &upgrade::Journal {
+        &workspace_upgrade::Journal {
             upgrade_id: "upgrade-1".to_string(),
             from_version: 0,
             to_version: 3,
@@ -636,8 +636,7 @@ fn workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup() {
         },
     )
     .expect("save journal");
-    let db = store::open(&resolved.paths).expect("open db");
-    store::ensure_schema(&db).expect("ensure schema");
+    let db = open_local_state(&resolved.paths).expect("open db");
     db.execute(
         "INSERT INTO messages(msg_id, owner_did, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
         rusqlite::params![
@@ -652,7 +651,8 @@ fn workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup() {
     .expect("insert db row");
     drop(db);
 
-    let backup_dir = upgrade::create_backup(&paths, "fixed'backup").expect("create backup");
+    let backup_dir =
+        workspace_upgrade::create_backup(&paths, "fixed'backup").expect("create backup");
     let backup = PathBuf::from(&backup_dir);
     assert_eq!(backup, Path::new(&paths.backup_root).join("fixed'backup"));
     assert_eq!(
@@ -691,10 +691,11 @@ fn workspace_upgrade_create_backup_copies_go_named_inputs_and_sqlite_backup() {
 fn workspace_upgrade_create_backup_skips_absent_inputs_without_placeholders() {
     let workspace = TempDir::new("workspace-upgrade-backup-sparse").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
-    let paths = upgrade::resolve_paths(&resolved);
+    let paths = workspace_upgrade::resolve_paths(&resolved);
     std::fs::write(&paths.config_file, "schema_version: 1\n").expect("write config");
 
-    let backup_dir = upgrade::create_backup(&paths, "sparse").expect("create sparse backup");
+    let backup_dir =
+        workspace_upgrade::create_backup(&paths, "sparse").expect("create sparse backup");
     let backup = PathBuf::from(&backup_dir);
     assert!(backup.join("config.yaml.bak").is_file());
     assert!(!backup.join("config.json.bak").exists());
@@ -708,12 +709,11 @@ fn workspace_upgrade_create_backup_skips_absent_inputs_without_placeholders() {
 fn workspace_upgrade_backup_sqlite_replaces_existing_destination_and_escapes_path() {
     let temp = TempDir::new("workspace-upgrade-sqlite-backup").expect("temp dir");
     let db_path = temp.path().join("source.db");
-    let paths = config::Paths {
+    let paths = workspace_config::Paths {
         database_file: path_string(&db_path),
         ..test_resolved(temp.path()).paths
     };
-    let db = store::open(&paths).expect("open source db");
-    store::ensure_schema(&db).expect("ensure schema");
+    let db = open_local_state(&paths).expect("open source db");
     db.execute(
         "INSERT INTO messages(msg_id, owner_did, thread_id, direction, content, stored_at, credential_name) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
         rusqlite::params![
@@ -731,7 +731,7 @@ fn workspace_upgrade_backup_sqlite_replaces_existing_destination_and_escapes_pat
     std::fs::create_dir_all(backup_path.parent().expect("backup parent")).expect("create parent");
     std::fs::write(&backup_path, "stale").expect("write stale destination");
 
-    upgrade::backup_sqlite_database(&path_string(&db_path), &path_string(&backup_path))
+    workspace_upgrade::backup_sqlite_database(&path_string(&db_path), &path_string(&backup_path))
         .expect("backup sqlite database");
     let backup = rusqlite::Connection::open(&backup_path).expect("open backup db");
     let count: i64 = backup
@@ -744,9 +744,9 @@ fn workspace_upgrade_backup_sqlite_replaces_existing_destination_and_escapes_pat
     assert_eq!(count, 1);
 }
 
-fn test_resolved(root: &Path) -> config::Resolved {
-    config::Resolved {
-        paths: config::Paths {
+fn test_resolved(root: &Path) -> workspace_config::Resolved {
+    workspace_config::Resolved {
+        paths: workspace_config::Paths {
             workspace_home_dir: path_string(root),
             root_dir: path_string(root),
             config_dir: path_string(root),
@@ -841,6 +841,17 @@ fn success_json(output: &Output) -> Value {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+fn open_local_state(paths: &workspace_config::Paths) -> rusqlite::Result<rusqlite::Connection> {
+    if let Some(parent) = Path::new(&paths.database_file).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+    }
+    let connection = rusqlite::Connection::open(&paths.database_file)?;
+    im_core::compat::local_state::ensure_schema(&connection)
+        .map_err(|err| rusqlite::Error::ToSqlConversionFailure(Box::new(err)))?;
+    Ok(connection)
 }
 
 fn write_upgrade_lock_metadata(path: &Path, metadata: Value) {

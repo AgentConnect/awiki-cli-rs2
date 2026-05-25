@@ -14,7 +14,7 @@ Passed:
 ```bash
 cargo fmt
 cargo check -p awiki-cli --locked
-cargo test -p awiki-cli --test mail_contract --test mail_live_contract --test cli_cutover_command_surface_contract --test cmdmeta_schema_contract --test im_core_adapter_policy_contract --locked
+cargo test -p awiki-cli --test mail_contract --test mail_live_contract --test cli_cutover_command_surface_contract --test command_catalog_schema_contract --test m_core_cli_adapter_policy_contract --locked
 cargo test -p im-core --test email_wire_contract --test email_notification_contract --locked
 cargo test -p im-core --locked
 cargo check -p im-core-dart --locked

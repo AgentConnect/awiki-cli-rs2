@@ -10,12 +10,12 @@ import sys
 TOTAL_LABEL = "total"
 THRESHOLDS = {
     TOTAL_LABEL: 40.0,
-    "crates/awiki-cli/src/app": 30.0,
+    "crates/awiki-cli/src/cli_shell": 30.0,
     "crates/awiki-cli/src/message": 35.0,
     "crates/awiki-cli/src/identity": 50.0,
     "crates/awiki-cli/src/store": 60.0,
-    "crates/awiki-cli/src/doctor": 70.0,
-    "crates/awiki-cli/src/docs": 100.0,
+    "crates/awiki-cli/src/diagnostics": 70.0,
+    "crates/awiki-cli/src/cli_docs": 100.0,
 }
 
 
@@ -42,18 +42,18 @@ def normalize_path(raw_path: str) -> str:
 
 def package_for_file(file_name: str) -> str:
     parts = pathlib.PurePosixPath(file_name).parts
-    if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "app"):
-        return "crates/awiki-cli/src/app"
+    if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "cli_shell"):
+        return "crates/awiki-cli/src/cli_shell"
     if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "message"):
         return "crates/awiki-cli/src/message"
     if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "identity"):
         return "crates/awiki-cli/src/identity"
     if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "store"):
         return "crates/awiki-cli/src/store"
-    if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "doctor"):
-        return "crates/awiki-cli/src/doctor"
-    if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "docs"):
-        return "crates/awiki-cli/src/docs"
+    if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "diagnostics"):
+        return "crates/awiki-cli/src/diagnostics"
+    if len(parts) >= 5 and parts[:4] == ("crates", "awiki-cli", "src", "cli_docs"):
+        return "crates/awiki-cli/src/cli_docs"
     if len(parts) >= 4 and parts[:3] == ("crates", "awiki-cli", "src"):
         return "crates/awiki-cli/src"
     return file_name.rsplit("/", 1)[0] if "/" in file_name else file_name

@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod support;
+
+use support::{write_ready_identity, TestIdentityOptions};
+
 #[test]
 fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() {
     let workspace = TempDir::new().expect("workspace");
@@ -66,25 +70,33 @@ fn identity_default_cutover_register_and_refresh_dry_run_keep_legacy_contract() 
 fn identity_default_cutover_refresh_selects_identity_before_legacy_auth() {
     let workspace = TempDir::new().expect("workspace");
     let workspace_home = workspace.path().join(".awiki-cli");
-    let manager = identity_manager(&workspace_home);
-    manager
-        .save(awiki_cli::legacy_identity::types::SaveInput {
-            identity_name: "alice".to_string(),
-            did: "did:wba:awiki.ai:user:e1_alice".to_string(),
-            unique_id: "e1_alice".to_string(),
-            display_name: "Alice".to_string(),
-            ..Default::default()
-        })
-        .expect("save alice");
-    manager
-        .save(awiki_cli::legacy_identity::types::SaveInput {
-            identity_name: "bob".to_string(),
-            did: "did:wba:awiki.ai:user:e1_bob".to_string(),
-            unique_id: "e1_bob".to_string(),
-            display_name: "Bob".to_string(),
-            ..Default::default()
-        })
-        .expect("save bob");
+    write_ready_identity(
+        &workspace_home,
+        TestIdentityOptions {
+            identity_name: "alice",
+            handle: "alice",
+            display_name: "Alice",
+            jwt_token: "",
+            make_default: true,
+        },
+    );
+    write_ready_identity(
+        &workspace_home,
+        TestIdentityOptions {
+            identity_name: "bob",
+            handle: "bob",
+            display_name: "Bob",
+            jwt_token: "",
+            make_default: false,
+        },
+    );
+    std::fs::remove_file(
+        workspace_home
+            .join("identities")
+            .join("bob")
+            .join("key-1-private.pem"),
+    )
+    .expect("remove bob private key");
 
     let result = awiki_cmd_with_env(
         &["--identity", "bob", "id", "refresh-token"],
@@ -706,10 +718,11 @@ fn identity_default_cutover_replace_did_dry_run_returns_sdk_plan_without_remote_
         .unwrap()
         .iter()
         .any(|note| note.as_str().unwrap().contains("backup manifest")));
-    assert!(replace["warnings"][0]
-        .as_str()
+    assert!(replace["warnings"]
+        .as_array()
         .unwrap()
-        .contains("Dangerous command"));
+        .iter()
+        .any(|warning| warning.as_str().unwrap().contains("Dangerous command")));
 
     let requests = server.requests();
     assert_eq!(
@@ -753,23 +766,6 @@ fn register_alice_response() -> &'static str {
     r#"{"jsonrpc":"2.0","result":{"did":"did:wba:awiki.ai:alice:e1_remote","user_id":"user-alice","message":"Registration successful","handle":"alice","domain":"awiki.ai","full_handle":"alice.awiki.ai","access_token":"jwt-register"},"id":"req-1"}"#
 }
 
-fn identity_manager(workspace: &Path) -> awiki_cli::legacy_identity::Manager {
-    awiki_cli::legacy_identity::Manager::new(awiki_cli::config::Paths {
-        workspace_home_dir: path_string(workspace),
-        root_dir: path_string(workspace),
-        config_dir: path_string(&workspace.join("config")),
-        data_dir: path_string(&workspace.join("data")),
-        state_dir: path_string(&workspace.join("state")),
-        cache_dir: path_string(&workspace.join("cache")),
-        logs_dir: path_string(&workspace.join("logs")),
-        config_file: path_string(&workspace.join("config").join("config.yaml")),
-        identity_dir: path_string(&workspace.join("identities")),
-        database_file: path_string(&workspace.join("data").join("awiki.db")),
-        legacy_credentials_dir: path_string(&workspace.join("legacy")),
-        legacy_data_dir: path_string(&workspace.join("legacy-data")),
-    })
-}
-
 fn success_json(output: &Output) -> Value {
     assert_code(output, 0);
     assert!(
@@ -798,10 +794,6 @@ fn assert_code(output: &Output, expected: i32) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-}
-
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 fn request_body(raw: &str) -> &str {
