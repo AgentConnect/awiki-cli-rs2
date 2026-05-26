@@ -687,3 +687,280 @@ fn json_object(value: Value) -> Map<String, Value> {
         _ => Map::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_e2ee_wire_builders_follow_p6_targets_and_security_profiles() {
+        let credentials = credentials();
+        let sender_did = "did:wba:awiki.test:user:alice";
+        let service_did = "did:wba:awiki.test";
+        let group_did = "did:wba:awiki.test:groups:secure";
+        let member_did = "did:wba:awiki.test:user:bob";
+        let state_ref = group_state_ref(group_did, "state-7");
+        let prepared = prepared_commit("op-create", "7");
+
+        let create = build_group_e2ee_create_rpc_params(
+            &credentials,
+            sender_did,
+            service_did,
+            group_did,
+            &prepared,
+            Some(&state_ref),
+        )
+        .expect("create params");
+        assert_meta(
+            &create,
+            "service",
+            service_did,
+            GROUP_E2EE_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(create["body"]["group_did"], group_did);
+        assert_eq!(
+            create["body"]["group_state_ref"]["group_state_version"],
+            "state-7"
+        );
+
+        let add = build_group_e2ee_add_rpc_params(
+            &credentials,
+            sender_did,
+            group_did,
+            member_did,
+            &prepared_commit("op-add", "8"),
+            &group_key_package(member_did),
+            Some(&group_state_ref(group_did, "state-8")),
+        )
+        .expect("add params");
+        assert_meta(
+            &add,
+            "group",
+            group_did,
+            GROUP_E2EE_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(add["body"]["member_did"], member_did);
+        assert_eq!(add["body"]["subject_did"], member_did);
+        assert_eq!(add["body"]["welcome_b64u"], "welcome-op-add");
+        assert_eq!(add["body"]["ratchet_tree_b64u"], "tree-op-add");
+        assert_eq!(add["body"]["subject_key_package_id"], "kp-member");
+
+        let remove = build_group_e2ee_remove_rpc_params(
+            &credentials,
+            sender_did,
+            group_did,
+            member_did,
+            &prepared_commit_with_subject_status("op-remove", "9", "removed"),
+            Some(&group_state_ref(group_did, "state-9")),
+            Some("  removed by owner  "),
+            Some("  leave-1  "),
+        )
+        .expect("remove params");
+        assert_meta(
+            &remove,
+            "group",
+            group_did,
+            GROUP_E2EE_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(remove["body"]["member_did"], member_did);
+        assert_eq!(remove["body"]["subject_status"], "removed");
+        assert_eq!(remove["body"]["reason_text"], "removed by owner");
+        assert_eq!(remove["body"]["leave_request_id"], "leave-1");
+
+        let get_key_package = build_group_e2ee_get_key_package_rpc_params(
+            &credentials,
+            sender_did,
+            service_did,
+            group_did,
+            member_did,
+        )
+        .expect("get key package params");
+        assert_meta(
+            &get_key_package,
+            "service",
+            service_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(get_key_package["body"]["target_did"], member_did);
+        assert_eq!(get_key_package["body"]["group_did"], group_did);
+
+        let notice = build_group_e2ee_notice_rpc_params(
+            &credentials,
+            sender_did,
+            group_did,
+            500,
+            true,
+            &[
+                " notice-1 ".to_owned(),
+                " ".to_owned(),
+                "notice-2".to_owned(),
+            ],
+        )
+        .expect("notice params");
+        assert_meta(
+            &notice,
+            "agent",
+            sender_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(notice["body"]["group_did"], group_did);
+        assert_eq!(notice["body"]["limit"], 100);
+        assert_eq!(notice["body"]["mark_delivered"], true);
+        assert_eq!(
+            notice["body"]["notice_ids"],
+            json!(["notice-1", "notice-2"])
+        );
+    }
+
+    #[test]
+    fn group_e2ee_send_body_is_direct_cipher_object_not_wrapped() {
+        let params = build_group_e2ee_send_rpc_params(
+            &credentials(),
+            "did:wba:awiki.test:user:alice",
+            "did:wba:awiki.test:groups:secure",
+            &anp::group_e2ee::GroupCipherObject {
+                crypto_group_id_b64u: "crypto-group".to_owned(),
+                epoch: "12".to_owned(),
+                private_message_b64u: "private-message".to_owned(),
+                group_state_ref: group_state_ref("did:wba:awiki.test:groups:secure", "state-12"),
+                epoch_authenticator: Some("epoch-auth".to_owned()),
+                non_cryptographic: false,
+                artifact_mode: None,
+            },
+            "op-send",
+            "msg-send",
+        )
+        .expect("send params");
+
+        assert_meta(
+            &params,
+            "group",
+            "did:wba:awiki.test:groups:secure",
+            GROUP_E2EE_SECURITY_PROFILE,
+            GROUP_E2EE_CIPHER_CONTENT_TYPE,
+        );
+        assert_eq!(params["meta"]["message_id"], "msg-send");
+        assert_eq!(params["body"]["crypto_group_id_b64u"], "crypto-group");
+        assert_eq!(params["body"]["epoch"], "12");
+        assert_eq!(params["body"]["private_message_b64u"], "private-message");
+        assert_eq!(
+            params["body"]["group_state_ref"]["group_state_version"],
+            "state-12"
+        );
+        assert_eq!(params["body"]["epoch_authenticator"], "epoch-auth");
+        assert!(params["body"].get("group_cipher_object").is_none());
+        assert!(params
+            .get("body")
+            .and_then(|body| body.get("body"))
+            .is_none());
+        assert!(params["auth"]["origin_proof"].is_object());
+    }
+
+    fn assert_meta(
+        params: &Value,
+        target_kind: &str,
+        target_did: &str,
+        security_profile: &str,
+        content_type: &str,
+    ) {
+        assert_eq!(params["meta"]["profile"], GROUP_E2EE_PROFILE);
+        assert_eq!(
+            params["meta"]["target"],
+            json!({"kind": target_kind, "did": target_did})
+        );
+        assert_eq!(params["meta"]["security_profile"], security_profile);
+        assert_eq!(params["meta"]["content_type"], content_type);
+        assert!(params["auth"]["origin_proof"].is_object());
+    }
+
+    fn credentials() -> crate::internal::message_runtime::group::GroupTextCredentials {
+        let bundle = anp::authentication::create_did_wba_document(
+            "awiki.test",
+            anp::authentication::DidDocumentOptions {
+                path_segments: vec!["user".to_owned(), "alice".to_owned()],
+                domain: Some("awiki.test".to_owned()),
+                challenge: Some("group-e2ee-wire-test".to_owned()),
+                ..anp::authentication::DidDocumentOptions::default()
+            },
+        )
+        .expect("did document");
+        let key1_private_pem = bundle
+            .private_key_pem("key-1")
+            .expect("private key")
+            .to_owned();
+        crate::internal::message_runtime::group::GroupTextCredentials {
+            identity_name: "alice".to_owned(),
+            did_document: Some(bundle.did_document),
+            key1_private_pem,
+        }
+    }
+
+    fn prepared_commit(
+        operation_id: &str,
+        epoch: &str,
+    ) -> anp::group_e2ee::operations::PreparedMlsCommitOutput {
+        prepared_commit_with_subject_status(operation_id, epoch, "active")
+    }
+
+    fn prepared_commit_with_subject_status(
+        operation_id: &str,
+        epoch: &str,
+        subject_status: &str,
+    ) -> anp::group_e2ee::operations::PreparedMlsCommitOutput {
+        anp::group_e2ee::operations::PreparedMlsCommitOutput {
+            pending_commit_id: format!("pending-{operation_id}"),
+            operation_id: operation_id.to_owned(),
+            status: "prepared".to_owned(),
+            actor_did: "did:wba:awiki.test:user:alice".to_owned(),
+            subject_did: "did:wba:awiki.test:user:bob".to_owned(),
+            subject_status: subject_status.to_owned(),
+            group_did: "did:wba:awiki.test:groups:secure".to_owned(),
+            commit_b64u: format!("commit-{operation_id}"),
+            welcome_b64u: Some(format!("welcome-{operation_id}")),
+            ratchet_tree_b64u: Some(format!("tree-{operation_id}")),
+            group_info_b64u: Some(format!("group-info-{operation_id}")),
+            crypto_group_id_b64u: "crypto-group".to_owned(),
+            from_epoch: epoch.to_owned(),
+            epoch: epoch.to_owned(),
+            to_epoch: epoch.to_owned(),
+            local_epoch: epoch.to_owned(),
+            epoch_authenticator: Some(format!("auth-{operation_id}")),
+            epoch_authenticator_b64u: Some(format!("auth-{operation_id}")),
+            suite: anp::group_e2ee::MTI_SUITE.to_owned(),
+            member_did: Some("did:wba:awiki.test:user:bob".to_owned()),
+        }
+    }
+
+    fn group_state_ref(group_did: &str, version: &str) -> anp::group_e2ee::GroupStateRef {
+        anp::group_e2ee::GroupStateRef {
+            group_did: group_did.to_owned(),
+            group_state_version: version.to_owned(),
+            policy_hash: None,
+        }
+    }
+
+    fn group_key_package(owner_did: &str) -> anp::group_e2ee::GroupKeyPackage {
+        anp::group_e2ee::GroupKeyPackage {
+            key_package_id: "kp-member".to_owned(),
+            owner_did: owner_did.to_owned(),
+            device_id: Some("default".to_owned()),
+            purpose: Some("normal".to_owned()),
+            group_did: None,
+            suite: anp::group_e2ee::MTI_SUITE.to_owned(),
+            mls_key_package_b64u: "mls-key-package".to_owned(),
+            did_wba_binding: json!({
+                "agent_did": owner_did,
+                "leaf_signature_key_b64u": "leaf-key",
+                "proof": {"type": "DataIntegrityProof"}
+            }),
+            expires_at: None,
+            non_cryptographic: false,
+            artifact_mode: None,
+        }
+    }
+}

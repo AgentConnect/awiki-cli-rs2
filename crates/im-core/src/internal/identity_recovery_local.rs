@@ -707,12 +707,11 @@ fn compare_rfc3339(left: &str, right: &str) -> Ordering {
         (false, true) => return Ordering::Less,
         (false, false) => {}
     }
-    match (
+    if let (Ok(left_time), Ok(right_time)) = (
         OffsetDateTime::parse(left, &Rfc3339),
         OffsetDateTime::parse(right, &Rfc3339),
     ) {
-        (Ok(left_time), Ok(right_time)) => return left_time.cmp(&right_time),
-        _ => {}
+        return left_time.cmp(&right_time);
     }
     left.cmp(right)
 }

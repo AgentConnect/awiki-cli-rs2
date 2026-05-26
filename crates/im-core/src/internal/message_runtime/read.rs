@@ -332,6 +332,8 @@ fn message_metadata_from_object(
     );
     let content_type =
         Some(string_value(object.get("content_type"))).filter(|value| !value.trim().is_empty());
+    let mut attributes = raw_content_attributes(object.get("content"), content_type.as_deref());
+    attributes.extend(secure_message_attributes(object));
     crate::messages::MessageMetadata {
         operation_id: Some(string_value(object.get("operation_id")))
             .filter(|value| !value.trim().is_empty()),
@@ -343,7 +345,7 @@ fn message_metadata_from_object(
             .or_else(|| i64_value(object.get("sequence")))
             .or_else(|| i64_value(object.get("group_event_seq"))),
         content_type: content_type.clone(),
-        attributes: raw_content_attributes(object.get("content"), content_type.as_deref()),
+        attributes,
     }
 }
 
@@ -448,6 +450,32 @@ fn raw_content_attributes(
         key: "raw_content".to_string(),
         value,
     }]
+}
+
+fn secure_message_attributes(
+    object: &serde_json::Map<String, Value>,
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    if !object
+        .get("secure")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Vec::new();
+    }
+    let mut attributes = vec![crate::messages::MessageMetadataAttribute {
+        key: "security".to_owned(),
+        value: "direct-e2ee".to_owned(),
+    }];
+    for key in ["decryption_state", "secure_wire_content_type"] {
+        let value = string_value(object.get(key));
+        if !value.trim().is_empty() {
+            attributes.push(crate::messages::MessageMetadataAttribute {
+                key: key.to_owned(),
+                value,
+            });
+        }
+    }
+    attributes
 }
 
 fn string_value(value: Option<&Value>) -> String {
@@ -773,6 +801,11 @@ mod tests {
                 kind: crate::messages::MessageKind::Text,
             }
         );
+        assert!(page.items[0]
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "security" && attribute.value == "direct-e2ee"));
         assert!(!serde_json::to_string(&page).unwrap().contains("CIPHER"));
     }
 

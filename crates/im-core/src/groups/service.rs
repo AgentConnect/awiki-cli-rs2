@@ -18,6 +18,7 @@ impl<'a> GroupService<'a> {
         }
         #[cfg(feature = "group-e2ee")]
         let secure_provider = if secure_required {
+            ensure_group_e2ee_service_available(self.client, false)?;
             Some(crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?)
         } else {
             None
@@ -81,6 +82,7 @@ impl<'a> GroupService<'a> {
         }
         #[cfg(feature = "group-e2ee")]
         let secure_provider = if request.security.required() {
+            ensure_group_e2ee_service_available(self.client, false)?;
             Some(crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?)
         } else {
             None
@@ -150,6 +152,7 @@ impl<'a> GroupService<'a> {
         }
         #[cfg(feature = "group-e2ee")]
         let secure_provider = if request.security.required() {
+            ensure_group_e2ee_service_available(self.client, true)?;
             Some(crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?)
         } else {
             None
@@ -211,6 +214,7 @@ impl<'a> GroupService<'a> {
         }
         #[cfg(feature = "group-e2ee")]
         let secure_provider = if request.security.required() {
+            ensure_group_e2ee_service_available(self.client, false)?;
             Some(crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?)
         } else {
             None
@@ -471,7 +475,7 @@ impl<'a> GroupService<'a> {
         group: &str,
         include_members: bool,
     ) {
-        let group_ref = match crate::ids::GroupRef::parse(&group) {
+        let group_ref = match crate::ids::GroupRef::parse(group) {
             Ok(group_ref) => group_ref,
             Err(err) => {
                 result.push_warning(format!("Failed to refresh group snapshot: {err}"));
@@ -557,4 +561,23 @@ fn group_create_uses_e2ee(request: &super::GroupCreateRequest) -> bool {
             Some(super::GroupMessageSecurityProfile::Custom(value))
                 if value.trim() == "group-e2ee"
         )
+}
+
+#[cfg(feature = "group-e2ee")]
+fn ensure_group_e2ee_service_available(
+    client: &crate::core::ImClient,
+    check_key_package: bool,
+) -> crate::ImResult<()> {
+    let session_provider = crate::internal::auth::session::FileSessionProvider::new(client);
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    crate::internal::group_e2ee::lifecycle::ensure_group_e2ee_service_available(
+        client,
+        &session_provider,
+        &mut transport,
+        crate::internal::group_e2ee::lifecycle::GroupE2eeServiceAvailabilityInput {
+            credentials: None,
+            service_did: None,
+            check_key_package,
+        },
+    )
 }

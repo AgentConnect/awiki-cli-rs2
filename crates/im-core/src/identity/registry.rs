@@ -538,6 +538,6 @@ fn identity_missing_item(value: String) -> super::IdentityMissingItem {
     }
 }
 
-fn first_non_empty<'a, const N: usize>(values: [&'a str; N]) -> Option<&'a str> {
+fn first_non_empty<const N: usize>(values: [&str; N]) -> Option<&str> {
     values.into_iter().find(|value| !value.trim().is_empty())
 }

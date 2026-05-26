@@ -88,7 +88,7 @@ where
         let raw = self
             .transport
             .rpc(call.endpoint, call.method, call.params.clone())?;
-        let identity = recovered_identity_summary(&request, &generated, &raw)?;
+        let identity = recovered_identity_summary(&request, generated, &raw)?;
         let recovered_identity = crate::identity::RecoveredIdentity {
             identity,
             user_id: raw

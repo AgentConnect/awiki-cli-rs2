@@ -741,7 +741,7 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
         "sent_at": message.sent_at.clone().unwrap_or_default(),
         "received_at": message.received_at.clone().unwrap_or_default(),
         "is_read": false,
-        "secure": false,
+        "secure": message_is_secure(message),
         "direction": match message.direction {
             MessageDirection::Outgoing => 1,
             MessageDirection::Incoming => 0,
@@ -803,6 +803,11 @@ fn message_content_type(message: &im_core::prelude::Message) -> String {
             .unwrap_or("application/octet-stream")
             .to_string(),
     }
+}
+
+fn message_is_secure(message: &im_core::prelude::Message) -> bool {
+    message_attribute(&message.metadata.attributes, "security")
+        .is_some_and(|value| matches!(value.as_str(), "direct-e2ee" | "group-e2ee"))
 }
 
 fn sdk_send_trace_operation(request: &SendMessageRequest) -> &'static str {
@@ -881,9 +886,11 @@ fn history_target_from_page(
         .to_string();
     TargetResolution {
         did,
-        handle: target_is_handle
-            .then(|| peer.as_str().to_string())
-            .unwrap_or_default(),
+        handle: if target_is_handle {
+            peer.as_str().to_string()
+        } else {
+            String::new()
+        },
     }
 }
 
@@ -947,7 +954,7 @@ fn raw_content_value(attributes: &[MessageMetadataAttribute]) -> Option<Value> {
     let raw = message_attribute(attributes, "raw_content")?;
     serde_json::from_str::<Value>(&raw)
         .ok()
-        .or_else(|| Some(Value::String(raw)))
+        .or(Some(Value::String(raw)))
 }
 
 fn message_text_and_type(
@@ -1477,14 +1484,20 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             status_code,
             code,
             message,
-        } => MessageAdapterError::Service(ServiceError {
-            status_code: status_code.unwrap_or_default(),
-            rpc_code: code
+        } => {
+            let rpc_code = code
                 .and_then(|value| value.parse().ok())
-                .unwrap_or_default(),
-            message,
-            data: None,
-        }),
+                .unwrap_or_default();
+            if group_e2ee_service_unsupported(rpc_code, &message) {
+                return MessageAdapterError::GroupNotSupported;
+            }
+            MessageAdapterError::Service(ServiceError {
+                status_code: status_code.unwrap_or_default(),
+                rpc_code,
+                message,
+                data: None,
+            })
+        }
         im_core::ImError::TransportUnavailable { detail } => {
             MessageAdapterError::TransportUnavailable(detail)
         }
@@ -1494,6 +1507,15 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
         im_core::ImError::Io { detail } => MessageAdapterError::PathUnavailable(detail),
         err => MessageAdapterError::Internal(err.to_string()),
     }
+}
+
+fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
+    if rpc_code != 1405 {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("group e2ee contract-test apis are disabled")
+        || message.contains("group e2ee p6 apis are disabled")
 }
 
 fn im_error_to_exit_error(err: im_core::ImError) -> ExitError {

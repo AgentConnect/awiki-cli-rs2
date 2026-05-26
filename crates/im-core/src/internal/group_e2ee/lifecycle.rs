@@ -46,9 +46,71 @@ pub(crate) struct GroupE2eeLeaveInput {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct GroupE2eeServiceAvailabilityInput {
+    pub(crate) credentials: Option<GroupTextCredentials>,
+    pub(crate) service_did: Option<crate::ids::Did>,
+    pub(crate) check_key_package: bool,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct GroupE2eeLifecycleResult {
     pub(crate) delivery: Value,
     pub(crate) warnings: Vec<String>,
+}
+
+pub(crate) fn ensure_group_e2ee_service_available<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    input: GroupE2eeServiceAvailabilityInput,
+) -> crate::ImResult<()>
+where
+    P: SessionProvider,
+    T: AuthenticatedRpcTransport,
+{
+    session_provider.ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+    let credentials = input
+        .credentials
+        .map(Ok)
+        .unwrap_or_else(|| load_credentials(client))?;
+    let preflight_group_did = group_e2ee_availability_group_did(client);
+    let head_params = super::wire::build_group_e2ee_head_rpc_params(
+        &credentials,
+        client.did().as_str(),
+        &preflight_group_did,
+    )?;
+    match transport.authenticated_rpc(
+        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+        "group.e2ee.head",
+        head_params,
+    ) {
+        Ok(_) => {}
+        Err(err) if is_group_e2ee_service_disabled(&err) => return Err(err),
+        Err(_) => {}
+    }
+    if !input.check_key_package {
+        return Ok(());
+    }
+    let service_did = input
+        .service_did
+        .map(Ok)
+        .unwrap_or_else(|| group_e2ee_service_did(client))?;
+    let key_package_params = super::wire::build_group_e2ee_get_key_package_rpc_params(
+        &credentials,
+        client.did().as_str(),
+        service_did.as_str(),
+        &preflight_group_did,
+        client.did().as_str(),
+    )?;
+    match transport.authenticated_rpc(
+        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+        "group.e2ee.get_key_package",
+        key_package_params,
+    ) {
+        Ok(_) => Ok(()),
+        Err(err) if is_group_e2ee_service_disabled(&err) => Err(err),
+        Err(_) => Ok(()),
+    }
 }
 
 impl<'a, P, T, M> GroupE2eeLifecycleRuntime<'a, P, T, M>
@@ -792,6 +854,44 @@ fn require_group(group_did: &str) -> crate::ImResult<&str> {
     Ok(group_did)
 }
 
+fn group_e2ee_availability_group_did(client: &crate::core::ImClient) -> String {
+    format!(
+        "did:wba:{}:groups:group-e2ee-preflight",
+        client.core_inner().sdk_config().did_domain
+    )
+}
+
+fn group_e2ee_service_did(client: &crate::core::ImClient) -> crate::ImResult<crate::ids::Did> {
+    client
+        .core_inner()
+        .sdk_config()
+        .anp_service_did
+        .clone()
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("anp_service_did".to_owned()),
+                "group E2EE lifecycle requires ImCoreConfig.anp_service_did",
+            )
+        })
+}
+
+pub(super) fn is_group_e2ee_service_disabled(err: &crate::ImError) -> bool {
+    let crate::ImError::Service {
+        code: Some(code),
+        message,
+        ..
+    } = err
+    else {
+        return false;
+    };
+    if code != "1405" {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("group e2ee contract-test apis are disabled")
+        || message.contains("group e2ee p6 apis are disabled")
+}
+
 fn require_did<'a>(did: &'a str, field: &'static str) -> crate::ImResult<&'a str> {
     let did = did.trim();
     if did.is_empty() {
@@ -1243,6 +1343,120 @@ mod tests {
 
         let calls = calls.borrow();
         assert_eq!(calls[0].method, "group.e2ee.leave_request");
+    }
+
+    #[test]
+    fn service_availability_preflight_returns_disabled_gate_error() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            responses: vec![(
+                "group.e2ee.head".to_owned(),
+                json!({"error": {"code": "1405", "message": "group E2EE contract-test APIs are disabled"}}),
+            )],
+        };
+
+        let err = ensure_group_e2ee_service_available(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            GroupE2eeServiceAvailabilityInput {
+                credentials: Some(fixture.credentials()),
+                service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                check_key_package: true,
+            },
+        )
+        .unwrap_err();
+
+        assert!(is_group_e2ee_service_disabled(&err));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.e2ee.head");
+    }
+
+    #[test]
+    fn service_availability_preflight_checks_key_package_gate_when_requested() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            responses: vec![
+                (
+                    "group.e2ee.head".to_owned(),
+                    json!({"error": {"code": "1404", "message": "group E2EE crypto head not found"}}),
+                ),
+                (
+                    "group.e2ee.get_key_package".to_owned(),
+                    json!({"error": {"code": "1405", "message": "group E2EE P6 APIs are disabled"}}),
+                ),
+            ],
+        };
+
+        let err = ensure_group_e2ee_service_available(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            GroupE2eeServiceAvailabilityInput {
+                credentials: Some(fixture.credentials()),
+                service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                check_key_package: true,
+            },
+        )
+        .unwrap_err();
+
+        assert!(is_group_e2ee_service_disabled(&err));
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.head", "group.e2ee.get_key_package"]
+        );
+    }
+
+    #[test]
+    fn service_availability_preflight_ignores_non_gate_errors() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            responses: vec![
+                (
+                    "group.e2ee.head".to_owned(),
+                    json!({"error": {"code": "1404", "message": "group E2EE crypto head not found"}}),
+                ),
+                (
+                    "group.e2ee.get_key_package".to_owned(),
+                    json!({"error": {"code": "1403", "message": "group.e2ee.get_key_package purpose=normal requires active owner role"}}),
+                ),
+            ],
+        };
+
+        ensure_group_e2ee_service_available(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            GroupE2eeServiceAvailabilityInput {
+                credentials: Some(fixture.credentials()),
+                service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                check_key_package: true,
+            },
+        )
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.head", "group.e2ee.get_key_package"]
+        );
     }
 
     #[derive(Clone)]

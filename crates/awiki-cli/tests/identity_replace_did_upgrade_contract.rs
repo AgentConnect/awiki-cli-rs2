@@ -75,43 +75,6 @@ fn write_legacy_config_json(workspace_home: &Path, payload: Value) -> (PathBuf, 
     (legacy_config, legacy_text)
 }
 
-fn assert_migrated_config(workspace_home: &Path, service_base_url: &str, did_domain: &str) {
-    let config_text =
-        std::fs::read_to_string(workspace_home.join("config.yaml")).expect("read migrated config");
-    for needle in [
-        "schema_version: 1\n".to_string(),
-        "  mode: http\n".to_string(),
-        format!("  service_base_url: {service_base_url}\n"),
-        format!("  did_domain: {did_domain}\n"),
-    ] {
-        assert!(
-            config_text.contains(&needle),
-            "migrated config: {config_text:?}"
-        );
-    }
-}
-
-fn assert_workspace_upgrade_meta(workspace_home: &Path, legacy_text: &str) {
-    let meta_path = workspace_home.join("upgrade").join("meta.json");
-    let meta: Value =
-        serde_json::from_slice(&std::fs::read(&meta_path).expect("read upgrade meta"))
-            .expect("upgrade meta JSON");
-    assert_eq!(meta["workspace_schema_version"], 3);
-    assert!(meta["last_upgrade_id"]
-        .as_str()
-        .is_some_and(|id| !id.is_empty()));
-    let backup_dir = PathBuf::from(meta["last_backup_dir"].as_str().unwrap());
-    assert_eq!(
-        std::fs::read_to_string(backup_dir.join("config.json.bak"))
-            .expect("read legacy config backup"),
-        legacy_text
-    );
-    assert!(!workspace_home
-        .join("upgrade")
-        .join("upgrade_journal.json")
-        .exists());
-}
-
 fn assert_no_runtime_state(workspace_home: &Path) {
     assert!(!workspace_home.join("data").join("awiki-cli.db").exists());
     assert!(!workspace_home

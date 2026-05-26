@@ -550,11 +550,10 @@ fn attachment_metadata(
     server_sequence: Option<i64>,
     manifest: &Value,
 ) -> crate::messages::MessageMetadata {
-    let mut attributes = Vec::new();
-    attributes.push(crate::messages::MessageMetadataAttribute {
+    let attributes = vec![crate::messages::MessageMetadataAttribute {
         key: "attachment_manifest".to_string(),
         value: crate::attachments::manifest::manifest_content_string(manifest),
-    });
+    }];
     crate::messages::MessageMetadata {
         operation_id: operation_id.filter(|value| !value.trim().is_empty()),
         delivery_state: delivery_state.filter(|value| !value.trim().is_empty()),

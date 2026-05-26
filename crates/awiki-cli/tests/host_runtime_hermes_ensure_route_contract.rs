@@ -1,3 +1,5 @@
+#![allow(clippy::bool_assert_comparison)]
+
 use awiki_cli::host_runtime::hermes_bridge::{self, EnsureRouteOptions};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

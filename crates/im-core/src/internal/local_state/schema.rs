@@ -775,11 +775,10 @@ VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2
 
     fn column_exists(db: &Connection, table: &str, column: &str) -> bool {
         let mut statement = db.prepare(&format!("PRAGMA table_info({table})")).unwrap();
-        let rows = statement
+        let mut rows = statement
             .query_map([], |row| row.get::<_, String>(1))
             .unwrap();
-        let exists = rows.map(Result::unwrap).any(|name| name == column);
-        exists
+        rows.any(|name| name.unwrap() == column)
     }
 
     fn string_cell(db: &Connection, sql: &str) -> String {

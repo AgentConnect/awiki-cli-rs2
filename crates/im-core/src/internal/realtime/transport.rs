@@ -132,13 +132,12 @@ where
     T: RealtimeTransport,
     A: RealtimeAuthProvider,
 {
-    let mut events = Vec::new();
-    events.push(crate::realtime::ImEvent::ConnectionStateChanged(
+    let events = vec![crate::realtime::ImEvent::ConnectionStateChanged(
         crate::realtime::ConnectionStateChanged {
             state: crate::realtime::RealtimeConnectionState::Connecting,
             reason: None,
         },
-    ));
+    )];
     let initial_token = current_jwt.trim().to_string();
     if !initial_token.is_empty() {
         match transport.dial_bearer(&endpoints.websocket_url, &initial_token) {

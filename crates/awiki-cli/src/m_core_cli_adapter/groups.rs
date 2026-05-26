@@ -954,17 +954,32 @@ fn im_error_to_message_error(err: im_core::ImError) -> MessageAdapterError {
             status_code,
             code,
             message,
-        } => MessageAdapterError::Service(ServiceError {
-            status_code: status_code.unwrap_or_default(),
-            rpc_code: code
+        } => {
+            let rpc_code = code
                 .and_then(|value| value.parse().ok())
-                .unwrap_or_default(),
-            message,
-            data: None,
-        }),
+                .unwrap_or_default();
+            if group_e2ee_service_unsupported(rpc_code, &message) {
+                return MessageAdapterError::GroupNotSupported;
+            }
+            MessageAdapterError::Service(ServiceError {
+                status_code: status_code.unwrap_or_default(),
+                rpc_code,
+                message,
+                data: None,
+            })
+        }
         im_core::ImError::TransportUnavailable { detail } => {
             MessageAdapterError::TransportUnavailable(detail)
         }
         err => MessageAdapterError::Internal(err.to_string()),
     }
+}
+
+fn group_e2ee_service_unsupported(rpc_code: i64, message: &str) -> bool {
+    if rpc_code != 1405 {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("group e2ee contract-test apis are disabled")
+        || message.contains("group e2ee p6 apis are disabled")
 }
