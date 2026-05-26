@@ -1,6 +1,6 @@
 use im_core::groups::{
-    GroupAdmissionMode, GroupDiscoverability, GroupMemberLimit, GroupMemberRole,
-    GroupMessageSecurityProfile, GroupReadResult, GroupSecurityRequirement,
+    GroupAdmissionMode, GroupDiscoverability, GroupKeyPackagePurpose, GroupMemberLimit,
+    GroupMemberRole, GroupMessageSecurityProfile, GroupReadResult, GroupSecurityRequirement,
 };
 use im_core::prelude::{
     Cursor, Did, GroupCreateRequest as SdkGroupCreateRequest,
@@ -84,6 +84,14 @@ pub struct GroupUpdateRequest {
     pub max_members: String,
     pub member_max_messages: Option<i64>,
     pub member_max_total_chars: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupKeyPackagePublishRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub purpose: String,
+    pub device: String,
 }
 
 fn group_raw_response(result: &im_core::groups::GroupReadResult) -> Value {
@@ -443,6 +451,50 @@ pub fn group_secure_repair_via_im_core(
     })
 }
 
+pub fn publish_group_key_package_via_im_core(
+    client: &im_core::ImClient,
+    request: GroupKeyPackagePublishRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    let purpose = GroupKeyPackagePurpose::parse(if request.purpose.trim().is_empty() {
+        "normal"
+    } else {
+        &request.purpose
+    })
+    .map_err(im_error_to_message_error)?;
+    let group = if request.group.trim().is_empty() {
+        None
+    } else {
+        Some(GroupRef::parse(&request.group).map_err(im_error_to_message_error)?)
+    };
+    let result = client
+        .groups()
+        .publish_key_package(im_core::groups::GroupKeyPackagePublishRequest {
+            purpose,
+            group,
+            device_id: optional_string(&request.device),
+            key_package_id: None,
+        })
+        .map_err(im_error_to_message_error)?;
+    let group = result
+        .group
+        .as_ref()
+        .map(|group| Value::String(group.as_str().to_owned()))
+        .unwrap_or(Value::Null);
+    Ok(CommandResult {
+        data: json!({
+            "published": true,
+            "owner_did": result.owner_did.as_str(),
+            "device_id": result.device_id,
+            "key_package_id": result.key_package_id,
+            "purpose": result.purpose.as_str(),
+            "group": group,
+            "delivery": result.raw_response,
+        }),
+        summary: "Published group E2EE KeyPackage".to_owned(),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
 fn group_create_request(
     request: GroupCreateRequest,
 ) -> Result<SdkGroupCreateRequest, MessageAdapterError> {
@@ -710,7 +762,7 @@ fn group_message_to_json(message: &Message) -> Value {
         "sent_at": message.sent_at.clone().unwrap_or_default(),
         "received_at": message.received_at.clone().unwrap_or_default(),
         "is_read": false,
-        "secure": false,
+        "secure": group_message_is_secure(message),
         "direction": match message.direction {
             im_core::prelude::MessageDirection::Outgoing => 1,
             im_core::prelude::MessageDirection::Incoming => 0,
@@ -725,6 +777,11 @@ fn group_message_to_json(message: &Message) -> Value {
     }
     if let Some(delivery_state) = &message.metadata.delivery_state {
         value["delivery_state"] = json!(delivery_state);
+    }
+    for attribute in &message.metadata.attributes {
+        if !attribute.key.trim().is_empty() {
+            value[attribute.key.as_str()] = json!(attribute.value);
+        }
     }
     value
 }
@@ -745,6 +802,14 @@ fn message_content_type(body: &im_core::prelude::MessageBodyView) -> &'static st
         im_core::prelude::MessageBodyView::Text { .. } => "text/plain",
         im_core::prelude::MessageBodyView::Unsupported { .. } => "application/octet-stream",
     }
+}
+
+fn group_message_is_secure(message: &Message) -> bool {
+    message
+        .metadata
+        .attributes
+        .iter()
+        .any(|attribute| attribute.key == "security" && attribute.value == "group-e2ee")
 }
 
 fn compact_warnings(warnings: Vec<String>) -> Vec<String> {

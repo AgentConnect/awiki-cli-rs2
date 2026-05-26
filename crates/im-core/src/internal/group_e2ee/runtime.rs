@@ -9,7 +9,7 @@ use crate::internal::message_runtime::group::{
 use crate::internal::transport::AuthenticatedRpcTransport;
 
 use super::provider::GroupMlsProvider;
-use super::state_ref::{resolve_group_state_ref, ResolveGroupStateRef};
+use super::state_ref::{resolve_group_state_ref_service_first, ResolveGroupStateRef};
 use super::DEFAULT_GROUP_MLS_DEVICE_ID;
 
 pub(crate) struct GroupE2eeTextSender<'a, P, T, M> {
@@ -135,7 +135,7 @@ where
         let group_state_ref = match input.group_state_ref.clone() {
             Some(group_state_ref) => group_state_ref,
             None => {
-                resolve_group_state_ref(
+                resolve_group_state_ref_service_first(
                     self.client,
                     &self.session_provider,
                     &mut self.transport,

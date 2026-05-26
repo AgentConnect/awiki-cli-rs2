@@ -13,11 +13,6 @@ impl App {
         command: &ParsedCommand,
     ) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
-        if !self.globals.dry_run {
-            return Err(unsupported_group_e2ee_command(
-                "group.e2ee.publish-key-package",
-            ));
-        }
         let mut purpose = string_flag_or(command, "purpose", "normal");
         if bool_flag(command, "recovery")? {
             purpose = "recovery".to_string();
@@ -27,6 +22,29 @@ impl App {
         }
         let device = string_flag_or(command, "device", DEFAULT_DEVICE);
         let group = string_flag(command, "group");
+        if !self.globals.dry_run {
+            let client = crate::m_core_cli_adapter::build_im_client(
+                &resolved,
+                crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+            )?;
+            let result = crate::m_core_cli_adapter::groups::publish_group_key_package_via_im_core(
+                &client,
+                crate::m_core_cli_adapter::groups::GroupKeyPackagePublishRequest {
+                    identity_name: self.globals.identity.clone(),
+                    group,
+                    purpose,
+                    device,
+                },
+            )
+            .map_err(|err| group_e2ee_exit(err, "group.e2ee.publish-key-package"))?;
+            return self.render_success(
+                "awiki-cli group e2ee publish-key-package",
+                &resolved,
+                result.data,
+                &result.summary,
+                result.warnings,
+            );
+        }
         let contract_test = bool_flag(command, "contract-test")?;
         let plan = json!({
             "action": "group.e2ee.publish_key_package",
@@ -298,6 +316,34 @@ fn required_string_flag(
 
 fn unsupported_group_e2ee_command(command: &str) -> ExitError {
     super::unsupported::unsupported_cutover_command(command, "group e2ee", "Phase 6")
+}
+
+fn group_e2ee_exit(
+    err: crate::m_core_cli_adapter::message_result::MessageAdapterError,
+    command: &str,
+) -> ExitError {
+    match err {
+        crate::m_core_cli_adapter::message_result::MessageAdapterError::GroupNotSupported => {
+            ExitError {
+                exit_code: 2,
+                detail: crate::cli_output::ErrorDetail {
+                    code: "unsupported_capability".to_string(),
+                    message: format!("group E2EE is unavailable for {command}."),
+                    hint: "Use internal group E2EE commands only when the workspace and service have Group E2EE enabled.".to_string(),
+                    retryable: false,
+                    details: json!({
+                        "command": command,
+                        "capability": "group-e2ee",
+                        "cutover_status": "im_core",
+                    }),
+                },
+            }
+        }
+        err => super::msg_handlers::message_exit(
+            err,
+            "Ensure the active identity is ready and the message service is reachable.",
+        ),
+    }
 }
 
 fn bool_flag(command: &ParsedCommand, name: &str) -> Result<bool, ExitError> {

@@ -26,6 +26,7 @@ pub use crate::email::{
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::{
     GroupAdmissionMode, GroupCreateRequest, GroupDiscoverability, GroupJoinRequest,
+    GroupKeyPackagePublishRequest, GroupKeyPackagePublishResult, GroupKeyPackagePurpose,
     GroupLeaveRequest, GroupListRequest, GroupMember, GroupMemberLimit, GroupMemberMutationRequest,
     GroupMemberRef, GroupMemberResolution, GroupMemberRole, GroupMembersRequest,
     GroupMessageSecurityProfile, GroupMessagesRequest, GroupPolicyPatch, GroupProfilePatch,

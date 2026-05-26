@@ -1,3 +1,10 @@
+#[cfg(feature = "group-e2ee")]
+use crate::internal::auth::session::SessionProvider;
+#[cfg(feature = "group-e2ee")]
+use crate::internal::group_e2ee::provider::GroupMlsProvider;
+#[cfg(feature = "group-e2ee")]
+use crate::internal::transport::AuthenticatedRpcTransport;
+
 pub struct GroupService<'a> {
     client: &'a crate::core::ImClient,
 }
@@ -5,6 +12,21 @@ pub struct GroupService<'a> {
 impl<'a> GroupService<'a> {
     pub(crate) fn new(client: &'a crate::core::ImClient) -> Self {
         Self { client }
+    }
+
+    pub fn publish_key_package(
+        &self,
+        request: super::GroupKeyPackagePublishRequest,
+    ) -> crate::ImResult<super::GroupKeyPackagePublishResult> {
+        #[cfg(feature = "group-e2ee")]
+        {
+            self.publish_key_package_with_group_e2ee(request)
+        }
+        #[cfg(not(feature = "group-e2ee"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("group-e2ee"))
+        }
     }
 
     pub fn create(
@@ -500,6 +522,78 @@ impl<'a> GroupService<'a> {
             Err(err) => result.push_warning(format!("Failed to refresh group members: {err}")),
         }
     }
+
+    #[cfg(feature = "group-e2ee")]
+    fn publish_key_package_with_group_e2ee(
+        &self,
+        request: super::GroupKeyPackagePublishRequest,
+    ) -> crate::ImResult<super::GroupKeyPackagePublishResult> {
+        let session_provider =
+            crate::internal::auth::session::FileSessionProvider::new(self.client);
+        session_provider.ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+        let credentials = crate::internal::message_runtime::group::load_credentials(self.client)?;
+        let service_did = group_e2ee_service_did(self.client)?;
+        let operation_id = format!(
+            "op-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let provider =
+            crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
+        let device_id = request
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(crate::internal::group_e2ee::DEFAULT_GROUP_MLS_DEVICE_ID)
+            .to_owned();
+        let mut group_key_package = provider
+            .generate_key_package(anp::group_e2ee::operations::GenerateKeyPackageInput {
+                owner_did: self.client.did().as_str().to_owned(),
+                device_id: device_id.clone(),
+                operation_id: operation_id.clone(),
+                request_id: format!("group-e2ee-key-package-{operation_id}"),
+                key_package_id: request
+                    .key_package_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+                purpose: Some(request.purpose.as_str().to_owned()),
+                group_did: request
+                    .group
+                    .as_ref()
+                    .map(|group| group.as_str().to_owned()),
+            })?
+            .group_key_package;
+        group_key_package.did_wba_binding = sign_group_key_package_binding(
+            &credentials,
+            self.client.did().as_str(),
+            group_key_package.did_wba_binding,
+        )?;
+        let params =
+            crate::internal::group_e2ee::wire::build_group_e2ee_publish_key_package_rpc_params(
+                &credentials,
+                self.client.did().as_str(),
+                service_did.as_str(),
+                &group_key_package,
+                &operation_id,
+            )?;
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+        let raw_response = transport.authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.publish_key_package",
+            params,
+        )?;
+        Ok(super::GroupKeyPackagePublishResult {
+            owner_did: self.client.did().clone(),
+            device_id,
+            key_package_id: group_key_package.key_package_id,
+            purpose: request.purpose,
+            group: request.group,
+            raw_response,
+            warnings: Vec::new(),
+        })
+    }
 }
 
 fn group_did(result: &super::GroupReadResult) -> Option<String> {
@@ -564,6 +658,80 @@ fn group_create_uses_e2ee(request: &super::GroupCreateRequest) -> bool {
 }
 
 #[cfg(feature = "group-e2ee")]
+fn sign_group_key_package_binding(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    owner_did: &str,
+    binding: serde_json::Value,
+) -> crate::ImResult<serde_json::Value> {
+    let leaf_signature_key_b64u = binding
+        .get("leaf_signature_key_b64u")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "group KeyPackage binding is missing leaf_signature_key_b64u".to_owned(),
+        })?;
+    let issued_at = binding
+        .get("issued_at")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "group KeyPackage binding is missing issued_at".to_owned(),
+        })?;
+    let expires_at = binding
+        .get("expires_at")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "group KeyPackage binding is missing expires_at".to_owned(),
+        })?;
+    let did_document =
+        credentials
+            .did_document
+            .as_ref()
+            .ok_or_else(|| crate::ImError::Serialization {
+                detail: "identity is missing a DID document for group KeyPackage binding"
+                    .to_owned(),
+            })?;
+    let verification_method = assertion_verification_method_id_from_document(did_document)
+        .ok_or_else(|| crate::ImError::Serialization {
+            detail: "identity is missing an assertion verification method".to_owned(),
+        })?;
+    let private_key =
+        crate::internal::proof::origin::load_private_key_material(&credentials.key1_private_pem)?;
+    anp::proof::generate_did_wba_binding(
+        owner_did,
+        &verification_method,
+        leaf_signature_key_b64u,
+        &private_key,
+        issued_at,
+        expires_at,
+        Some(issued_at.to_owned()),
+    )
+    .map_err(|err| crate::ImError::Serialization {
+        detail: format!("generate group KeyPackage DID WBA binding proof: {err}"),
+    })
+}
+
+#[cfg(feature = "group-e2ee")]
+fn assertion_verification_method_id_from_document(
+    did_document: &serde_json::Value,
+) -> Option<String> {
+    did_document
+        .get("assertionMethod")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|methods| methods.first())
+        .and_then(|method| {
+            method
+                .as_str()
+                .or_else(|| method.get("id").and_then(serde_json::Value::as_str))
+        })
+        .map(str::to_owned)
+        .or_else(|| {
+            crate::internal::proof::origin::verification_method_id_from_document(did_document)
+        })
+}
+
+#[cfg(feature = "group-e2ee")]
 fn ensure_group_e2ee_service_available(
     client: &crate::core::ImClient,
     check_key_package: bool,
@@ -580,4 +748,19 @@ fn ensure_group_e2ee_service_available(
             check_key_package,
         },
     )
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_e2ee_service_did(client: &crate::core::ImClient) -> crate::ImResult<crate::ids::Did> {
+    client
+        .core_inner()
+        .sdk_config()
+        .anp_service_did
+        .clone()
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("anp_service_did".to_owned()),
+                "group E2EE key package publish requires ImCoreConfig.anp_service_did",
+            )
+        })
 }

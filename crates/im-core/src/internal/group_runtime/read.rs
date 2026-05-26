@@ -77,7 +77,16 @@ where
             request.cursor.as_ref().map(crate::ids::Cursor::as_str),
             0,
         )?;
-        self.group_rpc("group.list_messages", params)
+        let mut raw = self.transport.authenticated_rpc(
+            MESSAGE_RPC_ENDPOINT,
+            "group.list_messages",
+            params,
+        )?;
+        project_group_e2ee_messages(self.client, &mut raw);
+        Ok(crate::groups::GroupReadResult::from_raw_response(
+            raw,
+            Vec::new(),
+        ))
     }
 
     fn ensure_group_session(&self) -> crate::ImResult<crate::auth::SessionBundle> {
@@ -97,6 +106,39 @@ where
             raw,
             Vec::new(),
         ))
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut message_values = std::mem::take(messages);
+    let warnings =
+        crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client(
+            client,
+            &mut message_values,
+        );
+    *messages = message_values;
+    append_warnings(raw, warnings);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value) {}
+
+fn append_warnings(raw: &mut Value, warnings: Vec<String>) {
+    if warnings.is_empty() {
+        return;
+    }
+    let Some(object) = raw.as_object_mut() else {
+        return;
+    };
+    let entry = object
+        .entry("warnings")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Value::Array(items) = entry {
+        items.extend(warnings.into_iter().map(Value::String));
     }
 }
 

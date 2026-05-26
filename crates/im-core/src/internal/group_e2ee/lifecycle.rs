@@ -503,7 +503,7 @@ where
         if let Some(reference) = local_group_state_ref(self.client, group_did) {
             return Ok(Some(reference));
         }
-        match super::state_ref::resolve_group_state_ref(
+        match super::state_ref::resolve_group_state_ref_local_first(
             self.client,
             &self.session_provider,
             &mut self.transport,

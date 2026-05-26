@@ -8,6 +8,33 @@ pub(crate) const GROUP_E2EE_TRANSPORT_SECURITY_PROFILE: &str =
     anp::group_e2ee::TRANSPORT_SECURITY_PROFILE;
 pub(crate) const GROUP_E2EE_CIPHER_CONTENT_TYPE: &str = anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE;
 
+pub(crate) fn build_group_e2ee_publish_key_package_rpc_params(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    sender_did: &str,
+    service_did: &str,
+    key_package: &anp::group_e2ee::GroupKeyPackage,
+    operation_id: &str,
+) -> crate::ImResult<Value> {
+    let service_did = require_non_empty("service_did", service_did)?;
+    let operation_id = require_non_empty("operation_id", operation_id)?;
+    build_signed_group_e2ee_params(
+        credentials,
+        "group.e2ee.publish_key_package",
+        group_e2ee_meta(
+            sender_did,
+            "service",
+            service_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+            operation_id,
+            None,
+        )?,
+        json!({
+            "group_key_package": sanitize_group_key_package_for_service(key_package)?,
+        }),
+    )
+}
+
 pub(crate) fn build_group_e2ee_create_rpc_params(
     credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
     sender_did: &str,
@@ -702,6 +729,30 @@ mod tests {
         let state_ref = group_state_ref(group_did, "state-7");
         let prepared = prepared_commit("op-create", "7");
 
+        let publish = build_group_e2ee_publish_key_package_rpc_params(
+            &credentials,
+            sender_did,
+            service_did,
+            &group_key_package(sender_did),
+            "op-publish",
+        )
+        .expect("publish params");
+        assert_meta(
+            &publish,
+            "service",
+            service_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(
+            publish["body"]["group_key_package"]["owner_did"],
+            sender_did
+        );
+        assert_eq!(
+            publish["body"]["group_key_package"]["did_wba_binding"]["proof"]["verificationMethod"],
+            format!("{sender_did}#key-1")
+        );
+
         let create = build_group_e2ee_create_rpc_params(
             &credentials,
             sender_did,
@@ -955,8 +1006,14 @@ mod tests {
             mls_key_package_b64u: "mls-key-package".to_owned(),
             did_wba_binding: json!({
                 "agent_did": owner_did,
+                "verification_method": format!("{owner_did}#key-1"),
                 "leaf_signature_key_b64u": "leaf-key",
-                "proof": {"type": "DataIntegrityProof"}
+                "issued_at": "2026-01-01T00:00:00Z",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "proof": {
+                    "type": "DataIntegrityProof",
+                    "verificationMethod": format!("{owner_did}#key-1")
+                }
             }),
             expires_at: None,
             non_cryptographic: false,

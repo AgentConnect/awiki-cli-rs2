@@ -60,7 +60,7 @@ where
         mut self,
         input: ResolveGroupStateRef,
     ) -> crate::ImResult<ResolveGroupStateRefResult> {
-        resolve_group_state_ref(
+        resolve_group_state_ref_local_first(
             self.client,
             &self.session_provider,
             &mut self.transport,
@@ -70,12 +70,13 @@ where
     }
 }
 
-pub(crate) fn resolve_group_state_ref<P, T, M>(
+fn resolve_group_state_ref<P, T, M>(
     client: &crate::core::ImClient,
     session_provider: &P,
     transport: &mut T,
     mls_provider: &M,
     input: ResolveGroupStateRef,
+    prefer_service_head: bool,
 ) -> crate::ImResult<ResolveGroupStateRefResult>
 where
     P: SessionProvider,
@@ -96,16 +97,36 @@ where
     })?;
     ensure_active_status(group_did, &mls_status)?;
 
-    if let Some(group_state_ref) = local_group_state_ref(client, group_did) {
-        return Ok(ResolveGroupStateRefResult {
-            group_state_ref,
-            source: GroupStateRefSource::LocalCache,
-            mls_status,
-            service_head_raw: None,
-        });
+    if !prefer_service_head {
+        if let Some(group_state_ref) = local_group_state_ref(client, group_did) {
+            return Ok(ResolveGroupStateRefResult {
+                group_state_ref,
+                source: GroupStateRefSource::LocalCache,
+                mls_status,
+                service_head_raw: None,
+            });
+        }
     }
 
-    let credentials = match input.credentials {
+    match resolve_service_group_state_ref(client, transport, group_did, input.credentials) {
+        Ok(result) => Ok(ResolveGroupStateRefResult {
+            mls_status,
+            ..result
+        }),
+        Err(err) => Err(err),
+    }
+}
+
+fn resolve_service_group_state_ref<T>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    group_did: &str,
+    credentials: Option<GroupTextCredentials>,
+) -> crate::ImResult<ResolveGroupStateRefResult>
+where
+    T: AuthenticatedRpcTransport,
+{
+    let credentials = match credentials {
         Some(credentials) => credentials,
         None => load_credentials(client)?,
     };
@@ -123,9 +144,59 @@ where
     Ok(ResolveGroupStateRefResult {
         group_state_ref,
         source: GroupStateRefSource::ServiceHead,
-        mls_status,
+        mls_status: StatusOutput {
+            status: String::new(),
+            epoch: None,
+            local_epoch: None,
+            pending_commits: Vec::new(),
+            epoch_authenticator: None,
+        },
         service_head_raw: Some(service_head_raw),
     })
+}
+
+pub(crate) fn resolve_group_state_ref_local_first<P, T, M>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    mls_provider: &M,
+    input: ResolveGroupStateRef,
+) -> crate::ImResult<ResolveGroupStateRefResult>
+where
+    P: SessionProvider,
+    T: AuthenticatedRpcTransport,
+    M: GroupMlsProvider,
+{
+    resolve_group_state_ref(
+        client,
+        session_provider,
+        transport,
+        mls_provider,
+        input,
+        false,
+    )
+}
+
+pub(crate) fn resolve_group_state_ref_service_first<P, T, M>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    mls_provider: &M,
+    input: ResolveGroupStateRef,
+) -> crate::ImResult<ResolveGroupStateRefResult>
+where
+    P: SessionProvider,
+    T: AuthenticatedRpcTransport,
+    M: GroupMlsProvider,
+{
+    resolve_group_state_ref(
+        client,
+        session_provider,
+        transport,
+        mls_provider,
+        input,
+        true,
+    )
 }
 
 pub(crate) fn local_group_state_ref(
@@ -156,6 +227,14 @@ pub(crate) fn group_state_ref_from_service_head(
             .get("mls")
             .and_then(|value| value.get("group_state_ref"))
             .and_then(|value| value.get("group_state_version")),
+        service_head.get("epoch"),
+        service_head
+            .get("group_state_ref")
+            .and_then(|value| value.get("epoch")),
+        service_head
+            .get("delivery")
+            .and_then(|value| value.get("epoch")),
+        service_head.get("mls").and_then(|value| value.get("epoch")),
     ]);
     if version.is_empty() {
         return Err(crate::ImError::LocalStateUnavailable {
@@ -408,6 +487,73 @@ mod tests {
         assert!(serde_json::to_string(&calls[0].params)
             .unwrap()
             .contains("origin_proof"));
+    }
+
+    #[test]
+    fn service_first_resolver_ignores_stale_local_snapshot() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        write_cached_group_snapshot(
+            &client,
+            "did:example:groups:e2ee",
+            json!({
+                "group_state_version": "1",
+                "group_e2ee": {
+                    "policy_hash": "sha256:stale-policy"
+                }
+            }),
+        );
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({
+                "group_state_ref": {
+                    "group_did": "did:example:groups:e2ee",
+                    "group_state_version": "2",
+                    "policy_hash": "sha256:current-policy"
+                }
+            }),
+        };
+
+        let result = resolve_group_state_ref_service_first(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            &ActiveStatusProvider,
+            ResolveGroupStateRef {
+                group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+                credentials: Some(fixture.credentials()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.source, GroupStateRefSource::ServiceHead);
+        assert_eq!(result.group_state_ref.group_state_version, "2");
+        assert_eq!(
+            result.group_state_ref.policy_hash.as_deref(),
+            Some("sha256:current-policy")
+        );
+        assert_eq!(calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn service_head_epoch_is_accepted_as_state_version() {
+        let group_state_ref = group_state_ref_from_service_head(
+            "did:example:groups:e2ee",
+            &json!({
+                "group_did": "did:example:groups:e2ee",
+                "crypto_group_id_b64u": "group-id",
+                "epoch": 8,
+                "epoch_authenticator_b64u": "auth",
+                "ratchet_tree_b64u": "tree",
+                "group_info_b64u": "group-info"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(group_state_ref.group_did, "did:example:groups:e2ee");
+        assert_eq!(group_state_ref.group_state_version, "8");
+        assert_eq!(group_state_ref.policy_hash, None);
     }
 
     #[test]
