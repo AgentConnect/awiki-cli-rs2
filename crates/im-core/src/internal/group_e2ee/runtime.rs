@@ -570,6 +570,16 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                         }),
                     ),
                     (
+                        "group.e2ee.head".to_owned(),
+                        json!({
+                            "group_state_ref": {
+                                "group_did": group_did,
+                                "group_state_version": "service-state-current"
+                            },
+                            "epoch": "2"
+                        }),
+                    ),
+                    (
                         "group.e2ee.send".to_owned(),
                         json!({
                             "accepted": true,
@@ -617,6 +627,7 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
                 "group.e2ee.notice",
                 "group.e2ee.head",
                 "group.e2ee.notice",
+                "group.e2ee.head",
                 "group.e2ee.send"
             ]
         );
@@ -625,10 +636,10 @@ WHERE owner_did = ?1 AND msg_id = ?2"#,
             "service-state-stale"
         );
         assert_eq!(
-            calls[7].params["body"]["group_state_ref"]["group_state_version"],
+            calls[8].params["body"]["group_state_ref"]["group_state_version"],
             "service-state-current"
         );
-        let encoded_retry = serde_json::to_string(&calls[7].params).unwrap();
+        let encoded_retry = serde_json::to_string(&calls[8].params).unwrap();
         assert!(!encoded_retry.contains("retry group text"));
         assert!(!encoded_retry.contains("application_plaintext"));
     }

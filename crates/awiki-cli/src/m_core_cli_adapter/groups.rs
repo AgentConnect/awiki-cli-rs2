@@ -94,6 +94,23 @@ pub struct GroupKeyPackagePublishRequest {
     pub device: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupE2eeProcessLeaveRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub leave_request_id: String,
+    pub reason_text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupE2eeMemberKeyRequest {
+    pub identity_name: String,
+    pub group: String,
+    pub member: String,
+    pub device: String,
+}
+
 fn group_raw_response(result: &im_core::groups::GroupReadResult) -> Value {
     result.response_json().cloned().unwrap_or(Value::Null)
 }
@@ -222,6 +239,7 @@ fn mutate_group_member_via_im_core(
         member,
         role: GroupMemberRole::parse_optional(&request.role).map_err(im_error_to_message_error)?,
         reason_text: optional_string(&request.reason_text),
+        leave_request_id: optional_string(&request.leave_request_id),
         security: group_security_requirement(request.secure_required || request.e2ee),
     };
     let result = if action == "add" {
@@ -491,6 +509,109 @@ pub fn publish_group_key_package_via_im_core(
             "delivery": result.raw_response,
         }),
         summary: "Published group E2EE KeyPackage".to_owned(),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
+pub fn process_group_e2ee_leave_request_via_im_core(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeProcessLeaveRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    if request.leave_request_id.trim().is_empty() {
+        return Err(MessageAdapterError::Internal(
+            "group e2ee process-leave-request requires leave_request_id".to_string(),
+        ));
+    }
+    let result = client
+        .groups()
+        .process_e2ee_leave_request(im_core::groups::GroupE2eeProcessLeaveRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            leave_request_id: request.leave_request_id,
+            reason_text: optional_string(&request.reason_text),
+        })
+        .map_err(im_error_to_message_error)?;
+    let raw = group_raw_response(&result);
+    Ok(CommandResult {
+        data: json!({
+            "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": request.group })),
+            "members": group_members_to_cli_json(&result, &raw),
+            "delivery": raw,
+            "member": group_member_resolution_json(result.resolved_member.as_ref()),
+        }),
+        summary: "Processed group E2EE leave request".to_string(),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
+pub fn update_group_e2ee_key_via_im_core(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeMemberKeyRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    let result = client
+        .groups()
+        .update_member_key(im_core::groups::GroupE2eeUpdateKeyRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            device_id: optional_string(&request.device),
+        })
+        .map_err(im_error_to_message_error)?;
+    group_e2ee_key_command_result("Updated group E2EE member key", request.group, result)
+}
+
+pub fn recover_group_e2ee_member_via_im_core(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: GroupE2eeMemberKeyRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    if request.group.trim().is_empty() {
+        return Err(MessageAdapterError::GroupRequired);
+    }
+    if request.member.trim().is_empty() {
+        return Err(MessageAdapterError::MemberRequired);
+    }
+    let result = client
+        .groups()
+        .recover_member(im_core::groups::GroupE2eeRecoverMemberRequest {
+            group: GroupRef::parse(&request.group).map_err(im_error_to_message_error)?,
+            member: GroupMemberRef::parse(&request.member, &resolved.did_domain)
+                .map_err(im_error_to_message_error)?,
+            device_id: optional_string(&request.device),
+        })
+        .map_err(im_error_to_message_error)?;
+    group_e2ee_key_command_result("Recovered group E2EE member", request.group, result)
+}
+
+fn group_e2ee_key_command_result(
+    summary: &str,
+    group: String,
+    result: im_core::groups::GroupReadResult,
+) -> Result<CommandResult, MessageAdapterError> {
+    let raw = group_raw_response(&result);
+    Ok(CommandResult {
+        data: json!({
+            "group": group_snapshot_result_json(&result, &raw).unwrap_or_else(|| json!({ "group_did": group })),
+            "members": group_members_to_cli_json(&result, &raw),
+            "delivery": raw,
+            "member": group_member_resolution_json(result.resolved_member.as_ref()),
+        }),
+        summary: summary.to_string(),
         warnings: compact_warnings(result.warnings),
     })
 }

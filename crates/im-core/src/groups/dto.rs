@@ -120,6 +120,8 @@ pub struct GroupMemberMutationRequest {
     pub member: GroupMemberRef,
     pub role: Option<GroupMemberRole>,
     pub reason_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leave_request_id: Option<String>,
     #[serde(default)]
     pub security: GroupSecurityRequirement,
 }
@@ -141,6 +143,28 @@ pub struct GroupKeyPackagePublishResult {
     pub group: Option<crate::ids::GroupRef>,
     pub raw_response: Value,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeProcessLeaveRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub leave_request_id: String,
+    pub reason_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeUpdateKeyRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeRecoverMemberRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

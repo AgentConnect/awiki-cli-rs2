@@ -219,7 +219,9 @@ impl<'a> GroupService<'a> {
                     service_did: None,
                 },
             )?;
-            result.warnings.extend(secure.warnings);
+            result = super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
+            result.resolved_member = Some(resolved_member.clone());
+            self.refresh_group_state_for(&mut result, &group, true);
         }
         Ok(result)
     }
@@ -266,7 +268,7 @@ impl<'a> GroupService<'a> {
                             group: request.group,
                             member: resolved_member.did.clone(),
                             reason_text: request.reason_text,
-                            leave_request_id: None,
+                            leave_request_id: request.leave_request_id,
                             credentials: None,
                             service_did: None,
                         },
@@ -291,6 +293,118 @@ impl<'a> GroupService<'a> {
         crate::internal::group_runtime::projection::project_group_snapshot(self.client, &result);
         self.refresh_group_state_for(&mut result, &group, true);
         Ok(result)
+    }
+
+    pub fn process_e2ee_leave_request(
+        &self,
+        request: super::GroupE2eeProcessLeaveRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        #[cfg(not(feature = "group-e2ee"))]
+        {
+            let _ = request;
+            return Err(crate::ImError::unsupported("group-e2ee"));
+        }
+        #[cfg(feature = "group-e2ee")]
+        {
+            ensure_group_e2ee_service_available(self.client, false)?;
+            let group = request.group.as_str().to_owned();
+            let resolved_member = resolve_group_member(self.client, &request.member)?;
+            let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?,
+            )
+            .process_leave_request(
+                crate::internal::group_e2ee::lifecycle::GroupE2eeMemberMutationInput {
+                    group: request.group,
+                    member: resolved_member.did.clone(),
+                    reason_text: request.reason_text,
+                    leave_request_id: Some(request.leave_request_id),
+                    credentials: None,
+                    service_did: None,
+                },
+            )?;
+            let mut result =
+                super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
+            result.resolved_member = Some(resolved_member);
+            self.refresh_group_state_for(&mut result, &group, true);
+            Ok(result)
+        }
+    }
+
+    pub fn update_member_key(
+        &self,
+        request: super::GroupE2eeUpdateKeyRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        #[cfg(not(feature = "group-e2ee"))]
+        {
+            let _ = request;
+            return Err(crate::ImError::unsupported("group-e2ee"));
+        }
+        #[cfg(feature = "group-e2ee")]
+        {
+            ensure_group_e2ee_service_available(self.client, true)?;
+            let group = request.group.as_str().to_owned();
+            let resolved_member = resolve_group_member(self.client, &request.member)?;
+            let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?,
+            )
+            .update_member_key(
+                crate::internal::group_e2ee::lifecycle::GroupE2eeKeyReplacementInput {
+                    group: request.group,
+                    member: resolved_member.did.clone(),
+                    device_id: request.device_id.unwrap_or_default(),
+                    credentials: None,
+                    service_did: None,
+                },
+            )?;
+            let mut result =
+                super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
+            result.resolved_member = Some(resolved_member);
+            self.refresh_group_state_for(&mut result, &group, true);
+            Ok(result)
+        }
+    }
+
+    pub fn recover_member(
+        &self,
+        request: super::GroupE2eeRecoverMemberRequest,
+    ) -> crate::ImResult<super::GroupReadResult> {
+        #[cfg(not(feature = "group-e2ee"))]
+        {
+            let _ = request;
+            return Err(crate::ImError::unsupported("group-e2ee"));
+        }
+        #[cfg(feature = "group-e2ee")]
+        {
+            ensure_group_e2ee_service_available(self.client, true)?;
+            let group = request.group.as_str().to_owned();
+            let resolved_member = resolve_group_member(self.client, &request.member)?;
+            let secure = crate::internal::group_e2ee::lifecycle::GroupE2eeLifecycleRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?,
+            )
+            .recover_member(
+                crate::internal::group_e2ee::lifecycle::GroupE2eeKeyReplacementInput {
+                    group: request.group,
+                    member: resolved_member.did.clone(),
+                    device_id: request.device_id.unwrap_or_default(),
+                    credentials: None,
+                    service_did: None,
+                },
+            )?;
+            let mut result =
+                super::GroupReadResult::from_raw_response(secure.delivery, secure.warnings);
+            result.resolved_member = Some(resolved_member);
+            self.refresh_group_state_for(&mut result, &group, true);
+            Ok(result)
+        }
     }
 
     pub fn update_profile(
@@ -639,6 +753,7 @@ fn resolved_group_member_request(
         member: super::GroupMemberRef::from(member.did.clone()),
         role: request.role,
         reason_text: request.reason_text,
+        leave_request_id: request.leave_request_id,
         security: request.security,
     }
 }
