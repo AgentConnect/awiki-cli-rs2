@@ -44,8 +44,13 @@ fn secure_service_api_shape_is_available_from_client() {
         .status()
         .unwrap();
     assert_eq!(group.group.as_str(), "did:example:groups:secure-api");
+    assert_eq!(group.state, im_core::secure::GroupSecureState::Unavailable);
     assert!(!group.can_send_secure);
     assert!(!group.local_readiness.has_local_state);
+    assert_eq!(
+        group.problem.as_ref().map(|problem| &problem.code),
+        Some(&SecureProblemCode::IdentityNotReady)
+    );
 
     let failed = client.secure().outbox().list_failed().unwrap();
     assert!(failed.is_empty());

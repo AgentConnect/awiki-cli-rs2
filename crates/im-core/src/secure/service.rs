@@ -106,22 +106,29 @@ impl GroupSecureConversation<'_> {
         #[cfg(feature = "group-e2ee")]
         {
             let provider =
-                crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
-            group_status_to_dto(
-                crate::internal::group_e2ee::status::GroupE2eeStatusRuntime::new(
-                    self.client,
-                    crate::internal::auth::session::FileSessionProvider::new(self.client),
-                    crate::internal::transport::CoreHttpTransport::new(self.client),
-                    provider,
-                )
-                .status(
-                    crate::internal::group_e2ee::status::GroupE2eeStatusInput {
-                        group: self.group.clone(),
-                        credentials: None,
-                        notice_limit: 50,
-                    },
-                )?,
+                match crate::internal::group_e2ee::storage::native_provider_for_client(self.client)
+                {
+                    Ok(provider) => provider,
+                    Err(err) => return Ok(group_status_unavailable(self.group.clone(), err)),
+                };
+            let status = crate::internal::group_e2ee::status::GroupE2eeStatusRuntime::new(
+                self.client,
+                crate::internal::auth::session::FileSessionProvider::new(self.client),
+                crate::internal::transport::CoreHttpTransport::new(self.client),
+                provider,
             )
+            .status(crate::internal::group_e2ee::status::GroupE2eeStatusInput {
+                group: self.group.clone(),
+                credentials: None,
+                notice_limit: 50,
+            });
+            match status {
+                Ok(status) => group_status_to_dto(status),
+                Err(err) if group_status_can_downgrade_error(&err) => {
+                    Ok(group_status_unavailable(self.group.clone(), err))
+                }
+                Err(err) => Err(err),
+            }
         }
         #[cfg(not(feature = "group-e2ee"))]
         {
@@ -176,6 +183,60 @@ impl GroupSecureConversation<'_> {
         {
             Err(crate::ImError::unsupported("group-e2ee"))
         }
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_status_unavailable(
+    group: crate::ids::GroupRef,
+    err: crate::ImError,
+) -> super::GroupSecureStatus {
+    let problem_code = group_status_problem_code(&err);
+    super::GroupSecureStatus {
+        group,
+        state: super::GroupSecureState::Unavailable,
+        can_send_secure: false,
+        local_readiness: super::GroupSecureLocalReadiness {
+            has_local_state: false,
+            has_active_membership: false,
+        },
+        pending_work: super::GroupSecurePendingWork::default(),
+        problem: Some(super::SecureProblem {
+            code: problem_code,
+            message: format!("group E2EE status is unavailable: {err}"),
+            retryable: true,
+        }),
+        warnings: vec!["group E2EE status is unavailable".to_owned()],
+    }
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_status_can_downgrade_error(err: &crate::ImError) -> bool {
+    matches!(
+        err,
+        crate::ImError::IdentityRequired
+            | crate::ImError::IdentityNotFound { .. }
+            | crate::ImError::DefaultIdentityMissing
+            | crate::ImError::IdentityNotReady { .. }
+            | crate::ImError::AuthRequired
+            | crate::ImError::SessionExpired
+            | crate::ImError::TransportUnavailable { .. }
+            | crate::ImError::LocalStateUnavailable { .. }
+            | crate::ImError::PathUnavailable { .. }
+            | crate::ImError::CredentialFileUnreadable { .. }
+    )
+}
+
+#[cfg(feature = "group-e2ee")]
+fn group_status_problem_code(err: &crate::ImError) -> super::SecureProblemCode {
+    match err {
+        crate::ImError::TransportUnavailable { .. } => {
+            super::SecureProblemCode::TransportUnavailable
+        }
+        crate::ImError::LocalStateUnavailable { .. } => {
+            super::SecureProblemCode::LocalStateUnavailable
+        }
+        _ => super::SecureProblemCode::IdentityNotReady,
     }
 }
 
