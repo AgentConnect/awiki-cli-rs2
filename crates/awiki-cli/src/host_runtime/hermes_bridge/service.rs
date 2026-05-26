@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub const ENABLE_SYSTEMD_SERVICE_ENV: &str = "AWIKI_CLI_ENABLE_SYSTEMD_HERMES_BRIDGE_SERVICE";
+pub const INTERNAL_ENTRY_ENV: &str = "AWIKI_CLI_INTERNAL_ENTRY";
 pub const SERVICE_NAME_PREFIX: &str = "awiki-cli-hermes-bridge";
 pub const SERVICE_DISPLAY_NAME_PREFIX: &str = "awiki-cli Hermes Bridge";
 pub const SERVICE_DESCRIPTION: &str = "awiki-cli Hermes notify bridge";
@@ -364,6 +365,7 @@ pub fn systemd_unit_for(resolved: &Resolved) -> anyhow::Result<BridgeSystemdUnit
     let stderr_log = Path::new(&plan.log_directory).join("hermes-bridge.service.err.log");
     let env_lines = [
         ("AWIKI_CLI_WORKSPACE_HOME_DIR", plan.env_workspace_home_dir),
+        (INTERNAL_ENTRY_ENV, "1".to_string()),
         ("HERMES_HOME", plan.env_hermes_home),
     ]
     .into_iter()

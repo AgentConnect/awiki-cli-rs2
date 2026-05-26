@@ -1,9 +1,12 @@
-use super::layout::write_secure_text;
-use super::types::{IdentityError, Paths};
+use super::layout::{write_secure_text, Manager};
+use super::types::{IdentityError, Paths, INDEX_FILE_NAME};
 use anp::PrivateKeyMaterial;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
+use std::path::Path;
 
 const ANP_SECP256K1_PRIVATE_KEY_LABEL: &str = "ANP SECP256K1 PRIVATE KEY";
 const ANP_SECP256R1_PRIVATE_KEY_LABEL: &str = "ANP SECP256R1 PRIVATE KEY";
@@ -28,6 +31,41 @@ pub(crate) fn ensure_identity_private_keys_compatible(paths: &Paths) -> Result<(
     Ok(())
 }
 
+pub(crate) fn ensure_all_identity_private_keys_compatible(
+    workspace_paths: &crate::workspace_config::Paths,
+) -> Result<(), IdentityError> {
+    let identity_root = Path::new(&workspace_paths.identity_dir);
+    let raw = match fs::read(identity_root.join(INDEX_FILE_NAME)) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(IdentityError::Io(err)),
+    };
+    for dir_name in indexed_identity_dir_names(&raw)? {
+        ensure_identity_dir_private_keys_compatible(workspace_paths, &dir_name)?;
+    }
+    Ok(())
+}
+
+fn indexed_identity_dir_names(raw: &[u8]) -> Result<Vec<String>, IdentityError> {
+    if let Ok(file) = serde_json::from_slice::<SdkRegistryFile>(raw) {
+        if file.default_identity.is_some() || !file.identities.is_empty() {
+            return Ok(file
+                .identities
+                .into_iter()
+                .map(|entry| sdk_identity_dir_name(&entry))
+                .filter(|dir_name| !dir_name.trim().is_empty())
+                .collect());
+        }
+    }
+    let file: LegacyRegistryFile = serde_json::from_slice(raw)?;
+    Ok(file
+        .credentials
+        .into_iter()
+        .map(|(alias, entry)| legacy_identity_dir_name(&alias, &entry))
+        .filter(|dir_name| !dir_name.trim().is_empty())
+        .collect())
+}
+
 fn ensure_private_key_pem_compatible(path: &str, name: &str) -> Result<(), IdentityError> {
     let raw = match fs::read(path) {
         Ok(raw) => raw,
@@ -41,6 +79,15 @@ fn ensure_private_key_pem_compatible(path: &str, name: &str) -> Result<(), Ident
         IdentityError::Internal(format!("rewrite {name} as standard PKCS#8 PEM: {err}"))
     })?;
     Ok(())
+}
+
+fn ensure_identity_dir_private_keys_compatible(
+    workspace_paths: &crate::workspace_config::Paths,
+    dir_name: &str,
+) -> Result<(), IdentityError> {
+    let manager = Manager::new(workspace_paths.clone());
+    let paths = manager.build_paths(dir_name);
+    ensure_identity_private_keys_compatible(&paths)
 }
 
 fn normalize_private_key_pem_to_pkcs8(
@@ -93,6 +140,34 @@ fn normalize_private_key_pem_to_pkcs8(
         return Ok(None);
     }
     Ok(Some(normalized))
+}
+
+fn sdk_identity_dir_name(entry: &SdkIdentityRecord) -> String {
+    first_non_empty([
+        entry.dir_name.as_deref().unwrap_or_default(),
+        entry.local_alias.as_deref().unwrap_or_default(),
+        &entry.id,
+    ])
+    .unwrap_or_default()
+    .to_string()
+}
+
+fn legacy_identity_dir_name(alias: &str, entry: &LegacyIdentityRecord) -> String {
+    first_non_empty([
+        &entry.dir_name,
+        &entry.unique_id,
+        &entry.credential_name,
+        alias,
+    ])
+    .unwrap_or(alias)
+    .to_string()
+}
+
+fn first_non_empty<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    values
+        .into_iter()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
 }
 
 fn decode_single_pem(input: &str, name: &str) -> Result<PemBlock, IdentityError> {
@@ -164,6 +239,39 @@ fn trim_trailing_lf(bytes: &[u8]) -> &[u8] {
         end -= 1;
     }
     &bytes[..end]
+}
+
+#[derive(Debug, Deserialize)]
+struct SdkRegistryFile {
+    #[serde(default)]
+    default_identity: Option<String>,
+    #[serde(default)]
+    identities: Vec<SdkIdentityRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SdkIdentityRecord {
+    id: String,
+    #[serde(default)]
+    dir_name: Option<String>,
+    #[serde(default)]
+    local_alias: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyRegistryFile {
+    #[serde(default)]
+    credentials: BTreeMap<String, LegacyIdentityRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyIdentityRecord {
+    #[serde(default)]
+    credential_name: String,
+    #[serde(default)]
+    dir_name: String,
+    #[serde(default)]
+    unique_id: String,
 }
 
 #[cfg(test)]

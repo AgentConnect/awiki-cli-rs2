@@ -330,6 +330,8 @@ fn message_metadata_from_object(
         send_state.as_ref(),
         retry_target,
     );
+    let content_type =
+        Some(string_value(object.get("content_type"))).filter(|value| !value.trim().is_empty());
     crate::messages::MessageMetadata {
         operation_id: Some(string_value(object.get("operation_id")))
             .filter(|value| !value.trim().is_empty()),
@@ -340,9 +342,8 @@ fn message_metadata_from_object(
         server_sequence: i64_value(object.get("server_seq"))
             .or_else(|| i64_value(object.get("sequence")))
             .or_else(|| i64_value(object.get("group_event_seq"))),
-        content_type: Some(string_value(object.get("content_type")))
-            .filter(|value| !value.trim().is_empty()),
-        attributes: Vec::new(),
+        content_type: content_type.clone(),
+        attributes: raw_content_attributes(object.get("content"), content_type.as_deref()),
     }
 }
 
@@ -415,6 +416,38 @@ fn message_body(value: &Value) -> crate::messages::MessageBodyView {
         _ => return crate::messages::MessageBodyView::Unsupported { content_type },
     };
     crate::messages::MessageBodyView::Text { text, kind }
+}
+
+fn raw_content_attributes(
+    content: Option<&Value>,
+    content_type: Option<&str>,
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    let Some(content) = content else {
+        return Vec::new();
+    };
+    let Some(content_type) = content_type
+        .map(str::trim)
+        .filter(|content_type| !content_type.is_empty())
+    else {
+        return Vec::new();
+    };
+    if content_type != crate::attachments::manifest::attachment_manifest_content_type() {
+        return Vec::new();
+    }
+    if content.is_null() {
+        return Vec::new();
+    }
+    let value = match content {
+        Value::String(text) => text.clone(),
+        value => serde_json::to_string(value).unwrap_or_default(),
+    };
+    if value.trim().is_empty() {
+        return Vec::new();
+    }
+    vec![crate::messages::MessageMetadataAttribute {
+        key: "raw_content".to_string(),
+        value,
+    }]
 }
 
 fn string_value(value: Option<&Value>) -> String {
@@ -787,6 +820,80 @@ mod tests {
         assert!(!serde_json::to_string(&page)
             .unwrap()
             .contains("FAILED-CIPHER"));
+    }
+
+    #[test]
+    fn inbox_projection_preserves_attachment_manifest_content() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [{
+                        "id": "msg-attachment-1",
+                        "sender_did": "did:example:bob",
+                        "receiver_did": "did:example:alice",
+                        "content_type": "application/anp-attachment-manifest+json",
+                        "content": {
+                            "attachments": [{
+                                "attachment_id": "att-1",
+                                "filename": "report.txt",
+                                "mime_type": "text/plain",
+                                "size": "12",
+                                "digest": {
+                                    "alg": "sha-256",
+                                    "value_b64u": "digest"
+                                },
+                                "access_info": {
+                                    "object_uri": "https://objects.example/att-1"
+                                },
+                                "encryption_info": {
+                                    "mode": "none"
+                                }
+                            }],
+                            "caption": "direct attachment",
+                            "primary_attachment_id": "att-1"
+                        },
+                        "server_seq": 42
+                    }],
+                    "has_more": false
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::DirectOnly,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: true,
+                },
+            })
+            .unwrap();
+
+        let message = &result.page.items[0];
+        assert_eq!(
+            message.metadata.content_type.as_deref(),
+            Some("application/anp-attachment-manifest+json")
+        );
+        assert!(matches!(
+            message.body,
+            crate::messages::MessageBodyView::Unsupported { .. }
+        ));
+        let raw_content = message
+            .metadata
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key == "raw_content")
+            .expect("raw content attribute");
+        let content: Value = serde_json::from_str(&raw_content.value).unwrap();
+        assert_eq!(content["attachments"][0]["attachment_id"], "att-1");
+        assert_eq!(content["caption"], "direct attachment");
     }
 
     #[derive(Clone)]

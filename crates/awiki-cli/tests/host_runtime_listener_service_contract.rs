@@ -99,6 +99,7 @@ fn listener_service_config_plan_matches_go_new_service_config_shape() {
         "AWIKI_CLI_WORKSPACE_HOME_DIR".to_string(),
         resolved.paths.workspace_home_dir.clone(),
     );
+    expected_env.insert("AWIKI_CLI_INTERNAL_ENTRY".to_string(), "1".to_string());
     expected_env.insert("AWIKI_LISTENER_SERVICE_MODE".to_string(), "1".to_string());
     assert_eq!(plan.env_vars, expected_env);
 
@@ -157,6 +158,9 @@ fn listener_systemd_unit_matches_go_service_intent_on_linux() {
     assert!(unit
         .content
         .contains("Environment=AWIKI_LISTENER_SERVICE_MODE=1"));
+    assert!(unit
+        .content
+        .contains("Environment=AWIKI_CLI_INTERNAL_ENTRY=1"));
     assert!(unit.content.contains(&format!(
         "Environment=AWIKI_CLI_WORKSPACE_HOME_DIR={}",
         resolved.paths.workspace_home_dir

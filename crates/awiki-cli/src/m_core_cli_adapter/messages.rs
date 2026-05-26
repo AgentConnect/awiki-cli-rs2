@@ -736,8 +736,8 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
         "sender_did": message.sender.as_str(),
         "receiver_did": message.receiver.as_ref().map(|peer| peer.as_str()).unwrap_or_default(),
         "group_did": message.group.as_ref().map(|group| group.as_str()).unwrap_or_default(),
-        "content": message_body_content(&message.body),
-        "content_type": message_content_type(&message.body),
+        "content": message_body_content(message),
+        "content_type": message_content_type(message),
         "sent_at": message.sent_at.clone().unwrap_or_default(),
         "received_at": message.received_at.clone().unwrap_or_default(),
         "is_read": false,
@@ -757,7 +757,13 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
     if let Some(delivery_state) = &message.metadata.delivery_state {
         value["delivery_state"] = json!(delivery_state);
     }
+    if message_content_type(message) == im_core::attachments::attachment_manifest_content_type() {
+        value["type"] = json!("attachment_manifest");
+    }
     for attribute in &message.metadata.attributes {
+        if attribute.key == "raw_content" {
+            continue;
+        }
         if !attribute.key.trim().is_empty() {
             value[attribute.key.as_str()] = json!(attribute.value);
         }
@@ -765,21 +771,37 @@ fn message_to_cli_json(message: &im_core::prelude::Message) -> Value {
     value
 }
 
-fn message_body_content(body: &MessageBodyView) -> String {
-    match body {
-        MessageBodyView::Text { text, .. } => text.clone(),
-        MessageBodyView::Unsupported { .. } => String::new(),
+fn message_body_content(message: &im_core::prelude::Message) -> Value {
+    match &message.body {
+        MessageBodyView::Text { text, .. } => Value::String(text.clone()),
+        MessageBodyView::Unsupported { .. } => {
+            raw_content_value(&message.metadata.attributes).unwrap_or(Value::Null)
+        }
     }
 }
 
-fn message_content_type(body: &MessageBodyView) -> &'static str {
-    match body {
+fn message_content_type(message: &im_core::prelude::Message) -> String {
+    if let Some(content_type) = message
+        .metadata
+        .content_type
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return content_type.to_string();
+    }
+    match &message.body {
         MessageBodyView::Text {
             kind: MessageKind::Markdown,
             ..
-        } => "text/markdown",
-        MessageBodyView::Text { .. } => "text/plain",
-        MessageBodyView::Unsupported { .. } => "application/octet-stream",
+        } => "text/markdown".to_string(),
+        MessageBodyView::Text { .. } => "text/plain".to_string(),
+        MessageBodyView::Unsupported { content_type } => content_type
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("application/octet-stream")
+            .to_string(),
     }
 }
 
@@ -919,6 +941,13 @@ fn bool_value(value: Option<&Value>) -> bool {
         ),
         _ => false,
     }
+}
+
+fn raw_content_value(attributes: &[MessageMetadataAttribute]) -> Option<Value> {
+    let raw = message_attribute(attributes, "raw_content")?;
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .or_else(|| Some(Value::String(raw)))
 }
 
 fn message_text_and_type(

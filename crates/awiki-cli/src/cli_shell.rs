@@ -24,8 +24,9 @@ mod id_recover_handlers;
 mod id_replace_did_handlers;
 mod legacy_identity {
     pub(super) use crate::workspace_upgrade::legacy_identity::{
-        choose_default_identity_name, create_migration_identity, import_v1_migration,
-        CommandResult, IdentityError, Manager,
+        choose_default_identity_name, create_migration_identity,
+        ensure_all_identity_private_keys_compatible, import_v1_migration, CommandResult,
+        IdentityError, Manager,
     };
 }
 mod legacy_sqlite {
@@ -702,7 +703,10 @@ impl App {
         phase.finish();
         result.map_err(|err| internal_anyhow(anyhow::Error::new(err)))?;
 
-        self.resolve_config_untraced().map_err(internal_anyhow)
+        let resolved = self.resolve_config_untraced().map_err(internal_anyhow)?;
+        legacy_identity::ensure_all_identity_private_keys_compatible(&resolved.paths)
+            .map_err(identity_exit)?;
+        Ok(resolved)
     }
 
     fn open_store(

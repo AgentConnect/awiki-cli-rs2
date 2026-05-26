@@ -83,6 +83,25 @@ fn hermes_bridge_service_config_plan_matches_go_new_service_config() {
 }
 
 #[test]
+fn hermes_bridge_systemd_unit_allows_hidden_service_entry() {
+    let resolved = test_resolved();
+    let _fixture = prepare_bridge_config_fixture(&resolved);
+    let unit = hermes_bridge::systemd_unit_for(&resolved).expect("systemd unit");
+
+    assert!(unit
+        .content
+        .contains("runtime host-notify hermes bridge service-run"));
+    assert!(unit
+        .content
+        .contains("Environment=AWIKI_CLI_INTERNAL_ENTRY=1"));
+    assert!(unit.content.contains(&format!(
+        "Environment=AWIKI_CLI_WORKSPACE_HOME_DIR={}",
+        resolved.paths.workspace_home_dir
+    )));
+    assert!(unit.content.contains("Environment=HERMES_HOME="));
+}
+
+#[test]
 fn hermes_bridge_systemd_gate_defaults_off() {
     assert!(!hermes_bridge::service_enabled_by_env_value(None));
     assert!(!hermes_bridge::service_enabled_by_env_value(Some("")));

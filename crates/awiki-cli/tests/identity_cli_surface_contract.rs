@@ -1,4 +1,5 @@
 use anp::authentication::{create_did_wba_document, DidDocumentOptions};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -67,6 +68,58 @@ fn identity_create_list_current_use_and_status_match_local_contract() {
     let status = success_json(&awiki_cmd(&["id", "status"], workspace.path()));
     assert_eq!(status["data"]["active_identity"]["identity_name"], "bob");
     assert_eq!(status["data"]["identity_count"], 2);
+}
+
+#[test]
+fn identity_current_migrates_legacy_anp_pem_before_im_core_store_read() {
+    let workspace = TempDir::new().expect("workspace");
+    let workspace_home = workspace.path().join(".awiki-cli");
+    let identity = write_ready_identity(
+        &workspace_home,
+        TestIdentityOptions {
+            identity_name: "legacy-pem",
+            handle: "legacy-pem",
+            display_name: "Legacy PEM",
+            jwt_token: "jwt-legacy",
+            make_default: true,
+        },
+    );
+    let key_paths = [
+        identity.identity_dir.join("key-1-private.pem"),
+        identity.identity_dir.join("e2ee-signing-private.pem"),
+        identity.identity_dir.join("e2ee-agreement-private.pem"),
+    ];
+    std::fs::write(
+        &key_paths[0],
+        legacy_private_pem("ANP ED25519 PRIVATE KEY", &[1; 32]),
+    )
+    .expect("write legacy key-1");
+    std::fs::write(
+        &key_paths[1],
+        legacy_private_pem("ANP SECP256R1 PRIVATE KEY", &[1]),
+    )
+    .expect("write legacy e2ee signing");
+    std::fs::write(
+        &key_paths[2],
+        legacy_private_pem("ANP X25519 PRIVATE KEY", &[2; 32]),
+    )
+    .expect("write legacy e2ee agreement");
+
+    let current = success_json(&awiki_cmd(&["id", "current"], workspace.path()));
+
+    assert_eq!(current["data"]["identity"]["identity_name"], "legacy-pem");
+    assert_eq!(current["data"]["identity"]["has_key1_private"], true);
+    assert_eq!(
+        current["data"]["identity"]["has_e2ee_signing_private"],
+        true
+    );
+    assert_eq!(
+        current["data"]["identity"]["has_e2ee_agreement_private"],
+        true
+    );
+    for path in key_paths {
+        assert_standard_private_key_pem(&path);
+    }
 }
 
 #[test]
@@ -941,6 +994,30 @@ fn sanitize_component(raw: &str) -> String {
         .collect::<String>()
         .trim_matches(['.', '_', '-'])
         .to_string()
+}
+
+fn legacy_private_pem(label: &str, contents: &[u8]) -> String {
+    let encoded = STANDARD.encode(contents);
+    let mut wrapped = String::new();
+    for chunk in encoded.as_bytes().chunks(64) {
+        wrapped.push_str(std::str::from_utf8(chunk).expect("base64 chunk"));
+        wrapped.push('\n');
+    }
+    format!("-----BEGIN {label}-----\n{wrapped}-----END {label}-----\n")
+}
+
+fn assert_standard_private_key_pem(path: &Path) {
+    let value = std::fs::read_to_string(path).expect("read private key");
+    assert!(
+        !value.contains("BEGIN ANP "),
+        "{path:?} still uses legacy ANP PEM label"
+    );
+    assert!(
+        value.starts_with("-----BEGIN PRIVATE KEY-----"),
+        "{path:?} starts with {:?}",
+        value.lines().next().unwrap_or_default()
+    );
+    anp::PrivateKeyMaterial::from_pem(&value).expect("standard private key parses");
 }
 
 fn awiki_cmd_with_home(args: &[&str], workspace: &Path, home: &Path) -> Output {

@@ -22,3 +22,5 @@ pub(crate) use service::{create_migration_identity, import_v1_migration, Command
 pub(crate) use types::{
     IdentityError, IdentitySummary, ImportResult, ReplaceDidParams, INDEX_FILE_NAME,
 };
+
+pub(crate) use key_compat::ensure_all_identity_private_keys_compatible;

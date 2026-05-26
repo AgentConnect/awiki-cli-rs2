@@ -17,6 +17,7 @@ pub const SERVICE_ARGUMENTS: &[&str] = &["runtime", "listener", "service-run"];
 pub const SERVICE_PID_FILE_NAME: &str = "listener.service.pid";
 pub const WORKSPACE_HOME_ENV: &str = "AWIKI_CLI_WORKSPACE_HOME_DIR";
 pub const LISTENER_SERVICE_MODE_ENV: &str = "AWIKI_LISTENER_SERVICE_MODE";
+pub const INTERNAL_ENTRY_ENV: &str = "AWIKI_CLI_INTERNAL_ENTRY";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ForegroundSignal {
@@ -370,6 +371,7 @@ pub fn service_config_plan_for(resolved: &Resolved, is_windows: bool) -> Listene
         WORKSPACE_HOME_ENV.to_string(),
         resolved.paths.workspace_home_dir.clone(),
     );
+    env_vars.insert(INTERNAL_ENTRY_ENV.to_string(), "1".to_string());
     env_vars.insert(LISTENER_SERVICE_MODE_ENV.to_string(), "1".to_string());
 
     ListenerServiceConfigPlan {
