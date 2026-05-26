@@ -349,7 +349,7 @@ fn string_value(raw: &Value, key: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
-fn identity_summary_from_stored(
+pub(crate) fn identity_summary_from_stored(
     stored: &crate::internal::identity_store::StoredIdentity,
 ) -> crate::ImResult<crate::identity::IdentitySummary> {
     Ok(crate::identity::IdentitySummary {

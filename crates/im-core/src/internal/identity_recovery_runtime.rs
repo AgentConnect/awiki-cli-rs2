@@ -8,6 +8,16 @@ pub(crate) struct IdentityRecoveryRuntimeResult {
     pub(crate) raw: Value,
 }
 
+pub(crate) struct PreparedRecoverHandleRequest {
+    pub(crate) request: crate::identity::RecoverHandleRequest,
+    pub(crate) local_store: Option<GeneratedRecoveryLocalStore>,
+}
+
+pub(crate) struct GeneratedRecoveryLocalStore {
+    generated: crate::internal::identity_generation::GeneratedIdentity,
+    local_alias: String,
+}
+
 pub(crate) struct IdentityRecoveryRuntime<T> {
     core: Option<crate::core::ImCore>,
     transport: T,
@@ -278,6 +288,109 @@ where
     }
 }
 
+pub(crate) fn prepare_recover_handle_request(
+    core: &crate::core::ImCore,
+    mut request: crate::identity::RecoverHandleRequest,
+) -> crate::ImResult<PreparedRecoverHandleRequest> {
+    let otp_present = request
+        .otp
+        .as_deref()
+        .is_some_and(|otp| !otp.trim().is_empty());
+    let mut local_store = None;
+    if otp_present && request.local_finalize.is_none() && request.generated_identity.is_none() {
+        let target = recovery_target(&request.handle, &core.inner().sdk_config().did_domain)?;
+        let generated = crate::internal::identity_generation::generate_identity_with_path_segments(
+            &target.effective_domain,
+            [target.local_part.as_str()],
+            core.inner().sdk_config().anp_service_endpoint.as_ref(),
+            core.inner().sdk_config().anp_service_did.as_ref(),
+        )?;
+        request.generated_identity = Some(crate::identity::RecoverGeneratedIdentity {
+            did: generated.did.clone(),
+            unique_id: generated.unique_id.clone(),
+            did_document: generated.did_document.clone(),
+        });
+        request.handle = target.full_handle;
+        local_store = Some(GeneratedRecoveryLocalStore {
+            generated,
+            local_alias: if target.explicit_domain {
+                request.handle.as_str().to_string()
+            } else {
+                target.local_part
+            },
+        });
+    }
+    validate_request(&request)?;
+    Ok(PreparedRecoverHandleRequest {
+        request,
+        local_store,
+    })
+}
+
+pub(crate) fn finalize_recover_handle_result(
+    core: &crate::core::ImCore,
+    local_store: Option<GeneratedRecoveryLocalStore>,
+    result: IdentityRecoveryRuntimeResult,
+) -> crate::ImResult<crate::identity::RecoverHandleResult> {
+    let Some(local_store) = local_store else {
+        return Ok(result.sdk_result);
+    };
+    if !matches!(
+        result.sdk_result.state,
+        crate::identity::RecoverHandleState::Recovered
+    ) {
+        return Ok(result.sdk_result);
+    }
+    let target = recovery_target(
+        &result.sdk_result.handle,
+        &core.inner().sdk_config().did_domain,
+    )?;
+    let generated = local_store.generated;
+    let did = did_from_raw(&result.raw).unwrap_or_else(|| generated.did.clone());
+    let stored =
+        crate::internal::identity_store::IdentityStore::new(&core.inner().sdk_paths().identities)
+            .save_identity(crate::internal::identity_store::SaveIdentityInput {
+            local_alias: local_store.local_alias,
+            did,
+            unique_id: generated.unique_id,
+            user_id: string_value(&result.raw, "user_id", ""),
+            display_name: string_value(&result.raw, "handle", &target.local_part),
+            handle: string_value(&result.raw, "handle", &target.local_part),
+            full_handle: string_value(&result.raw, "full_handle", target.full_handle.as_str()),
+            jwt_token: string_value(&result.raw, "access_token", ""),
+            did_document: Some(generated.did_document),
+            key1_private_pem: generated.key1_private_pem,
+            key1_public_pem: generated.key1_public_pem,
+            e2ee_signing_private_pem: generated.e2ee_signing_private_pem,
+            e2ee_agreement_private_pem: generated.e2ee_agreement_private_pem,
+            make_default: true,
+        })?;
+    let identity =
+        crate::internal::identity_registration_runtime::identity_summary_from_stored(&stored)?;
+    let recovered_identity = crate::identity::RecoveredIdentity {
+        identity,
+        user_id: result
+            .raw
+            .get("user_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        access_token_present: result
+            .raw
+            .get("access_token")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()),
+    };
+    Ok(crate::identity::RecoverHandleResult::with_raw_response(
+        result.sdk_result.handle,
+        result.sdk_result.phone,
+        result.sdk_result.state,
+        Some(recovered_identity),
+        None,
+        Some(result.raw),
+        result.sdk_result.warnings,
+    ))
+}
+
 pub(crate) fn validate_request(
     request: &crate::identity::RecoverHandleRequest,
 ) -> crate::ImResult<()> {
@@ -311,11 +424,68 @@ pub(crate) fn validate_request(
     Ok(())
 }
 
-fn did_from_raw(raw: &Value) -> Option<crate::ids::Did> {
-    raw.get("did")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .and_then(|value| crate::ids::Did::parse(value).ok())
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoveryTarget {
+    local_part: String,
+    full_handle: crate::ids::Handle,
+    effective_domain: String,
+    explicit_domain: bool,
+}
+
+fn recovery_target(
+    handle: &crate::ids::Handle,
+    default_domain: &str,
+) -> crate::ImResult<RecoveryTarget> {
+    let raw = handle
+        .as_str()
+        .trim()
+        .trim_start_matches('@')
+        .to_ascii_lowercase();
+    if raw.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("handle".to_string()),
+            "handle must not be empty",
+        ));
+    }
+    if raw.starts_with("did:") {
+        return Err(crate::ImError::invalid_input(
+            Some("handle".to_string()),
+            "DID values are not supported in handle recovery",
+        ));
+    }
+    if let Some(dot) = raw.find('.') {
+        let local_part = raw[..dot].trim().to_string();
+        let domain = raw[dot + 1..].trim().trim_end_matches('.').to_string();
+        if local_part.is_empty() || domain.is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("handle".to_string()),
+                "invalid handle",
+            ));
+        }
+        return Ok(RecoveryTarget {
+            full_handle: crate::ids::Handle::parse(format!("{local_part}.{domain}"), "")?,
+            local_part,
+            effective_domain: domain,
+            explicit_domain: true,
+        });
+    }
+
+    let domain = default_domain
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if domain.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("did_domain".to_string()),
+            "did_domain is required to complete bare handle recovery",
+        ));
+    }
+    Ok(RecoveryTarget {
+        full_handle: crate::ids::Handle::parse(format!("{raw}.{domain}"), "")?,
+        local_part: raw,
+        effective_domain: domain,
+        explicit_domain: false,
+    })
 }
 
 fn recovered_identity_summary(
@@ -362,6 +532,21 @@ fn local_part(handle: &str) -> &str {
         .split('.')
         .next()
         .unwrap_or(handle)
+}
+
+fn did_from_raw(raw: &Value) -> Option<crate::ids::Did> {
+    raw.get("did")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| crate::ids::Did::parse(value).ok())
+}
+
+fn string_value(raw: &Value, key: &str, fallback: &str) -> String {
+    raw.get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 #[cfg(test)]
@@ -438,6 +623,131 @@ mod tests {
         assert!(recovered.access_token_present);
     }
 
+    #[test]
+    fn prepare_recover_handle_request_generates_identity_when_otp_is_present() {
+        let fixture = CoreFixture::new();
+        let prepared = prepare_recover_handle_request(
+            &fixture.core,
+            crate::identity::RecoverHandleRequest {
+                handle: crate::ids::Handle::parse("alice", "").unwrap(),
+                raw_handle: None,
+                phone: "+15551234567".to_string(),
+                otp: Some("123456".to_string()),
+                generated_identity: None,
+                local_finalize: None,
+            },
+        )
+        .unwrap();
+
+        let generated = prepared
+            .request
+            .generated_identity
+            .as_ref()
+            .expect("generated identity");
+        assert_eq!(
+            generated
+                .did
+                .as_str()
+                .starts_with("did:wba:awiki.test:alice:"),
+            true
+        );
+        assert_eq!(prepared.request.handle.as_str(), "alice.awiki.test");
+        assert_eq!(
+            prepared
+                .local_store
+                .as_ref()
+                .unwrap()
+                .generated
+                .did
+                .as_str(),
+            generated.did.as_str()
+        );
+    }
+
+    #[test]
+    fn finalize_generated_recovery_persists_identity_for_flutter_clients() {
+        let fixture = CoreFixture::new();
+        let prepared = prepare_recover_handle_request(
+            &fixture.core,
+            crate::identity::RecoverHandleRequest {
+                handle: crate::ids::Handle::parse("alice", "").unwrap(),
+                raw_handle: None,
+                phone: "+15551234567".to_string(),
+                otp: Some("123456".to_string()),
+                generated_identity: None,
+                local_finalize: None,
+            },
+        )
+        .unwrap();
+        let generated = prepared.request.generated_identity.clone().unwrap();
+        let raw = serde_json::json!({
+            "did": generated.did.as_str(),
+            "user_id": "user-alice",
+            "handle": "alice",
+            "full_handle": "alice.awiki.test",
+            "access_token": "jwt-recover"
+        });
+        let runtime_result = IdentityRecoveryRuntimeResult {
+            sdk_result: crate::identity::RecoverHandleResult::with_raw_response(
+                prepared.request.handle,
+                "+15551234567".to_string(),
+                crate::identity::RecoverHandleState::Recovered,
+                Some(crate::identity::RecoveredIdentity {
+                    identity: crate::identity::IdentitySummary {
+                        id: crate::ids::IdentityId::parse(&generated.unique_id).unwrap(),
+                        did: generated.did.clone(),
+                        handle: Some(crate::ids::Handle::parse("alice.awiki.test", "").unwrap()),
+                        display_name: Some("alice".to_string()),
+                        local_alias: Some("alice".to_string()),
+                        device_id: None,
+                        is_default: false,
+                        readiness: crate::identity::IdentityReadiness {
+                            ready_for_auth: true,
+                            ready_for_messaging: true,
+                            missing: Vec::new(),
+                        },
+                    },
+                    user_id: Some("user-alice".to_string()),
+                    access_token_present: true,
+                }),
+                None,
+                Some(raw.clone()),
+                Vec::new(),
+            ),
+            raw,
+        };
+
+        let result =
+            finalize_recover_handle_result(&fixture.core, prepared.local_store, runtime_result)
+                .unwrap();
+
+        let recovered = result.recovered_identity.unwrap();
+        assert_eq!(recovered.identity.local_alias.as_deref(), Some("alice"));
+        assert!(recovered.identity.is_default);
+        assert!(recovered.identity.readiness.ready_for_auth);
+        assert!(recovered.identity.readiness.ready_for_messaging);
+        let default = fixture
+            .core
+            .identities()
+            .default_identity()
+            .unwrap()
+            .unwrap();
+        assert_eq!(default.handle.unwrap().as_str(), "alice.awiki.test");
+        assert_eq!(
+            std::fs::read_to_string(
+                fixture
+                    .root
+                    .path()
+                    .join("identities")
+                    .join(&generated.unique_id)
+                    .join("auth.json")
+            )
+            .unwrap()
+            .contains("jwt-recover"),
+            true
+        );
+    }
+
     struct TestTransport {
         responses: Vec<serde_json::Value>,
         calls: Vec<(String, String, serde_json::Value)>,
@@ -453,6 +763,41 @@ mod tests {
             self.calls
                 .push((endpoint.to_string(), method.to_string(), params));
             Ok(self.responses.remove(0))
+        }
+    }
+
+    struct CoreFixture {
+        root: tempfile::TempDir,
+        core: crate::core::ImCore,
+    }
+
+    impl CoreFixture {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let mut config = crate::ImCoreConfig::new(
+                crate::ServiceEndpoint::parse("https://awiki.test").unwrap(),
+                "awiki.test",
+            )
+            .unwrap();
+            config.anp_service_endpoint =
+                Some(crate::ServiceEndpoint::parse("https://awiki.test/anp-im/rpc").unwrap());
+            config.anp_service_did = Some(crate::ids::Did::parse("did:wba:awiki.test").unwrap());
+            let paths = crate::ImCorePaths {
+                identities: crate::IdentityRegistryPaths {
+                    identity_root_dir: root.path().join("identities"),
+                    registry_path: root.path().join("identities").join("index.json"),
+                    default_identity_path: Some(root.path().join("identities").join("default")),
+                },
+                local_state: crate::LocalStatePaths {
+                    sqlite_path: root.path().join("local").join("im.sqlite"),
+                },
+                runtime: crate::RuntimePaths {
+                    cache_dir: root.path().join("cache"),
+                    temp_dir: root.path().join("tmp"),
+                },
+            };
+            let core = crate::core::ImCore::new(config, paths).unwrap();
+            Self { root, core }
         }
     }
 }

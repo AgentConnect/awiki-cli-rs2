@@ -164,13 +164,21 @@ impl IdentityRegistry<'_> {
         &self,
         request: super::RecoverHandleRequest,
     ) -> crate::ImResult<super::RecoverHandleResult> {
-        crate::internal::identity_recovery_runtime::validate_request(&request)?;
+        let prepared = crate::internal::identity_recovery_runtime::prepare_recover_handle_request(
+            self.core, request,
+        )?;
         crate::internal::identity_recovery_runtime::IdentityRecoveryRuntime::new_with_core(
             self.core,
             crate::internal::transport::CorePlainTransport::new(self.core),
         )
-        .recover_handle(request)
-        .map(|result| result.sdk_result)
+        .recover_handle(prepared.request)
+        .and_then(|result| {
+            crate::internal::identity_recovery_runtime::finalize_recover_handle_result(
+                self.core,
+                prepared.local_store,
+                result,
+            )
+        })
     }
 
     pub fn recover_handle_plan(

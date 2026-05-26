@@ -65,6 +65,7 @@ where
                 .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)?;
         project_secure_direct_messages(self.client, &mut raw, &mut self.directory_transport);
         let page = page_from_raw(&raw, input.query.limit)?;
+        persist_projection_best_effort(self.client, &page.items);
         Ok(ReadPageResult { page, raw })
     }
 
@@ -96,6 +97,7 @@ where
                     &mut self.directory_transport,
                 );
                 let page = page_from_raw(&raw, input.query.limit)?;
+                persist_projection_best_effort(self.client, &page.items);
                 Ok(ReadPageResult { page, raw })
             }
             crate::messages::ThreadRef::Group(group) => {
@@ -115,6 +117,7 @@ where
                 )?;
                 project_group_e2ee_messages(self.client, &mut raw);
                 let page = page_from_raw_with_group(&raw, input.query.limit, Some(&group))?;
+                persist_projection_best_effort(self.client, &page.items);
                 Ok(ReadPageResult { page, raw })
             }
             crate::messages::ThreadRef::Thread(_) => {
@@ -122,6 +125,13 @@ where
             }
         }
     }
+}
+
+fn persist_projection_best_effort(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+) {
+    let _ = crate::internal::message_runtime::local_projection::persist_messages(client, messages);
 }
 
 struct DirectThread {
@@ -268,10 +278,6 @@ fn message_from_value(
     let Some(object) = value.as_object() else {
         return Ok(None);
     };
-    let id = message_identity(value);
-    if id.trim().is_empty() {
-        return Ok(None);
-    }
     let sender_did = string_value(object.get("sender_did"));
     let receiver_did = string_value(object.get("receiver_did"));
     let mut group_did = string_value(object.get("group_did"));
@@ -279,6 +285,13 @@ fn message_from_value(
         if let Some(group) = fallback_group {
             group_did = group.as_str().to_string();
         }
+    }
+    let id = message_identity(
+        value,
+        (!group_did.trim().is_empty()).then_some(group_did.as_str()),
+    );
+    if id.trim().is_empty() {
+        return Ok(None);
     }
     let retry_target = if group_did.trim().is_empty() {
         Some(crate::internal::message_runtime::state::MessageRetryTarget::DirectText)
@@ -308,7 +321,7 @@ fn message_from_value(
             .then(|| crate::ids::GroupRef::parse(&group_did))
             .transpose()?,
         body: message_body(value),
-        sent_at: Some(string_value(object.get("sent_at"))).filter(|value| !value.trim().is_empty()),
+        sent_at: message_sent_at(object),
         received_at: Some(string_value(object.get("received_at")))
             .filter(|value| !value.trim().is_empty()),
         metadata,
@@ -343,7 +356,7 @@ fn message_metadata_from_object(
             .or_else(|| i64_value(object.get("sequence")))
             .or_else(|| i64_value(object.get("group_event_seq"))),
         content_type: content_type.clone(),
-        attributes: raw_content_attributes(object.get("content"), content_type.as_deref()),
+        attributes: metadata_attributes_from_object(object, message_id, content_type.as_deref()),
     }
 }
 
@@ -369,19 +382,67 @@ fn metadata_projection_json(object: &serde_json::Map<String, Value>, message_id:
     Value::Object(metadata).to_string()
 }
 
-fn message_identity(message: &Value) -> String {
-    message
-        .as_object()
-        .and_then(|object| {
-            object
-                .get("id")
-                .or_else(|| object.get("message_id"))
-                .or_else(|| object.get("msg_id"))
-                .or_else(|| object.get("client_msg_id"))
-        })
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
+fn message_sent_at(object: &serde_json::Map<String, Value>) -> Option<String> {
+    [
+        object.get("sent_at"),
+        object.get("accepted_at"),
+        object.get("created_at"),
+    ]
+    .into_iter()
+    .map(string_or_number_value)
+    .find(|value| !value.trim().is_empty())
+}
+
+fn metadata_attributes_from_object(
+    object: &serde_json::Map<String, Value>,
+    message_id: &str,
+    content_type: Option<&str>,
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    let mut attributes = raw_content_attributes(object.get("content"), content_type);
+    if let Some(is_read) = bool_value(object.get("is_read")) {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "is_read".to_string(),
+            value: is_read.to_string(),
+        });
+    }
+    let raw_message_id = raw_message_identity(object);
+    if !raw_message_id.trim().is_empty() && raw_message_id != message_id {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "raw_message_id".to_string(),
+            value: raw_message_id,
+        });
+    }
+    let group_event_seq = string_or_number_value(object.get("group_event_seq"));
+    if !group_event_seq.trim().is_empty() {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "group_event_seq".to_string(),
+            value: group_event_seq,
+        });
+    }
+    attributes
+}
+
+fn message_identity(message: &Value, group_did: Option<&str>) -> String {
+    let Some(object) = message.as_object() else {
+        return String::new();
+    };
+    let group_event_seq = string_or_number_value(object.get("group_event_seq"));
+    if let Some(group_did) = group_did.filter(|_| !group_event_seq.trim().is_empty()) {
+        if !group_did.trim().is_empty() {
+            return format!("{}:{}", group_did.trim(), group_event_seq.trim());
+        }
+    }
+    raw_message_identity(object)
+}
+
+fn raw_message_identity(object: &serde_json::Map<String, Value>) -> String {
+    string_or_number_value(
+        object
+            .get("id")
+            .or_else(|| object.get("message_id"))
+            .or_else(|| object.get("msg_id"))
+            .or_else(|| object.get("client_msg_id")),
+    )
 }
 
 fn message_direction(value: &Value) -> crate::messages::MessageDirection {
@@ -455,6 +516,27 @@ fn string_value(value: Option<&Value>) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+fn bool_value(value: Option<&Value>) -> Option<bool> {
+    match value {
+        Some(Value::Bool(value)) => Some(*value),
+        Some(Value::Number(value)) => value.as_i64().map(|value| value != 0),
+        Some(Value::String(value)) => match value.trim() {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn string_or_number_value(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Number(value)) => value.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn i64_value(value: Option<&Value>) -> Option<i64> {
@@ -534,6 +616,120 @@ mod tests {
         assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["user_did"], "did:example:alice");
         assert_eq!(calls[0].params["body"]["limit"], 20);
+    }
+
+    #[test]
+    fn messages_read_runtime_persists_inbox_projection_for_conversations() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [{
+                        "id": "msg-inbox-projected",
+                        "sender_did": "did:example:bob",
+                        "receiver_did": "did:example:alice",
+                        "content": "restored from inbox",
+                        "content_type": "text/plain",
+                        "sent_at": "2026-05-21T00:00:00Z"
+                    }]
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::All,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                },
+            })
+            .unwrap();
+
+        let conversations =
+            crate::internal::message_runtime::conversations::MessageConversationRuntime::new(
+                &client,
+            )
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(conversations.items.len(), 1);
+        let conversation = &conversations.items[0];
+        assert_eq!(
+            conversation.last_message.as_ref().unwrap().id.as_str(),
+            "msg-inbox-projected"
+        );
+        assert_eq!(
+            conversation.last_message_at.as_deref(),
+            Some("2026-05-21T00:00:00Z")
+        );
+        assert_eq!(conversation.unread_count, 1);
+        assert!(matches!(
+            conversation.thread,
+            crate::messages::ThreadRef::Direct(_)
+        ));
+    }
+
+    #[test]
+    fn messages_read_runtime_preserves_remote_read_state_in_projection() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [{
+                        "id": "msg-inbox-read",
+                        "sender_did": "did:example:bob",
+                        "receiver_did": "did:example:alice",
+                        "content": "already read",
+                        "content_type": "text/plain",
+                        "sent_at": "2026-05-21T00:00:01Z",
+                        "is_read": true
+                    }]
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        runtime
+            .inbox(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::All,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                },
+            })
+            .unwrap();
+
+        let conversations =
+            crate::internal::message_runtime::conversations::MessageConversationRuntime::new(
+                &client,
+            )
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(conversations.items.len(), 1);
+        assert_eq!(conversations.items[0].unread_count, 0);
     }
 
     #[test]
@@ -636,6 +832,48 @@ mod tests {
     }
 
     #[test]
+    fn messages_read_runtime_uses_remote_created_at_as_sent_at() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response: json!({
+                    "messages": [{
+                        "id": "msg-history-created-at",
+                        "sender_did": "did:example:bob",
+                        "receiver_did": "did:example:alice",
+                        "content": "created timestamp",
+                        "content_type": "text/plain",
+                        "created_at": "2026-05-21T03:04:05Z"
+                    }]
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .history(HistoryRead {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                query: crate::messages::HistoryQuery {
+                    limit: crate::ids::PageLimit(5),
+                    cursor: None,
+                },
+                resolved_peer_did: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            result.page.items[0].sent_at.as_deref(),
+            Some("2026-05-21T03:04:05Z")
+        );
+    }
+
+    #[test]
     fn messages_read_runtime_builds_group_history_rpc() {
         let fixture = Fixture::new();
         let client = fixture.client();
@@ -673,13 +911,21 @@ mod tests {
 
         assert_eq!(result.page.items.len(), 1);
         let message = &result.page.items[0];
-        assert_eq!(message.id.as_str(), "msg-group-history-1");
+        assert_eq!(message.id.as_str(), "did:example:group:9");
         assert_eq!(message.group.as_ref(), Some(&group));
         assert_eq!(
             message.thread,
             crate::messages::ThreadRef::Group(group.clone())
         );
         assert_eq!(message.metadata.server_sequence, Some(9));
+        assert!(message.metadata.attributes.iter().any(|attribute| {
+            attribute.key == "raw_message_id" && attribute.value == "msg-group-history-1"
+        }));
+        assert!(message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| { attribute.key == "group_event_seq" && attribute.value == "9" }));
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
@@ -1057,12 +1303,14 @@ mod tests {
     }
 
     fn unique_temp_root() -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "im-core-read-runtime-{}-{nanos}",
+            "im-core-read-runtime-{}-{nanos}-{counter}",
             std::process::id()
         ))
     }

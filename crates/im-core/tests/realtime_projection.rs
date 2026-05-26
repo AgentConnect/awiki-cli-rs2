@@ -388,7 +388,7 @@ fn realtime_projection_group_incoming_becomes_group_message_received() {
     assert!(attachment_summary.is_none());
     assert!(download_action.is_none());
     assert!(warnings.is_empty());
-    assert_eq!(message.id.as_str(), "group-msg-1");
+    assert_eq!(message.id.as_str(), "did:example:group:42");
     assert_eq!(
         message.thread,
         ThreadRef::Group(GroupRef::parse("did:example:group").unwrap())
@@ -407,6 +407,14 @@ fn realtime_projection_group_incoming_becomes_group_message_received() {
     );
     assert_eq!(message.metadata.server_sequence, Some(42));
     assert_eq!(message.metadata.operation_id.as_deref(), Some("group-op-1"));
+    assert!(message.metadata.attributes.iter().any(|attribute| {
+        attribute.key == "raw_message_id" && attribute.value == "group-msg-1"
+    }));
+    assert!(message
+        .metadata
+        .attributes
+        .iter()
+        .any(|attribute| attribute.key == "group_event_seq" && attribute.value == "42"));
 }
 
 #[test]
@@ -440,15 +448,23 @@ fn realtime_attachment_projection_group_manifest_enriches_message_event() {
         panic!("expected attachment-enriched group message received");
     };
     assert!(warnings.is_empty());
-    assert_eq!(message.id.as_str(), "group-msg-attachment");
+    assert_eq!(message.id.as_str(), "did:example:group:43");
     assert_eq!(
         download_action.thread,
         ThreadRef::Group(GroupRef::parse("did:example:group").unwrap())
     );
-    assert_eq!(download_action.message_id.as_str(), "group-msg-attachment");
+    assert_eq!(download_action.message_id.as_str(), "did:example:group:43");
     assert_eq!(download_action.attachment_id.as_deref(), Some("att-1"));
     assert_eq!(summary.filename.as_deref(), Some("report.pdf"));
     assert_eq!(message.metadata.server_sequence, Some(43));
+    assert!(message.metadata.attributes.iter().any(|attribute| {
+        attribute.key == "raw_message_id" && attribute.value == "group-msg-attachment"
+    }));
+    assert!(message
+        .metadata
+        .attributes
+        .iter()
+        .any(|attribute| attribute.key == "group_event_seq" && attribute.value == "43"));
 }
 
 #[test]

@@ -131,9 +131,13 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
 
     let content_type = fallback_string(string_from_object(meta, "content_type"), "text/plain");
     let group_seq = int64_value(value_from_object(body, "group_event_seq"));
+    let raw_message_id = string_from_object(meta, "message_id");
     let message_id = fallback_string(
-        string_from_object(meta, "message_id"),
-        &fallback_group_message_id(&group_did, body, meta, notification),
+        canonical_group_message_id(&group_did, body),
+        &fallback_string(
+            raw_message_id.clone(),
+            &fallback_group_message_id(&group_did, body, meta, notification),
+        ),
     );
     let message_id = parse_message_id(&message_id, "unknown-group-message");
     let thread = ThreadRef::Group(parse_group(&group_did));
@@ -149,6 +153,12 @@ fn project_group_incoming(notification: &Value) -> NotificationProjection {
         group_seq,
         Some(content_type.clone()),
         [("notification_method", "group.incoming")],
+    );
+    add_group_message_identity_attributes(
+        &mut metadata,
+        &raw_message_id,
+        message_id.as_str(),
+        body,
     );
     if let Some(attachment) = attachment_projection.as_ref() {
         if let Some(summary) = attachment.summary.as_ref() {
@@ -338,9 +348,9 @@ fn fallback_group_message_id(
     meta: Option<&Map<String, Value>>,
     notification: &Value,
 ) -> String {
-    let group_event_seq = string_like_value(value_from_object(body, "group_event_seq"));
-    if !group_event_seq.is_empty() {
-        return format!("{group_did}:{group_event_seq}");
+    let canonical = canonical_group_message_id(group_did, body);
+    if !canonical.is_empty() {
+        return canonical;
     }
     fallback_string(
         string_from_object(meta, "operation_id"),
@@ -349,6 +359,35 @@ fn fallback_group_message_id(
             "unknown-group-message",
         ),
     )
+}
+
+fn canonical_group_message_id(group_did: &str, body: Option<&Map<String, Value>>) -> String {
+    let group_event_seq = string_like_value(value_from_object(body, "group_event_seq"));
+    if group_did.trim().is_empty() || group_event_seq.trim().is_empty() {
+        return String::new();
+    }
+    format!("{}:{}", group_did.trim(), group_event_seq.trim())
+}
+
+fn add_group_message_identity_attributes(
+    metadata: &mut MessageMetadata,
+    raw_message_id: &str,
+    visible_message_id: &str,
+    body: Option<&Map<String, Value>>,
+) {
+    if !raw_message_id.trim().is_empty() && raw_message_id.trim() != visible_message_id {
+        metadata.attributes.push(MessageMetadataAttribute {
+            key: "raw_message_id".to_string(),
+            value: raw_message_id.to_string(),
+        });
+    }
+    let group_event_seq = string_like_value(value_from_object(body, "group_event_seq"));
+    if !group_event_seq.trim().is_empty() {
+        metadata.attributes.push(MessageMetadataAttribute {
+            key: "group_event_seq".to_string(),
+            value: group_event_seq,
+        });
+    }
 }
 
 fn content_type(notification: &Value) -> Option<String> {

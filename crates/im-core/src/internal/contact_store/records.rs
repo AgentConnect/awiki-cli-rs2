@@ -603,6 +603,49 @@ LIMIT ?3"#,
     Ok(result)
 }
 
+pub(crate) fn list_contact_dids_for_message_history_recovery(
+    connection: &Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    limit: i64,
+) -> crate::ImResult<Vec<String>> {
+    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
+    let owner_did = normalize_owner_did(owner_did);
+    let limit = if limit <= 0 { 50 } else { limit };
+    let mut statement = connection
+        .prepare(
+            r#"
+SELECT did
+FROM contacts
+WHERE (owner_identity_id = ?1 OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = ?2))
+  AND TRIM(COALESCE(did, '')) <> ''
+  AND did <> ?2
+ORDER BY
+  messaged DESC,
+  CASE WHEN TRIM(COALESCE(last_seen_at, first_seen_at, connected_at, '')) = '' THEN 1 ELSE 0 END,
+  COALESCE(last_seen_at, first_seen_at, connected_at) DESC,
+  did ASC
+LIMIT ?3"#,
+        )
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            params![owner_identity_id.as_str(), owner_did.as_str(), limit],
+            |row| row.get::<_, Option<String>>("did"),
+        )
+        .map_err(super::local_state_unavailable)?;
+    let mut result = Vec::new();
+    for row in rows {
+        let did = row
+            .map_err(super::local_state_unavailable)?
+            .unwrap_or_default();
+        if !did.trim().is_empty() {
+            result.push(did);
+        }
+    }
+    Ok(result)
+}
+
 pub(crate) fn upsert_contact(
     connection: &mut Connection,
     record: ContactRecord,
@@ -1547,5 +1590,28 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
             list_dids_by_handle(&db, "did:owner", "alice").unwrap(),
             vec!["did:peer".to_string()]
         );
+    }
+
+    #[test]
+    fn contacts_lists_peer_dids_for_message_history_recovery() {
+        let db = Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+        db.execute(
+            r#"
+INSERT INTO contacts
+    (owner_identity_id, owner_did, did, handle, messaged, first_seen_at, last_seen_at, credential_name)
+VALUES
+    ('alice-id', 'did:owner', 'did:peer-seen', 'seen', 0, '2026-05-21T00:00:00Z', '2026-05-21T00:00:02Z', 'alice'),
+    ('alice-id', 'did:owner', 'did:peer-messaged', 'messaged', 1, '2026-05-21T00:00:00Z', '2026-05-21T00:00:01Z', 'alice'),
+    ('alice-id', 'did:owner', 'did:owner', 'self', 1, '2026-05-21T00:00:00Z', '2026-05-21T00:00:04Z', 'alice'),
+    ('other-id', 'did:other', 'did:peer-other', 'other', 1, '2026-05-21T00:00:00Z', '2026-05-21T00:00:05Z', 'other')"#,
+            [],
+        )
+        .unwrap();
+
+        let dids = list_contact_dids_for_message_history_recovery(&db, "alice-id", "did:owner", 10)
+            .unwrap();
+
+        assert_eq!(dids, vec!["did:peer-messaged", "did:peer-seen"]);
     }
 }

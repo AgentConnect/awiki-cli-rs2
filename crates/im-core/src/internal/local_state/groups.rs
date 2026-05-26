@@ -417,6 +417,54 @@ LIMIT ?4"#,
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn list_active_group_refs_for_owner_identity(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    limit: i64,
+) -> crate::ImResult<Vec<String>> {
+    let limit = if limit <= 0 { 50 } else { limit };
+    let statement = format!(
+        r#"
+SELECT COALESCE(NULLIF(TRIM(group_did), ''), group_id) AS group_ref
+FROM groups
+WHERE {}
+  AND TRIM(COALESCE(group_id, '')) <> ''
+  AND COALESCE(NULLIF(TRIM(membership_status), ''), 'active') NOT IN ('left', 'removed', 'inactive', 'non_member')
+ORDER BY
+  CASE WHEN TRIM(COALESCE(last_message_at, '')) = '' THEN 1 ELSE 0 END,
+  COALESCE(last_message_at, stored_at) DESC,
+  stored_at DESC,
+  group_id ASC
+LIMIT ?3"#,
+        owner_predicate("groups")
+    );
+    let mut statement = connection
+        .prepare(&statement)
+        .map_err(super::local_state_unavailable)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                normalize_owner_identity_id(owner_identity_id),
+                normalize(owner_did),
+                limit,
+            ],
+            |row| row.get::<_, Option<String>>("group_ref"),
+        )
+        .map_err(super::local_state_unavailable)?;
+    let mut result = Vec::new();
+    for row in rows {
+        let group_ref = row
+            .map_err(super::local_state_unavailable)?
+            .unwrap_or_default();
+        if !group_ref.trim().is_empty() {
+            result.push(group_ref);
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
 fn query_rows(
     connection: &rusqlite::Connection,
     statement: &str,
@@ -620,5 +668,28 @@ VALUES (?1, NULL, ?2, ?3, 0, ?4, ?5, ?6, 'text/plain', 'hello', 7, ?7, ?7, ?8)"#
         .unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["msg_id"], "msg-group-1");
+    }
+
+    #[test]
+    fn local_state_groups_lists_active_group_refs_for_recovery() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        db.execute(
+            r#"
+INSERT INTO groups
+    (owner_identity_id, owner_did, group_id, group_did, name, membership_status, last_message_at, stored_at, credential_name)
+VALUES
+    ('alice-id', 'did:owner', 'group-a', 'did:group:a', 'A', 'active', '2026-05-21T00:00:02Z', '2026-05-21T00:00:02Z', 'alice'),
+    ('alice-id', 'did:owner', 'group-b', '', 'B', 'active', '2026-05-21T00:00:03Z', '2026-05-21T00:00:03Z', 'alice'),
+    ('alice-id', 'did:owner', 'group-left', 'did:group:left', 'Left', 'left', '2026-05-21T00:00:04Z', '2026-05-21T00:00:04Z', 'alice'),
+    ('other-id', 'did:other', 'group-other', 'did:group:other', 'Other', 'active', '2026-05-21T00:00:05Z', '2026-05-21T00:00:05Z', 'other')"#,
+            [],
+        )
+        .unwrap();
+
+        let refs =
+            list_active_group_refs_for_owner_identity(&db, "alice-id", "did:owner", 10).unwrap();
+
+        assert_eq!(refs, vec!["group-b", "did:group:a"]);
     }
 }

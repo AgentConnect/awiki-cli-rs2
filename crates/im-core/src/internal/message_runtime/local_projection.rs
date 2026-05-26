@@ -1,6 +1,32 @@
 use serde_json::{Map, Value};
 
 #[cfg(feature = "sqlite")]
+pub(crate) fn persist_messages(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+) -> crate::ImResult<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let records = messages
+        .iter()
+        .map(|message| message_record_from_message(client, message))
+        .collect::<crate::ImResult<Vec<_>>>()?;
+    crate::internal::local_state::messages::upsert_messages(&connection, &records)
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) fn persist_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn persist_direct_outgoing(
     client: &crate::core::ImClient,
     target_did: &str,
@@ -502,6 +528,204 @@ fn insert_string(object: &mut Map<String, Value>, key: &str, value: Option<&str>
 
 fn credential_name(client: &crate::core::ImClient) -> String {
     client.current_identity().id.as_str().to_owned()
+}
+
+#[cfg(feature = "sqlite")]
+fn message_record_from_message(
+    client: &crate::core::ImClient,
+    message: &crate::messages::Message,
+) -> crate::ImResult<crate::internal::local_state::messages::MessageRecord> {
+    let (content_type, content) = body_projection(&message.body);
+    let direction = direction_value_for_message(client.did().as_str(), message);
+    Ok(crate::internal::local_state::messages::MessageRecord {
+        msg_id: message.id.as_str().to_owned(),
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        thread_id: thread_id_for_message(client.did().as_str(), message),
+        direction,
+        sender_did: message.sender.as_str().to_owned(),
+        receiver_did: message
+            .receiver
+            .as_ref()
+            .map(|receiver| receiver.as_str().to_owned())
+            .unwrap_or_default(),
+        group_id: group_ref_for_message(message).unwrap_or_default(),
+        group_did: group_ref_for_message(message).unwrap_or_default(),
+        content_type,
+        content,
+        server_seq: message.metadata.server_sequence,
+        sent_at: message.sent_at.clone().unwrap_or_default(),
+        stored_at: message
+            .received_at
+            .clone()
+            .or_else(|| message.sent_at.clone())
+            .unwrap_or_default(),
+        is_e2ee: is_e2ee_message(message),
+        is_read: read_state_for_message(direction, message),
+        metadata: read_metadata_json(&message.metadata),
+        credential_name: credential_name(client),
+        ..crate::internal::local_state::messages::MessageRecord::default()
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn thread_id_for_message(owner_did: &str, message: &crate::messages::Message) -> String {
+    if let Some(group) = group_ref_for_message(message) {
+        return group_thread_id(&group);
+    }
+    let peer = direct_peer_for_message(owner_did, message);
+    if !peer.trim().is_empty() {
+        return direct_thread_id(owner_did, &peer);
+    }
+    match &message.thread {
+        crate::messages::ThreadRef::Thread(thread) => thread.as_str().to_owned(),
+        crate::messages::ThreadRef::Direct(peer) => direct_thread_id(owner_did, peer.as_str()),
+        crate::messages::ThreadRef::Group(group) => group_thread_id(group.as_str()),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn direct_peer_for_message(owner_did: &str, message: &crate::messages::Message) -> String {
+    if message.sender.as_str() != owner_did {
+        return message.sender.as_str().to_owned();
+    }
+    if let Some(receiver) = message.receiver.as_ref() {
+        return receiver.as_str().to_owned();
+    }
+    match &message.thread {
+        crate::messages::ThreadRef::Direct(peer) => peer.as_str().to_owned(),
+        _ => String::new(),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn group_ref_for_message(message: &crate::messages::Message) -> Option<String> {
+    message
+        .group
+        .as_ref()
+        .map(|group| group.as_str().to_owned())
+        .or_else(|| match &message.thread {
+            crate::messages::ThreadRef::Group(group) => Some(group.as_str().to_owned()),
+            _ => None,
+        })
+        .filter(|group| !group.trim().is_empty())
+}
+
+#[cfg(feature = "sqlite")]
+fn direction_value_for_message(owner_did: &str, message: &crate::messages::Message) -> i64 {
+    match message.direction {
+        crate::messages::MessageDirection::Incoming => 0,
+        crate::messages::MessageDirection::Outgoing => 1,
+        crate::messages::MessageDirection::Unknown => {
+            if message.sender.as_str() == owner_did {
+                1
+            } else if !message.sender.as_str().trim().is_empty() {
+                0
+            } else {
+                -1
+            }
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn read_state_for_message(direction: i64, message: &crate::messages::Message) -> bool {
+    match metadata_bool_attribute(&message.metadata, "is_read") {
+        Some(value) => value,
+        None => direction != 0,
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn metadata_bool_attribute(metadata: &crate::messages::MessageMetadata, key: &str) -> Option<bool> {
+    metadata
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == key)
+        .and_then(|attribute| match attribute.value.trim() {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => None,
+        })
+}
+
+#[cfg(feature = "sqlite")]
+fn body_projection(body: &crate::messages::MessageBodyView) -> (String, String) {
+    match body {
+        crate::messages::MessageBodyView::Text { text, kind } => {
+            (content_type_for_kind(kind).to_owned(), text.to_owned())
+        }
+        crate::messages::MessageBodyView::Unsupported { content_type } => {
+            (content_type.clone().unwrap_or_default(), String::new())
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn is_e2ee_message(message: &crate::messages::Message) -> bool {
+    message
+        .metadata
+        .content_type
+        .as_deref()
+        .map(|content_type| content_type.contains("cipher") || content_type.contains("e2ee"))
+        .unwrap_or(false)
+        || message
+            .metadata
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key == "security" && attribute.value.contains("e2ee"))
+}
+
+#[cfg(feature = "sqlite")]
+fn read_metadata_json(metadata: &crate::messages::MessageMetadata) -> String {
+    let mut object = Map::new();
+    insert_string(
+        &mut object,
+        "operation_id",
+        metadata.operation_id.as_deref(),
+    );
+    insert_string(
+        &mut object,
+        "delivery_state",
+        metadata.delivery_state.as_deref(),
+    );
+    insert_string(
+        &mut object,
+        "content_type",
+        metadata.content_type.as_deref(),
+    );
+    if let Some(server_sequence) = metadata.server_sequence {
+        object.insert(
+            "server_sequence".to_owned(),
+            Value::Number(server_sequence.into()),
+        );
+    }
+    if let Some(send_state) = metadata.send_state.as_ref() {
+        object.insert(
+            "send_state".to_owned(),
+            serde_json::to_value(send_state).unwrap_or(Value::Null),
+        );
+    }
+    if let Some(retry_plan) = metadata.retry_plan.as_ref() {
+        object.insert(
+            "retry_plan".to_owned(),
+            serde_json::to_value(retry_plan).unwrap_or(Value::Null),
+        );
+    }
+    for attribute in &metadata.attributes {
+        match attribute.key.as_str() {
+            "raw_message_id" | "group_event_seq" | "is_read" | "senderName" | "sender_name"
+                if !attribute.value.trim().is_empty() =>
+            {
+                object.insert(
+                    attribute.key.clone(),
+                    Value::String(attribute.value.clone()),
+                );
+            }
+            _ => {}
+        }
+    }
+    Value::Object(object).to_string()
 }
 
 fn content_type_for_kind(kind: &crate::messages::MessageKind) -> &'static str {

@@ -455,6 +455,10 @@ impl<'a> GroupService<'a> {
             &group,
             &result,
         );
+        let _ = crate::internal::message_runtime::local_projection::persist_messages(
+            self.client,
+            &result.messages.items,
+        );
         Ok(result)
     }
 

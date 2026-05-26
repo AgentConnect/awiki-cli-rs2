@@ -41,7 +41,7 @@ pub fn open_core(
     }))
 }
 
-pub fn close_core(core: Arc<DartImCore>) -> Result<(), DartImError> {
+pub fn close_core(core: &Arc<DartImCore>) -> Result<(), DartImError> {
     let mut guard = core
         .state
         .write()

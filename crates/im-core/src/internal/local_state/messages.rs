@@ -54,8 +54,8 @@ ON CONFLICT(msg_id, owner_did) DO UPDATE SET
     server_seq = COALESCE(excluded.server_seq, messages.server_seq),
     sent_at = excluded.sent_at,
     stored_at = excluded.stored_at,
-    is_e2ee = excluded.is_e2ee,
-    is_read = excluded.is_read,
+    is_e2ee = CASE WHEN excluded.is_e2ee = 1 OR messages.is_e2ee = 1 THEN 1 ELSE 0 END,
+    is_read = CASE WHEN excluded.is_read = 1 OR messages.is_read = 1 THEN 1 ELSE 0 END,
     sender_name = excluded.sender_name,
     metadata = excluded.metadata,
     credential_name = excluded.credential_name"#,
@@ -556,6 +556,51 @@ VALUES ('other', 'bob-id', 'did:alice-new', 'thread', 0, 'text/plain', 'hello', 
         assert_eq!(row.1, "second");
         assert_eq!(row.2, "2026-05-24T00:00:01Z");
         assert_eq!(row.3, 1);
+    }
+
+    #[test]
+    fn local_state_messages_upsert_does_not_revert_read_or_e2ee_flags() {
+        let db = Connection::open_in_memory().unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-flags".to_owned(),
+                owner_did: "did:owner".to_owned(),
+                thread_id: "dm:did:owner:did:peer".to_owned(),
+                direction: 0,
+                content: "read secure".to_owned(),
+                stored_at: "2026-01-01T00:00:00Z".to_owned(),
+                is_e2ee: true,
+                is_read: true,
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+        upsert_message(
+            &db,
+            &MessageRecord {
+                msg_id: "msg-flags".to_owned(),
+                owner_did: "did:owner".to_owned(),
+                thread_id: "dm:did:owner:did:peer".to_owned(),
+                direction: 0,
+                content: "later projection".to_owned(),
+                stored_at: "2026-01-02T00:00:00Z".to_owned(),
+                is_e2ee: false,
+                is_read: false,
+                ..MessageRecord::default()
+            },
+        )
+        .unwrap();
+
+        let (is_e2ee, is_read): (i64, i64) = db
+            .query_row(
+                "SELECT is_e2ee, is_read FROM messages WHERE msg_id = 'msg-flags'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(is_e2ee, 1);
+        assert_eq!(is_read, 1);
     }
 
     fn is_read(db: &Connection, owner: &str) -> i64 {

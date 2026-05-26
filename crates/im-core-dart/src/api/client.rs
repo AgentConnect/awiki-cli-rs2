@@ -54,7 +54,7 @@ pub fn core_client(
     })
 }
 
-pub fn close_client(client: Arc<DartImClient>) -> Result<(), DartImError> {
+pub fn close_client(client: &Arc<DartImClient>) -> Result<(), DartImError> {
     client.close()
 }
 

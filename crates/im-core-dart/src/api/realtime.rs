@@ -112,7 +112,7 @@ pub fn realtime_connect(
             ],
         },
     )?;
-    realtime_stop(session)
+    realtime_stop(&session)
 }
 
 pub fn realtime_start(
@@ -125,7 +125,7 @@ pub fn realtime_start(
     Ok(Arc::new(DartRealtimeSession::new(handle)))
 }
 
-pub fn realtime_stop(session: Arc<DartRealtimeSession>) -> Result<(), DartImError> {
+pub fn realtime_stop(session: &Arc<DartRealtimeSession>) -> Result<(), DartImError> {
     session.stop()
 }
 

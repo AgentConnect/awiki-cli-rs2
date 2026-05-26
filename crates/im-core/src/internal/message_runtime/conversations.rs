@@ -13,6 +13,10 @@ impl<'a> MessageConversationRuntime<'a> {
     ) -> crate::ImResult<crate::ids::Page<crate::messages::Conversation>> {
         let requested_limit = page_limit(query.limit, 50);
         let mut records = list_conversation_records(self.client, &query)?;
+        if records.is_empty() && should_refresh_projection(&query) {
+            refresh_conversation_projection(self.client, &query, requested_limit)?;
+            records = list_conversation_records(self.client, &query)?;
+        }
         let has_more = records.len() > requested_limit;
         records.truncate(requested_limit);
         let items = records
@@ -25,6 +29,150 @@ impl<'a> MessageConversationRuntime<'a> {
             has_more,
         })
     }
+}
+
+fn should_refresh_projection(query: &crate::messages::ConversationQuery) -> bool {
+    !query.unread_only && (query.include_direct || query.include_groups)
+}
+
+#[cfg(feature = "sqlite")]
+fn refresh_conversation_projection(
+    client: &crate::core::ImClient,
+    query: &crate::messages::ConversationQuery,
+    requested_limit: usize,
+) -> crate::ImResult<()> {
+    refresh_projection_from_inbox(client, query, requested_limit)?;
+    if query.include_direct {
+        refresh_projection_from_contact_history(client, requested_limit)?;
+    }
+    if query.include_groups {
+        refresh_projection_from_group_history(client, requested_limit)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn refresh_conversation_projection(
+    _client: &crate::core::ImClient,
+    _query: &crate::messages::ConversationQuery,
+    _requested_limit: usize,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn refresh_projection_from_inbox(
+    client: &crate::core::ImClient,
+    query: &crate::messages::ConversationQuery,
+    requested_limit: usize,
+) -> crate::ImResult<()> {
+    let scope = match (query.include_direct, query.include_groups) {
+        (true, true) => crate::messages::InboxScope::All,
+        (true, false) => crate::messages::InboxScope::DirectOnly,
+        (false, true) => crate::messages::InboxScope::GroupOnly,
+        (false, false) => return Ok(()),
+    };
+    let limit = u32::try_from(requested_limit.max(50))
+        .unwrap_or(u32::MAX)
+        .min(100);
+    client.messages().inbox(crate::messages::InboxQuery {
+        scope,
+        limit: crate::ids::PageLimit(limit),
+        cursor: None,
+        unread_only: false,
+    })?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn refresh_projection_from_contact_history(
+    client: &crate::core::ImClient,
+    requested_limit: usize,
+) -> crate::ImResult<()> {
+    let candidates = list_direct_history_candidates(client, requested_limit)?;
+    for peer in candidates {
+        let Ok(peer) = crate::ids::PeerRef::parse(&peer, "") else {
+            continue;
+        };
+        let _ = client.messages().history(
+            crate::messages::ThreadRef::Direct(peer),
+            crate::messages::HistoryQuery {
+                limit: crate::ids::PageLimit(1),
+                cursor: None,
+            },
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn refresh_projection_from_group_history(
+    client: &crate::core::ImClient,
+    requested_limit: usize,
+) -> crate::ImResult<()> {
+    refresh_group_list_best_effort(client, requested_limit);
+    let candidates = list_group_history_candidates(client, requested_limit)?;
+    for group in candidates {
+        let Ok(group) = crate::ids::GroupRef::parse(&group) else {
+            continue;
+        };
+        let _ = client.messages().history(
+            crate::messages::ThreadRef::Group(group),
+            crate::messages::HistoryQuery {
+                limit: crate::ids::PageLimit(1),
+                cursor: None,
+            },
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn refresh_group_list_best_effort(client: &crate::core::ImClient, requested_limit: usize) {
+    let limit = u32::try_from(requested_limit.max(50))
+        .unwrap_or(u32::MAX)
+        .min(100);
+    let _ = client.groups().list(crate::groups::GroupListRequest {
+        limit: crate::ids::PageLimit(limit),
+    });
+}
+
+#[cfg(feature = "sqlite")]
+fn list_direct_history_candidates(
+    client: &crate::core::ImClient,
+    requested_limit: usize,
+) -> crate::ImResult<Vec<String>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let limit = i64::try_from(requested_limit.max(50))
+        .unwrap_or(i64::MAX)
+        .min(100);
+    crate::internal::contact_store::records::list_contact_dids_for_message_history_recovery(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        limit,
+    )
+}
+
+#[cfg(feature = "sqlite")]
+fn list_group_history_candidates(
+    client: &crate::core::ImClient,
+    requested_limit: usize,
+) -> crate::ImResult<Vec<String>> {
+    let connection = crate::internal::local_state::open_writable(
+        &client.core_inner().sdk_paths().local_state.sqlite_path,
+    )?;
+    let limit = i64::try_from(requested_limit.max(50))
+        .unwrap_or(i64::MAX)
+        .min(100);
+    crate::internal::local_state::groups::list_active_group_refs_for_owner_identity(
+        &connection,
+        client.current_identity().id.as_str(),
+        client.did().as_str(),
+        limit,
+    )
 }
 
 #[cfg(feature = "sqlite")]
@@ -523,6 +671,55 @@ mod tests {
             retry_plan.action,
             crate::messages::MessageRetryAction::RetryDirectText
         );
+    }
+
+    #[test]
+    fn message_conversation_runtime_reads_outgoing_sdk_message_projection() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let message = crate::messages::Message {
+            id: crate::ids::MessageId::parse("msg-outgoing-projected").unwrap(),
+            thread: crate::messages::ThreadRef::Direct(
+                crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+            ),
+            direction: crate::messages::MessageDirection::Outgoing,
+            sender: crate::ids::PeerRef::parse(client.did().as_str(), "").unwrap(),
+            receiver: Some(crate::ids::PeerRef::parse("did:example:bob", "").unwrap()),
+            group: None,
+            body: crate::messages::MessageBodyView::Text {
+                text: "sent after login".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            },
+            sent_at: Some("2026-05-21T00:00:06Z".to_owned()),
+            received_at: None,
+            metadata: crate::messages::MessageMetadata::default(),
+        };
+        crate::internal::message_runtime::local_projection::persist_messages(
+            &client,
+            std::slice::from_ref(&message),
+        )
+        .unwrap();
+
+        let page = MessageConversationRuntime::new(&client)
+            .conversations(crate::messages::ConversationQuery {
+                limit: crate::ids::PageLimit(10),
+                include_groups: true,
+                include_direct: true,
+                unread_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        let conversation = &page.items[0];
+        assert_eq!(conversation.unread_count, 0);
+        assert_eq!(
+            conversation.last_message.as_ref().unwrap().id.as_str(),
+            "msg-outgoing-projected"
+        );
+        assert!(matches!(
+            conversation.thread,
+            crate::messages::ThreadRef::Direct(_)
+        ));
     }
 
     struct Fixture {
