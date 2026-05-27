@@ -9,7 +9,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.78"
+rust-version = "1.88.0"
 license = "MIT"
 repository = "git@github.com:AgentConnect/awiki-cli-rs2.git"
 

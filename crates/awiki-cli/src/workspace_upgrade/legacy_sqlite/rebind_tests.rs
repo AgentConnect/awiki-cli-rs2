@@ -1,5 +1,5 @@
-use super as store;
 use crate::workspace_config::Paths;
+use crate::workspace_upgrade::legacy_sqlite as store;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 

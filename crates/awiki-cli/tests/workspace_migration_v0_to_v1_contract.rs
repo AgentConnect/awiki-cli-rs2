@@ -305,9 +305,11 @@ fn workspace_v0_to_v1_validate_requires_imported_identity_after_legacy_detection
     let workspace = TempDir::new("workspace-v0-v1-validate-identity").expect("temp workspace");
     let resolved = test_resolved(workspace.path());
     let mut context = workspace_upgrade::new_context(&resolved, "1.2.3");
-    let mut detection = workspace_upgrade::Detection::default();
-    detection.has_workspace = false;
-    detection.legacy_identity_exists = true;
+    let detection = workspace_upgrade::Detection {
+        has_workspace: false,
+        legacy_identity_exists: true,
+        ..Default::default()
+    };
     context.inspection = Some(workspace_upgrade::Inspection {
         paths: context.paths.clone(),
         detection,

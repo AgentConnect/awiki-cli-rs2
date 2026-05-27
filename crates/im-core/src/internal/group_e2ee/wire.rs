@@ -8,6 +8,33 @@ pub(crate) const GROUP_E2EE_TRANSPORT_SECURITY_PROFILE: &str =
     anp::group_e2ee::TRANSPORT_SECURITY_PROFILE;
 pub(crate) const GROUP_E2EE_CIPHER_CONTENT_TYPE: &str = anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE;
 
+pub(crate) fn build_group_e2ee_publish_key_package_rpc_params(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    sender_did: &str,
+    service_did: &str,
+    key_package: &anp::group_e2ee::GroupKeyPackage,
+    operation_id: &str,
+) -> crate::ImResult<Value> {
+    let service_did = require_non_empty("service_did", service_did)?;
+    let operation_id = require_non_empty("operation_id", operation_id)?;
+    build_signed_group_e2ee_params(
+        credentials,
+        "group.e2ee.publish_key_package",
+        group_e2ee_meta(
+            sender_did,
+            "service",
+            service_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+            operation_id,
+            None,
+        )?,
+        json!({
+            "group_key_package": sanitize_group_key_package_for_service(key_package)?,
+        }),
+    )
+}
+
 pub(crate) fn build_group_e2ee_create_rpc_params(
     credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
     sender_did: &str,
@@ -191,10 +218,18 @@ pub(crate) fn build_group_e2ee_get_key_package_rpc_params(
     service_did: &str,
     group_did: &str,
     target_did: &str,
+    purpose: Option<&str>,
+    device_id: Option<&str>,
 ) -> crate::ImResult<Value> {
     let service_did = require_non_empty("service_did", service_did)?;
     let group_did = require_non_empty("group_did", group_did)?;
     let target_did = require_non_empty("target_did", target_did)?;
+    let mut body = json_object(json!({
+        "target_did": target_did,
+        "group_did": group_did,
+    }));
+    insert_optional_trimmed_string(&mut body, "purpose", purpose);
+    insert_optional_trimmed_string(&mut body, "device_id", device_id);
     build_signed_group_e2ee_params(
         credentials,
         "group.e2ee.get_key_package",
@@ -210,9 +245,87 @@ pub(crate) fn build_group_e2ee_get_key_package_rpc_params(
             ),
             None,
         )?,
+        Value::Object(body),
+    )
+}
+
+pub(crate) fn build_group_e2ee_update_rpc_params(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    sender_did: &str,
+    group_did: &str,
+    member_did: &str,
+    device_id: &str,
+    prepared: &anp::group_e2ee::operations::PreparedMlsCommitOutput,
+    group_key_package: &anp::group_e2ee::GroupKeyPackage,
+    group_state_ref: Option<&anp::group_e2ee::GroupStateRef>,
+) -> crate::ImResult<Value> {
+    build_group_e2ee_key_replacement_rpc_params(
+        credentials,
+        "group.e2ee.update",
+        sender_did,
+        group_did,
+        member_did,
+        device_id,
+        prepared,
+        group_key_package,
+        group_state_ref,
+        "update_key_package_id",
+    )
+}
+
+pub(crate) fn build_group_e2ee_recover_member_rpc_params(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    sender_did: &str,
+    group_did: &str,
+    member_did: &str,
+    device_id: &str,
+    prepared: &anp::group_e2ee::operations::PreparedMlsCommitOutput,
+    group_key_package: &anp::group_e2ee::GroupKeyPackage,
+    group_state_ref: Option<&anp::group_e2ee::GroupStateRef>,
+) -> crate::ImResult<Value> {
+    build_group_e2ee_key_replacement_rpc_params(
+        credentials,
+        "group.e2ee.recover_member",
+        sender_did,
+        group_did,
+        member_did,
+        device_id,
+        prepared,
+        group_key_package,
+        group_state_ref,
+        "recovery_key_package_id",
+    )
+}
+
+pub(crate) fn build_group_e2ee_process_leave_request_rpc_params(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    sender_did: &str,
+    group_did: &str,
+    leave_request_id: &str,
+) -> crate::ImResult<Value> {
+    let group_did = require_non_empty("group_did", group_did)?;
+    let leave_request_id = require_non_empty("leave_request_id", leave_request_id)?;
+    build_signed_group_e2ee_params(
+        credentials,
+        "group.e2ee.process_leave_request",
+        group_e2ee_meta(
+            sender_did,
+            "group",
+            group_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+            &format!(
+                "op-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+            None,
+        )?,
         json!({
-            "target_did": target_did,
             "group_did": group_did,
+            "group_state_ref": {
+                "group_did": group_did,
+            },
+            "leave_request_id": leave_request_id,
         }),
     )
 }
@@ -340,6 +453,88 @@ fn build_signed_group_e2ee_params(
         "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
         "body": payload.body,
     }))
+}
+
+fn build_group_e2ee_key_replacement_rpc_params(
+    credentials: &crate::internal::message_runtime::group::GroupTextCredentials,
+    method: &str,
+    sender_did: &str,
+    group_did: &str,
+    member_did: &str,
+    device_id: &str,
+    prepared: &anp::group_e2ee::operations::PreparedMlsCommitOutput,
+    group_key_package: &anp::group_e2ee::GroupKeyPackage,
+    group_state_ref: Option<&anp::group_e2ee::GroupStateRef>,
+    key_package_id_field: &str,
+) -> crate::ImResult<Value> {
+    let group_did = require_non_empty("group_did", group_did)?;
+    let member_did = require_non_empty("member_did", member_did)?;
+    let device_id = require_non_empty("device_id", device_id)?;
+    let mut prepared_map = prepared_commit_map(prepared)?;
+    insert_group_state_ref(&mut prepared_map, group_state_ref)?;
+    let mut body = e2ee_head_body(group_did, "", &prepared_map);
+    copy_keys(
+        &prepared_map,
+        &mut body,
+        &[
+            "pending_commit_id",
+            "operation_id",
+            "commit_b64u",
+            "welcome_b64u",
+            "ratchet_tree_b64u",
+            "group_info_b64u",
+            "from_epoch",
+            "to_epoch",
+            "actor_did",
+        ],
+    );
+    if !body.contains_key("epoch") {
+        if let Some(value) = prepared_map.get("to_epoch") {
+            body.insert("epoch".to_owned(), value.clone());
+        }
+    }
+    if !body.contains_key("epoch_authenticator") {
+        if let Some(value) = prepared_map.get("epoch_authenticator_b64u") {
+            body.insert("epoch_authenticator".to_owned(), value.clone());
+        }
+    }
+    body.insert(
+        "target".to_owned(),
+        json!({
+            "agent_did": member_did,
+            "device_id": device_id,
+        }),
+    );
+    body.insert("device_id".to_owned(), Value::String(device_id.to_owned()));
+    body.insert(
+        key_package_id_field.to_owned(),
+        Value::String(group_key_package.key_package_id.clone()),
+    );
+    body.insert(
+        "key_package_id".to_owned(),
+        Value::String(group_key_package.key_package_id.clone()),
+    );
+    body.insert(
+        "group_key_package".to_owned(),
+        serde_json::to_value(group_key_package).map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })?,
+    );
+    augment_group_state_ref_with_crypto_claims(&mut body, true);
+    build_signed_group_e2ee_params(
+        credentials,
+        method,
+        group_e2ee_meta(
+            sender_did,
+            "group",
+            group_did,
+            GROUP_E2EE_SECURITY_PROFILE,
+            "application/json",
+            prepared.operation_id.as_str(),
+            None,
+        )?,
+        Value::Object(body),
+    )
 }
 
 fn group_e2ee_meta(
@@ -685,5 +880,362 @@ fn json_object(value: Value) -> Map<String, Value> {
     match value {
         Value::Object(map) => map,
         _ => Map::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_e2ee_wire_builders_follow_p6_targets_and_security_profiles() {
+        let credentials = credentials();
+        let sender_did = "did:wba:awiki.test:user:alice";
+        let service_did = "did:wba:awiki.test";
+        let group_did = "did:wba:awiki.test:groups:secure";
+        let member_did = "did:wba:awiki.test:user:bob";
+        let state_ref = group_state_ref(group_did, "state-7");
+        let prepared = prepared_commit("op-create", "7");
+
+        let publish = build_group_e2ee_publish_key_package_rpc_params(
+            &credentials,
+            sender_did,
+            service_did,
+            &group_key_package(sender_did),
+            "op-publish",
+        )
+        .expect("publish params");
+        assert_meta(
+            &publish,
+            "service",
+            service_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(
+            publish["body"]["group_key_package"]["owner_did"],
+            sender_did
+        );
+        assert_eq!(
+            publish["body"]["group_key_package"]["did_wba_binding"]["proof"]["verificationMethod"],
+            format!("{sender_did}#key-1")
+        );
+
+        let create = build_group_e2ee_create_rpc_params(
+            &credentials,
+            sender_did,
+            service_did,
+            group_did,
+            &prepared,
+            Some(&state_ref),
+        )
+        .expect("create params");
+        assert_meta(
+            &create,
+            "service",
+            service_did,
+            GROUP_E2EE_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(create["body"]["group_did"], group_did);
+        assert_eq!(
+            create["body"]["group_state_ref"]["group_state_version"],
+            "state-7"
+        );
+
+        let add = build_group_e2ee_add_rpc_params(
+            &credentials,
+            sender_did,
+            group_did,
+            member_did,
+            &prepared_commit("op-add", "8"),
+            &group_key_package(member_did),
+            Some(&group_state_ref(group_did, "state-8")),
+        )
+        .expect("add params");
+        assert_meta(
+            &add,
+            "group",
+            group_did,
+            GROUP_E2EE_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(add["body"]["member_did"], member_did);
+        assert_eq!(add["body"]["subject_did"], member_did);
+        assert_eq!(add["body"]["welcome_b64u"], "welcome-op-add");
+        assert_eq!(add["body"]["ratchet_tree_b64u"], "tree-op-add");
+        assert_eq!(add["body"]["subject_key_package_id"], "kp-member");
+
+        let remove = build_group_e2ee_remove_rpc_params(
+            &credentials,
+            sender_did,
+            group_did,
+            member_did,
+            &prepared_commit_with_subject_status("op-remove", "9", "removed"),
+            Some(&group_state_ref(group_did, "state-9")),
+            Some("  removed by owner  "),
+            Some("  leave-1  "),
+        )
+        .expect("remove params");
+        assert_meta(
+            &remove,
+            "group",
+            group_did,
+            GROUP_E2EE_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(remove["body"]["member_did"], member_did);
+        assert_eq!(remove["body"]["subject_status"], "removed");
+        assert_eq!(remove["body"]["reason_text"], "removed by owner");
+        assert_eq!(remove["body"]["leave_request_id"], "leave-1");
+
+        let get_key_package = build_group_e2ee_get_key_package_rpc_params(
+            &credentials,
+            sender_did,
+            service_did,
+            group_did,
+            member_did,
+            Some("update"),
+            Some("default"),
+        )
+        .expect("get key package params");
+        assert_meta(
+            &get_key_package,
+            "service",
+            service_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(get_key_package["body"]["target_did"], member_did);
+        assert_eq!(get_key_package["body"]["group_did"], group_did);
+        assert_eq!(get_key_package["body"]["purpose"], "update");
+        assert_eq!(get_key_package["body"]["device_id"], "default");
+
+        let update = build_group_e2ee_update_rpc_params(
+            &credentials,
+            sender_did,
+            group_did,
+            member_did,
+            "default",
+            &prepared_commit("op-update", "10"),
+            &group_key_package_with_purpose(member_did, "update"),
+            Some(&group_state_ref(group_did, "state-10")),
+        )
+        .expect("update params");
+        assert_meta(
+            &update,
+            "group",
+            group_did,
+            GROUP_E2EE_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(update["body"]["target"]["agent_did"], member_did);
+        assert_eq!(update["body"]["target"]["device_id"], "default");
+        assert_eq!(update["body"]["update_key_package_id"], "kp-member");
+        assert_eq!(update["body"]["group_key_package"]["purpose"], "update");
+
+        let process_leave = build_group_e2ee_process_leave_request_rpc_params(
+            &credentials,
+            sender_did,
+            group_did,
+            "leave-1",
+        )
+        .expect("process leave params");
+        assert_meta(
+            &process_leave,
+            "group",
+            group_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(process_leave["body"]["leave_request_id"], "leave-1");
+
+        let notice = build_group_e2ee_notice_rpc_params(
+            &credentials,
+            sender_did,
+            group_did,
+            500,
+            true,
+            &[
+                " notice-1 ".to_owned(),
+                " ".to_owned(),
+                "notice-2".to_owned(),
+            ],
+        )
+        .expect("notice params");
+        assert_meta(
+            &notice,
+            "agent",
+            sender_did,
+            GROUP_E2EE_TRANSPORT_SECURITY_PROFILE,
+            "application/json",
+        );
+        assert_eq!(notice["body"]["group_did"], group_did);
+        assert_eq!(notice["body"]["limit"], 100);
+        assert_eq!(notice["body"]["mark_delivered"], true);
+        assert_eq!(
+            notice["body"]["notice_ids"],
+            json!(["notice-1", "notice-2"])
+        );
+    }
+
+    #[test]
+    fn group_e2ee_send_body_is_direct_cipher_object_not_wrapped() {
+        let params = build_group_e2ee_send_rpc_params(
+            &credentials(),
+            "did:wba:awiki.test:user:alice",
+            "did:wba:awiki.test:groups:secure",
+            &anp::group_e2ee::GroupCipherObject {
+                crypto_group_id_b64u: "crypto-group".to_owned(),
+                epoch: "12".to_owned(),
+                private_message_b64u: "private-message".to_owned(),
+                group_state_ref: group_state_ref("did:wba:awiki.test:groups:secure", "state-12"),
+                epoch_authenticator: Some("epoch-auth".to_owned()),
+                non_cryptographic: false,
+                artifact_mode: None,
+            },
+            "op-send",
+            "msg-send",
+        )
+        .expect("send params");
+
+        assert_meta(
+            &params,
+            "group",
+            "did:wba:awiki.test:groups:secure",
+            GROUP_E2EE_SECURITY_PROFILE,
+            GROUP_E2EE_CIPHER_CONTENT_TYPE,
+        );
+        assert_eq!(params["meta"]["message_id"], "msg-send");
+        assert_eq!(params["body"]["crypto_group_id_b64u"], "crypto-group");
+        assert_eq!(params["body"]["epoch"], "12");
+        assert_eq!(params["body"]["private_message_b64u"], "private-message");
+        assert_eq!(
+            params["body"]["group_state_ref"]["group_state_version"],
+            "state-12"
+        );
+        assert_eq!(params["body"]["epoch_authenticator"], "epoch-auth");
+        assert!(params["body"].get("group_cipher_object").is_none());
+        assert!(params
+            .get("body")
+            .and_then(|body| body.get("body"))
+            .is_none());
+        assert!(params["auth"]["origin_proof"].is_object());
+    }
+
+    fn assert_meta(
+        params: &Value,
+        target_kind: &str,
+        target_did: &str,
+        security_profile: &str,
+        content_type: &str,
+    ) {
+        assert_eq!(params["meta"]["profile"], GROUP_E2EE_PROFILE);
+        assert_eq!(
+            params["meta"]["target"],
+            json!({"kind": target_kind, "did": target_did})
+        );
+        assert_eq!(params["meta"]["security_profile"], security_profile);
+        assert_eq!(params["meta"]["content_type"], content_type);
+        assert!(params["auth"]["origin_proof"].is_object());
+    }
+
+    fn credentials() -> crate::internal::message_runtime::group::GroupTextCredentials {
+        let bundle = anp::authentication::create_did_wba_document(
+            "awiki.test",
+            anp::authentication::DidDocumentOptions {
+                path_segments: vec!["user".to_owned(), "alice".to_owned()],
+                domain: Some("awiki.test".to_owned()),
+                challenge: Some("group-e2ee-wire-test".to_owned()),
+                ..anp::authentication::DidDocumentOptions::default()
+            },
+        )
+        .expect("did document");
+        let key1_private_pem = bundle
+            .private_key_pem("key-1")
+            .expect("private key")
+            .to_owned();
+        crate::internal::message_runtime::group::GroupTextCredentials {
+            identity_name: "alice".to_owned(),
+            did_document: Some(bundle.did_document),
+            key1_private_pem,
+        }
+    }
+
+    fn prepared_commit(
+        operation_id: &str,
+        epoch: &str,
+    ) -> anp::group_e2ee::operations::PreparedMlsCommitOutput {
+        prepared_commit_with_subject_status(operation_id, epoch, "active")
+    }
+
+    fn prepared_commit_with_subject_status(
+        operation_id: &str,
+        epoch: &str,
+        subject_status: &str,
+    ) -> anp::group_e2ee::operations::PreparedMlsCommitOutput {
+        anp::group_e2ee::operations::PreparedMlsCommitOutput {
+            pending_commit_id: format!("pending-{operation_id}"),
+            operation_id: operation_id.to_owned(),
+            status: "prepared".to_owned(),
+            actor_did: "did:wba:awiki.test:user:alice".to_owned(),
+            subject_did: "did:wba:awiki.test:user:bob".to_owned(),
+            subject_status: subject_status.to_owned(),
+            group_did: "did:wba:awiki.test:groups:secure".to_owned(),
+            commit_b64u: format!("commit-{operation_id}"),
+            welcome_b64u: Some(format!("welcome-{operation_id}")),
+            ratchet_tree_b64u: Some(format!("tree-{operation_id}")),
+            group_info_b64u: Some(format!("group-info-{operation_id}")),
+            crypto_group_id_b64u: "crypto-group".to_owned(),
+            from_epoch: epoch.to_owned(),
+            epoch: epoch.to_owned(),
+            to_epoch: epoch.to_owned(),
+            local_epoch: epoch.to_owned(),
+            epoch_authenticator: Some(format!("auth-{operation_id}")),
+            epoch_authenticator_b64u: Some(format!("auth-{operation_id}")),
+            suite: anp::group_e2ee::MTI_SUITE.to_owned(),
+            member_did: Some("did:wba:awiki.test:user:bob".to_owned()),
+        }
+    }
+
+    fn group_state_ref(group_did: &str, version: &str) -> anp::group_e2ee::GroupStateRef {
+        anp::group_e2ee::GroupStateRef {
+            group_did: group_did.to_owned(),
+            group_state_version: version.to_owned(),
+            policy_hash: None,
+        }
+    }
+
+    fn group_key_package(owner_did: &str) -> anp::group_e2ee::GroupKeyPackage {
+        group_key_package_with_purpose(owner_did, "normal")
+    }
+
+    fn group_key_package_with_purpose(
+        owner_did: &str,
+        purpose: &str,
+    ) -> anp::group_e2ee::GroupKeyPackage {
+        anp::group_e2ee::GroupKeyPackage {
+            key_package_id: "kp-member".to_owned(),
+            owner_did: owner_did.to_owned(),
+            device_id: Some("default".to_owned()),
+            purpose: Some(purpose.to_owned()),
+            group_did: None,
+            suite: anp::group_e2ee::MTI_SUITE.to_owned(),
+            mls_key_package_b64u: "mls-key-package".to_owned(),
+            did_wba_binding: json!({
+                "agent_did": owner_did,
+                "verification_method": format!("{owner_did}#key-1"),
+                "leaf_signature_key_b64u": "leaf-key",
+                "issued_at": "2026-01-01T00:00:00Z",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "proof": {
+                    "type": "DataIntegrityProof",
+                    "verificationMethod": format!("{owner_did}#key-1")
+                }
+            }),
+            expires_at: None,
+            non_cryptographic: false,
+            artifact_mode: None,
+        }
     }
 }

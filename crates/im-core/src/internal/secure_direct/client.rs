@@ -306,6 +306,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         body: &Value,
     ) -> DirectSecureRpcResult {
         let init_body = super::wire::direct_init_body_from_value(body);
+        let existing_session = self.existing_session(&init_body.session_id)?;
         let sender_document = (self.resolver)(sender_did)?;
         let sender_static_public = anp::direct_e2ee::extract_x25519_public_key(
             &sender_document,
@@ -349,6 +350,15 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
             &init_body,
         )
         .map_err(map_direct_error)?;
+        if let Some(existing_session) = existing_session {
+            if existing_session.peer_did != sender_did {
+                return Err(crate::ImError::Serialization {
+                    detail: "direct E2EE init session id is already bound to another peer"
+                        .to_owned(),
+                });
+            }
+            return Ok(decrypted_plaintext_result(&plaintext));
+        }
         if let Some(key_id) = one_time_prekey_id {
             let _ = self
                 .one_time_prekey_store()?
@@ -356,13 +366,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         }
         anp::direct_e2ee::SessionStore::save_session(&mut self.session_store()?, &session)
             .map_err(map_direct_error)?;
-        let mut result = Map::from_iter([
-            ("state".to_owned(), Value::String("decrypted".to_owned())),
-            (
-                "plaintext".to_owned(),
-                anp::direct_e2ee::plaintext_to_value(&plaintext),
-            ),
-        ]);
+        let mut result = decrypted_plaintext_result(&plaintext);
         if let Some(pending) = self.pending_by_peer.get(sender_did).cloned() {
             if !pending.is_empty() {
                 let mut pending_results = Vec::new();
@@ -415,14 +419,10 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
                     ),
                 ]))
             }
-            Err(_) => {
-                anp::direct_e2ee::SessionStore::save_session(&mut session_store, &session)
-                    .map_err(map_direct_error)?;
-                Ok(Map::from_iter([(
-                    "state".to_owned(),
-                    Value::String("undecryptable".to_owned()),
-                )]))
-            }
+            Err(_) => Ok(Map::from_iter([(
+                "state".to_owned(),
+                Value::String("undecryptable".to_owned()),
+            )])),
         }
     }
 
@@ -572,6 +572,21 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
             &self.prepared.owner_did,
         )
     }
+
+    fn existing_session(
+        &self,
+        session_id: &str,
+    ) -> crate::ImResult<Option<anp::direct_e2ee::DirectSessionState>> {
+        if session_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let store = self.session_store()?;
+        match anp::direct_e2ee::SessionStore::load_session(&store, session_id) {
+            Ok(session) => Ok(Some(session)),
+            Err(anp::direct_e2ee::DirectE2eeError::SessionNotFound(_)) => Ok(None),
+            Err(err) => Err(map_direct_error(err)),
+        }
+    }
 }
 
 struct VerifiedPrekeyBundle {
@@ -674,6 +689,16 @@ fn validate_one_time_prekey(prekey: &OneTimePrekey) -> crate::ImResult<()> {
     Ok(())
 }
 
+fn decrypted_plaintext_result(plaintext: &ApplicationPlaintext) -> Map<String, Value> {
+    Map::from_iter([
+        ("state".to_owned(), Value::String("decrypted".to_owned())),
+        (
+            "plaintext".to_owned(),
+            anp::direct_e2ee::plaintext_to_value(plaintext),
+        ),
+    ])
+}
+
 fn map_direct_error(error: DirectE2eeError) -> crate::ImError {
     crate::ImError::Serialization {
         detail: format!("direct E2EE: {error}"),
@@ -741,6 +766,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use anp::direct_e2ee::SessionStore as _;
     use serde_json::json;
 
     use super::*;
@@ -805,6 +831,134 @@ mod tests {
     }
 
     #[test]
+    fn secure_direct_client_replayed_init_and_failed_cipher_do_not_overwrite_session() {
+        let alice_db = Connection::open_in_memory().unwrap();
+        let bob_db = Connection::open_in_memory().unwrap();
+        let alice = test_identity("alice.example", "alice");
+        let bob = test_identity("bob.example", "bob");
+        let (bob_bundle, bob_one_time_prekey) = {
+            let mut bob_prekey_client = MessageServiceDirectSecureClient::new(
+                prepared_client(&bob, "bob-id", &bob_db),
+                Box::new(|_method, _params| Ok(Map::new())),
+                Box::new(|did| {
+                    Err(crate::ImError::PeerNotFound {
+                        peer: did.to_owned(),
+                    })
+                }),
+            );
+            let bundle = bob_prekey_client.ensure_fresh_prekey_bundle().unwrap();
+            let one_time_prekey = bob_prekey_client
+                .one_time_prekey_store()
+                .unwrap()
+                .list_one_time_prekeys()
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap();
+            (bundle, one_time_prekey)
+        };
+
+        let alice_sends = Rc::new(RefCell::new(Vec::<Map<String, Value>>::new()));
+        let alice_sends_for_rpc = Rc::clone(&alice_sends);
+        let bob_bundle_for_rpc = bob_bundle.clone();
+        let bob_opk_for_rpc = bob_one_time_prekey.clone();
+        let mut alice_client = MessageServiceDirectSecureClient::new(
+            prepared_client(&alice, "alice-id", &alice_db),
+            Box::new(move |method, params| match method {
+                "direct.e2ee.get_prekey_bundle" => Ok(object(json!({
+                    "prekey_bundle": bob_bundle_for_rpc,
+                    "one_time_prekey": bob_opk_for_rpc,
+                }))),
+                "direct.send" => {
+                    alice_sends_for_rpc.borrow_mut().push(params.clone());
+                    Ok(object(json!({
+                        "message_id": map_pointer(&params, "/meta/message_id").unwrap_or(Value::Null),
+                        "operation_id": map_pointer(&params, "/meta/operation_id").unwrap_or(Value::Null),
+                        "delivery_state": "accepted",
+                    })))
+                }
+                other => Err(crate::ImError::TransportUnavailable {
+                    detail: format!("unexpected alice RPC method: {other}"),
+                }),
+            }),
+            resolver_for(&bob),
+        );
+
+        alice_client
+            .send_text(&bob.did, "hello bob", "msg-init", "msg-init")
+            .unwrap();
+        let init_params = captured_send(&alice_sends, 0);
+
+        let bob_sends = Rc::new(RefCell::new(Vec::<Map<String, Value>>::new()));
+        let bob_sends_for_rpc = Rc::clone(&bob_sends);
+        let mut bob_client = MessageServiceDirectSecureClient::new(
+            prepared_client(&bob, "bob-id", &bob_db),
+            Box::new(move |method, params| match method {
+                "direct.send" => {
+                    bob_sends_for_rpc.borrow_mut().push(params.clone());
+                    Ok(object(json!({
+                        "message_id": map_pointer(&params, "/meta/message_id").unwrap_or(Value::Null),
+                        "operation_id": map_pointer(&params, "/meta/operation_id").unwrap_or(Value::Null),
+                        "delivery_state": "accepted",
+                    })))
+                }
+                other => Err(crate::ImError::TransportUnavailable {
+                    detail: format!("unexpected bob RPC method: {other}"),
+                }),
+            }),
+            resolver_for(&alice),
+        );
+
+        let init_result = bob_client.process_incoming(init_params.clone()).unwrap();
+        assert_eq!(init_result["state"], json!("decrypted"));
+        assert_eq!(init_result["plaintext"]["text"], json!("hello bob"));
+
+        bob_client
+            .send_text(&alice.did, "reply from bob", "msg-reply", "msg-reply")
+            .unwrap();
+        let reply_params = captured_send(&bob_sends, 0);
+
+        let reply_result = alice_client.process_incoming(reply_params.clone()).unwrap();
+        assert_eq!(reply_result["state"], json!("decrypted"));
+        assert_eq!(reply_result["plaintext"]["text"], json!("reply from bob"));
+
+        alice_client
+            .send_text(
+                &bob.did,
+                "follow up from alice",
+                "msg-follow-up",
+                "msg-follow-up",
+            )
+            .unwrap();
+        let follow_up_params = captured_send(&alice_sends, 1);
+        let session_id = string_value(map_pointer(&follow_up_params, "/body/session_id").as_ref());
+        let bob_session_after_reply = stored_session(&bob_db, "bob-id", &bob.did, &session_id);
+
+        let replayed_init = bob_client.process_incoming(init_params).unwrap();
+        assert_eq!(replayed_init["state"], json!("decrypted"));
+        assert_eq!(
+            stored_session(&bob_db, "bob-id", &bob.did, &session_id),
+            bob_session_after_reply,
+            "replayed direct-init must not replace an established responder session"
+        );
+
+        let self_cipher = bob_client.process_incoming(reply_params).unwrap();
+        assert_eq!(self_cipher["state"], json!("undecryptable"));
+        assert_eq!(
+            stored_session(&bob_db, "bob-id", &bob.did, &session_id),
+            bob_session_after_reply,
+            "failed self-cipher decrypt must not persist ratchet mutations"
+        );
+
+        let follow_up = bob_client.process_incoming(follow_up_params).unwrap();
+        assert_eq!(follow_up["state"], json!("decrypted"));
+        assert_eq!(
+            follow_up["plaintext"]["text"],
+            json!("follow up from alice")
+        );
+    }
+
+    #[test]
     fn prepare_direct_secure_client_rejects_empty_owner_identity() {
         let db = Connection::open_in_memory().unwrap();
         let identity = test_identity("alice.example", "alice");
@@ -833,6 +987,70 @@ mod tests {
         ));
     }
 
+    fn prepared_client<'a>(
+        identity: &TestIdentity,
+        owner_identity_id: &str,
+        db: &'a Connection,
+    ) -> PreparedDirectSecureClient<'a> {
+        prepare_direct_secure_client(DirectSecureClientInput {
+            owner_identity_id: owner_identity_id.to_owned(),
+            owner_did: identity.did.clone(),
+            identity_name: owner_identity_id.to_owned(),
+            signing_key_id: format!("{}#key-1", identity.did),
+            agreement_key_id: format!("{}#key-3", identity.did),
+            signing_private_pem: identity.signing_private_pem.clone(),
+            agreement_private_pem: identity.agreement_private_pem.clone(),
+            local_did_document: identity.document.clone(),
+            local_state: db,
+        })
+        .unwrap()
+    }
+
+    fn resolver_for(identity: &TestIdentity) -> Box<DirectSecureDidResolver<'static>> {
+        let did = identity.did.clone();
+        let document = identity.document.clone();
+        Box::new(move |candidate| {
+            if candidate == did {
+                Ok(document.clone())
+            } else {
+                Err(crate::ImError::PeerNotFound {
+                    peer: candidate.to_owned(),
+                })
+            }
+        })
+    }
+
+    fn captured_send(
+        sends: &Rc<RefCell<Vec<Map<String, Value>>>>,
+        index: usize,
+    ) -> Map<String, Value> {
+        sends.borrow().get(index).cloned().unwrap()
+    }
+
+    fn stored_session(
+        db: &Connection,
+        owner_identity_id: &str,
+        owner_did: &str,
+        session_id: &str,
+    ) -> anp::direct_e2ee::DirectSessionState {
+        AnpDirectSessionStore::new(db, owner_identity_id, owner_did)
+            .unwrap()
+            .load_session(session_id)
+            .unwrap()
+    }
+
+    fn object(value: Value) -> Map<String, Value> {
+        value.as_object().cloned().unwrap()
+    }
+
+    fn map_pointer(object: &Map<String, Value>, pointer: &str) -> Option<Value> {
+        Value::Object(object.clone()).pointer(pointer).cloned()
+    }
+
+    fn string_value(value: Option<&Value>) -> String {
+        value.and_then(Value::as_str).unwrap_or_default().to_owned()
+    }
+
     struct TestIdentity {
         did: String,
         document: Value,
@@ -841,10 +1059,17 @@ mod tests {
     }
 
     fn test_identity(domain: &str, label: &str) -> TestIdentity {
+        let service = anp::authentication::build_agent_message_service_with_options(
+            "#message",
+            format!("https://{domain}/anp-im/rpc"),
+            anp::authentication::AnpMessageServiceOptions::default()
+                .with_service_did(format!("did:wba:{domain}")),
+        );
         let bundle = anp::authentication::create_did_wba_document(
             domain,
             anp::authentication::DidDocumentOptions {
                 path_segments: vec!["agents".to_owned(), label.to_owned()],
+                services: vec![service],
                 ..Default::default()
             },
         )
@@ -852,16 +1077,7 @@ mod tests {
         let did = bundle.did().unwrap().to_owned();
         let signing_private_pem = bundle.private_key_pem("key-1").unwrap().to_owned();
         let agreement_private_pem = bundle.private_key_pem("key-3").unwrap().to_owned();
-        let mut document = bundle.did_document;
-        let service = anp::authentication::build_agent_message_service_with_options(
-            &did,
-            format!("https://{domain}/anp-im/rpc"),
-            anp::authentication::AnpMessageServiceOptions::default().with_service_did(&did),
-        );
-        document
-            .as_object_mut()
-            .unwrap()
-            .insert("service".to_owned(), Value::Array(vec![service]));
+        let document = bundle.did_document;
         assert_eq!(document.get("id"), Some(&json!(did)));
         TestIdentity {
             did,

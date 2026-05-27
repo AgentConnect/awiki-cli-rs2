@@ -1,3 +1,8 @@
+#![allow(dead_code)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+
 pub mod attachments;
 pub mod auth;
 pub mod config;

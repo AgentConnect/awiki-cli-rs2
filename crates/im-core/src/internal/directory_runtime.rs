@@ -83,10 +83,7 @@ where
         let lookup_raw = lookup_by_handle(&mut self.transport, &handle)
             .map_err(|err| map_directory_not_found(err, &handle))?;
         let lookup = handle_lookup_from_value(&lookup_raw)?;
-        let profile = match public_profile_by_did(&mut self.transport, lookup.did.as_str()) {
-            Ok(profile) => Some(profile),
-            Err(_) => None,
-        };
+        let profile = public_profile_by_did(&mut self.transport, lookup.did.as_str()).ok();
         let resolve_raw = resolve_profile_by_did(&mut self.transport, lookup.did.as_str())?;
         let profile_dto = profile
             .as_ref()

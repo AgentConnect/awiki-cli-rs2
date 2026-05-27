@@ -66,6 +66,26 @@ impl DirectSecureConversation<'_> {
             self.peer.clone(),
         )?;
         let mut warnings = plan.status.warnings;
+        let mut state = plan.status.state;
+        let mut problem = plan.status.problem;
+        let mut prepared_local_send_state = false;
+        match crate::internal::secure_direct::prepare::prepare_direct_for_client(
+            self.client,
+            self.peer.clone(),
+        ) {
+            Ok(prepare_plan) => {
+                warnings.extend(prepare_plan.status.warnings);
+                prepared_local_send_state = prepare_plan.prepared_local_send_state;
+                if prepared_local_send_state {
+                    state = prepare_plan.status.state;
+                    problem = prepare_plan.status.problem;
+                    warnings.push("direct E2EE local send state prepared".to_owned());
+                }
+            }
+            Err(err) => {
+                warnings.push(format!("direct E2EE prekey preparation failed: {err}"));
+            }
+        }
         if plan.requeued_outbox_count > 0 {
             warnings.push(format!(
                 "{} failed secure outbox item(s) were moved back to queued",
@@ -74,9 +94,12 @@ impl DirectSecureConversation<'_> {
         }
         Ok(super::DirectSecureRepairResult {
             peer: plan.status.peer,
-            state: plan.status.state,
-            repaired: plan.removed_session || plan.requeued_outbox_count > 0,
-            problem: plan.status.problem,
+            state,
+            repaired: plan.removed_session
+                || plan.requeued_outbox_count > 0
+                || prepared_local_send_state,
+            problem,
+            prepared_local_send_state,
             warnings,
         })
     }
@@ -142,7 +165,11 @@ impl GroupSecureConversation<'_> {
                     has_active_membership: false,
                 },
                 pending_work: super::GroupSecurePendingWork::default(),
-                problem: Some(super::SecureProblem::unsupported("group-e2ee-status")),
+                problem: Some(super::SecureProblem {
+                    code: super::SecureProblemCode::Unsupported,
+                    message: "group-e2ee-status is not available yet".to_owned(),
+                    retryable: false,
+                }),
                 warnings: Vec::new(),
             })
         }

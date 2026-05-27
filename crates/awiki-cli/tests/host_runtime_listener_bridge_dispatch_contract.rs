@@ -601,7 +601,6 @@ fn signed_record(identity_name: &str) -> RuntimeIdentityRecord {
         did: generated.did,
         did_document: Some(generated.did_document),
         key1_private_pem: generated.key1_private_pem,
-        ..RuntimeIdentityRecord::default()
     }
 }
 

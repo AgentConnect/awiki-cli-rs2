@@ -115,6 +115,19 @@ impl<'a> MessageService<'a> {
         &self,
         request: super::SendMessageRequest,
     ) -> crate::ImResult<super::SendMessageResult> {
+        let session_provider =
+            crate::internal::auth::session::FileSessionProvider::new(self.client);
+        let mut transport = crate::internal::transport::CoreHttpTransport::new(self.client);
+        crate::internal::group_e2ee::lifecycle::ensure_group_e2ee_service_available(
+            self.client,
+            &session_provider,
+            &mut transport,
+            crate::internal::group_e2ee::lifecycle::GroupE2eeServiceAvailabilityInput {
+                credentials: None,
+                service_did: None,
+                check_key_package: false,
+            },
+        )?;
         let provider =
             crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
         crate::internal::group_e2ee::runtime::GroupE2eeTextSender::new(
@@ -440,6 +453,12 @@ mod group_e2ee_public_send_tests {
         let server = RpcTestServer::spawn(vec![
             json!({
                 "group_state_ref": {
+                    "group_did": "did:wba:awiki.test:groups:group-e2ee-preflight",
+                    "group_state_version": "preflight-state"
+                }
+            }),
+            json!({
+                "group_state_ref": {
                     "group_did": fixture.group_did,
                     "group_state_version": "service-state-1"
                 }
@@ -491,29 +510,35 @@ mod group_e2ee_public_send_tests {
             crate::messages::DeliveryState::Accepted
         ));
         let requests = server.requests();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert_eq!(requests[0].rpc_method, "group.e2ee.head");
-        assert_eq!(requests[1].rpc_method, "group.e2ee.send");
         assert_eq!(
-            requests[1].params["meta"]["security_profile"],
+            requests[0].params["body"]["group_did"],
+            "did:wba:awiki.test:groups:group-e2ee-preflight"
+        );
+        assert_eq!(requests[1].rpc_method, "group.e2ee.head");
+        assert_eq!(requests[1].params["body"]["group_did"], fixture.group_did);
+        assert_eq!(requests[2].rpc_method, "group.e2ee.send");
+        assert_eq!(
+            requests[2].params["meta"]["security_profile"],
             anp::group_e2ee::SECURITY_PROFILE
         );
         assert_eq!(
-            requests[1].params["meta"]["content_type"],
+            requests[2].params["meta"]["content_type"],
             anp::group_e2ee::GROUP_CIPHER_CONTENT_TYPE
         );
         assert_eq!(
-            requests[1].params["body"]["group_state_ref"]["group_state_version"],
+            requests[2].params["body"]["group_state_ref"]["group_state_version"],
             "service-state-1"
         );
         assert!(
-            requests[1].params["body"]["private_message_b64u"]
+            requests[2].params["body"]["private_message_b64u"]
                 .as_str()
                 .map(|value| !value.trim().is_empty())
                 .unwrap_or(false),
             "group.e2ee.send must carry an MLS private message"
         );
-        let encoded_send = serde_json::to_string(&requests[1].params).unwrap();
+        let encoded_send = serde_json::to_string(&requests[2].params).unwrap();
         assert!(!encoded_send.contains("public group secret"));
         assert!(!encoded_send.contains("application_plaintext"));
         assert!(!encoded_send.contains("provider"));

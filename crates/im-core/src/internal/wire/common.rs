@@ -10,7 +10,7 @@ pub(crate) struct WireIdentity {
 pub(crate) fn now_rfc3339() -> String {
     let now = OffsetDateTime::now_utc()
         .replace_nanosecond(0)
-        .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH);
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH);
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         now.year(),

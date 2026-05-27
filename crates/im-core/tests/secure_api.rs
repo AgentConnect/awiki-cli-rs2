@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 #[test]
 fn secure_service_api_shape_is_available_from_client() {
     let root = unique_temp_root("im-core-secure-api");
-    write_identity_fixture(&root, "alice", "did:example:alice");
+    let identity = TestIdentity::new("alice.secure-api.example", "alice");
+    write_real_identity_fixture(&root, "alice", &identity);
     let core = ImCore::new(test_config(), test_paths(&root)).unwrap();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_owned()))

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const BASELINE: &str = include_str!("../../../docs/sdk-refactor/legacy-path-baseline.md");
+const BASELINE: &str = include_str!("../../../docs/harness/legacy-path-baseline.md");
 const SCAN_ROOTS: &[&str] = &[
     "crates/awiki-cli/src/cli_shell",
     "crates/awiki-cli/src/m_core_cli_adapter",
@@ -37,7 +37,7 @@ fn final_cutover_legacy_path_baseline_matches_current_sources() {
 
     assert_eq!(
         actual, baseline,
-        "legacy path baseline drifted; update docs/sdk-refactor/legacy-path-baseline.md when burning down an offender, and do not add new offenders"
+        "legacy path baseline drifted; update docs/harness/legacy-path-baseline.md when burning down an offender, and do not add new offenders"
     );
 }
 

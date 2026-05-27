@@ -369,7 +369,7 @@ pub(crate) mod normalize {
                     .map(ToOwned::to_owned)
                     .collect::<Vec<_>>(),
                 Value::String(value) => value
-                    .split(|ch| matches!(ch, ',' | ';'))
+                    .split([',', ';'])
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(ToOwned::to_owned)

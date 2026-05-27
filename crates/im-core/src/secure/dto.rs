@@ -55,6 +55,7 @@ pub struct DirectSecureRepairResult {
     pub state: DirectSecureState,
     pub repaired: bool,
     pub problem: Option<SecureProblem>,
+    pub prepared_local_send_state: bool,
     pub warnings: Vec<String>,
 }
 
@@ -152,15 +153,6 @@ pub struct SecureProblem {
 }
 
 impl SecureProblem {
-    pub(crate) fn unsupported(capability: impl Into<String>) -> Self {
-        let capability = capability.into();
-        Self {
-            code: SecureProblemCode::Unsupported,
-            message: format!("{capability} is not available yet"),
-            retryable: false,
-        }
-    }
-
     pub(crate) fn peer_not_found() -> Self {
         Self {
             code: SecureProblemCode::PeerNotFound,

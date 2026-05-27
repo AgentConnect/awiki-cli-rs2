@@ -667,7 +667,7 @@ fn sanitize_component(raw: &str) -> String {
     out.trim_matches(['.', '_', '-']).to_string()
 }
 
-fn first_non_empty<'a, const N: usize>(values: [&'a str; N]) -> Option<&'a str> {
+fn first_non_empty<const N: usize>(values: [&str; N]) -> Option<&str> {
     values.into_iter().find(|value| !value.trim().is_empty())
 }
 

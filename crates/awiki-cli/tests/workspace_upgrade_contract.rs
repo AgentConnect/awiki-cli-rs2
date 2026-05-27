@@ -1,3 +1,5 @@
+#![allow(clippy::bool_assert_comparison)]
+
 use awiki_cli::{workspace_config, workspace_upgrade};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

@@ -127,7 +127,7 @@ fn identity_profile_bridge_updates_current_profile() {
         ProfileSession {
             subject: client.did().clone(),
         },
-        ProfileUpdateTransport::default(),
+        ProfileUpdateTransport,
     )
     .unwrap();
 
@@ -180,7 +180,7 @@ fn identity_profile_update_empty_patch_does_not_call_transport() {
         ProfileSession {
             subject: client.did().clone(),
         },
-        ProfileUpdateTransport::default(),
+        ProfileUpdateTransport,
     );
 
     assert!(matches!(

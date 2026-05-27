@@ -139,7 +139,7 @@ fn group_e2ee_internal_dry_run_plans_remain_queryable() {
 #[test]
 fn group_e2ee_internal_live_commands_stay_unsupported() {
     let workspace = TempDir::new("group-e2ee-live-unsupported").expect("workspace");
-    for (args, command) in low_level_group_e2ee_commands(false) {
+    for (args, command) in unsupported_live_group_e2ee_commands() {
         let output = awiki_internal_cmd(&args, workspace.path());
         assert_unsupported_capability(&output, command, "group e2ee", "Phase 6");
     }
@@ -185,6 +185,19 @@ fn low_level_group_e2ee_commands(dry_run: bool) -> Vec<(Vec<&'static str>, &'sta
     ]
     .into_iter()
     .map(|command| (group_e2ee_args(command, dry_run), command))
+    .collect()
+}
+
+fn unsupported_live_group_e2ee_commands() -> Vec<(Vec<&'static str>, &'static str)> {
+    [
+        "group.e2ee.pending",
+        "group.e2ee.update-key",
+        "group.e2ee.rejoin",
+        "group.e2ee.recover-member",
+        "group.e2ee.process-leave-request",
+    ]
+    .into_iter()
+    .map(|command| (group_e2ee_args(command, false), command))
     .collect()
 }
 
