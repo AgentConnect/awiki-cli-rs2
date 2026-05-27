@@ -13,8 +13,8 @@ use crate::dto::{
     },
     group::{DartGroupMember, DartGroupReadResult, DartGroupSnapshot, DartGroupSummary},
     identity::{
-        DartDefaultIdentityChange, DartHandleRegistrationResult, DartIdentitySummary,
-        DartRecoverHandleResult,
+        DartDefaultIdentityChange, DartDeleteLocalIdentityResult, DartHandleRegistrationResult,
+        DartIdentitySummary, DartRecoverHandleResult,
     },
     message::{
         DartConversation, DartConversationPage, DartMarkReadResult, DartMessage,
@@ -204,6 +204,17 @@ impl From<im_core::identity::DefaultIdentityChange> for DartDefaultIdentityChang
             previous: value.previous.map(Into::into),
             next: value.next.into(),
             requires_default_identity_write: value.requires_default_identity_write,
+            warnings: value.warnings,
+        }
+    }
+}
+
+impl From<im_core::identity::DeleteLocalIdentityResult> for DartDeleteLocalIdentityResult {
+    fn from(value: im_core::identity::DeleteLocalIdentityResult) -> Self {
+        Self {
+            deleted: value.deleted.into(),
+            was_default: value.was_default,
+            next_default: value.next_default.map(Into::into),
             warnings: value.warnings,
         }
     }

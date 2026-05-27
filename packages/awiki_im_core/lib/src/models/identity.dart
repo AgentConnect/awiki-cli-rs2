@@ -80,6 +80,20 @@ class DefaultIdentityChange {
   final List<String> warnings;
 }
 
+class DeleteLocalIdentityResult {
+  const DeleteLocalIdentityResult({
+    required this.deleted,
+    required this.wasDefault,
+    this.nextDefault,
+    this.warnings = const [],
+  });
+
+  final IdentitySummary deleted;
+  final bool wasDefault;
+  final IdentitySummary? nextDefault;
+  final List<String> warnings;
+}
+
 class HandleRegistrationResult {
   const HandleRegistrationResult({
     this.identity,

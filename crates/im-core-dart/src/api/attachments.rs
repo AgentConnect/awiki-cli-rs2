@@ -9,7 +9,7 @@ use crate::dto::{
 };
 
 pub fn send_attachment(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     request: DartAttachmentSendRequest,
 ) -> Result<DartAttachmentSendResult, DartImError> {
     client.with_inner(|inner| {
@@ -23,7 +23,7 @@ pub fn send_attachment(
 }
 
 pub fn download_attachment(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     request: DartDownloadAttachmentRequest,
 ) -> Result<DartDownloadedAttachment, DartImError> {
     client.with_inner(|inner| {

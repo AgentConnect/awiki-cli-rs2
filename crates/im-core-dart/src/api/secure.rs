@@ -10,7 +10,7 @@ use crate::dto::{
 };
 
 pub fn secure_direct_status(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     peer: String,
 ) -> Result<DartDirectSecureStatus, DartImError> {
     client.with_inner(|inner| {
@@ -25,7 +25,7 @@ pub fn secure_direct_status(
 }
 
 pub fn secure_direct_prepare(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     peer: String,
 ) -> Result<DartDirectSecurePrepareResult, DartImError> {
     client.with_inner(|inner| {
@@ -40,7 +40,7 @@ pub fn secure_direct_prepare(
 }
 
 pub fn secure_direct_repair(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     peer: String,
 ) -> Result<DartDirectSecureRepairResult, DartImError> {
     client.with_inner(|inner| {
@@ -55,7 +55,7 @@ pub fn secure_direct_repair(
 }
 
 pub fn secure_group_status(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group: String,
 ) -> Result<DartGroupSecureStatus, DartImError> {
     client.with_inner(|inner| {
@@ -70,7 +70,7 @@ pub fn secure_group_status(
 }
 
 pub fn secure_group_prepare(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group: String,
 ) -> Result<DartGroupSecurePrepareResult, DartImError> {
     client.with_inner(|inner| {
@@ -85,7 +85,7 @@ pub fn secure_group_prepare(
 }
 
 pub fn secure_group_repair(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     group: String,
 ) -> Result<DartGroupSecureRepairResult, DartImError> {
     client.with_inner(|inner| {
@@ -100,7 +100,7 @@ pub fn secure_group_repair(
 }
 
 pub fn secure_outbox_list_failed(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<Vec<DartSecureOutboxEntry>, DartImError> {
     client.with_inner(|inner| {
         inner
@@ -113,7 +113,7 @@ pub fn secure_outbox_list_failed(
 }
 
 pub fn secure_outbox_retry(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     outbox_id: String,
 ) -> Result<DartSecureOutboxResult, DartImError> {
     client.with_inner(|inner| {
@@ -129,7 +129,7 @@ pub fn secure_outbox_retry(
 }
 
 pub fn secure_outbox_drop(
-    client: Arc<crate::api::client::DartImClient>,
+    client: &Arc<crate::api::client::DartImClient>,
     outbox_id: String,
 ) -> Result<DartSecureOutboxResult, DartImError> {
     client.with_inner(|inner| {

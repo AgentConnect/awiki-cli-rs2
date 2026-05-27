@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::dto::{
     error::DartImError,
     identity::{
-        DartHandleRegistrationResult, DartIdentitySelector, DartIdentitySummary,
-        DartInitialProfile, DartRecoverHandleResult,
+        DartDeleteLocalIdentityResult, DartHandleRegistrationResult, DartIdentitySelector,
+        DartIdentitySummary, DartInitialProfile, DartRecoverHandleResult,
     },
 };
 
@@ -40,6 +40,19 @@ pub fn resolve_identity(
         inner
             .identities()
             .resolve(selector.try_into()?)
+            .map(Into::into)
+            .map_err(DartImError::from)
+    })
+}
+
+pub fn delete_local_identity(
+    core: &Arc<crate::api::core::DartImCore>,
+    selector: DartIdentitySelector,
+) -> Result<DartDeleteLocalIdentityResult, DartImError> {
+    core.with_inner(|inner| {
+        inner
+            .identities()
+            .delete_local_identity(selector.try_into()?)
             .map(Into::into)
             .map_err(DartImError::from)
     })

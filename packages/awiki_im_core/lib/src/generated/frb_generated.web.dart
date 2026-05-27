@@ -246,6 +246,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  DartDeleteLocalIdentityResult dco_decode_dart_delete_local_identity_result(
+    dynamic raw,
+  );
+
+  @protected
   DartDirectSecurePrepareResult dco_decode_dart_direct_secure_prepare_result(
     dynamic raw,
   );
@@ -833,6 +838,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartDefaultIdentityChange sse_decode_dart_default_identity_change(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  DartDeleteLocalIdentityResult sse_decode_dart_delete_local_identity_result(
     SseDeserializer deserializer,
   );
 
@@ -1579,6 +1589,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_dart_default_identity_change(
     DartDefaultIdentityChange self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_dart_delete_local_identity_result(
+    DartDeleteLocalIdentityResult self,
     SseSerializer serializer,
   );
 

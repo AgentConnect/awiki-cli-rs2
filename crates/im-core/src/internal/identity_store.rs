@@ -520,9 +520,7 @@ fn parse_index_payload(raw: &[u8]) -> crate::ImResult<IndexPayload> {
         }
     })?;
     if sdk.default_identity.is_none() && sdk.identities.is_empty() {
-        return Err(crate::ImError::Serialization {
-            detail: "identity registry is neither CLI index nor SDK registry".to_string(),
-        });
+        return Ok(IndexPayload::default());
     }
     Ok(sdk_registry_to_index(sdk))
 }
@@ -732,4 +730,18 @@ fn set_private_file_mode(path: &Path) -> crate::ImResult<()> {
 #[cfg(not(unix))]
 fn set_private_file_mode(_path: &Path) -> crate::ImResult<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_sdk_registry_parses_as_empty_index() {
+        let index = parse_index_payload(br#"{"identities":[]}"#).unwrap();
+
+        assert_eq!(index.schema_version, INDEX_SCHEMA_VERSION);
+        assert!(index.default_credential_name.is_empty());
+        assert!(index.credentials.is_empty());
+    }
 }

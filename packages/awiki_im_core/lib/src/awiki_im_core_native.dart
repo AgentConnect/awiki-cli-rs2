@@ -119,6 +119,19 @@ class AwikiImCore {
     return identity._toModel();
   }
 
+  Future<DeleteLocalIdentityResult> deleteLocalIdentity(
+    IdentitySelector selector,
+  ) async {
+    _ensureNotDisposed();
+    final result = await _mapNativeErrors(
+      () => gen_identity_api.deleteLocalIdentity(
+        core: _inner,
+        selector: selector._toGen(),
+      ),
+    );
+    return result._toModel();
+  }
+
   Future<HandleRegistrationResult> registerHandleWithPhone({
     String? localAlias,
     required String requestedHandle,
@@ -902,10 +915,7 @@ class DirectSecureConversation {
   Future<DirectSecureStatus> status() async {
     _client._ensureNotDisposed();
     final status = await _mapNativeErrors(
-      () => gen_secure.secureDirectStatus(
-        client: _client._inner,
-        peer: peer,
-      ),
+      () => gen_secure.secureDirectStatus(client: _client._inner, peer: peer),
     );
     return status._toModel();
   }
@@ -913,10 +923,7 @@ class DirectSecureConversation {
   Future<DirectSecurePrepareResult> prepare() async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
-      () => gen_secure.secureDirectPrepare(
-        client: _client._inner,
-        peer: peer,
-      ),
+      () => gen_secure.secureDirectPrepare(client: _client._inner, peer: peer),
     );
     return result._toModel();
   }
@@ -924,10 +931,7 @@ class DirectSecureConversation {
   Future<DirectSecureRepairResult> repair() async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
-      () => gen_secure.secureDirectRepair(
-        client: _client._inner,
-        peer: peer,
-      ),
+      () => gen_secure.secureDirectRepair(client: _client._inner, peer: peer),
     );
     return result._toModel();
   }
@@ -942,10 +946,7 @@ class GroupSecureConversation {
   Future<GroupSecureStatus> status() async {
     _client._ensureNotDisposed();
     final status = await _mapNativeErrors(
-      () => gen_secure.secureGroupStatus(
-        client: _client._inner,
-        group: group,
-      ),
+      () => gen_secure.secureGroupStatus(client: _client._inner, group: group),
     );
     return status._toModel();
   }
@@ -953,10 +954,7 @@ class GroupSecureConversation {
   Future<GroupSecurePrepareResult> prepare() async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
-      () => gen_secure.secureGroupPrepare(
-        client: _client._inner,
-        group: group,
-      ),
+      () => gen_secure.secureGroupPrepare(client: _client._inner, group: group),
     );
     return result._toModel();
   }
@@ -964,10 +962,7 @@ class GroupSecureConversation {
   Future<GroupSecureRepairResult> repair() async {
     _client._ensureNotDisposed();
     final result = await _mapNativeErrors(
-      () => gen_secure.secureGroupRepair(
-        client: _client._inner,
-        group: group,
-      ),
+      () => gen_secure.secureGroupRepair(client: _client._inner, group: group),
     );
     return result._toModel();
   }
@@ -1087,6 +1082,15 @@ extension on gen_identity.DartDefaultIdentityChange {
     previous: previous?._toModel(),
     next: next._toModel(),
     requiresDefaultIdentityWrite: requiresDefaultIdentityWrite,
+    warnings: warnings,
+  );
+}
+
+extension on gen_identity.DartDeleteLocalIdentityResult {
+  DeleteLocalIdentityResult _toModel() => DeleteLocalIdentityResult(
+    deleted: deleted._toModel(),
+    wasDefault: wasDefault,
+    nextDefault: nextDefault?._toModel(),
     warnings: warnings,
   );
 }
@@ -1773,12 +1777,10 @@ extension on gen_secure_dto.DartGroupSecureRepairResult {
 extension on gen_secure_dto.DartSecureOutboxStatus {
   SecureOutboxStatus _toModel() => switch (this) {
     gen_secure_dto.DartSecureOutboxStatus.queued => SecureOutboxStatus.queued,
-    gen_secure_dto.DartSecureOutboxStatus.sending =>
-      SecureOutboxStatus.sending,
+    gen_secure_dto.DartSecureOutboxStatus.sending => SecureOutboxStatus.sending,
     gen_secure_dto.DartSecureOutboxStatus.failed => SecureOutboxStatus.failed,
     gen_secure_dto.DartSecureOutboxStatus.sent => SecureOutboxStatus.sent,
-    gen_secure_dto.DartSecureOutboxStatus.dropped =>
-      SecureOutboxStatus.dropped,
+    gen_secure_dto.DartSecureOutboxStatus.dropped => SecureOutboxStatus.dropped,
   };
 }
 
@@ -1805,10 +1807,8 @@ extension on gen_secure_dto.DartSecureOutboxResult {
 }
 
 extension on gen_secure_dto.DartSecureDelivery {
-  SecureDelivery _toModel() => SecureDelivery(
-    messageId: messageId,
-    state: state,
-  );
+  SecureDelivery _toModel() =>
+      SecureDelivery(messageId: messageId, state: state);
 }
 
 extension on gen_secure_dto.DartSecureProblem {

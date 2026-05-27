@@ -29,7 +29,7 @@ pub use crate::directory::{DirectoryService, HandleLookupResult};
 pub use crate::email::EmailService;
 pub use crate::error::{ImError, ImResult};
 pub use crate::groups::GroupService;
-pub use crate::identity::{IdentitySelector, IdentitySummary};
+pub use crate::identity::{DeleteLocalIdentityResult, IdentitySelector, IdentitySummary};
 pub use crate::paths::{IdentityRegistryPaths, ImCorePaths, LocalStatePaths, RuntimePaths};
 pub use crate::realtime::RealtimeService;
 pub use crate::secure::SecureService;

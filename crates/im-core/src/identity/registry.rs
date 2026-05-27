@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub struct IdentityRegistry<'a> {
     core: &'a crate::core::ImCore,
@@ -24,6 +24,60 @@ impl<'a> IdentityRegistry<'a> {
 
     pub fn default_identity(&self) -> crate::ImResult<Option<super::IdentitySummary>> {
         Ok(self.load_registry()?.default_identity())
+    }
+
+    pub fn delete_local_identity(
+        &self,
+        selector: super::IdentitySelector,
+    ) -> crate::ImResult<super::DeleteLocalIdentityResult> {
+        let paths = &self.core.inner().sdk_paths().identities;
+        let mut registry = self.load_registry()?;
+        let deleted_index = registry.find_index(selector)?;
+        let deleted_entry = registry.entries.remove(deleted_index);
+        let deleted = deleted_entry.summary.clone();
+        let was_default = deleted.is_default
+            || registry.default_alias.as_deref() == deleted_entry.local_alias.as_deref();
+
+        let mut warnings = Vec::new();
+        if let Some(identity_dir_name) = deleted_entry.identity_dir_name() {
+            let identity_dir = local_identity_dir(&paths.identity_root_dir, &identity_dir_name)?;
+            match fs::remove_dir_all(&identity_dir) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    warnings.push(format!(
+                        "local identity directory was already missing: {}",
+                        identity_dir.display()
+                    ));
+                }
+                Err(err) => return Err(crate::ImError::from(err)),
+            }
+        } else {
+            warnings.push(format!(
+                "local identity {} did not include a usable directory name",
+                deleted.id.as_str()
+            ));
+        }
+
+        if was_default {
+            registry.default_alias = registry
+                .entries
+                .first()
+                .and_then(|entry| entry.local_alias.clone());
+        }
+        registry.apply_default_flags();
+        let next_default = registry.default_identity();
+        write_registry(&paths.registry_path, &registry)?;
+        write_default_identity(
+            paths.default_identity_path.as_deref(),
+            registry.default_alias.as_deref(),
+        )?;
+
+        Ok(super::DeleteLocalIdentityResult {
+            deleted,
+            was_default,
+            next_default,
+            warnings,
+        })
     }
 
     pub fn resolve(
@@ -303,6 +357,58 @@ impl RegistrySnapshot {
         self.entries.iter().find(|entry| predicate(entry))
     }
 
+    fn find_index(&self, selector: super::IdentitySelector) -> crate::ImResult<usize> {
+        match selector {
+            super::IdentitySelector::Default => {
+                let default = self
+                    .default_identity()
+                    .ok_or(crate::ImError::DefaultIdentityMissing)?;
+                self.entries
+                    .iter()
+                    .position(|entry| entry.summary == default)
+                    .ok_or_else(|| crate::ImError::IdentityNotFound {
+                        selector: "default".to_string(),
+                    })
+            }
+            super::IdentitySelector::LocalAlias(alias) => {
+                let alias = alias.trim();
+                if alias.is_empty() {
+                    return Err(crate::ImError::invalid_input(
+                        Some("identity".to_string()),
+                        "local alias must not be empty",
+                    ));
+                }
+                self.entries
+                    .iter()
+                    .position(|entry| entry.local_alias.as_deref() == Some(alias))
+                    .ok_or_else(|| crate::ImError::IdentityNotFound {
+                        selector: alias.to_string(),
+                    })
+            }
+            super::IdentitySelector::Did(did) => self
+                .entries
+                .iter()
+                .position(|entry| entry.summary.did == did)
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: did.as_str().to_string(),
+                }),
+            super::IdentitySelector::Id(id) => self
+                .entries
+                .iter()
+                .position(|entry| entry.summary.id == id)
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: id.as_str().to_string(),
+                }),
+            super::IdentitySelector::Handle(handle) => self
+                .entries
+                .iter()
+                .position(|entry| entry.summary.handle.as_ref() == Some(&handle))
+                .ok_or_else(|| crate::ImError::IdentityNotFound {
+                    selector: handle.as_str().to_string(),
+                }),
+        }
+    }
+
     fn apply_default_flags(&mut self) {
         let default_alias = self.default_alias.clone();
         for entry in &mut self.entries {
@@ -364,27 +470,45 @@ struct RegistryEntry {
     summary: super::IdentitySummary,
 }
 
-#[derive(Debug, Deserialize)]
+impl RegistryEntry {
+    fn identity_dir_name(&self) -> Option<String> {
+        self.dir_name
+            .as_deref()
+            .or(self.local_alias.as_deref())
+            .or_else(|| Some(self.summary.id.as_str()))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 struct SdkRegistryFile {
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     default_identity: Option<String>,
     #[serde(default)]
     identities: Vec<SdkIdentityRecord>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct SdkIdentityRecord {
     id: String,
     did: String,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     dir_name: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     handle: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     display_name: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     local_alias: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     device_id: Option<String>,
     #[serde(default)]
     is_default: bool,
@@ -425,8 +549,14 @@ struct LegacyIdentityRecord {
 }
 
 fn parse_registry(raw: &[u8]) -> crate::ImResult<RegistrySnapshot> {
-    if let Ok(file) = serde_json::from_slice::<SdkRegistryFile>(raw) {
-        if !file.identities.is_empty() {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(raw) {
+        if value.as_object().is_some_and(|object| {
+            object.contains_key("identities") || object.contains_key("default_identity")
+        }) {
+            let file: SdkRegistryFile =
+                serde_json::from_value(value).map_err(|err| crate::ImError::Serialization {
+                    detail: err.to_string(),
+                })?;
             return sdk_registry_snapshot(file);
         }
     }
@@ -476,6 +606,85 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
         default_alias: file.default_identity,
         entries,
     })
+}
+
+fn write_registry(path: &Path, registry: &RegistrySnapshot) -> crate::ImResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = SdkRegistryFile {
+        default_identity: registry.default_alias.clone(),
+        identities: registry
+            .entries
+            .iter()
+            .map(|entry| SdkIdentityRecord {
+                id: entry.summary.id.as_str().to_string(),
+                did: entry.summary.did.as_str().to_string(),
+                dir_name: entry.dir_name.clone(),
+                handle: entry
+                    .summary
+                    .handle
+                    .as_ref()
+                    .map(|handle| handle.as_str().to_string()),
+                display_name: entry.summary.display_name.clone(),
+                local_alias: entry
+                    .local_alias
+                    .clone()
+                    .or_else(|| entry.summary.local_alias.clone()),
+                device_id: entry.summary.device_id.clone(),
+                is_default: entry.summary.is_default,
+                ready_for_auth: entry.summary.readiness.ready_for_auth,
+                ready_for_messaging: entry.summary.readiness.ready_for_messaging,
+                missing: entry
+                    .summary
+                    .readiness
+                    .missing
+                    .iter()
+                    .map(identity_missing_item_to_string)
+                    .collect(),
+            })
+            .collect(),
+    };
+    let raw = serde_json::to_vec_pretty(&file).map_err(|err| crate::ImError::Serialization {
+        detail: err.to_string(),
+    })?;
+    fs::write(path, raw)?;
+    Ok(())
+}
+
+fn write_default_identity(path: Option<&Path>, default_alias: Option<&str>) -> crate::ImResult<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    match default_alias {
+        Some(alias) => {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, format!("{alias}\n"))?;
+        }
+        None => match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(crate::ImError::from(err)),
+        },
+    }
+    Ok(())
+}
+
+fn local_identity_dir(root: &Path, dir_name: &str) -> crate::ImResult<PathBuf> {
+    let relative = Path::new(dir_name);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(crate::ImError::invalid_input(
+            Some("identity".to_string()),
+            "local identity directory name must be a simple relative path segment",
+        ));
+    }
+    Ok(root.join(relative))
 }
 
 fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<RegistrySnapshot> {
@@ -543,6 +752,17 @@ fn identity_missing_item(value: String) -> super::IdentityMissingItem {
         "handle" | "Handle" => super::IdentityMissingItem::Handle,
         "message_endpoint" | "MessageEndpoint" => super::IdentityMissingItem::MessageEndpoint,
         other => super::IdentityMissingItem::Other(other.to_string()),
+    }
+}
+
+fn identity_missing_item_to_string(value: &super::IdentityMissingItem) -> String {
+    match value {
+        super::IdentityMissingItem::DidDocument => "did_document".to_string(),
+        super::IdentityMissingItem::PrivateKey => "private_key".to_string(),
+        super::IdentityMissingItem::AuthState => "auth_state".to_string(),
+        super::IdentityMissingItem::Handle => "handle".to_string(),
+        super::IdentityMissingItem::MessageEndpoint => "message_endpoint".to_string(),
+        super::IdentityMissingItem::Other(value) => value.clone(),
     }
 }
 

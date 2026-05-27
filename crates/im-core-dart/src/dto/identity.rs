@@ -36,6 +36,14 @@ pub struct DartDefaultIdentityChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartDeleteLocalIdentityResult {
+    pub deleted: DartIdentitySummary,
+    pub was_default: bool,
+    pub next_default: Option<DartIdentitySummary>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DartHandleRegistrationResult {
     pub identity: Option<DartIdentitySummary>,
     pub handle: String,

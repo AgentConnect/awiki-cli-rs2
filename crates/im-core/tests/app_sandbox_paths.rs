@@ -123,6 +123,90 @@ mod app_sandbox_paths {
         );
     }
 
+    #[test]
+    fn deleting_default_local_identity_removes_files_and_promotes_next_identity() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        let result = core
+            .identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("alice".to_string()))
+            .unwrap();
+
+        assert_eq!(result.deleted.local_alias.as_deref(), Some("alice"));
+        assert!(result.was_default);
+        assert_eq!(
+            result.next_default.unwrap().local_alias.as_deref(),
+            Some("bob")
+        );
+        assert!(result.warnings.is_empty());
+        assert!(!fixture.identity_dir("alice").exists());
+        assert!(fixture.identity_dir("bob").exists());
+        assert_eq!(fs::read_to_string(fixture.default_path()).unwrap(), "bob\n");
+
+        let identities = core.identities().list().unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].local_alias.as_deref(), Some("bob"));
+        assert!(identities[0].is_default);
+        let default = core.identities().default_identity().unwrap().unwrap();
+        assert_eq!(default.local_alias.as_deref(), Some("bob"));
+        assert!(core
+            .identities()
+            .resolve(IdentitySelector::LocalAlias("alice".to_string()))
+            .is_err());
+    }
+
+    #[test]
+    fn deleting_non_default_local_identity_preserves_current_default() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        let result = core
+            .identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("bob".to_string()))
+            .unwrap();
+
+        assert_eq!(result.deleted.local_alias.as_deref(), Some("bob"));
+        assert!(!result.was_default);
+        assert_eq!(
+            result.next_default.unwrap().local_alias.as_deref(),
+            Some("alice")
+        );
+        assert!(fixture.identity_dir("alice").exists());
+        assert!(!fixture.identity_dir("bob").exists());
+        assert_eq!(
+            fs::read_to_string(fixture.default_path()).unwrap(),
+            "alice\n"
+        );
+
+        let identities = core.identities().list().unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].local_alias.as_deref(), Some("alice"));
+        assert!(identities[0].is_default);
+    }
+
+    #[test]
+    fn deleting_last_local_identity_removes_default_pointer() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        core.identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("bob".to_string()))
+            .unwrap();
+        let result = core
+            .identities()
+            .delete_local_identity(IdentitySelector::LocalAlias("alice".to_string()))
+            .unwrap();
+
+        assert!(result.was_default);
+        assert!(result.next_default.is_none());
+        assert!(!fixture.identity_dir("alice").exists());
+        assert!(!fixture.identity_dir("bob").exists());
+        assert!(!fixture.default_path().exists());
+        assert!(core.identities().list().unwrap().is_empty());
+        assert!(core.identities().default_identity().unwrap().is_none());
+    }
+
     struct AppSandboxFixture {
         temp: tempfile::TempDir,
     }

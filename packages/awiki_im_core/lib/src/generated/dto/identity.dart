@@ -39,6 +39,37 @@ class DartDefaultIdentityChange {
           warnings == other.warnings;
 }
 
+class DartDeleteLocalIdentityResult {
+  final DartIdentitySummary deleted;
+  final bool wasDefault;
+  final DartIdentitySummary? nextDefault;
+  final List<String> warnings;
+
+  const DartDeleteLocalIdentityResult({
+    required this.deleted,
+    required this.wasDefault,
+    this.nextDefault,
+    required this.warnings,
+  });
+
+  @override
+  int get hashCode =>
+      deleted.hashCode ^
+      wasDefault.hashCode ^
+      nextDefault.hashCode ^
+      warnings.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DartDeleteLocalIdentityResult &&
+          runtimeType == other.runtimeType &&
+          deleted == other.deleted &&
+          wasDefault == other.wasDefault &&
+          nextDefault == other.nextDefault &&
+          warnings == other.warnings;
+}
+
 class DartHandleRegistrationResult {
   final DartIdentitySummary? identity;
   final String handle;

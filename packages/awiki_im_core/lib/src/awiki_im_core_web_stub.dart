@@ -14,6 +14,24 @@ class AwikiImCore {
     throw _unsupported();
   }
 
+  Future<List<IdentitySummary>> listIdentities() async {
+    throw _unsupported();
+  }
+
+  Future<IdentitySummary?> defaultIdentity() async {
+    throw _unsupported();
+  }
+
+  Future<IdentitySummary> resolveIdentity(IdentitySelector selector) async {
+    throw _unsupported();
+  }
+
+  Future<DeleteLocalIdentityResult> deleteLocalIdentity(
+    IdentitySelector selector,
+  ) async {
+    throw _unsupported();
+  }
+
   Future<AwikiImClient> client(IdentitySelector selector) async {
     throw _unsupported();
   }

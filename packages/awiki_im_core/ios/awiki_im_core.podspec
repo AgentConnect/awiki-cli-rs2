@@ -10,7 +10,8 @@ Pod::Spec.new do |s|
   s.platform         = :ios, '12.0'
   s.source_files     = 'Classes/**/*'
   s.vendored_frameworks = 'Frameworks/AwikiImCore.xcframework'
-  s.pod_target_xcconfig = {
-    'OTHER_LDFLAGS' => '$(inherited) -force_load $(PODS_TARGET_SRCROOT)/Frameworks/AwikiImCore.xcframework/ios-arm64/libawiki_im_core.a'
+  s.user_target_xcconfig = {
+    'OTHER_LDFLAGS[sdk=iphoneos*]' => '$(inherited) -force_load $(PODS_ROOT)/../.symlinks/plugins/awiki_im_core/ios/Frameworks/AwikiImCore.xcframework/ios-arm64/libawiki_im_core.a',
+    'OTHER_LDFLAGS[sdk=iphonesimulator*]' => '$(inherited) -force_load $(PODS_ROOT)/../.symlinks/plugins/awiki_im_core/ios/Frameworks/AwikiImCore.xcframework/ios-arm64_x86_64-simulator/libawiki_im_core.a'
   }
 end

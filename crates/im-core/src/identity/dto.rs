@@ -106,6 +106,14 @@ pub struct DefaultIdentityChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteLocalIdentityResult {
+    pub deleted: IdentitySummary,
+    pub was_default: bool,
+    pub next_default: Option<IdentitySummary>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub subject: crate::ids::Did,
     pub handle: Option<crate::ids::Handle>,
