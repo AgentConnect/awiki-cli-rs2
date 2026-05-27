@@ -1,16 +1,16 @@
 # WebSocket Host Notification V1
 
-**Status**: Draft v1.1  
-**Scope**: `awiki-cli` websocket listener, normalized host notification event, and provider-neutral notify sink  
+**Status**: Current v1
+**Scope**: `awiki-cli` websocket listener, normalized host notification event, and provider-neutral notify sink
 **Out of scope**: Hermes webhook routing, retry queues, receipt/proof forwarding, and host-specific action schemas
 
 ---
 
 ## 1. Goal
 
-`awiki-cli` already receives websocket notifications from `message-service` and projects them into local SQLite state.
+`awiki-cli` receives websocket notifications from `message-service` through the runtime listener and projects them into local state.
 
-Phase 1 adds a second path:
+The host notification path adds a second side effect:
 
 1. receive raw websocket notification
 2. normalize it into a compact host-facing event
@@ -56,7 +56,7 @@ V1 intentionally does **not** include:
 
 ## 3. Supported Topics
 
-Phase 1 only normalizes the websocket notifications already handled by the listener:
+V1 normalizes the websocket notifications handled by the listener:
 
 | Raw websocket method | Host topic |
 | --- | --- |
@@ -64,7 +64,7 @@ Phase 1 only normalizes the websocket notifications already handled by the liste
 | `group.incoming` | `im.group.message.received` |
 | `group.state_changed` | `im.group.state.changed` |
 
-No other websocket notifications are normalized in this phase.
+Email notification events may reuse `im.message.received` with `data.source_kind = "mail"` and mail-specific fields such as `mailbox_address`, `from_addr`, `subject`, and `preview`.
 
 ---
 
@@ -226,22 +226,19 @@ Explicitly excluded:
 
 ## 5. Notify Sink Contract
 
-The listener emits host events through a provider-neutral sink:
+The listener emits host events through provider-neutral sink implementations in `crates/awiki-cli/src/host_runtime/`:
 
-```go
-Notify(context.Context, HostNotificationEvent) error
-```
-
-Phase 1 ships provider-neutral sinks:
+Current sinks:
 
 - `noop`: accept the event and drop it
 - `log`: write the normalized event into the listener log stream
 - `file`: append newline-delimited JSON events to a local file
 - `hermes`: post normalized events to a local/remote notify adapter endpoint
+- `openclaw`: post normalized events to the configured OpenClaw hook
 
-This is intentionally host-agnostic. OpenClaw and Hermes adapters will be built later on top of the same event contract.
+This is intentionally host-agnostic. OpenClaw and Hermes adapters sit on top of the same event contract.
 
-OpenClaw V1 is now specified separately in:
+Related specs:
 
 - `docs/architecture/openclaw-host-adapter-v1.md`
 - `docs/architecture/hermes-host-notify-v1.md`
@@ -279,19 +276,19 @@ Rules:
 
 Host notification delivery must not break the listener's primary job.
 
-Phase 1 failure policy:
+Failure policy:
 
 - SQLite projection remains the primary side effect
 - sink delivery happens after notification normalization
 - sink errors do **not** block SQLite writes
 - sink errors are exposed through listener status as the latest host notify error
-- no retry queue, dead-letter queue, or delivery acknowledgment is added in this phase
+- no retry queue, dead-letter queue, or delivery acknowledgment is part of the v1 contract
 
 ---
 
 ## 8. Test Requirements
 
-Phase 1 must cover:
+Tests should cover:
 
 - direct message normalization
 - group message normalization
@@ -305,10 +302,8 @@ Phase 1 must cover:
 
 ## 9. Future Work
 
-Not part of Phase 1:
+Out of scope for v1:
 
-- OpenClaw mapped hook or plugin-native delivery design
-- Hermes webhook route design
 - host-specific routing keys or action schemas
 - receipt/proof forwarding
 - persistent host delivery outbox

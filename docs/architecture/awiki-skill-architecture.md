@@ -1,7 +1,7 @@
 # awiki Skill V3 架构设计
 
-**文档状态**：Draft v3.0  
-**适用范围**：`awiki-cli` skill 入口、reference 文档、加载策略、状态标注与安全边界  
+**文档状态**：Current v3.0
+**适用范围**：`awiki-cli` skill 入口、reference 文档、加载策略、状态标注与安全边界
 **目标读者**：CLI/SDK 开发者、AI Agent 集成人员、技能维护者、文档维护者
 
 ---
@@ -56,30 +56,30 @@
 - `docs/architecture/awiki-v2-architecture.md`
 - `docs/architecture/awiki-command-v2.md`
 - `docs/architecture/output-format.md`
-- 当前 `internal/cmdmeta/catalog.go` 中冻结的命令面
-- 当前 `internal/cli/`、`internal/message/`、`internal/runtime/`、`internal/content/` 的实现边界
+- 当前 `crates/awiki-cli/src/command_catalog/mod.rs` 中的命令面
+- 当前 `crates/awiki-cli/src/cli_shell/`、`crates/awiki-cli/src/m_core_cli_adapter/`、`crates/awiki-cli/src/host_runtime/` 与 `crates/im-core/src/` 的实现边界
 
 最终采用以下裁决原则：
 
-1. **以 `awiki-cli` 为当前公共二进制名**  
+1. **以 `awiki-cli` 为当前公共二进制名**
    所有 skill 和 reference 示例默认使用 `awiki-cli ...`。
 
-2. **默认只加载单一入口文档**  
+2. **默认只加载单一入口文档**
    `skills/SKILL.md` 是 awiki skill 体系的唯一默认入口；domain/workflow/debug 内容不再以独立 skill 形式默认装载。
 
-3. **reference 按需加载，不预加载全集**  
+3. **reference 按需加载，不预加载全集**
    只有当前任务明确落到某个领域或 workflow 时，才打开对应的 reference 文档。
 
-4. **bundle 与 shared 的高价值内容并入入口层**  
+4. **bundle 与 shared 的高价值内容并入入口层**
    路由规则、通用安全规则、确认矩阵、输出契约、升级顺序不再分散在多个 skill 中，而是统一放进单一入口。
 
-5. **以当前实现状态为准，不提前承诺未落地能力**  
+5. **以当前实现状态为准，不提前承诺未落地能力**
    `people`、secure direct messaging、heartbeat、部分 debug 能力必须显式标为 `planned` 或 `partial`。
 
-6. **`group` 仍是一等领域**  
+6. **`group` 仍是一等领域**
    群生命周期与群读路径依然单列，但 `msg send --group` 仍归 messaging 路径，不迁移到 groups reference。
 
-7. **debug 仍然存在，但只作为最后兜底 reference**  
+7. **debug 仍然存在，但只作为最后兜底 reference**
    只有 canonical inspection 路径不足、且用户需要底层排查时，才进入 `08-debug.md`。
 
 ---
@@ -166,19 +166,19 @@ skills/
 
 该模型的问题不在于覆盖面不足，而在于：
 
-1. **入口层重复**  
+1. **入口层重复**
    Agent 往往需要先读 bundle，再读 shared，再读某个 domain/workflow，容易反复加载相同规则。
 
-2. **规则层与领域层耦合**  
+2. **规则层与领域层耦合**
    每个 skill 往往还要显式声明“先读 shared”，导致共享规则重复传播。
 
-3. **workflow 内容与操作手册重叠**  
+3. **workflow 内容与操作手册重叠**
    onboarding 既有 workflow skill，又有独立安装/初始化文档，内容交叉明显。
 
-4. **默认上下文过重**  
+4. **默认上下文过重**
    对单一任务来说，预加载 bundle/shared/domain/workflow 中的大量说明，性价比不高。
 
-5. **旧 manifest/template 叙事与当前实物不一致**  
+5. **旧 manifest/template 叙事与当前实物不一致**
    仓库当前正式方案已经落在 `skills/` 文件集上；旧的 manifest 叙事不再代表 bundle/shared/domain/workflow 多层体系，也不是运行时依赖。
 
 因此，旧模型在本仓库中不再作为当前正式架构保留。
@@ -249,16 +249,16 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 ### 7.1 `02-identity.md`
 
-**职责**：身份生命周期 reference。  
-**适用场景**：DID、handle、register、bind、recover、profile、identity switching。  
-**加载策略**：仅在任务明确是 identity 生命周期时加载。  
+**职责**：身份生命周期 reference。
+**适用场景**：DID、handle、register、bind、recover、profile、identity switching。
+**加载策略**：仅在任务明确是 identity 生命周期时加载。
 **状态**：implemented。
 
 ### 7.2 `03-messaging.md`
 
-**职责**：消息 reference。  
-**适用场景**：direct/group plain messaging、inbox、history、mark-read、secure contract 说明。  
-**加载策略**：仅在任务明确是 messaging 时加载。  
+**职责**：消息 reference。
+**适用场景**：direct/group plain messaging、inbox、history、mark-read、secure contract 说明。
+**加载策略**：仅在任务明确是 messaging 时加载。
 **状态**：partial。
 
 特别规则：
@@ -269,9 +269,9 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 ### 7.3 `04-groups.md`
 
-**职责**：群生命周期 reference。  
-**适用场景**：create/get/join/add/remove/leave/update/members/messages。  
-**加载策略**：仅在任务明确是群资源和成员关系时加载。  
+**职责**：群生命周期 reference。
+**适用场景**：create/get/join/add/remove/leave/update/members/messages。
+**加载策略**：仅在任务明确是群资源和成员关系时加载。
 **状态**：implemented。
 
 特别规则：
@@ -282,9 +282,9 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 ### 7.4 `05-runtime.md`
 
-**职责**：runtime 与 listener reference。  
-**适用场景**：runtime mode、listener lifecycle、websocket、host notify、heartbeat 状态说明。  
-**加载策略**：仅在 transport/runtime 任务时加载。  
+**职责**：runtime 与 listener reference。
+**适用场景**：runtime mode、listener lifecycle、websocket、host notify、heartbeat 状态说明。
+**加载策略**：仅在 transport/runtime 任务时加载。
 **状态**：partial。
 
 特别规则：
@@ -295,25 +295,25 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 ### 7.5 `06-pages.md`
 
-**职责**：content pages reference。  
-**适用场景**：page create/list/get/update/rename/delete、markdown、slug、visibility。  
-**加载策略**：仅在 pages 任务时加载。  
+**职责**：content pages reference。
+**适用场景**：page create/list/get/update/rename/delete、markdown、slug、visibility。
+**加载策略**：仅在 pages 任务时加载。
 **状态**：implemented。
 
 ### 7.6 `01-onboarding.md`
 
-**职责**：首次可用 setup workflow reference。  
-**适用场景**：first-time setup、v1 migration、identity registration、runtime bootstrap、listener smoke-check。  
-**加载策略**：仅在 onboarding 类多步任务时加载。  
+**职责**：首次可用 setup workflow reference。
+**适用场景**：first-time setup、v1 migration、identity registration、runtime bootstrap、listener smoke-check。
+**加载策略**：仅在 onboarding 类多步任务时加载。
 **状态**：implemented workflow。
 
 说明：installation 细节已拆出，不再和 onboarding 混在同一默认路径中。
 
 ### 7.7 `07-discovery.md`
 
-**职责**：review-and-draft workflow reference。  
-**适用场景**：group review、candidate inspection、history/profile gathering、manual intro drafting。  
-**加载策略**：仅在 discovery/review 类任务时加载。  
+**职责**：review-and-draft workflow reference。
+**适用场景**：group review、candidate inspection、history/profile gathering、manual intro drafting。
+**加载策略**：仅在 discovery/review 类任务时加载。
 **状态**：partial workflow。
 
 特别规则：
@@ -324,9 +324,9 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 ### 7.8 `08-debug.md`
 
-**职责**：最后兜底的 debug reference。  
-**适用场景**：SQLite inspection、migration import verification、低层排查。  
-**加载策略**：只有 canonical inspection 和领域 reference 都不足时才加载。  
+**职责**：最后兜底的 debug reference。
+**适用场景**：SQLite inspection、migration import verification、低层排查。
+**加载策略**：只有 canonical inspection 和领域 reference 都不足时才加载。
 **状态**：partial。
 
 特别规则：
@@ -337,16 +337,16 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 
 ### 7.9 `09-people-planned.md`
 
-**职责**：planned appendix。  
-**适用场景**：用户询问 people/follow/contact 是否已支持。  
-**加载策略**：不进入默认上下文，只在用户明确问及 future contract 时加载。  
+**职责**：planned appendix。
+**适用场景**：用户询问 people/follow/contact 是否已支持。
+**加载策略**：不进入默认上下文，只在用户明确问及 future contract 时加载。
 **状态**：planned。
 
 ### 7.10 `00-installation.md`
 
-**职责**：低频 installation reference。  
-**适用场景**：安装 `awiki-cli`、安装 Awiki Skills、初始化 workspace prerequisite。  
-**加载策略**：只有环境尚未安装或用户明确需要安装指导时加载。  
+**职责**：低频 installation reference。
+**适用场景**：安装 `awiki-cli`、安装 Awiki Skills、初始化 workspace prerequisite。
+**加载策略**：只有环境尚未安装或用户明确需要安装指导时加载。
 **状态**：reference-only operational guide。
 
 ---
@@ -496,7 +496,7 @@ reference 层负责承载默认入口之外的领域知识、流程细节和低�
 - “bundle + shared + domain + workflow + debug” 作为当前生产架构分类
 - 所有 domain/workflow 都以独立 `SKILL.md` 形式暴露给 Agent 的设计
 
-当前技能体系以 `skills/SKILL.md` 与 `skills/references/*.md` 为准；若历史文档与 `internal/cmdmeta/catalog.go` 或这些文件出现冲突，应以后者为准。
+当前技能体系以 `skills/SKILL.md` 与 `skills/references/*.md` 为准；若历史文档与 `crates/awiki-cli/src/command_catalog/mod.rs` 或这些文件出现冲突，应以后者为准。
 
 ---
 

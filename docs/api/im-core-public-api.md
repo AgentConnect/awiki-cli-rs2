@@ -1,4 +1,4 @@
-# SDK Refactor：公共接口总览
+# im-core Public API：公共接口总览
 
 ## 1. 设计原则
 
@@ -103,7 +103,7 @@ impl ImClient {
 
 `ClientIdentityRuntime`、`ActorContext`、`LoadedIdentity`、`IdentityRuntimePaths` 都是 `pub(crate)`。
 
-Email / Mail 不属于 Phase 1 IM MVP，但独立 Email 阶段已定义并打开默认命令面。接口形态见 `docs/sdk-refactor/Interface/08-email-interface.md`，执行顺序见 `docs/sdk-refactor/plan/email-migration-execution-plan.md`。CLI `mail.*` 默认通过 `client.email()` 执行，不回退到 legacy mail implementation；CLI 仍负责 dry-run、输出 envelope 和附件文件写入。
+Email / Mail 不属于 Phase 1 IM MVP，但独立 Email 阶段已定义并打开默认命令面。接口形态见 `docs/api/im-core-interface/08-email-interface.md`。CLI `mail.*` 默认通过 `client.email()` 执行，不回退到 legacy mail implementation；CLI 仍负责 dry-run、输出 envelope 和附件文件写入。
 
 ## 4. 错误类型
 

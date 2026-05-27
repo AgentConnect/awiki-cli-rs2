@@ -1,0 +1,160 @@
+# im-core SDK Architecture
+
+## 1. Positioning
+
+`crates/im-core` is the reusable Rust IM SDK for awiki. It owns product capabilities that used to be spread through the CLI: identity, auth/session, directory, messages, groups, attachments, secure, realtime, email, content/site, and local state.
+
+The SDK is not a collection of wire helpers, RPC parameter builders, SQLite helpers, or crypto utilities. Public callers construct `ImCore`, bind an identity into `ImClient`, then call high-level services.
+
+```text
+CLI / Flutter / App / Agent
+        |
+        v
+ImCore                    # environment-level entrypoint
+        |
+        v
+ImClient                  # identity-bound product client
+        |
+        +-- auth()
+        +-- identity()
+        +-- directory()
+        +-- messages()
+        +-- groups()
+        +-- attachments()
+        +-- secure()
+        +-- realtime()
+        +-- email()
+        +-- content() / site()
+```
+
+## 2. Crate Boundaries
+
+```text
+crates/im-core       # SDK product capability layer
+crates/awiki-cli     # CLI thin shell
+crates/im-core-dart  # Rust-Dart facade
+packages/awiki_im_core
+                    # Flutter/Dart package and platform loader
+```
+
+Dependency direction is fixed:
+
+```text
+awiki-cli      -> im-core
+im-core-dart   -> im-core
+awiki_im_core  -> im-core-dart native library
+```
+
+`im-core` must not depend on `awiki-cli`, CLI command parsing, CLI config resolution, CLI workspace discovery, OpenClaw/Hermes UX, or service manager types.
+
+## 3. Host vs SDK Responsibilities
+
+| Layer | Owns | Does not own |
+| --- | --- | --- |
+| `im-core` | Product flows, auth retry, target resolution, local owner binding, remote transport, local projection, secure/realtime orchestration | CLI flags, stdout/stderr, exit code, workspace discovery, service install/start/stop |
+| `awiki-cli` | Command parsing, config/workspace/path resolution, permission checks, dry-run, output envelope, daemon/service UX, OpenClaw/Hermes setup | Business flows, raw wire payload construction, auth retry, secure/MLS internals |
+| `im-core-dart` / `awiki_im_core` | Dart-friendly facade, FFI lifecycle, platform native library loading | App UI/cache DTOs, `awiki-me` gateway policy, Flutter Web runtime |
+
+The CLI handler target shape is:
+
+```text
+parse flags -> build ImCore/ImClient -> call SDK -> render output
+```
+
+CLI may parse `--to`, `--group`, `--text-file`, `--file`, and `--secure`; it passes `MessageTarget`, `MessageBody`, `AttachmentInput`, and `MessageSecurityMode` to SDK services.
+
+## 4. Identity Model
+
+`ImCore` is environment-level and does not bind a current identity. `ImClient` binds one identity and automatically carries actor, auth runtime, local owner, and identity-scoped state.
+
+```rust
+let core = ImCore::new(config, paths)?;
+let client = core.client(IdentitySelector::Default)?;
+client.messages().send(request)?;
+```
+
+Rules:
+
+- Do not use mutable global "current identity" inside SDK.
+- `Default` is one `IdentitySelector`, not hidden process state.
+- CLI credential names map to `IdentitySelector::LocalAlias`.
+- auth/session, local state, direct secure state, and MLS state must be identity-scoped.
+- Business queries inject owner internally; callers do not hand-write owner filters.
+
+## 5. Paths and Configuration
+
+Hosts pass explicit `ImCoreConfig` and `ImCorePaths`.
+
+Host responsibilities:
+
+- workspace and `config.yaml` resolution.
+- identity root/default/registry path selection.
+- DID document, key, auth/session, SQLite, runtime, cache, and temp paths.
+- directory creation, chmod, backup, cleanup, and migration timing.
+
+SDK responsibilities:
+
+- read/write only the explicit paths passed by the host.
+- bind paths to the selected identity.
+- initialize and migrate local state through `CoreBootstrap`.
+- avoid CLI workspace auto-discovery and CLI config parsing.
+
+## 6. Public/Internal Boundary
+
+Public API expresses product intent. Internal implementation owns wire, store, crypto, and transport details.
+
+| Module | Public API expresses | Internal only |
+| --- | --- | --- |
+| core | `ImCore`, `ImClient`, config, paths, bootstrap, errors | `ClientIdentityRuntime`, path expansion, store handles |
+| identity | selectors, summaries, registration, recovery, profile, DID replacement plan | private key material, DID writer, raw identity store rows |
+| auth | login, ensure, refresh, status | proof builder, JWT file format, bearer header handling |
+| directory | peer resolve, handle lookup, contacts, relationships | user-service raw request/response, contact store rows |
+| messages | send, inbox, history, mark-read, conversations | message RPC params, wire DTOs, raw notification frames |
+| groups | lifecycle, members, profile/policy, group reads | group wire helpers, raw group receipts |
+| attachments | send/download, source/destination DTOs | upload slots, object commit, ticket params, encrypted manifest internals |
+| secure | status, prepare, repair, outbox summary, secure send policy | ciphertext, prekeys, KeyPackage, MLS private state, provider IO |
+| realtime | status, runner, event stream, normalized `ImEvent` | WebSocket frame, request id, ping/pong, dispatch queues |
+| email | account, inbox, read, mark-read, send, attachment, notifications | mail RPC params, raw JSON payload, auth headers |
+| content/site | page/site product operations | content/site RPC envelope and wire normalization |
+
+## 7. Module Map
+
+- `core`: environment entrypoint, identity-bound client, bootstrap, errors, common IDs and paging types.
+- `identity`: local registry, default identity, handle registration/recovery, profile, contact binding, DID replacement plan.
+- `auth`: DID auth, session/JWT persistence, refresh, status, and retry support for business services.
+- `local_state`: SQLite schema, owner isolation, messages, contacts, groups, email notification, secure outbox, and realtime projection.
+- `discovery`: endpoint and capability selection from config, DID documents, profile, and service metadata.
+- `directory`: DID/Handle lookup, public profile, contact projection, relationship APIs.
+- `messages`: direct/group send, inbox, history, conversations, mark-read, retry plan, local message projection.
+- `groups`: group lifecycle, members, profile/policy, group message reads, group E2EE lifecycle hooks.
+- `attachments`: upload, digest, manifest, message send, ticket download, local file or memory sinks.
+- `secure`: direct E2EE, group E2EE, status/prepare/repair, secure outbox, secure message orchestration.
+- `realtime`: embeddable WebSocket runner, reconnect, notification projection, host notification events.
+- `email`: account, inbox/read/send/mark-read, attachment download, mail notifications.
+- `content/site`: handle content pages and tenant bare-domain site pages.
+
+## 8. Runtime and Features
+
+`im-core` is blocking-first. Flutter/Dart and App hosts expose async APIs by running SDK work on their own worker thread or platform runtime. Any future async public API must be designed separately from the current blocking contract.
+
+Transport is explicit through configuration and capability checks:
+
+- `HttpOnly` keeps business operations on HTTP/RPC.
+- realtime runner requires a non-HTTP-only transport policy and returns a capability error when unavailable.
+- group E2EE, secure direct, SQLite-backed state, and advanced provider traits are feature-gated where appropriate.
+
+## 9. Security Rules
+
+- Remote messages are untrusted input.
+- CLI/App output must not expose JWTs, private keys, raw secure state, ciphertext internals, MLS artifacts, provider stdout/stderr, or host secrets.
+- Host notification payloads must contain approved event summaries, not raw message instructions.
+- Diagnostics may expose lower-level details only behind explicit debug/diagnostic gates.
+
+## 10. API References
+
+Stable API references live under `docs/api/`:
+
+- `docs/api/im-core-public-api.md`
+- `docs/api/im-core-interface/*`
+
+These files describe the SDK public surface and interface-level contracts. They should only change when the API changes; architecture-only cleanup should update this document and related feature docs instead.

@@ -91,12 +91,12 @@ Focused CLI checks:
 
 ```bash
 cargo fmt --all
-cargo +stable check -p im-core --features group-e2ee --locked
-cargo +stable check -p awiki-cli --locked
-cargo +stable test -p im-core --features group-e2ee --locked lifecycle_
-cargo +stable test -p awiki-cli --locked msg_secure
-cargo +stable test -p awiki-cli --locked group_secure
-cargo +stable test -p awiki-cli --locked e2ee
+cargo check -p im-core --features group-e2ee --locked
+cargo check -p awiki-cli --locked
+cargo test -p im-core --features group-e2ee --locked lifecycle_
+cargo test -p awiki-cli --locked msg_secure
+cargo test -p awiki-cli --locked group_secure
+cargo test -p awiki-cli --locked e2ee
 ```
 
 Cross-service validation is owned by [awiki-system-test Group E2EE system tests](../../../awiki-system-test/docs/group-e2ee-system-tests.md). Local CLI work does not require connecting to real domains during unit/contract validation.

@@ -1,13 +1,13 @@
 # Phase 1 Interface：可实施接口方案
 
-**状态**：Final draft for Phase 1 implementation  
-**目录**：`docs/sdk-refactor/Interface/`  
-**适用阶段**：Phase 1 MVP  
-**目标**：把 `docs/sdk-refactor/` 的高层方案落成第一阶段可以直接编码的接口清单。
+**状态**：Final draft for Phase 1 implementation
+**目录**：`docs/api/im-core-interface/`
+**适用阶段**：Phase 1 MVP
+**目标**：记录第一阶段可直接编码的接口清单，作为当前 API 参考的一部分。
 
 ## 1. 结论
 
-当前 `docs/sdk-refactor` 已经说明了架构方向，但真正执行 Phase 1 时还需要一个更具体的接口规格。本目录只做一件事：**给 Phase 1 提供可以照着创建 `crates/im-core`、CLI adapter 和 façade 的接口清单。**
+当前 SDK 架构方向见 `docs/architecture/im-core-sdk-architecture.md`。本目录保留第一阶段接口规格，说明 `crates/im-core`、CLI adapter 和 facade 的接口清单。
 
 本目录遵守主方案中的约束：
 
@@ -74,7 +74,7 @@ async API
 6. 用 07-phase1-acceptance.md 做验收。
 ```
 
-Email / Mail 不属于 Phase 1 MVP。独立 Email 阶段按 `08-email-interface.md` 和 `../plan/email-migration-execution-plan.md` 迁入 SDK；CLI 默认命令面打开后，`mail.*` 必须走 `im-core::email`，不能回退到 legacy mail implementation。
+Email / Mail 不属于 Phase 1 MVP。独立 Email 阶段的接口形态见 `08-email-interface.md`；CLI 默认命令面打开后，`mail.*` 必须走 `im-core::email`，不能回退到 legacy mail implementation。
 
 ## 5. 兼容原则
 
