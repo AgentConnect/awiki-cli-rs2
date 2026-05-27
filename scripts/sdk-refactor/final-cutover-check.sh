@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
 cargo_bin="${CARGO:-cargo}"
-toolchain="${AWIKI_CLI_RUST_TOOLCHAIN:-1.85.1}"
+toolchain="${AWIKI_CLI_RUST_TOOLCHAIN:-1.88.0}"
 
 if [[ "${cargo_bin}" == "cargo" && -n "${toolchain}" ]]; then
   cargo_cmd=(cargo "+${toolchain}")

@@ -21,14 +21,13 @@ jobs:
       - name: Rust
         working-directory: awiki-cli-rs2
         run: |
-          rustup toolchain install 1.78.0 --profile minimal
-          rustup toolchain install 1.79.0 --profile minimal
-          cargo +1.78.0 check -p im-core --locked
-          cargo +1.79.0 check -p im-core-dart --locked
-          cargo +1.79.0 test -p im-core-dart --locked
+          rustup toolchain install 1.88.0 --profile minimal
+          cargo +1.88.0 check -p im-core --locked
+          cargo +1.88.0 check -p im-core-dart --locked
+          cargo +1.88.0 test -p im-core-dart --locked
           cargo install flutter_rust_bridge_codegen --version 2.12.0 --locked
           scripts/flutter/codegen-check.sh
-          cargo +1.79.0 run -p xtask --locked -- check-structure
+          cargo +1.88.0 run -p xtask --locked -- check-structure
 
   flutter-check:
     runs-on: ubuntu-latest

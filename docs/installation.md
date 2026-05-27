@@ -4,7 +4,7 @@
 
 awiki-cli 是 awiki 的命令行客户端。当前仓库是 Awiki CLI 合约的 Rust CLI port，通过 CLI 命令编排对后端服务的 API 调用，并保留早期 Go 设计中的命令面、输出契约和发布产物命名。它支持 DID 身份管理、消息收发（私聊/群聊）、群组管理、WebSocket 实时监听等能力。
 
-**技术栈**: Rust 1.78+ workspace + Cargo + bundled SQLite (`rusqlite`) + ANP Rust SDK
+**技术栈**: Rust 1.88+ workspace + Cargo + bundled SQLite (`rusqlite`) + ANP Rust SDK
 
 ---
 
@@ -12,7 +12,7 @@ awiki-cli 是 awiki 的命令行客户端。当前仓库是 Awiki CLI 合约的 
 
 ### 1.1 Rust toolchain
 
-`Cargo.toml` 中的最低 Rust 版本为 1.78。发布脚本默认使用 `AWIKI_CLI_RUST_TOOLCHAIN=1.79.0`，如本机已安装兼容 toolchain，也可以通过环境变量覆盖。
+`Cargo.toml` 中的最低 Rust 版本为 1.88。发布脚本默认使用 `AWIKI_CLI_RUST_TOOLCHAIN=1.88.0`，如本机已安装兼容 toolchain，也可以通过环境变量覆盖。
 
 ```bash
 # macOS (Homebrew)
@@ -44,8 +44,8 @@ Direct E2EE 的 CLI 编排、session/prekey/outbox 本地状态和 discovery 收
 如本机未安装 Rust，可使用 Rust Docker 镜像：
 
 ```bash
-docker run --rm -v "$PWD":/app -w /app rust:1.79 cargo build --workspace --locked
-docker run --rm -v "$PWD":/app -w /app rust:1.79 cargo test --workspace --all-features
+docker run --rm -v "$PWD":/app -w /app rust:1.88 cargo build --workspace --locked
+docker run --rm -v "$PWD":/app -w /app rust:1.88 cargo test --workspace --all-features
 ```
 
 ---
@@ -540,7 +540,7 @@ cargo check -p awiki-cli --all-features
 
 ### Q: `cargo fetch` 或 `cargo check` 报错
 
-可能是远端依赖下载失败，或 Rust 版本不匹配。确认使用 Rust 1.78+：
+可能是远端依赖下载失败，或 Rust 版本不匹配。确认使用 Rust 1.88+：
 
 ```bash
 rustc --version
