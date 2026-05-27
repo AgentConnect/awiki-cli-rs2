@@ -42,7 +42,7 @@ pub(crate) struct DirectRealtimeNotificationProjection {
 
 pub(crate) fn maybe_decrypt_direct_e2ee_messages_for_client<R>(
     client: &crate::core::ImClient,
-    messages: &mut Vec<Value>,
+    messages: &mut [Value],
     directory_transport: &mut R,
     mode: DirectDecryptMode,
 ) -> Vec<String>
@@ -76,11 +76,21 @@ where
     };
     let owner_did = client.did().as_str().to_owned();
     let local_document_for_resolver = local_did_document.clone();
+    let identity_paths = client.core_inner().sdk_paths().identities.clone();
     let resolver = Box::new(move |did: &str| {
         if did == owner_did {
             return Ok(local_document_for_resolver.clone());
         }
-        resolve_did_document_with_transport(directory_transport, did)
+        match resolve_did_document_with_transport(directory_transport, did) {
+            Ok(document) => Ok(document),
+            Err(err) => match crate::internal::identity_document_cache::load_local_did_document(
+                &identity_paths,
+                did,
+            ) {
+                Ok(Some(document)) => Ok(document),
+                Ok(None) | Err(_) => Err(err),
+            },
+        }
     });
     let rpc = Box::new(|method: &str, _params: Map<String, Value>| {
         Err(crate::ImError::TransportUnavailable {
@@ -154,11 +164,21 @@ where
     };
     let owner_did = client.did().as_str().to_owned();
     let local_document_for_resolver = local_did_document.clone();
+    let identity_paths = client.core_inner().sdk_paths().identities.clone();
     let resolver = Box::new(move |did: &str| {
         if did == owner_did {
             return Ok(local_document_for_resolver.clone());
         }
-        resolve_did_document_with_transport(directory_transport, did)
+        match resolve_did_document_with_transport(directory_transport, did) {
+            Ok(document) => Ok(document),
+            Err(err) => match crate::internal::identity_document_cache::load_local_did_document(
+                &identity_paths,
+                did,
+            ) {
+                Ok(Some(document)) => Ok(document),
+                Ok(None) | Err(_) => Err(err),
+            },
+        }
     });
     let mut message_transport = crate::internal::transport::CoreHttpTransport::new(client);
     let rpc = Box::new(move |method: &str, params: Map<String, Value>| {
@@ -311,14 +331,14 @@ fn normalize_direct_realtime_plaintext_notification(
     plaintext: &mut Map<String, Value>,
     control_warnings: Vec<String>,
 ) -> DirectRealtimeNotificationProjection {
-    if super::control::is_secure_ack_plaintext(&plaintext) {
+    if super::control::is_secure_ack_plaintext(plaintext) {
         return DirectRealtimeNotificationProjection {
             notification: None,
             warnings: compact_warnings(control_warnings),
             decision: DirectRealtimeNotificationDecision::DroppedControl,
         };
     }
-    if super::control::is_secure_init_plaintext(&plaintext) {
+    if super::control::is_secure_init_plaintext(plaintext) {
         return DirectRealtimeNotificationProjection {
             notification: None,
             warnings: match mode {
@@ -329,7 +349,7 @@ fn normalize_direct_realtime_plaintext_notification(
         };
     }
     let mut normalized = notification;
-    apply_plaintext_to_realtime_notification(&mut normalized, &plaintext);
+    apply_plaintext_to_realtime_notification(&mut normalized, plaintext);
     DirectRealtimeNotificationProjection {
         notification: Some(normalized),
         warnings: Vec::new(),
@@ -524,7 +544,7 @@ fn send_secure_outbox_request(
 
 #[allow(dead_code)]
 pub(crate) fn maybe_decrypt_direct_e2ee_messages_with_processor(
-    messages: &mut Vec<Value>,
+    messages: &mut [Value],
     mut process_incoming: impl FnMut(Map<String, Value>) -> DirectIncomingProcessorResult,
 ) -> Vec<String> {
     maybe_decrypt_direct_e2ee_messages_with_processor_and_side_effects(
@@ -547,7 +567,7 @@ pub(crate) fn project_direct_e2ee_message_values_with_processor(
 
 #[allow(dead_code)]
 pub(crate) fn maybe_decrypt_direct_e2ee_messages_with_processor_and_side_effects(
-    messages: &mut Vec<Value>,
+    messages: &mut [Value],
     mut process_incoming: impl FnMut(Map<String, Value>) -> DirectIncomingProcessorResult,
     mut side_effects: impl FnMut(&Value, &Map<String, Value>) -> Vec<String>,
 ) -> Vec<String> {

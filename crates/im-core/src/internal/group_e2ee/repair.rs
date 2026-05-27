@@ -277,9 +277,10 @@ where
         let mut warnings = Vec::new();
         for pending in &status.pending_commits {
             if !pending_commit_accepted_by_service(pending.to_epoch.as_str(), service_head) {
-                warnings.push(format!(
+                warnings.push(
                     "group E2EE pending commit retained: service head has not accepted its target state"
-                ));
+                        .to_string(),
+                );
                 continue;
             }
             match self.mls_provider.finalize_commit(FinalizeCommitInput {

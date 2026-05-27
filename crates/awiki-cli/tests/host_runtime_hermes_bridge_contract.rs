@@ -1,3 +1,5 @@
+#![allow(clippy::bool_assert_comparison)]
+
 use awiki_cli::host_runtime::hermes_bridge;
 use serde_json::{json, Map, Value};
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -102,7 +102,7 @@ fn new_host_notify_sink_disabled_returns_noop_and_status_like_go() {
 
     let (sink, status) = new_host_notify_sink(&resolved).expect("sink");
     assert!(matches!(sink, HostNotifySinkImpl::Noop(_)));
-    assert_eq!(status.enabled, false);
+    assert!(!status.enabled);
     assert_eq!(status.sink, "file");
     assert_eq!(status.file_path, resolved.host_notify_file_path);
     sink.notify(&host_event("disabled")).expect("noop notify");
@@ -120,7 +120,7 @@ fn new_host_notify_sink_file_returns_status_and_writes_like_go() {
 
     let (sink, status) = new_host_notify_sink(&resolved).expect("sink");
     assert!(matches!(sink, HostNotifySinkImpl::File(_)));
-    assert_eq!(status.enabled, true);
+    assert!(status.enabled);
     assert_eq!(status.sink, "file");
     assert_eq!(status.file_path, path_string(&sink_path));
     assert_eq!(status.hook_url, "");

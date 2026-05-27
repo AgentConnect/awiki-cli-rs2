@@ -1,6 +1,6 @@
 use anp::group_e2ee::operations::{
     AbortCommitInput, AddMemberInput, CreateGroupInput, FinalizeCommitInput, LeaveGroupInput,
-    RemoveMemberInput,
+    RecoverMemberInput, RemoveMemberInput, UpdateMemberInput,
 };
 use anp::group_e2ee::{GroupKeyPackage, GroupStateRef};
 use serde_json::{Map, Value};
@@ -38,6 +38,15 @@ pub(crate) struct GroupE2eeMemberMutationInput {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct GroupE2eeKeyReplacementInput {
+    pub(crate) group: crate::ids::GroupRef,
+    pub(crate) member: crate::ids::Did,
+    pub(crate) device_id: String,
+    pub(crate) credentials: Option<GroupTextCredentials>,
+    pub(crate) service_did: Option<crate::ids::Did>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct GroupE2eeLeaveInput {
     pub(crate) group: crate::ids::GroupRef,
     pub(crate) reason_text: Option<String>,
@@ -46,9 +55,73 @@ pub(crate) struct GroupE2eeLeaveInput {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct GroupE2eeServiceAvailabilityInput {
+    pub(crate) credentials: Option<GroupTextCredentials>,
+    pub(crate) service_did: Option<crate::ids::Did>,
+    pub(crate) check_key_package: bool,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct GroupE2eeLifecycleResult {
     pub(crate) delivery: Value,
     pub(crate) warnings: Vec<String>,
+}
+
+pub(crate) fn ensure_group_e2ee_service_available<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    input: GroupE2eeServiceAvailabilityInput,
+) -> crate::ImResult<()>
+where
+    P: SessionProvider,
+    T: AuthenticatedRpcTransport,
+{
+    session_provider.ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+    let credentials = input
+        .credentials
+        .map(Ok)
+        .unwrap_or_else(|| load_credentials(client))?;
+    let preflight_group_did = group_e2ee_availability_group_did(client);
+    let head_params = super::wire::build_group_e2ee_head_rpc_params(
+        &credentials,
+        client.did().as_str(),
+        &preflight_group_did,
+    )?;
+    match transport.authenticated_rpc(
+        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+        "group.e2ee.head",
+        head_params,
+    ) {
+        Ok(_) => {}
+        Err(err) if is_group_e2ee_service_disabled(&err) => return Err(err),
+        Err(_) => {}
+    }
+    if !input.check_key_package {
+        return Ok(());
+    }
+    let service_did = input
+        .service_did
+        .map(Ok)
+        .unwrap_or_else(|| group_e2ee_service_did(client))?;
+    let key_package_params = super::wire::build_group_e2ee_get_key_package_rpc_params(
+        &credentials,
+        client.did().as_str(),
+        service_did.as_str(),
+        &preflight_group_did,
+        client.did().as_str(),
+        None,
+        None,
+    )?;
+    match transport.authenticated_rpc(
+        crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+        "group.e2ee.get_key_package",
+        key_package_params,
+    ) {
+        Ok(_) => Ok(()),
+        Err(err) if is_group_e2ee_service_disabled(&err) => Err(err),
+        Err(_) => Ok(()),
+    }
 }
 
 impl<'a, P, T, M> GroupE2eeLifecycleRuntime<'a, P, T, M>
@@ -150,6 +223,8 @@ where
             service_did.as_str(),
             &group_did,
             &member_did,
+            "normal",
+            None,
         )?;
         let operation_id = format!(
             "op-{}",
@@ -381,6 +456,223 @@ where
         })
     }
 
+    pub(crate) fn update_member_key(
+        mut self,
+        input: GroupE2eeKeyReplacementInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+        let credentials = self.credentials(input.credentials)?;
+        let service_did = self.service_did(input.service_did)?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let member_did = require_did(input.member.as_str(), "member")?.to_owned();
+        let device_id = normalize_device_id(&input.device_id);
+        let key_package = self.lookup_member_key_package(
+            &credentials,
+            service_did.as_str(),
+            &group_did,
+            &member_did,
+            "update",
+            Some(&device_id),
+        )?;
+        let group_state_ref =
+            self.resolved_group_state_ref(&credentials, &input.group, &group_did)?;
+        let operation_id = format!(
+            "op-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let prepared = self.mls_provider.update_member_prepare(UpdateMemberInput {
+            actor_did: self.client.did().as_str().to_owned(),
+            device_id: device_id_for_client(self.client),
+            group_did: group_did.clone(),
+            member_did: member_did.clone(),
+            target_device_id: device_id.clone(),
+            group_key_package: key_package.clone(),
+            group_state_ref: group_state_ref.clone(),
+            update_key_package_id: Some(key_package.key_package_id.clone()),
+            operation_id: operation_id.clone(),
+            request_id: format!("group-e2ee-update-{operation_id}"),
+            pending_commit_id: Some(format!("pc-{operation_id}")),
+        })?;
+        let params = super::wire::build_group_e2ee_update_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            &member_did,
+            &device_id,
+            &prepared,
+            &key_package,
+            group_state_ref.as_ref(),
+        )?;
+        let delivery = match self.transport.authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.update",
+            params,
+        ) {
+            Ok(delivery) => delivery,
+            Err(err) => return self.service_rejected_prepared(&prepared, &group_did, err),
+        };
+        let mut warnings = Vec::new();
+        match self.finalize_prepared(&prepared, &group_did, &delivery) {
+            Ok(finalized) => persist_group_e2ee_summary(
+                self.client,
+                &group_did,
+                summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                group_state_version(&delivery, group_state_ref.as_ref()).as_deref(),
+                Some(finalized.crypto_group_id_b64u.as_str()),
+                finalized.epoch_authenticator.as_deref(),
+                Some(prepared.suite.as_str()),
+                Some(finalized.operation_id.as_str()),
+                "active",
+            ),
+            Err(err) => warnings.push(format!(
+                "group E2EE update was accepted by service but local finalize failed: {err}"
+            )),
+        }
+        Ok(GroupE2eeLifecycleResult {
+            delivery: public_lifecycle_delivery(
+                "secure_group_update_key",
+                &group_did,
+                Some(&member_did),
+                Some("active"),
+                &delivery,
+            ),
+            warnings,
+        })
+    }
+
+    pub(crate) fn recover_member(
+        mut self,
+        input: GroupE2eeKeyReplacementInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+        let credentials = self.credentials(input.credentials)?;
+        let service_did = self.service_did(input.service_did)?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let member_did = require_did(input.member.as_str(), "member")?.to_owned();
+        let device_id = normalize_device_id(&input.device_id);
+        let key_package = self.lookup_member_key_package(
+            &credentials,
+            service_did.as_str(),
+            &group_did,
+            &member_did,
+            "recovery",
+            Some(&device_id),
+        )?;
+        let group_state_ref =
+            self.resolved_group_state_ref(&credentials, &input.group, &group_did)?;
+        let operation_id = format!(
+            "op-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let prepared = self
+            .mls_provider
+            .recover_member_prepare(RecoverMemberInput {
+                actor_did: self.client.did().as_str().to_owned(),
+                device_id: device_id_for_client(self.client),
+                group_did: group_did.clone(),
+                member_did: member_did.clone(),
+                target_device_id: device_id.clone(),
+                group_key_package: key_package.clone(),
+                group_state_ref: group_state_ref.clone(),
+                operation_id: operation_id.clone(),
+                request_id: format!("group-e2ee-recover-{operation_id}"),
+                pending_commit_id: Some(format!("pc-{operation_id}")),
+            })?;
+        let params = super::wire::build_group_e2ee_recover_member_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            &member_did,
+            &device_id,
+            &prepared,
+            &key_package,
+            group_state_ref.as_ref(),
+        )?;
+        let delivery = match self.transport.authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.recover_member",
+            params,
+        ) {
+            Ok(delivery) => delivery,
+            Err(err) => return self.service_rejected_prepared(&prepared, &group_did, err),
+        };
+        let mut warnings = Vec::new();
+        match self.finalize_prepared(&prepared, &group_did, &delivery) {
+            Ok(finalized) => persist_group_e2ee_summary(
+                self.client,
+                &group_did,
+                summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                group_state_version(&delivery, group_state_ref.as_ref()).as_deref(),
+                Some(finalized.crypto_group_id_b64u.as_str()),
+                finalized.epoch_authenticator.as_deref(),
+                Some(prepared.suite.as_str()),
+                Some(finalized.operation_id.as_str()),
+                "active",
+            ),
+            Err(err) => warnings.push(format!(
+                "group E2EE recover-member was accepted by service but local finalize failed: {err}"
+            )),
+        }
+        Ok(GroupE2eeLifecycleResult {
+            delivery: public_lifecycle_delivery(
+                "secure_group_recover_member",
+                &group_did,
+                Some(&member_did),
+                Some("active"),
+                &delivery,
+            ),
+            warnings,
+        })
+    }
+
+    pub(crate) fn process_leave_request(
+        mut self,
+        input: GroupE2eeMemberMutationInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
+        let credentials = self.credentials(input.credentials)?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let member_did = require_did(input.member.as_str(), "member")?.to_owned();
+        let leave_request_id = input
+            .leave_request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("leave_request_id".to_owned()),
+                    "group E2EE process leave request requires leave_request_id",
+                )
+            })?
+            .to_owned();
+        let params = super::wire::build_group_e2ee_process_leave_request_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            &leave_request_id,
+        )?;
+        let processing = self.transport.authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.process_leave_request",
+            params,
+        )?;
+        let final_result = self.remove_secure_member(GroupE2eeMemberMutationInput {
+            group: input.group,
+            member: crate::ids::Did::parse(&member_did)?,
+            reason_text: input.reason_text,
+            leave_request_id: Some(leave_request_id),
+            credentials: Some(credentials),
+            service_did: input.service_did,
+        })?;
+        Ok(GroupE2eeLifecycleResult {
+            delivery: merge_process_leave_delivery(final_result.delivery, &processing),
+            warnings: final_result.warnings,
+        })
+    }
+
     fn credentials(
         &self,
         credentials: Option<GroupTextCredentials>,
@@ -416,6 +708,8 @@ where
         service_did: &str,
         group_did: &str,
         member_did: &str,
+        purpose: &str,
+        device_id: Option<&str>,
     ) -> crate::ImResult<GroupKeyPackage> {
         let params = super::wire::build_group_e2ee_get_key_package_rpc_params(
             credentials,
@@ -423,6 +717,8 @@ where
             service_did,
             group_did,
             member_did,
+            Some(purpose),
+            device_id,
         )?;
         let raw = self.transport.authenticated_rpc(
             crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
@@ -441,7 +737,7 @@ where
         if let Some(reference) = local_group_state_ref(self.client, group_did) {
             return Ok(Some(reference));
         }
-        match super::state_ref::resolve_group_state_ref(
+        match super::state_ref::resolve_group_state_ref_local_first(
             self.client,
             &self.session_provider,
             &mut self.transport,
@@ -533,6 +829,36 @@ fn group_key_package_from_value(value: &Value) -> crate::ImResult<GroupKeyPackag
     serde_json::from_value(candidate).map_err(|err| crate::ImError::Serialization {
         detail: format!("decode group E2EE KeyPackage: {err}"),
     })
+}
+
+fn merge_process_leave_delivery(mut delivery: Value, processing: &Value) -> Value {
+    let Value::Object(ref mut output) = delivery else {
+        return delivery;
+    };
+    output.insert(
+        "action".to_owned(),
+        Value::String("secure_group_process_leave_request".to_owned()),
+    );
+    let mut process = Map::new();
+    for key in [
+        "accepted",
+        "final_acceptance",
+        "group_did",
+        "leave_request_id",
+        "pending_leave_request_count",
+        "next_step",
+    ] {
+        if let Some(value) = processing.get(key) {
+            process.insert(key.to_owned(), value.clone());
+        }
+    }
+    if let Some(leave_request) = processing.get("leave_request") {
+        process.insert("leave_request".to_owned(), leave_request.clone());
+    }
+    if !process.is_empty() {
+        output.insert("process_leave_request".to_owned(), Value::Object(process));
+    }
+    delivery
 }
 
 fn public_lifecycle_delivery(
@@ -696,6 +1022,15 @@ fn summary_epoch<'a>(epoch: &'a str, fallback: Option<&'a str>) -> Option<&'a st
     }
 }
 
+fn normalize_device_id(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        DEFAULT_GROUP_MLS_DEVICE_ID.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
 #[cfg(feature = "sqlite")]
 fn persist_group_e2ee_summary(
     client: &crate::core::ImClient,
@@ -790,6 +1125,44 @@ fn require_group(group_did: &str) -> crate::ImResult<&str> {
         ));
     }
     Ok(group_did)
+}
+
+fn group_e2ee_availability_group_did(client: &crate::core::ImClient) -> String {
+    format!(
+        "did:wba:{}:groups:group-e2ee-preflight",
+        client.core_inner().sdk_config().did_domain
+    )
+}
+
+fn group_e2ee_service_did(client: &crate::core::ImClient) -> crate::ImResult<crate::ids::Did> {
+    client
+        .core_inner()
+        .sdk_config()
+        .anp_service_did
+        .clone()
+        .ok_or_else(|| {
+            crate::ImError::invalid_input(
+                Some("anp_service_did".to_owned()),
+                "group E2EE lifecycle requires ImCoreConfig.anp_service_did",
+            )
+        })
+}
+
+pub(super) fn is_group_e2ee_service_disabled(err: &crate::ImError) -> bool {
+    let crate::ImError::Service {
+        code: Some(code),
+        message,
+        ..
+    } = err
+    else {
+        return false;
+    };
+    if code != "1405" {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("group e2ee contract-test apis are disabled")
+        || message.contains("group e2ee p6 apis are disabled")
 }
 
 fn require_did<'a>(did: &'a str, field: &'static str) -> crate::ImResult<&'a str> {
@@ -1245,6 +1618,340 @@ mod tests {
         assert_eq!(calls[0].method, "group.e2ee.leave_request");
     }
 
+    #[test]
+    fn lifecycle_update_key_leases_update_package_and_finalizes() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![
+                    (
+                        "group.e2ee.get_key_package".to_owned(),
+                        json!({"group_key_package": key_package_json_with_purpose(
+                            "did:example:bob",
+                            "update"
+                        )}),
+                    ),
+                    (
+                        "group.e2ee.update".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "target_did": "did:example:bob",
+                            "device_id": "default",
+                            "update_key_package_id": "kp-did:example:bob",
+                            "group_state_version": "state-5",
+                            "epoch": "5"
+                        }),
+                    ),
+                ],
+            },
+            provider.clone(),
+        )
+        .update_member_key(GroupE2eeKeyReplacementInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            member: crate::ids::Did::parse("did:example:bob").unwrap(),
+            device_id: "default".to_owned(),
+            credentials: Some(fixture.credentials()),
+            service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+        })
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            provider.updated.borrow().as_slice(),
+            ["did:example:groups:e2ee:did:example:bob:default"]
+        );
+        assert_eq!(provider.finalized.borrow().as_slice(), ["pc-update"]);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.get_key_package", "group.e2ee.update"]
+        );
+        assert_eq!(calls[0].params["body"]["purpose"], "update");
+        assert_eq!(calls[0].params["body"]["device_id"], "default");
+        assert_eq!(
+            calls[1].params["body"]["target"]["agent_did"],
+            "did:example:bob"
+        );
+        assert_eq!(calls[1].params["body"]["target"]["device_id"], "default");
+        assert_eq!(
+            calls[1].params["body"]["update_key_package_id"],
+            "kp-did:example:bob"
+        );
+        assert_eq!(
+            calls[1].params["body"]["group_key_package"]["purpose"],
+            "update"
+        );
+        assert_eq!(result.delivery["action"], "secure_group_update_key");
+        assert_eq!(result.delivery["group_state"]["epoch"], "5");
+    }
+
+    #[test]
+    fn lifecycle_recover_member_leases_recovery_package_and_finalizes() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![
+                    (
+                        "group.e2ee.get_key_package".to_owned(),
+                        json!({"group_key_package": key_package_json_with_purpose(
+                            "did:example:bob",
+                            "recovery"
+                        )}),
+                    ),
+                    (
+                        "group.e2ee.recover_member".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "target_did": "did:example:bob",
+                            "device_id": "default",
+                            "recovery_key_package_id": "kp-did:example:bob",
+                            "group_state_version": "state-6",
+                            "epoch": "6"
+                        }),
+                    ),
+                ],
+            },
+            provider.clone(),
+        )
+        .recover_member(GroupE2eeKeyReplacementInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            member: crate::ids::Did::parse("did:example:bob").unwrap(),
+            device_id: "default".to_owned(),
+            credentials: Some(fixture.credentials()),
+            service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+        })
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            provider.recovered.borrow().as_slice(),
+            ["did:example:groups:e2ee:did:example:bob:default"]
+        );
+        assert_eq!(provider.finalized.borrow().as_slice(), ["pc-recover"]);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.get_key_package", "group.e2ee.recover_member"]
+        );
+        assert_eq!(calls[0].params["body"]["purpose"], "recovery");
+        assert_eq!(
+            calls[1].params["body"]["recovery_key_package_id"],
+            "kp-did:example:bob"
+        );
+        assert_eq!(
+            calls[1].params["body"]["group_key_package"]["purpose"],
+            "recovery"
+        );
+        assert_eq!(result.delivery["action"], "secure_group_recover_member");
+        assert_eq!(result.delivery["group_state"]["epoch"], "6");
+    }
+
+    #[test]
+    fn lifecycle_process_leave_request_marks_processing_then_removes() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![
+                    (
+                        "group.e2ee.process_leave_request".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "leave_request_id": "leave-1",
+                            "pending_leave_request_count": 0
+                        }),
+                    ),
+                    (
+                        "group.e2ee.remove".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "subject_did": "did:example:bob",
+                            "subject_status": "removed",
+                            "leave_request_id": "leave-1",
+                            "group_state_version": "state-3",
+                            "epoch": "3"
+                        }),
+                    ),
+                ],
+            },
+            provider.clone(),
+        )
+        .process_leave_request(GroupE2eeMemberMutationInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            member: crate::ids::Did::parse("did:example:bob").unwrap(),
+            reason_text: Some("approved leave".to_owned()),
+            leave_request_id: Some("leave-1".to_owned()),
+            credentials: Some(fixture.credentials()),
+            service_did: None,
+        })
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(provider.removed.borrow().as_slice(), ["did:example:bob"]);
+        assert_eq!(provider.finalized.borrow().as_slice(), ["pc-remove"]);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.process_leave_request", "group.e2ee.remove"]
+        );
+        assert_eq!(calls[0].params["body"]["leave_request_id"], "leave-1");
+        assert_eq!(calls[1].params["body"]["leave_request_id"], "leave-1");
+        assert_eq!(calls[1].params["body"]["reason_text"], "approved leave");
+        assert_eq!(
+            result.delivery["action"],
+            "secure_group_process_leave_request"
+        );
+        assert_eq!(result.delivery["subject_status"], "removed");
+        assert_eq!(
+            result.delivery["process_leave_request"]["leave_request_id"],
+            "leave-1"
+        );
+    }
+
+    #[test]
+    fn service_availability_preflight_returns_disabled_gate_error() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            responses: vec![(
+                "group.e2ee.head".to_owned(),
+                json!({"error": {"code": "1405", "message": "group E2EE contract-test APIs are disabled"}}),
+            )],
+        };
+
+        let err = ensure_group_e2ee_service_available(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            GroupE2eeServiceAvailabilityInput {
+                credentials: Some(fixture.credentials()),
+                service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                check_key_package: true,
+            },
+        )
+        .unwrap_err();
+
+        assert!(is_group_e2ee_service_disabled(&err));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.e2ee.head");
+    }
+
+    #[test]
+    fn service_availability_preflight_checks_key_package_gate_when_requested() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            responses: vec![
+                (
+                    "group.e2ee.head".to_owned(),
+                    json!({"error": {"code": "1404", "message": "group E2EE crypto head not found"}}),
+                ),
+                (
+                    "group.e2ee.get_key_package".to_owned(),
+                    json!({"error": {"code": "1405", "message": "group E2EE P6 APIs are disabled"}}),
+                ),
+            ],
+        };
+
+        let err = ensure_group_e2ee_service_available(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            GroupE2eeServiceAvailabilityInput {
+                credentials: Some(fixture.credentials()),
+                service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                check_key_package: true,
+            },
+        )
+        .unwrap_err();
+
+        assert!(is_group_e2ee_service_disabled(&err));
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.head", "group.e2ee.get_key_package"]
+        );
+    }
+
+    #[test]
+    fn service_availability_preflight_ignores_non_gate_errors() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            responses: vec![
+                (
+                    "group.e2ee.head".to_owned(),
+                    json!({"error": {"code": "1404", "message": "group E2EE crypto head not found"}}),
+                ),
+                (
+                    "group.e2ee.get_key_package".to_owned(),
+                    json!({"error": {"code": "1403", "message": "group.e2ee.get_key_package purpose=normal requires active owner role"}}),
+                ),
+            ],
+        };
+
+        ensure_group_e2ee_service_available(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            GroupE2eeServiceAvailabilityInput {
+                credentials: Some(fixture.credentials()),
+                service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+                check_key_package: true,
+            },
+        )
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.head", "group.e2ee.get_key_package"]
+        );
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -1327,6 +2034,8 @@ mod tests {
         created: Rc<RefCell<Vec<String>>>,
         added: Rc<RefCell<Vec<String>>>,
         removed: Rc<RefCell<Vec<String>>>,
+        updated: Rc<RefCell<Vec<String>>>,
+        recovered: Rc<RefCell<Vec<String>>>,
         finalized: Rc<RefCell<Vec<String>>>,
         aborted: Rc<RefCell<Vec<String>>>,
     }
@@ -1337,6 +2046,8 @@ mod tests {
                 created: Rc::new(RefCell::new(Vec::new())),
                 added: Rc::new(RefCell::new(Vec::new())),
                 removed: Rc::new(RefCell::new(Vec::new())),
+                updated: Rc::new(RefCell::new(Vec::new())),
+                recovered: Rc::new(RefCell::new(Vec::new())),
                 finalized: Rc::new(RefCell::new(Vec::new())),
                 aborted: Rc::new(RefCell::new(Vec::new())),
             }
@@ -1448,16 +2159,34 @@ mod tests {
 
         fn update_member_prepare(
             &self,
-            _input: UpdateMemberInput,
+            input: UpdateMemberInput,
         ) -> crate::ImResult<anp::group_e2ee::operations::PreparedMlsCommitOutput> {
-            unreachable!("lifecycle should not update members")
+            self.updated.borrow_mut().push(format!(
+                "{}:{}:{}",
+                input.group_did, input.member_did, input.target_device_id
+            ));
+            let mut output = prepared("pc-update", input.operation_id, "4", "5", "active");
+            output.subject_did = input.member_did;
+            output.commit_b64u = "commit-update".to_owned();
+            output.welcome_b64u = Some("welcome-update".to_owned());
+            output.ratchet_tree_b64u = Some("ratchet-tree-update".to_owned());
+            Ok(output)
         }
 
         fn recover_member_prepare(
             &self,
-            _input: RecoverMemberInput,
+            input: RecoverMemberInput,
         ) -> crate::ImResult<anp::group_e2ee::operations::PreparedMlsCommitOutput> {
-            unreachable!("lifecycle should not recover members")
+            self.recovered.borrow_mut().push(format!(
+                "{}:{}:{}",
+                input.group_did, input.member_did, input.target_device_id
+            ));
+            let mut output = prepared("pc-recover", input.operation_id, "5", "6", "active");
+            output.subject_did = input.member_did;
+            output.commit_b64u = "commit-recover".to_owned();
+            output.welcome_b64u = Some("welcome-recover".to_owned());
+            output.ratchet_tree_b64u = Some("ratchet-tree-recover".to_owned());
+            Ok(output)
         }
 
         fn process_welcome(
@@ -1515,6 +2244,10 @@ mod tests {
     }
 
     fn key_package_json(owner: &str) -> Value {
+        key_package_json_with_purpose(owner, "normal")
+    }
+
+    fn key_package_json_with_purpose(owner: &str, purpose: &str) -> Value {
         json!({
             "key_package_id": format!("kp-{owner}"),
             "owner_did": owner,
@@ -1523,6 +2256,8 @@ mod tests {
             "mls_key_package_b64u": "a2V5LXBhY2thZ2U",
             "did_wba_binding": {"did": owner},
             "expires_at": "2026-05-25T00:00:00Z",
+            "purpose": purpose,
+            "group_did": "did:example:groups:e2ee",
             "non_cryptographic": true
         })
     }

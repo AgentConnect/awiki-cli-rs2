@@ -342,7 +342,7 @@ fn local_relationship_status(
             did.as_str(),
         )
         .ok();
-        return relationship_status_from_contact(peer, did, record);
+        relationship_status_from_contact(peer, did, record)
     }
     #[cfg(not(feature = "sqlite"))]
     {

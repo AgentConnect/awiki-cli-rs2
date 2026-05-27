@@ -168,9 +168,7 @@ fn upsert_registry_entry(identity_root: &Path, entry: RegistryEntry<'_>) {
         .and_then(Value::as_array_mut)
         .expect("registry identities array");
     identities.retain(|item| {
-        item.get("local_alias")
-            .and_then(Value::as_str)
-            .map_or(true, |alias| alias != entry.identity_name)
+        item.get("local_alias").and_then(Value::as_str) != Some(entry.identity_name)
     });
     identities.push(json!({
         "id": entry.unique_id,

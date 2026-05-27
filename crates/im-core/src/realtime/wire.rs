@@ -509,6 +509,7 @@ fn group_member_mutation_request(
             None => None,
         },
         reason_text: optional_trimmed(reason_text),
+        leave_request_id: None,
         security: crate::groups::GroupSecurityRequirement::Default,
     })
 }

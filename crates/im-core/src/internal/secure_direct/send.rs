@@ -110,11 +110,23 @@ where
         let mut directory_transport = self.directory_transport;
         let local_document_for_resolver = local_did_document.clone();
         let owner_did = self.client.did().as_str().to_owned();
+        let identity_paths = self.client.core_inner().sdk_paths().identities.clone();
         let resolver = Box::new(move |did: &str| {
             if did == owner_did {
                 return Ok(local_document_for_resolver.clone());
             }
-            resolve_did_document_with_transport(&mut directory_transport, did)
+            match resolve_did_document_with_transport(&mut directory_transport, did) {
+                Ok(document) => Ok(document),
+                Err(err) => {
+                    match crate::internal::identity_document_cache::load_local_did_document(
+                        &identity_paths,
+                        did,
+                    ) {
+                        Ok(Some(document)) => Ok(document),
+                        Ok(None) | Err(_) => Err(err),
+                    }
+                }
+            }
         });
         let mut direct_client = MessageServiceDirectSecureClient::new(
             prepare_direct_secure_client(DirectSecureClientInput {

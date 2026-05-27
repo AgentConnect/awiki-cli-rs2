@@ -54,10 +54,15 @@ fn msg_secure_repair_uses_im_core_and_requeues_peer_failed_outbox() {
         envelope["data"]["repair"]["problem"]["code"],
         "PeerKeysUnavailable"
     );
+    assert_eq!(
+        envelope["data"]["repair"]["prepared_local_send_state"],
+        Value::Bool(false)
+    );
     assert_warning_contains(
         &envelope,
         "1 failed secure outbox item(s) were moved back to queued",
     );
+    assert_warning_contains(&envelope, "direct E2EE prekey preparation failed");
     assert_legacy_session_file_unchanged(&alice, &bob.did);
 
     let rows = query_rows(

@@ -138,7 +138,7 @@ impl<'a> DirectoryService<'a> {
                     .as_ref()
                     .map_or_else(|| request.peer.as_str(), crate::ids::Did::as_str),
             )?;
-            return crate::internal::contact_store::records::contact_to_dto(&record);
+            crate::internal::contact_store::records::contact_to_dto(&record)
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -171,11 +171,11 @@ impl<'a> DirectoryService<'a> {
                 .iter()
                 .map(crate::internal::contact_store::records::contact_to_dto)
                 .collect::<crate::ImResult<Vec<_>>>()?;
-            return Ok(crate::ids::Page {
+            Ok(crate::ids::Page {
                 items,
                 next_cursor: None,
                 has_more: false,
-            });
+            })
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -214,9 +214,7 @@ impl<'a> DirectoryService<'a> {
                 )
                 .ok()
             };
-            return crate::internal::contact_store::records::relation_status_from_record(
-                peer, record,
-            );
+            crate::internal::contact_store::records::relation_status_from_record(peer, record)
         }
         #[cfg(not(feature = "sqlite"))]
         {

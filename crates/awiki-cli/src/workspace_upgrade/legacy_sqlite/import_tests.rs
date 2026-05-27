@@ -1,5 +1,5 @@
-use super::{self as store, LegacyOwnerLookup};
 use crate::workspace_config::Paths;
+use crate::workspace_upgrade::legacy_sqlite::{self as store, LegacyOwnerLookup};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 

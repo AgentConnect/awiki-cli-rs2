@@ -310,6 +310,7 @@ impl DirectSecureFileRuntimeClient {
         body: &Value,
     ) -> crate::ImResult<Map<String, Value>> {
         let init_body = super::wire::direct_init_body_from_value(body);
+        let existing_session = self.existing_session(&init_body.session_id)?;
         let sender_document = (self.resolver)(sender_did)?;
         let sender_static_public = anp::direct_e2ee::extract_x25519_public_key(
             &sender_document,
@@ -357,6 +358,15 @@ impl DirectSecureFileRuntimeClient {
             &init_body,
         )
         .map_err(map_direct_error)?;
+        if let Some(existing_session) = existing_session {
+            if existing_session.peer_did != sender_did {
+                return Err(crate::ImError::Serialization {
+                    detail: "direct E2EE init session id is already bound to another peer"
+                        .to_owned(),
+                });
+            }
+            return Ok(decrypted_plaintext_result(&plaintext));
+        }
         if let Some(key_id) = one_time_prekey_id {
             self.prepared
                 .one_time_prekey_store
@@ -367,13 +377,7 @@ impl DirectSecureFileRuntimeClient {
             .session_store
             .save_session(&session)
             .map_err(map_direct_error)?;
-        let mut result = Map::from_iter([
-            ("state".to_owned(), Value::String("decrypted".to_owned())),
-            (
-                "plaintext".to_owned(),
-                anp::direct_e2ee::plaintext_to_value(&plaintext),
-            ),
-        ]);
+        let mut result = decrypted_plaintext_result(&plaintext);
         if let Some(pending) = self.pending_by_peer.get(sender_did).cloned() {
             if !pending.is_empty() {
                 let mut pending_results = Vec::new();
@@ -428,16 +432,10 @@ impl DirectSecureFileRuntimeClient {
                     ),
                 ]))
             }
-            Err(_) => {
-                self.prepared
-                    .session_store
-                    .save_session(&session)
-                    .map_err(map_direct_error)?;
-                Ok(Map::from_iter([(
-                    "state".to_owned(),
-                    Value::String("undecryptable".to_owned()),
-                )]))
-            }
+            Err(_) => Ok(Map::from_iter([(
+                "state".to_owned(),
+                Value::String("undecryptable".to_owned()),
+            )])),
         }
     }
 
@@ -575,6 +573,20 @@ impl DirectSecureFileRuntimeClient {
             .ok_or_else(|| missing_field("params"))?
             .clone();
         (self.rpc)(&method, params)
+    }
+
+    fn existing_session(
+        &self,
+        session_id: &str,
+    ) -> crate::ImResult<Option<anp::direct_e2ee::DirectSessionState>> {
+        if session_id.trim().is_empty() {
+            return Ok(None);
+        }
+        match self.prepared.session_store.load_session(session_id) {
+            Ok(session) => Ok(Some(session)),
+            Err(DirectE2eeError::SessionNotFound(_)) => Ok(None),
+            Err(err) => Err(map_direct_error(err)),
+        }
     }
 }
 
@@ -786,6 +798,16 @@ pub(crate) fn can_process_direct_secure_file_ack(
         return false;
     }
     recipient_store.save_session(&recipient_session).is_ok()
+}
+
+fn decrypted_plaintext_result(plaintext: &ApplicationPlaintext) -> Map<String, Value> {
+    Map::from_iter([
+        ("state".to_owned(), Value::String("decrypted".to_owned())),
+        (
+            "plaintext".to_owned(),
+            anp::direct_e2ee::plaintext_to_value(plaintext),
+        ),
+    ])
 }
 
 fn direct_envelope_metadata(

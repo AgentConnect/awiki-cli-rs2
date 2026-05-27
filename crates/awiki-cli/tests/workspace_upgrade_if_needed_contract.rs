@@ -571,7 +571,7 @@ fn workspace_upgrade_if_needed_records_v2_to_v3_k1_replacement_failures_as_warni
     );
     let stored = read_stored_identity(&resolved, "legacy");
     assert_eq!(stored["did"], old_did);
-    assert!(Path::new(&paths.journal_path).exists() == false);
+    assert!(!Path::new(&paths.journal_path).exists());
 }
 
 #[test]

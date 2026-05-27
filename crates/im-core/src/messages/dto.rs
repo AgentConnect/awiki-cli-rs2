@@ -45,19 +45,10 @@ pub enum MessageSecurityMode {
 
 pub type MessageSecurityPolicy = MessageSecurityMode;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageDeliveryOptions {
     pub idempotency_key: Option<String>,
     pub wait_for_final_acceptance: bool,
-}
-
-impl Default for MessageDeliveryOptions {
-    fn default() -> Self {
-        Self {
-            idempotency_key: None,
-            wait_for_final_acceptance: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

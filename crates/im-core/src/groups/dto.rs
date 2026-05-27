@@ -120,8 +120,85 @@ pub struct GroupMemberMutationRequest {
     pub member: GroupMemberRef,
     pub role: Option<GroupMemberRole>,
     pub reason_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leave_request_id: Option<String>,
     #[serde(default)]
     pub security: GroupSecurityRequirement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupKeyPackagePublishRequest {
+    pub purpose: GroupKeyPackagePurpose,
+    pub group: Option<crate::ids::GroupRef>,
+    pub device_id: Option<String>,
+    pub key_package_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupKeyPackagePublishResult {
+    pub owner_did: crate::ids::Did,
+    pub device_id: String,
+    pub key_package_id: String,
+    pub purpose: GroupKeyPackagePurpose,
+    pub group: Option<crate::ids::GroupRef>,
+    pub raw_response: Value,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeProcessLeaveRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub leave_request_id: String,
+    pub reason_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeUpdateKeyRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupE2eeRecoverMemberRequest {
+    pub group: crate::ids::GroupRef,
+    pub member: GroupMemberRef,
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupKeyPackagePurpose {
+    Normal,
+    Recovery,
+    Update,
+    Custom(String),
+}
+
+impl GroupKeyPackagePurpose {
+    pub fn parse(input: impl Into<String>) -> crate::ImResult<Self> {
+        parse_group_token(input, "purpose", |value| match value {
+            "normal" => Self::Normal,
+            "recovery" => Self::Recovery,
+            "update" => Self::Update,
+            custom => Self::Custom(custom.to_string()),
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Normal => "normal",
+            Self::Recovery => "recovery",
+            Self::Update => "update",
+            Self::Custom(value) => value.as_str(),
+        }
+    }
+}
+
+impl Default for GroupKeyPackagePurpose {
+    fn default() -> Self {
+        Self::Normal
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -511,6 +588,24 @@ impl<'de> Deserialize<'de> for GroupMemberRole {
     }
 }
 
+impl Serialize for GroupKeyPackagePurpose {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupKeyPackagePurpose {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Serialize for GroupMemberLimit {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -743,6 +838,10 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
     let sender = optional_string(object.get("sender_did"))
         .unwrap_or_else(|| "did:unknown:sender".to_string());
     let content_type = optional_string(object.get("content_type"));
+    let secure = object
+        .get("secure")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let body = if let Some(text) = optional_string(object.get("text"))
         .or_else(|| optional_string(object.get("content")))
         .or_else(|| nested_string(object.get("body"), "text"))
@@ -775,9 +874,32 @@ fn group_message_from_value(value: Value) -> Option<crate::messages::Message> {
                 .or_else(|| i64_value(object.get("sequence")))
                 .or_else(|| i64_value(object.get("group_event_seq"))),
             content_type,
+            attributes: group_message_attributes(object, secure),
             ..crate::messages::MessageMetadata::default()
         },
     })
+}
+
+fn group_message_attributes(
+    object: &serde_json::Map<String, Value>,
+    secure: bool,
+) -> Vec<crate::messages::MessageMetadataAttribute> {
+    let mut attributes = Vec::new();
+    if secure {
+        attributes.push(crate::messages::MessageMetadataAttribute {
+            key: "security".to_owned(),
+            value: "group-e2ee".to_owned(),
+        });
+    }
+    for key in ["decryption_state", "secure_wire_content_type"] {
+        if let Some(value) = optional_string(object.get(key)) {
+            attributes.push(crate::messages::MessageMetadataAttribute {
+                key: key.to_owned(),
+                value,
+            });
+        }
+    }
+    attributes
 }
 
 fn group_ref_from_object(object: &serde_json::Map<String, Value>) -> Option<crate::ids::GroupRef> {
