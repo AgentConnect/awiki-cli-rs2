@@ -5,51 +5,51 @@ use crate::dto::{
     error::DartImError,
 };
 
-pub fn auth_status(
+pub async fn auth_status(
     client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartAuthStatus, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .auth()
-            .status()
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .auth()
+        .status_async()
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
 
-pub fn auth_login(
+pub async fn auth_login(
     client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartSessionBundle, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .auth()
-            .login()
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .auth()
+        .login_async()
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
 
-pub fn auth_ensure_session(
+pub async fn auth_ensure_session(
     client: &Arc<crate::api::client::DartImClient>,
     scope: DartAuthScope,
 ) -> Result<DartSessionBundle, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .auth()
-            .ensure_session(scope.into())
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .auth()
+        .ensure_session_async(scope.into())
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
 
-pub fn auth_refresh_session(
+pub async fn auth_refresh_session(
     client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartSessionUpdate, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .auth()
-            .refresh_session()
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .auth()
+        .refresh_session_async()
+        .await
+        .map(Into::into)
+        .map_err(DartImError::from)
 }

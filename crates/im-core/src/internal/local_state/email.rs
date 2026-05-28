@@ -14,7 +14,17 @@ pub(crate) fn list_mail_notifications(
         rusqlite::Connection::open(sqlite_path).map_err(super::local_state_unavailable)?;
     super::configure(&connection)?;
     super::schema::ensure_schema(&connection)?;
-    let rows = query_mail_notification_rows(&connection, owner_identity_id, owner_did, limit.0)?;
+    list_mail_notifications_from_connection(&connection, owner_identity_id, owner_did, limit)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn list_mail_notifications_from_connection(
+    connection: &rusqlite::Connection,
+    owner_identity_id: &str,
+    owner_did: &str,
+    limit: crate::ids::PageLimit,
+) -> crate::ImResult<crate::ids::Page<crate::email::EmailNotification>> {
+    let rows = query_mail_notification_rows(connection, owner_identity_id, owner_did, limit.0)?;
     let items = rows
         .into_iter()
         .filter_map(normalize_notification_row)

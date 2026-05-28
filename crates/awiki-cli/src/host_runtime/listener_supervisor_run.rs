@@ -11,6 +11,7 @@ use super::listener_known_sessions::{
 use super::listener_session_methods::SessionDisconnectReason;
 use super::listener_shutdown_signal::{
     install_foreground_shutdown_handler, wait_for_foreground_shutdown,
+    wait_for_foreground_shutdown_async,
 };
 use crate::host_runtime;
 use crate::host_runtime::listener_im_event_adapter::CliRealtimeEventSink;
@@ -33,14 +34,30 @@ pub fn run_foreground(resolved: Resolved) -> anyhow::Result<()> {
     run_listener(resolved, ListenerRunHostKind::Foreground)
 }
 
+pub async fn run_foreground_async(resolved: Resolved) -> anyhow::Result<()> {
+    run_listener_async(resolved, ListenerRunHostKind::Foreground).await
+}
+
 pub fn run_service(resolved: Resolved) -> anyhow::Result<()> {
     run_listener(resolved, ListenerRunHostKind::Service)
 }
 
+pub async fn run_service_async(resolved: Resolved) -> anyhow::Result<()> {
+    run_listener_async(resolved, ListenerRunHostKind::Service).await
+}
+
 fn run_listener(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| anyhow::anyhow!("build listener runtime: {err}"))?
+        .block_on(run_listener_async(resolved, host))
+}
+
+async fn run_listener_async(resolved: Resolved, host: ListenerRunHostKind) -> anyhow::Result<()> {
     let runner = im_core_realtime_adapter::listener_runner_selection(host);
     let mut supervisor = ListenerSupervisor::new(resolved, runner.mode, host)?;
-    let result = supervisor.run();
+    let result = supervisor.run_async().await;
     supervisor.cleanup_runtime_artifacts();
     result
 }
@@ -94,7 +111,7 @@ impl ListenerSupervisor {
         })
     }
 
-    fn run(&mut self) -> anyhow::Result<()> {
+    async fn run_async(&mut self) -> anyhow::Result<()> {
         install_foreground_shutdown_handler(self.shutdown.clone())?;
         if host_runtime::resolve(&self.resolved).mode != bridge::MODE_WEBSOCKET {
             anyhow::bail!("runtime mode must be websocket before starting the listener");
@@ -113,8 +130,8 @@ impl ListenerSupervisor {
             listener::write_status(&status.status_file, &status)?;
         }
         self.start_socket()?;
-        self.start_known_sessions()?;
-        wait_for_shutdown_signal(self.shutdown.clone());
+        self.start_known_sessions_async().await?;
+        wait_for_shutdown_signal_async(self.shutdown.clone()).await;
         self.shutdown.store(true, Ordering::SeqCst);
         if let Some(listener) = self.listener.take() {
             drop(listener);
@@ -154,16 +171,16 @@ impl ListenerSupervisor {
         Ok(())
     }
 
-    fn start_known_sessions(&self) -> anyhow::Result<()> {
-        let core = crate::m_core_cli_adapter::build_im_core(&self.resolved)?;
-        let identities = core.identities().list()?;
+    async fn start_known_sessions_async(&self) -> anyhow::Result<()> {
+        let core = crate::m_core_cli_adapter::build_im_core_async(&self.resolved).await?;
+        let identities = core.identities().list_async().await?;
         for summary in identities {
             let identity_name = summary
                 .local_alias
                 .as_deref()
                 .unwrap_or_else(|| summary.id.as_str());
             let did = summary.did.as_str();
-            if let Err(err) = self.ensure_known_session(identity_name, did) {
+            if let Err(err) = self.ensure_known_session_async(identity_name, did).await {
                 self.record_session_error(identity_name, did, &err.to_string());
             }
         }
@@ -171,7 +188,11 @@ impl ListenerSupervisor {
         Ok(())
     }
 
-    fn ensure_known_session(&self, identity_name: &str, did: &str) -> anyhow::Result<()> {
+    async fn ensure_known_session_async(
+        &self,
+        identity_name: &str,
+        did: &str,
+    ) -> anyhow::Result<()> {
         let already_known = self
             .lock_status()
             .sessions
@@ -182,14 +203,15 @@ impl ListenerSupervisor {
         else {
             return Ok(());
         };
-        spawn_im_core_runner_session(
+        spawn_im_core_runner_session_async(
             self.resolved.clone(),
             self.status.clone(),
             self.host_notify.clone(),
             self.shutdown.clone(),
             identity_name.to_string(),
             did.to_string(),
-        );
+        )
+        .await;
         Ok(())
     }
 
@@ -296,7 +318,7 @@ fn handle_bridge_stream(stream: bridge::BridgeStream, mut runtime: BridgeRuntime
     });
 }
 
-fn spawn_im_core_runner_session(
+async fn spawn_im_core_runner_session_async(
     resolved: Arc<Resolved>,
     status: Arc<Mutex<Status>>,
     host_notify: Arc<HostNotifySinkImpl>,
@@ -317,37 +339,79 @@ fn spawn_im_core_runner_session(
         );
         let _ = listener::write_status(&guard.status_file, &guard);
     }
-    thread::spawn(move || {
-        let selector = im_core::IdentitySelector::LocalAlias(identity_name.clone());
-        let client = match crate::m_core_cli_adapter::build_im_client(&resolved, selector) {
-            Ok(client) => client,
-            Err(err) => {
-                mark_session_disconnected(
-                    &status,
-                    &identity_name,
-                    did,
-                    Some(SessionDisconnectReason::Other(err.to_string())),
-                );
-                return;
+    let selector = im_core::IdentitySelector::LocalAlias(identity_name.clone());
+    let client = match crate::m_core_cli_adapter::build_im_client_async(&resolved, selector).await {
+        Ok(client) => client,
+        Err(err) => {
+            mark_session_disconnected(
+                &status,
+                &identity_name,
+                did,
+                Some(SessionDisconnectReason::Other(err.to_string())),
+            );
+            return;
+        }
+    };
+    let did = client.did().as_str().to_string();
+    let mut session = match client
+        .realtime()
+        .start_async(im_core_realtime_adapter::listener_realtime_options())
+        .await
+        .map_err(im_core_realtime_adapter::map_sdk_runner_error)
+    {
+        Ok(session) => session,
+        Err(err) => {
+            mark_session_disconnected(
+                &status,
+                &identity_name,
+                did,
+                Some(SessionDisconnectReason::Other(err.to_string())),
+            );
+            return;
+        }
+    };
+    let mut events = match session.subscribe() {
+        Ok(events) => events,
+        Err(err) => {
+            mark_session_disconnected(
+                &status,
+                &identity_name,
+                did,
+                Some(SessionDisconnectReason::Other(err.to_string())),
+            );
+            return;
+        }
+    };
+    tokio::spawn(async move {
+        let mut event_error = None;
+        loop {
+            if shutdown.load(Ordering::SeqCst) {
+                let _ = session.stop().await;
+                break;
             }
-        };
-        let did = client.did().as_str().to_string();
-        let sdk_shutdown =
-            im_core_realtime_adapter::sdk_shutdown_signal_from_listener_shutdown(&shutdown);
-        spawn_sdk_shutdown_bridge(shutdown.clone(), sdk_shutdown.clone());
-        let mut event_sink = CliRealtimeEventSink {
-            status: &status,
-            host_notify: &host_notify,
-            identity_name: &identity_name,
-            did: &did,
-        };
-        let exit = client
-            .realtime()
-            .run_until_shutdown_with_event_sink(
-                im_core_realtime_adapter::listener_realtime_options(),
-                sdk_shutdown,
-                &mut event_sink,
-            )
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                event = events.recv() => {
+                    let Some(event) = event else {
+                        break;
+                    };
+                    let mut event_sink = CliRealtimeEventSink {
+                        status: &status,
+                        host_notify: &host_notify,
+                        identity_name: &identity_name,
+                        did: &did,
+                    };
+                    if let Err(err) = event_sink.emit(event) {
+                        event_error = Some(err.to_string());
+                        let _ = session.stop().await;
+                        break;
+                    }
+                }
+            }
+        }
+        let exit = session
+            .join()
+            .await
             .map_err(im_core_realtime_adapter::map_sdk_runner_error);
         if shutdown.load(Ordering::SeqCst) {
             mark_session_disconnected(
@@ -355,6 +419,15 @@ fn spawn_im_core_runner_session(
                 &identity_name,
                 did,
                 Some(SessionDisconnectReason::ContextCanceled),
+            );
+            return;
+        }
+        if let Some(error) = event_error {
+            mark_session_disconnected(
+                &status,
+                &identity_name,
+                did,
+                Some(SessionDisconnectReason::Other(error)),
             );
             return;
         }
@@ -368,18 +441,6 @@ fn spawn_im_core_runner_session(
             did,
             Some(SessionDisconnectReason::Other(error)),
         );
-    });
-}
-
-fn spawn_sdk_shutdown_bridge(
-    shutdown: Arc<AtomicBool>,
-    sdk_shutdown: im_core::prelude::ShutdownSignal,
-) {
-    thread::spawn(move || {
-        while !shutdown.load(Ordering::SeqCst) && !sdk_shutdown.is_requested() {
-            thread::sleep(Duration::from_millis(100));
-        }
-        im_core_realtime_adapter::mark_sdk_shutdown_requested(&sdk_shutdown);
     });
 }
 
@@ -518,6 +579,10 @@ fn running_in_listener_service_mode() -> bool {
 
 fn wait_for_shutdown_signal(shutdown: Arc<AtomicBool>) {
     wait_for_foreground_shutdown(&shutdown);
+}
+
+async fn wait_for_shutdown_signal_async(shutdown: Arc<AtomicBool>) {
+    wait_for_foreground_shutdown_async(&shutdown).await;
 }
 
 fn is_not_found(err: &anyhow::Error) -> bool {

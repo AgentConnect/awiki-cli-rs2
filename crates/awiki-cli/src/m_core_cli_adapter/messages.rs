@@ -202,6 +202,36 @@ pub fn send_text_via_im_core(
     }
 }
 
+pub async fn send_text_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: SendMessageRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let mut rpc_phase = crate::cli_trace::rpc_phase(sdk_send_trace_operation(&request));
+    let secure = matches!(
+        request.security,
+        MessageSecurityMode::E2eeRequired
+            | MessageSecurityMode::SecureDirect
+            | MessageSecurityMode::GroupE2ee
+    );
+    let result = client.messages().send_async(request).await.map_err(|err| {
+        rpc_phase.finish();
+        im_error_to_message_error(err)
+    })?;
+    rpc_phase.finish();
+    match &result.message.thread {
+        ThreadRef::Direct(_) => {
+            let target = direct_target_from_result(&result);
+            render_send_result(&target, &result, secure)
+        }
+        ThreadRef::Group(group) => render_group_send_result(group.as_str(), &result, secure),
+        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
+            "thread send results are not supported by the CLI renderer".to_string(),
+        )),
+    }
+}
+
 pub fn send_attachment_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
@@ -212,6 +242,32 @@ pub fn send_attachment_via_im_core(
     let result = client
         .attachments()
         .send(target, request)
+        .map_err(im_error_to_message_error)?;
+    match &result.message.message.thread {
+        ThreadRef::Direct(_) => {
+            let target = direct_target_from_attachment_result(&result);
+            render_direct_attachment_result(resolved, &target, &result)
+        }
+        ThreadRef::Group(group) => {
+            render_group_attachment_result(resolved, group.as_str(), &result)
+        }
+        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
+            "thread attachment send results are not supported by the CLI renderer".to_string(),
+        )),
+    }
+}
+
+pub async fn send_attachment_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    target: MessageTarget,
+    request: AttachmentSendRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let result = client
+        .attachments()
+        .send_async(target, request)
+        .await
         .map_err(im_error_to_message_error)?;
     match &result.message.message.thread {
         ThreadRef::Direct(_) => {
@@ -238,6 +294,52 @@ pub fn download_attachment_via_im_core(
     let downloaded = client
         .attachments()
         .download(request)
+        .map_err(im_error_to_message_error)?;
+    let output_path = match &downloaded.destination {
+        DownloadedAttachmentDestination::LocalFile(path) => path.clone(),
+        DownloadedAttachmentDestination::Memory(_) => {
+            return Err(MessageAdapterError::Internal(
+                "attachment download expected local-file destination".to_string(),
+            ));
+        }
+    };
+    apply_private_download_permissions(&output_path)?;
+    let output_path_string = output_path.to_string_lossy().into_owned();
+    let mut warnings = attachment_transport_warnings(resolved, true);
+    warnings.extend(downloaded.warnings);
+    let selection = downloaded
+        .selection
+        .ok_or(MessageAdapterError::AttachmentMessageInvalid)?;
+    let target = download_target_value(&thread, Some(&selection));
+    Ok(CommandResult {
+        data: json!({
+            "action": "download_attachment",
+            "message_id": selection.message_id,
+            "target": target,
+            "attachment": attachment_selection_value(&selection),
+            "output": {
+                "path": output_path_string,
+                "size_bytes": downloaded.size_bytes.unwrap_or_default(),
+                "content_type": downloaded.mime_type.unwrap_or_default(),
+            },
+        }),
+        summary: format!("Downloaded attachment to {output_path_string}"),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub async fn download_attachment_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    request: DownloadAttachmentRequest,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    prepare_download_destination(&request)?;
+    let thread = request.thread.clone();
+    let downloaded = client
+        .attachments()
+        .download_async(request)
+        .await
         .map_err(im_error_to_message_error)?;
     let output_path = match &downloaded.destination {
         DownloadedAttachmentDestination::LocalFile(path) => path.clone(),
@@ -366,6 +468,47 @@ pub fn read_inbox_via_im_core(
     })
 }
 
+pub async fn read_inbox_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    query: InboxQuery,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let mut rpc_phase = crate::cli_trace::rpc_phase("inbox.get");
+    let page = client
+        .messages()
+        .inbox_with_metadata_async(query.clone())
+        .await
+        .map_err(|err| {
+            rpc_phase.finish();
+            im_error_to_message_error(err)
+        })?;
+    rpc_phase.finish();
+    let raw = message_page_to_cli_raw(&page);
+    let mut messages = messages_from_raw(&raw);
+    let source = source_with_default(&raw);
+    messages = apply_inbox_filters(messages, "", query.unread_only, i64::from(query.limit.0));
+    let total = messages.len();
+    let data = match query.scope {
+        InboxScope::DirectOnly => json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "with": "",
+        }),
+        InboxScope::All | InboxScope::GroupOnly => json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+        }),
+    };
+    Ok(CommandResult {
+        data,
+        summary: format!("Loaded {total} inbox messages"),
+        warnings: Vec::new(),
+    })
+}
+
 pub fn read_history_via_im_core(
     resolved: &Resolved,
     client: &im_core::ImClient,
@@ -375,6 +518,25 @@ pub fn read_history_via_im_core(
     match thread {
         ThreadRef::Direct(peer) => read_direct_history_via_im_core(resolved, client, peer, query),
         ThreadRef::Group(group) => read_group_history_via_im_core(resolved, client, group, query),
+        ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
+            "thread history is not supported by the CLI renderer".to_string(),
+        )),
+    }
+}
+
+pub async fn read_history_via_im_core_async(
+    resolved: &Resolved,
+    client: &im_core::ImClient,
+    thread: ThreadRef,
+    query: HistoryQuery,
+) -> Result<CommandResult, MessageAdapterError> {
+    match thread {
+        ThreadRef::Direct(peer) => {
+            read_direct_history_via_im_core_async(resolved, client, peer, query).await
+        }
+        ThreadRef::Group(group) => {
+            read_group_history_via_im_core_async(resolved, client, group, query).await
+        }
         ThreadRef::Thread(_) => Err(MessageAdapterError::Internal(
             "thread history is not supported by the CLI renderer".to_string(),
         )),
@@ -392,6 +554,38 @@ fn read_direct_history_via_im_core(
     let page = client
         .messages()
         .history_with_metadata(ThreadRef::Direct(peer.clone()), query.clone())
+        .map_err(im_error_to_message_error)?;
+    let raw = message_page_to_cli_raw(&page);
+    let messages = messages_from_raw(&raw);
+    let source = source_with_default(&raw);
+    let resolved_dids = resolved_dids_value(&raw);
+    let target = history_target_from_page(&peer, &resolved_dids, target_is_handle);
+    let total = messages.len();
+    Ok(CommandResult {
+        data: json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "with": peer_handle_or_did(&target),
+            "resolved_dids": resolved_dids,
+        }),
+        summary: format!("Loaded {total} direct history messages"),
+        warnings: Vec::new(),
+    })
+}
+
+async fn read_direct_history_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    peer: PeerRef,
+    query: HistoryQuery,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let target_is_handle = !peer.as_str().trim().starts_with("did:");
+    let page = client
+        .messages()
+        .history_with_metadata_async(ThreadRef::Direct(peer.clone()), query.clone())
+        .await
         .map_err(im_error_to_message_error)?;
     let raw = message_page_to_cli_raw(&page);
     let messages = messages_from_raw(&raw);
@@ -439,6 +633,34 @@ fn read_group_history_via_im_core(
     })
 }
 
+async fn read_group_history_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    group: GroupRef,
+    query: HistoryQuery,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let page = client
+        .messages()
+        .history_with_metadata_async(ThreadRef::Group(group.clone()), query.clone())
+        .await
+        .map_err(im_error_to_message_error)?;
+    let raw = message_page_to_cli_raw(&page);
+    let messages = messages_from_raw(&raw);
+    let source = source_with_default(&raw);
+    let total = messages.len();
+    Ok(CommandResult {
+        data: json!({
+            "messages": messages,
+            "total": total,
+            "source": source,
+            "group": group.as_str(),
+        }),
+        summary: format!("Loaded {total} group history messages"),
+        warnings: Vec::new(),
+    })
+}
+
 pub fn mark_read_via_im_core(
     _resolved: &Resolved,
     client: &im_core::ImClient,
@@ -456,6 +678,37 @@ pub fn mark_read_via_im_core(
     let result = client
         .messages()
         .mark_read(ids)
+        .map_err(im_error_to_message_error)?;
+    let updated_count = result.updated_count;
+    Ok(CommandResult {
+        data: json!({
+            "action": "mark_read",
+            "updated_count": updated_count,
+            "message_ids": message_ids,
+        }),
+        summary: format!("Marked {updated_count} messages as read"),
+        warnings: compact_warnings(result.warnings),
+    })
+}
+
+pub async fn mark_read_via_im_core_async(
+    _resolved: &Resolved,
+    client: &im_core::ImClient,
+    message_ids: Vec<String>,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    if message_ids.is_empty() {
+        return Err(MessageAdapterError::MessageNotFound);
+    }
+    let ids = message_ids
+        .iter()
+        .map(MessageId::parse)
+        .collect::<im_core::ImResult<Vec<_>>>()
+        .map_err(im_error_to_message_error)?;
+    let result = client
+        .messages()
+        .mark_read_async(ids)
+        .await
         .map_err(im_error_to_message_error)?;
     let updated_count = result.updated_count;
     Ok(CommandResult {
@@ -491,6 +744,29 @@ pub fn direct_secure_status_via_im_core(
     })
 }
 
+pub async fn direct_secure_status_via_im_core_async(
+    client: &im_core::ImClient,
+    peer: String,
+    default_domain: &str,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
+    let status = client
+        .secure()
+        .direct(peer_ref)
+        .status_async()
+        .await
+        .map_err(im_error_to_message_error)?;
+    let warnings = status.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "status": serde_json::to_value(&status).unwrap_or(Value::Null),
+        }),
+        summary: "Loaded direct secure status".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
 pub fn direct_secure_repair_via_im_core(
     client: &im_core::ImClient,
     peer: String,
@@ -502,6 +778,29 @@ pub fn direct_secure_repair_via_im_core(
         .secure()
         .direct(peer_ref)
         .repair()
+        .map_err(im_error_to_message_error)?;
+    let warnings = repair.warnings.clone();
+    Ok(CommandResult {
+        data: json!({
+            "repair": serde_json::to_value(&repair).unwrap_or(Value::Null),
+        }),
+        summary: "Repaired direct secure state".to_string(),
+        warnings: compact_warnings(warnings),
+    })
+}
+
+pub async fn direct_secure_repair_via_im_core_async(
+    client: &im_core::ImClient,
+    peer: String,
+    default_domain: &str,
+) -> Result<CommandResult, MessageAdapterError> {
+    require_messaging_ready(client)?;
+    let peer_ref = PeerRef::parse(&peer, default_domain).map_err(im_error_to_message_error)?;
+    let repair = client
+        .secure()
+        .direct(peer_ref)
+        .repair_async()
+        .await
         .map_err(im_error_to_message_error)?;
     let warnings = repair.warnings.clone();
     Ok(CommandResult {

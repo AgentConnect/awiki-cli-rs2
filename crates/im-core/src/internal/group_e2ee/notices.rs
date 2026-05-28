@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,44 +18,106 @@ pub(crate) fn maybe_process_group_e2ee_notice_notification_for_client(
     })
 }
 
+pub(crate) async fn maybe_process_group_e2ee_notice_notification_for_client_async(
+    client: &crate::core::ImClient,
+    notification: Value,
+) -> GroupE2eeNoticeNotificationProjection {
+    maybe_process_group_e2ee_notice_notification_async(notification, |group| async move {
+        client.secure().group(group).repair_async().await
+    })
+    .await
+}
+
 pub(crate) fn maybe_process_group_e2ee_notice_notification(
     notification: Value,
     mut process_group: impl FnMut(
         crate::ids::GroupRef,
     ) -> crate::ImResult<crate::secure::GroupSecureRepairResult>,
 ) -> GroupE2eeNoticeNotificationProjection {
+    let group = match classify_group_e2ee_notice_notification(notification) {
+        GroupE2eeNoticeNotificationMatch::NotNotice(notification) => {
+            return GroupE2eeNoticeNotificationProjection {
+                notification: Some(notification),
+                warnings: Vec::new(),
+                processed: false,
+            };
+        }
+        GroupE2eeNoticeNotificationMatch::Drop(warnings) => {
+            return GroupE2eeNoticeNotificationProjection {
+                notification: None,
+                warnings,
+                processed: false,
+            };
+        }
+        GroupE2eeNoticeNotificationMatch::Process(group) => group,
+    };
+
+    group_e2ee_notice_projection_from_repair_result(process_group(group))
+}
+
+pub(crate) async fn maybe_process_group_e2ee_notice_notification_async<F, Fut>(
+    notification: Value,
+    mut process_group: F,
+) -> GroupE2eeNoticeNotificationProjection
+where
+    F: FnMut(crate::ids::GroupRef) -> Fut,
+    Fut: Future<Output = crate::ImResult<crate::secure::GroupSecureRepairResult>>,
+{
+    let group = match classify_group_e2ee_notice_notification(notification) {
+        GroupE2eeNoticeNotificationMatch::NotNotice(notification) => {
+            return GroupE2eeNoticeNotificationProjection {
+                notification: Some(notification),
+                warnings: Vec::new(),
+                processed: false,
+            };
+        }
+        GroupE2eeNoticeNotificationMatch::Drop(warnings) => {
+            return GroupE2eeNoticeNotificationProjection {
+                notification: None,
+                warnings,
+                processed: false,
+            };
+        }
+        GroupE2eeNoticeNotificationMatch::Process(group) => group,
+    };
+
+    group_e2ee_notice_projection_from_repair_result(process_group(group).await)
+}
+
+enum GroupE2eeNoticeNotificationMatch {
+    NotNotice(Value),
+    Drop(Vec<String>),
+    Process(crate::ids::GroupRef),
+}
+
+fn classify_group_e2ee_notice_notification(
+    notification: Value,
+) -> GroupE2eeNoticeNotificationMatch {
     if !is_group_e2ee_notice_notification(&notification) {
-        return GroupE2eeNoticeNotificationProjection {
-            notification: Some(notification),
-            warnings: Vec::new(),
-            processed: false,
-        };
+        return GroupE2eeNoticeNotificationMatch::NotNotice(notification);
     }
 
     let Some(group_did) = group_did_from_notice_notification(&notification) else {
-        return GroupE2eeNoticeNotificationProjection {
-            notification: None,
-            warnings: vec![
-                "group E2EE notice notification was dropped because group_did is missing"
-                    .to_owned(),
-            ],
-            processed: false,
-        };
+        return GroupE2eeNoticeNotificationMatch::Drop(vec![
+            "group E2EE notice notification was dropped because group_did is missing".to_owned(),
+        ]);
     };
     let group = match crate::ids::GroupRef::parse(&group_did) {
         Ok(group) => group,
         Err(err) => {
-            return GroupE2eeNoticeNotificationProjection {
-                notification: None,
-                warnings: vec![format!(
-                    "group E2EE notice notification was dropped because group_did is invalid: {err}"
-                )],
-                processed: false,
-            };
+            return GroupE2eeNoticeNotificationMatch::Drop(vec![format!(
+                "group E2EE notice notification was dropped because group_did is invalid: {err}"
+            )]);
         }
     };
 
-    match process_group(group) {
+    GroupE2eeNoticeNotificationMatch::Process(group)
+}
+
+fn group_e2ee_notice_projection_from_repair_result(
+    result: crate::ImResult<crate::secure::GroupSecureRepairResult>,
+) -> GroupE2eeNoticeNotificationProjection {
+    match result {
         Ok(result) => {
             let mut warnings = result.warnings;
             if !result.repaired {
@@ -154,6 +218,29 @@ mod tests {
 
         assert!(projection.notification.is_none());
         assert_eq!(projection.warnings, vec!["repair warning".to_owned()]);
+        assert!(projection.processed);
+        assert!(!format!("{projection:?}").contains("SECRET-WELCOME"));
+    }
+
+    #[tokio::test]
+    async fn group_e2ee_notice_notification_async_triggers_repair_and_drops_raw_notice() {
+        let projection = maybe_process_group_e2ee_notice_notification_async(
+            group_notice_notification("did:example:group", "SECRET-WELCOME"),
+            |group| async move {
+                assert_eq!(group.as_str(), "did:example:group");
+                Ok(crate::secure::GroupSecureRepairResult {
+                    group,
+                    state: crate::secure::GroupSecureState::Ready,
+                    repaired: true,
+                    problem: None,
+                    warnings: vec!["async repair warning".to_owned()],
+                })
+            },
+        )
+        .await;
+
+        assert!(projection.notification.is_none());
+        assert_eq!(projection.warnings, vec!["async repair warning".to_owned()]);
         assert!(projection.processed);
         assert!(!format!("{projection:?}").contains("SECRET-WELCOME"));
     }

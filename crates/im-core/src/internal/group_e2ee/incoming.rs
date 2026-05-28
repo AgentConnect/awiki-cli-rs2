@@ -40,6 +40,26 @@ pub(crate) fn maybe_decrypt_group_e2ee_messages_for_client(
     )
 }
 
+pub(crate) async fn maybe_decrypt_group_e2ee_messages_for_client_async(
+    client: &crate::core::ImClient,
+    messages: &mut Vec<Value>,
+) -> Vec<String> {
+    if messages.is_empty() || !contains_group_e2ee_messages(messages) {
+        return Vec::new();
+    }
+    let provider = match super::storage::native_provider_for_client(client) {
+        Ok(provider) => provider,
+        Err(err) => return decryptor_init_error(messages, err),
+    };
+    maybe_decrypt_group_e2ee_messages_with_provider_async(
+        client.did().as_str(),
+        device_id_for_client(client).as_str(),
+        messages,
+        provider,
+    )
+    .await
+}
+
 pub(crate) fn maybe_normalize_group_e2ee_notification_for_client(
     client: &crate::core::ImClient,
     notification: Value,
@@ -59,6 +79,26 @@ pub(crate) fn maybe_normalize_group_e2ee_notification_for_client(
     )
 }
 
+pub(crate) async fn maybe_normalize_group_e2ee_notification_for_client_async(
+    client: &crate::core::ImClient,
+    notification: Value,
+) -> GroupRealtimeNotificationProjection {
+    if !is_group_e2ee_incoming_notification(&notification) {
+        return keep_realtime_notification(notification);
+    }
+    let provider = match super::storage::native_provider_for_client(client) {
+        Ok(provider) => provider,
+        Err(err) => return realtime_decryptor_init_error(notification, err),
+    };
+    maybe_normalize_group_e2ee_notification_with_provider_async(
+        client.did().as_str(),
+        device_id_for_client(client).as_str(),
+        notification,
+        provider,
+    )
+    .await
+}
+
 pub(crate) fn maybe_normalize_group_e2ee_notification_with_provider<M: GroupMlsProvider>(
     owner_did: &str,
     device_id: &str,
@@ -76,6 +116,45 @@ pub(crate) fn maybe_normalize_group_e2ee_notification_with_provider<M: GroupMlsP
         &mut messages,
         provider,
     );
+    message = messages.into_iter().next().unwrap_or(Value::Null);
+    if !warnings.is_empty()
+        || !message
+            .get("decrypted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return redacted_realtime_notification(notification, "failed", warnings);
+    }
+    let mut normalized = notification;
+    apply_decrypted_message_to_group_notification(&mut normalized, &message);
+    GroupRealtimeNotificationProjection {
+        notification: Some(normalized),
+        warnings: Vec::new(),
+        decision: GroupRealtimeNotificationDecision::Normalized,
+    }
+}
+
+pub(crate) async fn maybe_normalize_group_e2ee_notification_with_provider_async<M>(
+    owner_did: &str,
+    device_id: &str,
+    notification: Value,
+    provider: M,
+) -> GroupRealtimeNotificationProjection
+where
+    M: GroupMlsProvider + Send + 'static,
+{
+    if !is_group_e2ee_incoming_notification(&notification) {
+        return keep_realtime_notification(notification);
+    }
+    let mut message = message_view_from_group_notification(&notification);
+    let mut messages = vec![message];
+    let warnings = maybe_decrypt_group_e2ee_messages_with_provider_async(
+        owner_did,
+        device_id,
+        &mut messages,
+        provider,
+    )
+    .await;
     message = messages.into_iter().next().unwrap_or(Value::Null);
     if !warnings.is_empty()
         || !message
@@ -149,6 +228,46 @@ pub(crate) fn maybe_decrypt_group_e2ee_messages_with_provider<M: GroupMlsProvide
         }
     }
     compact_warnings(warnings)
+}
+
+pub(crate) async fn maybe_decrypt_group_e2ee_messages_with_provider_async<M>(
+    owner_did: &str,
+    device_id: &str,
+    messages: &mut Vec<Value>,
+    provider: M,
+) -> Vec<String>
+where
+    M: GroupMlsProvider + Send + 'static,
+{
+    if messages.is_empty() || !contains_group_e2ee_messages(messages) {
+        return Vec::new();
+    }
+    let owner_did = owner_did.to_owned();
+    let device_id = device_id.to_owned();
+    let messages_for_worker = messages.clone();
+    match crate::internal::runtime::worker::run_blocking(move || {
+        let mut messages = messages_for_worker;
+        let warnings = maybe_decrypt_group_e2ee_messages_with_provider(
+            &owner_did,
+            &device_id,
+            &mut messages,
+            &provider,
+        );
+        (messages, warnings)
+    })
+    .await
+    {
+        Ok((projected, warnings)) => {
+            *messages = projected;
+            warnings
+        }
+        Err(err) => {
+            redact_all_group_e2ee_messages(messages, "failed");
+            compact_warnings(vec![format!(
+                "Failed to decrypt group E2EE messages on worker: {err}"
+            )])
+        }
+    }
 }
 
 fn decryptor_init_error(messages: &mut [Value], err: crate::ImError) -> Vec<String> {
@@ -519,7 +638,7 @@ fn compact_warnings(warnings: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::sync::{Arc, Mutex};
 
     use anp::group_e2ee::operations::{
         AbortCommitInput, AbortCommitOutput, AddMemberInput, CreateGroupInput, DecryptInput,
@@ -554,7 +673,8 @@ mod tests {
         assert_eq!(
             provider
                 .last_input
-                .borrow()
+                .lock()
+                .unwrap()
                 .as_ref()
                 .map(|input| input.group_did.as_str()),
             Some("did:example:groups:e2ee")
@@ -581,6 +701,60 @@ mod tests {
         assert!(!serde_json::to_string(&messages)
             .unwrap()
             .contains("failed-cipher"));
+    }
+
+    #[tokio::test]
+    async fn group_e2ee_message_projection_async_runs_decrypt_on_worker() {
+        let provider = StaticDecryptProvider::default();
+        let mut messages = vec![group_cipher_message("secret-cipher")];
+        let warnings = maybe_decrypt_group_e2ee_messages_with_provider_async(
+            "did:example:alice",
+            "default",
+            &mut messages,
+            provider.clone(),
+        )
+        .await;
+
+        assert!(warnings.is_empty());
+        assert_eq!(messages[0]["content"], "decrypted group text");
+        assert_eq!(messages[0]["content_type"], "text/plain");
+        assert_eq!(messages[0]["decrypted"], true);
+        let input = provider.last_input.lock().unwrap().clone().unwrap();
+        assert_eq!(input.recipient_did, "did:example:alice");
+        assert_eq!(input.group_did, "did:example:groups:e2ee");
+        assert!(!serde_json::to_string(&messages)
+            .unwrap()
+            .contains("secret-cipher"));
+    }
+
+    #[tokio::test]
+    async fn realtime_notification_projection_async_replaces_wire_body_with_plaintext() {
+        let provider = StaticDecryptProvider::default();
+        let projection = maybe_normalize_group_e2ee_notification_with_provider_async(
+            "did:example:alice",
+            "default",
+            group_cipher_notification("secret-realtime-cipher"),
+            provider,
+        )
+        .await;
+
+        assert_eq!(
+            projection.decision,
+            GroupRealtimeNotificationDecision::Normalized
+        );
+        assert!(projection.warnings.is_empty());
+        let notification = projection.notification.unwrap();
+        assert_eq!(
+            notification.pointer("/params/meta/content_type"),
+            Some(&json!("text/plain"))
+        );
+        assert_eq!(
+            notification.pointer("/params/body/text"),
+            Some(&json!("decrypted group text"))
+        );
+        assert!(!serde_json::to_string(&notification)
+            .unwrap()
+            .contains("secret-realtime-cipher"));
     }
 
     #[test]
@@ -625,14 +799,14 @@ mod tests {
         assert!(!encoded.contains("crypto_group_id_b64u"));
     }
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct StaticDecryptProvider {
-        last_input: RefCell<Option<DecryptInput>>,
+        last_input: Arc<Mutex<Option<DecryptInput>>>,
     }
 
     impl GroupMlsProvider for StaticDecryptProvider {
         fn decrypt(&self, input: DecryptInput) -> crate::ImResult<DecryptOutput> {
-            self.last_input.borrow_mut().replace(input);
+            self.last_input.lock().unwrap().replace(input);
             Ok(DecryptOutput {
                 application_plaintext: GroupApplicationPlaintext {
                     application_content_type: "text/plain".to_owned(),

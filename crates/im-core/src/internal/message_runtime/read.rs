@@ -1,7 +1,11 @@
-use serde_json::Value;
+use std::collections::HashMap;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::{AuthenticatedRpcTransport, RpcTransport};
+use serde_json::{Map, Value};
+
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{
+    AsyncAuthenticatedRpcTransport, AsyncRpcTransport, AuthenticatedRpcTransport, RpcTransport,
+};
 
 pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
@@ -127,11 +131,111 @@ where
     }
 }
 
+impl<'a, P, T, R> MessageReadRuntime<'a, P, T, R>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+    R: AsyncRpcTransport,
+{
+    pub(crate) async fn inbox_async(mut self, input: InboxRead) -> crate::ImResult<ReadPageResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
+        let limit = page_limit(input.query.limit, 20);
+        let params = crate::internal::wire::inbox::build_inbox_rpc_params(
+            &crate::internal::wire::common::WireIdentity {
+                did: self.client.did().as_str().to_string(),
+            },
+            crate::internal::wire::inbox::InboxWireRequest { limit },
+        );
+        let mut raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "inbox.get", params)
+            .await?;
+        project_secure_direct_messages_async(self.client, &mut raw, &mut self.directory_transport)
+            .await;
+        let page = page_from_raw(&raw, input.query.limit)?;
+        persist_projection_best_effort_async(self.client, &page.items).await;
+        Ok(ReadPageResult { page, raw })
+    }
+
+    pub(crate) async fn history_async(
+        mut self,
+        input: HistoryRead,
+    ) -> crate::ImResult<ReadPageResult> {
+        match input.thread {
+            crate::messages::ThreadRef::Direct(peer) => {
+                self.session_provider
+                    .ensure_session(crate::auth::AuthScope::Messaging)
+                    .await?;
+                let peer = direct_thread(peer, input.resolved_peer_did)?;
+                let params = crate::internal::wire::history::build_history_rpc_params(
+                    &crate::internal::wire::common::WireIdentity {
+                        did: self.client.did().as_str().to_string(),
+                    },
+                    crate::internal::wire::history::HistoryWireRequest {
+                        peer_did: peer.resolved_did.clone(),
+                        limit: page_limit(input.query.limit, 50),
+                        cursor: input.query.cursor.map(|cursor| cursor.as_str().to_string()),
+                        skip: 0,
+                    },
+                )?;
+                let mut raw = self
+                    .transport
+                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
+                    .await?;
+                project_secure_direct_messages_async(
+                    self.client,
+                    &mut raw,
+                    &mut self.directory_transport,
+                )
+                .await;
+                let page = page_from_raw(&raw, input.query.limit)?;
+                persist_projection_best_effort_async(self.client, &page.items).await;
+                Ok(ReadPageResult { page, raw })
+            }
+            crate::messages::ThreadRef::Group(group) => {
+                self.session_provider
+                    .ensure_session(crate::auth::AuthScope::GroupMessaging)
+                    .await?;
+                let params = crate::internal::wire::group::build_group_messages_rpc_params(
+                    self.client.did().as_str(),
+                    group.as_str(),
+                    page_limit(input.query.limit, 50),
+                    input.query.cursor.as_ref().map(crate::ids::Cursor::as_str),
+                    0,
+                )?;
+                let mut raw = self
+                    .transport
+                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
+                    .await?;
+                project_group_e2ee_messages_async(self.client, &mut raw).await;
+                let page = page_from_raw_with_group(&raw, input.query.limit, Some(&group))?;
+                persist_projection_best_effort_async(self.client, &page.items).await;
+                Ok(ReadPageResult { page, raw })
+            }
+            crate::messages::ThreadRef::Thread(_) => {
+                Err(crate::ImError::unsupported("thread-history"))
+            }
+        }
+    }
+}
+
 fn persist_projection_best_effort(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
 ) {
     let _ = crate::internal::message_runtime::local_projection::persist_messages(client, messages);
+}
+
+async fn persist_projection_best_effort_async(
+    client: &crate::core::ImClient,
+    messages: &[crate::messages::Message],
+) {
+    let _ = crate::internal::message_runtime::local_projection::persist_messages_async(
+        client, messages,
+    )
+    .await;
 }
 
 struct DirectThread {
@@ -238,6 +342,338 @@ fn project_secure_direct_messages(
     }
 }
 
+async fn project_secure_direct_messages_async(
+    client: &crate::core::ImClient,
+    raw: &mut Value,
+    directory_transport: &mut impl AsyncRpcTransport,
+) {
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = (client, raw, directory_transport);
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+            return;
+        };
+        let mut message_values = std::mem::take(messages);
+        let mut processed_async = vec![false; message_values.len()];
+        let mut async_warnings = Vec::new();
+        let mut pending_cipher_indices: HashMap<String, Vec<usize>> = HashMap::new();
+        let async_receive =
+            crate::internal::secure_direct::async_receive::AsyncDirectSecureIncomingProcessor::new(
+                client,
+            );
+        let mut order = (0..message_values.len()).collect::<Vec<_>>();
+        order.sort_by(|left, right| {
+            compare_secure_direct_message_order(&message_values[*left], &message_values[*right])
+        });
+        for index in order {
+            let content_type = direct_message_content_type(&message_values[index]);
+            let notification = match crate::internal::secure_direct::incoming::direct_e2ee_notification_from_message_view(&message_values[index]) {
+                Ok(notification) => notification,
+                Err(_) => continue,
+            };
+            let pending_cipher_message_id = if content_type == "application/anp-direct-cipher+json"
+            {
+                direct_notification_message_id(&notification)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| secure_direct_message_id(&message_values[index]))
+            } else {
+                String::new()
+            };
+            let result = if content_type == "application/anp-direct-init+json" {
+                let sender_did = notification
+                    .get("meta")
+                    .and_then(Value::as_object)
+                    .and_then(|meta| meta.get("sender_did"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let sender_document = match resolve_direct_sender_document_async(
+                    client,
+                    directory_transport,
+                    &sender_did,
+                )
+                .await
+                {
+                    Ok(document) => document,
+                    Err(err) => {
+                        mark_async_direct_failure(
+                            &mut message_values[index],
+                            &mut async_warnings,
+                            err,
+                        );
+                        continue;
+                    }
+                };
+                async_receive
+                    .process_init_if_ready(notification, sender_document)
+                    .await
+            } else if content_type == "application/anp-direct-cipher+json" {
+                async_receive.process_cipher_if_ready(notification).await
+            } else {
+                continue;
+            };
+            match result {
+                Ok(crate::internal::secure_direct::async_receive::AsyncDirectSecureReceiveOutcome::Processed(result)) => {
+                    crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
+                        &mut message_values[index],
+                        &Value::Object(result),
+                    );
+                    processed_async[index] = true;
+                }
+                Ok(crate::internal::secure_direct::async_receive::AsyncDirectSecureReceiveOutcome::ProcessedWithReplay {
+                    result,
+                    replayed,
+                }) => {
+                    crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
+                        &mut message_values[index],
+                        &Value::Object(result),
+                    );
+                    processed_async[index] = true;
+                    for replay in replayed {
+                        let Some(indices) = pending_cipher_indices.get_mut(&replay.message_id) else {
+                            continue;
+                        };
+                        let Some(pending_index) = indices.pop() else {
+                            continue;
+                        };
+                        crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
+                            &mut message_values[pending_index],
+                            &Value::Object(replay.result),
+                        );
+                        processed_async[pending_index] = true;
+                    }
+                }
+                Ok(crate::internal::secure_direct::async_receive::AsyncDirectSecureReceiveOutcome::Fallback(
+                    crate::internal::secure_direct::async_receive::AsyncDirectSecureReceiveFallback::NoEstablishedSession,
+                )) if content_type == "application/anp-direct-cipher+json" => {
+                    if !pending_cipher_message_id.trim().is_empty() {
+                        pending_cipher_indices
+                            .entry(pending_cipher_message_id)
+                            .or_default()
+                            .push(index);
+                    }
+                    continue;
+                }
+                Ok(crate::internal::secure_direct::async_receive::AsyncDirectSecureReceiveOutcome::Fallback(_)) => {
+                    continue;
+                }
+                Err(err) => {
+                    mark_async_direct_failure(&mut message_values[index], &mut async_warnings, err);
+                    continue;
+                }
+            };
+        }
+        let mut fallback_entries = message_values
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(index, message)| {
+                !processed_async[*index] && is_direct_e2ee_wire_message(message)
+            })
+            .collect::<Vec<_>>();
+        let mut fallback_messages = fallback_entries
+            .iter()
+            .map(|(_, message)| message.clone())
+            .collect::<Vec<_>>();
+        let warnings = if fallback_messages.is_empty() {
+            Vec::new()
+        } else {
+            crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
+                client,
+                &mut fallback_messages,
+                &mut crate::internal::transport::CoreHttpTransport::new(client),
+                crate::internal::secure_direct::incoming::DirectDecryptMode::ReadOnly,
+            )
+        };
+        async_warnings.extend(warnings);
+        for ((index, _), message) in fallback_entries.drain(..).zip(fallback_messages) {
+            message_values[index] = message;
+        }
+        let filtered =
+            crate::internal::secure_direct::incoming::filter_displayable_direct_e2ee_messages(
+                message_values,
+            );
+        *messages = filtered;
+        append_secure_direct_warnings(raw, compact_secure_direct_warnings(async_warnings));
+    }
+}
+
+async fn resolve_direct_sender_document_async(
+    client: &crate::core::ImClient,
+    directory_transport: &mut impl AsyncRpcTransport,
+    did: &str,
+) -> crate::ImResult<Value> {
+    if did == client.did().as_str() {
+        return read_json_file_async(client.runtime().did_document_path.clone(), "did_document")
+            .await;
+    }
+    let call = crate::internal::identity_wire::profile::build_profile_resolve_rpc_call(did)?;
+    match directory_transport
+        .rpc(call.endpoint, call.method, call.params)
+        .await
+        .and_then(|raw| {
+            did_document_from_resolve(raw).ok_or_else(|| crate::ImError::PeerNotFound {
+                peer: did.to_owned(),
+            })
+        }) {
+        Ok(document) => Ok(document),
+        Err(err) => match crate::internal::identity_document_cache::load_local_did_document_async(
+            &client.core_inner().sdk_paths().identities,
+            did,
+        )
+        .await
+        {
+            Ok(Some(document)) => Ok(document),
+            Ok(None) | Err(_) => Err(err),
+        },
+    }
+}
+
+async fn read_json_file_async(path: std::path::PathBuf, path_kind: &str) -> crate::ImResult<Value> {
+    let raw =
+        tokio::fs::read(&path)
+            .await
+            .map_err(|err| crate::ImError::CredentialFileUnreadable {
+                path_kind: path_kind.to_owned(),
+                detail: err.to_string(),
+            })?;
+    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+        detail: err.to_string(),
+    })
+}
+
+fn did_document_from_resolve(value: Value) -> Option<Value> {
+    if looks_like_did_document(&value) {
+        return Some(value);
+    }
+    for pointer in [
+        "/did_document",
+        "/didDocument",
+        "/document",
+        "/profile/did_document",
+        "/profile/didDocument",
+        "/result/did_document",
+        "/result/didDocument",
+    ] {
+        let candidate = value.pointer(pointer)?;
+        if looks_like_did_document(candidate) {
+            return Some(candidate.clone());
+        }
+    }
+    None
+}
+
+fn looks_like_did_document(value: &Value) -> bool {
+    value
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.starts_with("did:"))
+        && value.get("verificationMethod").is_some()
+}
+
+fn mark_async_direct_failure(message: &mut Value, warnings: &mut Vec<String>, err: crate::ImError) {
+    crate::internal::secure_direct::incoming::apply_direct_e2ee_processing_result(
+        message,
+        &json_object([("state", Value::String("failed".to_owned()))]),
+    );
+    if !is_secure_direct_control_like_message(message) {
+        warnings.push(format!(
+            "Failed to decrypt secure direct message {}: {err}",
+            secure_direct_message_id(message)
+        ));
+    }
+}
+
+fn json_object<const N: usize>(entries: [(&str, Value); N]) -> Value {
+    Value::Object(
+        entries
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
+fn is_direct_e2ee_wire_message(message: &Value) -> bool {
+    anp::direct_e2ee::is_direct_e2ee_wire_content_type(&direct_message_content_type(message))
+}
+
+fn direct_message_content_type(message: &Value) -> String {
+    message
+        .as_object()
+        .and_then(|object| object.get("content_type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn compare_secure_direct_message_order(left: &Value, right: &Value) -> std::cmp::Ordering {
+    let left_seq = secure_direct_message_server_seq(left).unwrap_or_default();
+    let right_seq = secure_direct_message_server_seq(right).unwrap_or_default();
+    if left_seq == right_seq {
+        return secure_direct_message_id(left).cmp(&secure_direct_message_id(right));
+    }
+    if left_seq == 0 {
+        return std::cmp::Ordering::Greater;
+    }
+    if right_seq == 0 {
+        return std::cmp::Ordering::Less;
+    }
+    left_seq.cmp(&right_seq)
+}
+
+fn secure_direct_message_server_seq(message: &Value) -> Option<i64> {
+    match message.as_object()?.get("server_seq")? {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .or_else(|| number.as_f64().map(|value| value as i64)),
+        Value::String(value) => value.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn secure_direct_message_id(message: &Value) -> String {
+    message
+        .as_object()
+        .and_then(|object| object.get("id").or_else(|| object.get("msg_id")))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn direct_notification_message_id(notification: &Map<String, Value>) -> Option<String> {
+    notification
+        .get("meta")
+        .and_then(Value::as_object)
+        .and_then(|meta| meta.get("message_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn is_secure_direct_control_like_message(message: &Value) -> bool {
+    let content_type = direct_message_content_type(message);
+    if content_type == "application/anp-direct-init+json" {
+        return true;
+    }
+    let id = secure_direct_message_id(message);
+    id.starts_with("secure-init-") || id.starts_with("ack-")
+}
+
+fn compact_secure_direct_warnings(warnings: Vec<String>) -> Vec<String> {
+    let mut compact = Vec::new();
+    for warning in warnings {
+        let warning = warning.trim();
+        if warning.is_empty() || compact.iter().any(|known: &String| known == warning) {
+            continue;
+        }
+        compact.push(warning.to_owned());
+    }
+    compact
+}
+
 fn append_secure_direct_warnings(raw: &mut Value, warnings: Vec<String>) {
     if warnings.is_empty() {
         return;
@@ -270,6 +706,25 @@ fn project_group_e2ee_messages(client: &crate::core::ImClient, raw: &mut Value) 
 
 #[cfg(not(feature = "group-e2ee"))]
 fn project_group_e2ee_messages(_client: &crate::core::ImClient, _raw: &mut Value) {}
+
+#[cfg(feature = "group-e2ee")]
+async fn project_group_e2ee_messages_async(client: &crate::core::ImClient, raw: &mut Value) {
+    let Some(messages) = raw.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let mut message_values = std::mem::take(messages);
+    let warnings =
+        crate::internal::group_e2ee::incoming::maybe_decrypt_group_e2ee_messages_for_client_async(
+            client,
+            &mut message_values,
+        )
+        .await;
+    *messages = message_values;
+    append_secure_direct_warnings(raw, warnings);
+}
+
+#[cfg(not(feature = "group-e2ee"))]
+async fn project_group_e2ee_messages_async(_client: &crate::core::ImClient, _raw: &mut Value) {}
 
 fn message_from_value(
     value: &Value,
@@ -591,7 +1046,9 @@ fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
 mod tests {
     use super::*;
     use crate::internal::auth::session::SessionProvider;
-    use crate::internal::transport::{AuthenticatedRpcTransport, RpcTransport};
+    use crate::internal::transport::{
+        AsyncAuthenticatedRpcTransport, AsyncRpcTransport, AuthenticatedRpcTransport, RpcTransport,
+    };
     use serde_json::{json, Value};
     use std::cell::RefCell;
     use std::fs;
@@ -969,6 +1426,57 @@ mod tests {
         assert_eq!(calls[0].params["body"]["since_seq"], "42");
     }
 
+    #[tokio::test]
+    async fn messages_read_runtime_builds_group_history_rpc_async() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group = crate::ids::GroupRef::parse("did:example:group").unwrap();
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadyGroupSessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "messages": [{
+                        "id": "msg-group-history-async-1",
+                        "sender_did": "did:example:bob",
+                        "content": "hello group async",
+                        "content_type": "text/plain",
+                        "group_event_seq": 10
+                    }],
+                    "has_more": false
+                }),
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .history_async(HistoryRead {
+                thread: crate::messages::ThreadRef::Group(group.clone()),
+                query: crate::messages::HistoryQuery {
+                    limit: crate::ids::PageLimit(6),
+                    cursor: Some(crate::ids::Cursor::parse("43").unwrap()),
+                },
+                resolved_peer_did: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.page.items.len(), 1);
+        let message = &result.page.items[0];
+        assert_eq!(message.id.as_str(), "did:example:group:10");
+        assert_eq!(message.group.as_ref(), Some(&group));
+        assert_eq!(message.metadata.server_sequence, Some(10));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
+        assert_eq!(calls[0].method, "group.list_messages");
+        assert_eq!(calls[0].params["body"]["group_did"], "did:example:group");
+        assert_eq!(calls[0].params["body"]["limit"], 6);
+        assert_eq!(calls[0].params["body"]["since_seq"], "43");
+    }
+
     #[test]
     fn direct_e2ee_projection_helper_returns_plaintext_and_filters_controls() {
         let messages = vec![
@@ -1176,6 +1684,198 @@ mod tests {
         assert_eq!(content["caption"], "direct attachment");
     }
 
+    #[tokio::test]
+    async fn messages_read_async_projects_direct_init_without_legacy_fallback() {
+        let fixture = Fixture::new();
+        let exchange =
+            crate::internal::secure_direct::async_receive::test_support::incoming_init_exchange();
+        fixture.write_direct_credentials(&exchange);
+        fixture.write_peer_document("bob", &exchange.sender_did, &exchange.sender_document);
+        fixture.seed_direct_prekeys(&exchange);
+        let client = fixture.client();
+        let response = json!({
+            "messages": [
+                {
+                    "id": "msg-init-async",
+                    "sender_did": exchange.sender_did.clone(),
+                    "receiver_did": exchange.recipient_did.clone(),
+                    "content_type": "application/anp-direct-init+json",
+                    "server_seq": 1,
+                    "content": anp::direct_e2ee::direct_init_body_to_value(&exchange.init_body),
+                }
+            ],
+            "has_more": false
+        });
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response,
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .inbox_async(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::All,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                },
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.page.items.len(), 1);
+        assert_eq!(
+            result.page.items[0].body,
+            crate::messages::MessageBodyView::Text {
+                text: "hello from init".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            }
+        );
+        assert!(result
+            .raw
+            .get("warnings")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty));
+        let saved = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .get_direct_secure_session("alice-id", exchange.sender_did)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.revision, 0);
+        let saved_session = crate::internal::secure_direct::sqlite_store::direct_session_from_blob(
+            &saved.state_blob,
+        )
+        .unwrap();
+        assert_eq!(saved_session.recv_n, 1);
+    }
+
+    #[tokio::test]
+    async fn messages_read_async_replays_pending_direct_cipher_after_init() {
+        use anp::direct_e2ee::{ApplicationPlaintext, DirectE2eeSession, DirectEnvelopeMetadata};
+
+        let fixture = Fixture::new();
+        let exchange =
+            crate::internal::secure_direct::async_receive::test_support::incoming_init_exchange();
+        fixture.write_direct_credentials(&exchange);
+        fixture.write_peer_document("bob", &exchange.sender_did, &exchange.sender_document);
+        fixture.seed_direct_prekeys(&exchange);
+        let client = fixture.client();
+        let mut sender_session = exchange.sender_session.clone();
+        sender_session.status = anp::direct_e2ee::models::SESSION_STATUS_ESTABLISHED.to_owned();
+        sender_session.recv_chain_key_b64u = sender_session.send_chain_key_b64u.clone();
+        sender_session.peer_ratchet_public_key_b64u =
+            Some(sender_session.ratchet_public_key_b64u.clone());
+        sender_session.send_n = 1;
+        let follow_up_metadata = DirectEnvelopeMetadata {
+            sender_did: exchange.sender_did.clone(),
+            recipient_did: exchange.recipient_did.clone(),
+            message_id: "msg-pending-follow-up".to_owned(),
+            profile: "anp.direct.e2ee.v1".to_owned(),
+            security_profile: "direct-e2ee".to_owned(),
+        };
+        let (_, follow_up_body) = DirectE2eeSession::encrypt_follow_up(
+            &mut sender_session,
+            &follow_up_metadata,
+            "msg-pending-follow-up",
+            &ApplicationPlaintext::new_text("text/plain", "follow-up after init"),
+        )
+        .unwrap();
+        let response = json!({
+            "messages": [
+                {
+                    "id": "msg-pending-follow-up",
+                    "sender_did": exchange.sender_did.clone(),
+                    "receiver_did": exchange.recipient_did.clone(),
+                    "content_type": "application/anp-direct-cipher+json",
+                    "server_seq": 1,
+                    "content": anp::direct_e2ee::direct_cipher_body_to_value(&follow_up_body),
+                },
+                {
+                    "id": "msg-init-async",
+                    "sender_did": exchange.sender_did.clone(),
+                    "receiver_did": exchange.recipient_did.clone(),
+                    "content_type": "application/anp-direct-init+json",
+                    "server_seq": 2,
+                    "content": anp::direct_e2ee::direct_init_body_to_value(&exchange.init_body),
+                }
+            ],
+            "has_more": false
+        });
+        let runtime = MessageReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                response,
+            },
+            NoopDirectoryTransport,
+        );
+
+        let result = runtime
+            .inbox_async(InboxRead {
+                query: crate::messages::InboxQuery {
+                    scope: crate::messages::InboxScope::All,
+                    limit: crate::ids::PageLimit(20),
+                    cursor: None,
+                    unread_only: false,
+                },
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.page.items.len(), 2);
+        assert_eq!(
+            result.page.items[0].body,
+            crate::messages::MessageBodyView::Text {
+                text: "follow-up after init".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            }
+        );
+        assert_eq!(
+            result.page.items[1].body,
+            crate::messages::MessageBodyView::Text {
+                text: "hello from init".to_owned(),
+                kind: crate::messages::MessageKind::Text,
+            }
+        );
+        assert!(result
+            .raw
+            .get("warnings")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty));
+        let raw_messages = result
+            .raw
+            .get("messages")
+            .and_then(Value::as_array)
+            .expect("raw messages");
+        assert_eq!(raw_messages[0]["decryption_state"], json!("decrypted"));
+        assert_eq!(raw_messages[0]["content"], json!("follow-up after init"));
+        let saved = client
+            .core_inner()
+            .local_state_db()
+            .await
+            .unwrap()
+            .get_direct_secure_session("alice-id", exchange.sender_did)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.revision, 1);
+        let saved_session = crate::internal::secure_direct::sqlite_store::direct_session_from_blob(
+            &saved.state_blob,
+        )
+        .unwrap();
+        assert_eq!(saved_session.recv_n, 2);
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -1199,6 +1899,23 @@ mod tests {
 
         fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
             unreachable!("read runtime should not read status")
+        }
+    }
+
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            SessionProvider::refresh_session(self)
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            SessionProvider::status(self)
         }
     }
 
@@ -1228,6 +1945,23 @@ mod tests {
         }
     }
 
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadyGroupSessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            SessionProvider::refresh_session(self)
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            SessionProvider::status(self)
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
         response: Value,
@@ -1249,6 +1983,17 @@ mod tests {
         }
     }
 
+    impl AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
     struct RecordedCall {
         endpoint: String,
         method: String,
@@ -1267,6 +2012,17 @@ mod tests {
             Err(crate::ImError::PeerNotFound {
                 peer: "noop-directory".to_owned(),
             })
+        }
+    }
+
+    impl AsyncRpcTransport for NoopDirectoryTransport {
+        async fn rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            RpcTransport::rpc(self, endpoint, method, params)
         }
     }
 
@@ -1333,6 +2089,136 @@ mod tests {
                 "alice".to_string(),
             ))
             .unwrap()
+        }
+
+        fn identity_dir(&self) -> PathBuf {
+            self.root.join("identities").join("alice")
+        }
+
+        fn sqlite_path(&self) -> PathBuf {
+            self.root.join("local").join("im.sqlite")
+        }
+
+        fn write_direct_credentials(
+            &self,
+            exchange: &crate::internal::secure_direct::async_receive::test_support::IncomingInitExchange,
+        ) {
+            let identity_dir = self.identity_dir();
+            fs::write(
+                identity_dir.join("did.json"),
+                exchange.recipient_document.to_string(),
+            )
+            .unwrap();
+            fs::write(identity_dir.join("private.key"), "test-key").unwrap();
+            fs::write(
+                identity_dir.join("e2ee-agreement-private.pem"),
+                exchange.recipient_agreement_private.to_pem(),
+            )
+            .unwrap();
+            fs::write(
+                identity_dir.join("auth.json"),
+                r#"{"jwt_token":"test-token"}"#,
+            )
+            .unwrap();
+        }
+
+        fn write_peer_document(&self, alias: &str, did: &str, document: &Value) {
+            let identities = self.root.join("identities");
+            let identity_dir = identities.join(alias);
+            fs::create_dir_all(&identity_dir).unwrap();
+            fs::write(
+                identities.join("registry.json"),
+                format!(
+                    r#"{{
+                      "default_identity": "alice",
+                      "identities": [
+                        {{
+                          "id": "alice-id",
+                          "did": "did:example:alice",
+                          "local_alias": "alice",
+                          "ready_for_auth": true,
+                          "ready_for_messaging": true,
+                          "missing": []
+                        }},
+                        {{
+                          "id": "{alias}-id",
+                          "did": "{did}",
+                          "local_alias": "{alias}",
+                          "ready_for_auth": true,
+                          "ready_for_messaging": true,
+                          "missing": []
+                        }}
+                      ]
+                    }}"#
+                ),
+            )
+            .unwrap();
+            fs::write(identity_dir.join("did.json"), document.to_string()).unwrap();
+        }
+
+        fn seed_direct_prekeys(
+            &self,
+            exchange: &crate::internal::secure_direct::async_receive::test_support::IncomingInitExchange,
+        ) {
+            let connection =
+                crate::internal::local_state::open_writable(&self.sqlite_path()).unwrap();
+            let store =
+                crate::internal::secure_direct::sqlite_store::SqliteDirectSecureStateStore::new(
+                    &connection,
+                )
+                .unwrap();
+            store
+                .upsert_signed_prekey(
+                    &crate::internal::secure_direct::sqlite_store::DirectSignedPrekeyRecord {
+                        owner_identity_id: "alice-id".to_owned(),
+                        owner_did: exchange.recipient_did.clone(),
+                        key_id: exchange.recipient_signed_prekey.key_id.clone(),
+                        private_key_blob: exchange
+                            .recipient_signed_prekey_private
+                            .to_pem()
+                            .into_bytes(),
+                        public_key_blob: exchange
+                            .recipient_signed_prekey
+                            .public_key_b64u
+                            .as_bytes()
+                            .to_vec(),
+                        status:
+                            crate::internal::secure_direct::sqlite_store::DirectPrekeyStatus::Active,
+                        metadata_json: serde_json::to_string(&json!({
+                            "metadata": exchange.recipient_signed_prekey,
+                        }))
+                        .unwrap(),
+                        created_at: "2026-05-24T00:00:00Z".to_owned(),
+                        updated_at: "2026-05-24T00:00:00Z".to_owned(),
+                    },
+                )
+                .unwrap();
+            store
+                .upsert_one_time_prekey(
+                    &crate::internal::secure_direct::sqlite_store::DirectOneTimePrekeyRecord {
+                        owner_identity_id: "alice-id".to_owned(),
+                        owner_did: exchange.recipient_did.clone(),
+                        key_id: exchange.recipient_one_time_prekey.key_id.clone(),
+                        private_key_blob: exchange
+                            .recipient_one_time_prekey_private
+                            .to_pem()
+                            .into_bytes(),
+                        public_key_blob: exchange
+                            .recipient_one_time_prekey
+                            .public_key_b64u
+                            .as_bytes()
+                            .to_vec(),
+                        status:
+                            crate::internal::secure_direct::sqlite_store::DirectPrekeyStatus::Available,
+                        metadata_json: serde_json::to_string(&json!({
+                            "metadata": exchange.recipient_one_time_prekey,
+                        }))
+                        .unwrap(),
+                        created_at: "2026-05-24T00:00:00Z".to_owned(),
+                        consumed_at: String::new(),
+                    },
+                )
+                .unwrap();
         }
     }
 

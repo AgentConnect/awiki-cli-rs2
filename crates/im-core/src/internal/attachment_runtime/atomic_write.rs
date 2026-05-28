@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 
 pub(crate) fn validate_destination(destination: &Path, overwrite: bool) -> crate::ImResult<()> {
     if destination.as_os_str().is_empty() {
@@ -57,6 +58,61 @@ pub(crate) fn write_bytes_atomic(
         temp.persist();
     } else {
         match std::fs::hard_link(temp.path(), destination) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(destination_exists_error(destination));
+            }
+            Err(err) => {
+                return Err(crate::ImError::Io {
+                    detail: format!(
+                        "link temp file {} to {}: {err}",
+                        temp.path().display(),
+                        destination.display()
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(destination.to_path_buf())
+}
+
+pub(crate) async fn write_stream_atomic(
+    destination: &Path,
+    mut response: crate::internal::transport::AsyncAttachmentObjectResponse,
+    overwrite: bool,
+) -> crate::ImResult<PathBuf> {
+    validate_destination(destination, overwrite)?;
+
+    let (temp, file) =
+        crate::internal::attachment_runtime::temp_file::AsyncSiblingTempFile::create(destination)
+            .await?;
+    let mut file = file;
+    while let Some(chunk) = response.next_chunk().await? {
+        file.write_all(&chunk)
+            .await
+            .map_err(|err| crate::ImError::Io {
+                detail: format!("write temp file {}: {err}", temp.path().display()),
+            })?;
+    }
+    file.sync_all().await.map_err(|err| crate::ImError::Io {
+        detail: format!("sync temp file {}: {err}", temp.path().display()),
+    })?;
+    drop(file);
+
+    if overwrite {
+        tokio::fs::rename(temp.path(), destination)
+            .await
+            .map_err(|err| crate::ImError::Io {
+                detail: format!(
+                    "rename temp file {} to {}: {err}",
+                    temp.path().display(),
+                    destination.display()
+                ),
+            })?;
+        temp.persist();
+    } else {
+        match tokio::fs::hard_link(temp.path(), destination).await {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(destination_exists_error(destination));

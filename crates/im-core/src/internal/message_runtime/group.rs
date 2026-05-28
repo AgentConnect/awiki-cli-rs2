@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
@@ -107,6 +107,72 @@ where
     }
 }
 
+impl<'a, P, T> GroupTextSender<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+{
+    pub(crate) async fn send_async(
+        mut self,
+        input: GroupTextSend,
+    ) -> crate::ImResult<GroupTextSendResult> {
+        let group = group_target(&input.request.target)?;
+        let (text, kind) = text_body(&input.request.body)?;
+        validate_plain_security(&input.request.security)?;
+
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+
+        let message_type = message_type(&kind);
+        let content_type =
+            crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
+        let payload = crate::internal::wire::group::build_group_send_payload(
+            self.client.did().as_str(),
+            group.as_str(),
+            text,
+            content_type,
+        )?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let origin_proof = crate::internal::proof::origin::build_origin_proof(
+            &crate::internal::proof::origin::OriginProofIdentity {
+                identity_name: credentials.identity_name,
+                did_document: credentials.did_document,
+                key1_private_pem: credentials.key1_private_pem,
+            },
+            &payload,
+        )?;
+        let params = serde_json::json!({
+            "meta": payload.meta.clone(),
+            "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
+            "body": payload.body.clone(),
+        });
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, payload.method.as_str(), params)
+            .await?;
+        let mut result = group_result_from_value(raw.clone())?;
+        fill_group_result_defaults(&mut result, &payload.meta, group.as_str());
+        let sdk_result = sdk_result_from_group_result(
+            &result,
+            self.client.did().clone(),
+            group.clone(),
+            text,
+            kind,
+        )?;
+        Ok(GroupTextSendResult {
+            sdk_result,
+            group_did: group.as_str().to_string(),
+            message_type,
+            text: text.to_string(),
+            raw,
+        })
+    }
+}
+
 pub(crate) fn load_credentials(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<GroupTextCredentials> {
@@ -125,8 +191,44 @@ pub(crate) fn load_credentials(
     })
 }
 
+pub(crate) async fn load_credentials_async(
+    client: &crate::core::ImClient,
+) -> crate::ImResult<GroupTextCredentials> {
+    let runtime = client.runtime();
+    let did_document = read_optional_json_async(runtime.did_document_path.clone()).await?;
+    let key1_private_pem = tokio::fs::read_to_string(&runtime.private_key_path)
+        .await
+        .map_err(|err| crate::ImError::CredentialFileUnreadable {
+            path_kind: "private_key".to_string(),
+            detail: err.to_string(),
+        })?;
+    Ok(GroupTextCredentials {
+        identity_name: runtime.owner.identity_id.as_str().to_string(),
+        did_document,
+        key1_private_pem,
+    })
+}
+
 fn read_optional_json(path: &std::path::Path) -> crate::ImResult<Option<Value>> {
     let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "did_document".to_string(),
+                detail: err.to_string(),
+            });
+        }
+    };
+    serde_json::from_slice(&raw)
+        .map(Some)
+        .map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })
+}
+
+async fn read_optional_json_async(path: std::path::PathBuf) -> crate::ImResult<Option<Value>> {
+    let raw = match tokio::fs::read(path).await {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
@@ -490,6 +592,65 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn messages_group_text_sender_async_builds_wire_and_maps_result() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group_did = "did:example:groups:async";
+        let sender = GroupTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "final_acceptance": true,
+                    "group_did": group_did,
+                    "message_id": "server-message-id",
+                    "operation_id": "server-operation-id",
+                    "group_event_seq": "43",
+                    "group_state_version": "v43",
+                    "accepted_at": "2026-05-21T00:00:00Z"
+                }),
+            },
+        );
+
+        let result = sender
+            .send_async(GroupTextSend {
+                request: group_text_request(
+                    group_did,
+                    "hello async group",
+                    crate::messages::MessageKind::Markdown,
+                ),
+                credentials: Some(fixture.credentials()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.group_did, group_did);
+        assert_eq!(result.message_type, "markdown");
+        assert_eq!(result.text, "hello async group");
+        assert_eq!(
+            result.sdk_result.message.id.as_str(),
+            "did:example:groups:async:43"
+        );
+        assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(43));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
+        assert_eq!(calls[0].method, "group.send");
+        assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
+        assert_eq!(
+            calls[0].params["meta"]["target"],
+            json!({"kind": "group", "did": group_did})
+        );
+        assert_eq!(
+            calls[0].params["body"],
+            json!({"text": "hello async group"})
+        );
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -516,6 +677,23 @@ mod tests {
         }
     }
 
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            SessionProvider::refresh_session(self)
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            SessionProvider::status(self)
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
         response: Value,
@@ -534,6 +712,17 @@ mod tests {
                 params,
             });
             Ok(self.response.clone())
+        }
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
         }
     }
 

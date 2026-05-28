@@ -5,12 +5,19 @@ use anp::group_e2ee::operations::{
 use anp::group_e2ee::{GroupKeyPackage, GroupStateRef};
 use serde_json::{Map, Value};
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::message_runtime::group::{load_credentials, GroupTextCredentials};
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::message_runtime::group::{
+    load_credentials, load_credentials_async, GroupTextCredentials,
+};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 use super::provider::GroupMlsProvider;
-use super::state_ref::{group_state_ref_from_service_head, local_group_state_ref};
+use super::state_ref::{
+    group_state_ref_from_service_head, local_group_state_ref, local_group_state_ref_async,
+};
+use super::summary::{
+    persist_group_e2ee_summary, persist_group_e2ee_summary_async, GroupE2eeSummaryUpdate,
+};
 use super::DEFAULT_GROUP_MLS_DEVICE_ID;
 
 pub(crate) struct GroupE2eeLifecycleRuntime<'a, P, T, M> {
@@ -124,6 +131,122 @@ where
     }
 }
 
+pub(crate) async fn ensure_group_e2ee_service_available_async<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    input: GroupE2eeServiceAvailabilityInput,
+) -> crate::ImResult<()>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+{
+    session_provider
+        .ensure_session(crate::auth::AuthScope::GroupMessaging)
+        .await?;
+    let credentials = match input.credentials {
+        Some(credentials) => credentials,
+        None => load_credentials_async(client).await?,
+    };
+    let preflight_group_did = group_e2ee_availability_group_did(client);
+    let head_params = super::wire::build_group_e2ee_head_rpc_params(
+        &credentials,
+        client.did().as_str(),
+        &preflight_group_did,
+    )?;
+    match transport
+        .authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.head",
+            head_params,
+        )
+        .await
+    {
+        Ok(_) => {}
+        Err(err) if is_group_e2ee_service_disabled(&err) => return Err(err),
+        Err(_) => {}
+    }
+    if !input.check_key_package {
+        return Ok(());
+    }
+    let service_did = input
+        .service_did
+        .map(Ok)
+        .unwrap_or_else(|| group_e2ee_service_did(client))?;
+    let key_package_params = super::wire::build_group_e2ee_get_key_package_rpc_params(
+        &credentials,
+        client.did().as_str(),
+        service_did.as_str(),
+        &preflight_group_did,
+        client.did().as_str(),
+        None,
+        None,
+    )?;
+    match transport
+        .authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.get_key_package",
+            key_package_params,
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(err) if is_group_e2ee_service_disabled(&err) => Err(err),
+        Err(_) => Ok(()),
+    }
+}
+
+pub(crate) async fn leave_secure_group_request_async<P, T>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    input: GroupE2eeLeaveInput,
+) -> crate::ImResult<GroupE2eeLifecycleResult>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+{
+    if input.owner_leave_commit {
+        return Err(crate::ImError::unsupported(
+            "group-e2ee-owner-leave-commit-async",
+        ));
+    }
+    session_provider
+        .ensure_session(crate::auth::AuthScope::GroupMessaging)
+        .await?;
+    let credentials = match input.credentials {
+        Some(credentials) => credentials,
+        None => load_credentials_async(client).await?,
+    };
+    let group_did = require_group(input.group.as_str())?.to_owned();
+    let params = super::wire::build_group_e2ee_leave_request_rpc_params(
+        &credentials,
+        client.did().as_str(),
+        &group_did,
+        input.reason_text.as_deref(),
+    )?;
+    let delivery = transport
+        .authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.leave_request",
+            params,
+        )
+        .await?;
+    Ok(GroupE2eeLifecycleResult {
+        delivery: public_lifecycle_delivery(
+            "secure_group_leave_request",
+            &group_did,
+            Some(client.did().as_str()),
+            Some("leave_requested"),
+            &delivery,
+        ),
+        warnings: vec![
+            "group E2EE leave request created; the group owner must process it before the MLS epoch advances"
+                .to_owned(),
+        ],
+    })
+}
+
 impl<'a, P, T, M> GroupE2eeLifecycleRuntime<'a, P, T, M>
 where
     P: SessionProvider,
@@ -151,7 +274,10 @@ where
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
         let credentials = self.credentials(input.credentials)?;
-        let service_did = self.service_did(input.service_did)?;
+        let service_did = input
+            .service_did
+            .map(Ok)
+            .unwrap_or_else(|| group_e2ee_service_did(self.client))?;
         let group_did = require_group(input.group.as_str())?.to_owned();
         let operation_id = format!(
             "op-{}",
@@ -183,14 +309,17 @@ where
         match self.finalize_prepared(&prepared, &group_did, &delivery) {
             Ok(finalized) => persist_group_e2ee_summary(
                 self.client,
-                &group_did,
-                summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
-                group_state_version(&delivery, group_state_ref.as_ref()).as_deref(),
-                Some(finalized.crypto_group_id_b64u.as_str()),
-                finalized.epoch_authenticator.as_deref(),
-                Some(prepared.suite.as_str()),
-                Some(finalized.operation_id.as_str()),
-                "active",
+                GroupE2eeSummaryUpdate {
+                    group_did: &group_did,
+                    epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                    group_state_version: group_state_version(&delivery, group_state_ref.as_ref())
+                        .as_deref(),
+                    crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                    epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                    suite: Some(prepared.suite.as_str()),
+                    operation_id: Some(finalized.operation_id.as_str()),
+                    membership_status: "active",
+                },
             ),
             Err(err) => warnings.push(format!(
                 "group E2EE create was accepted by service but local finalize failed: {err}"
@@ -215,7 +344,10 @@ where
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
         let credentials = self.credentials(input.credentials)?;
-        let service_did = self.service_did(input.service_did)?;
+        let service_did = input
+            .service_did
+            .map(Ok)
+            .unwrap_or_else(|| group_e2ee_service_did(self.client))?;
         let group_did = require_group(input.group.as_str())?.to_owned();
         let member_did = require_did(input.member.as_str(), "member")?.to_owned();
         let key_package = self.lookup_member_key_package(
@@ -256,20 +388,25 @@ where
             params,
         ) {
             Ok(delivery) => delivery,
-            Err(err) => return self.service_rejected_prepared(&prepared, &group_did, err),
+            Err(err) => {
+                return service_rejected_prepared(&self.mls_provider, &prepared, &group_did, err)
+            }
         };
         let mut warnings = Vec::new();
-        match self.finalize_prepared(&prepared, &group_did, &delivery) {
+        match finalize_prepared(&self.mls_provider, &prepared, &group_did, &delivery) {
             Ok(finalized) => persist_group_e2ee_summary(
                 self.client,
-                &group_did,
-                summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
-                group_state_version(&delivery, group_state_ref.as_ref()).as_deref(),
-                Some(finalized.crypto_group_id_b64u.as_str()),
-                finalized.epoch_authenticator.as_deref(),
-                Some(prepared.suite.as_str()),
-                Some(finalized.operation_id.as_str()),
-                "active",
+                GroupE2eeSummaryUpdate {
+                    group_did: &group_did,
+                    epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                    group_state_version: group_state_version(&delivery, group_state_ref.as_ref())
+                        .as_deref(),
+                    crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                    epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                    suite: Some(prepared.suite.as_str()),
+                    operation_id: Some(finalized.operation_id.as_str()),
+                    membership_status: "active",
+                },
             ),
             Err(err) => warnings.push(format!(
                 "group E2EE add was accepted by service but local finalize failed: {err}"
@@ -328,20 +465,25 @@ where
             params,
         ) {
             Ok(delivery) => delivery,
-            Err(err) => return self.service_rejected_prepared(&prepared, &group_did, err),
+            Err(err) => {
+                return service_rejected_prepared(&self.mls_provider, &prepared, &group_did, err)
+            }
         };
         let mut warnings = Vec::new();
-        match self.finalize_prepared(&prepared, &group_did, &delivery) {
+        match finalize_prepared(&self.mls_provider, &prepared, &group_did, &delivery) {
             Ok(finalized) => persist_group_e2ee_summary(
                 self.client,
-                &group_did,
-                summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
-                group_state_version(&delivery, group_state_ref.as_ref()).as_deref(),
-                Some(finalized.crypto_group_id_b64u.as_str()),
-                finalized.epoch_authenticator.as_deref(),
-                Some(prepared.suite.as_str()),
-                Some(finalized.operation_id.as_str()),
-                "active",
+                GroupE2eeSummaryUpdate {
+                    group_did: &group_did,
+                    epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                    group_state_version: group_state_version(&delivery, group_state_ref.as_ref())
+                        .as_deref(),
+                    crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                    epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                    suite: Some(prepared.suite.as_str()),
+                    operation_id: Some(finalized.operation_id.as_str()),
+                    membership_status: "active",
+                },
             ),
             Err(err) => warnings.push(format!(
                 "group E2EE remove was accepted by service but local finalize failed: {err}"
@@ -432,17 +574,20 @@ where
         }
         persist_group_e2ee_summary(
             self.client,
-            &group_did,
-            Some(prepared.epoch.as_str()),
-            group_state_version(&delivery, group_state_ref.as_ref()).as_deref(),
-            Some(prepared.crypto_group_id_b64u.as_str()),
-            prepared
-                .epoch_authenticator
-                .as_deref()
-                .or(prepared.epoch_authenticator_b64u.as_deref()),
-            Some(prepared.suite.as_str()),
-            Some(prepared.operation_id.as_str()),
-            "left",
+            GroupE2eeSummaryUpdate {
+                group_did: &group_did,
+                epoch: Some(prepared.epoch.as_str()),
+                group_state_version: group_state_version(&delivery, group_state_ref.as_ref())
+                    .as_deref(),
+                crypto_group_id_b64u: Some(prepared.crypto_group_id_b64u.as_str()),
+                epoch_authenticator: prepared
+                    .epoch_authenticator
+                    .as_deref()
+                    .or(prepared.epoch_authenticator_b64u.as_deref()),
+                suite: Some(prepared.suite.as_str()),
+                operation_id: Some(prepared.operation_id.as_str()),
+                membership_status: "left",
+            },
         );
         Ok(GroupE2eeLifecycleResult {
             delivery: public_lifecycle_delivery(
@@ -463,7 +608,10 @@ where
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
         let credentials = self.credentials(input.credentials)?;
-        let service_did = self.service_did(input.service_did)?;
+        let service_did = input
+            .service_did
+            .map(Ok)
+            .unwrap_or_else(|| group_e2ee_service_did(self.client))?;
         let group_did = require_group(input.group.as_str())?.to_owned();
         let member_did = require_did(input.member.as_str(), "member")?.to_owned();
         let device_id = normalize_device_id(&input.device_id);
@@ -510,20 +658,25 @@ where
             params,
         ) {
             Ok(delivery) => delivery,
-            Err(err) => return self.service_rejected_prepared(&prepared, &group_did, err),
+            Err(err) => {
+                return service_rejected_prepared(&self.mls_provider, &prepared, &group_did, err)
+            }
         };
         let mut warnings = Vec::new();
-        match self.finalize_prepared(&prepared, &group_did, &delivery) {
+        match finalize_prepared(&self.mls_provider, &prepared, &group_did, &delivery) {
             Ok(finalized) => persist_group_e2ee_summary(
                 self.client,
-                &group_did,
-                summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
-                group_state_version(&delivery, group_state_ref.as_ref()).as_deref(),
-                Some(finalized.crypto_group_id_b64u.as_str()),
-                finalized.epoch_authenticator.as_deref(),
-                Some(prepared.suite.as_str()),
-                Some(finalized.operation_id.as_str()),
-                "active",
+                GroupE2eeSummaryUpdate {
+                    group_did: &group_did,
+                    epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                    group_state_version: group_state_version(&delivery, group_state_ref.as_ref())
+                        .as_deref(),
+                    crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                    epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                    suite: Some(prepared.suite.as_str()),
+                    operation_id: Some(finalized.operation_id.as_str()),
+                    membership_status: "active",
+                },
             ),
             Err(err) => warnings.push(format!(
                 "group E2EE update was accepted by service but local finalize failed: {err}"
@@ -602,14 +755,17 @@ where
         match self.finalize_prepared(&prepared, &group_did, &delivery) {
             Ok(finalized) => persist_group_e2ee_summary(
                 self.client,
-                &group_did,
-                summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
-                group_state_version(&delivery, group_state_ref.as_ref()).as_deref(),
-                Some(finalized.crypto_group_id_b64u.as_str()),
-                finalized.epoch_authenticator.as_deref(),
-                Some(prepared.suite.as_str()),
-                Some(finalized.operation_id.as_str()),
-                "active",
+                GroupE2eeSummaryUpdate {
+                    group_did: &group_did,
+                    epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                    group_state_version: group_state_version(&delivery, group_state_ref.as_ref())
+                        .as_deref(),
+                    crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                    epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                    suite: Some(prepared.suite.as_str()),
+                    operation_id: Some(finalized.operation_id.as_str()),
+                    membership_status: "active",
+                },
             ),
             Err(err) => warnings.push(format!(
                 "group E2EE recover-member was accepted by service but local finalize failed: {err}"
@@ -759,30 +915,7 @@ where
         group_did: &str,
         delivery: &Value,
     ) -> crate::ImResult<anp::group_e2ee::operations::FinalizeCommitOutput> {
-        if !service_delivery_accepts_commit(prepared, delivery) {
-            return Err(crate::ImError::Service {
-                status_code: None,
-                code: Some("group_e2ee_not_accepted".to_owned()),
-                message: "group E2EE service response did not accept the prepared commit"
-                    .to_owned(),
-            });
-        }
-        let finalized = self.mls_provider.finalize_commit(FinalizeCommitInput {
-            pending_commit_id: prepared.pending_commit_id.clone(),
-            request_id: format!(
-                "group-e2ee-finalize-{}",
-                crate::internal::wire::common::generate_operation_id()
-            ),
-        })?;
-        if finalized.group_did.trim().is_empty() || finalized.group_did == group_did {
-            return Ok(finalized);
-        }
-        Err(crate::ImError::Internal {
-            message: format!(
-                "group E2EE finalized unexpected group {} while handling {group_did}",
-                finalized.group_did
-            ),
-        })
+        finalize_prepared(&self.mls_provider, prepared, group_did, delivery)
     }
 
     fn service_rejected_prepared(
@@ -791,33 +924,884 @@ where
         group_did: &str,
         err: crate::ImError,
     ) -> crate::ImResult<GroupE2eeLifecycleResult> {
-        if should_abort_pending_commit(&err) {
-            match self.mls_provider.abort_commit(AbortCommitInput {
-                pending_commit_id: prepared.pending_commit_id.clone(),
-                request_id: format!(
-                    "group-e2ee-abort-{}",
-                    crate::internal::wire::common::generate_operation_id()
-                ),
-            }) {
-                Ok(_) => {
-                    return Err(crate::ImError::Internal {
-                        message: format!(
-                            "{err}; local group E2EE pending commit for {group_did} was aborted"
-                        ),
-                    });
-                }
-                Err(abort_err) => {
-                    return Err(crate::ImError::Internal {
-                        message: format!(
-                            "{err}; local group E2EE pending commit abort failed: {abort_err}"
-                        ),
-                    });
-                }
+        service_rejected_prepared(&self.mls_provider, prepared, group_did, err)
+    }
+}
+
+fn finalize_prepared<M>(
+    mls_provider: &M,
+    prepared: &anp::group_e2ee::operations::PreparedMlsCommitOutput,
+    group_did: &str,
+    delivery: &Value,
+) -> crate::ImResult<anp::group_e2ee::operations::FinalizeCommitOutput>
+where
+    M: GroupMlsProvider,
+{
+    if !service_delivery_accepts_commit(prepared, delivery) {
+        return Err(crate::ImError::Service {
+            status_code: None,
+            code: Some("group_e2ee_not_accepted".to_owned()),
+            message: "group E2EE service response did not accept the prepared commit".to_owned(),
+        });
+    }
+    let finalized = mls_provider.finalize_commit(FinalizeCommitInput {
+        pending_commit_id: prepared.pending_commit_id.clone(),
+        request_id: format!(
+            "group-e2ee-finalize-{}",
+            crate::internal::wire::common::generate_operation_id()
+        ),
+    })?;
+    if finalized.group_did.trim().is_empty() || finalized.group_did == group_did {
+        return Ok(finalized);
+    }
+    Err(crate::ImError::Internal {
+        message: format!(
+            "group E2EE finalized unexpected group {} while handling {group_did}",
+            finalized.group_did
+        ),
+    })
+}
+
+fn service_rejected_prepared<M>(
+    mls_provider: &M,
+    prepared: &anp::group_e2ee::operations::PreparedMlsCommitOutput,
+    group_did: &str,
+    err: crate::ImError,
+) -> crate::ImResult<GroupE2eeLifecycleResult>
+where
+    M: GroupMlsProvider,
+{
+    if should_abort_pending_commit(&err) {
+        match mls_provider.abort_commit(AbortCommitInput {
+            pending_commit_id: prepared.pending_commit_id.clone(),
+            request_id: format!(
+                "group-e2ee-abort-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+        }) {
+            Ok(_) => {
+                return Err(crate::ImError::Internal {
+                    message: format!(
+                        "{err}; local group E2EE pending commit for {group_did} was aborted"
+                    ),
+                });
+            }
+            Err(abort_err) => {
+                return Err(crate::ImError::Internal {
+                    message: format!(
+                        "{err}; local group E2EE pending commit abort failed: {abort_err}"
+                    ),
+                });
             }
         }
-        Err(crate::ImError::Internal {
-            message: format!("{err}; local group E2EE pending commit retained for repair"),
+    }
+    Err(crate::ImError::Internal {
+        message: format!("{err}; local group E2EE pending commit retained for repair"),
+    })
+}
+
+async fn run_lifecycle_mls_blocking<F, T>(label: &'static str, operation: F) -> crate::ImResult<T>
+where
+    F: FnOnce() -> crate::ImResult<T> + Send + 'static,
+    T: Send + 'static,
+{
+    crate::internal::runtime::worker::run_blocking(operation)
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: format!("group E2EE lifecycle MLS {label} worker failed: {err}"),
+        })?
+}
+
+async fn finalize_prepared_async<M>(
+    mls_provider: M,
+    prepared: anp::group_e2ee::operations::PreparedMlsCommitOutput,
+    group_did: String,
+    delivery: Value,
+) -> crate::ImResult<anp::group_e2ee::operations::FinalizeCommitOutput>
+where
+    M: GroupMlsProvider + Send + 'static,
+{
+    run_lifecycle_mls_blocking("finalize", move || {
+        finalize_prepared(&mls_provider, &prepared, &group_did, &delivery)
+    })
+    .await
+}
+
+async fn service_rejected_prepared_async<M>(
+    mls_provider: M,
+    prepared: anp::group_e2ee::operations::PreparedMlsCommitOutput,
+    group_did: String,
+    err: crate::ImError,
+) -> crate::ImResult<GroupE2eeLifecycleResult>
+where
+    M: GroupMlsProvider + Send + 'static,
+{
+    run_lifecycle_mls_blocking("abort", move || {
+        service_rejected_prepared(&mls_provider, &prepared, &group_did, err)
+    })
+    .await
+}
+
+impl<P, T, M> GroupE2eeLifecycleRuntime<'_, P, T, M>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+    M: GroupMlsProvider + Clone + Send + 'static,
+{
+    pub(crate) async fn leave_secure_group_async(
+        mut self,
+        input: GroupE2eeLeaveInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        if !input.owner_leave_commit {
+            return leave_secure_group_request_async(
+                self.client,
+                &self.session_provider,
+                &mut self.transport,
+                input,
+            )
+            .await;
+        }
+
+        Err(crate::ImError::unsupported(
+            "group-e2ee-owner-leave-commit-async",
+        ))
+    }
+
+    pub(crate) async fn create_secure_group_async(
+        mut self,
+        input: GroupE2eeCreateInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let service_did = input
+            .service_did
+            .map(Ok)
+            .unwrap_or_else(|| group_e2ee_service_did(self.client))?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let operation_id = format!(
+            "op-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let create_input = CreateGroupInput {
+            creator_did: self.client.did().as_str().to_owned(),
+            device_id: device_id_for_client(self.client),
+            group_did: group_did.clone(),
+            operation_id: operation_id.clone(),
+            request_id: format!("group-e2ee-create-{operation_id}"),
+            pending_commit_id: Some(format!("pc-{operation_id}")),
+        };
+        let mls_provider = self.mls_provider.clone();
+        let prepared = run_lifecycle_mls_blocking("create prepare", move || {
+            mls_provider.create_group_prepare(create_input)
         })
+        .await?;
+        let group_state_ref = local_group_state_ref_async(self.client, &group_did).await;
+        let params = super::wire::build_group_e2ee_create_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            service_did.as_str(),
+            &group_did,
+            &prepared,
+            group_state_ref.as_ref(),
+        )?;
+        let delivery = match self
+            .transport
+            .authenticated_rpc(
+                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                "group.e2ee.create",
+                params,
+            )
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(err) => {
+                return service_rejected_prepared_async(
+                    self.mls_provider.clone(),
+                    prepared,
+                    group_did,
+                    err,
+                )
+                .await
+            }
+        };
+        let mut warnings = Vec::new();
+        match finalize_prepared_async(
+            self.mls_provider.clone(),
+            prepared.clone(),
+            group_did.clone(),
+            delivery.clone(),
+        )
+        .await
+        {
+            Ok(finalized) => {
+                if let Err(err) = persist_group_e2ee_summary_async(
+                    self.client,
+                    GroupE2eeSummaryUpdate {
+                        group_did: &group_did,
+                        epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                        group_state_version: group_state_version(
+                            &delivery,
+                            group_state_ref.as_ref(),
+                        )
+                        .as_deref(),
+                        crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                        epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                        suite: Some(prepared.suite.as_str()),
+                        operation_id: Some(finalized.operation_id.as_str()),
+                        membership_status: "active",
+                    },
+                )
+                .await
+                {
+                    warnings.push(format!(
+                        "group E2EE create finalized locally but failed to persist local summary: {err}"
+                    ));
+                }
+            }
+            Err(err) => warnings.push(format!(
+                "group E2EE create was accepted by service but local finalize failed: {err}"
+            )),
+        }
+        Ok(GroupE2eeLifecycleResult {
+            delivery: public_lifecycle_delivery(
+                "secure_group_create",
+                &group_did,
+                None,
+                Some("active"),
+                &delivery,
+            ),
+            warnings,
+        })
+    }
+
+    pub(crate) async fn add_secure_member_async(
+        mut self,
+        input: GroupE2eeMemberMutationInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let service_did = input
+            .service_did
+            .map(Ok)
+            .unwrap_or_else(|| group_e2ee_service_did(self.client))?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let member_did = require_did(input.member.as_str(), "member")?.to_owned();
+        let key_package = self
+            .lookup_member_key_package_async(
+                &credentials,
+                service_did.as_str(),
+                &group_did,
+                &member_did,
+                "normal",
+                None,
+            )
+            .await?;
+        let operation_id = format!(
+            "op-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let add_input = AddMemberInput {
+            actor_did: self.client.did().as_str().to_owned(),
+            device_id: device_id_for_client(self.client),
+            group_did: group_did.clone(),
+            member_did: member_did.clone(),
+            group_key_package: key_package.clone(),
+            operation_id: operation_id.clone(),
+            request_id: format!("group-e2ee-add-{operation_id}"),
+            pending_commit_id: Some(format!("pc-{operation_id}")),
+        };
+        let mls_provider = self.mls_provider.clone();
+        let prepared = run_lifecycle_mls_blocking("add prepare", move || {
+            mls_provider.add_member_prepare(add_input)
+        })
+        .await?;
+        let group_state_ref = local_group_state_ref_async(self.client, &group_did).await;
+        let params = super::wire::build_group_e2ee_add_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            &member_did,
+            &prepared,
+            &key_package,
+            group_state_ref.as_ref(),
+        )?;
+        let delivery = match self
+            .transport
+            .authenticated_rpc(
+                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                "group.e2ee.add",
+                params,
+            )
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(err) => {
+                return service_rejected_prepared_async(
+                    self.mls_provider.clone(),
+                    prepared,
+                    group_did,
+                    err,
+                )
+                .await
+            }
+        };
+        let mut warnings = Vec::new();
+        match finalize_prepared_async(
+            self.mls_provider.clone(),
+            prepared.clone(),
+            group_did.clone(),
+            delivery.clone(),
+        )
+        .await
+        {
+            Ok(finalized) => {
+                if let Err(err) = persist_group_e2ee_summary_async(
+                    self.client,
+                    GroupE2eeSummaryUpdate {
+                        group_did: &group_did,
+                        epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                        group_state_version: group_state_version(
+                            &delivery,
+                            group_state_ref.as_ref(),
+                        )
+                        .as_deref(),
+                        crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                        epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                        suite: Some(prepared.suite.as_str()),
+                        operation_id: Some(finalized.operation_id.as_str()),
+                        membership_status: "active",
+                    },
+                )
+                .await
+                {
+                    warnings.push(format!(
+                        "group E2EE add finalized locally but failed to persist local summary: {err}"
+                    ));
+                }
+            }
+            Err(err) => warnings.push(format!(
+                "group E2EE add was accepted by service but local finalize failed: {err}"
+            )),
+        }
+        Ok(GroupE2eeLifecycleResult {
+            delivery: public_lifecycle_delivery(
+                "secure_group_add_member",
+                &group_did,
+                Some(&member_did),
+                Some("active"),
+                &delivery,
+            ),
+            warnings,
+        })
+    }
+
+    pub(crate) async fn remove_secure_member_async(
+        mut self,
+        input: GroupE2eeMemberMutationInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let member_did = require_did(input.member.as_str(), "member")?.to_owned();
+        let group_state_ref = local_group_state_ref_async(self.client, &group_did).await;
+        let operation_id = format!(
+            "op-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let remove_input = RemoveMemberInput {
+            actor_did: self.client.did().as_str().to_owned(),
+            device_id: device_id_for_client(self.client),
+            group_did: group_did.clone(),
+            member_did: member_did.clone(),
+            group_state_ref: group_state_ref.clone(),
+            operation_id: operation_id.clone(),
+            request_id: format!("group-e2ee-remove-{operation_id}"),
+            pending_commit_id: Some(format!("pc-{operation_id}")),
+        };
+        let mls_provider = self.mls_provider.clone();
+        let prepared = run_lifecycle_mls_blocking("remove prepare", move || {
+            mls_provider.remove_member_prepare(remove_input)
+        })
+        .await?;
+        let params = super::wire::build_group_e2ee_remove_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            &member_did,
+            &prepared,
+            group_state_ref.as_ref(),
+            input.reason_text.as_deref(),
+            input.leave_request_id.as_deref(),
+        )?;
+        let delivery = match self
+            .transport
+            .authenticated_rpc(
+                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                "group.e2ee.remove",
+                params,
+            )
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(err) => {
+                return service_rejected_prepared_async(
+                    self.mls_provider.clone(),
+                    prepared,
+                    group_did,
+                    err,
+                )
+                .await
+            }
+        };
+        let mut warnings = Vec::new();
+        match finalize_prepared_async(
+            self.mls_provider.clone(),
+            prepared.clone(),
+            group_did.clone(),
+            delivery.clone(),
+        )
+        .await
+        {
+            Ok(finalized) => {
+                if let Err(err) = persist_group_e2ee_summary_async(
+                    self.client,
+                    GroupE2eeSummaryUpdate {
+                        group_did: &group_did,
+                        epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                        group_state_version: group_state_version(
+                            &delivery,
+                            group_state_ref.as_ref(),
+                        )
+                        .as_deref(),
+                        crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                        epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                        suite: Some(prepared.suite.as_str()),
+                        operation_id: Some(finalized.operation_id.as_str()),
+                        membership_status: "active",
+                    },
+                )
+                .await
+                {
+                    warnings.push(format!(
+                        "group E2EE remove finalized locally but failed to persist local summary: {err}"
+                    ));
+                }
+            }
+            Err(err) => warnings.push(format!(
+                "group E2EE remove was accepted by service but local finalize failed: {err}"
+            )),
+        }
+        Ok(GroupE2eeLifecycleResult {
+            delivery: public_lifecycle_delivery(
+                "secure_group_remove_member",
+                &group_did,
+                Some(&member_did),
+                Some("removed"),
+                &delivery,
+            ),
+            warnings,
+        })
+    }
+
+    pub(crate) async fn update_member_key_async(
+        mut self,
+        input: GroupE2eeKeyReplacementInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let service_did = input
+            .service_did
+            .map(Ok)
+            .unwrap_or_else(|| group_e2ee_service_did(self.client))?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let member_did = require_did(input.member.as_str(), "member")?.to_owned();
+        let device_id = normalize_device_id(&input.device_id);
+        let key_package = self
+            .lookup_member_key_package_async(
+                &credentials,
+                service_did.as_str(),
+                &group_did,
+                &member_did,
+                "update",
+                Some(&device_id),
+            )
+            .await?;
+        let group_state_ref = self
+            .resolved_group_state_ref_async(&credentials, &input.group, &group_did)
+            .await?;
+        let operation_id = format!(
+            "op-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let update_input = UpdateMemberInput {
+            actor_did: self.client.did().as_str().to_owned(),
+            device_id: device_id_for_client(self.client),
+            group_did: group_did.clone(),
+            member_did: member_did.clone(),
+            target_device_id: device_id.clone(),
+            group_key_package: key_package.clone(),
+            group_state_ref: group_state_ref.clone(),
+            update_key_package_id: Some(key_package.key_package_id.clone()),
+            operation_id: operation_id.clone(),
+            request_id: format!("group-e2ee-update-{operation_id}"),
+            pending_commit_id: Some(format!("pc-{operation_id}")),
+        };
+        let mls_provider = self.mls_provider.clone();
+        let prepared = run_lifecycle_mls_blocking("update prepare", move || {
+            mls_provider.update_member_prepare(update_input)
+        })
+        .await?;
+        let params = super::wire::build_group_e2ee_update_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            &member_did,
+            &device_id,
+            &prepared,
+            &key_package,
+            group_state_ref.as_ref(),
+        )?;
+        let delivery = match self
+            .transport
+            .authenticated_rpc(
+                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                "group.e2ee.update",
+                params,
+            )
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(err) => {
+                return service_rejected_prepared_async(
+                    self.mls_provider.clone(),
+                    prepared,
+                    group_did,
+                    err,
+                )
+                .await
+            }
+        };
+        let mut warnings = Vec::new();
+        match finalize_prepared_async(
+            self.mls_provider.clone(),
+            prepared.clone(),
+            group_did.clone(),
+            delivery.clone(),
+        )
+        .await
+        {
+            Ok(finalized) => {
+                if let Err(err) = persist_group_e2ee_summary_async(
+                    self.client,
+                    GroupE2eeSummaryUpdate {
+                        group_did: &group_did,
+                        epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                        group_state_version: group_state_version(
+                            &delivery,
+                            group_state_ref.as_ref(),
+                        )
+                        .as_deref(),
+                        crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                        epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                        suite: Some(prepared.suite.as_str()),
+                        operation_id: Some(finalized.operation_id.as_str()),
+                        membership_status: "active",
+                    },
+                )
+                .await
+                {
+                    warnings.push(format!(
+                        "group E2EE update finalized locally but failed to persist local summary: {err}"
+                    ));
+                }
+            }
+            Err(err) => warnings.push(format!(
+                "group E2EE update was accepted by service but local finalize failed: {err}"
+            )),
+        }
+        Ok(GroupE2eeLifecycleResult {
+            delivery: public_lifecycle_delivery(
+                "secure_group_update_key",
+                &group_did,
+                Some(&member_did),
+                Some("active"),
+                &delivery,
+            ),
+            warnings,
+        })
+    }
+
+    pub(crate) async fn recover_member_async(
+        mut self,
+        input: GroupE2eeKeyReplacementInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let service_did = input
+            .service_did
+            .map(Ok)
+            .unwrap_or_else(|| group_e2ee_service_did(self.client))?;
+        let group_did = require_group(input.group.as_str())?.to_owned();
+        let member_did = require_did(input.member.as_str(), "member")?.to_owned();
+        let device_id = normalize_device_id(&input.device_id);
+        let key_package = self
+            .lookup_member_key_package_async(
+                &credentials,
+                service_did.as_str(),
+                &group_did,
+                &member_did,
+                "recovery",
+                Some(&device_id),
+            )
+            .await?;
+        let group_state_ref = self
+            .resolved_group_state_ref_async(&credentials, &input.group, &group_did)
+            .await?;
+        let operation_id = format!(
+            "op-{}",
+            crate::internal::wire::common::generate_operation_id()
+        );
+        let recover_input = RecoverMemberInput {
+            actor_did: self.client.did().as_str().to_owned(),
+            device_id: device_id_for_client(self.client),
+            group_did: group_did.clone(),
+            member_did: member_did.clone(),
+            target_device_id: device_id.clone(),
+            group_key_package: key_package.clone(),
+            group_state_ref: group_state_ref.clone(),
+            operation_id: operation_id.clone(),
+            request_id: format!("group-e2ee-recover-{operation_id}"),
+            pending_commit_id: Some(format!("pc-{operation_id}")),
+        };
+        let mls_provider = self.mls_provider.clone();
+        let prepared = run_lifecycle_mls_blocking("recover prepare", move || {
+            mls_provider.recover_member_prepare(recover_input)
+        })
+        .await?;
+        let params = super::wire::build_group_e2ee_recover_member_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            &member_did,
+            &device_id,
+            &prepared,
+            &key_package,
+            group_state_ref.as_ref(),
+        )?;
+        let delivery = match self
+            .transport
+            .authenticated_rpc(
+                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                "group.e2ee.recover_member",
+                params,
+            )
+            .await
+        {
+            Ok(delivery) => delivery,
+            Err(err) => {
+                return service_rejected_prepared_async(
+                    self.mls_provider.clone(),
+                    prepared,
+                    group_did,
+                    err,
+                )
+                .await
+            }
+        };
+        let mut warnings = Vec::new();
+        match finalize_prepared_async(
+            self.mls_provider.clone(),
+            prepared.clone(),
+            group_did.clone(),
+            delivery.clone(),
+        )
+        .await
+        {
+            Ok(finalized) => {
+                if let Err(err) = persist_group_e2ee_summary_async(
+                    self.client,
+                    GroupE2eeSummaryUpdate {
+                        group_did: &group_did,
+                        epoch: summary_epoch(&finalized.epoch, Some(prepared.epoch.as_str())),
+                        group_state_version: group_state_version(
+                            &delivery,
+                            group_state_ref.as_ref(),
+                        )
+                        .as_deref(),
+                        crypto_group_id_b64u: Some(finalized.crypto_group_id_b64u.as_str()),
+                        epoch_authenticator: finalized.epoch_authenticator.as_deref(),
+                        suite: Some(prepared.suite.as_str()),
+                        operation_id: Some(finalized.operation_id.as_str()),
+                        membership_status: "active",
+                    },
+                )
+                .await
+                {
+                    warnings.push(format!(
+                        "group E2EE recover-member finalized locally but failed to persist local summary: {err}"
+                    ));
+                }
+            }
+            Err(err) => warnings.push(format!(
+                "group E2EE recover-member was accepted by service but local finalize failed: {err}"
+            )),
+        }
+        Ok(GroupE2eeLifecycleResult {
+            delivery: public_lifecycle_delivery(
+                "secure_group_recover_member",
+                &group_did,
+                Some(&member_did),
+                Some("active"),
+                &delivery,
+            ),
+            warnings,
+        })
+    }
+
+    pub(crate) async fn process_leave_request_async(
+        mut self,
+        input: GroupE2eeMemberMutationInput,
+    ) -> crate::ImResult<GroupE2eeLifecycleResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::GroupMessaging)
+            .await?;
+        let GroupE2eeMemberMutationInput {
+            group,
+            member,
+            reason_text,
+            leave_request_id,
+            credentials,
+            service_did,
+        } = input;
+        let credentials = match credentials {
+            Some(credentials) => credentials,
+            None => load_credentials_async(self.client).await?,
+        };
+        let group_did = require_group(group.as_str())?.to_owned();
+        let member_did = require_did(member.as_str(), "member")?.to_owned();
+        let leave_request_id = leave_request_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                crate::ImError::invalid_input(
+                    Some("leave_request_id".to_owned()),
+                    "group E2EE process leave request requires leave_request_id",
+                )
+            })?
+            .to_owned();
+        let params = super::wire::build_group_e2ee_process_leave_request_rpc_params(
+            &credentials,
+            self.client.did().as_str(),
+            &group_did,
+            &leave_request_id,
+        )?;
+        let processing = self
+            .transport
+            .authenticated_rpc(
+                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                "group.e2ee.process_leave_request",
+                params,
+            )
+            .await?;
+        let final_result = self
+            .remove_secure_member_async(GroupE2eeMemberMutationInput {
+                group,
+                member: crate::ids::Did::parse(&member_did)?,
+                reason_text,
+                leave_request_id: Some(leave_request_id),
+                credentials: Some(credentials),
+                service_did,
+            })
+            .await?;
+        Ok(GroupE2eeLifecycleResult {
+            delivery: merge_process_leave_delivery(final_result.delivery, &processing),
+            warnings: final_result.warnings,
+        })
+    }
+
+    async fn resolved_group_state_ref_async(
+        &mut self,
+        credentials: &GroupTextCredentials,
+        group: &crate::ids::GroupRef,
+        group_did: &str,
+    ) -> crate::ImResult<Option<GroupStateRef>>
+    where
+        M: Clone + Send + 'static,
+    {
+        if let Some(reference) = local_group_state_ref_async(self.client, group_did).await {
+            return Ok(Some(reference));
+        }
+        match super::state_ref::resolve_group_state_ref_local_first_async(
+            self.client,
+            &self.session_provider,
+            &mut self.transport,
+            &self.mls_provider,
+            super::state_ref::ResolveGroupStateRef {
+                group: group.clone(),
+                credentials: Some(credentials.clone()),
+            },
+        )
+        .await
+        {
+            Ok(result) => Ok(Some(result.group_state_ref)),
+            Err(crate::ImError::LocalStateUnavailable { .. }) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn lookup_member_key_package_async(
+        &mut self,
+        credentials: &GroupTextCredentials,
+        service_did: &str,
+        group_did: &str,
+        member_did: &str,
+        purpose: &str,
+        device_id: Option<&str>,
+    ) -> crate::ImResult<GroupKeyPackage> {
+        let params = super::wire::build_group_e2ee_get_key_package_rpc_params(
+            credentials,
+            self.client.did().as_str(),
+            service_did,
+            group_did,
+            member_did,
+            Some(purpose),
+            device_id,
+        )?;
+        let raw = self
+            .transport
+            .authenticated_rpc(
+                crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+                "group.e2ee.get_key_package",
+                params,
+            )
+            .await?;
+        group_key_package_from_value(&raw)
     }
 }
 
@@ -1022,97 +2006,18 @@ fn summary_epoch<'a>(epoch: &'a str, fallback: Option<&'a str>) -> Option<&'a st
     }
 }
 
+fn insert_string(map: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        map.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+}
+
 fn normalize_device_id(value: &str) -> String {
     let value = value.trim();
     if value.is_empty() {
         DEFAULT_GROUP_MLS_DEVICE_ID.to_owned()
     } else {
         value.to_owned()
-    }
-}
-
-#[cfg(feature = "sqlite")]
-fn persist_group_e2ee_summary(
-    client: &crate::core::ImClient,
-    group_did: &str,
-    epoch: Option<&str>,
-    group_state_version: Option<&str>,
-    crypto_group_id_b64u: Option<&str>,
-    epoch_authenticator: Option<&str>,
-    suite: Option<&str>,
-    operation_id: Option<&str>,
-    membership_status: &str,
-) {
-    let Ok(connection) = crate::internal::local_state::open_writable(
-        &client.core_inner().sdk_paths().local_state.sqlite_path,
-    ) else {
-        return;
-    };
-    let mut group_e2ee = Map::new();
-    insert_string(
-        &mut group_e2ee,
-        "crypto_group_id_b64u",
-        crypto_group_id_b64u,
-    );
-    insert_string(&mut group_e2ee, "epoch", epoch);
-    insert_string(&mut group_e2ee, "epoch_authenticator", epoch_authenticator);
-    insert_string(&mut group_e2ee, "suite", suite);
-    insert_string(&mut group_e2ee, "group_state_version", group_state_version);
-    insert_string(&mut group_e2ee, "operation_id", operation_id);
-    insert_string(
-        &mut group_e2ee,
-        "updated_at",
-        Some(crate::internal::wire::common::now_rfc3339().as_str()),
-    );
-    let mut metadata = Map::new();
-    metadata.insert(
-        "message_security_profile".to_owned(),
-        Value::String(super::wire::GROUP_E2EE_SECURITY_PROFILE.to_owned()),
-    );
-    metadata.insert("group_e2ee".to_owned(), Value::Object(group_e2ee));
-    if let Some(group_state_version) = group_state_version.filter(|value| !value.trim().is_empty())
-    {
-        metadata.insert(
-            "group_state_version".to_owned(),
-            Value::String(group_state_version.to_owned()),
-        );
-    }
-    let _ = crate::internal::local_state::groups::upsert_group(
-        &connection,
-        crate::internal::local_state::groups::GroupRecord {
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            group_id: group_did.to_owned(),
-            group_did: group_did.to_owned(),
-            membership_status: if membership_status.trim().is_empty() {
-                "active".to_owned()
-            } else {
-                membership_status.trim().to_owned()
-            },
-            metadata: Value::Object(metadata).to_string(),
-            credential_name: client.current_identity().id.as_str().to_owned(),
-            ..crate::internal::local_state::groups::GroupRecord::default()
-        },
-    );
-}
-
-#[cfg(not(feature = "sqlite"))]
-fn persist_group_e2ee_summary(
-    _client: &crate::core::ImClient,
-    _group_did: &str,
-    _epoch: Option<&str>,
-    _group_state_version: Option<&str>,
-    _crypto_group_id_b64u: Option<&str>,
-    _epoch_authenticator: Option<&str>,
-    _suite: Option<&str>,
-    _operation_id: Option<&str>,
-    _membership_status: &str,
-) {
-}
-
-fn insert_string(map: &mut Map<String, Value>, key: &str, value: Option<&str>) {
-    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
-        map.insert(key.to_owned(), Value::String(value.to_owned()));
     }
 }
 
@@ -1252,8 +2157,8 @@ fn _group_state_ref_from_delivery(group_did: &str, delivery: &Value) -> Option<G
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::auth::session::SessionProvider;
-    use crate::internal::transport::AuthenticatedRpcTransport;
+    use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+    use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
     use anp::group_e2ee::operations::{
         AbortCommitOutput, DecryptInput, DecryptOutput, EncryptInput, EncryptOutput,
         GenerateKeyPackageInput, GroupKeyPackageOutput, ProcessNoticeInput, ProcessNoticeOutput,
@@ -1265,6 +2170,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn lifecycle_create_prepares_delivers_finalizes_and_persists_summary() {
@@ -1297,11 +2203,8 @@ mod tests {
         .unwrap();
 
         assert!(result.warnings.is_empty());
-        assert_eq!(
-            provider.created.borrow().as_slice(),
-            ["did:example:groups:e2ee"]
-        );
-        assert_eq!(provider.finalized.borrow().as_slice(), ["pc-create"]);
+        assert_eq!(provider.created().as_slice(), ["did:example:groups:e2ee"]);
+        assert_eq!(provider.finalized().as_slice(), ["pc-create"]);
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].method, "group.e2ee.create");
@@ -1320,6 +2223,64 @@ mod tests {
                 .to_string()
                 .contains("group-e2ee")
         );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_create_async_uses_async_transport_and_db_actor_summary() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![(
+                    "group.e2ee.create".to_owned(),
+                    json!({
+                        "accepted": true,
+                        "group_did": "did:example:groups:e2ee",
+                        "group_state_version": "state-async-0",
+                        "epoch": "0"
+                    }),
+                )],
+            },
+            provider.clone(),
+        )
+        .create_secure_group_async(GroupE2eeCreateInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            credentials: Some(fixture.credentials()),
+            service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+        })
+        .await
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(provider.created().as_slice(), ["did:example:groups:e2ee"]);
+        assert_eq!(provider.finalized().as_slice(), ["pc-create"]);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.e2ee.create");
+        assert_eq!(
+            calls[0].params["meta"]["target"],
+            json!({"kind":"service","did":"did:example:service"})
+        );
+        assert_eq!(
+            calls[0].params["body"]["group_did"],
+            "did:example:groups:e2ee"
+        );
+
+        let metadata = stored_group_metadata(&fixture, &client, "did:example:groups:e2ee");
+        assert_eq!(
+            metadata["message_security_profile"],
+            crate::internal::group_e2ee::wire::GROUP_E2EE_SECURITY_PROFILE
+        );
+        assert_eq!(
+            metadata["group_e2ee"]["group_state_version"],
+            "state-async-0"
+        );
+        assert_eq!(metadata["group_e2ee"]["crypto_group_id_b64u"], "crypto");
     }
 
     #[test]
@@ -1363,10 +2324,10 @@ mod tests {
 
         assert!(result.warnings.is_empty());
         assert_eq!(
-            provider.added.borrow().as_slice(),
+            provider.added().as_slice(),
             ["did:example:groups:e2ee:did:example:bob"]
         );
-        assert_eq!(provider.finalized.borrow().as_slice(), ["pc-add"]);
+        assert_eq!(provider.finalized().as_slice(), ["pc-add"]);
         let calls = calls.borrow();
         assert_eq!(
             calls
@@ -1383,6 +2344,77 @@ mod tests {
         );
         assert_eq!(calls[1].params["body"]["commit_b64u"], "commit-add");
         assert_eq!(calls[1].params["body"]["welcome_b64u"], "welcome-add");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_add_async_uses_async_transport_and_db_actor_summary() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![
+                    (
+                        "group.e2ee.get_key_package".to_owned(),
+                        json!({"group_key_package": key_package_json("did:example:bob")}),
+                    ),
+                    (
+                        "group.e2ee.add".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "group_state_version": "state-async-2",
+                            "epoch": "2"
+                        }),
+                    ),
+                ],
+            },
+            provider.clone(),
+        )
+        .add_secure_member_async(GroupE2eeMemberMutationInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            member: crate::ids::Did::parse("did:example:bob").unwrap(),
+            reason_text: None,
+            leave_request_id: None,
+            credentials: Some(fixture.credentials()),
+            service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+        })
+        .await
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            provider.added().as_slice(),
+            ["did:example:groups:e2ee:did:example:bob"]
+        );
+        assert_eq!(provider.finalized().as_slice(), ["pc-add"]);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.get_key_package", "group.e2ee.add"]
+        );
+        assert_eq!(calls[0].params["body"]["target_did"], "did:example:bob");
+        assert_eq!(calls[1].params["body"]["member_did"], "did:example:bob");
+        assert_eq!(calls[1].params["body"]["commit_b64u"], "commit-add");
+        assert_eq!(calls[1].params["body"]["welcome_b64u"], "welcome-add");
+
+        let metadata = stored_group_metadata(&fixture, &client, "did:example:groups:e2ee");
+        assert_eq!(
+            metadata["message_security_profile"],
+            crate::internal::group_e2ee::wire::GROUP_E2EE_SECURITY_PROFILE
+        );
+        assert_eq!(
+            metadata["group_e2ee"]["group_state_version"],
+            "state-async-2"
+        );
+        assert_eq!(metadata["group_e2ee"]["crypto_group_id_b64u"], "crypto");
     }
 
     #[test]
@@ -1464,8 +2496,8 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("was aborted"));
-        assert_eq!(provider.removed.borrow().as_slice(), ["did:example:bob"]);
-        assert_eq!(provider.aborted.borrow().as_slice(), ["pc-remove"]);
+        assert_eq!(provider.removed().as_slice(), ["did:example:bob"]);
+        assert_eq!(provider.aborted().as_slice(), ["pc-remove"]);
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].method, "group.e2ee.remove");
@@ -1535,6 +2567,66 @@ mod tests {
         assert_eq!(calls[0].params["body"]["commit_b64u"], "commit-remove");
     }
 
+    #[tokio::test]
+    async fn lifecycle_remove_async_uses_async_transport_and_db_actor_summary() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![(
+                    "group.e2ee.remove".to_owned(),
+                    json!({
+                        "accepted": true,
+                        "group_did": "did:example:groups:e2ee",
+                        "member_did": "did:example:bob",
+                        "subject_status": "removed",
+                        "group_state_version": "state-async-3",
+                        "epoch": "3"
+                    }),
+                )],
+            },
+            provider.clone(),
+        )
+        .remove_secure_member_async(GroupE2eeMemberMutationInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            member: crate::ids::Did::parse("did:example:bob").unwrap(),
+            reason_text: Some("remove".to_owned()),
+            leave_request_id: Some("leave-1".to_owned()),
+            credentials: Some(fixture.credentials()),
+            service_did: None,
+        })
+        .await
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(provider.removed().as_slice(), ["did:example:bob"]);
+        assert_eq!(provider.finalized().as_slice(), ["pc-remove"]);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.e2ee.remove");
+        assert_eq!(calls[0].params["body"]["member_did"], "did:example:bob");
+        assert_eq!(calls[0].params["body"]["reason_text"], "remove");
+        assert_eq!(calls[0].params["body"]["leave_request_id"], "leave-1");
+        assert_eq!(result.delivery["action"], "secure_group_remove_member");
+        assert_eq!(result.delivery["subject_status"], "removed");
+
+        let metadata = stored_group_metadata(&fixture, &client, "did:example:groups:e2ee");
+        assert_eq!(
+            metadata["message_security_profile"],
+            crate::internal::group_e2ee::wire::GROUP_E2EE_SECURITY_PROFILE
+        );
+        assert_eq!(
+            metadata["group_e2ee"]["group_state_version"],
+            "state-async-3"
+        );
+        assert_eq!(metadata["group_e2ee"]["crypto_group_id_b64u"], "crypto");
+    }
+
     #[test]
     fn lifecycle_leave_request_uses_high_level_request_without_local_finalize() {
         let fixture = Fixture::new();
@@ -1565,7 +2657,7 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("owner must process")));
-        assert!(provider.finalized.borrow().is_empty());
+        assert!(provider.finalized().is_empty());
         let calls = calls.borrow();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].method, "group.e2ee.leave_request");
@@ -1618,6 +2710,77 @@ mod tests {
         assert_eq!(calls[0].method, "group.e2ee.leave_request");
     }
 
+    #[tokio::test]
+    async fn lifecycle_leave_request_async_uses_async_transport_without_local_mls() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            responses: vec![(
+                "group.e2ee.leave_request".to_owned(),
+                json!({"accepted": true, "leave_request_id": "leave-request-async-1"}),
+            )],
+        };
+        let result = leave_secure_group_request_async(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            GroupE2eeLeaveInput {
+                group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+                reason_text: Some("bye async".to_owned()),
+                owner_leave_commit: false,
+                credentials: Some(fixture.credentials()),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.delivery["action"], "secure_group_leave_request");
+        assert_eq!(result.delivery["accepted"], true);
+        assert_eq!(result.delivery["leave_request_id"], "leave-request-async-1");
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("owner must process")));
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.e2ee.leave_request");
+        assert_eq!(calls[0].params["body"]["reason_text"], "bye async");
+        assert_eq!(calls[0].params["body"]["subject_status"], "leave_requested");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_leave_request_async_rejects_owner_commit_fallback() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            responses: Vec::new(),
+        };
+        let err = leave_secure_group_request_async(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            GroupE2eeLeaveInput {
+                group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+                reason_text: None,
+                owner_leave_commit: true,
+                credentials: Some(fixture.credentials()),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::ImError::UnsupportedCapability { ref capability }
+                if capability == "group-e2ee-owner-leave-commit-async"
+        ));
+        assert!(calls.borrow().is_empty());
+    }
+
     #[test]
     fn lifecycle_update_key_leases_update_package_and_finalizes() {
         let fixture = Fixture::new();
@@ -1664,10 +2827,10 @@ mod tests {
 
         assert!(result.warnings.is_empty());
         assert_eq!(
-            provider.updated.borrow().as_slice(),
+            provider.updated().as_slice(),
             ["did:example:groups:e2ee:did:example:bob:default"]
         );
-        assert_eq!(provider.finalized.borrow().as_slice(), ["pc-update"]);
+        assert_eq!(provider.finalized().as_slice(), ["pc-update"]);
         let calls = calls.borrow();
         assert_eq!(
             calls
@@ -1693,6 +2856,90 @@ mod tests {
         );
         assert_eq!(result.delivery["action"], "secure_group_update_key");
         assert_eq!(result.delivery["group_state"]["epoch"], "5");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_update_key_async_uses_async_transport_and_db_actor_summary() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![
+                    (
+                        "group.e2ee.get_key_package".to_owned(),
+                        json!({"group_key_package": key_package_json_with_purpose(
+                            "did:example:bob",
+                            "update"
+                        )}),
+                    ),
+                    (
+                        "group.e2ee.update".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "target_did": "did:example:bob",
+                            "device_id": "default",
+                            "update_key_package_id": "kp-did:example:bob",
+                            "group_state_version": "state-async-5",
+                            "epoch": "5"
+                        }),
+                    ),
+                ],
+            },
+            provider.clone(),
+        )
+        .update_member_key_async(GroupE2eeKeyReplacementInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            member: crate::ids::Did::parse("did:example:bob").unwrap(),
+            device_id: "default".to_owned(),
+            credentials: Some(fixture.credentials()),
+            service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+        })
+        .await
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            provider.updated().as_slice(),
+            ["did:example:groups:e2ee:did:example:bob:default"]
+        );
+        assert_eq!(provider.finalized().as_slice(), ["pc-update"]);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.get_key_package", "group.e2ee.update"]
+        );
+        assert_eq!(calls[0].params["body"]["purpose"], "update");
+        assert_eq!(calls[0].params["body"]["device_id"], "default");
+        assert_eq!(
+            calls[1].params["body"]["update_key_package_id"],
+            "kp-did:example:bob"
+        );
+        assert_eq!(
+            calls[1].params["body"]["group_key_package"]["purpose"],
+            "update"
+        );
+        assert_eq!(result.delivery["action"], "secure_group_update_key");
+        assert_eq!(result.delivery["group_state"]["epoch"], "5");
+
+        let metadata = stored_group_metadata(&fixture, &client, "did:example:groups:e2ee");
+        assert_eq!(
+            metadata["message_security_profile"],
+            crate::internal::group_e2ee::wire::GROUP_E2EE_SECURITY_PROFILE
+        );
+        assert_eq!(
+            metadata["group_e2ee"]["group_state_version"],
+            "state-async-5"
+        );
+        assert_eq!(metadata["group_e2ee"]["crypto_group_id_b64u"], "crypto");
     }
 
     #[test]
@@ -1741,10 +2988,10 @@ mod tests {
 
         assert!(result.warnings.is_empty());
         assert_eq!(
-            provider.recovered.borrow().as_slice(),
+            provider.recovered().as_slice(),
             ["did:example:groups:e2ee:did:example:bob:default"]
         );
-        assert_eq!(provider.finalized.borrow().as_slice(), ["pc-recover"]);
+        assert_eq!(provider.finalized().as_slice(), ["pc-recover"]);
         let calls = calls.borrow();
         assert_eq!(
             calls
@@ -1764,6 +3011,89 @@ mod tests {
         );
         assert_eq!(result.delivery["action"], "secure_group_recover_member");
         assert_eq!(result.delivery["group_state"]["epoch"], "6");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_recover_member_async_uses_async_transport_and_db_actor_summary() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![
+                    (
+                        "group.e2ee.get_key_package".to_owned(),
+                        json!({"group_key_package": key_package_json_with_purpose(
+                            "did:example:bob",
+                            "recovery"
+                        )}),
+                    ),
+                    (
+                        "group.e2ee.recover_member".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "target_did": "did:example:bob",
+                            "device_id": "default",
+                            "recovery_key_package_id": "kp-did:example:bob",
+                            "group_state_version": "state-async-6",
+                            "epoch": "6"
+                        }),
+                    ),
+                ],
+            },
+            provider.clone(),
+        )
+        .recover_member_async(GroupE2eeKeyReplacementInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            member: crate::ids::Did::parse("did:example:bob").unwrap(),
+            device_id: "default".to_owned(),
+            credentials: Some(fixture.credentials()),
+            service_did: Some(crate::ids::Did::parse("did:example:service").unwrap()),
+        })
+        .await
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            provider.recovered().as_slice(),
+            ["did:example:groups:e2ee:did:example:bob:default"]
+        );
+        assert_eq!(provider.finalized().as_slice(), ["pc-recover"]);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.get_key_package", "group.e2ee.recover_member"]
+        );
+        assert_eq!(calls[0].params["body"]["purpose"], "recovery");
+        assert_eq!(
+            calls[1].params["body"]["recovery_key_package_id"],
+            "kp-did:example:bob"
+        );
+        assert_eq!(
+            calls[1].params["body"]["group_key_package"]["purpose"],
+            "recovery"
+        );
+        assert_eq!(result.delivery["action"], "secure_group_recover_member");
+        assert_eq!(result.delivery["group_state"]["epoch"], "6");
+
+        let metadata = stored_group_metadata(&fixture, &client, "did:example:groups:e2ee");
+        assert_eq!(
+            metadata["message_security_profile"],
+            crate::internal::group_e2ee::wire::GROUP_E2EE_SECURITY_PROFILE
+        );
+        assert_eq!(
+            metadata["group_e2ee"]["group_state_version"],
+            "state-async-6"
+        );
+        assert_eq!(metadata["group_e2ee"]["crypto_group_id_b64u"], "crypto");
     }
 
     #[test]
@@ -1814,8 +3144,8 @@ mod tests {
         .unwrap();
 
         assert!(result.warnings.is_empty());
-        assert_eq!(provider.removed.borrow().as_slice(), ["did:example:bob"]);
-        assert_eq!(provider.finalized.borrow().as_slice(), ["pc-remove"]);
+        assert_eq!(provider.removed().as_slice(), ["did:example:bob"]);
+        assert_eq!(provider.finalized().as_slice(), ["pc-remove"]);
         let calls = calls.borrow();
         assert_eq!(
             calls
@@ -1836,6 +3166,93 @@ mod tests {
             result.delivery["process_leave_request"]["leave_request_id"],
             "leave-1"
         );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_process_leave_request_async_uses_async_transport_and_db_actor_summary() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let provider = RecordingMlsProvider::new();
+        let result = GroupE2eeLifecycleRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                responses: vec![
+                    (
+                        "group.e2ee.process_leave_request".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "leave_request_id": "leave-async-1",
+                            "pending_leave_request_count": 0
+                        }),
+                    ),
+                    (
+                        "group.e2ee.remove".to_owned(),
+                        json!({
+                            "accepted": true,
+                            "group_did": "did:example:groups:e2ee",
+                            "subject_did": "did:example:bob",
+                            "subject_status": "removed",
+                            "leave_request_id": "leave-async-1",
+                            "group_state_version": "state-async-4",
+                            "epoch": "4"
+                        }),
+                    ),
+                ],
+            },
+            provider.clone(),
+        )
+        .process_leave_request_async(GroupE2eeMemberMutationInput {
+            group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+            member: crate::ids::Did::parse("did:example:bob").unwrap(),
+            reason_text: Some("approved async leave".to_owned()),
+            leave_request_id: Some("leave-async-1".to_owned()),
+            credentials: Some(fixture.credentials()),
+            service_did: None,
+        })
+        .await
+        .unwrap();
+
+        assert!(result.warnings.is_empty());
+        assert_eq!(provider.removed().as_slice(), ["did:example:bob"]);
+        assert_eq!(provider.finalized().as_slice(), ["pc-remove"]);
+        let calls = calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .map(|call| call.method.as_str())
+                .collect::<Vec<_>>(),
+            vec!["group.e2ee.process_leave_request", "group.e2ee.remove"]
+        );
+        assert_eq!(calls[0].params["body"]["leave_request_id"], "leave-async-1");
+        assert_eq!(calls[1].params["body"]["leave_request_id"], "leave-async-1");
+        assert_eq!(
+            calls[1].params["body"]["reason_text"],
+            "approved async leave"
+        );
+        assert_eq!(
+            result.delivery["action"],
+            "secure_group_process_leave_request"
+        );
+        assert_eq!(result.delivery["subject_status"], "removed");
+        assert_eq!(
+            result.delivery["process_leave_request"]["leave_request_id"],
+            "leave-async-1"
+        );
+
+        let metadata = stored_group_metadata(&fixture, &client, "did:example:groups:e2ee");
+        assert_eq!(
+            metadata["message_security_profile"],
+            crate::internal::group_e2ee::wire::GROUP_E2EE_SECURITY_PROFILE
+        );
+        assert_eq!(
+            metadata["group_e2ee"]["group_state_version"],
+            "state-async-4"
+        );
+        assert_eq!(metadata["group_e2ee"]["crypto_group_id_b64u"], "crypto");
     }
 
     #[test]
@@ -1978,6 +3395,23 @@ mod tests {
         }
     }
 
+    impl AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            unreachable!("group E2EE lifecycle should not refresh through the session provider")
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("group E2EE lifecycle should not read auth status")
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
         responses: Vec<(String, Value)>,
@@ -2023,6 +3457,17 @@ mod tests {
         }
     }
 
+    impl AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
     struct RecordedCall {
         endpoint: String,
         method: String,
@@ -2031,26 +3476,54 @@ mod tests {
 
     #[derive(Clone)]
     struct RecordingMlsProvider {
-        created: Rc<RefCell<Vec<String>>>,
-        added: Rc<RefCell<Vec<String>>>,
-        removed: Rc<RefCell<Vec<String>>>,
-        updated: Rc<RefCell<Vec<String>>>,
-        recovered: Rc<RefCell<Vec<String>>>,
-        finalized: Rc<RefCell<Vec<String>>>,
-        aborted: Rc<RefCell<Vec<String>>>,
+        created: Arc<Mutex<Vec<String>>>,
+        added: Arc<Mutex<Vec<String>>>,
+        removed: Arc<Mutex<Vec<String>>>,
+        updated: Arc<Mutex<Vec<String>>>,
+        recovered: Arc<Mutex<Vec<String>>>,
+        finalized: Arc<Mutex<Vec<String>>>,
+        aborted: Arc<Mutex<Vec<String>>>,
     }
 
     impl RecordingMlsProvider {
         fn new() -> Self {
             Self {
-                created: Rc::new(RefCell::new(Vec::new())),
-                added: Rc::new(RefCell::new(Vec::new())),
-                removed: Rc::new(RefCell::new(Vec::new())),
-                updated: Rc::new(RefCell::new(Vec::new())),
-                recovered: Rc::new(RefCell::new(Vec::new())),
-                finalized: Rc::new(RefCell::new(Vec::new())),
-                aborted: Rc::new(RefCell::new(Vec::new())),
+                created: Arc::new(Mutex::new(Vec::new())),
+                added: Arc::new(Mutex::new(Vec::new())),
+                removed: Arc::new(Mutex::new(Vec::new())),
+                updated: Arc::new(Mutex::new(Vec::new())),
+                recovered: Arc::new(Mutex::new(Vec::new())),
+                finalized: Arc::new(Mutex::new(Vec::new())),
+                aborted: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn created(&self) -> Vec<String> {
+            self.created.lock().unwrap().clone()
+        }
+
+        fn added(&self) -> Vec<String> {
+            self.added.lock().unwrap().clone()
+        }
+
+        fn removed(&self) -> Vec<String> {
+            self.removed.lock().unwrap().clone()
+        }
+
+        fn updated(&self) -> Vec<String> {
+            self.updated.lock().unwrap().clone()
+        }
+
+        fn recovered(&self) -> Vec<String> {
+            self.recovered.lock().unwrap().clone()
+        }
+
+        fn finalized(&self) -> Vec<String> {
+            self.finalized.lock().unwrap().clone()
+        }
+
+        fn aborted(&self) -> Vec<String> {
+            self.aborted.lock().unwrap().clone()
         }
     }
 
@@ -2059,7 +3532,7 @@ mod tests {
             &self,
             input: CreateGroupInput,
         ) -> crate::ImResult<anp::group_e2ee::operations::PreparedMlsCommitOutput> {
-            self.created.borrow_mut().push(input.group_did.clone());
+            self.created.lock().unwrap().push(input.group_did.clone());
             Ok(prepared(
                 "pc-create",
                 input.operation_id,
@@ -2074,7 +3547,8 @@ mod tests {
             input: AddMemberInput,
         ) -> crate::ImResult<anp::group_e2ee::operations::PreparedMlsCommitOutput> {
             self.added
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(format!("{}:{}", input.group_did, input.member_did));
             let mut output = prepared("pc-add", input.operation_id, "1", "2", "active");
             output.subject_did = input.member_did;
@@ -2089,7 +3563,7 @@ mod tests {
             &self,
             input: RemoveMemberInput,
         ) -> crate::ImResult<anp::group_e2ee::operations::PreparedMlsCommitOutput> {
-            self.removed.borrow_mut().push(input.member_did.clone());
+            self.removed.lock().unwrap().push(input.member_did.clone());
             let mut output = prepared("pc-remove", input.operation_id, "2", "3", "removed");
             output.subject_did = input.member_did;
             output.commit_b64u = "commit-remove".to_owned();
@@ -2111,7 +3585,8 @@ mod tests {
             input: FinalizeCommitInput,
         ) -> crate::ImResult<anp::group_e2ee::operations::FinalizeCommitOutput> {
             self.finalized
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(input.pending_commit_id.clone());
             Ok(anp::group_e2ee::operations::FinalizeCommitOutput {
                 pending_commit_id: input.pending_commit_id,
@@ -2130,7 +3605,8 @@ mod tests {
 
         fn abort_commit(&self, input: AbortCommitInput) -> crate::ImResult<AbortCommitOutput> {
             self.aborted
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(input.pending_commit_id.clone());
             Ok(AbortCommitOutput {
                 pending_commit_id: input.pending_commit_id,
@@ -2161,7 +3637,7 @@ mod tests {
             &self,
             input: UpdateMemberInput,
         ) -> crate::ImResult<anp::group_e2ee::operations::PreparedMlsCommitOutput> {
-            self.updated.borrow_mut().push(format!(
+            self.updated.lock().unwrap().push(format!(
                 "{}:{}:{}",
                 input.group_did, input.member_did, input.target_device_id
             ));
@@ -2177,7 +3653,7 @@ mod tests {
             &self,
             input: RecoverMemberInput,
         ) -> crate::ImResult<anp::group_e2ee::operations::PreparedMlsCommitOutput> {
-            self.recovered.borrow_mut().push(format!(
+            self.recovered.lock().unwrap().push(format!(
                 "{}:{}:{}",
                 input.group_did, input.member_did, input.target_device_id
             ));

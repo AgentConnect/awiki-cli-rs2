@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +169,79 @@ pub(crate) fn flush_queued_secure_outbox_with_sender(
             },
         );
         warnings.extend(execute_secure_outbox_flush_plan(connection, scope, plan));
+    }
+    compact_warnings(warnings)
+}
+
+#[allow(dead_code)]
+pub(crate) async fn flush_queued_secure_outbox_with_sender_async<F, Fut>(
+    db: &crate::internal::local_state::actor::LocalStateDb,
+    scope: &crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope,
+    peer_filter_did: &str,
+    mut sender: F,
+) -> Vec<String>
+where
+    F: FnMut(SecureOutboxSendRequest) -> Fut,
+    Fut: Future<Output = SecureOutboxSendResult>,
+{
+    let rows = match db
+        .list_e2ee_outbox(scope.clone(), Some("queued".to_owned()))
+        .await
+    {
+        Ok(rows) => rows,
+        Err(err) => {
+            return compact_warnings(vec![format!("Failed to list secure outbox: {err}")]);
+        }
+    };
+    let rows = rows
+        .iter()
+        .filter_map(queued_secure_outbox_row_from_record)
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let mut warnings = Vec::new();
+    let mut rows = rows;
+    rows.sort_by(|left, right| left.created_at.cmp(&right.created_at));
+    let peer_filter = peer_filter_did.trim().to_owned();
+    for row in rows {
+        if !peer_filter.is_empty() && row.peer_did != peer_filter {
+            continue;
+        }
+
+        let preflight = flush_queued_secure_outbox_rows_plan(
+            &scope.owner_identity_id,
+            &scope.owner_did,
+            &scope.credential_name,
+            "",
+            std::slice::from_ref(&row),
+            |_| SecureOutboxFlushRowOutcome {
+                send: SecureOutboxSendOutcome::Error("preflight".to_owned()),
+                ..SecureOutboxFlushRowOutcome::default()
+            },
+        );
+
+        let Some(request) = send_request_from_plan(&preflight) else {
+            warnings.extend(execute_secure_outbox_flush_plan_async(db, scope, preflight).await);
+            continue;
+        };
+
+        let result = sender(request).await;
+        let plan = flush_queued_secure_outbox_rows_plan(
+            &scope.owner_identity_id,
+            &scope.owner_did,
+            &scope.credential_name,
+            "",
+            std::slice::from_ref(&row),
+            |_| SecureOutboxFlushRowOutcome {
+                send: result.send.clone(),
+                session_id: result.session_id.clone(),
+                mark_sent: MarkSentOutcome::Success,
+                store_message: StoreMessageOutcome::Success,
+            },
+        );
+        warnings.extend(execute_secure_outbox_flush_plan_async(db, scope, plan).await);
     }
     compact_warnings(warnings)
 }
@@ -394,6 +469,140 @@ fn execute_secure_outbox_flush_plan(
     compact_warnings(warnings)
 }
 
+pub(crate) async fn execute_secure_outbox_flush_plan_async(
+    db: &crate::internal::local_state::actor::LocalStateDb,
+    scope: &crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope,
+    plan: SecureOutboxFlushPlan,
+) -> Vec<String> {
+    let mut warnings = plan.warnings;
+    let mut pending_sent = std::collections::BTreeMap::<String, PendingMarkOutboxSent>::new();
+    for action in plan.actions {
+        match action {
+            SecureOutboxFlushAction::SendText { .. } | SecureOutboxFlushAction::SendJson { .. } => {
+            }
+            SecureOutboxFlushAction::SetOutboxFailure {
+                outbox_id,
+                error_code,
+                retry_hint,
+                metadata,
+            } => {
+                if let Err(err) = db
+                    .set_e2ee_outbox_failure(
+                        scope.clone(),
+                        outbox_id.clone(),
+                        error_code,
+                        retry_hint,
+                        metadata,
+                    )
+                    .await
+                {
+                    warnings.push(format!(
+                        "Failed to mark secure outbox {outbox_id} failed: {err}"
+                    ));
+                }
+            }
+            SecureOutboxFlushAction::MarkOutboxSent {
+                outbox_id,
+                session_id,
+                sent_msg_id,
+                metadata,
+            } => {
+                pending_sent.insert(
+                    outbox_id.clone(),
+                    PendingMarkOutboxSent {
+                        outbox_id,
+                        session_id,
+                        sent_msg_id,
+                        metadata,
+                    },
+                );
+            }
+            SecureOutboxFlushAction::StoreMessage { outbox_id, record } => {
+                if let Some(pending) = pending_sent.remove(&outbox_id) {
+                    if let Err(err) = db
+                        .mark_e2ee_outbox_sent_and_store_message(
+                            scope.clone(),
+                            pending.outbox_id.clone(),
+                            pending.session_id,
+                            pending.sent_msg_id,
+                            None,
+                            pending.metadata,
+                            record,
+                        )
+                        .await
+                    {
+                        warnings.push(format!(
+                            "Failed to persist flushed secure outbox {outbox_id}: {err}"
+                        ));
+                    }
+                } else if let Err(err) = db.store_messages(vec![record]).await {
+                    warnings.push(format!(
+                        "Failed to persist flushed secure outbox {outbox_id}: {err}"
+                    ));
+                }
+            }
+        }
+    }
+
+    for pending in pending_sent.into_values() {
+        if let Err(err) = db
+            .mark_e2ee_outbox_sent(
+                scope.clone(),
+                pending.outbox_id.clone(),
+                pending.session_id,
+                pending.sent_msg_id,
+                None,
+                pending.metadata,
+            )
+            .await
+        {
+            warnings.push(format!(
+                "Failed to mark secure outbox {} sent: {err}",
+                pending.outbox_id
+            ));
+        }
+    }
+    compact_warnings(warnings)
+}
+
+#[derive(Debug, Clone)]
+struct PendingMarkOutboxSent {
+    outbox_id: String,
+    session_id: String,
+    sent_msg_id: String,
+    metadata: String,
+}
+
+pub(crate) fn send_request_from_plan(
+    plan: &SecureOutboxFlushPlan,
+) -> Option<SecureOutboxSendRequest> {
+    plan.actions.iter().find_map(|action| match action {
+        SecureOutboxFlushAction::SendText {
+            outbox_id,
+            target_did,
+            plaintext,
+        } => Some(SecureOutboxSendRequest {
+            outbox_id: outbox_id.clone(),
+            target_did: target_did.clone(),
+            original_type: "text".to_owned(),
+            plaintext: plaintext.clone(),
+            json_payload: None,
+        }),
+        SecureOutboxFlushAction::SendJson {
+            outbox_id,
+            target_did,
+            payload,
+        } => Some(SecureOutboxSendRequest {
+            outbox_id: outbox_id.clone(),
+            target_did: target_did.clone(),
+            original_type: "json".to_owned(),
+            plaintext: Value::Object(payload.clone()).to_string(),
+            json_payload: Some(payload.clone()),
+        }),
+        _ => None,
+    })
+}
+
 fn make_thread_id(owner_did: &str, peer_did: &str) -> String {
     let peer_did = peer_did.trim();
     let owner_did = owner_did.trim();
@@ -609,6 +818,89 @@ mod tests {
             .unwrap();
         assert_eq!(stored.0, "alice-id");
         assert_eq!(stored.1, "queued plaintext");
+        assert_eq!(stored.2, 1);
+    }
+
+    #[tokio::test]
+    async fn secure_outbox_async_flush_marks_sent_and_stores_local_message_via_actor() {
+        let temp = tempfile::tempdir().unwrap();
+        let sqlite_path = temp.path().join("local").join("im.sqlite");
+        let scope = crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope {
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: "did:example:alice".to_owned(),
+            credential_name: "alice".to_owned(),
+        };
+        {
+            let connection = crate::internal::local_state::open_writable(&sqlite_path).unwrap();
+            crate::internal::store::e2ee_outbox::queue_e2ee_outbox(
+                &connection,
+                crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
+                    outbox_id: "outbox-async".to_owned(),
+                    owner_identity_id: scope.owner_identity_id.clone(),
+                    owner_did: scope.owner_did.clone(),
+                    credential_name: scope.credential_name.clone(),
+                    peer_did: "did:example:bob".to_owned(),
+                    original_type: "text".to_owned(),
+                    plaintext: "queued async plaintext".to_owned(),
+                    local_status: "queued".to_owned(),
+                    created_at: "2026-05-24T00:00:00Z".to_owned(),
+                    updated_at: "2026-05-24T00:00:00Z".to_owned(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let db = crate::internal::local_state::actor::LocalStateDb::open(sqlite_path.clone())
+            .await
+            .unwrap();
+
+        let warnings = flush_queued_secure_outbox_with_sender_async(
+            &db,
+            &scope,
+            "did:example:bob",
+            |request| async move {
+                assert_eq!(request.outbox_id, "outbox-async");
+                assert_eq!(request.original_type, "text");
+                assert_eq!(request.plaintext, "queued async plaintext");
+                SecureOutboxSendResult {
+                    session_id: "session-async".to_owned(),
+                    send: SecureOutboxSendOutcome::Success {
+                        message_id: "msg-async-flushed".to_owned(),
+                        operation_id: "outbox-async".to_owned(),
+                        delivery_state: "accepted".to_owned(),
+                        accepted_at: "2026-05-24T00:00:01Z".to_owned(),
+                    },
+                }
+            },
+        )
+        .await;
+
+        assert!(warnings.is_empty());
+        let sent = db
+            .list_e2ee_outbox(scope.clone(), Some("sent".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].session_id, "session-async");
+        assert_eq!(sent[0].sent_msg_id, "msg-async-flushed");
+        db.shutdown().await.unwrap();
+
+        let connection = rusqlite::Connection::open(sqlite_path).unwrap();
+        let stored = connection
+            .query_row(
+                "SELECT owner_identity_id, content, is_e2ee FROM messages WHERE msg_id = 'msg-async-flushed'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored.0, "alice-id");
+        assert_eq!(stored.1, "queued async plaintext");
         assert_eq!(stored.2, 1);
     }
 }

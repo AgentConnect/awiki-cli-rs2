@@ -94,6 +94,18 @@ pub(crate) fn prepare_attachment_payload(
     .map(PreparedAttachment::from)
 }
 
+pub(crate) async fn prepare_attachment_metadata_from_path(
+    path: &std::path::Path,
+    mime_override: &str,
+) -> crate::ImResult<PreparedAttachment> {
+    crate::internal::attachment_runtime::digest::prepare_attachment_metadata_from_path(
+        path,
+        mime_override,
+    )
+    .await
+    .map(PreparedAttachment::from)
+}
+
 pub(crate) fn build_attachment_manifest(descriptor: &AttachmentDescriptor, caption: &str) -> Value {
     let manifest = AttachmentManifest {
         attachments: vec![descriptor.clone()],

@@ -16,6 +16,7 @@ impl<'a> RealtimeService<'a> {
         })
     }
 
+    #[cfg(feature = "blocking")]
     pub fn connect(
         &self,
         options: super::RealtimeOptions,
@@ -29,6 +30,20 @@ impl<'a> RealtimeService<'a> {
         super::runner::spawn_default(self.client.clone(), options)
     }
 
+    pub async fn start_async(
+        &self,
+        options: super::RealtimeOptions,
+    ) -> crate::ImResult<super::RealtimeSession> {
+        validate_options(&options)?;
+        if self.client.core_inner().sdk_config().transport_policy
+            == crate::config::MessageTransportPolicy::HttpOnly
+        {
+            return Err(crate::ImError::unsupported("realtime-runner"));
+        }
+        super::runner::spawn_default_async(self.client.clone(), options).await
+    }
+
+    #[cfg(feature = "blocking")]
     pub fn run_until_shutdown(
         &self,
         options: super::RealtimeOptions,
@@ -54,6 +69,7 @@ impl<'a> RealtimeService<'a> {
         super::runner::run_default_until_shutdown(self.client, options, shutdown)
     }
 
+    #[cfg(feature = "blocking")]
     pub fn run_until_shutdown_with_event_sink<S>(
         &self,
         options: super::RealtimeOptions,

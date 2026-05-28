@@ -2,7 +2,8 @@ use super::App;
 use crate::cli_output::ExitError;
 use crate::cli_parser::ParsedCommand;
 use crate::m_core_cli_adapter::identity::{
-    recover_handle_command_via_im_core, RecoverHandleCommandRequest,
+    recover_handle_command_via_im_core, recover_handle_command_via_im_core_async,
+    RecoverHandleCommandRequest,
 };
 
 impl App {
@@ -32,6 +33,36 @@ impl App {
             self.globals.dry_run,
             self.globals.identity_changed,
         )?;
+        self.render_identity_result("awiki-cli id recover", &resolved, result)
+    }
+
+    pub async fn run_id_recover_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        let resolved = self.resolve_config_for_workspace()?;
+        let handle = required_string_flag(
+            command,
+            "handle",
+            "id recover",
+            "Usage: awiki-cli id recover --handle <handle> --phone <phone> [--otp <code>]",
+        )?;
+        let phone = required_string_flag(
+            command,
+            "phone",
+            "id recover",
+            "Usage: awiki-cli id recover --handle <handle> --phone <phone> [--otp <code>]",
+        )?;
+        let request = RecoverHandleCommandRequest {
+            identity_name: self.globals.identity.clone(),
+            handle,
+            phone,
+            otp: string_flag(command, "otp"),
+        };
+        let result = recover_handle_command_via_im_core_async(
+            &resolved,
+            request,
+            self.globals.dry_run,
+            self.globals.identity_changed,
+        )
+        .await?;
         self.render_identity_result("awiki-cli id recover", &resolved, result)
     }
 }

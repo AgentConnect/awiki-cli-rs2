@@ -75,6 +75,74 @@ fn site_public_api_dispatches_authenticated_site_rpc() {
     );
 }
 
+#[tokio::test]
+async fn site_public_async_api_dispatches_authenticated_site_rpc() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        json!({
+            "domain": "tenant.example",
+            "body": "# Home"
+        }),
+        json!({
+            "slug": "about",
+            "body": "About"
+        }),
+    ]);
+    let core = fixture.core(server.base_url());
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_owned()))
+        .unwrap();
+
+    let domain = SiteDomain::parse("tenant.example").unwrap();
+    let root = client
+        .site()
+        .set_root_async(SiteRootDraft {
+            domain: domain.clone(),
+            body: "# Home".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(root.domain.as_str(), "tenant.example");
+    assert_eq!(root.body.as_deref(), Some("# Home"));
+
+    let page = client
+        .site()
+        .create_page_async(SitePageDraft {
+            domain: domain.clone(),
+            slug: PageSlug::parse("about").unwrap(),
+            body: "About".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.domain.as_str(), "tenant.example");
+    assert_eq!(page.slug.as_str(), "about");
+    assert_eq!(page.body.as_deref(), Some("About"));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/site/rpc");
+    assert_eq!(requests[0].rpc_method, "set_root");
+    assert_eq!(
+        requests[0].params,
+        json!({
+            "domain": "tenant.example",
+            "body": "# Home"
+        })
+    );
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].path, "/site/rpc");
+    assert_eq!(requests[1].rpc_method, "create_page");
+    assert_eq!(
+        requests[1].params,
+        json!({
+            "domain": "tenant.example",
+            "slug": "about",
+            "body": "About"
+        })
+    );
+}
+
 #[test]
 fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
     let fixture = Fixture::new();

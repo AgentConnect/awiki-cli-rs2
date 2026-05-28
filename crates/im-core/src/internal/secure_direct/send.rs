@@ -13,6 +13,7 @@ pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 pub(crate) struct DirectSecureTextSend {
     pub(crate) request: crate::messages::SendMessageRequest,
     pub(crate) resolved_target_did: Option<String>,
+    pub(crate) local_persistence: DirectSecureLocalPersistence,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +21,23 @@ pub(crate) struct DirectSecureTextSendResult {
     pub(crate) sdk_result: crate::messages::SendMessageResult,
     pub(crate) queued_outbox_id: Option<String>,
     pub(crate) target_did: String,
+    pub(crate) text: String,
+    pub(crate) kind: crate::messages::MessageKind,
     pub(crate) raw: Option<Value>,
+    pub(crate) local_effect: DirectSecureLocalEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectSecureLocalPersistence {
+    LegacySqlite,
+    Deferred,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirectSecureLocalEffect {
+    None,
+    PersistOutgoing,
+    QueueOutbox(crate::internal::store::e2ee_outbox::E2eeOutboxRecord),
 }
 
 pub(crate) struct DirectSecureTextSender<'a, P, A, R> {
@@ -161,52 +178,75 @@ where
                     kind.clone(),
                     warnings,
                 )?;
-                if let Err(err) =
-                    crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing(
-                        &connection,
-                        self.client,
-                        &target_did,
-                        text,
-                        &kind,
-                        &sdk_result,
-                    )
-                {
-                    sdk_result.warnings.push(format!(
-                        "Failed to persist local secure direct message: {err}"
-                    ));
-                }
+                let local_effect = match input.local_persistence {
+                    DirectSecureLocalPersistence::LegacySqlite => {
+                        if let Err(err) = crate::internal::message_runtime::local_projection::persist_direct_e2ee_outgoing(
+                            &connection,
+                            self.client,
+                            &target_did,
+                            text,
+                            &kind,
+                            &sdk_result,
+                        ) {
+                            sdk_result.warnings.push(format!(
+                                "Failed to persist local secure direct message: {err}"
+                            ));
+                        }
+                        DirectSecureLocalEffect::None
+                    }
+                    DirectSecureLocalPersistence::Deferred => {
+                        DirectSecureLocalEffect::PersistOutgoing
+                    }
+                };
+                let text = text.to_owned();
                 Ok(DirectSecureTextSendResult {
                     sdk_result,
                     queued_outbox_id: None,
                     target_did,
+                    text,
+                    kind,
                     raw: Some(Value::Object(raw)),
+                    local_effect,
                 })
             }
             Err(err) if super::control::is_pending_confirmation_error(Some(&err.to_string())) => {
-                let outbox_id = queue_pending_confirmation_outbox(
-                    &connection,
+                let record = pending_confirmation_outbox_record(
                     self.client,
                     &target_did,
                     &kind,
                     text,
                     &err.to_string(),
-                )?;
+                );
+                if input.local_persistence == DirectSecureLocalPersistence::LegacySqlite {
+                    queue_pending_confirmation_outbox(&connection, record.clone())?;
+                }
+                let outbox_id = record.outbox_id.clone();
                 let sdk_result = queued_sdk_result(
                     &outbox_id,
                     self.client.did().clone(),
                     peer,
                     &target_did,
                     text,
-                    kind,
+                    kind.clone(),
                     operation_id,
                     message_id,
                     warnings,
                 )?;
+                let text = text.to_owned();
+                let local_effect = match input.local_persistence {
+                    DirectSecureLocalPersistence::LegacySqlite => DirectSecureLocalEffect::None,
+                    DirectSecureLocalPersistence::Deferred => {
+                        DirectSecureLocalEffect::QueueOutbox(record)
+                    }
+                };
                 Ok(DirectSecureTextSendResult {
                     sdk_result,
                     queued_outbox_id: Some(outbox_id),
                     target_did,
+                    text,
+                    kind,
                     raw: None,
+                    local_effect,
                 })
             }
             Err(err) => Err(err),
@@ -221,7 +261,7 @@ fn publish_prekeys_warnings(client: &mut MessageServiceDirectSecureClient<'_>) -
     }
 }
 
-fn direct_target(
+pub(crate) fn direct_target(
     target: &crate::messages::MessageTarget,
     resolved_target_did: Option<String>,
 ) -> crate::ImResult<(crate::ids::PeerRef, String)> {
@@ -241,7 +281,7 @@ fn direct_target(
     Ok((peer.clone(), resolved.to_owned()))
 }
 
-fn text_body(
+pub(crate) fn text_body(
     body: &crate::messages::MessageBody,
 ) -> crate::ImResult<(&str, crate::messages::MessageKind)> {
     match body {
@@ -258,7 +298,7 @@ fn text_body(
     }
 }
 
-fn validate_secure_direct_security(
+pub(crate) fn validate_secure_direct_security(
     security: &crate::messages::MessageSecurityMode,
 ) -> crate::ImResult<()> {
     match security {
@@ -291,7 +331,7 @@ fn read_text_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<St
     })
 }
 
-fn object_result(value: Value) -> crate::ImResult<Map<String, Value>> {
+pub(crate) fn object_result(value: Value) -> crate::ImResult<Map<String, Value>> {
     match value {
         Value::Object(object) => Ok(object),
         Value::Null => Ok(Map::new()),
@@ -312,7 +352,7 @@ fn resolve_did_document_with_transport(
     })
 }
 
-fn did_document_from_resolve(value: Value) -> Option<Value> {
+pub(crate) fn did_document_from_resolve(value: Value) -> Option<Value> {
     if looks_like_did_document(&value) {
         return Some(value);
     }
@@ -333,7 +373,7 @@ fn did_document_from_resolve(value: Value) -> Option<Value> {
     None
 }
 
-fn looks_like_did_document(value: &Value) -> bool {
+pub(crate) fn looks_like_did_document(value: &Value) -> bool {
     value
         .get("id")
         .and_then(Value::as_str)
@@ -341,7 +381,7 @@ fn looks_like_did_document(value: &Value) -> bool {
         && value.get("verificationMethod").is_some()
 }
 
-fn sdk_result_from_secure_result(
+pub(crate) fn sdk_result_from_secure_result(
     raw: &Map<String, Value>,
     sender: crate::ids::Did,
     peer: crate::ids::PeerRef,
@@ -406,7 +446,7 @@ fn sdk_result_from_secure_result(
     })
 }
 
-fn queued_sdk_result(
+pub(crate) fn queued_sdk_result(
     outbox_id: &str,
     sender: crate::ids::Did,
     peer: crate::ids::PeerRef,
@@ -486,28 +526,32 @@ fn secure_direct_attributes(
 
 fn queue_pending_confirmation_outbox(
     connection: &rusqlite::Connection,
+    record: crate::internal::store::e2ee_outbox::E2eeOutboxRecord,
+) -> crate::ImResult<String> {
+    crate::internal::store::e2ee_outbox::queue_e2ee_outbox(connection, record)
+}
+
+pub(crate) fn pending_confirmation_outbox_record(
     client: &crate::core::ImClient,
     target_did: &str,
     kind: &crate::messages::MessageKind,
     plaintext: &str,
     error: &str,
-) -> crate::ImResult<String> {
+) -> crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
     let scope = crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope::for_client(client);
-    crate::internal::store::e2ee_outbox::queue_e2ee_outbox(
-        connection,
-        crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
-            owner_identity_id: scope.owner_identity_id,
-            owner_did: scope.owner_did,
-            credential_name: scope.credential_name,
-            peer_did: target_did.to_owned(),
-            original_type: message_type_for_kind(kind).to_owned(),
-            plaintext: plaintext.to_owned(),
-            local_status: "queued".to_owned(),
-            last_error_code: error.to_owned(),
-            retry_hint: "retry".to_owned(),
-            ..Default::default()
-        },
-    )
+    crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
+        outbox_id: generate_outbox_id(),
+        owner_identity_id: scope.owner_identity_id,
+        owner_did: scope.owner_did,
+        credential_name: scope.credential_name,
+        peer_did: target_did.to_owned(),
+        original_type: message_type_for_kind(kind).to_owned(),
+        plaintext: plaintext.to_owned(),
+        local_status: "queued".to_owned(),
+        last_error_code: error.to_owned(),
+        retry_hint: "retry".to_owned(),
+        ..Default::default()
+    }
 }
 
 fn delivery_state_from_result(raw: &Map<String, Value>) -> crate::messages::DeliveryState {
@@ -532,7 +576,7 @@ fn delivery_state_from_result(raw: &Map<String, Value>) -> crate::messages::Deli
     }
 }
 
-fn content_type_for_kind(kind: &crate::messages::MessageKind) -> &'static str {
+pub(crate) fn content_type_for_kind(kind: &crate::messages::MessageKind) -> &'static str {
     match kind {
         crate::messages::MessageKind::Markdown => "text/markdown",
         crate::messages::MessageKind::Text => "text/plain",
@@ -573,12 +617,25 @@ fn default_string<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     }
 }
 
-fn generate_message_id() -> String {
+pub(crate) fn generate_message_id() -> String {
     let mut bytes = [0_u8; 16];
     use rand::RngCore as _;
     rand::thread_rng().fill_bytes(&mut bytes);
     format!(
         "msg-{}",
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn generate_outbox_id() -> String {
+    let mut bytes = [0_u8; 16];
+    use rand::RngCore as _;
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!(
+        "outbox-{}",
         bytes
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -637,6 +694,7 @@ mod tests {
             .send(DirectSecureTextSend {
                 request: secure_direct_request(&bob.did, "secret text"),
                 resolved_target_did: None,
+                local_persistence: DirectSecureLocalPersistence::LegacySqlite,
             })
             .unwrap();
 

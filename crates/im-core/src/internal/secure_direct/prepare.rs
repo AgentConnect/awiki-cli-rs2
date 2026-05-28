@@ -8,7 +8,8 @@ use crate::internal::transport::AuthenticatedRpcTransport;
 
 #[cfg(feature = "sqlite")]
 use super::client::{
-    prepare_direct_secure_client, DirectSecureClientInput, MessageServiceDirectSecureClient,
+    prepare_direct_secure_client, DirectSecureClientInput, DirectSecurePrekeyPublishRequest,
+    MessageServiceDirectSecureClient,
 };
 
 #[cfg(feature = "sqlite")]
@@ -16,6 +17,26 @@ use super::client::{
 pub(crate) struct DirectSecurePreparePlan {
     pub(crate) status: super::status::DirectSecureLocalStatus,
     pub(crate) prepared_local_send_state: bool,
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) struct DirectSecurePrekeyPrepareInput {
+    pub(crate) owner_identity_id: String,
+    pub(crate) owner_did: String,
+    pub(crate) identity_name: String,
+    pub(crate) signing_key_id: String,
+    pub(crate) agreement_key_id: String,
+    pub(crate) signing_private_pem: String,
+    pub(crate) agreement_private_pem: String,
+    pub(crate) local_did_document: Value,
+    pub(crate) peer: crate::ids::PeerRef,
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Debug)]
+pub(crate) struct DirectSecurePrekeyPrepareResult {
+    pub(crate) status: super::status::DirectSecureLocalStatus,
+    pub(crate) publish_request: DirectSecurePrekeyPublishRequest,
 }
 
 #[cfg(feature = "sqlite")]
@@ -29,6 +50,61 @@ pub(crate) fn prepare_direct_for_client(
         crate::internal::auth::session::FileSessionProvider::new(client),
         crate::internal::transport::CoreHttpTransport::new(client),
     )
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn prepare_direct_for_client_async(
+    client: &crate::core::ImClient,
+    peer: crate::ids::PeerRef,
+) -> crate::ImResult<DirectSecurePreparePlan> {
+    let session_provider = crate::internal::auth::session::FileSessionProvider::new(client);
+    <crate::internal::auth::session::FileSessionProvider<'_> as crate::internal::auth::session::AsyncSessionProvider>::ensure_session(
+        &session_provider,
+        crate::auth::AuthScope::Messaging,
+    )
+    .await?;
+    let input = direct_prekey_prepare_input_from_client(client, peer).await?;
+    let db = client.core_inner().local_state_db().await?;
+    let result = db.prepare_direct_secure_prekeys(input).await?;
+    let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
+    let mut warnings = Vec::new();
+    let _ = publish_prekey_request_async(&mut transport, result.publish_request.clone()).await;
+    let prepared_local_send_state =
+        match publish_prekey_request_async(&mut transport, result.publish_request).await {
+            Ok(_) => true,
+            Err(err) => {
+                warnings.push(format!("direct E2EE prekey bundle publish failed: {err}"));
+                false
+            }
+        };
+    let mut status = result.status;
+    if !prepared_local_send_state && status.problem.is_some() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "direct E2EE prekey preparation did not produce usable local prekeys"
+                .to_owned(),
+        });
+    }
+    warnings.extend(status.warnings);
+    status.warnings = compact_warnings(warnings);
+    Ok(DirectSecurePreparePlan {
+        status,
+        prepared_local_send_state,
+    })
+}
+
+#[cfg(feature = "sqlite")]
+async fn publish_prekey_request_async(
+    transport: &mut crate::internal::transport::CoreHttpTransport<'_>,
+    request: DirectSecurePrekeyPublishRequest,
+) -> crate::ImResult<Map<String, Value>> {
+    <crate::internal::transport::CoreHttpTransport<'_> as crate::internal::transport::AsyncAuthenticatedRpcTransport>::authenticated_rpc(
+        transport,
+        super::send::MESSAGE_RPC_ENDPOINT,
+        &request.method,
+        Value::Object(request.params),
+    )
+    .await
+    .and_then(object_result)
 }
 
 #[cfg(feature = "sqlite")]
@@ -116,6 +192,51 @@ where
     })
 }
 
+#[cfg(feature = "sqlite")]
+pub(crate) fn prepare_direct_prekeys_for_connection(
+    connection: &rusqlite::Connection,
+    input: DirectSecurePrekeyPrepareInput,
+) -> crate::ImResult<DirectSecurePrekeyPrepareResult> {
+    let mut direct_client = MessageServiceDirectSecureClient::new(
+        prepare_direct_secure_client(DirectSecureClientInput {
+            owner_identity_id: input.owner_identity_id.clone(),
+            owner_did: input.owner_did.clone(),
+            identity_name: input.identity_name,
+            signing_key_id: input.signing_key_id,
+            agreement_key_id: input.agreement_key_id,
+            signing_private_pem: input.signing_private_pem,
+            agreement_private_pem: input.agreement_private_pem,
+            local_did_document: input.local_did_document,
+            local_state: connection,
+        })?,
+        Box::new(|_, _| Ok(Map::new())),
+        Box::new(|did| {
+            Err(crate::ImError::PeerNotFound {
+                peer: did.to_owned(),
+            })
+        }),
+    );
+    let publish_request = direct_client.prepare_prekey_bundle_publish_request()?;
+    let status = super::status::direct_status_for_scope(
+        connection,
+        &super::status::DirectSecureStatusScope {
+            owner_identity_id: input.owner_identity_id,
+            owner_did: input.owner_did,
+        },
+        input.peer,
+    )?;
+    if status.problem.is_some() {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: "direct E2EE prekey preparation did not produce usable local prekeys"
+                .to_owned(),
+        });
+    }
+    Ok(DirectSecurePrekeyPrepareResult {
+        status,
+        publish_request,
+    })
+}
+
 #[cfg(not(feature = "sqlite"))]
 #[derive(Debug)]
 pub(crate) struct DirectSecurePreparePlan {
@@ -134,6 +255,46 @@ pub(crate) fn prepare_direct_for_client(
     })
 }
 
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn prepare_direct_for_client_async(
+    client: &crate::core::ImClient,
+    peer: crate::ids::PeerRef,
+) -> crate::ImResult<DirectSecurePreparePlan> {
+    prepare_direct_for_client(client, peer)
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn direct_prekey_prepare_input_from_client(
+    client: &crate::core::ImClient,
+    peer: crate::ids::PeerRef,
+) -> crate::ImResult<DirectSecurePrekeyPrepareInput> {
+    let runtime = client.runtime();
+    let local_did_document =
+        read_json_file_async(runtime.did_document_path.clone(), "did_document").await?;
+    let signing_private_pem =
+        read_text_file_async(runtime.private_key_path.clone(), "private_key").await?;
+    let agreement_private_pem = read_text_file_async(
+        runtime.e2ee_agreement_private_key_path.clone(),
+        "e2ee_agreement_private_key",
+    )
+    .await?;
+    Ok(DirectSecurePrekeyPrepareInput {
+        owner_identity_id: client.current_identity().id.as_str().to_owned(),
+        owner_did: client.did().as_str().to_owned(),
+        identity_name: client
+            .current_identity()
+            .local_alias
+            .clone()
+            .unwrap_or_else(|| client.current_identity().id.as_str().to_owned()),
+        signing_key_id: format!("{}#key-1", client.did().as_str()),
+        agreement_key_id: format!("{}#key-3", client.did().as_str()),
+        signing_private_pem,
+        agreement_private_pem,
+        local_did_document,
+        peer,
+    })
+}
+
 #[cfg(feature = "sqlite")]
 fn read_json_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<Value> {
     let raw = std::fs::read(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
@@ -143,6 +304,33 @@ fn read_json_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<Va
     serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
         detail: err.to_string(),
     })
+}
+
+#[cfg(feature = "sqlite")]
+async fn read_json_file_async(path: std::path::PathBuf, path_kind: &str) -> crate::ImResult<Value> {
+    let raw =
+        tokio::fs::read(&path)
+            .await
+            .map_err(|err| crate::ImError::CredentialFileUnreadable {
+                path_kind: path_kind.to_owned(),
+                detail: err.to_string(),
+            })?;
+    serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+        detail: err.to_string(),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+async fn read_text_file_async(
+    path: std::path::PathBuf,
+    path_kind: &str,
+) -> crate::ImResult<String> {
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|err| crate::ImError::CredentialFileUnreadable {
+            path_kind: path_kind.to_owned(),
+            detail: err.to_string(),
+        })
 }
 
 #[cfg(feature = "sqlite")]

@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 15;
+pub(crate) const SCHEMA_VERSION: i64 = 16;
 
 const V6_TABLES_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS contacts (
@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS direct_e2ee_sessions (
     session_id        TEXT NOT NULL,
     state_blob        BLOB NOT NULL,
     metadata_json     TEXT,
+    revision          INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
     PRIMARY KEY (owner_identity_id, peer_did),
@@ -348,6 +349,7 @@ fn create_schema(connection: &Connection) -> crate::ImResult<()> {
             .map_err(super::local_state_unavailable)?;
     }
     ensure_owner_identity_columns(connection)?;
+    ensure_direct_e2ee_session_columns(connection)?;
     backfill_contact_handle_bindings(connection)?;
     for statement in INDEX_STATEMENTS {
         connection
@@ -386,6 +388,15 @@ fn ensure_owner_identity_columns(connection: &Connection) -> crate::ImResult<()>
         "TEXT NOT NULL DEFAULT ''",
     )?;
     Ok(())
+}
+
+fn ensure_direct_e2ee_session_columns(connection: &Connection) -> crate::ImResult<()> {
+    ensure_column(
+        connection,
+        "direct_e2ee_sessions",
+        "revision",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -626,7 +637,35 @@ mod tests {
         ] {
             assert_column_exists(&db, table, "owner_identity_id");
         }
+        assert_column_exists(&db, "direct_e2ee_sessions", "revision");
         assert_column_missing(&db, "e2ee_sessions", "owner_identity_id");
+    }
+
+    #[test]
+    fn local_state_schema_adds_direct_session_revision_to_existing_tables() {
+        let db = Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "user_version", 15).unwrap();
+        db.execute_batch(
+            r#"
+CREATE TABLE direct_e2ee_sessions (
+    owner_identity_id TEXT NOT NULL,
+    owner_did         TEXT NOT NULL DEFAULT '',
+    peer_did          TEXT NOT NULL,
+    session_id        TEXT NOT NULL,
+    state_blob        BLOB NOT NULL,
+    metadata_json     TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (owner_identity_id, peer_did),
+    UNIQUE (owner_identity_id, session_id)
+)"#,
+        )
+        .unwrap();
+
+        ensure_schema(&db).unwrap();
+
+        assert_column_exists(&db, "direct_e2ee_sessions", "revision");
+        assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

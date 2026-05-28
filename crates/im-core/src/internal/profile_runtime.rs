@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 pub(crate) struct ProfileReader<'a, P, T> {
     client: &'a crate::core::ImClient,
@@ -22,11 +22,7 @@ pub(crate) struct ProfileUpdateResult {
     pub(crate) changed_fields: Vec<String>,
 }
 
-impl<'a, P, T> ProfileReader<'a, P, T>
-where
-    P: SessionProvider,
-    T: AuthenticatedRpcTransport,
-{
+impl<'a, P, T> ProfileReader<'a, P, T> {
     pub(crate) fn new(
         client: &'a crate::core::ImClient,
         session_provider: P,
@@ -38,7 +34,13 @@ where
             transport,
         }
     }
+}
 
+impl<'a, P, T> ProfileReader<'a, P, T>
+where
+    P: SessionProvider,
+    T: AuthenticatedRpcTransport,
+{
     pub(crate) fn profile(mut self) -> crate::ImResult<ProfileReadResult> {
         self.session_provider
             .ensure_session(crate::auth::AuthScope::UserProfile)?;
@@ -81,6 +83,73 @@ where
                     &self.client.core_inner().sdk_paths().identities,
                 )
                 .update_display_name_projection(self.client.current_identity(), display_name);
+            }
+        }
+        Ok(ProfileUpdateResult {
+            profile,
+            raw,
+            changed_fields: update_call.changed_fields,
+        })
+    }
+}
+
+impl<'a, P, T> ProfileReader<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+{
+    pub(crate) async fn profile_async(mut self) -> crate::ImResult<ProfileReadResult> {
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::UserProfile)
+            .await?;
+        let call = crate::internal::identity_wire::profile::build_get_me_profile_rpc_call();
+        let raw = self
+            .transport
+            .authenticated_rpc(call.endpoint, call.method, call.params)
+            .await?;
+        let profile = profile_from_value(self.client, &raw)?;
+        Ok(ProfileReadResult { profile, raw })
+    }
+
+    pub(crate) async fn update_profile_async(
+        mut self,
+        patch: crate::identity::ProfilePatch,
+    ) -> crate::ImResult<ProfileUpdateResult> {
+        let params = update_profile_params_from_patch(patch);
+        let requested_display_name = params.display_name.trim().to_string();
+        let update_call =
+            crate::internal::identity_wire::profile::build_update_me_profile_rpc_call(params)?;
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::UserProfile)
+            .await?;
+        let raw = self
+            .transport
+            .authenticated_rpc(
+                update_call.call.endpoint,
+                update_call.call.method,
+                update_call.call.params,
+            )
+            .await?;
+        let profile = profile_from_value(self.client, &raw)?;
+        if update_call
+            .changed_fields
+            .iter()
+            .any(|field| field == "display_name")
+        {
+            let display_name = profile
+                .display_name
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(requested_display_name.as_str());
+            if !display_name.is_empty() {
+                let paths = self.client.core_inner().sdk_paths().identities.clone();
+                let identity = self.client.current_identity().clone();
+                let display_name = display_name.to_string();
+                let _ = crate::internal::runtime::worker::run_blocking(move || {
+                    crate::internal::identity_store::IdentityStore::new(&paths)
+                        .update_display_name_projection(&identity, &display_name)
+                })
+                .await;
             }
         }
         Ok(ProfileUpdateResult {

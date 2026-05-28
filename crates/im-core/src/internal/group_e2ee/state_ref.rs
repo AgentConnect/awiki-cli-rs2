@@ -2,9 +2,11 @@ use anp::group_e2ee::operations::{StatusInput, StatusOutput};
 use anp::group_e2ee::GroupStateRef;
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::message_runtime::group::{load_credentials, GroupTextCredentials};
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::message_runtime::group::{
+    load_credentials, load_credentials_async, GroupTextCredentials,
+};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 use super::provider::GroupMlsProvider;
 use super::DEFAULT_GROUP_MLS_DEVICE_ID;
@@ -199,6 +201,52 @@ where
     )
 }
 
+pub(crate) async fn resolve_group_state_ref_service_first_async<P, T, M>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    mls_provider: &M,
+    input: ResolveGroupStateRef,
+) -> crate::ImResult<ResolveGroupStateRefResult>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+    M: GroupMlsProvider + Clone + Send + 'static,
+{
+    resolve_group_state_ref_async(
+        client,
+        session_provider,
+        transport,
+        mls_provider,
+        input,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_group_state_ref_local_first_async<P, T, M>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    mls_provider: &M,
+    input: ResolveGroupStateRef,
+) -> crate::ImResult<ResolveGroupStateRefResult>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+    M: GroupMlsProvider + Clone + Send + 'static,
+{
+    resolve_group_state_ref_async(
+        client,
+        session_provider,
+        transport,
+        mls_provider,
+        input,
+        false,
+    )
+    .await
+}
+
 pub(crate) fn local_group_state_ref(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -207,6 +255,20 @@ pub(crate) fn local_group_state_ref(
         return None;
     };
     let snapshot = local_group_snapshot(client, group_did).ok().flatten()?;
+    group_state_ref_from_snapshot(group_did, &snapshot)
+}
+
+pub(crate) async fn local_group_state_ref_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+) -> Option<GroupStateRef> {
+    let Ok(group_did) = require_non_empty_group(group_did) else {
+        return None;
+    };
+    let snapshot = local_group_snapshot_async(client, group_did)
+        .await
+        .ok()
+        .flatten()?;
     group_state_ref_from_snapshot(group_did, &snapshot)
 }
 
@@ -254,6 +316,106 @@ pub(crate) fn group_state_ref_from_service_head(
     })
 }
 
+async fn resolve_group_state_ref_async<P, T, M>(
+    client: &crate::core::ImClient,
+    session_provider: &P,
+    transport: &mut T,
+    mls_provider: &M,
+    input: ResolveGroupStateRef,
+    prefer_service_head: bool,
+) -> crate::ImResult<ResolveGroupStateRefResult>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+    M: GroupMlsProvider + Clone + Send + 'static,
+{
+    session_provider
+        .ensure_session(crate::auth::AuthScope::GroupMessaging)
+        .await?;
+    let group_did = require_non_empty_group(input.group.as_str())?;
+    let device_id = device_id_for_client(client);
+    let agent_did = client.did().as_str().to_owned();
+    let group_did_for_worker = group_did.to_owned();
+    let mls_provider = (*mls_provider).clone();
+    let mls_status = crate::internal::runtime::worker::run_blocking(move || {
+        mls_provider.status(StatusInput {
+            request_id: format!(
+                "group-e2ee-status-{}",
+                crate::internal::wire::common::generate_operation_id()
+            ),
+            device_id,
+            agent_did: Some(agent_did),
+            group_did: Some(group_did_for_worker),
+        })
+    })
+    .await
+    .map_err(|err| crate::ImError::Internal {
+        message: format!("group E2EE state-ref MLS status worker failed: {err}"),
+    })??;
+    ensure_active_status(group_did, &mls_status)?;
+
+    if !prefer_service_head {
+        if let Some(group_state_ref) = local_group_state_ref_async(client, group_did).await {
+            return Ok(ResolveGroupStateRefResult {
+                group_state_ref,
+                source: GroupStateRefSource::LocalCache,
+                mls_status,
+                service_head_raw: None,
+            });
+        }
+    }
+
+    match resolve_service_group_state_ref_async(client, transport, group_did, input.credentials)
+        .await
+    {
+        Ok(result) => Ok(ResolveGroupStateRefResult {
+            mls_status,
+            ..result
+        }),
+        Err(err) => Err(err),
+    }
+}
+
+async fn resolve_service_group_state_ref_async<T>(
+    client: &crate::core::ImClient,
+    transport: &mut T,
+    group_did: &str,
+    credentials: Option<GroupTextCredentials>,
+) -> crate::ImResult<ResolveGroupStateRefResult>
+where
+    T: AsyncAuthenticatedRpcTransport,
+{
+    let credentials = match credentials {
+        Some(credentials) => credentials,
+        None => load_credentials_async(client).await?,
+    };
+    let params = super::wire::build_group_e2ee_head_rpc_params(
+        &credentials,
+        client.did().as_str(),
+        group_did,
+    )?;
+    let service_head_raw = transport
+        .authenticated_rpc(
+            crate::internal::message_runtime::group::MESSAGE_RPC_ENDPOINT,
+            "group.e2ee.head",
+            params,
+        )
+        .await?;
+    let group_state_ref = group_state_ref_from_service_head(group_did, &service_head_raw)?;
+    Ok(ResolveGroupStateRefResult {
+        group_state_ref,
+        source: GroupStateRefSource::ServiceHead,
+        mls_status: StatusOutput {
+            status: String::new(),
+            epoch: None,
+            local_epoch: None,
+            pending_commits: Vec::new(),
+            epoch_authenticator: None,
+        },
+        service_head_raw: Some(service_head_raw),
+    })
+}
+
 fn ensure_active_status(group_did: &str, status: &StatusOutput) -> crate::ImResult<()> {
     if status.status.trim().eq_ignore_ascii_case("active") {
         return Ok(());
@@ -282,8 +444,33 @@ fn local_group_snapshot(
     )
 }
 
+#[cfg(feature = "sqlite")]
+async fn local_group_snapshot_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<Option<Value>> {
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .get_group_snapshot(
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            group_did,
+        )
+        .await
+}
+
 #[cfg(not(feature = "sqlite"))]
 fn local_group_snapshot(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+) -> crate::ImResult<Option<Value>> {
+    Ok(None)
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn local_group_snapshot_async(
     _client: &crate::core::ImClient,
     _group_did: &str,
 ) -> crate::ImResult<Option<Value>> {
@@ -372,6 +559,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     use anp::group_e2ee::operations::{
         AbortCommitInput, AbortCommitOutput, AddMemberInput, CreateGroupInput, DecryptInput,
@@ -582,6 +770,55 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn async_resolver_uses_worker_isolated_mls_status_and_async_transport() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let status_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut transport = RecordingTransport {
+            calls: Rc::clone(&calls),
+            response: json!({
+                "group_state_ref": {
+                    "group_did": "did:example:groups:e2ee",
+                    "group_state_version": "service-async-44",
+                    "policy_hash": "sha256:async-policy"
+                }
+            }),
+        };
+
+        let result = resolve_group_state_ref_service_first_async(
+            &client,
+            &ReadySessionProvider,
+            &mut transport,
+            &AsyncStatusProvider {
+                calls: Arc::clone(&status_calls),
+            },
+            ResolveGroupStateRef {
+                group: crate::ids::GroupRef::parse("did:example:groups:e2ee").unwrap(),
+                credentials: Some(fixture.credentials()),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.source, GroupStateRefSource::ServiceHead);
+        assert_eq!(
+            result.group_state_ref.group_state_version,
+            "service-async-44"
+        );
+        assert_eq!(
+            result.group_state_ref.policy_hash.as_deref(),
+            Some("sha256:async-policy")
+        );
+        assert_eq!(result.mls_status.status, "active");
+        let status_calls = status_calls.lock().unwrap();
+        assert_eq!(status_calls.as_slice(), ["did:example:groups:e2ee"]);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.e2ee.head");
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -608,6 +845,23 @@ mod tests {
         }
     }
 
+    impl AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            unreachable!("resolver should not refresh through the session provider")
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("resolver should not read status")
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
         response: Value,
@@ -629,6 +883,17 @@ mod tests {
         }
     }
 
+    impl AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
     struct RecordedCall {
         endpoint: String,
         method: String,
@@ -647,6 +912,108 @@ mod tests {
                 local_epoch: Some("7".to_owned()),
                 pending_commits: Vec::new(),
                 epoch_authenticator: Some("auth".to_owned()),
+            })
+        }
+
+        fn generate_key_package(
+            &self,
+            _input: GenerateKeyPackageInput,
+        ) -> crate::ImResult<GroupKeyPackageOutput> {
+            unreachable!("resolver should not generate key packages")
+        }
+
+        fn create_group_prepare(
+            &self,
+            _input: CreateGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("resolver should not create groups")
+        }
+
+        fn add_member_prepare(
+            &self,
+            _input: AddMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("resolver should not add members")
+        }
+
+        fn remove_member_prepare(
+            &self,
+            _input: RemoveMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("resolver should not remove members")
+        }
+
+        fn leave_prepare(
+            &self,
+            _input: LeaveGroupInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("resolver should not leave groups")
+        }
+
+        fn update_member_prepare(
+            &self,
+            _input: UpdateMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("resolver should not update members")
+        }
+
+        fn recover_member_prepare(
+            &self,
+            _input: RecoverMemberInput,
+        ) -> crate::ImResult<PreparedMlsCommitOutput> {
+            unreachable!("resolver should not recover members")
+        }
+
+        fn finalize_commit(
+            &self,
+            _input: FinalizeCommitInput,
+        ) -> crate::ImResult<FinalizeCommitOutput> {
+            unreachable!("resolver should not finalize commits")
+        }
+
+        fn abort_commit(&self, _input: AbortCommitInput) -> crate::ImResult<AbortCommitOutput> {
+            unreachable!("resolver should not abort commits")
+        }
+
+        fn process_welcome(
+            &self,
+            _input: ProcessWelcomeInput,
+        ) -> crate::ImResult<ProcessWelcomeOutput> {
+            unreachable!("resolver should not process welcomes")
+        }
+
+        fn process_notice(
+            &self,
+            _input: ProcessNoticeInput,
+        ) -> crate::ImResult<ProcessNoticeOutput> {
+            unreachable!("resolver should not process notices")
+        }
+
+        fn encrypt(&self, _input: EncryptInput) -> crate::ImResult<EncryptOutput> {
+            unreachable!("resolver should not encrypt")
+        }
+
+        fn decrypt(&self, _input: DecryptInput) -> crate::ImResult<DecryptOutput> {
+            unreachable!("resolver should not decrypt")
+        }
+    }
+
+    #[derive(Clone)]
+    struct AsyncStatusProvider {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl GroupMlsProvider for AsyncStatusProvider {
+        fn status(&self, input: StatusInput) -> crate::ImResult<StatusOutput> {
+            assert_eq!(input.agent_did.as_deref(), Some("did:example:alice"));
+            let group_did = input.group_did.unwrap_or_default();
+            self.calls.lock().unwrap().push(group_did);
+            Ok(StatusOutput {
+                status: "active".to_owned(),
+                epoch: Some("8".to_owned()),
+                local_epoch: Some("8".to_owned()),
+                pending_commits: Vec::new(),
+                epoch_authenticator: Some("auth-async".to_owned()),
             })
         }
 

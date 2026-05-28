@@ -511,8 +511,7 @@ pub(super) fn count_rows_for_owners(
 }
 
 fn placeholders(count: usize) -> String {
-    std::iter::repeat("?")
-        .take(count)
+    std::iter::repeat_n("?", count)
         .collect::<Vec<_>>()
         .join(",")
 }

@@ -1,3 +1,5 @@
+#![cfg(feature = "blocking")]
+
 use std::collections::VecDeque;
 
 use im_core::prelude::*;

@@ -13,8 +13,46 @@ pub(crate) struct DirectSessionRecord {
     pub(crate) session_id: String,
     pub(crate) state_blob: Vec<u8>,
     pub(crate) metadata_json: String,
+    pub(crate) revision: i64,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirectSessionCasResult {
+    Saved(DirectSessionRecord),
+    Stale {
+        current: Option<DirectSessionRecord>,
+        expected_revision: i64,
+    },
+}
+
+pub(crate) struct DirectInitSessionMaterial {
+    pub(crate) existing_session: Option<DirectSessionRecord>,
+    pub(crate) peer_session_revision: Option<i64>,
+    pub(crate) signed_prekey_private: Option<anp::PrivateKeyMaterial>,
+    pub(crate) one_time_prekey_private: Option<anp::PrivateKeyMaterial>,
+}
+
+pub(crate) struct DirectInitSendCommit {
+    pub(crate) record: DirectSessionRecord,
+    pub(crate) expected_peer_revision: Option<i64>,
+}
+
+pub(crate) struct DirectInitSessionCommit {
+    pub(crate) record: DirectSessionRecord,
+    pub(crate) expected_peer_revision: Option<i64>,
+    pub(crate) consume_one_time_prekey_id: Option<String>,
+    pub(crate) consumed_at: String,
+}
+
+pub(crate) enum DirectInitSessionCommitResult {
+    Saved(DirectSessionRecord),
+    Existing(DirectSessionRecord),
+    Stale {
+        current: Option<DirectSessionRecord>,
+        expected_revision: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,16 +135,17 @@ impl<'a> SqliteDirectSecureStateStore<'a> {
         self.connection
             .execute(
                 r#"
-INSERT INTO direct_e2ee_sessions
-    (owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, created_at, updated_at)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-ON CONFLICT(owner_identity_id, peer_did)
-DO UPDATE SET
-    owner_did = excluded.owner_did,
-    session_id = excluded.session_id,
-    state_blob = excluded.state_blob,
-    metadata_json = excluded.metadata_json,
-    updated_at = excluded.updated_at"#,
+	INSERT INTO direct_e2ee_sessions
+	    (owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, revision, created_at, updated_at)
+	VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)
+	ON CONFLICT(owner_identity_id, peer_did)
+	DO UPDATE SET
+	    owner_did = excluded.owner_did,
+	    session_id = excluded.session_id,
+	    state_blob = excluded.state_blob,
+	    metadata_json = excluded.metadata_json,
+	    revision = direct_e2ee_sessions.revision + 1,
+	    updated_at = excluded.updated_at"#,
                 params![
                     owner_identity_id,
                     record.owner_did.trim(),
@@ -122,6 +161,95 @@ DO UPDATE SET
         Ok(())
     }
 
+    pub(crate) fn save_session_if_revision(
+        &self,
+        record: &DirectSessionRecord,
+        expected_revision: i64,
+    ) -> crate::ImResult<DirectSessionCasResult> {
+        let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
+        let peer_did = required("peer_did", &record.peer_did)?;
+        let session_id = required("session_id", &record.session_id)?;
+        let existing = self.get_session(&owner_identity_id, &peer_did)?;
+        let Some(existing) = existing else {
+            if expected_revision != 0 {
+                return Ok(DirectSessionCasResult::Stale {
+                    current: None,
+                    expected_revision,
+                });
+            }
+            self.connection
+                .execute(
+                    r#"
+INSERT INTO direct_e2ee_sessions
+    (owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, revision, created_at, updated_at)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)"#,
+                    params![
+                        owner_identity_id,
+                        record.owner_did.trim(),
+                        peer_did,
+                        session_id,
+                        record.state_blob,
+                        nullable_text(&record.metadata_json),
+                        required("created_at", &record.created_at)?,
+                        required("updated_at", &record.updated_at)?,
+                    ],
+                )
+                .map_err(crate::internal::local_state::local_state_unavailable)?;
+            let saved = self
+                .get_session(&owner_identity_id, &peer_did)?
+                .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                    detail: "direct E2EE session save did not persist a row".to_string(),
+                })?;
+            return Ok(DirectSessionCasResult::Saved(saved));
+        };
+        if existing.revision != expected_revision {
+            return Ok(DirectSessionCasResult::Stale {
+                current: Some(existing),
+                expected_revision,
+            });
+        }
+        let next_revision = expected_revision + 1;
+        let changed = self
+            .connection
+            .execute(
+                r#"
+UPDATE direct_e2ee_sessions
+SET owner_did = ?4,
+    session_id = ?5,
+    state_blob = ?6,
+    metadata_json = ?7,
+    revision = ?8,
+    updated_at = ?9
+WHERE owner_identity_id = ?1
+  AND peer_did = ?2
+  AND revision = ?3"#,
+                params![
+                    owner_identity_id,
+                    peer_did,
+                    expected_revision,
+                    record.owner_did.trim(),
+                    session_id,
+                    record.state_blob,
+                    nullable_text(&record.metadata_json),
+                    next_revision,
+                    required("updated_at", &record.updated_at)?,
+                ],
+            )
+            .map_err(crate::internal::local_state::local_state_unavailable)?;
+        if changed == 0 {
+            return Ok(DirectSessionCasResult::Stale {
+                current: self.get_session(&owner_identity_id, &peer_did)?,
+                expected_revision,
+            });
+        }
+        let saved = self
+            .get_session(&owner_identity_id, &peer_did)?
+            .ok_or_else(|| crate::ImError::LocalStateUnavailable {
+                detail: "direct E2EE session save did not persist a row".to_string(),
+            })?;
+        Ok(DirectSessionCasResult::Saved(saved))
+    }
+
     pub(crate) fn get_session(
         &self,
         owner_identity_id: &str,
@@ -132,9 +260,9 @@ DO UPDATE SET
         self.connection
             .query_row(
                 r#"
-SELECT owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, created_at, updated_at
-FROM direct_e2ee_sessions
-WHERE owner_identity_id = ?1 AND peer_did = ?2"#,
+	SELECT owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, revision, created_at, updated_at
+	FROM direct_e2ee_sessions
+	WHERE owner_identity_id = ?1 AND peer_did = ?2"#,
                 params![owner_identity_id, peer_did],
                 session_from_row,
             )
@@ -152,14 +280,46 @@ WHERE owner_identity_id = ?1 AND peer_did = ?2"#,
         self.connection
             .query_row(
                 r#"
-SELECT owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, created_at, updated_at
-FROM direct_e2ee_sessions
-WHERE owner_identity_id = ?1 AND session_id = ?2"#,
+	SELECT owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, revision, created_at, updated_at
+	FROM direct_e2ee_sessions
+	WHERE owner_identity_id = ?1 AND session_id = ?2"#,
                 params![owner_identity_id, session_id],
                 session_from_row,
             )
             .optional()
             .map_err(crate::internal::local_state::local_state_unavailable)
+    }
+
+    pub(crate) fn direct_init_session_material(
+        &self,
+        owner_identity_id: &str,
+        peer_did: &str,
+        session_id: &str,
+        signed_prekey_id: &str,
+        one_time_prekey_id: Option<&str>,
+    ) -> crate::ImResult<DirectInitSessionMaterial> {
+        let existing_session = if session_id.trim().is_empty() {
+            None
+        } else {
+            self.get_session_by_id(owner_identity_id, session_id)?
+        };
+        let peer_session_revision = self
+            .get_session(owner_identity_id, peer_did)?
+            .map(|record| record.revision);
+        let signed_prekey_private =
+            self.load_signed_prekey_material(owner_identity_id, signed_prekey_id)?;
+        let one_time_prekey_private = one_time_prekey_id
+            .filter(|key_id| !key_id.trim().is_empty())
+            .map(|key_id| self.load_one_time_prekey_material(owner_identity_id, key_id))
+            .transpose()?
+            .flatten()
+            .map(|record| record.private_key);
+        Ok(DirectInitSessionMaterial {
+            existing_session,
+            peer_session_revision,
+            signed_prekey_private,
+            one_time_prekey_private,
+        })
     }
 
     pub(crate) fn delete_session(
@@ -452,6 +612,117 @@ WHERE owner_identity_id = ?1 AND key_id = ?2"#,
     }
 }
 
+pub(crate) fn save_incoming_init_session(
+    connection: &mut Connection,
+    commit: DirectInitSessionCommit,
+) -> crate::ImResult<DirectInitSessionCommitResult> {
+    crate::internal::local_state::schema::ensure_schema(connection)?;
+    let transaction = connection
+        .transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let result = {
+        let store = SqliteDirectSecureStateStore::new(&transaction)?;
+        let owner_identity_id = required("owner_identity_id", &commit.record.owner_identity_id)?;
+        let peer_did = required("peer_did", &commit.record.peer_did)?;
+        let session_id = required("session_id", &commit.record.session_id)?;
+        if let Some(existing) = store.get_session_by_id(&owner_identity_id, &session_id)? {
+            if existing.peer_did != peer_did {
+                return Err(crate::ImError::Serialization {
+                    detail: "direct E2EE init session id is already bound to another peer"
+                        .to_owned(),
+                });
+            }
+            DirectInitSessionCommitResult::Existing(existing)
+        } else {
+            let current_peer = store.get_session(&owner_identity_id, &peer_did)?;
+            let revision_matches = match (&current_peer, commit.expected_peer_revision) {
+                (None, None) => true,
+                (Some(current), Some(expected)) => current.revision == expected,
+                _ => false,
+            };
+            if !revision_matches {
+                DirectInitSessionCommitResult::Stale {
+                    current: current_peer,
+                    expected_revision: commit.expected_peer_revision,
+                }
+            } else {
+                let expected_revision = commit.expected_peer_revision.unwrap_or(0);
+                let saved = store.save_session_if_revision(&commit.record, expected_revision)?;
+                match saved {
+                    DirectSessionCasResult::Saved(record) => {
+                        if let Some(key_id) = commit
+                            .consume_one_time_prekey_id
+                            .as_deref()
+                            .filter(|value| !value.trim().is_empty())
+                        {
+                            store.mark_one_time_prekey_consumed(
+                                &owner_identity_id,
+                                key_id,
+                                &commit.consumed_at,
+                            )?;
+                        }
+                        DirectInitSessionCommitResult::Saved(record)
+                    }
+                    DirectSessionCasResult::Stale { current, .. } => {
+                        DirectInitSessionCommitResult::Stale {
+                            current,
+                            expected_revision: commit.expected_peer_revision,
+                        }
+                    }
+                }
+            }
+        }
+    };
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(result)
+}
+
+pub(crate) fn save_outgoing_init_session(
+    connection: &mut Connection,
+    commit: DirectInitSendCommit,
+) -> crate::ImResult<DirectInitSessionCommitResult> {
+    crate::internal::local_state::schema::ensure_schema(connection)?;
+    let transaction = connection
+        .transaction()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    let result = {
+        let store = SqliteDirectSecureStateStore::new(&transaction)?;
+        let owner_identity_id = required("owner_identity_id", &commit.record.owner_identity_id)?;
+        let peer_did = required("peer_did", &commit.record.peer_did)?;
+        let current_peer = store.get_session(&owner_identity_id, &peer_did)?;
+        let revision_matches = match (&current_peer, commit.expected_peer_revision) {
+            (None, None) => true,
+            (Some(current), Some(expected)) => current.revision == expected,
+            _ => false,
+        };
+        if !revision_matches {
+            DirectInitSessionCommitResult::Stale {
+                current: current_peer,
+                expected_revision: commit.expected_peer_revision,
+            }
+        } else {
+            let expected_revision = commit.expected_peer_revision.unwrap_or(0);
+            match store.save_session_if_revision(&commit.record, expected_revision)? {
+                DirectSessionCasResult::Saved(record) => {
+                    DirectInitSessionCommitResult::Saved(record)
+                }
+                DirectSessionCasResult::Stale { current, .. } => {
+                    DirectInitSessionCommitResult::Stale {
+                        current,
+                        expected_revision: commit.expected_peer_revision,
+                    }
+                }
+            }
+        }
+    };
+    transaction
+        .commit()
+        .map_err(crate::internal::local_state::local_state_unavailable)?;
+    Ok(result)
+}
+
 pub(crate) struct AnpDirectSessionStore<'a> {
     owner_identity_id: String,
     owner_did: String,
@@ -502,6 +773,7 @@ impl anp::direct_e2ee::SessionStore for AnpDirectSessionStore<'_> {
                 session_id: session.session_id.clone(),
                 state_blob: direct_session_to_blob(session)?,
                 metadata_json: direct_session_metadata_json(session)?,
+                revision: existing.as_ref().map(|record| record.revision).unwrap_or(0),
                 created_at: existing
                     .map(|record| record.created_at)
                     .unwrap_or_else(|| now.clone()),
@@ -686,7 +958,7 @@ fn direct_store_error_from_anp(error: anp::direct_e2ee::DirectE2eeError) -> crat
     }
 }
 
-fn direct_session_to_blob(
+pub(crate) fn direct_session_to_blob(
     session: &anp::direct_e2ee::DirectSessionState,
 ) -> Result<Vec<u8>, anp::direct_e2ee::DirectE2eeError> {
     serde_json::to_vec(session).map_err(|err| {
@@ -694,7 +966,7 @@ fn direct_session_to_blob(
     })
 }
 
-fn direct_session_from_blob(
+pub(crate) fn direct_session_from_blob(
     blob: &[u8],
 ) -> Result<anp::direct_e2ee::DirectSessionState, anp::direct_e2ee::DirectE2eeError> {
     serde_json::from_slice(blob).map_err(|err| {
@@ -702,7 +974,7 @@ fn direct_session_from_blob(
     })
 }
 
-fn direct_session_metadata_json(
+pub(crate) fn direct_session_metadata_json(
     session: &anp::direct_e2ee::DirectSessionState,
 ) -> Result<String, anp::direct_e2ee::DirectE2eeError> {
     serde_json::to_string(&serde_json::json!({
@@ -845,6 +1117,7 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DirectSessionRe
         session_id: row.get("session_id")?,
         state_blob: row.get("state_blob")?,
         metadata_json: optional_string(row.get("metadata_json")?),
+        revision: row.get::<_, Option<i64>>("revision")?.unwrap_or(0),
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -902,6 +1175,7 @@ mod tests {
                 session_id: "session-1".to_owned(),
                 state_blob: b"state-v1".to_vec(),
                 metadata_json: r#"{"version":1}"#.to_owned(),
+                revision: 0,
                 created_at: "2026-05-24T00:00:00Z".to_owned(),
                 updated_at: "2026-05-24T00:00:01Z".to_owned(),
             })
@@ -914,6 +1188,7 @@ mod tests {
                 session_id: "session-2".to_owned(),
                 state_blob: b"other-owner-state".to_vec(),
                 metadata_json: String::new(),
+                revision: 0,
                 created_at: "2026-05-24T00:00:00Z".to_owned(),
                 updated_at: "2026-05-24T00:00:02Z".to_owned(),
             })
@@ -926,6 +1201,7 @@ mod tests {
         assert_eq!(alice.session_id, "session-1");
         assert_eq!(alice.state_blob, b"state-v1");
         assert_eq!(alice.metadata_json, r#"{"version":1}"#);
+        assert_eq!(alice.revision, 0);
         assert_eq!(
             store.get_session_by_id("charlie-id", "session-1").unwrap(),
             None
@@ -938,6 +1214,60 @@ mod tests {
                 .peer_did,
             "did:bob"
         );
+    }
+
+    #[test]
+    fn sqlite_store_cas_rejects_stale_direct_session_updates() {
+        let db = Connection::open_in_memory().unwrap();
+        let store = SqliteDirectSecureStateStore::new(&db).unwrap();
+        store
+            .upsert_session(&DirectSessionRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:alice".to_owned(),
+                peer_did: "did:bob".to_owned(),
+                session_id: "session-1".to_owned(),
+                state_blob: b"state-v1".to_vec(),
+                metadata_json: "{}".to_owned(),
+                revision: 0,
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:01Z".to_owned(),
+            })
+            .unwrap();
+
+        let loaded = store
+            .get_session("alice-id", "did:bob")
+            .unwrap()
+            .expect("session");
+        let mut first_update = loaded.clone();
+        first_update.state_blob = b"state-v2".to_vec();
+        first_update.updated_at = "2026-05-24T00:00:02Z".to_owned();
+        let first = store
+            .save_session_if_revision(&first_update, loaded.revision)
+            .unwrap();
+        let DirectSessionCasResult::Saved(saved) = first else {
+            panic!("first update should save");
+        };
+        assert_eq!(saved.revision, loaded.revision + 1);
+        assert_eq!(saved.state_blob, b"state-v2");
+
+        let mut stale_update = loaded;
+        stale_update.state_blob = b"stale-state".to_vec();
+        stale_update.updated_at = "2026-05-24T00:00:03Z".to_owned();
+        let stale = store
+            .save_session_if_revision(&stale_update, stale_update.revision)
+            .unwrap();
+        let DirectSessionCasResult::Stale {
+            current,
+            expected_revision,
+        } = stale
+        else {
+            panic!("second update should be stale");
+        };
+        assert_eq!(expected_revision, 0);
+        let current = current.expect("current row");
+        assert_eq!(current.revision, 1);
+        assert_eq!(current.state_blob, b"state-v2");
+        assert_ne!(current.state_blob, b"stale-state");
     }
 
     #[test]

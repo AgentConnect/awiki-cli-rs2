@@ -56,11 +56,7 @@ fn msg_send_default_cutover_direct_text_posts_im_core_rpc() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(
-        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
-        "missing bearer auth:\n{}",
-        requests[0]
-    );
+    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
     assert_eq!(body["method"], "direct.send");
     assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
@@ -131,11 +127,7 @@ fn msg_send_default_cutover_group_text_posts_im_core_rpc() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(
-        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
-        "missing bearer auth:\n{}",
-        requests[0]
-    );
+    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
     assert_eq!(body["method"], "group.send");
     assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
@@ -203,11 +195,7 @@ fn msg_inbox_default_cutover_direct_posts_im_core_rpc() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(
-        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
-        "missing bearer auth:\n{}",
-        requests[0]
-    );
+    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
     assert_eq!(body["method"], "inbox.get");
     assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
@@ -270,11 +258,7 @@ fn msg_history_default_cutover_direct_posts_im_core_rpc() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(
-        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
-        "missing bearer auth:\n{}",
-        requests[0]
-    );
+    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
     assert_eq!(body["method"], "direct.get_history");
     assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
@@ -328,6 +312,10 @@ fn msg_history_default_cutover_group_posts_im_core_rpc() {
     assert_eq!(envelope["summary"], "Loaded 1 group history messages");
     assert_eq!(
         envelope["data"]["messages"][0]["id"],
+        format!("{group_did}:12")
+    );
+    assert_eq!(
+        envelope["data"]["messages"][0]["raw_message_id"],
         "msg-group-history-cutover-1"
     );
     assert_eq!(envelope["data"]["messages"][0]["group_did"], group_did);
@@ -337,11 +325,7 @@ fn msg_history_default_cutover_group_posts_im_core_rpc() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(
-        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
-        "missing bearer auth:\n{}",
-        requests[0]
-    );
+    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
     assert_eq!(body["method"], "group.list_messages");
     assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
@@ -403,11 +387,7 @@ fn msg_mark_read_default_cutover_posts_im_core_rpc_and_updates_local_cache() {
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].starts_with("POST /im/rpc HTTP/1.1"));
-    assert!(
-        requests[0].contains("Authorization: Bearer jwt-alice\r\n"),
-        "missing bearer auth:\n{}",
-        requests[0]
-    );
+    assert_contains_header(&requests[0], "Authorization", "Bearer jwt-alice");
     let body: Value = serde_json::from_str(request_body(&requests[0])).expect("request JSON");
     assert_eq!(body["method"], "inbox.mark_read");
     assert_eq!(body["params"]["meta"]["sender_did"], alice.did);
@@ -725,6 +705,17 @@ fn request_complete(raw: &[u8]) -> bool {
         .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or_default();
     body.len() >= content_length
+}
+
+fn assert_contains_header(haystack: &str, header_name: &str, expected_value: &str) {
+    assert!(
+        haystack.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case(header_name) && value.trim() == expected_value
+            })
+        }),
+        "missing {header_name}: {expected_value}:\n{haystack}"
+    );
 }
 
 struct TempDir {

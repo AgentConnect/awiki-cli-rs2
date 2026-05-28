@@ -17,6 +17,10 @@ pub struct RealtimeMessageLocalProjection {
 
 #[cfg(feature = "sqlite")]
 impl RealtimeMessageLocalProjection {
+    pub(crate) fn into_record(self) -> crate::internal::local_state::messages::MessageRecord {
+        self.record
+    }
+
     pub fn msg_id(&self) -> &str {
         &self.record.msg_id
     }

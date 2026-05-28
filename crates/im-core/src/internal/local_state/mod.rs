@@ -1,3 +1,6 @@
+#[cfg(feature = "sqlite")]
+pub(crate) mod actor;
+
 pub(crate) mod contacts;
 pub(crate) mod conversations;
 pub(crate) mod email;

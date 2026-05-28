@@ -165,6 +165,26 @@ pub fn follow_via_im_core(
     })
 }
 
+pub async fn follow_via_im_core_async(
+    client: &im_core::ImClient,
+    command: &ParsedCommand,
+    did_domain: &str,
+) -> Result<CommandResult, ExitError> {
+    let result = client
+        .directory()
+        .follow_async(FollowRequest {
+            peer: required_peer_arg(command, did_domain, "people follow")?,
+        })
+        .await
+        .map_err(|err| super::map_im_error(err, "people follow"))?;
+    let summary = format!("Followed {}", result.did.as_str());
+    Ok(CommandResult {
+        data: serde_json::to_value(&result).map_err(serialization_exit)?,
+        summary,
+        warnings: result.warnings,
+    })
+}
+
 pub fn unfollow_via_im_core(
     client: &im_core::ImClient,
     command: &ParsedCommand,
@@ -175,6 +195,26 @@ pub fn unfollow_via_im_core(
         .unfollow(UnfollowRequest {
             peer: required_peer_arg(command, did_domain, "people unfollow")?,
         })
+        .map_err(|err| super::map_im_error(err, "people unfollow"))?;
+    let summary = format!("Unfollowed {}", result.did.as_str());
+    Ok(CommandResult {
+        data: serde_json::to_value(&result).map_err(serialization_exit)?,
+        summary,
+        warnings: result.warnings,
+    })
+}
+
+pub async fn unfollow_via_im_core_async(
+    client: &im_core::ImClient,
+    command: &ParsedCommand,
+    did_domain: &str,
+) -> Result<CommandResult, ExitError> {
+    let result = client
+        .directory()
+        .unfollow_async(UnfollowRequest {
+            peer: required_peer_arg(command, did_domain, "people unfollow")?,
+        })
+        .await
         .map_err(|err| super::map_im_error(err, "people unfollow"))?;
     let summary = format!("Unfollowed {}", result.did.as_str());
     Ok(CommandResult {
@@ -201,6 +241,24 @@ pub fn relationship_status_via_im_core(
     })
 }
 
+pub async fn relationship_status_via_im_core_async(
+    client: &im_core::ImClient,
+    command: &ParsedCommand,
+    did_domain: &str,
+) -> Result<CommandResult, ExitError> {
+    let result = client
+        .directory()
+        .relationship_status_async(required_peer_arg(command, did_domain, "people status")?)
+        .await
+        .map_err(|err| super::map_im_error(err, "people status"))?;
+    let summary = format!("Loaded relationship status for {}", result.did.as_str());
+    Ok(CommandResult {
+        data: serde_json::to_value(&result).map_err(serialization_exit)?,
+        summary,
+        warnings: result.warnings,
+    })
+}
+
 pub fn followers_via_im_core(
     client: &im_core::ImClient,
     command: &ParsedCommand,
@@ -209,6 +267,29 @@ pub fn followers_via_im_core(
     let page = client
         .directory()
         .followers(query)
+        .map_err(|err| super::map_im_error(err, "people followers"))?;
+    let total = page.items.len();
+    Ok(CommandResult {
+        data: json!({
+            "followers": page.items,
+            "items": page.items,
+            "has_more": page.has_more,
+            "next_cursor": page.next_cursor.as_ref().map(|cursor| cursor.as_str()),
+        }),
+        summary: format!("Loaded {total} followers"),
+        warnings: relationship_list_warnings(&page.items),
+    })
+}
+
+pub async fn followers_via_im_core_async(
+    client: &im_core::ImClient,
+    command: &ParsedCommand,
+) -> Result<CommandResult, ExitError> {
+    let query = relationship_list_query(command)?;
+    let page = client
+        .directory()
+        .followers_async(query)
+        .await
         .map_err(|err| super::map_im_error(err, "people followers"))?;
     let total = page.items.len();
     Ok(CommandResult {
@@ -245,6 +326,29 @@ pub fn following_via_im_core(
     })
 }
 
+pub async fn following_via_im_core_async(
+    client: &im_core::ImClient,
+    command: &ParsedCommand,
+) -> Result<CommandResult, ExitError> {
+    let query = relationship_list_query(command)?;
+    let page = client
+        .directory()
+        .following_async(query)
+        .await
+        .map_err(|err| super::map_im_error(err, "people following"))?;
+    let total = page.items.len();
+    Ok(CommandResult {
+        data: json!({
+            "following": page.items,
+            "items": page.items,
+            "has_more": page.has_more,
+            "next_cursor": page.next_cursor.as_ref().map(|cursor| cursor.as_str()),
+        }),
+        summary: format!("Loaded {total} following"),
+        warnings: relationship_list_warnings(&page.items),
+    })
+}
+
 pub fn contacts_list_via_im_core(
     client: &im_core::ImClient,
     command: &ParsedCommand,
@@ -267,6 +371,29 @@ pub fn contacts_list_via_im_core(
     })
 }
 
+pub async fn contacts_list_via_im_core_async(
+    client: &im_core::ImClient,
+    command: &ParsedCommand,
+) -> Result<CommandResult, ExitError> {
+    let limit = optional_page_limit(command, "limit")?;
+    let page = client
+        .directory()
+        .contacts_async(ContactListQuery { limit })
+        .await
+        .map_err(|err| super::map_im_error(err, "people contacts list"))?;
+    let total = page.items.len();
+    Ok(CommandResult {
+        data: json!({
+            "contacts": page.items,
+            "items": page.items,
+            "has_more": page.has_more,
+            "next_cursor": page.next_cursor.as_ref().map(|cursor| cursor.as_str()),
+        }),
+        summary: format!("Loaded {total} contacts"),
+        warnings: Vec::new(),
+    })
+}
+
 pub fn contacts_save_via_im_core(
     client: &im_core::ImClient,
     command: &ParsedCommand,
@@ -275,6 +402,24 @@ pub fn contacts_save_via_im_core(
     let contact = client
         .directory()
         .save_contact(contact_save_request(command, did_domain)?)
+        .map_err(|err| super::map_im_error(err, "people contacts save"))?;
+    let summary = format!("Saved contact {}", contact.did.as_str());
+    Ok(CommandResult {
+        data: serde_json::to_value(&contact).map_err(serialization_exit)?,
+        summary,
+        warnings: Vec::new(),
+    })
+}
+
+pub async fn contacts_save_via_im_core_async(
+    client: &im_core::ImClient,
+    command: &ParsedCommand,
+    did_domain: &str,
+) -> Result<CommandResult, ExitError> {
+    let contact = client
+        .directory()
+        .save_contact_async(contact_save_request(command, did_domain)?)
+        .await
         .map_err(|err| super::map_im_error(err, "people contacts save"))?;
     let summary = format!("Saved contact {}", contact.did.as_str());
     Ok(CommandResult {

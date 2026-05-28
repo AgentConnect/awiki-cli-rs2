@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 pub(crate) struct MessageMarkReadRuntime<'a, P, T> {
     client: &'a crate::core::ImClient,
@@ -116,6 +116,89 @@ where
     }
 }
 
+impl<'a, P, T> MessageMarkReadRuntime<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+{
+    pub(crate) async fn mark_read_async(
+        mut self,
+        input: MarkReadInput,
+    ) -> crate::ImResult<MarkReadRuntimeResult> {
+        if input.message_ids.is_empty() {
+            return Err(crate::ImError::MessageNotFound {
+                message_id: "message_ids".to_string(),
+            });
+        }
+        let ids = input
+            .message_ids
+            .iter()
+            .map(|id| id.as_str().to_string())
+            .collect::<Vec<_>>();
+        let classification = classify_mark_read_ids_async(self.client, &ids).await;
+        let direct_ids = classification
+            .as_ref()
+            .map(|value| value.direct_ids.clone())
+            .unwrap_or_else(|_| ids.clone());
+        let group_ids = classification
+            .as_ref()
+            .map(|value| value.group_ids.clone())
+            .unwrap_or_default();
+        let local_only_ids = classification
+            .as_ref()
+            .map(|value| value.local_only_ids.clone())
+            .unwrap_or_default();
+
+        let mut warnings = Vec::new();
+        let mut updated_count = 0_i64;
+        let mut raw = None;
+        if !direct_ids.is_empty() {
+            self.session_provider
+                .ensure_session(crate::auth::AuthScope::Messaging)
+                .await?;
+            let params = crate::internal::wire::inbox::build_mark_read_rpc_params(
+                &crate::internal::wire::common::WireIdentity {
+                    did: self.client.did().as_str().to_string(),
+                },
+                crate::internal::wire::inbox::MarkReadWireRequest {
+                    message_ids: direct_ids.clone(),
+                },
+            )?;
+            let response = self
+                .transport
+                .authenticated_rpc(super::read::MESSAGE_RPC_ENDPOINT, "inbox.mark_read", params)
+                .await?;
+            updated_count += int_value(response.get("updated_count"), direct_ids.len() as i64);
+            warnings.extend(warnings_from_raw(&response));
+            raw = Some(response);
+        }
+
+        if let Ok(local_updated) =
+            mark_local_messages_read_async(self.client, classification.as_ref()).await
+        {
+            if updated_count == 0 {
+                updated_count = local_updated;
+            } else {
+                updated_count += (group_ids.len() + local_only_ids.len()) as i64;
+            }
+        } else if classification.is_ok() {
+            warnings.push("Failed to mark local messages read".to_string());
+        }
+
+        Ok(MarkReadRuntimeResult {
+            sdk_result: crate::messages::MarkReadResult {
+                updated_count: u32::try_from(updated_count).unwrap_or(u32::MAX),
+                message_ids: input.message_ids,
+                warnings,
+            },
+            raw,
+            direct_ids,
+            group_ids,
+            local_only_ids,
+        })
+    }
+}
+
 #[cfg(feature = "sqlite")]
 fn classify_mark_read_ids(
     client: &crate::core::ImClient,
@@ -134,6 +217,35 @@ fn classify_mark_read_ids(
 
 #[cfg(not(feature = "sqlite"))]
 fn classify_mark_read_ids(
+    _client: &crate::core::ImClient,
+    ids: &[String],
+) -> crate::ImResult<NoSqliteMarkReadClassification> {
+    Ok(NoSqliteMarkReadClassification {
+        direct_ids: ids.to_vec(),
+        group_ids: Vec::new(),
+        local_only_ids: Vec::new(),
+    })
+}
+
+#[cfg(feature = "sqlite")]
+async fn classify_mark_read_ids_async(
+    client: &crate::core::ImClient,
+    ids: &[String],
+) -> crate::ImResult<crate::internal::local_state::messages::MarkReadClassification> {
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .classify_mark_read_ids(
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            ids.to_vec(),
+        )
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn classify_mark_read_ids_async(
     _client: &crate::core::ImClient,
     ids: &[String],
 ) -> crate::ImResult<NoSqliteMarkReadClassification> {
@@ -166,6 +278,39 @@ fn mark_local_messages_read(
         client.did().as_str(),
         &local_ids,
     )
+}
+
+#[cfg(feature = "sqlite")]
+async fn mark_local_messages_read_async(
+    client: &crate::core::ImClient,
+    classification: Result<
+        &crate::internal::local_state::messages::MarkReadClassification,
+        &crate::ImError,
+    >,
+) -> crate::ImResult<i64> {
+    let classification = classification.map_err(Clone::clone)?;
+    let local_ids = classification.local_ids();
+    if local_ids.is_empty() {
+        return Ok(0);
+    }
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .mark_messages_read(
+            client.current_identity().id.as_str(),
+            client.did().as_str(),
+            local_ids,
+        )
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn mark_local_messages_read_async(
+    _client: &crate::core::ImClient,
+    _classification: Result<&NoSqliteMarkReadClassification, &crate::ImError>,
+) -> crate::ImResult<i64> {
+    Ok(0)
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -291,6 +436,40 @@ mod tests {
         assert_eq!(fixture.is_read(&client, "mail-1"), 1);
     }
 
+    #[tokio::test]
+    async fn mark_read_runtime_async_marks_direct_remote_and_actor_local_rows() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        fixture.seed_message(&client, "direct-async-1", "", "text/plain", "", 0);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+
+        let result = MessageMarkReadRuntime::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({"updated_count": 1}),
+            },
+        )
+        .mark_read_async(MarkReadInput {
+            message_ids: vec![crate::ids::MessageId::parse("direct-async-1").unwrap()],
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result.sdk_result.updated_count, 1);
+        assert_eq!(result.direct_ids, vec!["direct-async-1"]);
+        assert_eq!(fixture.is_read(&client, "direct-async-1"), 1);
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].endpoint, super::super::read::MESSAGE_RPC_ENDPOINT);
+        assert_eq!(calls[0].method, "inbox.mark_read");
+        assert_eq!(
+            calls[0].params["body"]["message_ids"],
+            json!(["direct-async-1"])
+        );
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -317,6 +496,23 @@ mod tests {
         }
     }
 
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            SessionProvider::refresh_session(self)
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            SessionProvider::status(self)
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
         response: Value,
@@ -335,6 +531,17 @@ mod tests {
                 params,
             });
             Ok(self.response.clone())
+        }
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
         }
     }
 

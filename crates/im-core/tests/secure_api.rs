@@ -45,16 +45,126 @@ fn secure_service_api_shape_is_available_from_client() {
         .status()
         .unwrap();
     assert_eq!(group.group.as_str(), "did:example:groups:secure-api");
+    #[cfg(feature = "group-e2ee")]
+    assert_eq!(
+        group.state,
+        im_core::secure::GroupSecureState::MissingLocalState
+    );
+    #[cfg(not(feature = "group-e2ee"))]
     assert_eq!(group.state, im_core::secure::GroupSecureState::Unavailable);
     assert!(!group.can_send_secure);
     assert!(!group.local_readiness.has_local_state);
+    #[cfg(feature = "group-e2ee")]
     assert_eq!(
         group.problem.as_ref().map(|problem| &problem.code),
-        Some(&SecureProblemCode::IdentityNotReady)
+        Some(&SecureProblemCode::GroupStateUnavailable)
+    );
+    #[cfg(not(feature = "group-e2ee"))]
+    assert_eq!(
+        group.problem.as_ref().map(|problem| &problem.code),
+        Some(&SecureProblemCode::Unsupported)
     );
 
     let failed = client.secure().outbox().list_failed().unwrap();
     assert!(failed.is_empty());
+}
+
+#[tokio::test]
+async fn secure_direct_status_async_uses_db_actor() {
+    let root = unique_temp_root("im-core-secure-direct-status-async-api");
+    write_identity_fixture(&root, "alice", "did:example:alice");
+    let paths = test_paths(&root);
+    let core = ImCore::open(test_config(), paths.clone()).await.unwrap();
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("alice".to_owned()))
+        .await
+        .unwrap();
+    std::fs::create_dir_all(paths.local_state.sqlite_path.parent().unwrap()).unwrap();
+    let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
+    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    db.execute(
+        r#"
+INSERT INTO direct_e2ee_sessions
+    (owner_identity_id, owner_did, peer_did, session_id, state_blob, metadata_json, created_at, updated_at)
+VALUES ('alice-id', 'did:example:alice', 'did:example:bob', 'session-secret',
+        X'7B7D', '{}', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z')"#,
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let status = client
+        .secure()
+        .direct(PeerRef::parse("did:example:bob", "").unwrap())
+        .status_async()
+        .await
+        .unwrap();
+
+    assert_eq!(status.state, im_core::secure::DirectSecureState::Ready);
+    assert!(status.can_send_secure);
+    assert_eq!(
+        status.resolved_peer.as_ref().map(|did| did.as_str()),
+        Some("did:example:bob")
+    );
+    assert!(!format!("{status:?}").contains("session-secret"));
+}
+
+#[tokio::test]
+async fn secure_group_status_async_api_shape_is_available() {
+    let root = unique_temp_root("im-core-secure-group-status-async-shape-api");
+    write_identity_fixture(&root, "alice", "did:example:alice");
+    let core = ImCore::open(test_config(), test_paths(&root))
+        .await
+        .unwrap();
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("alice".to_owned()))
+        .await
+        .unwrap();
+
+    let group = GroupRef::parse("did:example:groups:secure-api").unwrap();
+    let status = client
+        .secure()
+        .group(group.clone())
+        .status_async()
+        .await
+        .unwrap();
+    assert_eq!(status.group.as_str(), group.as_str());
+    assert_eq!(status.state, im_core::secure::GroupSecureState::Unavailable);
+    assert!(!status.can_send_secure);
+
+    let prepare = client.secure().group(group).prepare_async().await.unwrap();
+    assert_eq!(
+        prepare.state,
+        im_core::secure::GroupSecureState::Unavailable
+    );
+    assert!(!prepare.can_send_secure);
+}
+
+#[tokio::test]
+async fn secure_group_repair_async_api_shape_is_available() {
+    let root = unique_temp_root("im-core-secure-group-repair-async-shape-api");
+    write_identity_fixture(&root, "alice", "did:example:alice");
+    let core = ImCore::open(test_config(), test_paths(&root))
+        .await
+        .unwrap();
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("alice".to_owned()))
+        .await
+        .unwrap();
+
+    let err = client
+        .secure()
+        .group(GroupRef::parse("did:example:groups:secure-api").unwrap())
+        .repair_async()
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        im_core::ImError::UnsupportedCapability { .. }
+            | im_core::ImError::CredentialFileUnreadable { .. }
+            | im_core::ImError::AuthRequired
+    ));
 }
 
 #[test]
@@ -85,6 +195,59 @@ fn secure_direct_prepare_initializes_send_state_and_returns_redacted_dto() {
         .secure()
         .direct(PeerRef::parse("did:example:bob", "").unwrap())
         .prepare()
+        .unwrap();
+
+    assert_eq!(result.peer.as_str(), "did:example:bob");
+    assert_eq!(
+        result.state,
+        im_core::secure::DirectSecureState::WaitingForPeer
+    );
+    assert!(!result.can_send_secure);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("local send state prepared")));
+    let rendered = format!("{result:?}");
+    assert!(!rendered.contains("direct.e2ee."));
+    assert!(!rendered.contains("application/anp-direct"));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.path == "/im/rpc"));
+    assert!(requests.iter().all(|request| {
+        request
+            .json_body()
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| method.starts_with("direct.e2ee."))
+    }));
+}
+
+#[tokio::test]
+async fn secure_direct_prepare_async_initializes_send_state_and_returns_redacted_dto() {
+    let root = unique_temp_root("im-core-secure-direct-prepare-async-api");
+    let identity = TestIdentity::new("alice.secure-api-async.example", "alice");
+    write_real_identity_fixture(&root, "alice", &identity);
+    let server = TestServer::spawn(vec![
+        ExpectedHttp::rpc_result(json!({})),
+        ExpectedHttp::rpc_result(json!({})),
+    ]);
+    let core = ImCore::open(
+        test_config_with_base_url(server.base_url()),
+        test_paths(&root),
+    )
+    .await
+    .unwrap();
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("alice".to_owned()))
+        .await
+        .unwrap();
+
+    let result = client
+        .secure()
+        .direct(PeerRef::parse("did:example:bob", "").unwrap())
+        .prepare_async()
+        .await
         .unwrap();
 
     assert_eq!(result.peer.as_str(), "did:example:bob");
@@ -164,6 +327,57 @@ VALUES ('outbox-secret', 'alice-id', 'did:example:alice', 'did:example:bob', 'te
         .secure()
         .outbox()
         .drop(SecureOutboxId::parse("outbox-secret").unwrap())
+        .unwrap();
+    assert!(matches!(dropped.status, SecureOutboxStatus::Dropped));
+}
+
+#[tokio::test]
+async fn secure_outbox_async_failed_retry_drop_uses_db_actor() {
+    let root = unique_temp_root("im-core-secure-outbox-async-api");
+    write_identity_fixture(&root, "alice", "did:example:alice");
+    let paths = test_paths(&root);
+    let core = ImCore::open(test_config(), paths.clone()).await.unwrap();
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("alice".to_owned()))
+        .await
+        .unwrap();
+    std::fs::create_dir_all(paths.local_state.sqlite_path.parent().unwrap()).unwrap();
+    let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
+    im_core::compat::local_state::ensure_schema(&db).unwrap();
+    db.execute(
+        r#"
+INSERT INTO e2ee_outbox
+    (outbox_id, owner_identity_id, owner_did, peer_did, original_type, plaintext, local_status,
+     attempt_count, last_error_code, retry_hint, created_at, updated_at, credential_name)
+VALUES ('outbox-secret-async', 'alice-id', 'did:example:alice', 'did:example:bob', 'text',
+        'do not expose this async plaintext', 'failed', 3, 'pending_confirmation', 'retry',
+        '2026-05-24T00:00:00Z', '2026-05-24T00:00:01Z', 'alice')"#,
+        [],
+    )
+    .unwrap();
+    drop(db);
+
+    let failed = client.secure().outbox().list_failed_async().await.unwrap();
+
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].id.as_str(), "outbox-secret-async");
+    assert!(matches!(failed[0].status, SecureOutboxStatus::Failed));
+    assert_eq!(failed[0].attempt_count, 3);
+    assert!(!format!("{failed:?}").contains("do not expose"));
+
+    let retried = client
+        .secure()
+        .outbox()
+        .retry_async(SecureOutboxId::parse("outbox-secret-async").unwrap())
+        .await
+        .unwrap();
+    assert!(matches!(retried.status, SecureOutboxStatus::Queued));
+
+    let dropped = client
+        .secure()
+        .outbox()
+        .drop_async(SecureOutboxId::parse("outbox-secret-async").unwrap())
+        .await
         .unwrap();
     assert!(matches!(dropped.status, SecureOutboxStatus::Dropped));
 }

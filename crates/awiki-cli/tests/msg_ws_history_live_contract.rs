@@ -372,6 +372,21 @@ fn request_body(raw: &str) -> &str {
 }
 
 fn assert_contains_text(haystack: &str, needle: &str) {
+    let header_probe = needle.strip_suffix("\r\n").unwrap_or(needle);
+    if let Some((header_name, expected_value)) = header_probe.split_once(':') {
+        let header_name = header_name.trim();
+        let expected_value = expected_value.trim();
+        if !header_name.is_empty()
+            && haystack.lines().any(|line| {
+                line.split_once(':').is_some_and(|(name, value)| {
+                    name.trim().eq_ignore_ascii_case(header_name)
+                        && (expected_value.is_empty() || value.trim() == expected_value)
+                })
+            })
+        {
+            return;
+        }
+    }
     assert!(
         haystack.contains(needle),
         "expected text to contain {needle:?}, got:\n{haystack}"
@@ -496,7 +511,13 @@ fn read_http_request(stream: &mut TcpStream) -> String {
             let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
             let content_length = headers
                 .lines()
-                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then_some(value)
+                    })
+                })
                 .and_then(|value| value.trim().parse::<usize>().ok())
                 .unwrap_or_default();
             let expected = header_end + content_length;

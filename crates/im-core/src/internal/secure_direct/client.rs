@@ -25,6 +25,12 @@ pub(crate) type DirectSecureRpc<'a> =
     dyn FnMut(&str, Map<String, Value>) -> DirectSecureRpcResult + 'a;
 pub(crate) type DirectSecureDidResolver<'a> = dyn FnMut(&str) -> crate::ImResult<Value> + 'a;
 
+#[derive(Debug, Clone)]
+pub(crate) struct DirectSecurePrekeyPublishRequest {
+    pub(crate) method: String,
+    pub(crate) params: Map<String, Value>,
+}
+
 pub(crate) struct DirectSecureClientInput<'a> {
     pub(crate) owner_identity_id: String,
     pub(crate) owner_did: String,
@@ -113,7 +119,20 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
         self.publish_prekey_bundle_rpc(&bundle)
     }
 
+    pub(crate) fn prepare_prekey_bundle_publish_request(
+        &mut self,
+    ) -> crate::ImResult<DirectSecurePrekeyPublishRequest> {
+        let bundle = self.build_fresh_prekey_bundle()?;
+        self.prekey_bundle_publish_request(&bundle)
+    }
+
     pub(crate) fn ensure_fresh_prekey_bundle(&mut self) -> crate::ImResult<PrekeyBundle> {
+        let bundle = self.build_fresh_prekey_bundle()?;
+        let _ = self.publish_prekey_bundle_rpc(&bundle);
+        Ok(bundle)
+    }
+
+    fn build_fresh_prekey_bundle(&mut self) -> crate::ImResult<PrekeyBundle> {
         self.ensure_fresh_one_time_prekeys(DEFAULT_ONE_TIME_PREKEY_BATCH_SIZE)?;
         let signed_prekey = match self.signed_prekey_store()?.load_latest_signed_prekey()? {
             Some((_private_key, metadata)) => metadata,
@@ -130,9 +149,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
                 metadata
             }
         };
-        let bundle = self.build_prekey_bundle(signed_prekey)?;
-        let _ = self.publish_prekey_bundle_rpc(&bundle);
-        Ok(bundle)
+        self.build_prekey_bundle(signed_prekey)
     }
 
     pub(crate) fn send_text(
@@ -487,6 +504,14 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
     }
 
     fn publish_prekey_bundle_rpc(&mut self, bundle: &PrekeyBundle) -> DirectSecureRpcResult {
+        let request = self.prekey_bundle_publish_request(bundle)?;
+        (self.rpc)(&request.method, request.params)
+    }
+
+    fn prekey_bundle_publish_request(
+        &mut self,
+        bundle: &PrekeyBundle,
+    ) -> crate::ImResult<DirectSecurePrekeyPublishRequest> {
         let one_time_prekeys = self.one_time_prekey_store()?.list_one_time_prekeys()?;
         let request = anp::direct_e2ee::prekey_bundle_publish_request(
             &self.prepared.owner_did,
@@ -494,7 +519,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
             bundle,
             &one_time_prekeys,
         );
-        self.call_request(request)
+        direct_secure_request_method_params(request)
     }
 
     fn build_prekey_bundle(
@@ -533,19 +558,9 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
     }
 
     fn call_request(&mut self, request: Value) -> DirectSecureRpcResult {
-        let object = request
-            .as_object()
-            .ok_or_else(|| missing_field("request"))?;
-        let method = object
-            .get("method")
-            .and_then(Value::as_str)
-            .ok_or_else(|| missing_field("method"))?
-            .to_owned();
-        let params = object
-            .get("params")
-            .and_then(Value::as_object)
-            .ok_or_else(|| missing_field("params"))?
-            .clone();
+        let request = direct_secure_request_method_params(request)?;
+        let method = request.method;
+        let params = request.params;
         (self.rpc)(&method, params)
     }
 
@@ -587,6 +602,25 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
             Err(err) => Err(map_direct_error(err)),
         }
     }
+}
+
+pub(crate) fn direct_secure_request_method_params(
+    request: Value,
+) -> crate::ImResult<DirectSecurePrekeyPublishRequest> {
+    let object = request
+        .as_object()
+        .ok_or_else(|| missing_field("request"))?;
+    let method = object
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or_else(|| missing_field("method"))?
+        .to_owned();
+    let params = object
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or_else(|| missing_field("params"))?
+        .clone();
+    Ok(DirectSecurePrekeyPublishRequest { method, params })
 }
 
 struct VerifiedPrekeyBundle {
@@ -699,7 +733,7 @@ fn decrypted_plaintext_result(plaintext: &ApplicationPlaintext) -> Map<String, V
     ])
 }
 
-fn map_direct_error(error: DirectE2eeError) -> crate::ImError {
+pub(crate) fn map_direct_error(error: DirectE2eeError) -> crate::ImError {
     crate::ImError::Serialization {
         detail: format!("direct E2EE: {error}"),
     }

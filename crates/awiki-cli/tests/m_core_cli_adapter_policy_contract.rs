@@ -100,9 +100,9 @@ fn runtime_listener_host_uses_public_realtime_runner_api() {
     }
     assert!(
         text.contains(".realtime()")
-            && text.contains(".run_until_shutdown_with_event_sink(")
+            && text.contains(".start_async(")
             && text.contains("im_core_realtime_adapter::listener_realtime_options()"),
-        "host runtime listener should call the public realtime runner service API outside compat"
+        "host runtime listener should call the public async realtime service API outside compat"
     );
 }
 

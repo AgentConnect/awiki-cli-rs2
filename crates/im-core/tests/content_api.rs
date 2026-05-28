@@ -77,6 +77,76 @@ fn content_public_api_dispatches_authenticated_content_rpc() {
     assert_eq!(requests[1].params, json!({}));
 }
 
+#[tokio::test]
+async fn content_public_async_api_dispatches_authenticated_content_rpc() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        json!({
+            "slug": "hello",
+            "title": "Hello",
+            "body": "Body",
+            "visibility": "draft"
+        }),
+        json!({
+            "count": 1,
+            "pages": [{
+                "slug": "hello",
+                "title": "Hello",
+                "visibility": "draft"
+            }]
+        }),
+    ]);
+    let core = fixture.core(server.base_url());
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_owned()))
+        .unwrap();
+
+    let created = client
+        .content()
+        .create_page_async(
+            PageDraft::new(
+                PageSlug::parse("hello").unwrap(),
+                "Hello",
+                "Body",
+                Visibility::Draft,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.slug.as_str(), "hello");
+    assert_eq!(created.title.as_deref(), Some("Hello"));
+    assert!(matches!(created.visibility, Some(Visibility::Draft)));
+
+    let listed = client
+        .content()
+        .list_pages_async(ContentPageQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(listed.items.len(), 1);
+    assert!(!listed.has_more);
+    assert_eq!(listed.items[0].slug.as_str(), "hello");
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/content/rpc");
+    assert_eq!(requests[0].rpc_method, "create");
+    assert_eq!(
+        requests[0].params,
+        json!({
+            "slug": "hello",
+            "title": "Hello",
+            "body": "Body",
+            "visibility": "draft"
+        })
+    );
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(requests[1].path, "/content/rpc");
+    assert_eq!(requests[1].rpc_method, "list");
+    assert_eq!(requests[1].params, json!({}));
+}
+
 #[test]
 fn content_public_api_dispatches_all_page_rpc_methods() {
     let fixture = Fixture::new();

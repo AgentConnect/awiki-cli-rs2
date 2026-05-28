@@ -72,6 +72,71 @@ fn identity_service_profile_uses_public_http_transport() {
         .all(|request| request.authorization.as_deref() == Some("Bearer test-token-for-alice")));
 }
 
+#[tokio::test]
+async fn identity_service_profile_async_uses_public_http_transport() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_me",
+            json!({}),
+            json!({
+                "did": "did:example:alice",
+                "handle": "alice.awiki.test",
+                "nick_name": "Alice Remote",
+                "bio": "Rust async public API",
+                "tags": ["sdk", "async"],
+                "profile_md": "## Alice",
+            }),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "update_me",
+            json!({
+                "nick_name": "Alice Async",
+                "bio": "async profile skeleton",
+                "tags": ["async"],
+                "profile_md": "# Alice Async",
+            }),
+            json!({
+                "did": "did:example:alice",
+                "handle": "alice.awiki.test",
+                "nick_name": "Alice Async",
+                "bio": "async profile skeleton",
+                "tags": ["async"],
+                "profile_md": "# Alice Async",
+            }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    let profile = client.identity().profile_async().await.unwrap();
+    assert_eq!(profile.subject.as_str(), "did:example:alice");
+    assert_eq!(profile.display_name.as_deref(), Some("Alice Remote"));
+    assert_eq!(profile.bio.as_deref(), Some("Rust async public API"));
+    assert_eq!(profile.tags, vec!["sdk", "async"]);
+
+    let updated = client
+        .identity()
+        .update_profile_async(ProfilePatch {
+            display_name: Some("Alice Async".to_string()),
+            bio: Some("async profile skeleton".to_string()),
+            tags: Some(vec!["async".to_string()]),
+            markdown: Some("# Alice Async".to_string()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(updated.subject.as_str(), "did:example:alice");
+    assert_eq!(updated.display_name.as_deref(), Some("Alice Async"));
+    assert_eq!(updated.markdown.as_deref(), Some("# Alice Async"));
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+    assert!(requests
+        .iter()
+        .all(|request| request.authorization.as_deref() == Some("Bearer test-token-for-alice")));
+}
+
 #[test]
 fn identity_profile_bridge_maps_get_me_result_to_sdk_profile() {
     let fixture = Fixture::new();
@@ -283,6 +348,86 @@ fn directory_service_exposes_contact_store_and_resolution_api() {
     assert_eq!(relation.relationship.as_deref(), Some("friend"));
     assert!(!relation.followed);
     assert!(!relation.messaged);
+}
+
+#[tokio::test]
+async fn directory_service_async_uses_actor_projection_and_resolution_api() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_public_profile",
+            json!({ "did": "did:example:bob" }),
+            public_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+    let peer = PeerRef::parse("bob.awiki.test", "").unwrap();
+
+    let resolved = client
+        .directory()
+        .resolve_peer_async(peer.clone())
+        .await
+        .unwrap();
+    assert_eq!(resolved.did.as_str(), "did:example:bob");
+    assert_eq!(resolved.handle.as_ref().unwrap().as_str(), "bob.awiki.test");
+    assert_eq!(
+        resolved.profile.as_ref().unwrap().display_name.as_deref(),
+        Some("Bob")
+    );
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 3);
+    assert!(requests
+        .iter()
+        .all(|request| request.authorization.as_deref() == Some("Bearer test-token-for-alice")));
+
+    let saved = client
+        .directory()
+        .save_contact_async(SaveContactRequest {
+            peer: peer.clone(),
+            did: Some(Did::parse("did:example:bob").unwrap()),
+            handle: Some(Handle::parse("bob.awiki.test", "").unwrap()),
+            display_name: Some("Bob".to_string()),
+            relationship: Some("friend".to_string()),
+            note: Some("Async contact".to_string()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(saved.did.as_str(), "did:example:bob");
+    assert_eq!(saved.handle.as_ref().unwrap().as_str(), "bob.awiki.test");
+    assert_eq!(saved.relationship.as_deref(), Some("friend"));
+
+    let contacts = client
+        .directory()
+        .contacts_async(ContactListQuery {
+            limit: Some(PageLimit(10)),
+        })
+        .await
+        .unwrap();
+    assert_eq!(contacts.items.len(), 1);
+    assert_eq!(contacts.items[0].did.as_str(), "did:example:bob");
+
+    let relation = client
+        .directory()
+        .relation_status_async(peer)
+        .await
+        .unwrap();
+    assert_eq!(relation.did.as_ref().unwrap().as_str(), "did:example:bob");
+    assert!(relation.is_contact);
+    assert_eq!(relation.relationship.as_deref(), Some("friend"));
 }
 
 #[test]

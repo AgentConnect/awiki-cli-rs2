@@ -368,9 +368,23 @@ impl App {
         host_runtime::listener_supervisor_run::run_foreground(resolved).map_err(internal_anyhow)
     }
 
+    pub async fn run_runtime_listener_run_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        host_runtime::listener_supervisor_run::run_foreground_async(resolved)
+            .await
+            .map_err(internal_anyhow)
+    }
+
     pub fn run_runtime_listener_service_run(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         host_runtime::listener_supervisor_run::run_service(resolved).map_err(internal_anyhow)
+    }
+
+    pub async fn run_runtime_listener_service_run_async(&self) -> Result<(), ExitError> {
+        let resolved = self.resolve_config()?;
+        host_runtime::listener_supervisor_run::run_service_async(resolved)
+            .await
+            .map_err(internal_anyhow)
     }
 
     fn run_runtime_listener_lifecycle(

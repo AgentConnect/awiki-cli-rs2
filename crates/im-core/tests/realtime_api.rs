@@ -17,7 +17,7 @@ fn realtime_service_api_shape_is_available_from_client_and_prelude() {
 }
 
 #[test]
-fn realtime_options_default_is_blocking_first_and_channel_ready() {
+fn realtime_options_default_is_async_session_ready() {
     let options = RealtimeOptions::default();
 
     assert_eq!(options.reconnect, ReconnectPolicy::Disabled);
@@ -32,81 +32,91 @@ fn realtime_options_default_is_blocking_first_and_channel_ready() {
     );
 }
 
-#[test]
-fn realtime_connect_and_runner_enter_transport_boundary() {
+#[tokio::test]
+async fn realtime_start_async_enters_transport_boundary() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
 
-    let connect = client.realtime().connect(RealtimeOptions::default());
-    assert!(matches!(connect, Err(ImError::AuthRequired)));
-
-    let exit = client
+    let start = client
         .realtime()
-        .run_until_shutdown(RealtimeOptions::default(), ShutdownSignal::pending())
-        .unwrap();
-    assert_eq!(exit.reason, RealtimeExitReason::AuthFailed);
-    assert_eq!(exit.reconnect_attempts, 0);
-    assert_eq!(
-        exit.warnings,
-        vec!["authentication is required".to_string()]
-    );
+        .start_async(RealtimeOptions::default())
+        .await;
+    assert!(matches!(start, Err(ImError::AuthRequired)));
 }
 
-#[test]
-fn realtime_run_until_shutdown_returns_immediate_shutdown_exit() {
+#[tokio::test]
+async fn realtime_start_async_exposes_session_stream_and_keeps_validation() {
     let core = test_core();
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_string()))
         .unwrap();
 
-    let exit = client
+    let zero_buffer = client
         .realtime()
-        .run_until_shutdown(RealtimeOptions::default(), ShutdownSignal::requested())
-        .unwrap();
-
-    assert_eq!(exit.reason, RealtimeExitReason::ShutdownRequested);
-    assert_eq!(exit.reconnect_attempts, 0);
-    assert!(exit.warnings.is_empty());
-}
-
-#[test]
-fn realtime_options_validate_without_touching_cli_runtime() {
-    let core = test_core();
-    let client = core
-        .client(IdentitySelector::LocalAlias("alice".to_string()))
-        .unwrap();
-
-    let zero_buffer = client.realtime().connect(RealtimeOptions {
-        event_buffer: 0,
-        ..RealtimeOptions::default()
-    });
+        .start_async(RealtimeOptions {
+            event_buffer: 0,
+            ..RealtimeOptions::default()
+        })
+        .await;
     assert!(matches!(
         zero_buffer,
         Err(ImError::InvalidInput { field: Some(field), .. }) if field == "event_buffer"
     ));
 
-    let bad_fixed = client.realtime().connect(RealtimeOptions {
-        reconnect: ReconnectPolicy::Fixed {
-            delay_ms: 0,
-            max_attempts: Some(1),
-        },
-        ..RealtimeOptions::default()
-    });
+    let auth_required = client
+        .realtime()
+        .start_async(RealtimeOptions::default())
+        .await;
+    assert!(matches!(auth_required, Err(ImError::AuthRequired)));
+}
+
+#[tokio::test]
+async fn realtime_options_validate_without_touching_cli_runtime() {
+    let core = test_core();
+    let client = core
+        .client(IdentitySelector::LocalAlias("alice".to_string()))
+        .unwrap();
+
+    let zero_buffer = client
+        .realtime()
+        .start_async(RealtimeOptions {
+            event_buffer: 0,
+            ..RealtimeOptions::default()
+        })
+        .await;
+    assert!(matches!(
+        zero_buffer,
+        Err(ImError::InvalidInput { field: Some(field), .. }) if field == "event_buffer"
+    ));
+
+    let bad_fixed = client
+        .realtime()
+        .start_async(RealtimeOptions {
+            reconnect: ReconnectPolicy::Fixed {
+                delay_ms: 0,
+                max_attempts: Some(1),
+            },
+            ..RealtimeOptions::default()
+        })
+        .await;
     assert!(matches!(
         bad_fixed,
         Err(ImError::InvalidInput { field: Some(field), .. }) if field == "reconnect.delay_ms"
     ));
 
-    let bad_exponential = client.realtime().connect(RealtimeOptions {
-        reconnect: ReconnectPolicy::Exponential {
-            base_delay_ms: 5000,
-            max_delay_ms: 1000,
-            max_attempts: None,
-        },
-        ..RealtimeOptions::default()
-    });
+    let bad_exponential = client
+        .realtime()
+        .start_async(RealtimeOptions {
+            reconnect: ReconnectPolicy::Exponential {
+                base_delay_ms: 5000,
+                max_delay_ms: 1000,
+                max_attempts: None,
+            },
+            ..RealtimeOptions::default()
+        })
+        .await;
     assert!(matches!(
         bad_exponential,
         Err(ImError::InvalidInput { field: Some(field), .. }) if field == "reconnect"

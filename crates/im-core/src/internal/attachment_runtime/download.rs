@@ -3,8 +3,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::internal::auth::session::SessionProvider;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
 use crate::internal::transport::{
+    AsyncAttachmentObjectTransport, AsyncAuthenticatedRpcTransport, AsyncRawJsonTransport,
     AttachmentObjectTransport, AuthenticatedRpcTransport, RawJsonTransport,
 };
 
@@ -227,6 +228,213 @@ where
     }
 }
 
+impl<'a, P, T> AttachmentDownloadRuntime<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport + AsyncRawJsonTransport + AsyncAttachmentObjectTransport,
+{
+    pub(crate) async fn download_async(
+        mut self,
+        input: AttachmentDownloadInput,
+    ) -> crate::ImResult<AttachmentDownloadResult> {
+        let sink = crate::internal::blob::sink::attachment_destination_to_sink(
+            input.request.destination,
+            input.request.overwrite,
+        )?;
+        if let crate::internal::blob::sink::AttachmentSink::LocalFile { path, overwrite } = &sink {
+            crate::internal::attachment_runtime::atomic_write::validate_destination(
+                path, *overwrite,
+            )?;
+        }
+        let target = download_target(&input.request.thread, input.resolved_peer_did)?;
+        self.session_provider
+            .ensure_session(auth_scope(&target))
+            .await?;
+        let selection = self
+            .find_selection_async(
+                &target,
+                input.request.message_id.as_str(),
+                input.request.attachment_id.as_deref().unwrap_or_default(),
+            )
+            .await?;
+        if selection.sender_did.trim().is_empty() {
+            return Err(crate::ImError::invalid_input(
+                Some("sender_did".to_string()),
+                "attachment message sender_did is required",
+            ));
+        }
+        let attachment_service = self
+            .resolve_attachment_service_async(&selection.sender_did)
+            .await?;
+        let ticket = self
+            .get_download_ticket_async(&target, &selection, &attachment_service)
+            .await?;
+        let object = self
+            .transport
+            .get_attachment_object_stream(&selection.object_uri, &ticket.download_ticket_b64u)
+            .await?;
+        let filename = Some(selection.filename.clone()).filter(|value| !value.trim().is_empty());
+        let object_content_type = object.content_type().map(ToOwned::to_owned);
+        let mime_type = Some(selection.mime_type.clone())
+            .filter(|value| !value.trim().is_empty())
+            .or(object_content_type);
+        let size_bytes = selection.size.trim().parse().ok();
+        let destination = match sink {
+            crate::internal::blob::sink::AttachmentSink::Memory => {
+                crate::attachments::DownloadedAttachmentDestination::Memory(
+                    object.into_bytes().await?,
+                )
+            }
+            crate::internal::blob::sink::AttachmentSink::LocalFile { path, overwrite } => {
+                let path = crate::internal::attachment_runtime::atomic_write::write_stream_atomic(
+                    &path, object, overwrite,
+                )
+                .await?;
+                crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
+            }
+        };
+        let sdk_result = crate::attachments::DownloadedAttachment {
+            attachment_id: selection.attachment_id.clone(),
+            filename,
+            mime_type,
+            size_bytes,
+            destination,
+            selection: Some(selection.clone()),
+            warnings: Vec::new(),
+        };
+        Ok(AttachmentDownloadResult {
+            sdk_result,
+            selection,
+            ticket,
+        })
+    }
+
+    async fn find_selection_async(
+        &mut self,
+        target: &DownloadTarget,
+        requested_message_id: &str,
+        requested_attachment_id: &str,
+    ) -> crate::ImResult<crate::attachments::selection::AttachmentSelection> {
+        let mut skip = 0_i64;
+        loop {
+            let (messages, has_more) = self.fetch_page_async(target, skip).await?;
+            match crate::attachments::selection::find_attachment_selection(
+                &messages,
+                requested_message_id,
+                requested_attachment_id,
+            ) {
+                Ok(selection) => return Ok(selection),
+                Err(crate::ImError::MessageNotFound { .. }) if has_more && !messages.is_empty() => {
+                    skip += messages.len() as i64;
+                }
+                Err(crate::ImError::MessageNotFound { message_id }) => {
+                    return Err(crate::ImError::MessageNotFound { message_id });
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    async fn fetch_page_async(
+        &mut self,
+        target: &DownloadTarget,
+        skip: i64,
+    ) -> crate::ImResult<(Vec<Value>, bool)> {
+        match target {
+            DownloadTarget::Direct { peer_did } => {
+                let params = crate::internal::wire::history::build_history_rpc_params(
+                    &crate::internal::wire::common::WireIdentity {
+                        did: self.client.did().as_str().to_string(),
+                    },
+                    crate::internal::wire::history::HistoryWireRequest {
+                        peer_did: peer_did.clone(),
+                        limit: ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE,
+                        cursor: None,
+                        skip,
+                    },
+                )?;
+                let raw = self
+                    .transport
+                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "direct.get_history", params)
+                    .await?;
+                Ok((
+                    values_from_array(raw.get("messages")),
+                    bool_from_value(raw.get("has_more")),
+                ))
+            }
+            DownloadTarget::Group { group } => {
+                let params = crate::internal::wire::group::build_group_messages_rpc_params(
+                    self.client.did().as_str(),
+                    group.as_str(),
+                    ATTACHMENT_DOWNLOAD_LOOKUP_PAGE_SIZE,
+                    None,
+                    skip,
+                )?;
+                let raw = self
+                    .transport
+                    .authenticated_rpc(MESSAGE_RPC_ENDPOINT, "group.list_messages", params)
+                    .await?;
+                Ok((
+                    values_from_array(raw.get("messages")),
+                    bool_from_value(raw.get("has_more")),
+                ))
+            }
+        }
+    }
+
+    async fn resolve_attachment_service_async(
+        &mut self,
+        sender_did: &str,
+    ) -> crate::ImResult<crate::internal::discovery::attachment::DiscoveredAttachmentService> {
+        let document = match crate::internal::discovery::did_document::resolve_did_document_async(
+            &mut self.transport,
+            sender_did,
+        )
+        .await
+        {
+            Ok(document) => document,
+            Err(remote_error) => local_identity_document_async(self.client, sender_did)
+                .await?
+                .ok_or(remote_error)?,
+        };
+        crate::internal::discovery::attachment::select_attachment_rpc_service_from_document(
+            sender_did, &document,
+        )
+    }
+
+    async fn get_download_ticket_async(
+        &mut self,
+        target: &DownloadTarget,
+        selection: &crate::attachments::selection::AttachmentSelection,
+        attachment_service: &crate::internal::discovery::attachment::DiscoveredAttachmentService,
+    ) -> crate::ImResult<crate::internal::wire::attachment::AttachmentDownloadTicketResult> {
+        let group_did = match target {
+            DownloadTarget::Direct { .. } => "",
+            DownloadTarget::Group { group } => group.as_str(),
+        };
+        let params =
+            crate::internal::wire::attachment::build_attachment_download_ticket_rpc_params(
+                self.client.did().as_str(),
+                &attachment_service.service_did,
+                &selection.sender_did,
+                &selection.message_id,
+                group_did,
+                selection,
+            )?;
+        let raw = self
+            .transport
+            .authenticated_rpc(
+                attachment_service.rpc_endpoint.as_str(),
+                "attachment.get_download_ticket",
+                params,
+            )
+            .await?;
+        serde_json::from_value(raw).map_err(|err| crate::ImError::Serialization {
+            detail: err.to_string(),
+        })
+    }
+}
+
 fn local_identity_document(
     client: &crate::core::ImClient,
     sender_did: &str,
@@ -244,6 +452,41 @@ fn local_identity_document(
         let identity_dir = paths.identity_root_dir.join(identity.dir_name);
         let document_path = first_existing_path(&identity_dir, &["did.json", "did_document.json"]);
         let raw = match std::fs::read(&document_path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(crate::ImError::CredentialFileUnreadable {
+                    path_kind: "did_document".to_string(),
+                    detail: err.to_string(),
+                });
+            }
+        };
+        return serde_json::from_slice(&raw).map(Some).map_err(|err| {
+            crate::ImError::Serialization {
+                detail: err.to_string(),
+            }
+        });
+    }
+    Ok(None)
+}
+
+async fn local_identity_document_async(
+    client: &crate::core::ImClient,
+    sender_did: &str,
+) -> crate::ImResult<Option<Value>> {
+    let sender_did = sender_did.trim();
+    if sender_did.is_empty() {
+        return Ok(None);
+    }
+    let paths = &client.core_inner().sdk_paths().identities;
+    let identities = local_registry_identities_async(paths).await?;
+    for identity in identities {
+        if identity.did != sender_did {
+            continue;
+        }
+        let identity_dir = paths.identity_root_dir.join(identity.dir_name);
+        let document_path = first_existing_path(&identity_dir, &["did.json", "did_document.json"]);
+        let raw = match tokio::fs::read(&document_path).await {
             Ok(raw) => raw,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
@@ -317,7 +560,27 @@ fn local_registry_identities(
             });
         }
     };
-    if let Ok(file) = serde_json::from_slice::<SdkRegistryFile>(&raw) {
+    parse_local_registry_identities(&raw)
+}
+
+async fn local_registry_identities_async(
+    paths: &crate::paths::IdentityRegistryPaths,
+) -> crate::ImResult<Vec<LocalRegistryIdentity>> {
+    let raw = match tokio::fs::read(&paths.registry_path).await {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(crate::ImError::CredentialFileUnreadable {
+                path_kind: "identity_registry".to_string(),
+                detail: err.to_string(),
+            });
+        }
+    };
+    parse_local_registry_identities(&raw)
+}
+
+fn parse_local_registry_identities(raw: &[u8]) -> crate::ImResult<Vec<LocalRegistryIdentity>> {
+    if let Ok(file) = serde_json::from_slice::<SdkRegistryFile>(raw) {
         if !file.identities.is_empty() {
             return Ok(file
                 .identities
@@ -339,7 +602,7 @@ fn local_registry_identities(
         }
     }
     let file: LegacyRegistryFile =
-        serde_json::from_slice(&raw).map_err(|err| crate::ImError::Serialization {
+        serde_json::from_slice(raw).map_err(|err| crate::ImError::Serialization {
             detail: err.to_string(),
         })?;
     Ok(file
@@ -646,6 +909,51 @@ mod tests {
         assert_eq!(calls.borrow().len(), 4);
     }
 
+    #[tokio::test]
+    async fn attachments_download_runtime_local_file_async_streams_to_file() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let output = fixture.root.join("downloads").join("report-async.txt");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+
+        let result = AttachmentDownloadRuntime::new(
+            &client,
+            ReadySessionProvider {
+                scopes: Rc::new(RefCell::new(Vec::new())),
+            },
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+            },
+        )
+        .download_async(AttachmentDownloadInput {
+            request: crate::attachments::DownloadAttachmentRequest {
+                thread: crate::messages::ThreadRef::Direct(
+                    crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
+                ),
+                message_id: crate::ids::MessageId::parse("msg-attachment-1").unwrap(),
+                attachment_id: Some("att-1".to_string()),
+                destination: crate::attachments::AttachmentDestination::LocalFile(output.clone()),
+                overwrite: false,
+            },
+            resolved_peer_did: None,
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            result.sdk_result.destination,
+            crate::attachments::DownloadedAttachmentDestination::LocalFile(path)
+                if path == output
+        ));
+        assert_eq!(fs::read(&output).unwrap(), b"downloaded bytes");
+        assert_no_attachment_temp_files(output.parent().unwrap());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 4);
+        let object = calls[3].object_get_stream("https://objects.example/att-1");
+        assert_eq!(object.ticket, "ticket-1");
+    }
+
     #[test]
     fn attachments_download_runtime_local_file_rejects_existing_destination_without_network() {
         let fixture = Fixture::new();
@@ -775,6 +1083,29 @@ mod tests {
         }
     }
 
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            self.scopes.borrow_mut().push(scope);
+            Ok(crate::auth::SessionBundle {
+                subject: crate::ids::Did::parse("did:example:alice")?,
+                scope,
+                expires_at: None,
+                refreshed: false,
+            })
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            unreachable!("attachment download runtime should not refresh through test provider")
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            unreachable!("attachment download runtime should not read status")
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
     }
@@ -856,6 +1187,64 @@ mod tests {
                 body: b"downloaded bytes".to_vec(),
                 content_type: Some("application/octet-stream".to_string()),
             })
+        }
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
+        }
+    }
+
+    impl crate::internal::transport::AsyncRawJsonTransport for RecordingTransport {
+        async fn get_json_url(
+            &mut self,
+            url: &str,
+            headers: BTreeMap<String, String>,
+        ) -> crate::ImResult<Value> {
+            RawJsonTransport::get_json_url(self, url, headers)
+        }
+    }
+
+    impl crate::internal::transport::AsyncAttachmentObjectTransport for RecordingTransport {
+        async fn put_attachment_object(
+            &mut self,
+            upload_uri: &str,
+            headers: BTreeMap<String, String>,
+            body: Vec<u8>,
+        ) -> crate::ImResult<()> {
+            AttachmentObjectTransport::put_attachment_object(self, upload_uri, headers, body)
+        }
+
+        async fn get_attachment_object(
+            &mut self,
+            object_uri: &str,
+            download_ticket: &str,
+        ) -> crate::ImResult<AttachmentObjectResponse> {
+            AttachmentObjectTransport::get_attachment_object(self, object_uri, download_ticket)
+        }
+
+        async fn get_attachment_object_stream(
+            &mut self,
+            object_uri: &str,
+            download_ticket: &str,
+        ) -> crate::ImResult<crate::internal::transport::AsyncAttachmentObjectResponse> {
+            self.calls.borrow_mut().push(RecordedCall::GetObjectStream {
+                object_uri: object_uri.to_string(),
+                ticket: download_ticket.to_string(),
+            });
+            Ok(
+                crate::internal::transport::AsyncAttachmentObjectResponse::Bytes {
+                    body: b"downloaded bytes".to_vec(),
+                    content_type: Some("application/octet-stream".to_string()),
+                    consumed: false,
+                },
+            )
         }
     }
 
@@ -966,6 +1355,10 @@ mod tests {
             object_uri: String,
             ticket: String,
         },
+        GetObjectStream {
+            object_uri: String,
+            ticket: String,
+        },
     }
 
     impl RecordedCall {
@@ -1000,6 +1393,16 @@ mod tests {
                     RecordedGetObject { ticket }
                 }
                 _ => panic!("expected object GET call {expected_uri}, got {self:?}"),
+            }
+        }
+
+        fn object_get_stream(&self, expected_uri: &str) -> RecordedGetObject<'_> {
+            match self {
+                Self::GetObjectStream { object_uri, ticket } => {
+                    assert_eq!(object_uri, expected_uri);
+                    RecordedGetObject { ticket }
+                }
+                _ => panic!("expected object streaming GET call {expected_uri}, got {self:?}"),
             }
         }
     }

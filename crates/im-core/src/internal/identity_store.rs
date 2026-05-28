@@ -194,6 +194,19 @@ impl<'a> IdentityStore<'a> {
         })
     }
 
+    pub(crate) async fn save_identity_async(
+        paths: crate::paths::IdentityRegistryPaths,
+        input: SaveIdentityInput,
+    ) -> crate::ImResult<StoredIdentity> {
+        crate::internal::runtime::worker::run_blocking(move || {
+            IdentityStore::new(&paths).save_identity(input)
+        })
+        .await
+        .map_err(|err| crate::ImError::Internal {
+            message: err.to_string(),
+        })?
+    }
+
     pub(crate) fn promote_recovered_handle(
         &self,
         final_identity_name: &str,

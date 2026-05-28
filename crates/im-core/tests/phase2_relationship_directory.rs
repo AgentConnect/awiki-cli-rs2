@@ -97,6 +97,96 @@ fn directory_relationship_follow_persists_projection_and_status() {
     assert_eq!(target_handle, "bob.awiki.test");
 }
 
+#[tokio::test]
+async fn directory_relationship_follow_async_persists_projection_and_status() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/handle/rpc",
+            "lookup",
+            json!({ "handle": "bob.awiki.test" }),
+            handle_lookup_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "get_public_profile",
+            json!({ "did": "did:example:bob" }),
+            public_profile_value(),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/profile/rpc",
+            "resolve",
+            json!({ "did": "did:example:bob" }),
+            json!({ "did": "did:example:bob", "status": "active" }),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/relationships/rpc",
+            "follow",
+            json!({ "target_did": "did:example:bob" }),
+            json!({ "ok": true, "is_friend": true }),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/relationships/rpc",
+            "get_status",
+            json!({ "target_did": "did:example:bob" }),
+            json!({
+                "is_following": true,
+                "is_follower": true,
+                "is_friend": true,
+                "is_blocked": false,
+                "is_blocked_by": false,
+            }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    let result = client
+        .directory()
+        .follow_async(FollowRequest {
+            peer: PeerRef::parse("bob.awiki.test", "").unwrap(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(result.did.as_str(), "did:example:bob");
+    assert!(result.is_friend);
+    assert!(result.relation.is_following);
+    assert!(result.relation.is_follower);
+    assert!(result.relation.is_friend);
+    assert!(result.relation.is_contact);
+    assert_eq!(result.relation.relationship.as_deref(), Some("following"));
+    assert!(result.warnings.is_empty());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 5);
+    assert!(requests
+        .iter()
+        .all(|request| request.authorization.as_deref() == Some("Bearer test-token-for-alice")));
+
+    let connection = rusqlite::Connection::open(fixture.root.join("local").join("im.sqlite"))
+        .expect("open im-core local state");
+    let (followed, relationship, handle): (i64, String, String) = connection
+        .query_row(
+            "SELECT followed, relationship, handle FROM contacts WHERE owner_identity_id = ?1 AND did = ?2",
+            ("alice-id", "did:example:bob"),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(followed, 1);
+    assert_eq!(relationship, "following");
+    assert_eq!(handle, "bob.awiki.test");
+
+    let (event_type, status, target_handle): (String, String, String) = connection
+        .query_row(
+            "SELECT event_type, status, target_handle FROM relationship_events WHERE owner_identity_id = ?1 AND target_did = ?2",
+            ("alice-id", "did:example:bob"),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(event_type, "followed");
+    assert_eq!(status, "applied");
+    assert_eq!(target_handle, "bob.awiki.test");
+}
+
 #[test]
 fn directory_relationship_unfollow_did_updates_projection() {
     let fixture = Fixture::new();
@@ -231,6 +321,78 @@ fn directory_relationship_lists_hide_service_user_ids() {
         Some("2026-05-22T01:00:00Z")
     );
 
+    let output = serde_json::to_value(&following.items[0]).unwrap();
+    assert!(output.get("from_user_id").is_none());
+    assert!(output.get("to_user_id").is_none());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 2);
+}
+
+#[tokio::test]
+async fn directory_relationship_async_lists_hide_service_user_ids() {
+    let fixture = Fixture::new();
+    let server = RpcTestServer::spawn(vec![
+        ExpectedRpc::new(
+            "/user-service/did/relationships/rpc",
+            "get_followers",
+            json!({ "limit": 2, "offset": 4 }),
+            json!({
+                "items": [{
+                    "from_did": "did:example:carol",
+                    "to_did": "did:example:alice",
+                    "from_user_id": "internal-carol",
+                    "to_user_id": "internal-alice",
+                    "created_at": "2026-05-22T00:00:00Z"
+                }]
+            }),
+        ),
+        ExpectedRpc::new(
+            "/user-service/did/relationships/rpc",
+            "get_following",
+            json!({ "limit": 3, "offset": 0 }),
+            json!({
+                "items": [{
+                    "from_did": "did:example:alice",
+                    "to_did": "did:example:dave",
+                    "from_user_id": "internal-alice",
+                    "to_user_id": "internal-dave",
+                    "created_at": "2026-05-22T01:00:00Z"
+                }]
+            }),
+        ),
+    ]);
+    let client = fixture.client_with_base_url("alice", server.base_url());
+
+    let followers = client
+        .directory()
+        .followers_async(RelationshipListQuery {
+            limit: Some(PageLimit(2)),
+            offset: Some(4),
+            hydrate_profiles: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(followers.items.len(), 1);
+    assert_eq!(
+        followers.items[0].did.as_ref().unwrap().as_str(),
+        "did:example:carol"
+    );
+
+    let following = client
+        .directory()
+        .following_async(RelationshipListQuery {
+            limit: Some(PageLimit(3)),
+            offset: None,
+            hydrate_profiles: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(following.items.len(), 1);
+    assert_eq!(
+        following.items[0].did.as_ref().unwrap().as_str(),
+        "did:example:dave"
+    );
     let output = serde_json::to_value(&following.items[0]).unwrap();
     assert!(output.get("from_user_id").is_none());
     assert!(output.get("to_user_id").is_none());

@@ -41,4 +41,4 @@ pub mod self_update;
 pub mod workspace_config;
 pub mod workspace_upgrade;
 
-pub use cli_shell::execute;
+pub use cli_shell::{execute, execute_async};

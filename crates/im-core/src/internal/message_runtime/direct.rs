@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use crate::internal::auth::session::SessionProvider;
-use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::auth::session::{AsyncSessionProvider, SessionProvider};
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AuthenticatedRpcTransport};
 
 pub(crate) const MESSAGE_RPC_ENDPOINT: &str = "/im/rpc";
 
@@ -89,6 +89,67 @@ where
             payload.method.as_str(),
             params,
         )?;
+        let mut result = direct_result_from_value(raw.clone())?;
+        fill_direct_result_defaults(&mut result, &payload.meta, &target_did);
+        let sdk_result =
+            sdk_result_from_direct_result(&result, self.client.did().clone(), peer, text, kind)?;
+        Ok(DirectTextSendResult {
+            sdk_result,
+            target_did,
+            message_type,
+            text: text.to_string(),
+            raw,
+        })
+    }
+}
+
+impl<'a, P, T> DirectTextSender<'a, P, T>
+where
+    P: AsyncSessionProvider,
+    T: AsyncAuthenticatedRpcTransport,
+{
+    pub(crate) async fn send_async(
+        mut self,
+        input: DirectTextSend,
+    ) -> crate::ImResult<DirectTextSendResult> {
+        let (peer, target_did) = direct_target(&input.request.target, input.resolved_target_did)?;
+        let (text, kind) = text_body(&input.request.body)?;
+        validate_plain_security(&input.request.security)?;
+
+        self.session_provider
+            .ensure_session(crate::auth::AuthScope::Messaging)
+            .await?;
+
+        let message_type = message_type(&kind);
+        let content_type =
+            crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
+        let payload = crate::internal::wire::direct::build_direct_text_payload(
+            self.client.did().as_str(),
+            &target_did,
+            text,
+            content_type,
+        )?;
+        let credentials = match input.credentials {
+            Some(credentials) => credentials,
+            None => load_credentials(self.client)?,
+        };
+        let origin_proof = crate::internal::proof::origin::build_origin_proof(
+            &crate::internal::proof::origin::OriginProofIdentity {
+                identity_name: credentials.identity_name,
+                did_document: credentials.did_document,
+                key1_private_pem: credentials.key1_private_pem,
+            },
+            &payload,
+        )?;
+        let params = serde_json::json!({
+            "meta": payload.meta.clone(),
+            "auth": crate::internal::proof::origin::origin_auth_value(&origin_proof),
+            "body": payload.body.clone(),
+        });
+        let raw = self
+            .transport
+            .authenticated_rpc(MESSAGE_RPC_ENDPOINT, payload.method.as_str(), params)
+            .await?;
         let mut result = direct_result_from_value(raw.clone())?;
         fill_direct_result_defaults(&mut result, &payload.meta, &target_did);
         let sdk_result =
@@ -506,6 +567,59 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn messages_direct_text_sender_async_builds_wire_and_maps_result() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sender = DirectTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "message_id": "msg-async-direct",
+                    "operation_id": "op-async-direct",
+                    "target_did": "did:example:bob",
+                    "accepted_at": "2026-05-21T00:00:00Z",
+                    "delivery_state": "accepted"
+                }),
+            },
+        );
+
+        let result = sender
+            .send_async(DirectTextSend {
+                request: direct_text_request(
+                    "bob.awiki.test",
+                    "hello async direct",
+                    crate::messages::MessageKind::Markdown,
+                ),
+                resolved_target_did: Some("did:example:bob".to_string()),
+                credentials: Some(fixture.credentials()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.target_did, "did:example:bob");
+        assert_eq!(result.message_type, "markdown");
+        assert_eq!(result.text, "hello async direct");
+        assert_eq!(result.sdk_result.message.id.as_str(), "msg-async-direct");
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].endpoint, MESSAGE_RPC_ENDPOINT);
+        assert_eq!(calls[0].method, "direct.send");
+        assert_eq!(calls[0].params["meta"]["sender_did"], "did:example:alice");
+        assert_eq!(
+            calls[0].params["meta"]["target"],
+            json!({"kind": "agent", "did": "did:example:bob"})
+        );
+        assert_eq!(
+            calls[0].params["body"],
+            json!({"text": "hello async direct"})
+        );
+    }
+
     #[derive(Clone)]
     struct ReadySessionProvider;
 
@@ -531,6 +645,23 @@ mod tests {
         }
     }
 
+    impl crate::internal::auth::session::AsyncSessionProvider for ReadySessionProvider {
+        async fn ensure_session(
+            &self,
+            scope: crate::auth::AuthScope,
+        ) -> crate::ImResult<crate::auth::SessionBundle> {
+            SessionProvider::ensure_session(self, scope)
+        }
+
+        async fn refresh_session(&self) -> crate::ImResult<crate::auth::SessionUpdate> {
+            SessionProvider::refresh_session(self)
+        }
+
+        async fn status(&self) -> crate::ImResult<crate::auth::AuthStatus> {
+            SessionProvider::status(self)
+        }
+    }
+
     struct RecordingTransport {
         calls: Rc<RefCell<Vec<RecordedCall>>>,
         response: Value,
@@ -549,6 +680,17 @@ mod tests {
                 params,
             });
             Ok(self.response.clone())
+        }
+    }
+
+    impl crate::internal::transport::AsyncAuthenticatedRpcTransport for RecordingTransport {
+        async fn authenticated_rpc(
+            &mut self,
+            endpoint: &str,
+            method: &str,
+            params: Value,
+        ) -> crate::ImResult<Value> {
+            AuthenticatedRpcTransport::authenticated_rpc(self, endpoint, method, params)
         }
     }
 

@@ -24,6 +24,30 @@ pub(crate) fn project_group_snapshot(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_snapshot_async(
+    client: &crate::core::ImClient,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let Some(record) = group_record(client, result) else {
+        return Ok(());
+    };
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .upsert_group(record)
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_snapshot_async(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn project_group_summaries(
     client: &crate::core::ImClient,
     result: &crate::groups::GroupReadResult,
@@ -47,6 +71,30 @@ pub(crate) fn project_group_summaries(
     _client: &crate::core::ImClient,
     _result: &crate::groups::GroupReadResult,
 ) {
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_summaries_async(
+    client: &crate::core::ImClient,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let records = group_summary_records(client, result);
+    if records.is_empty() {
+        return Ok(());
+    }
+    let db = client.core_inner().local_state_db().await?;
+    for record in records {
+        db.upsert_group(record).await?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_summaries_async(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    Ok(())
 }
 
 #[cfg(feature = "sqlite")]
@@ -86,6 +134,42 @@ pub(crate) fn project_group_members(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_members_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let members = group_member_records(client, group_did, result);
+    let raw_has_members = result
+        .raw_response()
+        .and_then(|raw| raw.get("members"))
+        .is_some();
+    if members.is_empty() && !raw_has_members {
+        return Ok(());
+    }
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .replace_group_members(
+            client.did().as_str(),
+            group_storage_key(group_did),
+            members,
+            client.current_identity().id.as_str(),
+        )
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_members_async(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn project_group_messages(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -112,6 +196,33 @@ pub(crate) fn project_group_messages(
 }
 
 #[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_messages_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+    result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    let records = group_message_records(client, group_did, result);
+    if records.is_empty() {
+        return Ok(());
+    }
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .store_messages(records)
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_messages_async(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) -> crate::ImResult<()> {
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn project_group_left(client: &crate::core::ImClient, group_did: &str) {
     let Ok(mut connection) = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
@@ -129,6 +240,32 @@ pub(crate) fn project_group_left(client: &crate::core::ImClient, group_did: &str
 
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn project_group_left(_client: &crate::core::ImClient, _group_did: &str) {}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn project_group_left_async(
+    client: &crate::core::ImClient,
+    group_did: &str,
+) -> crate::ImResult<()> {
+    client
+        .core_inner()
+        .local_state_db()
+        .await?
+        .mark_group_left(
+            client.did().as_str(),
+            group_storage_key(group_did),
+            group_did,
+            client.current_identity().id.as_str(),
+        )
+        .await
+}
+
+#[cfg(not(feature = "sqlite"))]
+pub(crate) async fn project_group_left_async(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+) -> crate::ImResult<()> {
+    Ok(())
+}
 
 #[cfg(feature = "sqlite")]
 fn group_record(

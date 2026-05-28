@@ -85,6 +85,38 @@ pub(crate) fn project_directory_resolution(
     let _ = super::records::upsert_contact(&mut connection, record);
 }
 
+pub(crate) async fn project_directory_resolution_async(
+    client: &crate::core::ImClient,
+    resolution: &crate::directory::DirectoryResolution,
+) -> crate::ImResult<()> {
+    let record = record_from_directory_resolution(client, resolution);
+    let db = client.core_inner().local_state_db().await?;
+    db.upsert_contact(record).await
+}
+
+fn record_from_directory_resolution(
+    client: &crate::core::ImClient,
+    resolution: &crate::directory::DirectoryResolution,
+) -> ContactRecord {
+    resolution
+        .profile
+        .as_ref()
+        .map(|profile| record_from_profile(client, profile, "directory.profile_projection"))
+        .unwrap_or_else(|| ContactRecord {
+            owner_identity_id: client.current_identity().id.as_str().to_string(),
+            owner_did: client.did().as_str().to_string(),
+            did: resolution.did.as_str().to_string(),
+            handle: resolution
+                .handle
+                .as_ref()
+                .map(|handle| handle.as_str().to_string())
+                .unwrap_or_default(),
+            source_type: "directory.resolve_peer".to_string(),
+            credential_name: client.current_identity().id.as_str().to_string(),
+            ..ContactRecord::default()
+        })
+}
+
 fn metadata_json(metadata: &[crate::identity::ProfileAttribute]) -> String {
     if metadata.is_empty() {
         return String::new();

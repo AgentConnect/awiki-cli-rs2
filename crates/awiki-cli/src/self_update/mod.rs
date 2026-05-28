@@ -271,8 +271,8 @@ mod tests {
         let proxy = TestServer::new(vec![TestResponse::ok(
             r#"{"version":"1.0.11","awikiCli":{"minSupportedVersion":"1.0.9"}}"#,
         )]);
-        let _proxy = EnvVar::set("HTTP_PROXY", &proxy.url(""));
         let _urls = TestUrls::set(vec!["http://registry.example/latest".to_string()]);
+        let _proxy = EnvVar::set("HTTP_PROXY", &proxy.url(""));
         let temp = TempDir::new();
 
         let outcome = super::check_fresh(&resolved(temp.path()));

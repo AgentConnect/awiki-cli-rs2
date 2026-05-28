@@ -145,4 +145,4 @@ for path in [Path("crates/im-core-dart/src/frb_generated.rs"), *Path("packages/a
     path.write_text("\n".join(line.rstrip() for line in text.splitlines()) + "\n")
 PY
 
-rustfmt "crates/im-core-dart/src/frb_generated.rs"
+rustfmt --edition 2021 "crates/im-core-dart/src/frb_generated.rs"

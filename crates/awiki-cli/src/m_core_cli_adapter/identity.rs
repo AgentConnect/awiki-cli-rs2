@@ -192,10 +192,10 @@ pub fn register_handle_request(
             display_name: trimmed_optional(&string_flag(command, "display-name")),
             avatar_url: trimmed_optional(&string_flag(command, "avatar-url")),
         },
-        make_default: !command
+        make_default: command
             .flags
             .get("no-default")
-            .is_some_and(|value| value == "true"),
+            .is_none_or(|value| value != "true"),
     })
 }
 
@@ -227,6 +227,30 @@ pub fn register_handle_via_im_core(
     let result = core
         .identities()
         .register_handle(request.clone())
+        .map_err(|err| super::map_im_error(err, "id register"))?;
+    register_handle_command_result(result, &request)
+}
+
+pub async fn register_handle_plan_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    command: &ParsedCommand,
+    identity_flag: &str,
+) -> Result<CommandResult, ExitError> {
+    let request = register_handle_command_request(command, identity_flag)?;
+    register_handle_plan_command_result_async(resolved, request).await
+}
+
+pub async fn register_handle_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    command: &ParsedCommand,
+    identity_flag: &str,
+) -> Result<CommandResult, ExitError> {
+    let request = register_handle_command_request(command, identity_flag)?;
+    let core = super::build_im_core_async(resolved).await?;
+    let result = core
+        .identities()
+        .register_handle_async(request.clone())
+        .await
         .map_err(|err| super::map_im_error(err, "id register"))?;
     register_handle_command_result(result, &request)
 }
@@ -306,6 +330,41 @@ pub fn list_identities_via_im_core(
     })
 }
 
+pub async fn list_identities_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+) -> Result<CommandResult, ExitError> {
+    let core = super::build_im_core_async(resolved).await?;
+    let identities = core
+        .identities()
+        .list_async()
+        .await
+        .map_err(|err| super::map_im_error(err, "id list"))?;
+    let summaries = cli_identity_summaries_from_sdk(&identities);
+    let identity_count = summaries.len();
+    let current = identities
+        .iter()
+        .find(|identity| identity.is_default)
+        .map(|identity| cli_identity_summary_from_sdk(identity, &summaries));
+    let mut warnings = Vec::new();
+    if current
+        .as_ref()
+        .is_some_and(|identity| !identity.user_state.ready_for_messaging)
+    {
+        warnings.push(
+            "The default identity is local-only. Register or recover a handle-backed user before using messaging."
+                .to_string(),
+        );
+    }
+    Ok(CommandResult {
+        data: json!({
+            "identities": summaries,
+            "default_identity": current,
+        }),
+        summary: format!("Found {identity_count} local identities"),
+        warnings,
+    })
+}
+
 pub fn current_identity_via_im_core(
     resolved: &crate::workspace_config::Resolved,
 ) -> Result<CommandResult, ExitError> {
@@ -313,6 +372,38 @@ pub fn current_identity_via_im_core(
     let default_identity = core
         .identities()
         .default_identity()
+        .map_err(|err| super::map_im_error(err, "id current"))?;
+    let Some(default_identity) = default_identity else {
+        return Ok(CommandResult {
+            data: json!({ "identity": Value::Null }),
+            summary: "No default identity is configured".to_string(),
+            warnings: Vec::new(),
+        });
+    };
+    let current = cli_identity_summary_from_sdk(&default_identity, &[]);
+    let mut summary = format!("Current identity is {}", current.identity_name);
+    let mut warnings = Vec::new();
+    if !current.user_state.ready_for_messaging {
+        summary = format!("Current identity {} is local-only", current.identity_name);
+        warnings.push(
+            "Register or recover a handle-backed user before using messaging commands.".to_string(),
+        );
+    }
+    Ok(CommandResult {
+        data: json!({ "identity": current }),
+        summary,
+        warnings,
+    })
+}
+
+pub async fn current_identity_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+) -> Result<CommandResult, ExitError> {
+    let core = super::build_im_core_async(resolved).await?;
+    let default_identity = core
+        .identities()
+        .default_identity_async()
+        .await
         .map_err(|err| super::map_im_error(err, "id current"))?;
     let Some(default_identity) = default_identity else {
         return Ok(CommandResult {
@@ -374,6 +465,44 @@ pub fn identity_status_via_im_core(
     })
 }
 
+pub async fn identity_status_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+) -> Result<CommandResult, ExitError> {
+    let core = super::build_im_core_async(resolved).await?;
+    let identities = core
+        .identities()
+        .list_async()
+        .await
+        .map_err(|err| super::map_im_error(err, "id status"))?;
+    let summaries = cli_identity_summaries_from_sdk(&identities);
+    let active_identity = identities
+        .iter()
+        .find(|identity| identity.is_default)
+        .map(|identity| cli_identity_summary_from_sdk(identity, &summaries));
+    let mut warnings = Vec::new();
+    let mut summary = "Identity store is ready".to_string();
+    if active_identity.is_none() {
+        summary = "No default identity is configured yet".to_string();
+    } else if active_identity
+        .as_ref()
+        .is_some_and(|identity| !identity.user_state.ready_for_messaging)
+    {
+        summary = "Default identity exists but user setup is incomplete".to_string();
+        warnings.push(
+            "Current identity is local-only. Register or recover a handle-backed user before using messaging."
+                .to_string(),
+        );
+    }
+    Ok(CommandResult {
+        data: json!({
+            "active_identity": active_identity,
+            "identity_count": summaries.len(),
+        }),
+        summary,
+        warnings,
+    })
+}
+
 pub fn use_identity_plan_via_im_core(identity_name: &str) -> CommandResult {
     CommandResult {
         data: json!({
@@ -396,6 +525,34 @@ pub fn use_identity_via_im_core(
     let change = core
         .identities()
         .plan_default_identity_change(IdentitySelector::LocalAlias(identity_name.to_string()))
+        .map_err(|err| super::map_im_error(err, "id use"))?;
+    let target_name = change
+        .next
+        .local_alias
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(identity_name);
+    write_default_identity_file(&resolved.paths.identity_dir, target_name)?;
+    let summary = cli_identity_summary_from_sdk(&change.next, &[]);
+    Ok(CommandResult {
+        data: json!({
+            "action": "set_default_identity",
+            "identity": summary,
+        }),
+        summary: format!("Default identity switched to {target_name}"),
+        warnings: Vec::new(),
+    })
+}
+
+pub async fn use_identity_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    identity_name: &str,
+) -> Result<CommandResult, ExitError> {
+    let core = super::build_im_core_async(resolved).await?;
+    let change = core
+        .identities()
+        .plan_default_identity_change_async(IdentitySelector::LocalAlias(identity_name.to_string()))
+        .await
         .map_err(|err| super::map_im_error(err, "id use"))?;
     let target_name = change
         .next
@@ -477,6 +634,30 @@ pub fn bind_contact_via_im_core(
         let result = client
             .identity()
             .bind_contact(request.sdk)
+            .map_err(|err| super::map_im_error(err, "id bind"))?;
+        bind_command_result(&identity, result)?
+    };
+    Ok(result)
+}
+
+pub async fn bind_contact_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    identity_flag: &str,
+    command: &ParsedCommand,
+) -> Result<CommandResult, ExitError> {
+    let request = bind_contact_command_request(command)?;
+    let client =
+        super::build_im_client_async(resolved, cli_identity_selector(identity_flag)).await?;
+    let identity = cli_identity_summary_from_sdk(client.current_identity(), &[]);
+    let result = if request.sdk.wait_for_email_verification
+        && matches!(request.sdk.method, ContactBindingMethod::Email { .. })
+    {
+        bind_email_wait_via_im_core_async(&client, &identity, request).await?
+    } else {
+        let result = client
+            .identity()
+            .bind_contact_async(request.sdk)
+            .await
             .map_err(|err| super::map_im_error(err, "id bind"))?;
         bind_command_result(&identity, result)?
     };
@@ -568,6 +749,29 @@ pub fn recover_handle_plan_via_im_core(
     })
 }
 
+pub async fn recover_handle_plan_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    request: RecoverHandleCommandRequest,
+) -> Result<CommandResult, ExitError> {
+    let core = super::build_im_core_async(resolved).await?;
+    let plan = core
+        .identities()
+        .recover_handle_plan_async(RecoverHandlePlanRequest {
+            handle: Handle::parse(request.handle.clone(), &resolved.did_domain)
+                .map_err(|err| super::map_im_error(err, "id recover"))?,
+            raw_handle: Some(request.handle.clone()),
+            phone: request.phone.clone(),
+            otp: trimmed_optional(&request.otp),
+        })
+        .await
+        .map_err(|err| super::map_im_error(err, "id recover"))?;
+    Ok(CommandResult {
+        data: json!({ "plan": plan }),
+        summary: "Dry run: handle recovery planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
 pub fn recover_handle_via_im_core(
     resolved: &crate::workspace_config::Resolved,
     request: RecoverHandleCommandRequest,
@@ -612,6 +816,52 @@ pub fn recover_handle_via_im_core(
     recover_handle_command_result(result, &plan)
 }
 
+pub async fn recover_handle_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    request: RecoverHandleCommandRequest,
+) -> Result<CommandResult, ExitError> {
+    let phone = request.phone.trim().to_string();
+    let otp = request.otp.trim().to_string();
+    if request.handle.trim().is_empty() || phone.is_empty() {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "invalid input: handle and phone are required",
+            "Usage: awiki-cli id recover --handle <handle> --phone <phone> [--otp <code>]",
+        ));
+    }
+
+    let core = super::build_im_core_async(resolved).await?;
+    let plan = core
+        .identities()
+        .recover_handle_plan_async(RecoverHandlePlanRequest {
+            handle: Handle::parse(request.handle.clone(), &resolved.did_domain)
+                .map_err(|err| super::map_im_error(err, "id recover"))?,
+            raw_handle: Some(request.handle.clone()),
+            phone: request.phone.clone(),
+            otp: None,
+        })
+        .await
+        .map_err(|err| super::map_im_error(err, "id recover"))?;
+    let sdk_request = recover_handle_request(
+        request.handle.clone(),
+        request.phone.clone(),
+        trimmed_optional(&request.otp),
+        (!otp.is_empty()).then(|| RecoverHandleLocalFinalizeRequest {
+            raw_handle: Some(request.handle.clone()),
+            active_identity_name: Some(resolved.active_identity.clone()),
+            config_file_path: Some(std::path::PathBuf::from(&resolved.paths.config_file)),
+        }),
+        &resolved.did_domain,
+    )?;
+    let result = core
+        .identities()
+        .recover_handle_async(sdk_request)
+        .await
+        .map_err(|err| super::map_im_error(err, "id recover"))?;
+    recover_handle_command_result(result, &plan)
+}
+
 pub fn recover_handle_command_via_im_core(
     resolved: &crate::workspace_config::Resolved,
     request: RecoverHandleCommandRequest,
@@ -622,6 +872,21 @@ pub fn recover_handle_command_via_im_core(
         recover_handle_plan_via_im_core(resolved, request)
     } else {
         recover_handle_via_im_core(resolved, request)
+    }?;
+    append_recover_identity_warning(&mut result, identity_changed);
+    Ok(result)
+}
+
+pub async fn recover_handle_command_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    request: RecoverHandleCommandRequest,
+    dry_run: bool,
+    identity_changed: bool,
+) -> Result<CommandResult, ExitError> {
+    let mut result = if dry_run {
+        recover_handle_plan_via_im_core_async(resolved, request).await
+    } else {
+        recover_handle_via_im_core_async(resolved, request).await
     }?;
     append_recover_identity_warning(&mut result, identity_changed);
     Ok(result)
@@ -665,6 +930,38 @@ fn bind_email_wait_via_im_core(
     bind_command_result(identity, result)
 }
 
+async fn bind_email_wait_via_im_core_async(
+    client: &im_core::ImClient,
+    identity: &CliIdentitySummary,
+    request: BindContactCommandRequest,
+) -> Result<CommandResult, ExitError> {
+    let email = match &request.sdk.method {
+        ContactBindingMethod::Email { email } => email.clone(),
+        _ => unreachable!("wait request is only used for email"),
+    };
+    let mut result = client
+        .identity()
+        .bind_contact_async(request.sdk.clone())
+        .await
+        .map_err(|err| super::map_im_error(err, "id bind"))?;
+    if result.state == ContactBindingState::Completed {
+        return bind_command_result(identity, result);
+    }
+    if result.state != ContactBindingState::Pending {
+        return bind_command_result(identity, result);
+    }
+
+    let wait_result = wait_for_email_verification_via_im_core_async(
+        client,
+        &email,
+        request.verification_timeout,
+        request.poll_interval_seconds,
+    )
+    .await?;
+    result = wait_result;
+    bind_command_result(identity, result)
+}
+
 fn wait_for_email_verification_via_im_core(
     client: &im_core::ImClient,
     email: &str,
@@ -687,6 +984,34 @@ fn wait_for_email_verification_via_im_core(
             return Ok(result);
         }
         std::thread::sleep(std::time::Duration::from_secs_f64(poll_interval_secs));
+    }
+}
+
+async fn wait_for_email_verification_via_im_core_async(
+    client: &im_core::ImClient,
+    email: &str,
+    timeout_secs: i64,
+    poll_interval_secs: f64,
+) -> Result<ContactBindingResult, ExitError> {
+    let timeout_secs = if timeout_secs <= 0 { 300 } else { timeout_secs };
+    let poll_interval_secs = if poll_interval_secs <= 0.0 {
+        5.0
+    } else {
+        poll_interval_secs
+    };
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs as u64);
+    loop {
+        let result = client
+            .identity()
+            .bind_email_status_async(email.to_string())
+            .await
+            .map_err(|err| super::map_im_error(err, "id bind"))?;
+        if result.state == ContactBindingState::Completed || tokio::time::Instant::now() >= deadline
+        {
+            return Ok(result);
+        }
+        tokio::time::sleep(std::time::Duration::from_secs_f64(poll_interval_secs)).await;
     }
 }
 
@@ -745,6 +1070,20 @@ pub fn get_self_profile_via_im_core(
     Ok(profile_self_command_result(profile.to_wire_profile_value()))
 }
 
+pub async fn get_self_profile_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    identity_flag: &str,
+) -> Result<CommandResult, ExitError> {
+    let client =
+        super::build_im_client_async(resolved, cli_identity_selector(identity_flag)).await?;
+    let profile = client
+        .identity()
+        .profile_async()
+        .await
+        .map_err(|err| super::map_im_error(err, "id profile get"))?;
+    Ok(profile_self_command_result(profile.to_wire_profile_value()))
+}
+
 pub fn get_public_profile_via_im_core(
     resolved: &crate::workspace_config::Resolved,
     identity_flag: &str,
@@ -785,6 +1124,56 @@ pub fn get_public_profile_via_im_core(
     let result = client
         .directory()
         .public_profile(IdentitySubject::Did(did))
+        .map_err(|err| super::map_im_error(err, "id profile get"))?;
+    Ok(profile_public_command_result(
+        Value::Object(subject),
+        result.profile.to_wire_profile_value(),
+    ))
+}
+
+pub async fn get_public_profile_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    identity_flag: &str,
+    request: GetProfileCommandRequest,
+) -> Result<CommandResult, ExitError> {
+    let Some(client) =
+        build_optional_directory_client_async(resolved, identity_flag, "id profile get").await?
+    else {
+        return Err(super::unsupported_cutover_command(
+            "id.profile.get",
+            "unauthenticated public profile lookup",
+            "anonymous directory client support",
+        ));
+    };
+    let mut subject = serde_json::Map::new();
+    let profile_did = request.did.trim().to_string();
+    if !request.handle.trim().is_empty() {
+        let target = normalize_handle_input(&request.handle, &resolved.did_domain)?;
+        let handle = Handle::parse(&target.full_handle, "")
+            .map_err(|err| super::map_im_error(err, "id profile get"))?;
+        let result = client
+            .directory()
+            .public_profile_async(IdentitySubject::Handle(handle))
+            .await
+            .map_err(|err| super::map_im_error(err, "id profile get"))?;
+        let did = result.did.as_str().to_string();
+        subject.insert("handle".to_string(), Value::String(target.local_part));
+        subject.insert("full_handle".to_string(), Value::String(target.full_handle));
+        subject.insert("domain".to_string(), Value::String(target.effective_domain));
+        subject.insert("did".to_string(), Value::String(did));
+        return Ok(profile_public_command_result(
+            Value::Object(subject),
+            result.profile.to_wire_profile_value(),
+        ));
+    }
+    if !profile_did.trim().is_empty() {
+        subject.insert("did".to_string(), Value::String(profile_did.clone()));
+    }
+    let did = Did::parse(&profile_did).map_err(|err| super::map_im_error(err, "id profile get"))?;
+    let result = client
+        .directory()
+        .public_profile_async(IdentitySubject::Did(did))
+        .await
         .map_err(|err| super::map_im_error(err, "id profile get"))?;
     Ok(profile_public_command_result(
         Value::Object(subject),
@@ -836,6 +1225,45 @@ pub fn resolve_identity_via_im_core(
     Ok(resolve_command_result_from_sdk(result))
 }
 
+pub async fn resolve_identity_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    identity_flag: &str,
+    request: ResolveCommandRequest,
+) -> Result<CommandResult, ExitError> {
+    let handle = request.handle.trim();
+    let did = request.did.trim();
+    if (handle.is_empty() && did.is_empty()) || (!handle.is_empty() && !did.is_empty()) {
+        return Err(ExitError::new(
+            "invalid_argument",
+            2,
+            "invalid input: exactly one of handle or did is required",
+            "Pass either --handle <handle> or --did <did>.",
+        ));
+    }
+    let Some(client) =
+        build_optional_directory_client_async(resolved, identity_flag, "id resolve").await?
+    else {
+        return Err(super::unsupported_cutover_command(
+            "id.resolve",
+            "unauthenticated directory resolve",
+            "anonymous directory client support",
+        ));
+    };
+    let peer = if !handle.is_empty() {
+        let target = normalize_handle_input(handle, &resolved.did_domain)?;
+        PeerRef::parse(&target.full_handle, "")
+            .map_err(|err| super::map_im_error(err, "id resolve"))?
+    } else {
+        PeerRef::parse(did, "").map_err(|err| super::map_im_error(err, "id resolve"))?
+    };
+    let result = client
+        .directory()
+        .resolve_peer_async(peer)
+        .await
+        .map_err(|err| super::map_im_error(err, "id resolve"))?;
+    Ok(resolve_command_result_from_sdk(result))
+}
+
 fn build_optional_directory_client(
     resolved: &crate::workspace_config::Resolved,
     identity_flag: &str,
@@ -843,6 +1271,24 @@ fn build_optional_directory_client(
 ) -> Result<Option<im_core::ImClient>, ExitError> {
     let core = super::build_im_core(resolved)?;
     match core.client(cli_identity_selector(identity_flag)) {
+        Ok(client) => Ok(Some(client)),
+        Err(im_core::ImError::DefaultIdentityMissing)
+        | Err(im_core::ImError::IdentityRequired)
+        | Err(im_core::ImError::IdentityNotFound { .. }) => Ok(None),
+        Err(err) => Err(super::map_im_error(err, context)),
+    }
+}
+
+async fn build_optional_directory_client_async(
+    resolved: &crate::workspace_config::Resolved,
+    identity_flag: &str,
+    context: &'static str,
+) -> Result<Option<im_core::ImClient>, ExitError> {
+    let core = super::build_im_core_async(resolved).await?;
+    match core
+        .client_async(cli_identity_selector(identity_flag))
+        .await
+    {
         Ok(client) => Ok(Some(client)),
         Err(im_core::ImError::DefaultIdentityMissing)
         | Err(im_core::ImError::IdentityRequired)
@@ -878,6 +1324,27 @@ pub fn set_profile_via_im_core(
     let profile = client
         .identity()
         .update_profile(request.patch)
+        .map_err(|err| super::map_im_error(err, "id profile set"))?;
+    Ok(profile_update_command_result(
+        &identity,
+        changed_fields,
+        profile.to_wire_profile_value(),
+    ))
+}
+
+pub async fn set_profile_via_im_core_async(
+    resolved: &crate::workspace_config::Resolved,
+    identity_flag: &str,
+    request: SetProfileCommandRequest,
+) -> Result<CommandResult, ExitError> {
+    let selector = cli_identity_selector(identity_flag);
+    let client = super::build_im_client_async(resolved, selector).await?;
+    let identity = cli_identity_summary_from_sdk(client.current_identity(), &[]);
+    let changed_fields = changed_fields_from_profile_patch(&request.patch);
+    let profile = client
+        .identity()
+        .update_profile_async(request.patch)
+        .await
         .map_err(|err| super::map_im_error(err, "id profile set"))?;
     Ok(profile_update_command_result(
         &identity,
@@ -1300,6 +1767,47 @@ fn register_handle_plan_command_result(
     let existing = core
         .identities()
         .list()
+        .map(|items| cli_identity_summaries_from_sdk(&items))
+        .unwrap_or_default();
+    let alias_base = if target.explicit_domain {
+        target.full_handle.as_str()
+    } else {
+        target.local_part.as_str()
+    };
+    let identity_name = choose_named_identity(
+        &request.local_alias.unwrap_or_default(),
+        &existing,
+        alias_base,
+    );
+    let (action, remote_calls) = register_plan_action_and_calls(&request.verification);
+    Ok(CommandResult {
+        data: json!({
+            "plan": {
+                "action": action,
+                "identity_name": identity_name,
+                "handle": target.local_part,
+                "full_handle": target.full_handle.as_str(),
+                "did_domain": target.effective_domain,
+                "phone": registration_phone(&request.verification).unwrap_or_default(),
+                "email": registration_email(&request.verification).unwrap_or_default(),
+                "remote_calls": remote_calls,
+            }
+        }),
+        summary: "Dry run: handle registration flow planned".to_string(),
+        warnings: Vec::new(),
+    })
+}
+
+async fn register_handle_plan_command_result_async(
+    resolved: &crate::workspace_config::Resolved,
+    request: RegisterHandleRequest,
+) -> Result<CommandResult, ExitError> {
+    let target = register_plan_target(request.requested_handle.as_str(), &resolved.did_domain)?;
+    let core = super::build_im_core_async(resolved).await?;
+    let existing = core
+        .identities()
+        .list_async()
+        .await
         .map(|items| cli_identity_summaries_from_sdk(&items))
         .unwrap_or_default();
     let alias_base = if target.explicit_domain {

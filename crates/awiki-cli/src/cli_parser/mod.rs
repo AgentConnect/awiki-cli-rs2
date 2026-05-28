@@ -40,6 +40,16 @@ where
     let mut command_words = Vec::new();
     let mut iter = args.into_iter().peekable();
     while let Some(arg) = iter.next() {
+        if command_words.is_empty()
+            && remaining.is_empty()
+            && iter.peek().is_none()
+            && matches!(arg.as_str(), "--help" | "-h")
+        {
+            return Ok(ParsedCommand {
+                name: "schema".to_string(),
+                ..ParsedCommand::default()
+            });
+        }
         match split_long_flag(&arg) {
             Some(("format", value)) => {
                 globals.format = take_flag_value("format", value, &mut iter)?;
@@ -235,6 +245,86 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "debug.db.handle-history" => app.run_debug_db_handle_history(command),
         other if is_go_stub_command(other) => Err(go_stub_error(other)),
         other => Err(stub_error(other)),
+    }
+}
+
+pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
+    enforce_command_policy(command)?;
+
+    match command.name.as_str() {
+        "msg.send" => app.run_msg_send_async(command).await,
+        "msg.attachment.download" => app.run_msg_attachment_download_async(command).await,
+        "msg.inbox" => app.run_msg_inbox_async(command).await,
+        "msg.history" => app.run_msg_history_async(command).await,
+        "msg.mark-read" => app.run_msg_mark_read_async(command).await,
+        "msg.secure.status" => app.run_msg_secure_status_async(command).await,
+        "msg.secure.repair" => app.run_msg_secure_repair_async(command).await,
+        "id.register" => app.run_id_register_async(command).await,
+        "id.list" => app.run_id_list_async().await,
+        "id.current" => app.run_id_current_async().await,
+        "id.use" => app.run_id_use_async(command).await,
+        "id.status" => app.run_id_status_async().await,
+        "id.bind" => app.run_id_bind_async(command).await,
+        "id.refresh-token" => app.run_id_refresh_token_async().await,
+        "id.resolve" => app.run_id_resolve_async(command).await,
+        "id.recover" => app.run_id_recover_async(command).await,
+        "id.profile.get" => app.run_id_profile_get_async(command).await,
+        "id.profile.set" => app.run_id_profile_set_async(command).await,
+        "group.create" => app.run_group_create_async(command).await,
+        "group.get" => app.run_group_get_async(command).await,
+        "group.join" => app.run_group_join_async(command).await,
+        "group.add" => app.run_group_add_async(command).await,
+        "group.remove" => app.run_group_remove_async(command).await,
+        "group.leave" => app.run_group_leave_async(command).await,
+        "group.update" => app.run_group_update_async(command).await,
+        "group.list" => app.run_group_list_async(command).await,
+        "group.members" => app.run_group_members_async(command).await,
+        "group.messages" => app.run_group_messages_async(command).await,
+        "group.secure.status" => app.run_group_secure_status_async(command).await,
+        "group.secure.repair" => app.run_group_secure_repair_async(command).await,
+        "group.e2ee.status" => app.run_group_e2ee_status_alias_async(command).await,
+        "group.e2ee.publish-key-package" => {
+            app.run_group_e2ee_publish_key_package_async(command).await
+        }
+        "group.e2ee.process-leave-request" => {
+            app.run_group_e2ee_process_leave_request_async(command)
+                .await
+        }
+        "group.e2ee.repair" => app.run_group_e2ee_repair_alias_async(command).await,
+        "group.e2ee.update-key" => app.run_group_e2ee_update_key_async(command).await,
+        "group.e2ee.rejoin" => app.run_group_e2ee_rejoin_async(command).await,
+        "group.e2ee.recover-member" => app.run_group_e2ee_recover_member_async(command).await,
+        "people.follow" => app.run_people_follow_async(command).await,
+        "people.unfollow" => app.run_people_unfollow_async(command).await,
+        "people.status" => app.run_people_status_async(command).await,
+        "people.followers" => app.run_people_followers_async(command).await,
+        "people.following" => app.run_people_following_async(command).await,
+        "people.contacts.list" => app.run_people_contacts_list_async(command).await,
+        "people.contacts.save" => app.run_people_contacts_save_async(command).await,
+        "page.create" => app.run_page_create_async(command).await,
+        "page.list" => app.run_page_list_async().await,
+        "page.get" => app.run_page_get_async(command).await,
+        "page.update" => app.run_page_update_async(command).await,
+        "page.rename" => app.run_page_rename_async(command).await,
+        "page.delete" => app.run_page_delete_async(command).await,
+        "site.root.get" => app.run_site_root_get_async(command).await,
+        "site.root.set" => app.run_site_root_set_async(command).await,
+        "site.page.list" => app.run_site_page_list_async(command).await,
+        "site.page.get" => app.run_site_page_get_async(command).await,
+        "site.page.create" => app.run_site_page_create_async(command).await,
+        "site.page.update" => app.run_site_page_update_async(command).await,
+        "site.page.rename" => app.run_site_page_rename_async(command).await,
+        "site.page.delete" => app.run_site_page_delete_async(command).await,
+        "runtime.listener.run" => app.run_runtime_listener_run_async().await,
+        "runtime.listener.service-run" => app.run_runtime_listener_service_run_async().await,
+        "mail.inbox" => app.run_mail_inbox_async(command).await,
+        "mail.read" => app.run_mail_read_async(command).await,
+        "mail.mark-read" => app.run_mail_mark_read_async(command).await,
+        "mail.account" => app.run_mail_account_async().await,
+        "mail.send" => app.run_mail_send_async(command).await,
+        "mail.attachment.download" => app.run_mail_attachment_download_async(command).await,
+        "mail.notify" => app.run_mail_notify_async(command).await,
+        _ => dispatch(app, command),
     }
 }
 

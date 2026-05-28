@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
 
 use crate::dto::{
     error::DartImError,
@@ -11,21 +10,19 @@ use crate::dto::{
 use crate::frb_generated::StreamSink;
 
 pub struct DartRealtimeSession {
-    handle: Mutex<Option<im_core::realtime::RealtimeHandle>>,
+    session: Mutex<Option<im_core::realtime::RealtimeSession>>,
     event_stream_attached: Mutex<bool>,
 }
 
 impl DartRealtimeSession {
-    fn new(handle: im_core::realtime::RealtimeHandle) -> Self {
+    fn new(session: im_core::realtime::RealtimeSession) -> Self {
         Self {
-            handle: Mutex::new(Some(handle)),
+            session: Mutex::new(Some(session)),
             event_stream_attached: Mutex::new(false),
         }
     }
 
-    fn take_event_receiver(
-        &self,
-    ) -> Result<std::sync::mpsc::Receiver<im_core::realtime::ImEvent>, DartImError> {
+    fn take_event_receiver(&self) -> Result<im_core::realtime::RealtimeEventStream, DartImError> {
         let mut attached = self
             .event_stream_attached
             .lock()
@@ -37,24 +34,36 @@ impl DartRealtimeSession {
             ));
         }
         let mut guard = self
-            .handle
+            .session
             .lock()
             .map_err(|_| DartImError::internal("realtime session lock poisoned"))?;
-        let handle = guard
+        let session = guard
             .as_mut()
             .ok_or_else(|| DartImError::object_closed("DartRealtimeSession"))?;
-        let (_sender, replacement) = std::sync::mpsc::channel();
+        let receiver = session.subscribe().map_err(DartImError::from)?;
         *attached = true;
-        Ok(std::mem::replace(&mut handle.events, replacement))
+        Ok(receiver)
     }
 
-    fn stop(&self) -> Result<(), DartImError> {
+    fn status(&self) -> Result<DartRealtimeStatus, DartImError> {
         let guard = self
-            .handle
+            .session
             .lock()
             .map_err(|_| DartImError::internal("realtime session lock poisoned"))?;
-        if let Some(handle) = guard.as_ref() {
-            handle.control.shutdown();
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| DartImError::object_closed("DartRealtimeSession"))?;
+        Ok(session.status().into())
+    }
+
+    async fn stop(&self) -> Result<(), DartImError> {
+        let session = self
+            .session
+            .lock()
+            .map_err(|_| DartImError::internal("realtime session lock poisoned"))?
+            .take();
+        if let Some(session) = session {
+            session.stop().await.map_err(DartImError::from)?;
         }
         Ok(())
     }
@@ -62,9 +71,9 @@ impl DartRealtimeSession {
 
 impl Drop for DartRealtimeSession {
     fn drop(&mut self) {
-        if let Ok(guard) = self.handle.lock() {
-            if let Some(handle) = guard.as_ref() {
-                handle.control.shutdown();
+        if let Ok(mut guard) = self.session.lock() {
+            if let Some(session) = guard.take() {
+                drop(session);
             }
         }
     }
@@ -81,23 +90,22 @@ pub fn realtime_capability(
     })
 }
 
-pub fn realtime_status(
+pub async fn realtime_status(
     client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<DartRealtimeStatus, DartImError> {
-    client.with_inner(|inner| {
-        inner
-            .realtime()
-            .status()
-            .map(Into::into)
-            .map_err(DartImError::from)
-    })
+    let inner = client.clone_inner()?;
+    inner
+        .realtime()
+        .status()
+        .map(Into::into)
+        .map_err(DartImError::from)
 }
 
-pub fn realtime_connect(
-    _client: &Arc<crate::api::client::DartImClient>,
+pub async fn realtime_connect(
+    client: &Arc<crate::api::client::DartImClient>,
 ) -> Result<(), DartImError> {
     let session = realtime_start(
-        _client,
+        client,
         DartRealtimeOptions {
             reconnect: "disabled".to_string(),
             event_buffer: 128,
@@ -111,41 +119,49 @@ pub fn realtime_connect(
                 "notifications".to_string(),
             ],
         },
-    )?;
-    realtime_stop(&session)
+    )
+    .await?;
+    realtime_stop(&session).await
 }
 
-pub fn realtime_start(
+pub async fn realtime_start(
     client: &Arc<crate::api::client::DartImClient>,
     options: DartRealtimeOptions,
 ) -> Result<Arc<DartRealtimeSession>, DartImError> {
     let options = options.try_into()?;
-    let handle =
-        client.with_inner(|inner| inner.realtime().connect(options).map_err(DartImError::from))?;
-    Ok(Arc::new(DartRealtimeSession::new(handle)))
+    let inner = client.clone_inner()?;
+    let session = inner
+        .realtime()
+        .start_async(options)
+        .await
+        .map_err(DartImError::from)?;
+    Ok(Arc::new(DartRealtimeSession::new(session)))
 }
 
-pub fn realtime_stop(session: &Arc<DartRealtimeSession>) -> Result<(), DartImError> {
-    session.stop()
+pub async fn realtime_stop(session: &Arc<DartRealtimeSession>) -> Result<(), DartImError> {
+    session.stop().await
 }
 
-pub fn realtime_event_stream(
+pub fn realtime_session_status(
+    session: &Arc<DartRealtimeSession>,
+) -> Result<DartRealtimeStatus, DartImError> {
+    session.status()
+}
+
+pub async fn realtime_event_stream(
     session: &Arc<DartRealtimeSession>,
     sink: StreamSink<DartRealtimeEvent>,
 ) -> Result<(), DartImError> {
-    let receiver = session.take_event_receiver()?;
+    let mut receiver = session.take_event_receiver()?;
     let session_for_worker = Arc::clone(session);
-    thread::Builder::new()
-        .name("im-core-dart-realtime-events".to_string())
-        .spawn(move || {
-            for event in receiver {
-                let event = crate::mapping::from_core::realtime_event_to_dart(event);
-                if sink.add(event).is_err() {
-                    let _ = session_for_worker.stop();
-                    break;
-                }
+    tokio::spawn(async move {
+        while let Some(event) = receiver.recv().await {
+            let event = crate::mapping::from_core::realtime_event_to_dart(event);
+            if sink.add(event).is_err() {
+                let _ = session_for_worker.stop().await;
+                break;
             }
-        })
-        .map_err(|err| DartImError::internal(format!("spawn realtime stream worker: {err}")))?;
+        }
+    });
     Ok(())
 }

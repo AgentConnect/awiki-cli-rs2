@@ -36,6 +36,23 @@ impl App {
         self.render_mail_result("awiki-cli mail inbox", &resolved, result)
     }
 
+    pub async fn run_mail_inbox_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_mail_inbox(command);
+        }
+        let resolved = self.resolve_config()?;
+        let query = email::inbox_query(command)?;
+        let client = self.mail_client_async(&resolved).await?;
+        let result = email::render_inbox(
+            client
+                .email()
+                .inbox_async(query)
+                .await
+                .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "mail inbox"))?,
+        );
+        self.render_mail_result("awiki-cli mail inbox", &resolved, result)
+    }
+
     pub fn run_mail_read(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let message_id = command.flags.get("id").cloned().unwrap_or_default();
@@ -65,6 +82,32 @@ impl App {
         self.render_mail_result("awiki-cli mail read", &resolved, result)
     }
 
+    pub async fn run_mail_read_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_mail_read(command);
+        }
+        let resolved = self.resolve_config()?;
+        let message_id = command.flags.get("id").cloned().unwrap_or_default();
+        if message_id.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "mail read requires --id.",
+                "Usage: awiki-cli mail read --id <MESSAGE_ID>",
+            ));
+        }
+        let id = email::read_id(command)?;
+        let client = self.mail_client_async(&resolved).await?;
+        let result = email::render_read(
+            client
+                .email()
+                .read_async(id)
+                .await
+                .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "mail read"))?,
+        );
+        self.render_mail_result("awiki-cli mail read", &resolved, result)
+    }
+
     pub fn run_mail_mark_read(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         if command.args.is_empty() {
@@ -91,6 +134,31 @@ impl App {
         self.render_mail_result("awiki-cli mail mark-read", &resolved, result)
     }
 
+    pub async fn run_mail_mark_read_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_mail_mark_read(command);
+        }
+        let resolved = self.resolve_config()?;
+        if command.args.is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "mail mark-read requires at least one message id.",
+                "Usage: awiki-cli mail mark-read <MESSAGE_ID...>",
+            ));
+        }
+        let request = email::mark_read_request(command)?;
+        let client = self.mail_client_async(&resolved).await?;
+        let result = email::render_mark_read(
+            client
+                .email()
+                .mark_read_async(request)
+                .await
+                .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "mail mark-read"))?,
+        );
+        self.render_mail_result("awiki-cli mail mark-read", &resolved, result)
+    }
+
     pub fn run_mail_account(&self) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let result = if self.globals.dry_run {
@@ -107,6 +175,22 @@ impl App {
                     .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "mail account"))?,
             )
         };
+        self.render_mail_result("awiki-cli mail account", &resolved, result)
+    }
+
+    pub async fn run_mail_account_async(&self) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_mail_account();
+        }
+        let resolved = self.resolve_config()?;
+        let client = self.mail_client_async(&resolved).await?;
+        let result = email::render_account(
+            client
+                .email()
+                .account_async()
+                .await
+                .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "mail account"))?,
+        );
         self.render_mail_result("awiki-cli mail account", &resolved, result)
     }
 
@@ -161,6 +245,51 @@ impl App {
         self.render_mail_result("awiki-cli mail send", &resolved, result)
     }
 
+    pub async fn run_mail_send_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_mail_send(command);
+        }
+        let resolved = self.resolve_config()?;
+        let to_raw = command.flags.get("to").cloned().unwrap_or_default();
+        let subject = command.flags.get("subject").cloned().unwrap_or_default();
+        let body = command.flags.get("body").cloned().unwrap_or_default();
+        let to = email::split_mail_list(&to_raw);
+        if to.is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "mail send requires --to.",
+                "Usage: awiki-cli mail send --to alice@example.com --subject \"Hello\" --body \"Hi\"",
+            ));
+        }
+        if subject.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "mail send requires --subject.",
+                "Provide a subject with --subject.",
+            ));
+        }
+        if body.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "mail send requires --body.",
+                "Provide the plain text body with --body.",
+            ));
+        }
+        let request = email::send_request(command)?;
+        let client = self.mail_client_async(&resolved).await?;
+        let result = email::render_send(
+            client
+                .email()
+                .send_async(request)
+                .await
+                .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "mail send"))?,
+        );
+        self.render_mail_result("awiki-cli mail send", &resolved, result)
+    }
+
     pub fn run_mail_attachment_download(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let message_id = command.flags.get("message-id").cloned().unwrap_or_default();
@@ -211,6 +340,51 @@ impl App {
         )
     }
 
+    pub async fn run_mail_attachment_download_async(
+        &self,
+        command: &ParsedCommand,
+    ) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_mail_attachment_download(command);
+        }
+        let resolved = self.resolve_config()?;
+        let message_id = command.flags.get("message-id").cloned().unwrap_or_default();
+        let attachment_index = int_flag(command, "attachment-index", 0)?;
+        let output = command.flags.get("output").cloned().unwrap_or_default();
+        if message_id.trim().is_empty() {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "mail attachment download requires --message-id.",
+                "Usage: awiki-cli mail attachment download --message-id <MESSAGE_ID> --attachment-index 0",
+            ));
+        }
+        if attachment_index < 0 {
+            return Err(ExitError::new(
+                "invalid_argument",
+                2,
+                "attachment index must be >= 0.",
+                "Use --attachment-index 0 for the first attachment.",
+            ));
+        }
+        let request = email::attachment_request(command)?;
+        let client = self.mail_client_async(&resolved).await?;
+        let result = client
+            .email()
+            .download_attachment_async(request)
+            .await
+            .map_err(|err| {
+                crate::m_core_cli_adapter::map_im_error(err, "mail attachment download")
+            })?;
+        self.render_attachment_download_result(
+            &resolved,
+            &message_id,
+            attachment_index,
+            &output,
+            result,
+        )
+    }
+
     pub fn run_mail_notify(&self, command: &ParsedCommand) -> Result<(), ExitError> {
         let resolved = self.resolve_config()?;
         let limit = int_flag(command, "limit", 20)?;
@@ -229,6 +403,23 @@ impl App {
                     .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "mail notify"))?,
             )
         };
+        self.render_mail_result("awiki-cli mail notify", &resolved, result)
+    }
+
+    pub async fn run_mail_notify_async(&self, command: &ParsedCommand) -> Result<(), ExitError> {
+        if self.globals.dry_run {
+            return self.run_mail_notify(command);
+        }
+        let resolved = self.resolve_config()?;
+        let query = email::notification_query(command)?;
+        let client = self.mail_client_async(&resolved).await?;
+        let result = email::render_notifications(
+            client
+                .email()
+                .notifications_async(query)
+                .await
+                .map_err(|err| crate::m_core_cli_adapter::map_im_error(err, "mail notify"))?,
+        );
         self.render_mail_result("awiki-cli mail notify", &resolved, result)
     }
 
@@ -293,6 +484,17 @@ impl App {
             &summary,
             warnings,
         )
+    }
+
+    async fn mail_client_async(
+        &self,
+        resolved: &crate::workspace_config::Resolved,
+    ) -> Result<im_core::ImClient, ExitError> {
+        crate::m_core_cli_adapter::build_im_client_async(
+            resolved,
+            crate::m_core_cli_adapter::cli_identity_selector(&self.globals.identity),
+        )
+        .await
     }
 }
 

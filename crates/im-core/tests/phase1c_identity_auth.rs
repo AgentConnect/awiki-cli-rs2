@@ -43,6 +43,44 @@ fn identity_registry_lists_default_and_resolves_selectors() {
     assert_eq!(by_handle.did.as_str(), "did:example:bob");
 }
 
+#[tokio::test]
+async fn identity_registry_async_lists_default_and_resolves_selectors() {
+    let fixture = Fixture::new();
+    let core = fixture.core_async().await;
+
+    let identities = core.identities().list_async().await.unwrap();
+    assert_eq!(identities.len(), 2);
+
+    let default = core
+        .identities()
+        .default_identity_async()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(default.local_alias.as_deref(), Some("alice"));
+    assert!(default.is_default);
+
+    let bob = core
+        .identities()
+        .resolve_async(IdentitySelector::Handle(
+            Handle::parse("bob.awiki.test", "").unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bob.did.as_str(), "did:example:bob");
+
+    let change = core
+        .identities()
+        .plan_default_identity_change_async(IdentitySelector::LocalAlias("bob".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(
+        change.previous.unwrap().local_alias.as_deref(),
+        Some("alice")
+    );
+    assert_eq!(change.next.local_alias.as_deref(), Some("bob"));
+}
+
 #[test]
 fn default_identity_file_overrides_registry_default_flags() {
     let fixture = Fixture::new();
@@ -128,6 +166,143 @@ fn register_handle_returns_identity_and_default_change() {
     let body = requests[0].json_body();
     assert_eq!(body["method"], "register");
     assert_eq!(body["params"]["handle"], "carol");
+    assert!(body["params"]["did_document"].is_object());
+}
+
+#[tokio::test]
+async fn register_handle_async_returns_identity_and_default_change() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "did": "did:wba:awiki.test:dana:e1_registered",
+        "user_id": "user-dana",
+        "handle": "dana",
+        "full_handle": "dana.awiki.test",
+        "access_token": "jwt-dana"
+    }))]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url();
+    let core = fixture.core_async_with_base_url(base_url).await;
+
+    let result = core
+        .identities()
+        .register_handle_async(RegisterHandleRequest {
+            local_alias: Some("dana".to_string()),
+            requested_handle: Handle::parse("dana.awiki.test", "").unwrap(),
+            verification: VerificationInput::AlreadyVerified,
+            invite_code: None,
+            profile: InitialProfile {
+                display_name: Some("Dana".to_string()),
+                avatar_url: None,
+            },
+            make_default: true,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, HandleRegistrationState::Registered);
+    assert_eq!(result.method, RegistrationMethod::AlreadyVerified);
+    assert_eq!(result.handle.as_str(), "dana.awiki.test");
+    let identity = result.identity.unwrap();
+    assert_eq!(identity.local_alias.as_deref(), Some("dana"));
+    assert_eq!(identity.handle.unwrap().as_str(), "dana.awiki.test");
+    assert_eq!(identity.display_name.as_deref(), Some("Dana"));
+    assert!(identity.readiness.ready_for_auth);
+    assert!(result.default_identity_change.is_some());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    let body = requests[0].json_body();
+    assert_eq!(body["method"], "register");
+    assert_eq!(body["params"]["handle"], "dana");
+    assert!(body["params"]["did_document"].is_object());
+}
+
+#[tokio::test]
+async fn recover_handle_async_without_otp_sends_recover_otp() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({ "sent": true }))]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url();
+    let core = fixture.core_async_with_base_url(base_url).await;
+
+    let result = core
+        .identities()
+        .recover_handle_async(RecoverHandleRequest {
+            handle: Handle::parse("alice.awiki.test", "").unwrap(),
+            raw_handle: None,
+            phone: "+15551234567".to_string(),
+            otp: None,
+            generated_identity: None,
+            local_finalize: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, RecoverHandleState::OtpSent);
+    assert_eq!(result.phone, "+15551234567");
+    assert!(result.recovered_identity.is_none());
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/user-service/handle/rpc");
+    let body = requests[0].json_body();
+    assert_eq!(body["method"], "send_otp");
+    assert_eq!(body["params"], json!({ "phone": "+15551234567" }));
+}
+
+#[tokio::test]
+async fn recover_handle_async_with_otp_recovers_and_persists_identity() {
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
+        "did": "did:wba:awiki.test:erin:e1_recovered",
+        "user_id": "user-erin",
+        "handle": "erin",
+        "full_handle": "erin.awiki.test",
+        "access_token": "jwt-erin"
+    }))]);
+    let fixture = Fixture::new();
+    let base_url = server.base_url();
+    let core = fixture.core_async_with_base_url(base_url).await;
+
+    let result = core
+        .identities()
+        .recover_handle_async(RecoverHandleRequest {
+            handle: Handle::parse("erin", "").unwrap(),
+            raw_handle: None,
+            phone: "+15551234567".to_string(),
+            otp: Some("654321".to_string()),
+            generated_identity: None,
+            local_finalize: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, RecoverHandleState::Recovered);
+    assert_eq!(result.handle.as_str(), "erin.awiki.test");
+    let recovered = result.recovered_identity.unwrap();
+    assert_eq!(recovered.identity.local_alias.as_deref(), Some("erin"));
+    assert_eq!(
+        recovered.identity.did.as_str(),
+        "did:wba:awiki.test:erin:e1_recovered"
+    );
+    assert!(recovered.access_token_present);
+    let default = core
+        .identities()
+        .default_identity_async()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(default.handle.unwrap().as_str(), "erin.awiki.test");
+
+    let requests = server.join();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/user-service/did-auth/rpc");
+    let body = requests[0].json_body();
+    assert_eq!(body["method"], "recover_handle");
+    assert_eq!(body["params"]["handle"], "erin.awiki.test");
+    assert_eq!(body["params"]["phone"], "+15551234567");
+    assert_eq!(body["params"]["otp_code"], "654321");
     assert!(body["params"]["did_document"].is_object());
 }
 
@@ -240,6 +415,54 @@ fn auth_service_returns_stable_structures() {
     assert!(!status.needs_refresh);
 }
 
+#[tokio::test]
+async fn async_open_client_bootstrap_and_auth_use_async_entrypoints() {
+    let fixture = Fixture::new();
+    let core = fixture.core_async().await;
+
+    let path_report = core.bootstrap().validate_paths_async().await.unwrap();
+    assert_eq!(path_report.checked.len(), 6);
+
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("alice".to_string()))
+        .await
+        .unwrap();
+    let login = client.auth().login_async().await.unwrap();
+    assert_eq!(login.subject.as_str(), "did:example:alice");
+    assert_eq!(login.scope, AuthScope::UserProfile);
+
+    let ensured = client
+        .auth()
+        .ensure_session_async(AuthScope::Messaging)
+        .await
+        .unwrap();
+    assert_eq!(ensured.subject.as_str(), "did:example:alice");
+    assert_eq!(ensured.scope, AuthScope::Messaging);
+
+    let status = client.auth().status_async().await.unwrap();
+    assert_eq!(status.subject.as_str(), "did:example:alice");
+    assert!(status.has_session);
+    assert!(!status.needs_refresh);
+}
+
+#[tokio::test]
+async fn async_bootstrap_initializes_and_migrates_local_state() {
+    let fixture = Fixture::new();
+    let core = fixture.core_async().await;
+
+    let status = core
+        .bootstrap()
+        .initialize_local_state_async()
+        .await
+        .unwrap();
+    assert!(status.initialized);
+    assert!(status.schema_version.is_some());
+
+    let report = core.bootstrap().migrate_local_state_async().await.unwrap();
+    assert_eq!(report.sqlite_path, status.sqlite_path);
+    assert_eq!(report.to_version, status.schema_version.unwrap_or_default());
+}
+
 struct Fixture {
     root: PathBuf,
 }
@@ -328,6 +551,47 @@ impl Fixture {
             },
         )
         .unwrap()
+    }
+
+    async fn core_async(&self) -> ImCore {
+        self.core_async_with_base_url("https://example.test").await
+    }
+
+    async fn core_async_with_base_url(&self, base_url: &str) -> ImCore {
+        ImCore::open(self.config(base_url), self.paths())
+            .await
+            .unwrap()
+    }
+
+    fn config(&self, base_url: &str) -> ImCoreConfig {
+        ImCoreConfig {
+            service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
+            did_domain: "awiki.test".to_string(),
+            user_service_endpoint: None,
+            message_service_endpoint: None,
+            mail_service_endpoint: None,
+            anp_service_endpoint: None,
+            anp_service_did: None,
+            ca_bundle: None,
+            transport_policy: MessageTransportPolicy::HttpOnly,
+        }
+    }
+
+    fn paths(&self) -> ImCorePaths {
+        ImCorePaths {
+            identities: IdentityRegistryPaths {
+                identity_root_dir: self.root.join("identities"),
+                registry_path: self.root.join("identities").join("registry.json"),
+                default_identity_path: Some(self.root.join("identities").join("default")),
+            },
+            local_state: LocalStatePaths {
+                sqlite_path: self.root.join("local").join("im.sqlite"),
+            },
+            runtime: RuntimePaths {
+                cache_dir: self.root.join("cache"),
+                temp_dir: self.root.join("tmp"),
+            },
+        }
     }
 }
 
