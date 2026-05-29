@@ -1,8 +1,11 @@
 use serde_json::{Map, Value};
 
+#[cfg(any(feature = "blocking", test))]
 use crate::internal::auth::session::SessionProvider;
+#[cfg(any(feature = "blocking", test))]
 use crate::internal::transport::{AuthenticatedRpcTransport, RpcTransport};
 
+#[cfg(any(feature = "blocking", test))]
 use super::client::{
     prepare_direct_secure_client, DirectSecureClientInput, MessageServiceDirectSecureClient,
 };
@@ -40,6 +43,7 @@ pub(crate) enum DirectSecureLocalEffect {
     QueueOutbox(crate::internal::store::e2ee_outbox::E2eeOutboxRecord),
 }
 
+#[cfg(any(feature = "blocking", test))]
 pub(crate) struct DirectSecureTextSender<'a, P, A, R> {
     client: &'a crate::core::ImClient,
     session_provider: P,
@@ -47,6 +51,7 @@ pub(crate) struct DirectSecureTextSender<'a, P, A, R> {
     directory_transport: R,
 }
 
+#[cfg(any(feature = "blocking", test))]
 impl<'a, P, A, R> DirectSecureTextSender<'a, P, A, R>
 where
     P: SessionProvider,
@@ -254,6 +259,7 @@ where
     }
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn publish_prekeys_warnings(client: &mut MessageServiceDirectSecureClient<'_>) -> Vec<String> {
     match client.publish_prekey_bundle() {
         Ok(_) => Vec::new(),
@@ -341,6 +347,7 @@ pub(crate) fn object_result(value: Value) -> crate::ImResult<Map<String, Value>>
     }
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn resolve_did_document_with_transport(
     transport: &mut impl RpcTransport,
     did: &str,
@@ -524,6 +531,7 @@ fn secure_direct_attributes(
     attributes
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn queue_pending_confirmation_outbox(
     connection: &rusqlite::Connection,
     record: crate::internal::store::e2ee_outbox::E2eeOutboxRecord,
@@ -670,7 +678,6 @@ mod tests {
                 calls: message_calls.clone(),
                 responses: Rc::new(RefCell::new(vec![
                     json!({}),
-                    json!({}),
                     json!({
                         "prekey_bundle": bob_bundle.bundle,
                         "one_time_prekey": bob_bundle.one_time_prekey,
@@ -712,14 +719,13 @@ mod tests {
         );
         let calls = message_calls.borrow();
         assert_eq!(calls[0].method, "direct.e2ee.publish_prekey_bundle");
-        assert_eq!(calls[1].method, "direct.e2ee.publish_prekey_bundle");
-        assert_eq!(calls[2].method, "direct.e2ee.get_prekey_bundle");
-        assert_eq!(calls[3].method, "direct.send");
+        assert_eq!(calls[1].method, "direct.e2ee.get_prekey_bundle");
+        assert_eq!(calls[2].method, "direct.send");
         assert_eq!(
-            calls[3].params["meta"]["content_type"],
+            calls[2].params["meta"]["content_type"],
             "application/anp-direct-init+json"
         );
-        assert!(!calls[3].params["body"].to_string().contains("secret text"));
+        assert!(!calls[2].params["body"].to_string().contains("secret text"));
 
         let stored = rusqlite::Connection::open(fixture.root.join("local").join("im.sqlite"))
             .unwrap()

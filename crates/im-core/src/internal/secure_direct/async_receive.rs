@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use anp::direct_e2ee::models::SESSION_STATUS_ESTABLISHED;
 use anp::direct_e2ee::{
     ApplicationPlaintext, DirectCipherBody, DirectE2eeSession, DirectEnvelopeMetadata,
     DirectInitBody,
@@ -80,7 +79,7 @@ impl<'a> AsyncDirectSecureIncomingProcessor<'a> {
                 AsyncDirectSecureReceiveFallback::NoEstablishedSession,
             ));
         };
-        if !is_established_record_for_cipher(&record, &input.cipher_body)? {
+        if !is_record_for_cipher_session(&record, &input.cipher_body) {
             self.queue_pending_cipher(&input);
             return Ok(AsyncDirectSecureReceiveOutcome::Fallback(
                 AsyncDirectSecureReceiveFallback::NoEstablishedSession,
@@ -252,7 +251,7 @@ impl<'a> AsyncDirectSecureIncomingProcessor<'a> {
                 self.requeue_pending(peer_did.clone(), pending_cipher, pending);
                 break;
             };
-            if !is_established_record_for_cipher(&record, &pending_cipher.cipher_body)? {
+            if !is_record_for_cipher_session(&record, &pending_cipher.cipher_body) {
                 self.requeue_pending(peer_did.clone(), pending_cipher, pending);
                 break;
             }
@@ -430,11 +429,6 @@ fn decrypt_follow_up_from_record(
 ) -> crate::ImResult<Option<DecryptedFollowUp>> {
     let expected_revision = record.revision;
     let mut session = direct_session_from_blob(&record.state_blob).map_err(map_direct_error)?;
-    if session.status != SESSION_STATUS_ESTABLISHED {
-        return Err(crate::ImError::LocalStateUnavailable {
-            detail: "direct E2EE session is not established".to_owned(),
-        });
-    }
     if session.session_id != cipher_body.session_id {
         return Err(crate::ImError::LocalStateUnavailable {
             detail: "direct E2EE cipher session does not match stored session".to_owned(),
@@ -462,18 +456,11 @@ fn decrypt_follow_up_from_record(
     }))
 }
 
-fn is_established_record_for_cipher(
+fn is_record_for_cipher_session(
     record: &DirectSessionRecord,
     cipher_body: &DirectCipherBody,
-) -> crate::ImResult<bool> {
-    if record.session_id != cipher_body.session_id {
-        return Ok(false);
-    }
-    let session = direct_session_from_blob(&record.state_blob).map_err(map_direct_error)?;
-    Ok(
-        session.status == SESSION_STATUS_ESTABLISHED
-            && session.session_id == cipher_body.session_id,
-    )
+) -> bool {
+    record.session_id == cipher_body.session_id
 }
 
 fn undecryptable_result() -> Map<String, Value> {
@@ -627,6 +614,13 @@ pub(crate) mod test_support {
         pub(crate) cipher_body: DirectCipherBody,
     }
 
+    pub(crate) struct FirstReplyExchange {
+        pub(crate) alice_session: anp::direct_e2ee::DirectSessionState,
+        pub(crate) bob_session: anp::direct_e2ee::DirectSessionState,
+        pub(crate) reply_metadata: DirectEnvelopeMetadata,
+        pub(crate) reply_body: DirectCipherBody,
+    }
+
     pub(crate) struct IncomingInitExchange {
         pub(crate) sender_did: String,
         pub(crate) sender_document: Value,
@@ -699,6 +693,42 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn established_exchange() -> EstablishedExchange {
+        let exchange = first_reply_exchange();
+        let mut alice_session = exchange.alice_session.clone();
+        DirectE2eeSession::decrypt_follow_up(
+            &mut alice_session,
+            &exchange.reply_metadata,
+            &exchange.reply_body,
+            "text/plain",
+        )
+        .unwrap();
+        assert_eq!(alice_session.status, SESSION_STATUS_ESTABLISHED);
+
+        let mut bob_session = exchange.bob_session;
+        assert_eq!(bob_session.status, SESSION_STATUS_ESTABLISHED);
+        let message_metadata = DirectEnvelopeMetadata {
+            sender_did: exchange.reply_metadata.sender_did,
+            recipient_did: exchange.reply_metadata.recipient_did,
+            message_id: "msg-async-receive".to_owned(),
+            profile: "anp.direct.e2ee.v1".to_owned(),
+            security_profile: "direct-e2ee".to_owned(),
+        };
+        let (_, cipher_body) = DirectE2eeSession::encrypt_follow_up(
+            &mut bob_session,
+            &message_metadata,
+            "msg-async-receive",
+            &ApplicationPlaintext::new_text("text/plain", "async receive secret"),
+        )
+        .unwrap();
+        EstablishedExchange {
+            alice_session,
+            bob_session,
+            message_metadata,
+            cipher_body,
+        }
+    }
+
+    pub(crate) fn first_reply_exchange() -> FirstReplyExchange {
         let alice_static = generated_x25519_private();
         let bob_static = generated_x25519_private();
         let bob_spk = generated_x25519_private();
@@ -732,7 +762,7 @@ pub(crate) mod test_support {
             profile: "anp.direct.e2ee.v1".to_owned(),
             security_profile: "direct-e2ee".to_owned(),
         };
-        let (mut alice_session, _, init_body) = DirectE2eeSession::initiate_session(
+        let (alice_session, _, init_body) = DirectE2eeSession::initiate_session(
             &init_metadata,
             "msg-init",
             &format!("{alice_did}#key-3"),
@@ -766,35 +796,11 @@ pub(crate) mod test_support {
             &ApplicationPlaintext::new_text("text/plain", "reply"),
         )
         .unwrap();
-        DirectE2eeSession::decrypt_follow_up(
-            &mut alice_session,
-            &reply_metadata,
-            &reply_body,
-            "text/plain",
-        )
-        .unwrap();
-        assert_eq!(alice_session.status, SESSION_STATUS_ESTABLISHED);
-        assert_eq!(bob_session.status, SESSION_STATUS_ESTABLISHED);
-
-        let message_metadata = DirectEnvelopeMetadata {
-            sender_did: bob_did.to_owned(),
-            recipient_did: alice_did.to_owned(),
-            message_id: "msg-async-receive".to_owned(),
-            profile: "anp.direct.e2ee.v1".to_owned(),
-            security_profile: "direct-e2ee".to_owned(),
-        };
-        let (_, cipher_body) = DirectE2eeSession::encrypt_follow_up(
-            &mut bob_session,
-            &message_metadata,
-            "msg-async-receive",
-            &ApplicationPlaintext::new_text("text/plain", "async receive secret"),
-        )
-        .unwrap();
-        EstablishedExchange {
+        FirstReplyExchange {
             alice_session,
             bob_session,
-            message_metadata,
-            cipher_body,
+            reply_metadata,
+            reply_body,
         }
     }
 
@@ -997,7 +1003,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use anp::direct_e2ee::models::SESSION_STATUS_PENDING_CONFIRMATION;
+    use anp::direct_e2ee::models::SESSION_STATUS_ESTABLISHED;
     use serde_json::json;
 
     use super::*;
@@ -1061,9 +1067,8 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_follow_up_from_record_rejects_pending_confirmation_session() {
-        let mut exchange = established_exchange();
-        exchange.alice_session.status = SESSION_STATUS_PENDING_CONFIRMATION.to_owned();
+    fn decrypt_follow_up_from_record_confirms_pending_session_from_first_reply() {
+        let exchange = first_reply_exchange();
         let record = DirectSessionRecord {
             owner_identity_id: "alice-id".to_owned(),
             owner_did: "did:example:alice".to_owned(),
@@ -1076,16 +1081,15 @@ mod tests {
             updated_at: "2026-05-24T00:00:00Z".to_owned(),
         };
 
-        let err =
-            decrypt_follow_up_from_record(record, exchange.message_metadata, exchange.cipher_body)
-                .unwrap_err();
+        let decrypted =
+            decrypt_follow_up_from_record(record, exchange.reply_metadata, exchange.reply_body)
+                .unwrap()
+                .unwrap();
 
-        assert_eq!(
-            err,
-            crate::ImError::LocalStateUnavailable {
-                detail: "direct E2EE session is not established".to_owned(),
-            }
-        );
+        assert_eq!(decrypted.result["plaintext"]["text"], json!("reply"));
+        let updated = direct_session_from_blob(&decrypted.updated_record.state_blob).unwrap();
+        assert_eq!(updated.status, SESSION_STATUS_ESTABLISHED);
+        assert_eq!(updated.recv_n, 1);
     }
 
     #[tokio::test]
@@ -1136,6 +1140,53 @@ mod tests {
         assert_eq!(saved.revision, 1);
         let saved_session = direct_session_from_blob(&saved.state_blob).unwrap();
         assert_eq!(saved_session.recv_n, exchange.alice_session.recv_n + 1);
+    }
+
+    #[tokio::test]
+    async fn async_direct_receive_processor_confirms_pending_session_from_first_reply() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let exchange = first_reply_exchange();
+        let db = client.core_inner().local_state_db().await.unwrap();
+        db.save_direct_secure_session_if_revision(
+            DirectSessionRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:example:alice".to_owned(),
+                peer_did: "did:example:bob".to_owned(),
+                session_id: exchange.alice_session.session_id.clone(),
+                state_blob: direct_session_to_blob(&exchange.alice_session).unwrap(),
+                metadata_json: direct_session_metadata_json(&exchange.alice_session).unwrap(),
+                revision: 0,
+                created_at: "2026-05-24T00:00:00Z".to_owned(),
+                updated_at: "2026-05-24T00:00:00Z".to_owned(),
+            },
+            0,
+        )
+        .await
+        .unwrap();
+
+        let outcome = AsyncDirectSecureIncomingProcessor::new(&client)
+            .process_cipher_if_ready(direct_cipher_notification(
+                &exchange.reply_metadata,
+                &exchange.reply_body,
+            ))
+            .await
+            .unwrap();
+
+        let AsyncDirectSecureReceiveOutcome::Processed(result) = outcome else {
+            panic!("pending confirmation first reply should be processed");
+        };
+        assert_eq!(result["state"], json!("decrypted"));
+        assert_eq!(result["plaintext"]["text"], json!("reply"));
+        let saved = db
+            .get_direct_secure_session("alice-id", "did:example:bob")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.revision, 1);
+        let saved_session = direct_session_from_blob(&saved.state_blob).unwrap();
+        assert_eq!(saved_session.status, SESSION_STATUS_ESTABLISHED);
+        assert_eq!(saved_session.recv_n, 1);
     }
 
     #[tokio::test]

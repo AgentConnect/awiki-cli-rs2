@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 #[cfg(feature = "sqlite")]
-use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 
 mod bootstrap;
 mod client;
@@ -15,7 +15,7 @@ pub(crate) struct ImCoreInner {
     pub(crate) sdk_config: crate::ImCoreConfig,
     pub(crate) sdk_paths: crate::ImCorePaths,
     #[cfg(feature = "sqlite")]
-    pub(crate) local_state_db: Mutex<Option<crate::internal::local_state::actor::LocalStateDb>>,
+    pub(crate) local_state_db: OnceCell<crate::internal::local_state::actor::LocalStateDb>,
 }
 
 #[derive(Clone)]
@@ -46,7 +46,7 @@ impl ImCore {
                 sdk_config,
                 sdk_paths,
                 #[cfg(feature = "sqlite")]
-                local_state_db: Mutex::new(None),
+                local_state_db: OnceCell::new(),
             }),
         })
     }
@@ -90,15 +90,69 @@ impl ImCoreInner {
     pub(crate) async fn local_state_db(
         &self,
     ) -> crate::ImResult<crate::internal::local_state::actor::LocalStateDb> {
-        let mut guard = self.local_state_db.lock().await;
-        if let Some(db) = guard.as_ref() {
-            return Ok(db.clone());
-        }
-        let db = crate::internal::local_state::actor::LocalStateDb::open(
-            self.sdk_paths.local_state.sqlite_path.clone(),
+        self.local_state_db
+            .get_or_try_init(|| {
+                crate::internal::local_state::actor::LocalStateDb::open(
+                    self.sdk_paths.local_state.sqlite_path.clone(),
+                )
+            })
+            .await
+            .cloned()
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_state_db_concurrent_first_open_shares_actor() {
+        let root = tempfile::tempdir().unwrap();
+        let core = ImCore::new(
+            crate::ImCoreConfig {
+                service_base_url: crate::ServiceEndpoint::parse("https://example.test").unwrap(),
+                did_domain: "awiki.test".to_owned(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: crate::MessageTransportPolicy::HttpOnly,
+            },
+            crate::ImCorePaths {
+                identities: crate::IdentityRegistryPaths {
+                    identity_root_dir: root.path().join("identities"),
+                    registry_path: root.path().join("identities").join("registry.json"),
+                    default_identity_path: Some(root.path().join("identities").join("default")),
+                },
+                local_state: crate::LocalStatePaths {
+                    sqlite_path: root.path().join("local").join("im.sqlite"),
+                },
+                runtime: crate::RuntimePaths {
+                    cache_dir: root.path().join("cache"),
+                    temp_dir: root.path().join("tmp"),
+                },
+            },
         )
-        .await?;
-        *guard = Some(db.clone());
-        Ok(db)
+        .unwrap();
+
+        let inner = core.inner.clone();
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let inner = inner.clone();
+            tasks.push(tokio::spawn(async move {
+                let db = inner.local_state_db().await.unwrap();
+                db.current_schema_version().await.unwrap()
+            }));
+        }
+
+        for task in tasks {
+            assert_eq!(
+                task.await.unwrap(),
+                crate::internal::local_state::schema::SCHEMA_VERSION
+            );
+        }
+        assert!(core.inner().local_state_db.get().is_some());
     }
 }

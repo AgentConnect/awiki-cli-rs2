@@ -71,6 +71,10 @@ enum LocalStateCommand {
         record: super::groups::GroupRecord,
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
+    UpsertGroupE2eeSummary {
+        summary: super::groups::GroupE2eeSummaryRecord,
+        reply: oneshot::Sender<crate::ImResult<()>>,
+    },
     ReplaceGroupMembers {
         owner_did: String,
         group_id: String,
@@ -254,6 +258,17 @@ enum LocalStateCommand {
             crate::ImResult<Option<crate::internal::store::e2ee_outbox::E2eeOutboxRecord>>,
         >,
     },
+    MergeRecoveredHandleLocalState {
+        old_owner_dids: Vec<String>,
+        new_owner_did: String,
+        final_credential_name: String,
+        reply: oneshot::Sender<
+            crate::ImResult<(
+                std::collections::BTreeMap<String, i64>,
+                std::collections::BTreeMap<String, i64>,
+            )>,
+        >,
+    },
     BackfillOwnerIdentityIds {
         identities: Vec<super::schema::OwnerIdentityBackfill>,
         reply: oneshot::Sender<crate::ImResult<usize>>,
@@ -424,6 +439,16 @@ impl LocalStateDb {
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::UpsertGroup { record, reply })
+            .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
+    pub(crate) async fn upsert_group_e2ee_summary(
+        &self,
+        summary: super::groups::GroupE2eeSummaryRecord,
+    ) -> crate::ImResult<()> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::UpsertGroupE2eeSummary { summary, reply })
             .await?;
         receiver.await.map_err(|_| actor_closed())?
     }
@@ -840,6 +865,26 @@ impl LocalStateDb {
         receiver.await.map_err(|_| actor_closed())?
     }
 
+    pub(crate) async fn merge_recovered_handle_local_state(
+        &self,
+        old_owner_dids: Vec<String>,
+        new_owner_did: impl Into<String>,
+        final_credential_name: impl Into<String>,
+    ) -> crate::ImResult<(
+        std::collections::BTreeMap<String, i64>,
+        std::collections::BTreeMap<String, i64>,
+    )> {
+        let (reply, receiver) = oneshot::channel();
+        self.send(LocalStateCommand::MergeRecoveredHandleLocalState {
+            old_owner_dids,
+            new_owner_did: new_owner_did.into(),
+            final_credential_name: final_credential_name.into(),
+            reply,
+        })
+        .await?;
+        receiver.await.map_err(|_| actor_closed())?
+    }
+
     pub(crate) async fn backfill_owner_identity_ids(
         &self,
         identities: Vec<super::schema::OwnerIdentityBackfill>,
@@ -990,6 +1035,10 @@ fn run_actor(
             }
             LocalStateCommand::UpsertGroup { record, reply } => {
                 let result = super::groups::upsert_group(&connection, record);
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::UpsertGroupE2eeSummary { summary, reply } => {
+                let result = super::groups::upsert_group_e2ee_summary(&connection, summary);
                 let _ = reply.send(result);
             }
             LocalStateCommand::ReplaceGroupMembers {
@@ -1328,6 +1377,21 @@ fn run_actor(
                     &scope,
                     &outbox_id,
                 );
+                let _ = reply.send(result);
+            }
+            LocalStateCommand::MergeRecoveredHandleLocalState {
+                old_owner_dids,
+                new_owner_did,
+                final_credential_name,
+                reply,
+            } => {
+                let result =
+                    crate::internal::identity_recover_local_state::merge_recovered_handle_local_state_for_connection(
+                        &mut connection,
+                        &old_owner_dids,
+                        &new_owner_did,
+                        &final_credential_name,
+                    );
                 let _ = reply.send(result);
             }
             LocalStateCommand::BackfillOwnerIdentityIds { identities, reply } => {
@@ -1751,6 +1815,90 @@ mod tests {
             .await
             .unwrap();
         assert!(!event_id.trim().is_empty());
+
+        db.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn db_actor_merge_recovered_handle_local_state_uses_actor_connection() {
+        let fixture = Fixture::new();
+        let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();
+        let old_did = "did:example:old-alice";
+        let new_did = "did:example:new-alice";
+
+        db.store_messages(vec![super::super::messages::MessageRecord {
+            msg_id: "recover-msg-1".to_string(),
+            owner_identity_id: "old-alice".to_string(),
+            owner_did: old_did.to_string(),
+            thread_id: "dm:did:example:old-alice:did:example:bob".to_string(),
+            direction: 1,
+            sender_did: old_did.to_string(),
+            receiver_did: "did:example:bob".to_string(),
+            content_type: "text/plain".to_string(),
+            content: "pre recovery".to_string(),
+            sent_at: "2026-05-21T00:00:01Z".to_string(),
+            stored_at: "2026-05-21T00:00:01Z".to_string(),
+            credential_name: "old-alice".to_string(),
+            ..super::super::messages::MessageRecord::default()
+        }])
+        .await
+        .unwrap();
+        db.queue_e2ee_outbox(crate::internal::store::e2ee_outbox::E2eeOutboxRecord {
+            outbox_id: "recover-outbox-1".to_string(),
+            owner_identity_id: "old-alice".to_string(),
+            owner_did: old_did.to_string(),
+            credential_name: "old-alice".to_string(),
+            peer_did: "did:example:bob".to_string(),
+            plaintext: "stale secret".to_string(),
+            local_status: "failed".to_string(),
+            created_at: "2026-05-21T00:00:02Z".to_string(),
+            updated_at: "2026-05-21T00:00:02Z".to_string(),
+            ..crate::internal::store::e2ee_outbox::E2eeOutboxRecord::default()
+        })
+        .await
+        .unwrap();
+
+        let (store_merge, e2ee_cleanup) = db
+            .merge_recovered_handle_local_state(
+                vec![old_did.to_string()],
+                new_did,
+                "alice-recovered",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(store_merge.get("messages"), Some(&1));
+        assert_eq!(e2ee_cleanup.get("e2ee_outbox"), Some(&1));
+        let messages = db
+            .list_conversations(
+                "alice-recovered",
+                new_did,
+                crate::messages::ConversationQuery {
+                    limit: crate::ids::PageLimit(10),
+                    include_groups: false,
+                    include_direct: true,
+                    unread_only: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].thread_id,
+            "dm:did:example:bob:did:example:new-alice"
+        );
+        let old_outbox = db
+            .list_e2ee_outbox(
+                crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope {
+                    owner_identity_id: "old-alice".to_string(),
+                    owner_did: old_did.to_string(),
+                    credential_name: "old-alice".to_string(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(old_outbox.is_empty());
 
         db.shutdown().await.unwrap();
     }

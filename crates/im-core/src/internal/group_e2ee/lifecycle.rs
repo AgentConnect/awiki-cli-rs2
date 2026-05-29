@@ -2172,6 +2172,7 @@ mod tests {
     use std::rc::Rc;
     use std::sync::{Arc, Mutex};
 
+    #[cfg(feature = "blocking")]
     #[test]
     fn lifecycle_create_prepares_delivers_finalizes_and_persists_summary() {
         let fixture = Fixture::new();

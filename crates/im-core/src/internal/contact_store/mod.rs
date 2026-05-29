@@ -2,10 +2,10 @@
 pub(crate) mod projection;
 #[cfg(feature = "sqlite")]
 pub(crate) mod records;
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) mod relationships;
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn open_writable(
     client: &crate::core::ImClient,
 ) -> crate::ImResult<rusqlite::Connection> {
@@ -19,7 +19,7 @@ pub(crate) fn open_writable(
     Ok(connection)
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn configure(connection: &rusqlite::Connection) -> crate::ImResult<()> {
     connection
         .pragma_update(None, "journal_mode", "WAL")

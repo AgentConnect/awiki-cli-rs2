@@ -13,7 +13,7 @@ pub(crate) struct GroupE2eeSummaryUpdate<'a> {
     pub(crate) membership_status: &'a str,
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
 pub(crate) fn persist_group_e2ee_summary(
     client: &crate::core::ImClient,
     update: GroupE2eeSummaryUpdate<'_>,
@@ -23,10 +23,17 @@ pub(crate) fn persist_group_e2ee_summary(
     ) else {
         return;
     };
-    let _ = crate::internal::local_state::groups::upsert_group(
+    let _ = crate::internal::local_state::groups::upsert_group_e2ee_summary(
         &connection,
         group_e2ee_summary_record(client, &update),
     );
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+pub(crate) fn persist_group_e2ee_summary(
+    _client: &crate::core::ImClient,
+    _update: GroupE2eeSummaryUpdate<'_>,
+) {
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -46,7 +53,7 @@ pub(crate) async fn persist_group_e2ee_summary_async(
         .core_inner()
         .local_state_db()
         .await?
-        .upsert_group(record)
+        .upsert_group_e2ee_summary(record)
         .await
 }
 
@@ -62,7 +69,7 @@ pub(crate) async fn persist_group_e2ee_summary_async(
 fn group_e2ee_summary_record(
     client: &crate::core::ImClient,
     update: &GroupE2eeSummaryUpdate<'_>,
-) -> crate::internal::local_state::groups::GroupRecord {
+) -> crate::internal::local_state::groups::GroupE2eeSummaryRecord {
     let mut group_e2ee = Map::new();
     insert_string(
         &mut group_e2ee,
@@ -102,7 +109,7 @@ fn group_e2ee_summary_record(
         );
     }
 
-    crate::internal::local_state::groups::GroupRecord {
+    let record = crate::internal::local_state::groups::GroupRecord {
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
         group_id: update.group_did.to_owned(),
@@ -115,6 +122,19 @@ fn group_e2ee_summary_record(
         metadata: Value::Object(metadata).to_string(),
         credential_name: client.current_identity().id.as_str().to_owned(),
         ..crate::internal::local_state::groups::GroupRecord::default()
+    };
+    crate::internal::local_state::groups::GroupE2eeSummaryRecord {
+        record,
+        epoch: update
+            .epoch
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+        group_state_version: update
+            .group_state_version
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
     }
 }
 

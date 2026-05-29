@@ -1,9 +1,9 @@
 #[cfg(feature = "sqlite")]
 use serde_json::{Map, Value};
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 use crate::internal::auth::session::SessionProvider;
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 use crate::internal::transport::AuthenticatedRpcTransport;
 
 #[cfg(feature = "sqlite")]
@@ -39,7 +39,7 @@ pub(crate) struct DirectSecurePrekeyPrepareResult {
     pub(crate) publish_request: DirectSecurePrekeyPublishRequest,
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
 pub(crate) fn prepare_direct_for_client(
     client: &crate::core::ImClient,
     peer: crate::ids::PeerRef,
@@ -50,6 +50,14 @@ pub(crate) fn prepare_direct_for_client(
         crate::internal::auth::session::FileSessionProvider::new(client),
         crate::internal::transport::CoreHttpTransport::new(client),
     )
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+pub(crate) fn prepare_direct_for_client(
+    _client: &crate::core::ImClient,
+    _peer: crate::ids::PeerRef,
+) -> crate::ImResult<DirectSecurePreparePlan> {
+    Err(crate::ImError::unsupported("sync-direct-secure-prepare"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -68,7 +76,6 @@ pub(crate) async fn prepare_direct_for_client_async(
     let result = db.prepare_direct_secure_prekeys(input).await?;
     let mut transport = crate::internal::transport::CoreHttpTransport::new(client);
     let mut warnings = Vec::new();
-    let _ = publish_prekey_request_async(&mut transport, result.publish_request.clone()).await;
     let prepared_local_send_state =
         match publish_prekey_request_async(&mut transport, result.publish_request).await {
             Ok(_) => true,
@@ -107,7 +114,7 @@ async fn publish_prekey_request_async(
     .and_then(object_result)
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn prepare_direct_for_client_with_transport<P, T>(
     client: &crate::core::ImClient,
     peer: crate::ids::PeerRef,
@@ -295,7 +302,7 @@ pub(crate) async fn direct_prekey_prepare_input_from_client(
     })
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn read_json_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<Value> {
     let raw = std::fs::read(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
         path_kind: path_kind.to_owned(),
@@ -333,7 +340,7 @@ async fn read_text_file_async(
         })
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn read_text_file(path: &std::path::Path, path_kind: &str) -> crate::ImResult<String> {
     std::fs::read_to_string(path).map_err(|err| crate::ImError::CredentialFileUnreadable {
         path_kind: path_kind.to_owned(),
@@ -390,7 +397,7 @@ mod tests {
             ReadySessionProvider,
             RecordingAuthenticatedTransport {
                 calls: calls.clone(),
-                responses: Rc::new(RefCell::new(vec![json!({}), json!({})])),
+                responses: Rc::new(RefCell::new(vec![json!({})])),
             },
         )
         .unwrap();
@@ -405,12 +412,11 @@ mod tests {
         assert!(!format!("{plan:?}").contains("one_time_prekeys"));
 
         let calls = calls.borrow();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].method, "direct.e2ee.publish_prekey_bundle");
-        assert_eq!(calls[1].method, "direct.e2ee.publish_prekey_bundle");
-        assert!(calls[1].params.pointer("/body/prekey_bundle").is_some());
+        assert!(calls[0].params.pointer("/body/prekey_bundle").is_some());
         assert_eq!(
-            calls[1]
+            calls[0]
                 .params
                 .pointer("/body/one_time_prekeys")
                 .and_then(Value::as_array)

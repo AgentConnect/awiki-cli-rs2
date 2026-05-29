@@ -228,7 +228,7 @@ impl<'a> DirectoryService<'a> {
         if request.handle.is_none() {
             request.handle = handle;
         }
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             let mut connection = crate::internal::contact_store::open_writable(self.client)?;
             let record = crate::internal::contact_store::projection::record_from_save_request(
@@ -247,6 +247,11 @@ impl<'a> DirectoryService<'a> {
                     .map_or_else(|| request.peer.as_str(), crate::ids::Did::as_str),
             )?;
             crate::internal::contact_store::records::contact_to_dto(&record)
+        }
+        #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+        {
+            let _ = did;
+            Err(crate::ImError::unsupported("sync-directory-save-contact"))
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -306,7 +311,7 @@ impl<'a> DirectoryService<'a> {
                 "limit must be greater than zero",
             ));
         }
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             let connection = crate::internal::contact_store::open_writable(self.client)?;
             let limit = query.limit.map(|limit| i64::from(limit.0)).unwrap_or(100);
@@ -325,6 +330,11 @@ impl<'a> DirectoryService<'a> {
                 next_cursor: None,
                 has_more: false,
             })
+        }
+        #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+        {
+            let _ = query;
+            Err(crate::ImError::unsupported("sync-directory-contacts"))
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -377,7 +387,7 @@ impl<'a> DirectoryService<'a> {
                 "peer must not be empty",
             ));
         }
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             let connection = crate::internal::contact_store::open_writable(self.client)?;
             let record = if peer.as_str().trim().starts_with("did:") {
@@ -398,6 +408,13 @@ impl<'a> DirectoryService<'a> {
                 .ok()
             };
             crate::internal::contact_store::records::relation_status_from_record(peer, record)
+        }
+        #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+        {
+            let _ = peer;
+            Err(crate::ImError::unsupported(
+                "sync-directory-relation-status",
+            ))
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -451,6 +468,13 @@ impl<'a> DirectoryService<'a> {
 
     pub fn follow(&self, request: super::FollowRequest) -> crate::ImResult<super::FollowResult> {
         validate_peer(request.peer.as_str())?;
+        validate_not_self_peer(self.client, &request.peer)?;
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-directory-follow"))
+        }
+        #[cfg(feature = "blocking")]
         self.follow_with_runtime(
             request,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -515,6 +539,13 @@ impl<'a> DirectoryService<'a> {
         request: super::UnfollowRequest,
     ) -> crate::ImResult<super::UnfollowResult> {
         validate_peer(request.peer.as_str())?;
+        validate_not_self_peer(self.client, &request.peer)?;
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = request;
+            Err(crate::ImError::unsupported("sync-directory-unfollow"))
+        }
+        #[cfg(feature = "blocking")]
         self.unfollow_with_runtime(
             request,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -579,6 +610,14 @@ impl<'a> DirectoryService<'a> {
         peer: crate::ids::PeerRef,
     ) -> crate::ImResult<super::RelationshipStatus> {
         validate_peer(peer.as_str())?;
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = peer;
+            Err(crate::ImError::unsupported(
+                "sync-directory-relationship-status",
+            ))
+        }
+        #[cfg(feature = "blocking")]
         self.relationship_status_with_runtime(
             peer,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -643,6 +682,12 @@ impl<'a> DirectoryService<'a> {
         query: super::RelationshipListQuery,
     ) -> crate::ImResult<crate::ids::Page<super::RelationshipListItem>> {
         validate_relationship_list_query(&query)?;
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = query;
+            Err(crate::ImError::unsupported("sync-directory-followers"))
+        }
+        #[cfg(feature = "blocking")]
         self.followers_with_runtime(
             query,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -707,6 +752,12 @@ impl<'a> DirectoryService<'a> {
         query: super::RelationshipListQuery,
     ) -> crate::ImResult<crate::ids::Page<super::RelationshipListItem>> {
         validate_relationship_list_query(&query)?;
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = query;
+            Err(crate::ImError::unsupported("sync-directory-following"))
+        }
+        #[cfg(feature = "blocking")]
         self.following_with_runtime(
             query,
             crate::internal::auth::session::FileSessionProvider::new(self.client),
@@ -776,6 +827,19 @@ fn validate_peer(peer: &str) -> crate::ImResult<()> {
         return Err(crate::ImError::invalid_input(
             Some("peer".to_string()),
             "peer must not be empty",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_not_self_peer(
+    client: &crate::core::ImClient,
+    peer: &crate::ids::PeerRef,
+) -> crate::ImResult<()> {
+    if peer.as_str().trim() == client.did().as_str() {
+        return Err(crate::ImError::invalid_input(
+            Some("peer".to_string()),
+            "cannot follow self",
         ));
     }
     Ok(())

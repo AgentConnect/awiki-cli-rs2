@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn cached_group_snapshot(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -20,6 +20,14 @@ pub(crate) fn cached_group_snapshot(
             return Ok(Some(enrich_cached_group_snapshot(snapshot)));
         }
     }
+    Ok(None)
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn cached_group_snapshot(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+) -> crate::ImResult<Option<Value>> {
     Ok(None)
 }
 

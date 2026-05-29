@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_messages(
     client: &crate::core::ImClient,
     messages: &[crate::messages::Message],
@@ -16,6 +16,14 @@ pub(crate) fn persist_messages(
         .map(|message| message_record_from_message(client, message))
         .collect::<crate::ImResult<Vec<_>>>()?;
     crate::internal::local_state::messages::upsert_messages(&connection, &records)
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_messages(
+    _client: &crate::core::ImClient,
+    _messages: &[crate::messages::Message],
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -54,7 +62,7 @@ pub(crate) async fn persist_messages_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_direct_outgoing(
     client: &crate::core::ImClient,
     target_did: &str,
@@ -70,6 +78,18 @@ pub(crate) fn persist_direct_outgoing(
         &connection,
         &direct_outgoing_record(client, target_did, target_handle, text, kind, sdk_result),
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_direct_outgoing(
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _target_handle: Option<&str>,
+    _text: &str,
+    _kind: &crate::messages::MessageKind,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -90,7 +110,7 @@ pub(crate) async fn persist_direct_outgoing_async(
         .await
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_group_outgoing(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -106,6 +126,17 @@ pub(crate) fn persist_group_outgoing(
         &group_outgoing_record(client, group_did, text, kind, sdk_result),
     )?;
     touch_group_after_outgoing(&connection, client, group_did, sdk_result)
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_group_outgoing(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _text: &str,
+    _kind: &crate::messages::MessageKind,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -125,7 +156,7 @@ pub(crate) async fn persist_group_outgoing_async(
         .await
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_direct_attachment_outgoing(
     client: &crate::core::ImClient,
     target_did: &str,
@@ -140,6 +171,17 @@ pub(crate) fn persist_direct_attachment_outgoing(
         &connection,
         &direct_attachment_outgoing_record(client, target_did, target_handle, manifest, sdk_result),
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_direct_attachment_outgoing(
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _target_handle: Option<&str>,
+    _manifest: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -160,7 +202,7 @@ pub(crate) async fn persist_direct_attachment_outgoing_async(
         .await
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_group_attachment_outgoing(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -175,6 +217,16 @@ pub(crate) fn persist_group_attachment_outgoing(
         &group_attachment_outgoing_record(client, group_did, manifest, sdk_result),
     )?;
     touch_group_after_outgoing(&connection, client, group_did, sdk_result)
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_group_attachment_outgoing(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _manifest: &Value,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -214,7 +266,7 @@ pub(crate) async fn persist_group_attachment_outgoing_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn peer_dids_for_handle(
     client: &crate::core::ImClient,
     handle: &str,
@@ -228,6 +280,15 @@ pub(crate) fn peer_dids_for_handle(
         &normalize_handle_value(handle),
     )?;
     Ok(merge_peer_dids(current_did, &dids))
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn peer_dids_for_handle(
+    _client: &crate::core::ImClient,
+    _handle: &str,
+    _current_did: &str,
+) -> crate::ImResult<Vec<String>> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -249,7 +310,7 @@ pub(crate) async fn peer_dids_for_handle_async(
     Ok(merge_peer_dids(current_did, &dids))
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn persist_direct_e2ee_outgoing(
     connection: &rusqlite::Connection,
     client: &crate::core::ImClient,
@@ -262,6 +323,18 @@ pub(crate) fn persist_direct_e2ee_outgoing(
         connection,
         &direct_e2ee_outgoing_record(client, target_did, text, kind, sdk_result),
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_direct_e2ee_outgoing(
+    _connection: &rusqlite::Connection,
+    _client: &crate::core::ImClient,
+    _target_did: &str,
+    _text: &str,
+    _kind: &crate::messages::MessageKind,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -281,7 +354,7 @@ pub(crate) async fn persist_direct_e2ee_outgoing_async(
         .await
 }
 
-#[cfg(feature = "group-e2ee")]
+#[cfg(all(feature = "group-e2ee", any(feature = "blocking", test)))]
 pub(crate) fn persist_group_e2ee_outgoing(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -296,6 +369,17 @@ pub(crate) fn persist_group_e2ee_outgoing(
         &connection,
         &group_e2ee_outgoing_record(client, group_did, text, kind, sdk_result),
     )
+}
+
+#[cfg(all(feature = "group-e2ee", not(any(feature = "blocking", test))))]
+pub(crate) fn persist_group_e2ee_outgoing(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _text: &str,
+    _kind: &crate::messages::MessageKind,
+    _sdk_result: &crate::messages::SendMessageResult,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-projection"))
 }
 
 #[cfg(feature = "group-e2ee")]
@@ -363,7 +447,7 @@ fn group_storage_key(group_did: &str) -> String {
     group_did.trim().to_owned()
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn touch_group_after_outgoing(
     connection: &rusqlite::Connection,
     client: &crate::core::ImClient,

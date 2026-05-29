@@ -6,8 +6,8 @@ use im_core::prelude::*;
 mod app_sandbox_paths {
     use super::*;
 
-    #[test]
-    fn app_can_construct_core_with_explicit_paths() {
+    #[tokio::test]
+    async fn app_can_construct_core_with_explicit_paths() {
         let fixture = AppSandboxFixture::new();
         let core = fixture.core();
 
@@ -25,7 +25,11 @@ mod app_sandbox_paths {
         assert_path_check(&report, "temp_dir", fixture.temp_dir(), true);
         assert!(report.warnings.is_empty());
 
-        let status = core.bootstrap().initialize_local_state().unwrap();
+        let status = core
+            .bootstrap()
+            .initialize_local_state_async()
+            .await
+            .unwrap();
         assert_eq!(
             status.sqlite_path,
             fixture.sqlite_path().display().to_string()
@@ -42,6 +46,18 @@ mod app_sandbox_paths {
         assert!(identities
             .iter()
             .all(|identity| identity.readiness.ready_for_auth));
+    }
+
+    #[test]
+    fn sync_local_state_bootstrap_fails_closed_by_default() {
+        let fixture = AppSandboxFixture::new();
+        let core = fixture.core();
+
+        let result = core.bootstrap().initialize_local_state();
+        assert!(matches!(
+            result,
+            Err(ImError::UnsupportedCapability { capability }) if capability == "sync-bootstrap-local-state"
+        ));
     }
 
     #[test]

@@ -466,31 +466,47 @@ async fn project_secure_direct_messages_async(
                 }
             };
         }
-        let mut fallback_entries = message_values
-            .iter()
-            .cloned()
-            .enumerate()
-            .filter(|(index, message)| {
-                !processed_async[*index] && is_direct_e2ee_wire_message(message)
-            })
-            .collect::<Vec<_>>();
-        let mut fallback_messages = fallback_entries
-            .iter()
-            .map(|(_, message)| message.clone())
-            .collect::<Vec<_>>();
-        let warnings = if fallback_messages.is_empty() {
-            Vec::new()
-        } else {
-            crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
-                client,
-                &mut fallback_messages,
-                &mut crate::internal::transport::CoreHttpTransport::new(client),
-                crate::internal::secure_direct::incoming::DirectDecryptMode::ReadOnly,
-            )
-        };
-        async_warnings.extend(warnings);
-        for ((index, _), message) in fallback_entries.drain(..).zip(fallback_messages) {
-            message_values[index] = message;
+        #[cfg(feature = "blocking")]
+        {
+            let mut fallback_entries = message_values
+                .iter()
+                .cloned()
+                .enumerate()
+                .filter(|(index, message)| {
+                    !processed_async[*index] && is_direct_e2ee_wire_message(message)
+                })
+                .collect::<Vec<_>>();
+            let mut fallback_messages = fallback_entries
+                .iter()
+                .map(|(_, message)| message.clone())
+                .collect::<Vec<_>>();
+            let warnings = if fallback_messages.is_empty() {
+                Vec::new()
+            } else {
+                crate::internal::secure_direct::incoming::maybe_decrypt_direct_e2ee_messages_for_client(
+                    client,
+                    &mut fallback_messages,
+                    &mut crate::internal::transport::CoreHttpTransport::new(client),
+                    crate::internal::secure_direct::incoming::DirectDecryptMode::ReadOnly,
+                )
+            };
+            async_warnings.extend(warnings);
+            for ((index, _), message) in fallback_entries.drain(..).zip(fallback_messages) {
+                message_values[index] = message;
+            }
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = client;
+            for (index, message) in message_values.iter_mut().enumerate() {
+                if !processed_async[index] && is_direct_e2ee_wire_message(message) {
+                    mark_async_direct_failure(
+                        message,
+                        &mut async_warnings,
+                        crate::ImError::unsupported("sync-direct-e2ee-read-fallback"),
+                    );
+                }
+            }
         }
         let filtered =
             crate::internal::secure_direct::incoming::filter_displayable_direct_e2ee_messages(

@@ -9,6 +9,55 @@ use im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[test]
+fn directory_relationship_sync_methods_fail_closed_by_default() {
+    let fixture = Fixture::new();
+    let client = fixture.client("alice");
+
+    let follow = client.directory().follow(FollowRequest {
+        peer: PeerRef::parse("bob.awiki.test", "").unwrap(),
+    });
+    assert!(matches!(
+        follow,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-directory-follow"
+    ));
+
+    let unfollow = client.directory().unfollow(UnfollowRequest {
+        peer: PeerRef::parse("did:example:bob", "").unwrap(),
+    });
+    assert!(matches!(
+        unfollow,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-directory-unfollow"
+    ));
+
+    let status = client
+        .directory()
+        .relationship_status(PeerRef::parse("did:example:bob", "").unwrap());
+    assert!(matches!(
+        status,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-directory-relationship-status"
+    ));
+
+    let followers = client.directory().followers(RelationshipListQuery {
+        limit: Some(PageLimit(2)),
+        ..RelationshipListQuery::default()
+    });
+    assert!(matches!(
+        followers,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-directory-followers"
+    ));
+
+    let following = client.directory().following(RelationshipListQuery {
+        limit: Some(PageLimit(2)),
+        ..RelationshipListQuery::default()
+    });
+    assert!(matches!(
+        following,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-directory-following"
+    ));
+}
+
+#[cfg(feature = "blocking")]
+#[test]
 fn directory_relationship_follow_persists_projection_and_status() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
@@ -187,8 +236,8 @@ async fn directory_relationship_follow_async_persists_projection_and_status() {
     assert_eq!(target_handle, "bob.awiki.test");
 }
 
-#[test]
-fn directory_relationship_unfollow_did_updates_projection() {
+#[tokio::test]
+async fn directory_relationship_unfollow_async_did_updates_projection() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
@@ -214,9 +263,10 @@ fn directory_relationship_unfollow_did_updates_projection() {
 
     let result = client
         .directory()
-        .unfollow(UnfollowRequest {
+        .unfollow_async(UnfollowRequest {
             peer: PeerRef::parse("did:example:bob", "").unwrap(),
         })
+        .await
         .unwrap();
     assert_eq!(result.did.as_str(), "did:example:bob");
     assert!(result.ok);
@@ -250,6 +300,7 @@ fn directory_relationship_unfollow_did_updates_projection() {
     assert_eq!(event_type, "unfollowed");
 }
 
+#[cfg(feature = "blocking")]
 #[test]
 fn directory_relationship_lists_hide_service_user_ids() {
     let fixture = Fixture::new();

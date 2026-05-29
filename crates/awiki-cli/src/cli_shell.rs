@@ -381,7 +381,7 @@ impl App {
         )
     }
 
-    pub fn run_init(&self) -> Result<(), ExitError> {
+    pub async fn run_init_async(&self) -> Result<(), ExitError> {
         let mut resolved = self.resolve_config()?;
         let dirs = init_dirs(&resolved);
         if self.globals.dry_run {
@@ -411,7 +411,9 @@ impl App {
                 .map_err(internal_anyhow)?;
             resolved.config_exists = true;
         }
-        ensure_sqlite_schema(&resolved).map_err(internal_anyhow)?;
+        ensure_sqlite_schema(&resolved)
+            .await
+            .map_err(internal_anyhow)?;
         self.render_success(
             "awiki-cli init",
             &resolved,
@@ -1064,11 +1066,20 @@ fn init_dirs(resolved: &Resolved) -> Vec<String> {
     ]
 }
 
-fn ensure_sqlite_schema(resolved: &Resolved) -> anyhow::Result<()> {
+async fn ensure_sqlite_schema(resolved: &Resolved) -> anyhow::Result<()> {
     crate::m_core_cli_adapter::build_im_core(resolved)?
         .bootstrap()
-        .initialize_local_state()?;
+        .initialize_local_state_async()
+        .await?;
     Ok(())
+}
+
+fn ensure_sqlite_schema_blocking(resolved: &Resolved) -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| anyhow::anyhow!("failed to start async runtime: {err}"))?
+        .block_on(ensure_sqlite_schema(resolved))
 }
 
 fn identity_meta_from_resolved(resolved: &Resolved) -> Option<IdentityMeta> {

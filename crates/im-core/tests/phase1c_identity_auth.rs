@@ -122,8 +122,8 @@ fn plan_default_identity_change_returns_previous_and_next() {
     assert!(change.requires_default_identity_write);
 }
 
-#[test]
-fn register_handle_returns_identity_and_default_change() {
+#[tokio::test]
+async fn register_handle_returns_identity_and_default_change() {
     let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({
         "did": "did:wba:awiki.test:carol:e1_registered",
         "user_id": "user-carol",
@@ -132,11 +132,12 @@ fn register_handle_returns_identity_and_default_change() {
         "access_token": "jwt-carol"
     }))]);
     let fixture = Fixture::new();
-    let core = fixture.core_with_base_url(server.base_url());
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
 
     let result = core
         .identities()
-        .register_handle(RegisterHandleRequest {
+        .register_handle_async(RegisterHandleRequest {
             local_alias: Some("carol".to_string()),
             requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
             verification: VerificationInput::AlreadyVerified,
@@ -147,6 +148,7 @@ fn register_handle_returns_identity_and_default_change() {
             },
             make_default: true,
         })
+        .await
         .unwrap();
 
     assert_eq!(result.state, HandleRegistrationState::Registered);
@@ -306,15 +308,16 @@ async fn recover_handle_async_with_otp_recovers_and_persists_identity() {
     assert!(body["params"]["did_document"].is_object());
 }
 
-#[test]
-fn register_phone_without_otp_returns_pending_otp_state() {
+#[tokio::test]
+async fn register_phone_without_otp_returns_pending_otp_state() {
     let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({ "sent": true }))]);
     let fixture = Fixture::new();
-    let core = fixture.core_with_base_url(server.base_url());
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
 
     let result = core
         .identities()
-        .register_handle(RegisterHandleRequest {
+        .register_handle_async(RegisterHandleRequest {
             local_alias: Some("carol".to_string()),
             requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
             verification: VerificationInput::Phone {
@@ -328,6 +331,7 @@ fn register_phone_without_otp_returns_pending_otp_state() {
             },
             make_default: true,
         })
+        .await
         .unwrap();
 
     assert_eq!(result.state, HandleRegistrationState::OtpSent);
@@ -345,18 +349,19 @@ fn register_phone_without_otp_returns_pending_otp_state() {
     assert_eq!(body["params"], json!({ "phone": "+15551234567" }));
 }
 
-#[test]
-fn register_email_without_wait_returns_email_sent_state() {
+#[tokio::test]
+async fn register_email_without_wait_returns_email_sent_state() {
     let server = TestServer::spawn(vec![
         ExpectedHttp::json(json!({ "verified": false })),
         ExpectedHttp::json(json!({ "sent": true })),
     ]);
     let fixture = Fixture::new();
-    let core = fixture.core_with_base_url(server.base_url());
+    let base_url = server.base_url().to_owned();
+    let core = fixture.core_async_with_base_url(&base_url).await;
 
     let result = core
         .identities()
-        .register_handle(RegisterHandleRequest {
+        .register_handle_async(RegisterHandleRequest {
             local_alias: Some("carol".to_string()),
             requested_handle: Handle::parse("carol.awiki.test", "").unwrap(),
             verification: VerificationInput::Email {
@@ -370,6 +375,7 @@ fn register_email_without_wait_returns_email_sent_state() {
             },
             make_default: true,
         })
+        .await
         .unwrap();
 
     assert_eq!(result.state, HandleRegistrationState::EmailSent);

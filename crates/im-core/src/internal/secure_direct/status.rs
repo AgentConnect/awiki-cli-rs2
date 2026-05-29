@@ -39,7 +39,7 @@ impl DirectSecureStatusScope {
     }
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
 pub(crate) fn direct_status_for_client(
     client: &crate::core::ImClient,
     peer: crate::ids::PeerRef,
@@ -48,6 +48,14 @@ pub(crate) fn direct_status_for_client(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
     )?;
     direct_status_for_connection(client, &connection, peer)
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+pub(crate) fn direct_status_for_client(
+    _client: &crate::core::ImClient,
+    _peer: crate::ids::PeerRef,
+) -> crate::ImResult<DirectSecureLocalStatus> {
+    Err(crate::ImError::unsupported("sync-direct-secure-status"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -189,7 +197,7 @@ pub(crate) async fn direct_status_for_client_async(
     direct_status_for_client(client, peer)
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "blocking"))]
 pub(crate) fn repair_direct_for_client(
     client: &crate::core::ImClient,
     peer: crate::ids::PeerRef,
@@ -202,6 +210,14 @@ pub(crate) fn repair_direct_for_client(
         &DirectSecureStatusScope::for_client(client),
         peer,
     )
+}
+
+#[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+pub(crate) fn repair_direct_for_client(
+    _client: &crate::core::ImClient,
+    _peer: crate::ids::PeerRef,
+) -> crate::ImResult<DirectSecureRepairPlan> {
+    Err(crate::ImError::unsupported("sync-direct-secure-repair"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -408,10 +424,9 @@ VALUES ('outbox-1', 'did:example:alice', 'did:example:bob', 'redacted', 'failed'
             [],
         )
         .unwrap();
-        drop(db);
-
-        let plan = repair_direct_for_client(
-            &client,
+        let plan = repair_direct_for_scope(
+            &db,
+            &DirectSecureStatusScope::for_client(&client),
             crate::ids::PeerRef::parse("did:example:bob", "").unwrap(),
         )
         .unwrap();
@@ -422,10 +437,6 @@ VALUES ('outbox-1', 'did:example:alice', 'did:example:bob', 'redacted', 'failed'
             plan.status.state,
             crate::secure::DirectSecureState::Preparing
         );
-        let db = crate::internal::local_state::open_writable(
-            &client.core_inner().sdk_paths().local_state.sqlite_path,
-        )
-        .unwrap();
         assert!(SqliteDirectSecureStateStore::new(&db)
             .unwrap()
             .get_session("alice-id", "did:example:bob")

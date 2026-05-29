@@ -37,20 +37,38 @@ pub(crate) fn merge_recovered_handle_local_state<S: AsRef<str>>(
     new_owner_did: &str,
     final_credential_name: &str,
 ) -> StoreResult<(BTreeMap<String, i64>, BTreeMap<String, i64>)> {
-    let mut store_merge = zero_counts(STORE_MERGE_TABLES);
-    let mut e2ee_cleanup = zero_counts(E2EE_CLEANUP_TABLES);
     if !store_file_exists(sqlite_path) {
-        return Ok((store_merge, e2ee_cleanup));
-    }
-    let owners = normalize_recover_owner_dids(old_owner_dids, new_owner_did);
-    if owners.is_empty() {
-        return Ok((store_merge, e2ee_cleanup));
+        return Ok((
+            zero_counts(STORE_MERGE_TABLES),
+            zero_counts(E2EE_CLEANUP_TABLES),
+        ));
     }
 
     let mut connection = rusqlite::Connection::open(sqlite_path)
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     crate::internal::local_state::configure(&connection)?;
     crate::internal::local_state::schema::ensure_schema(&connection)?;
+    merge_recovered_handle_local_state_for_connection(
+        &mut connection,
+        old_owner_dids,
+        new_owner_did,
+        final_credential_name,
+    )
+}
+
+pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
+    connection: &mut rusqlite::Connection,
+    old_owner_dids: &[S],
+    new_owner_did: &str,
+    final_credential_name: &str,
+) -> StoreResult<(BTreeMap<String, i64>, BTreeMap<String, i64>)> {
+    let mut store_merge = zero_counts(STORE_MERGE_TABLES);
+    let mut e2ee_cleanup = zero_counts(E2EE_CLEANUP_TABLES);
+    let owners = normalize_recover_owner_dids(old_owner_dids, new_owner_did);
+    if owners.is_empty() {
+        return Ok((store_merge, e2ee_cleanup));
+    }
+
     let transaction = connection.transaction()?;
     let owner_set = owners.iter().cloned().collect::<BTreeSet<_>>();
     let mut affected_handles = BTreeSet::new();

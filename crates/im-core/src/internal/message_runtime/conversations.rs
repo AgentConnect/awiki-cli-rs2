@@ -58,7 +58,7 @@ fn should_refresh_projection(query: &crate::messages::ConversationQuery) -> bool
     !query.unread_only && (query.include_direct || query.include_groups)
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn refresh_conversation_projection(
     client: &crate::core::ImClient,
     query: &crate::messages::ConversationQuery,
@@ -72,6 +72,15 @@ fn refresh_conversation_projection(
         refresh_projection_from_group_history(client, requested_limit)?;
     }
     Ok(())
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn refresh_conversation_projection(
+    _client: &crate::core::ImClient,
+    _query: &crate::messages::ConversationQuery,
+    _requested_limit: usize,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-conversations"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -108,7 +117,7 @@ fn refresh_conversation_projection(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn refresh_projection_from_inbox(
     client: &crate::core::ImClient,
     query: &crate::messages::ConversationQuery,
@@ -130,6 +139,15 @@ fn refresh_projection_from_inbox(
         unread_only: false,
     })?;
     Ok(())
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn refresh_projection_from_inbox(
+    _client: &crate::core::ImClient,
+    _query: &crate::messages::ConversationQuery,
+    _requested_limit: usize,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-conversations"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -159,7 +177,7 @@ async fn refresh_projection_from_inbox_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn refresh_projection_from_contact_history(
     client: &crate::core::ImClient,
     requested_limit: usize,
@@ -178,6 +196,14 @@ fn refresh_projection_from_contact_history(
         );
     }
     Ok(())
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn refresh_projection_from_contact_history(
+    _client: &crate::core::ImClient,
+    _requested_limit: usize,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-conversations"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -204,7 +230,7 @@ async fn refresh_projection_from_contact_history_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn refresh_projection_from_group_history(
     client: &crate::core::ImClient,
     requested_limit: usize,
@@ -224,6 +250,14 @@ fn refresh_projection_from_group_history(
         );
     }
     Ok(())
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn refresh_projection_from_group_history(
+    _client: &crate::core::ImClient,
+    _requested_limit: usize,
+) -> crate::ImResult<()> {
+    Err(crate::ImError::unsupported("sync-message-conversations"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -251,7 +285,7 @@ async fn refresh_projection_from_group_history_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn refresh_group_list_best_effort(client: &crate::core::ImClient, requested_limit: usize) {
     let limit = u32::try_from(requested_limit.max(50))
         .unwrap_or(u32::MAX)
@@ -260,6 +294,9 @@ fn refresh_group_list_best_effort(client: &crate::core::ImClient, requested_limi
         limit: crate::ids::PageLimit(limit),
     });
 }
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn refresh_group_list_best_effort(_client: &crate::core::ImClient, _requested_limit: usize) {}
 
 #[cfg(feature = "sqlite")]
 async fn refresh_group_list_best_effort_async(
@@ -277,7 +314,7 @@ async fn refresh_group_list_best_effort_async(
         .await;
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn list_direct_history_candidates(
     client: &crate::core::ImClient,
     requested_limit: usize,
@@ -294,6 +331,14 @@ fn list_direct_history_candidates(
         client.did().as_str(),
         limit,
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn list_direct_history_candidates(
+    _client: &crate::core::ImClient,
+    _requested_limit: usize,
+) -> crate::ImResult<Vec<String>> {
+    Err(crate::ImError::unsupported("sync-message-conversations"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -316,7 +361,7 @@ async fn list_direct_history_candidates_async(
         .await
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn list_group_history_candidates(
     client: &crate::core::ImClient,
     requested_limit: usize,
@@ -333,6 +378,14 @@ fn list_group_history_candidates(
         client.did().as_str(),
         limit,
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn list_group_history_candidates(
+    _client: &crate::core::ImClient,
+    _requested_limit: usize,
+) -> crate::ImResult<Vec<String>> {
+    Err(crate::ImError::unsupported("sync-message-conversations"))
 }
 
 #[cfg(feature = "sqlite")]
@@ -355,7 +408,7 @@ async fn list_group_history_candidates_async(
         .await
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn list_conversation_records(
     client: &crate::core::ImClient,
     query: &crate::messages::ConversationQuery,
@@ -369,6 +422,14 @@ fn list_conversation_records(
         client.did().as_str(),
         query,
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn list_conversation_records(
+    _client: &crate::core::ImClient,
+    _query: &crate::messages::ConversationQuery,
+) -> crate::ImResult<Vec<crate::internal::local_state::conversations::ConversationRecord>> {
+    Err(crate::ImError::unsupported("sync-message-conversations"))
 }
 
 #[cfg(feature = "sqlite")]

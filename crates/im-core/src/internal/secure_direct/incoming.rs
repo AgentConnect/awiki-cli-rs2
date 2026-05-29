@@ -1,10 +1,11 @@
 use serde_json::{Map, Value};
 use std::future::Future;
 
-use crate::internal::transport::{
-    AsyncAuthenticatedRpcTransport, AsyncRpcTransport, AuthenticatedRpcTransport, RpcTransport,
-};
+#[cfg(any(feature = "blocking", test))]
+use crate::internal::transport::AuthenticatedRpcTransport;
+use crate::internal::transport::{AsyncAuthenticatedRpcTransport, AsyncRpcTransport, RpcTransport};
 
+#[cfg(any(feature = "blocking", test))]
 use super::client::{
     prepare_direct_secure_client, DirectSecureClientInput, MessageServiceDirectSecureClient,
 };
@@ -57,6 +58,7 @@ pub(crate) enum DirectRealtimeAsyncProjectionOutcome {
     Fallback(Value),
 }
 
+#[cfg(any(feature = "blocking", test))]
 pub(crate) fn maybe_decrypt_direct_e2ee_messages_for_client<R>(
     client: &crate::core::ImClient,
     messages: &mut [Value],
@@ -145,6 +147,24 @@ where
     )
 }
 
+#[cfg(not(any(feature = "blocking", test)))]
+pub(crate) fn maybe_decrypt_direct_e2ee_messages_for_client<R>(
+    _client: &crate::core::ImClient,
+    messages: &mut [Value],
+    _directory_transport: &mut R,
+    _mode: DirectDecryptMode,
+) -> Vec<String>
+where
+    R: RpcTransport,
+{
+    if !messages.is_empty() && contains_direct_e2ee_messages(messages) {
+        vec!["direct E2EE sync read fallback is disabled".to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(any(feature = "blocking", test))]
 pub(crate) fn maybe_normalize_direct_e2ee_notification_for_client<R>(
     client: &crate::core::ImClient,
     notification: Value,
@@ -277,6 +297,24 @@ where
         &mut plaintext,
         control_warnings,
     )
+}
+
+#[cfg(not(any(feature = "blocking", test)))]
+pub(crate) fn maybe_normalize_direct_e2ee_notification_for_client<R>(
+    _client: &crate::core::ImClient,
+    notification: Value,
+    _directory_transport: &mut R,
+    _mode: DirectDecryptMode,
+) -> DirectRealtimeNotificationProjection
+where
+    R: RpcTransport,
+{
+    DirectRealtimeNotificationProjection {
+        notification: Some(notification),
+        additional_notifications: Vec::new(),
+        warnings: vec!["direct E2EE sync realtime fallback is disabled".to_owned()],
+        decision: DirectRealtimeNotificationDecision::KeepOriginal,
+    }
 }
 
 pub(crate) fn maybe_normalize_direct_e2ee_notification_with_processor(
@@ -851,6 +889,7 @@ fn direct_realtime_params_and_sender(
     Ok((params, sender_did))
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn flush_secure_outbox_after_ack(
     client: &crate::core::ImClient,
     connection: &rusqlite::Connection,
@@ -882,6 +921,7 @@ fn flush_secure_outbox_after_ack(
     )
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn send_ack_after_secure_init(
     direct_client: &mut MessageServiceDirectSecureClient<'_>,
     notification: &Value,
@@ -987,6 +1027,7 @@ fn realtime_decryptor_init_error(
     )
 }
 
+#[cfg(any(feature = "blocking", test))]
 fn send_secure_outbox_request(
     direct_client: &mut MessageServiceDirectSecureClient<'_>,
     request: &super::outbox::SecureOutboxSendRequest,

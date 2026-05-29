@@ -112,7 +112,12 @@ pub fn dispatch(app: &App, command: &ParsedCommand) -> Result<(), ExitError> {
         "doctor" => app.run_doctor(),
         "docs" => app.run_docs(&command.args),
         "schema" => app.run_schema(command),
-        "init" => app.run_init(),
+        "init" => Err(ExitError::new(
+            "unsupported_capability",
+            1,
+            "sync init is disabled in the async cutover.",
+            "Use the async CLI entrypoint.",
+        )),
         "completion.bash" => app.run_completion("bash"),
         "completion.zsh" => app.run_completion("zsh"),
         "completion.fish" => app.run_completion("fish"),
@@ -252,6 +257,7 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
     enforce_command_policy(command)?;
 
     match command.name.as_str() {
+        "init" => app.run_init_async().await,
         "msg.send" => app.run_msg_send_async(command).await,
         "msg.attachment.download" => app.run_msg_attachment_download_async(command).await,
         "msg.inbox" => app.run_msg_inbox_async(command).await,
@@ -315,6 +321,9 @@ pub async fn dispatch_async(app: &App, command: &ParsedCommand) -> Result<(), Ex
         "site.page.update" => app.run_site_page_update_async(command).await,
         "site.page.rename" => app.run_site_page_rename_async(command).await,
         "site.page.delete" => app.run_site_page_delete_async(command).await,
+        "runtime.apply" => app.run_runtime_apply_async().await,
+        "runtime.setup" => app.run_runtime_setup_async(command).await,
+        "runtime.mode.set" => app.run_runtime_mode_set_async(command).await,
         "runtime.listener.run" => app.run_runtime_listener_run_async().await,
         "runtime.listener.service-run" => app.run_runtime_listener_service_run_async().await,
         "mail.inbox" => app.run_mail_inbox_async(command).await,

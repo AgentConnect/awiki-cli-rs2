@@ -116,8 +116,8 @@ fn attachments_service_send_and_memory_download_are_public_runtime_paths() {
     assert!(matches!(download, Err(ImError::AuthRequired)));
 }
 
-#[test]
-fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
+#[tokio::test]
+async fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     let server = AttachmentServiceTestServer::spawn(vec![
         ExpectedHttp::rpc_result(handle_lookup_result()),
         ExpectedHttp::rpc_result(json!({
@@ -158,7 +158,7 @@ fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
 
     let result = client
         .attachments()
-        .send(
+        .send_async(
             MessageTarget::Direct(PeerRef::parse("bob.awiki.info", "").unwrap()),
             AttachmentSendRequest {
                 input: AttachmentInput::Bytes {
@@ -172,6 +172,7 @@ fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
                 delivery: MessageDeliveryOptions::default(),
             },
         )
+        .await
         .expect("public attachment send should resolve handle and run upload");
 
     assert_eq!(result.message.message.id.as_str(), "msg-attachment-send-1");
@@ -281,8 +282,8 @@ fn attachments_service_send_resolves_direct_handle_before_upload_flow() {
     );
 }
 
-#[test]
-fn attachments_service_download_resolves_direct_handle_before_history_lookup() {
+#[tokio::test]
+async fn attachments_service_download_resolves_direct_handle_before_history_lookup() {
     let server = AttachmentServiceTestServer::spawn(vec![
         ExpectedHttp::rpc_result(handle_lookup_result()),
         ExpectedHttp::rpc_result(json!({
@@ -313,13 +314,14 @@ fn attachments_service_download_resolves_direct_handle_before_history_lookup() {
 
     let err = client
         .attachments()
-        .download(DownloadAttachmentRequest {
+        .download_async(DownloadAttachmentRequest {
             thread: ThreadRef::Direct(PeerRef::parse("bob.awiki.info", "").unwrap()),
             message_id: MessageId::parse("msg-attachment-1").unwrap(),
             attachment_id: Some("att-1".to_string()),
             destination: AttachmentDestination::Memory,
             overwrite: false,
         })
+        .await
         .expect_err("unsupported sender DID should stop after resolved history lookup");
     assert!(matches!(
         err,

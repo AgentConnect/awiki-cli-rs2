@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use im_core::prelude::*;
 use serde_json::{json, Value};
 
-#[test]
-fn identity_service_profile_uses_public_http_transport() {
+#[tokio::test]
+async fn identity_service_profile_uses_public_http_transport() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
@@ -44,9 +44,10 @@ fn identity_service_profile_uses_public_http_transport() {
             }),
         ),
     ]);
-    let client = fixture.client_with_base_url("alice", server.base_url());
+    let base_url = server.base_url().to_owned();
+    let client = fixture.client_async_with_base_url("alice", &base_url).await;
 
-    let profile = client.identity().profile().unwrap();
+    let profile = client.identity().profile_async().await.unwrap();
     assert_eq!(profile.subject.as_str(), "did:example:alice");
     assert_eq!(profile.display_name.as_deref(), Some("Alice Remote"));
     assert_eq!(profile.bio.as_deref(), Some("Rust public API"));
@@ -54,12 +55,13 @@ fn identity_service_profile_uses_public_http_transport() {
 
     let updated = client
         .identity()
-        .update_profile(ProfilePatch {
+        .update_profile_async(ProfilePatch {
             display_name: Some("Alice Updated".to_string()),
             bio: Some("sdk profile skeleton".to_string()),
             tags: Some(vec!["sdk".to_string()]),
             markdown: Some("# Alice".to_string()),
         })
+        .await
         .unwrap();
     assert_eq!(updated.subject.as_str(), "did:example:alice");
     assert_eq!(updated.display_name.as_deref(), Some("Alice Updated"));
@@ -270,8 +272,8 @@ fn identity_service_validates_profile_patch_before_stub() {
     ));
 }
 
-#[test]
-fn directory_service_exposes_contact_store_and_resolution_api() {
+#[tokio::test]
+async fn directory_service_exposes_contact_store_and_resolution_api() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
@@ -297,7 +299,11 @@ fn directory_service_exposes_contact_store_and_resolution_api() {
     assert_eq!(client.directory().owner_did().as_str(), "did:example:alice");
 
     let peer = PeerRef::parse("bob.awiki.test", "").unwrap();
-    let resolved = client.directory().resolve_peer(peer.clone()).unwrap();
+    let resolved = client
+        .directory()
+        .resolve_peer_async(peer.clone())
+        .await
+        .unwrap();
     assert_eq!(resolved.did.as_str(), "did:example:bob");
     assert_eq!(resolved.handle.as_ref().unwrap().as_str(), "bob.awiki.test");
     assert_eq!(
@@ -317,7 +323,7 @@ fn directory_service_exposes_contact_store_and_resolution_api() {
 
     let saved = client
         .directory()
-        .save_contact(SaveContactRequest {
+        .save_contact_async(SaveContactRequest {
             peer: peer.clone(),
             did: Some(Did::parse("did:example:bob").unwrap()),
             handle: Some(Handle::parse("bob.awiki.test", "").unwrap()),
@@ -325,6 +331,7 @@ fn directory_service_exposes_contact_store_and_resolution_api() {
             relationship: Some("friend".to_string()),
             note: Some("Phase 2 contact".to_string()),
         })
+        .await
         .unwrap();
     assert_eq!(saved.did.as_str(), "did:example:bob");
     assert_eq!(saved.handle.as_ref().unwrap().as_str(), "bob.awiki.test");
@@ -334,15 +341,20 @@ fn directory_service_exposes_contact_store_and_resolution_api() {
 
     let contacts = client
         .directory()
-        .contacts(ContactListQuery {
+        .contacts_async(ContactListQuery {
             limit: Some(PageLimit(10)),
         })
+        .await
         .unwrap();
     assert_eq!(contacts.items.len(), 1);
     assert_eq!(contacts.items[0].did.as_str(), "did:example:bob");
     assert!(!contacts.has_more);
 
-    let relation = client.directory().relation_status(peer).unwrap();
+    let relation = client
+        .directory()
+        .relation_status_async(peer)
+        .await
+        .unwrap();
     assert_eq!(relation.did.as_ref().unwrap().as_str(), "did:example:bob");
     assert!(relation.is_contact);
     assert_eq!(relation.relationship.as_deref(), Some("friend"));
@@ -430,8 +442,8 @@ async fn directory_service_async_uses_actor_projection_and_resolution_api() {
     assert_eq!(relation.relationship.as_deref(), Some("friend"));
 }
 
-#[test]
-fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
+#[tokio::test]
+async fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
     let fixture = Fixture::new();
     let old_did = "did:example:bob-old";
     seed_contact_binding(
@@ -471,17 +483,19 @@ fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
             }),
         ),
     ]);
-    let client = fixture.client_with_base_url("alice", server.base_url());
+    let base_url = server.base_url().to_owned();
+    let client = fixture.client_async_with_base_url("alice", &base_url).await;
 
     let page = client
         .messages()
-        .history_with_metadata(
+        .history_with_metadata_async(
             ThreadRef::Direct(PeerRef::parse("bob.awiki.test", "").unwrap()),
             HistoryQuery {
                 limit: PageLimit(5),
                 cursor: None,
             },
         )
+        .await
         .unwrap();
 
     assert_eq!(page.source.as_deref(), Some("remote_http"));
@@ -498,8 +512,8 @@ fn messages_history_with_handle_merges_local_handle_history_in_im_core() {
     assert_eq!(requests.len(), 2);
 }
 
-#[test]
-fn directory_service_reads_public_profile_without_resolve_call() {
+#[tokio::test]
+async fn directory_service_reads_public_profile_without_resolve_call() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         ExpectedRpc::new(
@@ -525,9 +539,10 @@ fn directory_service_reads_public_profile_without_resolve_call() {
 
     let handle_profile = client
         .directory()
-        .public_profile(IdentitySubject::Handle(
+        .public_profile_async(IdentitySubject::Handle(
             Handle::parse("bob.awiki.test", "").unwrap(),
         ))
+        .await
         .unwrap();
     assert_eq!(handle_profile.did.as_str(), "did:example:bob");
     assert_eq!(
@@ -539,7 +554,8 @@ fn directory_service_reads_public_profile_without_resolve_call() {
 
     let did_profile = client
         .directory()
-        .public_profile(IdentitySubject::Did(Did::parse("did:example:bob").unwrap()))
+        .public_profile_async(IdentitySubject::Did(Did::parse("did:example:bob").unwrap()))
+        .await
         .unwrap();
     assert_eq!(did_profile.did.as_str(), "did:example:bob");
     assert_eq!(did_profile.profile.subject.as_str(), "did:example:bob");
@@ -552,8 +568,8 @@ fn directory_service_reads_public_profile_without_resolve_call() {
     assert_eq!(requests[2].rpc_method, "get_public_profile");
 }
 
-#[test]
-fn directory_bridge_resolves_handle_with_public_profile_projection() {
+#[tokio::test]
+async fn directory_bridge_resolves_handle_without_sync_projection() {
     let fixture = Fixture::new();
     let client = fixture.client("alice");
     let result = im_core::compat::directory::resolve_peer_with_bridge(
@@ -583,15 +599,12 @@ fn directory_bridge_resolves_handle_with_public_profile_projection() {
     assert_eq!(result.public_profile.as_ref().unwrap()["nick_name"], "Bob");
     assert_eq!(result.resolve.as_ref().unwrap()["did"], "did:example:bob");
 
-    let contacts = client
-        .directory()
-        .contacts(ContactListQuery {
+    assert!(matches!(
+        client.directory().contacts(ContactListQuery {
             limit: Some(PageLimit(10)),
-        })
-        .unwrap();
-    assert_eq!(contacts.items.len(), 1);
-    assert_eq!(contacts.items[0].did.as_str(), "did:example:bob");
-    assert_eq!(contacts.items[0].display_name.as_deref(), Some("Bob"));
+        }),
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-directory-contacts"
+    ));
 }
 
 #[test]
@@ -658,6 +671,7 @@ impl Fixture {
         let root = unique_temp_root();
         let identities = root.join("identities");
         fs::create_dir_all(&identities).unwrap();
+        fs::create_dir_all(root.join("local")).unwrap();
         fs::write(identities.join("default"), "alice\n").unwrap();
         fs::write(
             identities.join("registry.json"),
@@ -689,6 +703,14 @@ impl Fixture {
     fn client_with_base_url(&self, alias: &str, base_url: &str) -> ImClient {
         self.core_with_base_url(base_url)
             .client(IdentitySelector::LocalAlias(alias.to_string()))
+            .unwrap()
+    }
+
+    async fn client_async_with_base_url(&self, alias: &str, base_url: &str) -> ImClient {
+        self.core_async_with_base_url(base_url)
+            .await
+            .client_async(IdentitySelector::LocalAlias(alias.to_string()))
+            .await
             .unwrap()
     }
 
@@ -724,6 +746,38 @@ impl Fixture {
                 },
             },
         )
+        .unwrap()
+    }
+
+    async fn core_async_with_base_url(&self, base_url: &str) -> ImCore {
+        ImCore::open(
+            ImCoreConfig {
+                service_base_url: ServiceEndpoint::parse(base_url).unwrap(),
+                did_domain: "awiki.test".to_string(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: MessageTransportPolicy::HttpOnly,
+            },
+            ImCorePaths {
+                identities: IdentityRegistryPaths {
+                    identity_root_dir: self.root.join("identities"),
+                    registry_path: self.root.join("identities").join("registry.json"),
+                    default_identity_path: Some(self.root.join("identities").join("default")),
+                },
+                local_state: LocalStatePaths {
+                    sqlite_path: self.root.join("local").join("im.sqlite"),
+                },
+                runtime: RuntimePaths {
+                    cache_dir: self.root.join("cache"),
+                    temp_dir: self.root.join("tmp"),
+                },
+            },
+        )
+        .await
         .unwrap()
     }
 }

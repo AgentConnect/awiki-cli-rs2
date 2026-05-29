@@ -428,7 +428,7 @@ fn ensure_active_status(group_did: &str, status: &StatusOutput) -> crate::ImResu
     })
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn local_group_snapshot(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -442,6 +442,14 @@ fn local_group_snapshot(
         client.did().as_str(),
         group_did,
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn local_group_snapshot(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+) -> crate::ImResult<Option<Value>> {
+    Ok(None)
 }
 
 #[cfg(feature = "sqlite")]

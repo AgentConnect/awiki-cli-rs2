@@ -1,6 +1,8 @@
 use im_core::{
     ids::{GroupRef, PeerRef},
-    secure::{SecureOutboxId, SecureOutboxStatus, SecureProblemCode},
+    secure::{
+        DirectSecureFileOutboxFlushScope, SecureOutboxId, SecureOutboxStatus, SecureProblemCode,
+    },
     IdentityRegistryPaths, IdentitySelector, ImCore, ImCoreConfig, ImCorePaths, LocalStatePaths,
     MessageTransportPolicy, RuntimePaths, ServiceEndpoint,
 };
@@ -12,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[test]
-fn secure_service_api_shape_is_available_from_client() {
+fn secure_service_sync_methods_fail_closed_by_default() {
     let root = unique_temp_root("im-core-secure-api");
     let identity = TestIdentity::new("alice.secure-api.example", "alice");
     write_real_identity_fixture(&root, "alice", &identity);
@@ -21,10 +23,121 @@ fn secure_service_api_shape_is_available_from_client() {
         .client(IdentitySelector::LocalAlias("alice".to_owned()))
         .unwrap();
 
+    let direct_status = client
+        .secure()
+        .direct(PeerRef::parse("did:example:bob", "").unwrap())
+        .status();
+    assert!(matches!(
+        direct_status,
+        Err(im_core::ImError::UnsupportedCapability { capability })
+            if capability == "sync-direct-secure-status"
+    ));
+
+    let direct_prepare = client
+        .secure()
+        .direct(PeerRef::parse("did:example:bob", "").unwrap())
+        .prepare();
+    assert!(matches!(
+        direct_prepare,
+        Err(im_core::ImError::UnsupportedCapability { capability })
+            if capability == "sync-direct-secure-prepare"
+    ));
+
+    let group_status = client
+        .secure()
+        .group(GroupRef::parse("did:example:groups:secure-api").unwrap())
+        .status();
+    #[cfg(feature = "group-e2ee")]
+    assert!(matches!(
+        group_status,
+        Err(im_core::ImError::UnsupportedCapability { capability })
+            if capability == "sync-group-secure-status"
+    ));
+    #[cfg(not(feature = "group-e2ee"))]
+    {
+        let group_status = group_status.unwrap();
+        assert_eq!(
+            group_status.state,
+            im_core::secure::GroupSecureState::Unavailable
+        );
+        assert_eq!(
+            group_status.problem.as_ref().map(|problem| &problem.code),
+            Some(&SecureProblemCode::Unsupported)
+        );
+    }
+
+    let failed = client.secure().outbox().list_failed();
+    assert!(matches!(
+        failed,
+        Err(im_core::ImError::UnsupportedCapability { capability })
+            if capability == "sync-secure-outbox"
+    ));
+}
+
+#[test]
+fn direct_secure_file_outbox_flush_fails_closed_by_default() {
+    let root = unique_temp_root("im-core-secure-file-outbox-sync-api");
+    let identity = TestIdentity::new("alice.secure-file-outbox.example", "alice");
+    let identity_dir = root.join("identities").join("alice");
+    let mut client = im_core::secure::new_direct_secure_file_runtime_client(
+        im_core::secure::DirectSecureFileRuntimeIdentity {
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: identity.did.clone(),
+            identity_name: "alice".to_owned(),
+            identity_dir,
+            signing_private_pem: identity.key1_private_pem.clone(),
+            agreement_private_pem: identity.agreement_private_pem.clone(),
+            local_did_document: identity.document.clone(),
+        },
+        Box::new(|_, _| Ok(serde_json::Map::new())),
+        Box::new(|did| {
+            Err(im_core::ImError::PeerNotFound {
+                peer: did.to_owned(),
+            })
+        }),
+    )
+    .unwrap();
+
+    let warnings = im_core::secure::flush_direct_secure_file_outbox(
+        &DirectSecureFileOutboxFlushScope {
+            owner_identity_id: "alice-id".to_owned(),
+            owner_did: identity.did.clone(),
+            credential_name: "alice".to_owned(),
+            sqlite_path: root.join("local").join("im.sqlite"),
+        },
+        "did:example:bob",
+        &mut client,
+    );
+
+    #[cfg(feature = "blocking")]
+    assert!(warnings
+        .iter()
+        .any(|warning| warning.contains("secure outbox store")));
+    #[cfg(not(feature = "blocking"))]
+    assert_eq!(
+        warnings,
+        vec!["direct secure file outbox flush is disabled in the async cutover build".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn secure_service_async_api_shape_is_available_from_client() {
+    let root = unique_temp_root("im-core-secure-async-api");
+    let identity = TestIdentity::new("alice.secure-async-api.example", "alice");
+    write_real_identity_fixture(&root, "alice", &identity);
+    let core = ImCore::open(test_config(), test_paths(&root))
+        .await
+        .unwrap();
+    let client = core
+        .client_async(IdentitySelector::LocalAlias("alice".to_owned()))
+        .await
+        .unwrap();
+
     let direct = client
         .secure()
         .direct(PeerRef::parse("did:example:bob", "").unwrap())
-        .status()
+        .status_async()
+        .await
         .unwrap();
     assert_eq!(direct.peer.as_str(), "did:example:bob");
     assert_eq!(
@@ -42,7 +155,8 @@ fn secure_service_api_shape_is_available_from_client() {
     let group = client
         .secure()
         .group(GroupRef::parse("did:example:groups:secure-api").unwrap())
-        .status()
+        .status_async()
+        .await
         .unwrap();
     assert_eq!(group.group.as_str(), "did:example:groups:secure-api");
     #[cfg(feature = "group-e2ee")]
@@ -65,7 +179,7 @@ fn secure_service_api_shape_is_available_from_client() {
         Some(&SecureProblemCode::Unsupported)
     );
 
-    let failed = client.secure().outbox().list_failed().unwrap();
+    let failed = client.secure().outbox().list_failed_async().await.unwrap();
     assert!(failed.is_empty());
 }
 
@@ -173,15 +287,13 @@ fn secure_outbox_id_rejects_empty_values() {
     assert!(matches!(result, Err(im_core::ImError::InvalidInput { .. })));
 }
 
+#[cfg(feature = "blocking")]
 #[test]
 fn secure_direct_prepare_initializes_send_state_and_returns_redacted_dto() {
     let root = unique_temp_root("im-core-secure-direct-prepare-api");
     let identity = TestIdentity::new("alice.secure-api.example", "alice");
     write_real_identity_fixture(&root, "alice", &identity);
-    let server = TestServer::spawn(vec![
-        ExpectedHttp::rpc_result(json!({})),
-        ExpectedHttp::rpc_result(json!({})),
-    ]);
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({}))]);
     let core = ImCore::new(
         test_config_with_base_url(server.base_url()),
         test_paths(&root),
@@ -212,15 +324,15 @@ fn secure_direct_prepare_initializes_send_state_and_returns_redacted_dto() {
     assert!(!rendered.contains("application/anp-direct"));
 
     let requests = server.join();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
     assert!(requests.iter().all(|request| request.path == "/im/rpc"));
-    assert!(requests.iter().all(|request| {
-        request
+    assert_eq!(
+        requests[0]
             .json_body()
             .get("method")
-            .and_then(Value::as_str)
-            .is_some_and(|method| method.starts_with("direct.e2ee."))
-    }));
+            .and_then(Value::as_str),
+        Some("direct.e2ee.publish_prekey_bundle")
+    );
 }
 
 #[tokio::test]
@@ -228,10 +340,7 @@ async fn secure_direct_prepare_async_initializes_send_state_and_returns_redacted
     let root = unique_temp_root("im-core-secure-direct-prepare-async-api");
     let identity = TestIdentity::new("alice.secure-api-async.example", "alice");
     write_real_identity_fixture(&root, "alice", &identity);
-    let server = TestServer::spawn(vec![
-        ExpectedHttp::rpc_result(json!({})),
-        ExpectedHttp::rpc_result(json!({})),
-    ]);
+    let server = TestServer::spawn(vec![ExpectedHttp::rpc_result(json!({}))]);
     let core = ImCore::open(
         test_config_with_base_url(server.base_url()),
         test_paths(&root),
@@ -265,25 +374,26 @@ async fn secure_direct_prepare_async_initializes_send_state_and_returns_redacted
     assert!(!rendered.contains("application/anp-direct"));
 
     let requests = server.join();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
     assert!(requests.iter().all(|request| request.path == "/im/rpc"));
-    assert!(requests.iter().all(|request| {
-        request
+    assert_eq!(
+        requests[0]
             .json_body()
             .get("method")
-            .and_then(Value::as_str)
-            .is_some_and(|method| method.starts_with("direct.e2ee."))
-    }));
+            .and_then(Value::as_str),
+        Some("direct.e2ee.publish_prekey_bundle")
+    );
 }
 
-#[test]
-fn secure_outbox_failed_retry_drop_uses_redacted_public_dto() {
+#[tokio::test]
+async fn secure_outbox_failed_retry_drop_uses_redacted_public_dto() {
     let root = unique_temp_root("im-core-secure-outbox-api");
     write_identity_fixture(&root, "alice", "did:example:alice");
     let paths = test_paths(&root);
-    let core = ImCore::new(test_config(), paths.clone()).unwrap();
+    let core = ImCore::open(test_config(), paths.clone()).await.unwrap();
     let client = core
-        .client(IdentitySelector::LocalAlias("alice".to_owned()))
+        .client_async(IdentitySelector::LocalAlias("alice".to_owned()))
+        .await
         .unwrap();
     std::fs::create_dir_all(paths.local_state.sqlite_path.parent().unwrap()).unwrap();
     let db = rusqlite::Connection::open(&paths.local_state.sqlite_path).unwrap();
@@ -301,7 +411,7 @@ VALUES ('outbox-secret', 'alice-id', 'did:example:alice', 'did:example:bob', 'te
     .unwrap();
     drop(db);
 
-    let failed = client.secure().outbox().list_failed().unwrap();
+    let failed = client.secure().outbox().list_failed_async().await.unwrap();
 
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].id.as_str(), "outbox-secret");
@@ -319,14 +429,16 @@ VALUES ('outbox-secret', 'alice-id', 'did:example:alice', 'did:example:bob', 'te
     let retried = client
         .secure()
         .outbox()
-        .retry(SecureOutboxId::parse("outbox-secret").unwrap())
+        .retry_async(SecureOutboxId::parse("outbox-secret").unwrap())
+        .await
         .unwrap();
     assert!(matches!(retried.status, SecureOutboxStatus::Queued));
 
     let dropped = client
         .secure()
         .outbox()
-        .drop(SecureOutboxId::parse("outbox-secret").unwrap())
+        .drop_async(SecureOutboxId::parse("outbox-secret").unwrap())
+        .await
         .unwrap();
     assert!(matches!(dropped.status, SecureOutboxStatus::Dropped));
 }

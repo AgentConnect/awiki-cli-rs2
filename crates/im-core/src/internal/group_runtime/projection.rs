@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_snapshot(
     client: &crate::core::ImClient,
     result: &crate::groups::GroupReadResult,
@@ -14,6 +14,13 @@ pub(crate) fn project_group_snapshot(
         return;
     };
     let _ = crate::internal::local_state::groups::upsert_group(&connection, record);
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_snapshot(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) {
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -47,7 +54,7 @@ pub(crate) async fn project_group_snapshot_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_summaries(
     client: &crate::core::ImClient,
     result: &crate::groups::GroupReadResult,
@@ -64,6 +71,13 @@ pub(crate) fn project_group_summaries(
     for record in records {
         let _ = crate::internal::local_state::groups::upsert_group(&connection, record);
     }
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_summaries(
+    _client: &crate::core::ImClient,
+    _result: &crate::groups::GroupReadResult,
+) {
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -97,7 +111,7 @@ pub(crate) async fn project_group_summaries_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_members(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -123,6 +137,14 @@ pub(crate) fn project_group_members(
         &members,
         client.current_identity().id.as_str(),
     );
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_members(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) {
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -169,7 +191,7 @@ pub(crate) async fn project_group_members_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_messages(
     client: &crate::core::ImClient,
     group_did: &str,
@@ -185,6 +207,14 @@ pub(crate) fn project_group_messages(
         return;
     };
     let _ = crate::internal::local_state::messages::upsert_messages(&connection, &records);
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_messages(
+    _client: &crate::core::ImClient,
+    _group_did: &str,
+    _result: &crate::groups::GroupReadResult,
+) {
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -222,7 +252,7 @@ pub(crate) async fn project_group_messages_async(
     Ok(())
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 pub(crate) fn project_group_left(client: &crate::core::ImClient, group_did: &str) {
     let Ok(mut connection) = crate::internal::local_state::open_writable(
         &client.core_inner().sdk_paths().local_state.sqlite_path,
@@ -237,6 +267,9 @@ pub(crate) fn project_group_left(client: &crate::core::ImClient, group_did: &str
         client.current_identity().id.as_str(),
     );
 }
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+pub(crate) fn project_group_left(_client: &crate::core::ImClient, _group_did: &str) {}
 
 #[cfg(not(feature = "sqlite"))]
 pub(crate) fn project_group_left(_client: &crate::core::ImClient, _group_did: &str) {}

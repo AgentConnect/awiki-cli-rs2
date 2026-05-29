@@ -57,6 +57,7 @@ pub(crate) fn record_from_profile(
     }
 }
 
+#[cfg(any(feature = "blocking", test))]
 pub(crate) fn project_directory_resolution(
     client: &crate::core::ImClient,
     resolution: &crate::directory::DirectoryResolution,
@@ -83,6 +84,13 @@ pub(crate) fn project_directory_resolution(
             ..ContactRecord::default()
         });
     let _ = super::records::upsert_contact(&mut connection, record);
+}
+
+#[cfg(not(any(feature = "blocking", test)))]
+pub(crate) fn project_directory_resolution(
+    _client: &crate::core::ImClient,
+    _resolution: &crate::directory::DirectoryResolution,
+) {
 }
 
 pub(crate) async fn project_directory_resolution_async(

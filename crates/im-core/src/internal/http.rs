@@ -101,14 +101,8 @@ impl HttpClient {
     }
 
     #[cfg(not(feature = "blocking"))]
-    pub(crate) fn execute(&self, request: HttpRequest) -> crate::ImResult<HttpResponse> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| crate::ImError::Internal {
-                message: format!("create sync compatibility runtime: {err}"),
-            })?
-            .block_on(self.execute_async(request))
+    pub(crate) fn execute(&self, _request: HttpRequest) -> crate::ImResult<HttpResponse> {
+        Err(crate::ImError::unsupported("sync-http"))
     }
 
     pub(crate) async fn execute_async(

@@ -1287,6 +1287,10 @@ where
                     warnings.extend(projection.warnings);
                     for event in projection.additional_events {
                         if let Err(warning) = events.emit(event) {
+                            events.set_status(
+                                super::RealtimeConnectionState::Closed,
+                                Some(warning.clone()),
+                            );
                             warnings.push(warning);
                             return Ok(realtime_exit(
                                 super::RealtimeExitReason::ConnectionClosed,
@@ -1299,6 +1303,10 @@ where
                         continue;
                     };
                     if let Err(warning) = events.emit(event) {
+                        events.set_status(
+                            super::RealtimeConnectionState::Closed,
+                            Some(warning.clone()),
+                        );
                         warnings.push(warning);
                         return Ok(realtime_exit(
                             super::RealtimeExitReason::ConnectionClosed,
@@ -1380,15 +1388,21 @@ pub(crate) struct TokioRunnerEvents {
     subscriptions: Vec<super::RealtimeSubscription>,
 }
 
+impl TokioRunnerEvents {
+    fn set_status(&self, state: super::RealtimeConnectionState, last_error: Option<String>) {
+        let _ = self.status.send(super::RealtimeStatus {
+            connected: state == super::RealtimeConnectionState::Connected,
+            state,
+            subscriptions: self.subscriptions.clone(),
+            last_error,
+        });
+    }
+}
+
 impl RunnerEvents for TokioRunnerEvents {
     fn emit(&mut self, event: super::ImEvent) -> Result<(), String> {
         if let super::ImEvent::ConnectionStateChanged(state) = &event {
-            let _ = self.status.send(super::RealtimeStatus {
-                connected: state.state == super::RealtimeConnectionState::Connected,
-                state: state.state.clone(),
-                subscriptions: self.subscriptions.clone(),
-                last_error: state.reason.clone(),
-            });
+            self.set_status(state.state.clone(), state.reason.clone());
         }
         self.sender
             .try_send(event)
@@ -1548,7 +1562,7 @@ pub(crate) async fn spawn_default_async(
     let shutdown = super::ShutdownSignal::pending();
     let worker_shutdown = shutdown.clone();
     let worker_options = options.clone();
-    tokio::spawn(async move {
+    let worker = tokio::spawn(async move {
         let mut transport = AsyncDefaultRunnerTransport {
             client: client.clone(),
             socket: None,
@@ -1594,6 +1608,7 @@ pub(crate) async fn spawn_default_async(
         status_receiver,
         shutdown,
         exit_receiver,
+        Some(worker),
     ))
 }
 
@@ -2298,6 +2313,65 @@ WHERE owner_identity_id = ?1 AND owner_did = ?2 AND did = ?3 AND messaged = 1"#,
                 },
             )) if reason == "shutdown requested"
         ));
+    }
+
+    #[tokio::test]
+    async fn realtime_async_runner_exits_when_event_buffer_is_full() {
+        let options = super::super::RealtimeOptions {
+            event_buffer: 1,
+            ..super::super::RealtimeOptions::default()
+        };
+        let (sender, receiver) = tokio_mpsc::channel(options.event_buffer);
+        let (status_sender, status_receiver) =
+            watch::channel(super::super::session::initial_realtime_status(
+                &options,
+                super::super::RealtimeConnectionState::Disconnected,
+                None,
+            ));
+        let events = TokioRunnerEvents {
+            sender,
+            status: status_sender,
+            subscriptions: options.subscriptions.clone(),
+        };
+        let mut transport = FakeAsyncRealtimeTransport {
+            connect_attempts: 0,
+            connect_results: VecDeque::from([Ok(())]),
+            notifications: VecDeque::from([Ok(Some(json!({
+                "method": "local.notification",
+                "params": {"id": "buffered-local", "title": "buffered"}
+            })))]),
+            shutdown_on_next_notification: None,
+        };
+        let mut projector = PlainRealtimeNotificationProjector;
+
+        let exit = run_realtime_async_transport_until_shutdown(
+            options,
+            super::super::ShutdownSignal::pending(),
+            super::super::RealtimeControl::default(),
+            &mut transport,
+            events,
+            &mut projector,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            exit.reason,
+            super::super::RealtimeExitReason::ConnectionClosed
+        );
+        assert_eq!(
+            exit.warnings,
+            vec!["realtime event buffer is full or closed".to_owned()]
+        );
+        assert_eq!(
+            status_receiver.borrow().state,
+            super::super::RealtimeConnectionState::Closed
+        );
+        assert_eq!(
+            status_receiver.borrow().last_error.as_deref(),
+            Some("realtime event buffer is full or closed")
+        );
+        drop(receiver);
     }
 
     struct FixedProjector {

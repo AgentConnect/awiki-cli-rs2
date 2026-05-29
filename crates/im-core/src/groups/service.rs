@@ -1774,6 +1774,31 @@ fn assertion_verification_method_id_from_document(
         })
 }
 
+#[cfg(all(test, feature = "group-e2ee"))]
+fn verify_group_key_package_binding_contract(
+    binding: &serde_json::Value,
+    did_document: &serde_json::Value,
+) -> crate::ImResult<()> {
+    anp::proof::verify_did_wba_binding(
+        binding,
+        did_document,
+        anp::proof::DidWbaBindingVerificationOptions {
+            expected_leaf_signature_key_b64u: binding
+                .get("leaf_signature_key_b64u")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            expected_credential_identity: binding
+                .get("agent_did")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            ..Default::default()
+        },
+    )
+    .map_err(|err| crate::ImError::Serialization {
+        detail: format!("verify group KeyPackage DID WBA binding proof: {err}"),
+    })
+}
+
 #[cfg(feature = "group-e2ee")]
 fn ensure_group_e2ee_service_available(
     client: &crate::core::ImClient,
@@ -1926,7 +1951,63 @@ mod tests {
         assert!(
             calls[0].params["body"]["group_key_package"]["did_wba_binding"]["proof"].is_object()
         );
+        assert_group_key_package_binding_uses_base58btc_object_proof(
+            &calls[0].params["body"]["group_key_package"]["did_wba_binding"],
+        );
+        verify_group_key_package_binding_contract(
+            &calls[0].params["body"]["group_key_package"]["did_wba_binding"],
+            &fixture.did_bundle.did_document,
+        )
+        .unwrap();
         assert!(calls[0].params["auth"]["origin_proof"].is_object());
+    }
+
+    fn assert_group_key_package_binding_uses_base58btc_object_proof(binding: &Value) {
+        let proof_value = binding["proof"]["proofValue"]
+            .as_str()
+            .expect("binding proofValue should be a string");
+        assert!(
+            proof_value.starts_with('z'),
+            "binding proofValue should use multibase base58btc"
+        );
+        let signature =
+            decode_base58btc_signature(&proof_value[1..]).expect("proofValue should be base58btc");
+        assert_eq!(
+            signature.len(),
+            64,
+            "binding proofValue should encode one Ed25519 signature"
+        );
+    }
+
+    fn decode_base58btc_signature(value: &str) -> Option<Vec<u8>> {
+        const ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        let mut decoded = Vec::new();
+        for byte in value.bytes() {
+            let mut carry = ALPHABET
+                .as_bytes()
+                .iter()
+                .position(|candidate| *candidate == byte)?;
+            for current in decoded.iter_mut().rev() {
+                let next = (*current as usize * 58) + carry;
+                *current = (next & 0xff) as u8;
+                carry = next >> 8;
+            }
+            while carry > 0 {
+                decoded.insert(0, (carry & 0xff) as u8);
+                carry >>= 8;
+            }
+        }
+        let leading_zeroes = value
+            .bytes()
+            .take_while(|byte| *byte == ALPHABET.as_bytes()[0])
+            .count();
+        let first_non_zero = decoded
+            .iter()
+            .position(|byte| *byte != 0)
+            .unwrap_or(decoded.len());
+        let mut output = vec![0; leading_zeroes];
+        output.extend_from_slice(&decoded[first_non_zero..]);
+        Some(output)
     }
 
     #[derive(Default)]

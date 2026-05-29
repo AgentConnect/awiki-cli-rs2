@@ -125,9 +125,7 @@ impl DirectSecureFileRuntimeClient {
             }
             Err(err) => return Err(map_direct_error(err)),
         };
-        let bundle = self.build_prekey_bundle(signed_prekey)?;
-        let _ = self.publish_prekey_bundle_rpc(&bundle);
-        Ok(bundle)
+        self.build_prekey_bundle(signed_prekey)
     }
 
     pub(crate) fn send_text(
@@ -590,6 +588,7 @@ impl DirectSecureFileRuntimeClient {
     }
 }
 
+#[cfg(feature = "blocking")]
 pub(crate) fn flush_direct_secure_file_outbox(
     scope: &DirectSecureFileOutboxFlushScope,
     peer_filter_did: &str,
@@ -645,6 +644,15 @@ pub(crate) fn flush_direct_secure_file_outbox(
             super::outbox::SecureOutboxSendResult { send, session_id }
         },
     )
+}
+
+#[cfg(not(feature = "blocking"))]
+pub(crate) fn flush_direct_secure_file_outbox(
+    _scope: &DirectSecureFileOutboxFlushScope,
+    _peer_filter_did: &str,
+    _client: &mut DirectSecureFileRuntimeClient,
+) -> Vec<String> {
+    vec!["direct secure file outbox flush is disabled in the async cutover build".to_owned()]
 }
 
 pub(crate) fn encrypt_direct_secure_file_ack(

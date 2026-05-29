@@ -46,16 +46,16 @@ fn file_session_provider_reports_missing_token_without_faking_session() {
         .any(|warning| warning.contains("JWT")));
 }
 
-#[test]
-fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_token() {
+#[tokio::test]
+async fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_token() {
     let server = TestServer::new(
         r#"{"jsonrpc":"2.0","result":{"access_token":"fresh-token"},"id":"req-1"}"#,
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
-    let client = fixture.client("alice");
+    let client = fixture.client_async("alice").await;
 
-    let update = client.auth().refresh_session().unwrap();
+    let update = client.auth().refresh_session_async().await.unwrap();
 
     assert_eq!(update.subject.as_str(), "did:example:alice");
     assert_eq!(
@@ -82,17 +82,17 @@ fn file_session_provider_refreshes_jwt_with_signed_get_me_and_persists_token() {
     assert_eq!(body["params"], serde_json::json!({}));
 }
 
-#[test]
-fn file_session_provider_refreshes_jwt_from_response_authorization_header() {
+#[tokio::test]
+async fn file_session_provider_refreshes_jwt_from_response_authorization_header() {
     let server = TestServer::with_authorization_header(
         r#"{"jsonrpc":"2.0","result":{"handle":"alice"},"id":"req-1"}"#,
         "fresh-header-token",
     );
     let fixture = AuthFixture::new().with_service_base_url(server.base_url());
     fixture.write_runtime("alice", "did:example:alice", Some("stale-token"), true);
-    let client = fixture.client("alice");
+    let client = fixture.client_async("alice").await;
 
-    let update = client.auth().refresh_session().unwrap();
+    let update = client.auth().refresh_session_async().await.unwrap();
 
     assert_eq!(update.subject.as_str(), "did:example:alice");
     assert!(update.refreshed);

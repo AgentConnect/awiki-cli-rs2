@@ -127,9 +127,7 @@ impl<'a> MessageServiceDirectSecureClient<'a> {
     }
 
     pub(crate) fn ensure_fresh_prekey_bundle(&mut self) -> crate::ImResult<PrekeyBundle> {
-        let bundle = self.build_fresh_prekey_bundle()?;
-        let _ = self.publish_prekey_bundle_rpc(&bundle);
-        Ok(bundle)
+        self.build_fresh_prekey_bundle()
     }
 
     fn build_fresh_prekey_bundle(&mut self) -> crate::ImResult<PrekeyBundle> {
@@ -842,10 +840,9 @@ mod tests {
 
         assert!(response.is_empty());
         let calls = calls.borrow();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "direct.e2ee.publish_prekey_bundle");
-        assert_eq!(calls[1].0, "direct.e2ee.publish_prekey_bundle");
-        let body = calls[1].1.get("body").and_then(Value::as_object).unwrap();
+        let body = calls[0].1.get("body").and_then(Value::as_object).unwrap();
         assert!(body.get("prekey_bundle").is_some());
         assert_eq!(
             body.get("one_time_prekeys")

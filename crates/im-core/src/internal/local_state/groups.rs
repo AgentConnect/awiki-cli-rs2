@@ -52,6 +52,14 @@ pub(crate) struct GroupMemberRecord {
 }
 
 #[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct GroupE2eeSummaryRecord {
+    pub(crate) record: GroupRecord,
+    pub(crate) epoch: Option<String>,
+    pub(crate) group_state_version: Option<String>,
+}
+
+#[cfg(feature = "sqlite")]
 pub(crate) fn upsert_group(
     connection: &rusqlite::Connection,
     record: GroupRecord,
@@ -139,6 +147,40 @@ DO UPDATE SET
         )
         .map_err(super::local_state_unavailable)?;
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) fn upsert_group_e2ee_summary(
+    connection: &rusqlite::Connection,
+    summary: GroupE2eeSummaryRecord,
+) -> crate::ImResult<()> {
+    let owner_did = normalize(&summary.record.owner_did);
+    let owner_identity_id = normalize_owner_identity_id(&default_string(
+        summary.record.owner_identity_id.clone(),
+        &summary.record.credential_name,
+    ));
+    let group_id = normalize(&summary.record.group_id);
+    if owner_did.is_empty() || group_id.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            None,
+            "owner_did and group_id are required",
+        ));
+    }
+    if let Some(existing) = get_group_snapshot_for_owner_identity(
+        connection,
+        &owner_identity_id,
+        &owner_did,
+        &group_id,
+    )? {
+        if !should_apply_group_e2ee_summary(
+            existing.get("metadata"),
+            summary.epoch.as_deref(),
+            summary.group_state_version.as_deref(),
+        ) {
+            return Ok(());
+        }
+    }
+    upsert_group(connection, summary.record)
 }
 
 #[cfg(feature = "sqlite")]
@@ -577,6 +619,95 @@ fn now_utc() -> String {
     )
 }
 
+#[cfg(feature = "sqlite")]
+fn should_apply_group_e2ee_summary(
+    existing_metadata: Option<&serde_json::Value>,
+    next_epoch: Option<&str>,
+    next_group_state_version: Option<&str>,
+) -> bool {
+    let Some(existing_metadata) = existing_metadata.and_then(decode_metadata_value) else {
+        return true;
+    };
+    let existing_epoch = metadata_string(&existing_metadata, &["group_e2ee", "epoch"])
+        .as_deref()
+        .and_then(parse_u64);
+    let next_epoch = next_epoch.and_then(parse_u64);
+    match (existing_epoch, next_epoch) {
+        (Some(existing), Some(next)) if next < existing => return false,
+        (Some(existing), Some(next)) if next > existing => return true,
+        _ => {}
+    }
+
+    let existing_version = metadata_string(&existing_metadata, &["group_state_version"])
+        .or_else(|| metadata_string(&existing_metadata, &["group_e2ee", "group_state_version"]));
+    let existing_version = existing_version.as_deref();
+    match compare_group_state_versions(next_group_state_version, existing_version) {
+        Some(std::cmp::Ordering::Less) => false,
+        Some(_) => true,
+        None => existing_version.is_none(),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn decode_metadata_value(value: &serde_json::Value) -> Option<serde_json::Value> {
+    match value {
+        serde_json::Value::Object(_) => Some(value.clone()),
+        serde_json::Value::String(raw) => serde_json::from_str(raw).ok(),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn metadata_string(value: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+#[cfg(feature = "sqlite")]
+fn compare_group_state_versions(
+    next: Option<&str>,
+    existing: Option<&str>,
+) -> Option<std::cmp::Ordering> {
+    let next = next.map(str::trim).filter(|value| !value.is_empty())?;
+    let existing = existing.map(str::trim).filter(|value| !value.is_empty())?;
+    match (parse_version_ordinal(next), parse_version_ordinal(existing)) {
+        (Some(next), Some(existing)) => Some(next.cmp(&existing)),
+        _ if next == existing => Some(std::cmp::Ordering::Equal),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn parse_version_ordinal(value: &str) -> Option<u64> {
+    parse_u64(value).or_else(|| {
+        let digits: String = value
+            .chars()
+            .rev()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if digits.is_empty() {
+            None
+        } else {
+            digits.parse().ok()
+        }
+    })
+}
+
+#[cfg(feature = "sqlite")]
+fn parse_u64(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
@@ -691,5 +822,170 @@ VALUES
             list_active_group_refs_for_owner_identity(&db, "alice-id", "did:owner", 10).unwrap();
 
         assert_eq!(refs, vec!["group-b", "did:group:a"]);
+    }
+
+    #[test]
+    fn group_e2ee_summary_upsert_does_not_revert_to_older_epoch() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        upsert_group_e2ee_summary(
+            &db,
+            summary_record("did:group:e2ee", Some("5"), Some("state-5"), "newer-crypto"),
+        )
+        .unwrap();
+
+        upsert_group_e2ee_summary(
+            &db,
+            summary_record("did:group:e2ee", Some("4"), Some("state-4"), "older-crypto"),
+        )
+        .unwrap();
+
+        let snapshot =
+            get_group_snapshot_for_owner_identity(&db, "alice-id", "did:owner", "did:group:e2ee")
+                .unwrap()
+                .unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_str(snapshot["metadata"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["group_e2ee"]["epoch"], "5");
+        assert_eq!(metadata["group_e2ee"]["group_state_version"], "state-5");
+        assert_eq!(
+            metadata["group_e2ee"]["crypto_group_id_b64u"],
+            "newer-crypto"
+        );
+    }
+
+    #[test]
+    fn group_e2ee_summary_upsert_uses_version_when_epoch_is_missing() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        upsert_group_e2ee_summary(
+            &db,
+            summary_record("did:group:e2ee", None, Some("state-11"), "newer-crypto"),
+        )
+        .unwrap();
+
+        upsert_group_e2ee_summary(
+            &db,
+            summary_record("did:group:e2ee", None, Some("state-10"), "older-crypto"),
+        )
+        .unwrap();
+
+        let snapshot =
+            get_group_snapshot_for_owner_identity(&db, "alice-id", "did:owner", "did:group:e2ee")
+                .unwrap()
+                .unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_str(snapshot["metadata"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["group_e2ee"]["group_state_version"], "state-11");
+        assert_eq!(
+            metadata["group_e2ee"]["crypto_group_id_b64u"],
+            "newer-crypto"
+        );
+    }
+
+    #[test]
+    fn group_e2ee_summary_upsert_rejects_missing_version_over_existing_version() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+        upsert_group_e2ee_summary(
+            &db,
+            summary_record("did:group:e2ee", None, Some("state-11"), "newer-crypto"),
+        )
+        .unwrap();
+
+        upsert_group_e2ee_summary(
+            &db,
+            summary_record("did:group:e2ee", None, None, "unknown-crypto"),
+        )
+        .unwrap();
+
+        let snapshot =
+            get_group_snapshot_for_owner_identity(&db, "alice-id", "did:owner", "did:group:e2ee")
+                .unwrap()
+                .unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_str(snapshot["metadata"].as_str().unwrap()).unwrap();
+        assert_eq!(metadata["group_e2ee"]["group_state_version"], "state-11");
+        assert_eq!(
+            metadata["group_e2ee"]["crypto_group_id_b64u"],
+            "newer-crypto"
+        );
+    }
+
+    #[test]
+    fn group_e2ee_summary_upsert_accepts_missing_version_for_empty_cache() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+
+        upsert_group_e2ee_summary(
+            &db,
+            summary_record("did:group:e2ee", None, None, "first-crypto"),
+        )
+        .unwrap();
+
+        let snapshot =
+            get_group_snapshot_for_owner_identity(&db, "alice-id", "did:owner", "did:group:e2ee")
+                .unwrap()
+                .unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_str(snapshot["metadata"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            metadata["group_e2ee"]["crypto_group_id_b64u"],
+            "first-crypto"
+        );
+    }
+
+    fn summary_record(
+        group_did: &str,
+        epoch: Option<&str>,
+        group_state_version: Option<&str>,
+        crypto_group_id_b64u: &str,
+    ) -> GroupE2eeSummaryRecord {
+        let mut group_e2ee = serde_json::Map::new();
+        if let Some(epoch) = epoch {
+            group_e2ee.insert(
+                "epoch".to_owned(),
+                serde_json::Value::String(epoch.to_owned()),
+            );
+        }
+        if let Some(group_state_version) = group_state_version {
+            group_e2ee.insert(
+                "group_state_version".to_owned(),
+                serde_json::Value::String(group_state_version.to_owned()),
+            );
+        }
+        group_e2ee.insert(
+            "crypto_group_id_b64u".to_owned(),
+            serde_json::Value::String(crypto_group_id_b64u.to_owned()),
+        );
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "message_security_profile".to_owned(),
+            serde_json::Value::String("group-e2ee".to_owned()),
+        );
+        metadata.insert(
+            "group_e2ee".to_owned(),
+            serde_json::Value::Object(group_e2ee),
+        );
+        if let Some(group_state_version) = group_state_version {
+            metadata.insert(
+                "group_state_version".to_owned(),
+                serde_json::Value::String(group_state_version.to_owned()),
+            );
+        }
+        GroupE2eeSummaryRecord {
+            record: GroupRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:owner".to_owned(),
+                group_id: group_did.to_owned(),
+                group_did: group_did.to_owned(),
+                membership_status: "active".to_owned(),
+                metadata: serde_json::Value::Object(metadata).to_string(),
+                credential_name: "alice-id".to_owned(),
+                ..GroupRecord::default()
+            },
+            epoch: epoch.map(ToOwned::to_owned),
+            group_state_version: group_state_version.map(ToOwned::to_owned),
+        }
     }
 }

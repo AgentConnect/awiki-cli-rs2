@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::dto::{
     error::DartImError,
@@ -153,15 +152,153 @@ pub async fn realtime_event_stream(
     sink: StreamSink<DartRealtimeEvent>,
 ) -> Result<(), DartImError> {
     let mut receiver = session.take_event_receiver()?;
-    let session_for_worker = Arc::clone(session);
+    let session_for_worker = Arc::downgrade(session);
     tokio::spawn(async move {
         while let Some(event) = receiver.recv().await {
             let event = crate::mapping::from_core::realtime_event_to_dart(event);
             if sink.add(event).is_err() {
-                let _ = session_for_worker.stop().await;
+                if let Some(session) = session_for_worker.upgrade() {
+                    let _ = session.stop().await;
+                }
                 break;
             }
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use im_core::{
+        IdentityRegistryPaths, IdentitySelector, ImCore, ImCoreConfig, ImCorePaths,
+        LocalStatePaths, MessageTransportPolicy, RuntimePaths, ServiceEndpoint,
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn dart_realtime_session_allows_only_one_event_receiver() {
+        let client = Arc::new(crate::api::client::DartImClient::new(test_client()));
+        let session = realtime_start(&client, test_options()).await.unwrap();
+
+        let _receiver = session.take_event_receiver().unwrap();
+        let error = session.take_event_receiver().unwrap_err();
+
+        assert_eq!(error.code, "invalid_input");
+        assert_eq!(error.field.as_deref(), Some("session"));
+        assert!(error.message.contains("already attached"));
+        realtime_stop(&session).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dart_realtime_stop_disposes_session_handle() {
+        let client = Arc::new(crate::api::client::DartImClient::new(test_client()));
+        let session = realtime_start(&client, test_options()).await.unwrap();
+
+        realtime_stop(&session).await.unwrap();
+        let error = realtime_session_status(&session).unwrap_err();
+
+        assert_eq!(error.code, "object_closed");
+        assert!(error.message.contains("DartRealtimeSession"));
+        realtime_stop(&session).await.unwrap();
+    }
+
+    fn test_options() -> DartRealtimeOptions {
+        DartRealtimeOptions {
+            reconnect: "disabled".to_owned(),
+            event_buffer: 4,
+            reconnect_delay_ms: None,
+            reconnect_base_delay_ms: None,
+            reconnect_max_delay_ms: None,
+            reconnect_max_attempts: None,
+            subscriptions: vec!["messages".to_owned()],
+        }
+    }
+
+    fn test_client() -> im_core::ImClient {
+        let root = unique_temp_root();
+        write_ready_identity(&root, "alice", "test-token");
+        ImCore::new(
+            ImCoreConfig {
+                service_base_url: ServiceEndpoint::parse("http://127.0.0.1:9").unwrap(),
+                did_domain: "awiki.test".to_owned(),
+                user_service_endpoint: None,
+                message_service_endpoint: None,
+                mail_service_endpoint: None,
+                anp_service_endpoint: None,
+                anp_service_did: None,
+                ca_bundle: None,
+                transport_policy: MessageTransportPolicy::Auto,
+            },
+            ImCorePaths {
+                identities: IdentityRegistryPaths {
+                    identity_root_dir: root.join("identities"),
+                    registry_path: root.join("identities").join("registry.json"),
+                    default_identity_path: Some(root.join("identities").join("default")),
+                },
+                local_state: LocalStatePaths {
+                    sqlite_path: root.join("local").join("im.sqlite"),
+                },
+                runtime: RuntimePaths {
+                    cache_dir: root.join("cache"),
+                    temp_dir: root.join("tmp"),
+                },
+            },
+        )
+        .unwrap()
+        .client(IdentitySelector::LocalAlias("alice".to_owned()))
+        .unwrap()
+    }
+
+    fn write_ready_identity(root: &std::path::Path, alias: &str, token: &str) {
+        let identities = root.join("identities");
+        std::fs::create_dir_all(&identities).unwrap();
+        std::fs::write(identities.join("default"), format!("{alias}\n")).unwrap();
+        std::fs::write(
+            identities.join("registry.json"),
+            format!(
+                r#"{{
+                  "default_identity": "{alias}",
+                  "identities": [{{
+                    "id": "{alias}-id",
+                    "did": "did:example:{alias}",
+                    "handle": "{alias}.awiki.test",
+                    "display_name": "{alias}",
+                    "local_alias": "{alias}",
+                    "is_default": true,
+                    "ready_for_auth": true,
+                    "ready_for_messaging": true,
+                    "missing": []
+                  }}]
+                }}"#
+            ),
+        )
+        .unwrap();
+        let dir = identities.join(alias);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("did.json"),
+            format!(r#"{{"id":"did:example:{alias}"}}"#),
+        )
+        .unwrap();
+        std::fs::write(dir.join("private.key"), "test-private-key").unwrap();
+        std::fs::write(
+            dir.join("auth.json"),
+            format!(r#"{{"jwt_token":"{token}"}}"#),
+        )
+        .unwrap();
+    }
+
+    fn unique_temp_root() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "im-core-dart-realtime-{}-{nanos}",
+            std::process::id()
+        ))
+    }
 }

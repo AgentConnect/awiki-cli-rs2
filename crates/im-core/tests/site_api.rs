@@ -10,69 +10,21 @@ use im_core::prelude::*;
 use serde_json::{json, Value};
 
 #[test]
-fn site_public_api_dispatches_authenticated_site_rpc() {
+fn site_public_sync_api_fails_closed_by_default() {
     let fixture = Fixture::new();
-    let server = RpcTestServer::spawn(vec![
-        json!({
-            "domain": "tenant.example",
-            "body": "# Home"
-        }),
-        json!({
-            "slug": "about",
-            "body": "About"
-        }),
-    ]);
-    let core = fixture.core(server.base_url());
+    let core = fixture.core("https://example.test".to_owned());
     let client = core
         .client(IdentitySelector::LocalAlias("alice".to_owned()))
         .unwrap();
 
-    let domain = SiteDomain::parse("tenant.example").unwrap();
-    let root = client
+    let err = client
         .site()
-        .set_root(SiteRootDraft {
-            domain: domain.clone(),
-            body: "# Home".to_owned(),
-        })
-        .unwrap();
-    assert_eq!(root.domain.as_str(), "tenant.example");
-    assert_eq!(root.body.as_deref(), Some("# Home"));
-
-    let page = client
-        .site()
-        .create_page(SitePageDraft {
-            domain: domain.clone(),
-            slug: PageSlug::parse("about").unwrap(),
-            body: "About".to_owned(),
-        })
-        .unwrap();
-    assert_eq!(page.domain.as_str(), "tenant.example");
-    assert_eq!(page.slug.as_str(), "about");
-    assert_eq!(page.body.as_deref(), Some("About"));
-
-    let requests = server.join();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].method, "POST");
-    assert_eq!(requests[0].path, "/site/rpc");
-    assert_eq!(requests[0].rpc_method, "set_root");
-    assert_eq!(
-        requests[0].params,
-        json!({
-            "domain": "tenant.example",
-            "body": "# Home"
-        })
-    );
-    assert_eq!(requests[1].method, "POST");
-    assert_eq!(requests[1].path, "/site/rpc");
-    assert_eq!(requests[1].rpc_method, "create_page");
-    assert_eq!(
-        requests[1].params,
-        json!({
-            "domain": "tenant.example",
-            "slug": "about",
-            "body": "About"
-        })
-    );
+        .get_root(SiteDomain::parse("tenant.example").unwrap())
+        .expect_err("sync site API should fail closed in async cutover build");
+    assert!(matches!(
+        err,
+        ImError::UnsupportedCapability { capability } if capability == "sync-http"
+    ));
 }
 
 #[tokio::test]
@@ -143,8 +95,8 @@ async fn site_public_async_api_dispatches_authenticated_site_rpc() {
     );
 }
 
-#[test]
-fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
+#[tokio::test]
+async fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
     let fixture = Fixture::new();
     let server = RpcTestServer::spawn(vec![
         RpcResponse::success(json!({
@@ -177,39 +129,42 @@ fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
     let domain = SiteDomain::parse("tenant.example").unwrap();
     let page = SitePageRef::new(domain.clone(), PageSlug::parse("about").unwrap());
 
-    let root = client.site().get_root(domain.clone()).unwrap();
+    let root = client.site().get_root_async(domain.clone()).await.unwrap();
     assert_eq!(root.domain.as_str(), "tenant.example");
 
     let listed = client
         .site()
-        .list_pages(SitePageQuery {
+        .list_pages_async(SitePageQuery {
             domain: domain.clone(),
             ..Default::default()
         })
+        .await
         .unwrap();
     assert_eq!(listed.items.len(), 1);
 
-    let fetched = client.site().get_page(page.clone()).unwrap();
+    let fetched = client.site().get_page_async(page.clone()).await.unwrap();
     assert_eq!(fetched.slug.as_str(), "about");
 
     let updated = client
         .site()
-        .update_page(
+        .update_page_async(
             page.clone(),
             SitePageUpdate {
                 body: "Updated".to_owned(),
             },
         )
+        .await
         .unwrap();
     assert_eq!(updated.body.as_deref(), Some("Updated"));
 
     let renamed = client
         .site()
-        .rename_page(page.clone(), PageSlug::parse("team").unwrap())
+        .rename_page_async(page.clone(), PageSlug::parse("team").unwrap())
+        .await
         .unwrap();
     assert_eq!(renamed.slug.as_str(), "team");
 
-    let deleted = client.site().delete_page(page).unwrap();
+    let deleted = client.site().delete_page_async(page).await.unwrap();
     assert!(deleted.deleted);
 
     let requests = server.join();
@@ -253,8 +208,8 @@ fn site_public_api_dispatches_all_root_and_page_rpc_methods() {
     );
 }
 
-#[test]
-fn site_public_api_maps_remote_error_statuses() {
+#[tokio::test]
+async fn site_public_api_maps_remote_error_statuses() {
     for status in [400, 401, 403, 404, 409] {
         let fixture = Fixture::new();
         let mut responses = vec![RpcResponse::http_error(
@@ -272,7 +227,8 @@ fn site_public_api_maps_remote_error_statuses() {
 
         let err = client
             .site()
-            .get_root(SiteDomain::parse("tenant.example").unwrap())
+            .get_root_async(SiteDomain::parse("tenant.example").unwrap())
+            .await
             .expect_err("remote status should map to service error");
         assert_service_status(err, status);
         let expected_requests = if status == 401 { 2 } else { 1 };

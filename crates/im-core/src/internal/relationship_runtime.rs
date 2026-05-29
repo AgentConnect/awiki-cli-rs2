@@ -46,7 +46,7 @@ where
             .authenticated_rpc(call.endpoint, call.method, call.params)?;
         let mut warnings = Vec::new();
         let is_friend = bool_value(&raw, "is_friend");
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
         if let Err(err) = crate::internal::contact_store::relationships::record_follow_applied(
             self.client,
             &target.did,
@@ -54,6 +54,9 @@ where
         ) {
             warnings.push(format!("Local relationship projection failed: {err}"));
         }
+        #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+        warnings
+            .push("Local relationship projection skipped for sync compatibility path".to_owned());
         let mut relation = match self.remote_status(request.peer.clone(), &target.did) {
             Ok(status) => status,
             Err(err) => {
@@ -88,7 +91,7 @@ where
             .transport
             .authenticated_rpc(call.endpoint, call.method, call.params)?;
         let mut warnings = Vec::new();
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
         if let Err(err) = crate::internal::contact_store::relationships::record_unfollow_applied(
             self.client,
             &target.did,
@@ -96,6 +99,9 @@ where
         ) {
             warnings.push(format!("Local relationship projection failed: {err}"));
         }
+        #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+        warnings
+            .push("Local relationship projection skipped for sync compatibility path".to_owned());
         let mut relation = match self.remote_status(request.peer.clone(), &target.did) {
             Ok(status) => status,
             Err(err) => {
@@ -636,7 +642,7 @@ fn local_relationship_status(
     peer: crate::ids::PeerRef,
     did: crate::ids::Did,
 ) -> crate::ImResult<crate::directory::RelationshipStatus> {
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
     {
         let connection = match crate::internal::contact_store::open_writable(client) {
             Ok(connection) => connection,
@@ -656,6 +662,15 @@ fn local_relationship_status(
         )
         .ok();
         relationship_status_from_contact(peer, did, record)
+    }
+    #[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+    {
+        let _ = client;
+        let mut status = relationship_status_from_contact(peer, did, None)?;
+        status
+            .warnings
+            .push("Local relationship projection skipped for sync compatibility path".to_owned());
+        Ok(status)
     }
     #[cfg(not(feature = "sqlite"))]
     {

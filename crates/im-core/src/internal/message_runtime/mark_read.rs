@@ -199,7 +199,7 @@ where
     }
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn classify_mark_read_ids(
     client: &crate::core::ImClient,
     ids: &[String],
@@ -213,6 +213,14 @@ fn classify_mark_read_ids(
         client.did().as_str(),
         ids,
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn classify_mark_read_ids(
+    _client: &crate::core::ImClient,
+    _ids: &[String],
+) -> crate::ImResult<crate::internal::local_state::messages::MarkReadClassification> {
+    Err(crate::ImError::unsupported("sync-message-mark-read"))
 }
 
 #[cfg(not(feature = "sqlite"))]
@@ -256,7 +264,7 @@ async fn classify_mark_read_ids_async(
     })
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", any(feature = "blocking", test)))]
 fn mark_local_messages_read(
     client: &crate::core::ImClient,
     classification: Result<
@@ -278,6 +286,17 @@ fn mark_local_messages_read(
         client.did().as_str(),
         &local_ids,
     )
+}
+
+#[cfg(all(feature = "sqlite", not(any(feature = "blocking", test))))]
+fn mark_local_messages_read(
+    _client: &crate::core::ImClient,
+    _classification: Result<
+        &crate::internal::local_state::messages::MarkReadClassification,
+        &crate::ImError,
+    >,
+) -> crate::ImResult<i64> {
+    Err(crate::ImError::unsupported("sync-message-mark-read"))
 }
 
 #[cfg(feature = "sqlite")]

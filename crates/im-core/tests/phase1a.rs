@@ -56,7 +56,10 @@ fn message_security_mode_mismatches_fail_closed() {
         client_message_id: None,
         delivery: MessageDeliveryOptions::default(),
     });
-    assert!(matches!(secure, Err(ImError::AuthRequired)));
+    assert!(matches!(
+        secure,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
+    ));
 
     let group_e2ee = client.messages().send(SendMessageRequest {
         target: MessageTarget::Direct(peer),
@@ -134,7 +137,10 @@ fn e2ee_required_policy_routes_direct_fail_closed_without_plaintext_fallback() {
         delivery: MessageDeliveryOptions::default(),
     });
 
-    assert!(matches!(result, Err(ImError::AuthRequired)));
+    assert!(matches!(
+        result,
+        Err(ImError::UnsupportedCapability { capability }) if capability == "sync-secure-direct-send"
+    ));
 }
 
 #[test]

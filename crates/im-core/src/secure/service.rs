@@ -35,12 +35,20 @@ pub struct DirectSecureConversation<'a> {
 
 impl DirectSecureConversation<'_> {
     pub fn status(&self) -> crate::ImResult<super::DirectSecureStatus> {
-        direct_status_to_dto(
-            crate::internal::secure_direct::status::direct_status_for_client(
-                self.client,
-                self.peer.clone(),
-            )?,
-        )
+        #[cfg(feature = "blocking")]
+        {
+            direct_status_to_dto(
+                crate::internal::secure_direct::status::direct_status_for_client(
+                    self.client,
+                    self.peer.clone(),
+                )?,
+            )
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = self.client.current_identity();
+            Err(crate::ImError::unsupported("sync-direct-secure-status"))
+        }
     }
 
     pub async fn status_async(&self) -> crate::ImResult<super::DirectSecureStatus> {
@@ -54,11 +62,19 @@ impl DirectSecureConversation<'_> {
     }
 
     pub fn prepare(&self) -> crate::ImResult<super::DirectSecurePrepareResult> {
-        let plan = crate::internal::secure_direct::prepare::prepare_direct_for_client(
-            self.client,
-            self.peer.clone(),
-        )?;
-        direct_prepare_to_dto(plan)
+        #[cfg(feature = "blocking")]
+        {
+            let plan = crate::internal::secure_direct::prepare::prepare_direct_for_client(
+                self.client,
+                self.peer.clone(),
+            )?;
+            direct_prepare_to_dto(plan)
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = self.client.current_identity();
+            Err(crate::ImError::unsupported("sync-direct-secure-prepare"))
+        }
     }
 
     pub async fn prepare_async(&self) -> crate::ImResult<super::DirectSecurePrepareResult> {
@@ -71,7 +87,15 @@ impl DirectSecureConversation<'_> {
     }
 
     pub fn repair(&self) -> crate::ImResult<super::DirectSecureRepairResult> {
-        direct_repair_for_client(self.client, self.peer.clone())
+        #[cfg(feature = "blocking")]
+        {
+            direct_repair_for_client(self.client, self.peer.clone())
+        }
+        #[cfg(not(feature = "blocking"))]
+        {
+            let _ = self.client.current_identity();
+            Err(crate::ImError::unsupported("sync-direct-secure-repair"))
+        }
     }
 
     pub async fn repair_async(&self) -> crate::ImResult<super::DirectSecureRepairResult> {
@@ -103,9 +127,17 @@ fn direct_repair_for_client(
     client: &crate::core::ImClient,
     peer: crate::ids::PeerRef,
 ) -> crate::ImResult<super::DirectSecureRepairResult> {
-    let plan =
-        crate::internal::secure_direct::status::repair_direct_for_client(client, peer.clone())?;
-    direct_repair_plan_to_dto(client, peer, plan)
+    #[cfg(feature = "blocking")]
+    {
+        let plan =
+            crate::internal::secure_direct::status::repair_direct_for_client(client, peer.clone())?;
+        direct_repair_plan_to_dto(client, peer, plan)
+    }
+    #[cfg(not(feature = "blocking"))]
+    {
+        let _ = (client, peer);
+        Err(crate::ImError::unsupported("sync-direct-secure-repair"))
+    }
 }
 
 async fn direct_repair_plan_to_dto_with_prepare(
@@ -196,7 +228,7 @@ pub struct GroupSecureConversation<'a> {
 
 impl GroupSecureConversation<'_> {
     pub fn status(&self) -> crate::ImResult<super::GroupSecureStatus> {
-        #[cfg(feature = "group-e2ee")]
+        #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
             let provider =
                 match crate::internal::group_e2ee::storage::native_provider_for_client(self.client)
@@ -222,6 +254,11 @@ impl GroupSecureConversation<'_> {
                 }
                 Err(err) => Err(err),
             }
+        }
+        #[cfg(all(feature = "group-e2ee", not(feature = "blocking")))]
+        {
+            let _ = self.client.current_identity();
+            Err(crate::ImError::unsupported("sync-group-secure-status"))
         }
         #[cfg(not(feature = "group-e2ee"))]
         {
@@ -317,7 +354,7 @@ impl GroupSecureConversation<'_> {
     }
 
     pub fn repair(&self) -> crate::ImResult<super::GroupSecureRepairResult> {
-        #[cfg(feature = "group-e2ee")]
+        #[cfg(all(feature = "group-e2ee", feature = "blocking"))]
         {
             let provider =
                 crate::internal::group_e2ee::storage::native_provider_for_client(self.client)?;
@@ -336,6 +373,11 @@ impl GroupSecureConversation<'_> {
                     },
                 )?,
             )
+        }
+        #[cfg(all(feature = "group-e2ee", not(feature = "blocking")))]
+        {
+            let _ = self.client.current_identity();
+            Err(crate::ImError::unsupported("sync-group-secure-repair"))
         }
         #[cfg(not(feature = "group-e2ee"))]
         {
@@ -458,7 +500,7 @@ pub struct SecureOutboxService<'a> {
 
 impl SecureOutboxService<'_> {
     pub fn list_failed(&self) -> crate::ImResult<Vec<super::SecureOutboxEntry>> {
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             let connection = crate::internal::local_state::open_writable(
                 &self.client.core_inner().sdk_paths().local_state.sqlite_path,
@@ -474,6 +516,11 @@ impl SecureOutboxService<'_> {
             .map(crate::internal::store::e2ee_outbox::secure_outbox_entry_from_record)
             .collect::<crate::ImResult<Vec<_>>>()?;
             Ok(entries)
+        }
+        #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+        {
+            let _ = self.client.current_identity();
+            Err(crate::ImError::unsupported("sync-secure-outbox"))
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -505,7 +552,7 @@ impl SecureOutboxService<'_> {
         &self,
         outbox_id: super::SecureOutboxId,
     ) -> crate::ImResult<super::SecureOutboxResult> {
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             let connection = crate::internal::local_state::open_writable(
                 &self.client.core_inner().sdk_paths().local_state.sqlite_path,
@@ -521,6 +568,11 @@ impl SecureOutboxService<'_> {
                     &outbox_id_value,
                 )?,
             )
+        }
+        #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+        {
+            let _ = outbox_id;
+            Err(crate::ImError::unsupported("sync-secure-outbox"))
         }
         #[cfg(not(feature = "sqlite"))]
         {
@@ -555,7 +607,7 @@ impl SecureOutboxService<'_> {
         &self,
         outbox_id: super::SecureOutboxId,
     ) -> crate::ImResult<super::SecureOutboxResult> {
-        #[cfg(feature = "sqlite")]
+        #[cfg(all(feature = "sqlite", feature = "blocking"))]
         {
             let connection = crate::internal::local_state::open_writable(
                 &self.client.core_inner().sdk_paths().local_state.sqlite_path,
@@ -571,6 +623,11 @@ impl SecureOutboxService<'_> {
                     &outbox_id_value,
                 )?,
             )
+        }
+        #[cfg(all(feature = "sqlite", not(feature = "blocking")))]
+        {
+            let _ = outbox_id;
+            Err(crate::ImError::unsupported("sync-secure-outbox"))
         }
         #[cfg(not(feature = "sqlite"))]
         {
