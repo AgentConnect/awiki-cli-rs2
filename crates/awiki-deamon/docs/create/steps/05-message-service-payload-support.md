@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)
 步骤编号：05
-状态：进行中
+状态：已完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 进行中 |
+| 状态 | 已完成 |
 | 分支 | `feature/release-0526/daemon-payload-message-service` |
 | 开始时间 | 2026-05-31 03:02:41 CST |
-| 完成时间 | 待定 |
-| 提交 | 待定 |
-| 审查证据 | 待定 |
-| 验证证据 | 待定 |
-| 下一步 | 正在阅读 message-service direct/group 处理器、绑定归一化、存储和 realtime 通知路径。 |
+| 完成时间 | 2026-05-31 03:24:37 CST |
+| 提交 | message-service `30eecf4` |
+| 审查证据 | 已审查 direct/group 协议兼容、存储/realtime 投递、payload 不透明语义、附件和 E2EE 边界、旧字段禁用、测试和文档；发现 group 缺少 content-type/body 严格绑定、group list view 对 binary/attachment/payload 分支不够明确、incoming notification 缺少 payload 保留测试，均已修复。 |
+| 验证证据 | `cargo fmt --all --check` 通过；`cargo test -p im-group --locked group_incoming_notification_preserves_json_payload_body` 通过；`cargo test -p im-group --locked group_send` 通过；`cargo test -p im-group --locked group_list_messages_projects_payload_attachment_and_binary_content` 通过；`cargo test -p im-direct --locked json_payload` 通过；`cargo test -p im-direct --locked direct_send_rejects_non_object_json_payload` 通过；`cargo test --workspace --locked` 通过；`cargo clippy --workspace --all-targets -- -D warnings` 通过；`git diff --check -- docs/api crates` 通过；旧字段和旧 content type 搜索无结果。 |
+| 下一步 | 开始步骤 06：user-service registration token API。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -72,15 +72,15 @@ message-service 把 payload 当作消息内容，而不是命令：
 
 ## 7. 验收标准
 
-- [ ] direct payload 消息能通过 send、存储、read API。
-- [ ] group payload 消息能通过 send、存储、read API。
-- [ ] WebSocket incoming 保留 `body.payload`。
-- [ ] message-service 不授权、不执行 daemon command schema。
-- [ ] message-service 不按 command/status/result 内容类型分支。
-- [ ] text 和 attachment 行为不回归。
-- [ ] API 文档与实现一致。
-- [ ] 审查发现已修复或明确记录。
-- [ ] 完成验证和审查后，为本步骤创建聚焦提交。
+- [x] direct payload 消息能通过 send、存储、read API。
+- [x] group payload 消息能通过 send、存储、read API。
+- [x] WebSocket incoming 保留 `body.payload`。
+- [x] message-service 不授权、不执行 daemon command schema。
+- [x] message-service 不按 command/status/result 内容类型分支。
+- [x] text 和 attachment 行为不回归。
+- [x] API 文档与实现一致。
+- [x] 审查发现已修复或明确记录。
+- [x] 完成验证和审查后，为本步骤创建聚焦提交。
 
 ## 8. 代码验证
 
@@ -98,11 +98,11 @@ message-service 把 payload 当作消息内容，而不是命令：
 
 | 审查项 | 结果 | 说明 |
 |---|---|---|
-| 发现 | 待定 | 待定 |
-| 已修复 | 待定 | 待定 |
-| 残余风险 | 待定 | 待定 |
-| 测试缺口 | 待定 | 待定 |
-| 文档缺口 | 待定 | 待定 |
+| 发现 | 已处理 | group 原先只校验 `text/payload/payload_b64u` 三选一，未按 `meta.content_type` 绑定 body shape；group 本地消息视图对 JSON payload、附件清单和 binary 的投影分支不够明确；incoming notification 缺少直接验证 `body.payload` 保留的测试。 |
+| 已修复 | 已完成 | 为 group.send 增加 `text/plain`、`application/json`、`application/anp-attachment-manifest+json`、其他二进制内容类型的严格 body 字段校验；要求 JSON/附件 `body.payload` 为 object；为 group list view 增加明确投影函数；补 direct payload 往返/负向测试和 group send/list/incoming 测试。 |
+| 残余风险 | 可接受 | 本步骤不实现 direct-e2ee/group-e2ee 内层 payload；message-service 现有 storage 已保存完整 `payload_json` / `wire_payload_json`，未新增 migration；跨 SDK 到真实服务的 E2E 留到步骤 08。 |
+| 测试缺口 | 已记录 | 已覆盖 direct send/inbox/history/notification、direct 非 object payload 拒绝、group content-type/body 绑定、group list projection、group incoming notification；未跑真实跨进程 WebSocket E2E，后续步骤 08 覆盖。 |
+| 文档缺口 | 已修复 | 已更新 group API 文档和 schema examples，说明 `application/json + body.payload`、payload 不透明语义、incoming 保留 payload、本地视图投影规则。 |
 
 ## 10. 提交要求
 

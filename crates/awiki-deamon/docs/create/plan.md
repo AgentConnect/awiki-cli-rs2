@@ -1,10 +1,10 @@
 # 计划：AWiki Daemon 运行时宿主初始化创建
 
-状态：执行中（步骤 05 进行中）
+状态：执行中（步骤 05 已完成）
 文档目录：`crates/awiki-deamon/docs/create/`
 创建日期：2026-05-30
 当前分支：`feature/release-0526/awiki-deamon`
-恢复位置：步骤 05 正在执行，继续 message-service payload 支持
+恢复位置：步骤 05 已完成，下一次执行从步骤 06 开始
 
 ## 1. 目标
 
@@ -126,7 +126,7 @@
 | 02 | 本地 RPC 安全与 CLI 封装器 | 01 | UDS 本地 RPC、`runtime_rpc_token`、方法分级、封装器命令 | [steps/02-local-rpc-security-and-cli-wrapper.md](steps/02-local-rpc-security-and-cli-wrapper.md) | 必须 | 已完成 |
 | 03 | 通用 CLI 运行时插件 MVP | 01, 02 | 手工 runtime agent 配置、无界面 CLI driver、Skill callback 闭环 | [steps/03-generic-cli-runtime-plugin-mvp.md](steps/03-generic-cli-runtime-plugin-mvp.md) | 必须 | 已完成 |
 | 04 | `im-core` payload 接口 | 协议仓库已完成 | `im-core`、Dart DTO、local projection、realtime 支持 payload | [steps/04-sdk-im-core-payload-interface.md](steps/04-sdk-im-core-payload-interface.md) | 必须 | 已完成 |
-| 05 | message-service payload 支持 | 04，协议仓库已完成 | direct/group payload send、存储、history、realtime 支持 | [steps/05-message-service-payload-support.md](steps/05-message-service-payload-support.md) | 必须 | 进行中 |
+| 05 | message-service payload 支持 | 04，协议仓库已完成 | direct/group payload send、存储、history、realtime 支持 | [steps/05-message-service-payload-support.md](steps/05-message-service-payload-support.md) | 必须 | 已完成 |
 | 06 | user-service registration token API | 无强依赖；阶段 B 内可并行 | daemon/runtime registration token 契约与实现 | [steps/06-user-service-registration-token-api.md](steps/06-user-service-registration-token-api.md) | 必须 | 待开始 |
 | 07 | daemon agent 与 runtime agent 管理 | 01-06 | daemon DID 注册、runtime agent create/status、daemon 命令设计 | [steps/07-agent-registration-and-management.md](steps/07-agent-registration-and-management.md) | 必须 | 待开始 |
 | 08 | 集成、系统测试与发布门禁 | 01-07 | 跨仓 E2E、安全审查、文档和发布检查清单 | [steps/08-integration-system-tests-and-rollout.md](steps/08-integration-system-tests-and-rollout.md) | 如有文件变更则必须 | 待开始 |
@@ -142,7 +142,7 @@
 | 03 | 已完成 | `feature/release-0526/awiki-deamon` | 2026-05-31 01:14:03 CST | 2026-05-31 02:00:31 CST | `bc2458b` | Review 已完成：controller_did 文本路由、runtime profile/workspace 成组校验、runtime run 生命周期、local RPC token 回传、outbox test adapter、audit、RuntimeEvent 非权威通道、Debug token 脱敏、daemon/awiki-cli 边界和测试覆盖已审查；发现 schema migration 跳版本、run 状态更新未检查不存在的 run、runtime launch 失败时 run 可能停在 pending、非零退出会产生 final callback、callback Debug 可能泄露 token，均已修复。提交后 `git status --short --branch` 显示分支 ahead 1，仅剩计划台账更新待提交。 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；`cargo test --workspace --locked` 通过；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；`git diff --check -- crates/awiki-deamon/docs` 通过；`rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无结果；`rg -n "RuntimeEvent" crates/awiki-deamon/src crates/awiki-deamon/tests crates/awiki-deamon/docs/local-dev.md` 仅命中文档中“非权威通道”说明；secret 搜索确认生产代码无 token 原文日志，新增 Debug 脱敏测试通过。 | 执行阶段 A Review |
 | 阶段 A Review | 已完成 | `feature/release-0526/awiki-deamon` | 2026-05-31 02:02:50 CST | 2026-05-31 02:03:46 CST | 无新增代码提交；本次为阶段 Review 台账更新 | 阶段 A Review 通过：步骤 01-03 的 daemon crate、配置、状态目录、`daemon.db` schema v3、本地 RPC token/UDS 安全、Generic CLI runtime MVP、workspace mode 文档、测试和提交记录已复核；未发现阻止进入阶段 B 的问题。 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；步骤 03 后 `cargo test --workspace --locked` 通过；daemon 源码/测试 awiki-cli 边界搜索无结果；旧字段和旧 content type 搜索无结果；`rg -n "RuntimeEvent" crates/awiki-deamon/src crates/awiki-deamon/tests crates/awiki-deamon/docs/local-dev.md` 仅命中文档中“非权威通道”说明。 | 开始步骤 04 |
 | 04 | 已完成 | `feature/release-0526/awiki-deamon` | 2026-05-31 02:09:13 CST | 2026-05-31 02:56:44 CST | `defc907` | Review 已完成：公开 DTO、direct/group 线协议、local projection、history/inbox/realtime payload 解析、Dart bridge、生成文件同步、CLI 兼容展示分支和文档已审查；发现 SDK 文档行尾空格、旧字段字面量验证会命中测试和历史记录、普通 workspace 测试首次在 `im-core-dart` 链接阶段被系统 SIGKILL，均已处理或用低并发重跑验证。实现提交后 `git status --short --branch` 显示分支 ahead 1，仅剩本台账更新待提交。 | `cargo fmt --all --check` 通过；`cargo test -p im-core --locked` 通过；`cargo test -p im-core-dart --locked` 通过；`cargo test -p awiki-deamon --locked` 通过；`scripts/flutter/codegen-check.sh` 通过；`CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；`git diff --check -- crates/awiki-cli crates/awiki-deamon/docs/create crates/im-core crates/im-core-dart docs/sdk-refactor packages/awiki_im_core` 通过；旧字段和旧 content type 搜索无结果；daemon 源码/测试 awiki-cli 边界搜索无结果。 | 开始步骤 05 |
-| 05 | 进行中 | `feature/release-0526/daemon-payload-message-service` | 2026-05-31 03:02:41 CST | 待定 | 待定 | 待定 | 待定 | 正在阅读 message-service direct/group 处理器、绑定归一化、存储和 realtime 通知路径 |
+| 05 | 已完成 | `feature/release-0526/daemon-payload-message-service` | 2026-05-31 03:02:41 CST | 2026-05-31 03:24:37 CST | `30eecf4` | Review 已完成：message-service direct 路径已有严格 `application/json + body.payload` 校验和存储/投影能力，本步骤补充 direct payload inbox/history/notification 回归测试；group 路径已审查并补齐 content-type/body 绑定、JSON object payload 校验、attachment/binary/history projection 和 incoming notification payload 保留；存储层已确认使用完整 `payload_json` / `wire_payload_json` 保存 `meta/body`，无需 migration；服务端不解释 daemon command/status/result schema，仅在测试和文档示例中作为不透明 payload 字段出现；旧字段和旧 content type 搜索无结果。提交后 message-service `git status --short --branch` 显示工作区干净。 | `cargo fmt --all --check` 通过；`cargo test -p im-group --locked group_incoming_notification_preserves_json_payload_body` 通过；`cargo test -p im-group --locked group_send` 通过；`cargo test -p im-group --locked group_list_messages_projects_payload_attachment_and_binary_content` 通过；`cargo test -p im-direct --locked json_payload` 通过；`cargo test -p im-direct --locked direct_send_rejects_non_object_json_payload` 通过；`cargo test --workspace --locked` 通过；`cargo clippy --workspace --all-targets -- -D warnings` 通过；`git diff --check -- docs/api crates` 通过；旧字段和旧 command/status/result 专用 content type 搜索无结果。 | 开始步骤 06 |
 | 06 | 待开始 | user-service 分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 阶段 B 内可与步骤 04/05 并行评估 |
 | 阶段 B Review | 待开始 | 相关仓库分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 步骤 04-06 完成后执行 |
 | 07 | 待开始 | 当前仓库和服务端相关分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 等待阶段 B Review |
