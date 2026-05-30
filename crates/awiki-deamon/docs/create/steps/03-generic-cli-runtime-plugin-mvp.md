@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)
 步骤编号：03
-状态：草稿
+状态：已完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 待开始 |
+| 状态 | 已完成 |
 | 分支 | `feature/release-0526/awiki-deamon` |
-| 开始时间 | 待定 |
-| 完成时间 | 待定 |
-| 提交 | 待定 |
-| 审查证据 | 待定 |
-| 验证证据 | 待定 |
-| 下一步 | 本地 RPC 完成后，实现最小通用 CLI 运行时插件。 |
+| 开始时间 | 2026-05-31 01:14:03 CST |
+| 完成时间 | 2026-05-31 02:00:31 CST |
+| 提交 | `bc2458b` |
+| 审查证据 | Review 已完成：controller_did 文本路由、runtime profile/workspace 成组校验、runtime run 生命周期、local RPC token 回传、outbox test adapter、audit、RuntimeEvent 非权威通道、Debug token 脱敏、daemon/awiki-cli 边界和测试覆盖已审查；发现 schema migration 跳版本、run 状态更新未检查不存在的 run、runtime launch 失败时 run 可能停在 pending、非零退出会产生 final callback、callback Debug 可能泄露 token，均已修复。 |
+| 验证证据 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；`cargo test --workspace --locked` 通过；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；`git diff --check -- crates/awiki-deamon/docs` 通过；`rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无结果；`rg -n "RuntimeEvent" crates/awiki-deamon/src crates/awiki-deamon/tests crates/awiki-deamon/docs/local-dev.md` 仅命中文档中“非权威通道”说明；secret 搜索确认生产代码无 token 原文日志，新增 Debug 脱敏测试通过。 |
+| 下一步 | 执行阶段 A Review。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -89,16 +89,16 @@ RuntimeEvent 在本步骤只做观察/日志。权威状态和结果通道是 Sk
 
 ## 7. 验收标准
 
-- [ ] 能加载手工 runtime agent config。
-- [ ] controller 文本任务能创建 RuntimeTask 和 RuntimeRun。
-- [ ] 通用 CLI 插件能启动测试替身/无界面 runtime。
-- [ ] runtime callback 使用步骤 02 的本地 RPC 和 token 校验。
-- [ ] daemon 通过 testable adapter 或 `im-core` 发送 status/final message。
-- [ ] run 和 audit 记录被持久化。
-- [ ] RuntimeEvent 不作为第二条状态权威来源。
-- [ ] workspace mode 限制已文档化。
-- [ ] 审查发现已修复或明确记录。
-- [ ] 完成验证和审查后，为本步骤创建聚焦提交。
+- [x] 能加载手工 runtime agent config。
+- [x] controller 文本任务能创建 RuntimeTask 和 RuntimeRun。
+- [x] 通用 CLI 插件能启动测试替身/无界面 runtime。
+- [x] runtime callback 使用步骤 02 的本地 RPC 和 token 校验。
+- [x] daemon 通过 testable adapter 或 `im-core` 发送 status/final message。
+- [x] run 和 audit 记录被持久化。
+- [x] RuntimeEvent 不作为第二条状态权威来源。
+- [x] workspace mode 限制已文档化。
+- [x] 审查发现已修复或明确记录。
+- [x] 完成验证和审查后，为本步骤创建聚焦提交。
 
 ## 8. 代码验证
 
@@ -117,11 +117,11 @@ RuntimeEvent 在本步骤只做观察/日志。权威状态和结果通道是 Sk
 
 | 审查项 | 结果 | 说明 |
 |---|---|---|
-| 发现 | 待定 | 待定 |
-| 已修复 | 待定 | 待定 |
-| 残余风险 | 待定 | 待定 |
-| 测试缺口 | 待定 | 待定 |
-| 文档缺口 | 待定 | 待定 |
+| 发现 | 5 项 | schema migration 跳版本；run 状态更新未检查不存在的 run；runtime launch 失败时 run 可能停在 pending；非零退出会产生 final callback；callback Debug 可能泄露 token。 |
+| 已修复 | 已修复 | 补记 schema v2/v3；run 状态更新对 0 行更新报错；launch error 标记 failed；非零退出只生成 failed status；RuntimeRpcRequest 和 GenericCliInvocation Debug 脱敏。 |
+| 残余风险 | 已记录 | 真实 runtime CLI、真实 Skill 安装、真实 im-core/payload 发送和长驻 listener 不在本步骤产品化；当前用 testable outbox 证明本地闭环。 |
+| 测试缺口 | 可接受 | 已覆盖成功、失败、非 controller、workspace mode、workspace profile 校验、run/audit 持久化和 token Debug 脱敏；真实外部 CLI 差异留到后续步骤。 |
+| 文档缺口 | 已补充 | `docs/local-dev.md` 已补 Generic CLI runtime MVP、testable outbox 边界、workspace mode 安全边界和 RuntimeEvent 非权威通道说明。 |
 
 ## 10. 提交要求
 
