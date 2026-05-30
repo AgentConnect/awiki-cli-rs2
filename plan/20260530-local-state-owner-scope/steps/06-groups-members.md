@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)  
 步骤编号：06  
-状态：草案
+状态：审查中
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | review |
 | 分支 | `feature/release-0526/db-refactor-in-async` |
-| 开始时间 | |
+| 开始时间 | 2026-05-30T19:13:21Z |
 | 完成时间 | |
 | 提交 | |
-| 审查证据 | |
-| 验证证据 | |
-| 下一步 | 将 group snapshots、members 和 cached group messages 移到 strict owner identity scope。 |
+| 审查证据 | 提交前审查完成：group snapshot、summary、members、messages 和 left projection 统一从 `OwnerScope::for_client` 派生 owner；`groups` upsert 使用 `(owner_identity_id, group_id)`；`group_members` replacement 和 left cleanup 只按 `owner_identity_id + group_id` 删除；无状态 stale projection 不会把 `left` group 重新激活；cached group mark-read fixture 使用 `owner_identity_id` 和稳定 group `conversation_id`；未新增 Secure discovery、public group E2EE command surface、raw MLS artifact、provider stdout/stderr/path 输出。 |
+| 验证证据 | `CARGO_BUILD_JOBS=1 cargo test -p im-core --locked group` 通过，33 个匹配测试通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --features group-e2ee --locked group_e2ee` 通过，60 个匹配测试通过；`CARGO_BUILD_JOBS=1 cargo check -p im-core --locked` 通过；`cargo fmt --all --check` 通过；`git diff --check` 通过；`rg "DELETE FROM group_members WHERE owner_did|ON CONFLICT\\(owner_did, group_id" crates/im-core/src/internal/local_state/groups.rs` 无命中；group E2EE 搜索命中分类为既有 docs、internal service/test code 和 hidden CLI command catalog，没有本步骤新增 public output 或默认 discovery。 |
+| 下一步 | 创建步骤 06 聚焦提交。 |
 
 ## 2. 目标
 

@@ -98,7 +98,10 @@ DO UPDATE SET
     group_owner_did = COALESCE(excluded.group_owner_did, groups.group_owner_did),
     group_owner_handle = COALESCE(excluded.group_owner_handle, groups.group_owner_handle),
     my_role = COALESCE(excluded.my_role, groups.my_role),
-    membership_status = COALESCE(excluded.membership_status, groups.membership_status),
+    membership_status = CASE
+        WHEN ?29 IS NULL THEN groups.membership_status
+        ELSE excluded.membership_status
+    END,
     join_enabled = COALESCE(excluded.join_enabled, groups.join_enabled),
     join_code = COALESCE(excluded.join_code, groups.join_code),
     join_code_expires_at = COALESCE(excluded.join_code_expires_at, groups.join_code_expires_at),
@@ -127,7 +130,7 @@ DO UPDATE SET
                 optional_string(&record.group_owner_did),
                 optional_string(&record.group_owner_handle),
                 optional_string(&record.my_role),
-                default_string(record.membership_status.clone(), "active"),
+                optional_string(&record.membership_status).unwrap_or_else(|| "active".to_owned()),
                 optional_bool(record.join_enabled),
                 optional_string(&record.join_code),
                 optional_string(&record.join_code_expires_at),
@@ -140,6 +143,7 @@ DO UPDATE SET
                 stored_at,
                 optional_string(&record.metadata),
                 normalize(&record.credential_name),
+                optional_string(&record.membership_status),
             ],
         )
         .map_err(super::local_state_unavailable)?;
@@ -823,6 +827,195 @@ VALUES
             list_active_group_refs_for_owner_identity(&db, "alice-id", "did:owner", 10).unwrap();
 
         assert_eq!(refs, vec!["group-b", "did:group:a"]);
+    }
+
+    #[test]
+    fn group_upsert_same_identity_old_new_owner_did_keeps_single_snapshot() {
+        let db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+
+        upsert_group(
+            &db,
+            GroupRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:owner:old".to_owned(),
+                group_id: "did:group:same".to_owned(),
+                group_did: "did:group:same".to_owned(),
+                name: "Old Name".to_owned(),
+                group_owner_did: "did:group-owner".to_owned(),
+                member_count: Some(3),
+                remote_created_at: "2026-05-21T00:00:00Z".to_owned(),
+                credential_name: "alice".to_owned(),
+                ..GroupRecord::default()
+            },
+        )
+        .unwrap();
+        upsert_group(
+            &db,
+            GroupRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:owner:new".to_owned(),
+                group_id: "did:group:same".to_owned(),
+                group_did: "did:group:same".to_owned(),
+                name: "New Name".to_owned(),
+                last_message_at: "2026-05-21T00:00:03Z".to_owned(),
+                credential_name: "alice".to_owned(),
+                ..GroupRecord::default()
+            },
+        )
+        .unwrap();
+
+        let (count, owner_did, name, group_owner_did, member_count): (
+            i64,
+            String,
+            String,
+            String,
+            i64,
+        ) = db
+            .query_row(
+                r#"
+SELECT COUNT(*), MAX(owner_did), MAX(name), MAX(group_owner_did), MAX(member_count)
+FROM groups
+WHERE owner_identity_id = 'alice-id' AND group_id = 'did:group:same'"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(owner_did, "did:owner:new");
+        assert_eq!(name, "New Name");
+        assert_eq!(group_owner_did, "did:group-owner");
+        assert_eq!(member_count, 3);
+    }
+
+    #[test]
+    fn group_member_replacement_is_scoped_by_owner_identity() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+
+        replace_group_members(
+            &mut db,
+            "alice-id",
+            "did:shared-owner",
+            "did:group:shared",
+            &[GroupMemberRecord {
+                user_id: "did:member:old".to_owned(),
+                member_did: "did:member:old".to_owned(),
+                member_handle: "old.awiki.test".to_owned(),
+                role: "member".to_owned(),
+                credential_name: "alice".to_owned(),
+                ..GroupMemberRecord::default()
+            }],
+            "alice",
+        )
+        .unwrap();
+        replace_group_members(
+            &mut db,
+            "bob-id",
+            "did:shared-owner",
+            "did:group:shared",
+            &[GroupMemberRecord {
+                user_id: "did:member:bob".to_owned(),
+                member_did: "did:member:bob".to_owned(),
+                member_handle: "bob.awiki.test".to_owned(),
+                role: "member".to_owned(),
+                credential_name: "bob".to_owned(),
+                ..GroupMemberRecord::default()
+            }],
+            "bob",
+        )
+        .unwrap();
+        replace_group_members(
+            &mut db,
+            "alice-id",
+            "did:owner:new",
+            "did:group:shared",
+            &[GroupMemberRecord {
+                user_id: "did:member:new".to_owned(),
+                member_did: "did:member:new".to_owned(),
+                member_handle: "new.awiki.test".to_owned(),
+                role: "admin".to_owned(),
+                credential_name: "alice".to_owned(),
+                ..GroupMemberRecord::default()
+            }],
+            "alice",
+        )
+        .unwrap();
+
+        let alice_members = list_cached_group_members_for_owner_identity(
+            &db,
+            "alice-id",
+            "did:owner:new",
+            "did:group:shared",
+            10,
+        )
+        .unwrap();
+        let bob_members = list_cached_group_members_for_owner_identity(
+            &db,
+            "bob-id",
+            "did:shared-owner",
+            "did:group:shared",
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(alice_members.len(), 1);
+        assert_eq!(alice_members[0]["member_did"], "did:member:new");
+        assert_eq!(bob_members.len(), 1);
+        assert_eq!(bob_members[0]["member_did"], "did:member:bob");
+    }
+
+    #[test]
+    fn group_upsert_without_status_does_not_reactivate_left_group() {
+        let mut db = Connection::open_in_memory().unwrap();
+        crate::internal::local_state::schema::ensure_schema(&db).unwrap();
+
+        mark_group_left(
+            &mut db,
+            "alice-id",
+            "did:owner",
+            "did:group:left",
+            "did:group:left",
+            "alice",
+        )
+        .unwrap();
+        upsert_group(
+            &db,
+            GroupRecord {
+                owner_identity_id: "alice-id".to_owned(),
+                owner_did: "did:owner:new".to_owned(),
+                group_id: "did:group:left".to_owned(),
+                group_did: "did:group:left".to_owned(),
+                name: "Stale projection".to_owned(),
+                credential_name: "alice".to_owned(),
+                ..GroupRecord::default()
+            },
+        )
+        .unwrap();
+
+        let (owner_did, membership_status, name): (String, String, String) = db
+            .query_row(
+                r#"
+SELECT owner_did, membership_status, name
+FROM groups
+WHERE owner_identity_id = 'alice-id' AND group_id = 'did:group:left'"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(owner_did, "did:owner:new");
+        assert_eq!(membership_status, "left");
+        assert_eq!(name, "Stale projection");
     }
 
     #[test]

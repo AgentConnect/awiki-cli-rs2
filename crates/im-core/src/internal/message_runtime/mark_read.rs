@@ -652,13 +652,16 @@ mod tests {
                 .execute(
                     r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, group_id, group_did,
      content_type, content, stored_at, metadata, is_read)
-VALUES (?1, ?2, ?3, 0, 'did:example:bob', ?2, ?4, ?4, ?5, 'hello', '2026-05-21T00:00:00Z', ?6, ?7)"#,
+VALUES (?1, ?2, ?3, ?4, ?4, 0, 'did:example:bob', ?3, ?5, ?5, ?6, 'hello', '2026-05-21T00:00:00Z', ?7, ?8)"#,
                     (
                         message_id,
+                        client.current_identity().id.as_str(),
                         client.did().as_str(),
-                        format!("thread:{message_id}"),
+                        crate::internal::local_state::owner_scope::group_conversation_id(
+                            group_did,
+                        ),
                         group_did,
                         content_type,
                         metadata,
@@ -675,8 +678,8 @@ VALUES (?1, ?2, ?3, 0, 'did:example:bob', ?2, ?4, ?4, ?5, 'hello', '2026-05-21T0
             .unwrap();
             connection
                 .query_row(
-                    "SELECT is_read FROM messages WHERE owner_did = ?1 AND msg_id = ?2",
-                    (client.did().as_str(), message_id),
+                    "SELECT is_read FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+                    (client.current_identity().id.as_str(), message_id),
                     |row| row.get(0),
                 )
                 .unwrap()
