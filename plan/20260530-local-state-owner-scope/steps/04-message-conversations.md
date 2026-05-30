@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)  
 步骤编号：04  
-状态：待提交
+状态：完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/db-refactor-in-async` |
 | 开始时间 | 2026-05-30T18:16:06Z |
-| 完成时间 | 2026-05-30T18:46:44Z |
-| 提交 | |
+| 完成时间 | 2026-05-30T18:52:48Z |
+| 提交 | 实现提交 `332aec4`：`im-core: stabilize local conversation keys` |
 | 审查证据 | 提交前审查：确认 `MessageRecord` 和 active `messages` 写入会计算稳定 `conversation_id`，并强制新写入 `thread_id = conversation_id`；`threads` view 和 conversation list 按 `owner_identity_id + conversation_id` 分组；direct projection、realtime projection、secure outbox flush、recover merge 和 replace-DID 测试夹具不再生成 `dm:<owner>:<peer>`；补充 legacy direct thread alias 归一化，兼容入口只传旧 `thread_id` 时也落为 `dm:<peer>`；未改变 public Rust/Dart DTO，因此未运行 Dart codegen；未新增 Secure public discovery 或 raw secure output。 |
 | 验证证据 | `CARGO_BUILD_JOBS=1 cargo test -p im-core --locked conversation` 通过，10 个相关测试通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked local_projection` 通过，2 个相关测试通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked local_state_messages` 通过，5 个相关测试通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked secure_outbox` 通过，7 个 outbox 测试和 3 个 secure API 相关测试通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked identity_recovery` 通过，5 个相关测试通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked replace_did` 通过，5 个相关测试通过；`CARGO_BUILD_JOBS=1 cargo check -p im-core --locked` 通过；`cargo fmt --all --check` 通过；`git diff --check` 通过；Step 04 direct-key 搜索仅命中 secure direct session/outbox owner scope，不是 conversation key 生成；Secure redaction 搜索仅命中 `pendingCommits` 计数和 internal group MLS operation names，未暴露 raw secure artifacts。 |
-| 下一步 | 创建步骤 04 聚焦提交，然后把总计划和本步骤标记为 done。 |
+| 下一步 | 步骤 05 开始前读取步骤 05 文档和 `git status`。 |
 
 ## 2. 目标
 
@@ -69,7 +69,7 @@ Secure direct/group projection 使用同一套稳定 `conversation_id` 规则，
 - [x] 如果 secure direct/group conversation DTO 有变化，只暴露 stable IDs 和 redacted status fields。本步骤未改变 public DTO。
 - [x] Mark-read 和 local message classification 仍工作。
 - [x] 审查发现 已处理或明确记录。
-- [ ] 已创建本步骤聚焦提交。
+- [x] 已创建本步骤聚焦提交。
 
 ## 8.1 执行记录
 
@@ -79,6 +79,13 @@ Secure direct/group projection 使用同一套稳定 `conversation_id` 规则，
 - 兼容摘要：`compat::local_state::MessageRecord` public struct 未新增字段，转换到内部 record 时让 storage 推导 `conversation_id`；因此未改变 Rust/Dart public DTO，也未运行 `scripts/flutter/codegen-check.sh`。
 - 搜索分类：`rg "direct_thread_id\\(|dm:\\{owner|owner_did.*peer_did" crates/im-core/src/internal/message_runtime crates/im-core/src/internal/secure_direct` 仍命中 `secure_direct/status.rs` 和 `secure_direct/sqlite_store.rs` 的 owner/peer 参数，这些是 secure direct session/outbox owner scope 和 SQL 参数，不是 direct conversation key 生成。
 - Secure 分类：`rg "session_id|send_n|recv_n|skipped_key|KeyPackage|Welcome|Commit|Proposal|provider.*path" crates/im-core/src/messages crates/im-core-dart packages/awiki_im_core` 命中 `FinalizeCommitInput` internal operation 名称和 `pendingCommits` 计数 DTO；未新增 raw session id、ratchet counter、KeyPackage/Welcome/Commit/Proposal payload、provider path 或 plaintext public output。
+
+## 8.2 提交记录
+
+- 提交前状态：包含 Step 04 的代码、测试和计划记录变更；无无关未提交文件。
+- 提交：`332aec4 im-core: stabilize local conversation keys`。
+- 提交后状态：`feature/release-0526/db-refactor-in-async...origin/feature/release-0526/db-refactor-in-async [ahead 5]`，无未提交代码变更。
+- 文档记录：本状态更新将单独提交为计划记录提交，避免修改已存在实现提交。
 
 ## 8. 验证
 
