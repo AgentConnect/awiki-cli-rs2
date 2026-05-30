@@ -745,7 +745,7 @@ runtime 执行任务
 核心设计原则：
 
 ```text
-ANP message 协议需要一等支持 text / attachment / payload；
+ANP message 协议需要一等支持 text / attachment / json；
 普通文本使用 text body；
 附件使用 attachment body；
 结构化命令和状态使用 body.payload；
