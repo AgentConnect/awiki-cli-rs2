@@ -56,6 +56,35 @@ pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
     }
 }
 
+pub(crate) fn direct_conversation_id_from_thread_alias(
+    thread_id: &str,
+    owner_did: &str,
+) -> Option<String> {
+    let alias = thread_id.trim().strip_prefix("dm:")?.trim();
+    let owner_did = owner_did.trim();
+    if alias.is_empty() {
+        return Some(direct_conversation_id(""));
+    }
+    if owner_did.is_empty() {
+        return Some(direct_conversation_id(alias));
+    }
+    if let Some(peer) = alias
+        .strip_prefix(owner_did)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .filter(|peer| !peer.trim().is_empty())
+    {
+        return Some(direct_conversation_id(peer));
+    }
+    if let Some(peer) = alias
+        .strip_suffix(owner_did)
+        .and_then(|rest| rest.strip_suffix(':'))
+        .filter(|peer| !peer.trim().is_empty())
+    {
+        return Some(direct_conversation_id(peer));
+    }
+    Some(direct_conversation_id(alias))
+}
+
 pub(crate) fn group_conversation_id(group_id_or_did: &str) -> String {
     let group_id_or_did = group_id_or_did.trim();
     if group_id_or_did.is_empty() {
@@ -132,5 +161,27 @@ mod tests {
             "group:did:example:group"
         );
         assert_eq!(mail_conversation_id(" inbox "), "mail:inbox");
+    }
+
+    #[test]
+    fn direct_aliases_drop_local_owner_did() {
+        assert_eq!(
+            direct_conversation_id_from_thread_alias(
+                "dm:did:example:alice:did:example:bob",
+                "did:example:alice",
+            ),
+            Some("dm:did:example:bob".to_owned())
+        );
+        assert_eq!(
+            direct_conversation_id_from_thread_alias(
+                "dm:did:example:bob:did:example:alice",
+                "did:example:alice",
+            ),
+            Some("dm:did:example:bob".to_owned())
+        );
+        assert_eq!(
+            direct_conversation_id_from_thread_alias("dm:did:example:bob", "did:example:alice"),
+            Some("dm:did:example:bob".to_owned())
+        );
     }
 }

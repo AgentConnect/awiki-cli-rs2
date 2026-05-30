@@ -417,19 +417,16 @@ mod helpers {
         )
     }
 
-    pub(super) fn make_thread_id(my_did: &str, peer_did: &str, group_id: &str) -> String {
+    pub(super) fn make_thread_id(_my_did: &str, peer_did: &str, group_id: &str) -> String {
         let group_id = group_id.trim();
         if !group_id.is_empty() {
-            return format!("group:{group_id}");
+            return crate::internal::local_state::owner_scope::group_conversation_id(group_id);
         }
         let peer_did = peer_did.trim();
-        let my_did = my_did.trim();
         if !peer_did.is_empty() {
-            let mut pair = [my_did.to_string(), peer_did.to_string()];
-            pair.sort();
-            return format!("dm:{}:{}", pair[0], pair[1]);
+            return crate::internal::local_state::owner_scope::direct_conversation_id(peer_did);
         }
-        format!("dm:{my_did}:unknown")
+        crate::internal::local_state::owner_scope::direct_conversation_id("")
     }
 
     pub(super) fn normalize_owner_did(value: &str) -> String {

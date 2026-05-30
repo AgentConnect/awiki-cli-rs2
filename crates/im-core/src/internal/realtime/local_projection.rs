@@ -59,8 +59,8 @@ pub fn plan_realtime_message_local_projection(
         sender_did.as_str()
     };
     let has_thread_peer = !peer_did.trim().is_empty();
-    let thread_id = thread_id_for_message(message, &owner_did);
-    if thread_id.trim().is_empty() || (group_did.trim().is_empty() && !has_thread_peer) {
+    let conversation_id = conversation_id_for_message(message);
+    if conversation_id.trim().is_empty() || (group_did.trim().is_empty() && !has_thread_peer) {
         return None;
     }
 
@@ -69,7 +69,8 @@ pub fn plan_realtime_message_local_projection(
             msg_id: message.id.as_str().to_string(),
             owner_identity_id: context.owner_identity_id.trim().to_string(),
             owner_did,
-            thread_id,
+            conversation_id: conversation_id.clone(),
+            thread_id: conversation_id,
             direction: direction_value(&message.direction),
             sender_did,
             receiver_did,
@@ -122,14 +123,15 @@ fn owner_did_for_message(
 }
 
 #[cfg(feature = "sqlite")]
-fn thread_id_for_message(message: &crate::messages::Message, owner_did: &str) -> String {
+fn conversation_id_for_message(message: &crate::messages::Message) -> String {
     match &message.thread {
         crate::messages::ThreadRef::Group(group) => {
-            crate::internal::message_runtime::local_projection::group_thread_id(group.as_str())
+            crate::internal::message_runtime::local_projection::group_conversation_id(
+                group.as_str(),
+            )
         }
         crate::messages::ThreadRef::Direct(peer) => {
-            crate::internal::message_runtime::local_projection::direct_thread_id(
-                owner_did,
+            crate::internal::message_runtime::local_projection::direct_conversation_id(
                 peer.as_str(),
             )
         }

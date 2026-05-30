@@ -171,6 +171,7 @@ impl From<MessageRecord> for crate::internal::local_state::messages::MessageReco
             msg_id: record.msg_id,
             owner_identity_id: record.owner_identity_id,
             owner_did: record.owner_did,
+            conversation_id: String::new(),
             thread_id: record.thread_id,
             direction: record.direction,
             sender_did: record.sender_did,

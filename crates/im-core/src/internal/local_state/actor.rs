@@ -1503,7 +1503,8 @@ mod tests {
                 msg_id: "direct-1".to_string(),
                 owner_identity_id: "alice-id".to_string(),
                 owner_did: "did:example:alice".to_string(),
-                thread_id: "dm:did:example:alice:did:example:bob".to_string(),
+                conversation_id: "dm:did:example:bob".to_string(),
+                thread_id: "dm:did:example:bob".to_string(),
                 direction: 0,
                 sender_did: "did:example:bob".to_string(),
                 receiver_did: "did:example:alice".to_string(),
@@ -1519,6 +1520,7 @@ mod tests {
                 msg_id: "group-1".to_string(),
                 owner_identity_id: "alice-id".to_string(),
                 owner_did: "did:example:alice".to_string(),
+                conversation_id: "group:did:example:group".to_string(),
                 thread_id: "group:did:example:group".to_string(),
                 direction: 0,
                 sender_did: "did:example:bob".to_string(),
@@ -1569,7 +1571,7 @@ mod tests {
         assert_eq!(conversations.len(), 2);
         assert!(conversations
             .iter()
-            .any(|record| record.thread_id == "dm:did:example:alice:did:example:bob"));
+            .any(|record| record.thread_id == "dm:did:example:bob"));
         assert!(conversations
             .iter()
             .any(|record| record.thread_id == "group:did:example:group"));
@@ -1826,7 +1828,8 @@ mod tests {
             msg_id: "recover-msg-1".to_string(),
             owner_identity_id: "old-alice".to_string(),
             owner_did: old_did.to_string(),
-            thread_id: "dm:did:example:old-alice:did:example:bob".to_string(),
+            conversation_id: "dm:did:example:bob".to_string(),
+            thread_id: "dm:did:example:bob".to_string(),
             direction: 1,
             sender_did: old_did.to_string(),
             receiver_did: "did:example:bob".to_string(),
@@ -1880,10 +1883,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(
-            messages[0].thread_id,
-            "dm:did:example:bob:did:example:new-alice"
-        );
+        assert_eq!(messages[0].thread_id, "dm:did:example:bob");
         let old_outbox = db
             .list_e2ee_outbox(
                 crate::internal::store::e2ee_outbox::E2eeOutboxOwnerScope {
@@ -2170,7 +2170,8 @@ mod tests {
             msg_id: "msg-outbox-tx".to_string(),
             owner_identity_id: alice.owner_identity_id.clone(),
             owner_did: alice.owner_did.clone(),
-            thread_id: "dm:did:example:alice:did:example:bob".to_string(),
+            conversation_id: "dm:did:example:bob".to_string(),
+            thread_id: "dm:did:example:bob".to_string(),
             direction: 1,
             sender_did: alice.owner_did.clone(),
             receiver_did: "did:example:bob".to_string(),

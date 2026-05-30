@@ -465,11 +465,13 @@ fn group_message_record(
         .as_ref()
         .map(crate::ids::GroupRef::as_str)
         .unwrap_or(group_did);
+    let conversation_id = group_conversation_id(group_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: message.id.as_str().to_string(),
         owner_identity_id: client.current_identity().id.as_str().to_string(),
         owner_did: client.did().as_str().to_string(),
-        thread_id: group_thread_id(group_did),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: match message.direction {
             crate::messages::MessageDirection::Outgoing => 1,
             crate::messages::MessageDirection::Incoming => 0,
@@ -688,7 +690,7 @@ fn group_storage_key(group_did: &str) -> String {
 }
 
 #[cfg(feature = "sqlite")]
-fn group_thread_id(group_did: &str) -> String {
+fn group_conversation_id(group_did: &str) -> String {
     let value = group_did.trim();
     if value.is_empty() {
         "group:unknown".to_string()

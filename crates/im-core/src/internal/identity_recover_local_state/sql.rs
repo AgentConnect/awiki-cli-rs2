@@ -38,13 +38,14 @@ pub(super) fn upsert_recovered_message(
     transaction.execute(
         r#"
 INSERT INTO messages
-    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, group_id, group_did,
      content_type, content, title, server_seq, sent_at, stored_at, is_e2ee, is_read,
      sender_name, metadata, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
 ON CONFLICT(owner_identity_id, msg_id)
 DO UPDATE SET
     owner_did = excluded.owner_did,
+    conversation_id = excluded.conversation_id,
     thread_id = excluded.thread_id,
     direction = excluded.direction,
     sender_did = excluded.sender_did,
@@ -66,6 +67,7 @@ DO UPDATE SET
             record.msg_id,
             normalize_required_identity(&record.owner_identity_id),
             normalize_owner_did(&record.owner_did),
+            record.conversation_id,
             record.thread_id,
             record.direction,
             normalize_optional_string(&record.sender_did),

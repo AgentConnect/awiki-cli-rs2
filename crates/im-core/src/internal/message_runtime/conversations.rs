@@ -1066,8 +1066,8 @@ mod tests {
                 &client.core_inner().sdk_paths().local_state.sqlite_path,
             )
             .unwrap();
-            let thread_id = if group_did.trim().is_empty() {
-                "dm:did:example:alice:did:example:bob".to_string()
+            let conversation_id = if group_did.trim().is_empty() {
+                "dm:did:example:bob".to_string()
             } else {
                 format!("group:{group_did}")
             };
@@ -1080,13 +1080,14 @@ mod tests {
                 .execute(
                     r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did, group_id, group_did,
      content_type, content, sent_at, stored_at, is_read)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
+VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?8, 'text/plain', ?9, ?10, ?10, ?11)"#,
                     (
                         message_id,
+                        client.current_identity().id.as_str(),
                         client.did().as_str(),
-                        thread_id,
+                        conversation_id,
                         direction,
                         sender_did,
                         receiver_did,
@@ -1121,12 +1122,13 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
                 .execute(
                     r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, direction, sender_did, receiver_did,
      content_type, content, sent_at, stored_at, is_read, metadata)
-VALUES (?1, ?2, 'dm:did:example:alice:did:example:bob', ?3, ?4, ?5,
-        'text/plain', ?6, ?7, ?7, 1, ?8)"#,
+VALUES (?1, ?2, ?3, 'dm:did:example:bob', 'dm:did:example:bob', ?4, ?5, ?6,
+        'text/plain', ?7, ?8, ?8, 1, ?9)"#,
                     (
                         message_id,
+                        client.current_identity().id.as_str(),
                         client.did().as_str(),
                         direction,
                         sender_did,

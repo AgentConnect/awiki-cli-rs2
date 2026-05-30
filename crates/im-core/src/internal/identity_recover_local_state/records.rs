@@ -14,6 +14,7 @@ pub(super) struct MessageRecord {
     pub(super) msg_id: String,
     pub(super) owner_identity_id: String,
     pub(super) owner_did: String,
+    pub(super) conversation_id: String,
     pub(super) thread_id: String,
     pub(super) direction: i64,
     pub(super) sender_did: String,
@@ -163,7 +164,7 @@ pub(super) fn normalize_recovered_message_row(
     );
     let group_id = string_from_row(row, "group_id");
     let group_did = string_from_row(row, "group_did");
-    let thread_id =
+    let conversation_id =
         if let Some(group_key) = first_non_empty([group_id.as_str(), group_did.as_str()]) {
             make_thread_id(new_owner_did, "", group_key)
         } else {
@@ -174,7 +175,8 @@ pub(super) fn normalize_recovered_message_row(
         msg_id: string_from_row(row, "msg_id"),
         owner_identity_id: final_owner_identity_id.to_string(),
         owner_did: new_owner_did.to_string(),
-        thread_id,
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: int_from_row(row, "direction"),
         sender_did,
         receiver_did,
@@ -347,6 +349,10 @@ pub(super) fn normalize_recovered_group_member_row(
 
 pub(super) fn merge_recovered_message(existing: &RowMap, incoming: MessageRecord) -> MessageRecord {
     MessageRecord {
+        conversation_id: default_string(
+            incoming.conversation_id.clone(),
+            &string_from_row(existing, "conversation_id"),
+        ),
         thread_id: default_string(
             incoming.thread_id.clone(),
             &string_from_row(existing, "thread_id"),

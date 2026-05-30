@@ -407,11 +407,13 @@ fn group_e2ee_outgoing_record(
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = group_conversation_id(group_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: group_thread_id(group_did),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: 1,
         sender_did: client.did().as_str().to_owned(),
         group_id: group_did.trim().to_owned(),
@@ -428,23 +430,12 @@ fn group_e2ee_outgoing_record(
     }
 }
 
-pub(crate) fn direct_thread_id(owner_did: &str, peer_did: &str) -> String {
-    let owner_did = owner_did.trim();
-    let peer_did = peer_did.trim();
-    if peer_did.is_empty() {
-        return format!("dm:{owner_did}:unknown");
-    }
-    let mut pair = [owner_did.to_owned(), peer_did.to_owned()];
-    pair.sort();
-    format!("dm:{}:{}", pair[0], pair[1])
-}
-
 pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
     crate::internal::local_state::owner_scope::direct_conversation_id(peer_did)
 }
 
 pub(crate) fn group_thread_id(group_did: &str) -> String {
-    format!("group:{}", group_did.trim())
+    group_conversation_id(group_did)
 }
 
 pub(crate) fn group_conversation_id(group_id_or_did: &str) -> String {
@@ -481,11 +472,13 @@ fn direct_outgoing_record(
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = direct_conversation_id(target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: direct_thread_id(client.did().as_str(), target_did),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: 1,
         sender_did: client.did().as_str().to_owned(),
         receiver_did: target_did.trim().to_owned(),
@@ -512,11 +505,13 @@ fn direct_e2ee_outgoing_record(
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = direct_conversation_id(target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: direct_thread_id(client.did().as_str(), target_did),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: 1,
         sender_did: client.did().as_str().to_owned(),
         receiver_did: target_did.trim().to_owned(),
@@ -540,11 +535,13 @@ fn group_outgoing_record(
     kind: &crate::messages::MessageKind,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = group_conversation_id(group_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: group_thread_id(group_did),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: 1,
         sender_did: client.did().as_str().to_owned(),
         group_id: group_storage_key(group_did),
@@ -569,11 +566,13 @@ fn direct_attachment_outgoing_record(
     manifest: &Value,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = direct_conversation_id(target_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: direct_thread_id(client.did().as_str(), target_did),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: 1,
         sender_did: client.did().as_str().to_owned(),
         receiver_did: target_did.trim().to_owned(),
@@ -599,11 +598,13 @@ fn group_attachment_outgoing_record(
     manifest: &Value,
     sdk_result: &crate::messages::SendMessageResult,
 ) -> crate::internal::local_state::messages::MessageRecord {
+    let conversation_id = group_conversation_id(group_did);
     crate::internal::local_state::messages::MessageRecord {
         msg_id: sdk_result.message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: group_thread_id(group_did),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction: 1,
         sender_did: client.did().as_str().to_owned(),
         group_id: group_storage_key(group_did),
@@ -877,11 +878,13 @@ fn message_record_from_message(
 ) -> crate::ImResult<crate::internal::local_state::messages::MessageRecord> {
     let (content_type, content) = body_projection(&message.body);
     let direction = direction_value_for_message(client.did().as_str(), message);
+    let conversation_id = conversation_id_for_message(client.did().as_str(), message);
     Ok(crate::internal::local_state::messages::MessageRecord {
         msg_id: message.id.as_str().to_owned(),
         owner_identity_id: client.current_identity().id.as_str().to_owned(),
         owner_did: client.did().as_str().to_owned(),
-        thread_id: thread_id_for_message(client.did().as_str(), message),
+        conversation_id: conversation_id.clone(),
+        thread_id: conversation_id,
         direction,
         sender_did: message.sender.as_str().to_owned(),
         receiver_did: message
@@ -909,18 +912,18 @@ fn message_record_from_message(
 }
 
 #[cfg(feature = "sqlite")]
-fn thread_id_for_message(owner_did: &str, message: &crate::messages::Message) -> String {
+fn conversation_id_for_message(owner_did: &str, message: &crate::messages::Message) -> String {
     if let Some(group) = group_ref_for_message(message) {
-        return group_thread_id(&group);
+        return group_conversation_id(&group);
     }
     let peer = direct_peer_for_message(owner_did, message);
     if !peer.trim().is_empty() {
-        return direct_thread_id(owner_did, &peer);
+        return direct_conversation_id(&peer);
     }
     match &message.thread {
         crate::messages::ThreadRef::Thread(thread) => thread.as_str().to_owned(),
-        crate::messages::ThreadRef::Direct(peer) => direct_thread_id(owner_did, peer.as_str()),
-        crate::messages::ThreadRef::Group(group) => group_thread_id(group.as_str()),
+        crate::messages::ThreadRef::Direct(peer) => direct_conversation_id(peer.as_str()),
+        crate::messages::ThreadRef::Group(group) => group_conversation_id(group.as_str()),
     }
 }
 
@@ -1109,14 +1112,6 @@ fn merge_peer_dids(current: &str, historical: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn direct_thread_id_is_stable_for_peer_order() {
-        assert_eq!(
-            direct_thread_id("did:example:b", "did:example:a"),
-            "dm:did:example:a:did:example:b"
-        );
-    }
 
     #[test]
     fn conversation_ids_do_not_include_local_owner_did() {

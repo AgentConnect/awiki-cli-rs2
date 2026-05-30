@@ -497,17 +497,18 @@ const VIEW_STATEMENTS: &[&str] = &[
 SELECT
     owner_identity_id,
     owner_did,
-    thread_id,
+    COALESCE(NULLIF(conversation_id, ''), thread_id) AS conversation_id,
+    COALESCE(NULLIF(conversation_id, ''), thread_id) AS thread_id,
     COUNT(*) AS message_count,
     SUM(CASE WHEN is_read = 0 AND direction = 0 THEN 1 ELSE 0 END) AS unread_count,
     MAX(COALESCE(sent_at, stored_at)) AS last_message_at,
     (SELECT m2.content FROM messages m2
      WHERE m2.owner_identity_id = m.owner_identity_id
-       AND m2.thread_id = m.thread_id
+       AND COALESCE(NULLIF(m2.conversation_id, ''), m2.thread_id) = COALESCE(NULLIF(m.conversation_id, ''), m.thread_id)
      ORDER BY COALESCE(m2.sent_at, m2.stored_at) DESC
      LIMIT 1) AS last_content
 FROM messages m
-GROUP BY owner_identity_id, thread_id"#,
+GROUP BY owner_identity_id, COALESCE(NULLIF(conversation_id, ''), thread_id)"#,
     r#"CREATE VIEW IF NOT EXISTS inbox AS
 SELECT * FROM messages WHERE direction = 0
     ORDER BY owner_identity_id, COALESCE(sent_at, stored_at) DESC"#,

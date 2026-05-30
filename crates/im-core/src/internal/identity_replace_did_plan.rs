@@ -356,13 +356,13 @@ mod tests {
         let connection = crate::internal::local_state::open_writable(sqlite_path).unwrap();
         connection
             .execute(
-                "INSERT INTO messages (msg_id, owner_identity_id, owner_did, thread_id, stored_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO messages (msg_id, owner_identity_id, owner_did, conversation_id, thread_id, stored_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
                 rusqlite::params![
                     "replace-did-msg-1",
                     "alice-id",
                     "did:wba:awiki.test:alice:e1_old",
-                    "dm:alice:bob",
+                    "dm:did:example:bob",
                     "2026-05-25T00:00:00Z",
                 ],
             )

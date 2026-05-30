@@ -353,13 +353,15 @@ pub(crate) fn flush_queued_secure_outbox_rows_plan(
             continue;
         }
 
+        let conversation_id = direct_conversation_id(&target_did);
         actions.push(SecureOutboxFlushAction::StoreMessage {
             outbox_id: outbox_id.clone(),
             record: crate::internal::local_state::messages::MessageRecord {
                 msg_id: sent_msg_id,
                 owner_identity_id: owner_identity_id.trim().to_owned(),
                 owner_did: owner_did.trim().to_owned(),
-                thread_id: make_thread_id(owner_did, &target_did),
+                conversation_id: conversation_id.clone(),
+                thread_id: conversation_id,
                 direction: 1,
                 sender_did: owner_did.trim().to_owned(),
                 receiver_did: target_did,
@@ -603,15 +605,12 @@ pub(crate) fn send_request_from_plan(
     })
 }
 
-fn make_thread_id(owner_did: &str, peer_did: &str) -> String {
+fn direct_conversation_id(peer_did: &str) -> String {
     let peer_did = peer_did.trim();
-    let owner_did = owner_did.trim();
     if !peer_did.is_empty() {
-        let mut pair = [owner_did.to_owned(), peer_did.to_owned()];
-        pair.sort();
-        return format!("dm:{}:{}", pair[0], pair[1]);
+        return crate::internal::local_state::owner_scope::direct_conversation_id(peer_did);
     }
-    format!("dm:{owner_did}:unknown")
+    crate::internal::local_state::owner_scope::direct_conversation_id("")
 }
 
 fn content_type_for_message_type(message_type: &str) -> &'static str {
@@ -698,10 +697,8 @@ mod tests {
             panic!("expected StoreMessage action");
         };
         assert_eq!(record.owner_identity_id, "alice-id");
-        assert_eq!(
-            record.thread_id,
-            "dm:did:example:alice:did:example:bob".to_owned()
-        );
+        assert_eq!(record.conversation_id, "dm:did:example:bob");
+        assert_eq!(record.thread_id, record.conversation_id);
         assert_eq!(record.content, "hello");
         assert!(record.is_e2ee);
     }
