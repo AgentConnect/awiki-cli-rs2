@@ -975,7 +975,7 @@ Direct E2EE：外层 content_type 表示 cipher envelope，内层 application_co
 收到 direct.incoming
   → 解密，如需要
   → 读取 application_content_type 或 meta.content_type
-  → 读取 text / attachment / payload body
+  → 读取 text / attachment / json body
   → 判断 sender_did 是否为 controller_did
   → 根据 content type 分发
 ```
