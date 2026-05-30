@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)  
 步骤编号：07  
-状态：审查中
+状态：完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/db-refactor-in-async` |
 | 开始时间 | 2026-05-30T19:35:53Z |
-| 完成时间 | |
-| 提交 | |
+| 完成时间 | 2026-05-30T20:20:56Z |
+| 提交 | 实现提交 `1eb0ce1`：`im-core: scope secure local state by owner identity` |
 | 审查证据 | 2026-05-30T20:19:20Z 提交前审查完成：`e2ee_outbox` 的 get/list/retry/drop/mark-sent/failure update 都按 `owner_identity_id` strict predicate 执行，不再使用 credential/DID 回退；新增相同 `outbox_id` 跨 owner identity 共存测试；direct secure status/repair 的 pending/requeue 按 `owner_identity_id + peer_did` scoped，测试覆盖相同 owner DID、不同 owner identity 不被误 requeue；Group MLS provider 继续通过 `ImCoreSqliteGroupMlsStore::from_local_state_sqlite_path(sqlite_path, identity.id, identity.did, device_id)` 按 owner identity 和 device scoped；Group E2EE dry-run plan 和 doctor `anp_mls` details 已移除 provider binary、MLS data dir、state.db/state.lock 和 scoped state path 输出；审查发现 doctor 的 I/O error 文本可能包含本地路径，已改为 `ErrorKind` 级别脱敏，并将 provider `binary_name` 兼容错误限制为文件名；低层 group E2EE command catalog 仍 hidden/internal；未发现默认 DID/service discovery 新增 direct/group E2EE advertisement。 |
 | 验证证据 | `CARGO_BUILD_JOBS=1 cargo test -p im-core --locked e2ee_outbox` 通过，7 个匹配测试通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked direct_secure` 通过，8 个 lib 匹配测试和 1 个 `secure_api` 匹配测试通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --features group-e2ee --locked group_e2ee` 通过，60 个 lib 匹配测试和相关 integration 匹配测试通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked msg_secure` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked group_secure` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked group_e2ee_dry_run_plans_match_go_contracts` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked doctor_anp_mls_probe_and_state_details_match_go_contract` 脱敏修复后通过；`cargo fmt --all --check` 通过；`git diff --check` 通过；redaction 搜索命中分类为 internal crypto/storage 实现、测试 fixture、Dart secure counter DTO、既有 hidden command text 和既有 docs，没有新增 public raw secure output；discovery 搜索命中分类为 feature flags、deprecated/hidden CLI aliases、internal/test code 和既有 docs，没有新增默认 public advertisement；`rg "credential_name.*owner.*fallback|owner_scope_predicate|e2ee_sessions" crates/im-core/src/internal` 未命中 active owner 回退，`e2ee_sessions` 命中是 legacy schema/recover/replace cleanup path 和 active `direct_e2ee_sessions`。过宽命令 `CARGO_BUILD_JOBS=1 cargo test -p awiki-cli --locked e2ee` 失败在 `workspace_upgrade::legacy_sqlite::rebind_tests` 旧 fixture 缺少 `messages.owner_identity_id`，属于步骤 08 recover/upgrade 范围，未作为步骤 07 阻塞。 |
-| 下一步 | 提交步骤 07 聚焦实现，提交后记录 commit hash 和 post-commit 状态。 |
+| 下一步 | 步骤 08 开始前读取步骤 08 文档和 `git status`。提交后状态：分支 ahead 11，工作区干净。 |
 
 ## 2. 目标
 
@@ -75,7 +75,7 @@ Secure surface 规则：
 - [x] Direct E2EE 和 Group E2EE public discovery 在默认 DID/service discovery 和 config 中继续 disabled。
 - [x] Hidden/internal low-level group E2EE commands 继续 hidden/internal 或 stable unsupported。
 - [x] 审查发现 已处理或明确记录。
-- [ ] 已创建本步骤聚焦提交。
+- [x] 已创建本步骤聚焦提交。
 
 ## 8. 验证
 
