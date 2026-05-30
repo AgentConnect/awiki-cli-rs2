@@ -69,3 +69,28 @@ daemon 收到 RPC 后按顺序执行：
 - `artifact.created`
 
 Linux 使用 `SO_PEERCRED` 校验连接方 UID 必须等于 daemon UID。其他 Unix 平台已经 gated，后续需要补等价 peer credential 机制。Windows named pipe 不在当前步骤实现范围内。
+
+## 通用 CLI runtime MVP
+
+daemon 当前提供最小 Generic CLI runtime 闭环：
+
+1. 加载手工配置的 runtime agent profile。
+2. 只接受 `sender_did == controller_did` 的 controller 文本消息。
+3. 将文本消息标准化为 `RuntimeTask`。
+4. 创建 `RuntimeRun`，并签发短期 `runtime_rpc_token`。
+5. Generic CLI plugin 启动无界面 runtime，并把 token 注入 runtime launch context。
+6. runtime 通过 CLI wrapper 形态的 `task.status` 和 `task.finish` callback 回到 daemon local RPC。
+7. daemon 通过 token 反查可信上下文，更新 run 状态，并把 status/final 写入 testable outbox。
+
+MVP 阶段的消息出口是 testable outbox，不直连 message-service。真实 `application/json + body.payload` 产品化闭环会在后续 SDK/service/agent 管理步骤完成。
+
+workspace mode 只记录边界，不夸大安全性：
+
+| mode | 定位 | 是否安全边界 |
+|---|---|---|
+| `shared-root` | 个人低风险、本机可信、读任务 | 否 |
+| `worktree-per-task` | 代码变更隔离、避免任务互相污染 | 部分隔离，不防系统凭据读取 |
+| `container` | 外部委托、高风险、自动写代码 | 是，依赖容器配置 |
+| `sandbox` | 外部委托、高风险、自动写代码 | 是，依赖 sandbox profile |
+
+RuntimeEvent 当前不作为任务状态和结果的第二条权威通道。权威回传链路是 Skill / daemon CLI wrapper / local RPC。

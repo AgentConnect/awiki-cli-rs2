@@ -6,12 +6,14 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask};
 use crate::security::runtime_token::{
     current_time_millis, IssuedRuntimeToken, RpcMethod, RuntimeRpcToken, RuntimeTokenScope,
 };
+use crate::workspace::WorkspaceBindingConfig;
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 2;
+const DAEMON_SCHEMA_VERSION: i64 = 3;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
@@ -107,6 +109,258 @@ INSERT INTO runtime_rpc_tokens (
             rusqlite::params![current_time_millis()?, token_id],
         )?;
         Ok(())
+    }
+
+    pub fn upsert_runtime_agent_profile(&self, profile: &RuntimeAgentProfile) -> Result<()> {
+        profile.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?.to_string();
+        connection.execute(
+            r#"
+INSERT INTO agent_definition (
+    agent_did,
+    controller_did,
+    runtime_profile_id,
+    status,
+    created_at,
+    updated_at
+) VALUES (?1, ?2, ?3, 'active', ?4, ?4)
+ON CONFLICT(agent_did) DO UPDATE SET
+    controller_did = excluded.controller_did,
+    runtime_profile_id = excluded.runtime_profile_id,
+    status = 'active',
+    updated_at = excluded.updated_at
+"#,
+            rusqlite::params![
+                profile.agent_did,
+                profile.controller_did,
+                profile.runtime_profile_id,
+                now,
+            ],
+        )?;
+        connection.execute(
+            r#"
+INSERT INTO runtime_profile (
+    runtime_profile_id,
+    agent_did,
+    runtime_plugin_id,
+    display_name,
+    status,
+    created_at,
+    updated_at
+) VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?5)
+ON CONFLICT(runtime_profile_id) DO UPDATE SET
+    agent_did = excluded.agent_did,
+    runtime_plugin_id = excluded.runtime_plugin_id,
+    display_name = excluded.display_name,
+    status = 'active',
+    updated_at = excluded.updated_at
+"#,
+            rusqlite::params![
+                profile.runtime_profile_id,
+                profile.agent_did,
+                profile.runtime_plugin_id,
+                profile.display_name,
+                now,
+            ],
+        )?;
+        if let (Some(workspace_id), Some(workspace_root), Some(workspace_mode)) = (
+            profile.workspace_id.as_deref(),
+            profile.workspace_root.as_ref(),
+            profile.workspace_mode,
+        ) {
+            self.upsert_workspace_binding(
+                &profile.agent_did,
+                &profile.runtime_profile_id,
+                &WorkspaceBindingConfig {
+                    workspace_id: workspace_id.to_string(),
+                    workspace_root: workspace_root.clone(),
+                    workspace_mode,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn upsert_workspace_binding(
+        &self,
+        agent_did: &str,
+        runtime_profile_id: &str,
+        binding: &WorkspaceBindingConfig,
+    ) -> Result<()> {
+        binding.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?.to_string();
+        connection.execute(
+            r#"
+INSERT INTO workspace_binding (
+    workspace_id,
+    agent_did,
+    runtime_profile_id,
+    workspace_root,
+    workspace_mode,
+    status,
+    created_at,
+    updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6)
+ON CONFLICT(workspace_id) DO UPDATE SET
+    agent_did = excluded.agent_did,
+    runtime_profile_id = excluded.runtime_profile_id,
+    workspace_root = excluded.workspace_root,
+    workspace_mode = excluded.workspace_mode,
+    status = 'active',
+    updated_at = excluded.updated_at
+"#,
+            rusqlite::params![
+                binding.workspace_id,
+                agent_did,
+                runtime_profile_id,
+                binding.workspace_root.display().to_string(),
+                binding.workspace_mode.as_str(),
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_runtime_task(&self, task: &RuntimeTask) -> Result<()> {
+        task.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO runtime_task (
+    task_id,
+    agent_did,
+    controller_did,
+    sender_did,
+    conversation_id,
+    task_text,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?7)
+ON CONFLICT(task_id) DO UPDATE SET
+    status = excluded.status,
+    task_text = excluded.task_text,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+            rusqlite::params![
+                task.task_id,
+                task.agent_did,
+                task.controller_did,
+                task.sender_did,
+                task.conversation_id,
+                task.text,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_runtime_run(&self, run: &RuntimeRun) -> Result<()> {
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        connection.execute(
+            r#"
+INSERT INTO runtime_run (
+    run_id,
+    task_id,
+    agent_did,
+    runtime_profile_id,
+    runtime_plugin_id,
+    workspace_id,
+    status,
+    started_at,
+    updated_at,
+    started_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?9)
+"#,
+            rusqlite::params![
+                run.run_id,
+                run.task_id,
+                run.agent_did,
+                run.runtime_profile_id,
+                run.runtime_plugin_id,
+                run.workspace_id,
+                run.status.as_str(),
+                now.to_string(),
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_runtime_run_status(&self, run_id: &str, status: RuntimeRunStatus) -> Result<()> {
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let completed_at = match status {
+            RuntimeRunStatus::Finished | RuntimeRunStatus::Failed => Some(now.to_string()),
+            RuntimeRunStatus::Pending | RuntimeRunStatus::Running => None,
+        };
+        let updated = connection.execute(
+            r#"
+UPDATE runtime_run
+SET status = ?1,
+    completed_at = COALESCE(?2, completed_at),
+    updated_at = ?3,
+    completed_at_ms = COALESCE(?4, completed_at_ms),
+    updated_at_ms = ?5
+WHERE run_id = ?6
+"#,
+            rusqlite::params![
+                status.as_str(),
+                completed_at,
+                now.to_string(),
+                match status {
+                    RuntimeRunStatus::Finished | RuntimeRunStatus::Failed => Some(now),
+                    RuntimeRunStatus::Pending | RuntimeRunStatus::Running => None,
+                },
+                now,
+                run_id,
+            ],
+        )?;
+        if updated == 0 {
+            bail!("runtime run does not exist: {run_id}");
+        }
+        Ok(())
+    }
+
+    pub fn load_runtime_run(&self, run_id: &str) -> Result<RuntimeRun> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT run_id, task_id, agent_did, runtime_profile_id, runtime_plugin_id, workspace_id, status
+FROM runtime_run
+WHERE run_id = ?1
+"#,
+                [run_id],
+                |row| {
+                    let status: String = row.get(6)?;
+                    let status = RuntimeRunStatus::parse(&status).map_err(|err| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            status.len(),
+                            rusqlite::types::Type::Text,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                err.to_string(),
+                            )),
+                        )
+                    })?;
+                    Ok(RuntimeRun {
+                        run_id: row.get(0)?,
+                        task_id: row.get(1)?,
+                        agent_did: row.get(2)?,
+                        runtime_profile_id: row.get(3)?,
+                        runtime_plugin_id: row.get(4)?,
+                        workspace_id: row.get(5)?,
+                        status,
+                    })
+                },
+            )
+            .context("load runtime run")
     }
 
     pub fn authorize_runtime_rpc(
@@ -267,6 +521,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
 
         CREATE TABLE IF NOT EXISTS runtime_run (
             run_id TEXT PRIMARY KEY,
+            task_id TEXT DEFAULT '',
             agent_did TEXT NOT NULL,
             runtime_profile_id TEXT NOT NULL,
             runtime_plugin_id TEXT NOT NULL,
@@ -274,7 +529,22 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             status TEXT NOT NULL,
             started_at TEXT NOT NULL,
             completed_at TEXT,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            started_at_ms INTEGER NOT NULL DEFAULT 0,
+            completed_at_ms INTEGER,
+            updated_at_ms INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS runtime_task (
+            task_id TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            sender_did TEXT NOT NULL,
+            conversation_id TEXT,
+            task_text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS runtime_rpc_tokens (
@@ -314,9 +584,46 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     )?;
     migrate_runtime_rpc_tokens_v2(connection)?;
     migrate_audit_log_v2(connection)?;
+    migrate_runtime_run_v3(connection)?;
+    migrate_runtime_task_v3(connection)?;
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        [],
+    )?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_runtime_run_v3(connection: &Connection) -> Result<()> {
+    for (column, definition) in [
+        ("task_id", "TEXT DEFAULT ''"),
+        ("started_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("completed_at_ms", "INTEGER"),
+        ("updated_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        add_column_if_missing(connection, "runtime_run", column, definition)?;
+    }
+    Ok(())
+}
+
+fn migrate_runtime_task_v3(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS runtime_task (
+            task_id TEXT PRIMARY KEY,
+            agent_did TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            sender_did TEXT NOT NULL,
+            conversation_id TEXT,
+            task_text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        "#,
     )?;
     Ok(())
 }
@@ -481,6 +788,7 @@ mod tests {
             "agent_definition",
             "runtime_profile",
             "workspace_binding",
+            "runtime_task",
             "runtime_run",
             "runtime_rpc_tokens",
             "audit_log",

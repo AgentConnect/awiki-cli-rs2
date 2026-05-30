@@ -16,7 +16,7 @@ fn init_state_creates_daemon_and_im_core_databases() {
     assert!(root.path().join("runtime").join("tmp").is_dir());
     assert!(root.path().join("rpc").is_dir());
     assert!(root.path().join("audit").is_dir());
-    assert_eq!(status.daemon_schema_version, 2);
+    assert_eq!(status.daemon_schema_version, 3);
     assert!(status.im_core_schema_version.is_some());
 }
 
@@ -31,5 +31,5 @@ fn status_initializes_existing_state_idempotently() {
     .unwrap();
 
     assert_eq!(first.database_path, second.database_path);
-    assert_eq!(second.daemon_schema_version, 2);
+    assert_eq!(second.daemon_schema_version, 3);
 }

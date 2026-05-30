@@ -5,6 +5,8 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::outbox::RuntimeOutbox;
+use crate::runtime::RuntimeRunStatus;
 use crate::security::runtime_token::{RpcMethod, RuntimeRpcToken};
 use crate::state::{AuthorizedRuntimeContext, DaemonState};
 
@@ -14,7 +16,7 @@ mod uds;
 #[cfg(unix)]
 pub use uds::{serve_one_uds_request, verify_socket_permissions, PeerCredential};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRpcRequest {
     pub runtime_rpc_token: String,
     pub method: String,
@@ -22,6 +24,17 @@ pub struct RuntimeRpcRequest {
     pub params: Value,
     #[serde(default)]
     pub debug: Option<RuntimeRpcDebug>,
+}
+
+impl std::fmt::Debug for RuntimeRpcRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeRpcRequest")
+            .field("runtime_rpc_token", &"<redacted>")
+            .field("method", &self.method)
+            .field("params", &self.params)
+            .field("debug", &self.debug)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +120,20 @@ pub fn execute_runtime_rpc_request(
     })
 }
 
+pub fn execute_runtime_rpc_request_with_outbox(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    request: RuntimeRpcRequest,
+) -> Result<RuntimeRpcResponse> {
+    let method = RpcMethod::parse(&request.method)?;
+    let token = RuntimeRpcToken::parse(request.runtime_rpc_token)?;
+    let recipient = rpc_recipient(&method, &request.params);
+    let context = state.authorize_runtime_rpc(&token, &method, recipient)?;
+    apply_runtime_rpc_side_effects(state, outbox, &context, &method, &request.params)?;
+
+    RuntimeRpcResponse::success(RuntimeRpcExecution::from(context))
+}
+
 pub fn read_request_from<R: std::io::Read>(reader: R) -> Result<RuntimeRpcRequest> {
     let mut line = String::new();
     let mut reader = BufReader::new(reader);
@@ -165,6 +192,49 @@ fn rpc_recipient<'a>(method: &RpcMethod, params: &'a Value) -> Option<&'a str> {
         .get("to")
         .or_else(|| params.get("recipient"))
         .and_then(Value::as_str)
+}
+
+fn apply_runtime_rpc_side_effects(
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    context: &AuthorizedRuntimeContext,
+    method: &RpcMethod,
+    params: &Value,
+) -> Result<()> {
+    match method {
+        RpcMethod::TaskStatus => {
+            let state_value = params
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("running");
+            let status = match state_value {
+                "pending" => RuntimeRunStatus::Pending,
+                "running" => RuntimeRunStatus::Running,
+                "finished" => RuntimeRunStatus::Finished,
+                "failed" => RuntimeRunStatus::Failed,
+                _ => RuntimeRunStatus::Running,
+            };
+            state.update_runtime_run_status(&context.run_id, status)?;
+            outbox.send_status(
+                context,
+                state_value,
+                params.get("text").and_then(Value::as_str),
+            )?;
+        }
+        RpcMethod::TaskFinish => {
+            state.update_runtime_run_status(&context.run_id, RuntimeRunStatus::Finished)?;
+            outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
+        }
+        RpcMethod::MsgSend => {
+            outbox.send_message(
+                context,
+                rpc_recipient(method, params),
+                params.get("text").and_then(Value::as_str),
+            )?;
+        }
+        RpcMethod::RpcPing | RpcMethod::ArtifactCreated => {}
+    }
+    Ok(())
 }
 
 impl From<AuthorizedRuntimeContext> for RuntimeRpcExecution {

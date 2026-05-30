@@ -1,9 +1,14 @@
 pub mod cli_wrapper;
 pub mod config;
 pub mod im_core_adapter;
+pub mod inbox;
 pub mod local_rpc;
+pub mod outbox;
+pub mod plugins;
+pub mod runtime;
 pub mod security;
 pub mod state;
+pub mod workspace;
 
 use std::path::PathBuf;
 
