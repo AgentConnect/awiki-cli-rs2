@@ -235,7 +235,7 @@ impl<'a> DirectoryService<'a> {
                 self.client,
                 &request,
                 did.clone(),
-            );
+            )?;
             crate::internal::contact_store::records::upsert_contact(&mut connection, record)?;
             let record = crate::internal::contact_store::records::get_contact_by_did(
                 &connection,
@@ -279,7 +279,7 @@ impl<'a> DirectoryService<'a> {
                 self.client,
                 &request,
                 did.clone(),
-            );
+            )?;
             let db = self.client.core_inner().local_state_db().await?;
             db.upsert_contact(record).await?;
             let record = db

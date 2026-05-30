@@ -461,7 +461,7 @@ pub(crate) fn upsert_contact(
     };
     if !handle.is_empty() && !existing_by_handle.is_empty() && existing_by_handle[0].0.trim() != did
     {
-        transaction
+        let affected = transaction
             .execute(
                 &format!(
                     "UPDATE contacts SET handle = NULL, last_seen_at = ?1 WHERE {} AND did = ?3",
@@ -474,6 +474,12 @@ pub(crate) fn upsert_contact(
                 ],
             )
             .map_err(super::local_state_unavailable)?;
+        ensure_expected_rows(
+            affected,
+            "clear_previous_contact_handle",
+            &owner_identity_id,
+            existing_by_handle[0].0.as_str(),
+        )?;
     }
     if existing_by_did.is_empty() {
         insert_contact(
@@ -685,7 +691,7 @@ fn update_contact(
     handle: &str,
     now: &str,
 ) -> crate::ImResult<()> {
-    connection
+    let affected = connection
         .execute(
             r#"
 UPDATE contacts
@@ -736,6 +742,7 @@ WHERE owner_identity_id = ?21 AND did = ?22"#,
             ],
         )
         .map_err(super::local_state_unavailable)?;
+    ensure_expected_rows(affected, "update_contact", owner_identity_id, did)?;
     Ok(())
 }
 
@@ -776,7 +783,7 @@ WHERE {} AND handle = ?4 AND did <> ?5"#,
             )
             .map_err(super::local_state_unavailable)?;
     }
-    connection
+    let affected = connection
         .execute(
             r#"
 INSERT INTO contact_handle_bindings
@@ -808,6 +815,12 @@ DO UPDATE SET
             ],
         )
         .map_err(super::local_state_unavailable)?;
+    ensure_expected_rows(
+        affected,
+        "upsert_contact_handle_binding",
+        &owner_identity_id,
+        &did,
+    )?;
     Ok(())
 }
 
@@ -1037,6 +1050,24 @@ fn normalize_credential_name(value: &str) -> String {
 
 fn owner_predicate(identity_param: usize) -> String {
     format!("owner_identity_id = ?{identity_param}")
+}
+
+fn ensure_expected_rows(
+    affected: usize,
+    operation: &'static str,
+    owner_identity_id: &str,
+    key: &str,
+) -> crate::ImResult<()> {
+    if affected == 0 {
+        return Err(crate::ImError::LocalStateUnavailable {
+            detail: format!(
+                "{operation} affected 0 rows for owner_identity_id={} key={}",
+                owner_identity_id.trim(),
+                key.trim()
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn ensure_column(
@@ -1269,6 +1300,169 @@ mod tests {
             "carol",
         )
         .is_err());
+    }
+
+    #[test]
+    fn contacts_upsert_same_identity_did_after_owner_did_change_updates_one_row() {
+        let mut db = Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+
+        upsert_contact(
+            &mut db,
+            ContactRecord {
+                owner_identity_id: "alice-id".to_string(),
+                owner_did: "did:owner:old".to_string(),
+                did: "did:peer".to_string(),
+                handle: "alice".to_string(),
+                relationship: "friend".to_string(),
+                note: "keep this".to_string(),
+                credential_name: "alice".to_string(),
+                ..ContactRecord::default()
+            },
+        )
+        .unwrap();
+        upsert_contact(
+            &mut db,
+            ContactRecord {
+                owner_identity_id: "alice-id".to_string(),
+                owner_did: "did:owner:new".to_string(),
+                did: "did:peer".to_string(),
+                handle: "alice".to_string(),
+                name: "Alice Peer".to_string(),
+                credential_name: "alice".to_string(),
+                ..ContactRecord::default()
+            },
+        )
+        .unwrap();
+
+        let (count, owner_did, name, relationship, note): (i64, String, String, String, String) =
+            db.query_row(
+                r#"
+SELECT COUNT(*), MAX(owner_did), MAX(name), MAX(relationship), MAX(note)
+FROM contacts
+WHERE owner_identity_id = 'alice-id' AND did = 'did:peer'"#,
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(owner_did, "did:owner:new");
+        assert_eq!(name, "Alice Peer");
+        assert_eq!(relationship, "friend");
+        assert_eq!(note, "keep this");
+    }
+
+    #[test]
+    fn contact_current_handle_uniqueness_is_scoped_by_owner_identity() {
+        let mut db = Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+
+        for (owner_identity_id, owner_did, peer_did) in [
+            ("alice-id", "did:owner:alice", "did:peer:alice"),
+            ("bob-id", "did:owner:bob", "did:peer:bob"),
+        ] {
+            upsert_contact(
+                &mut db,
+                ContactRecord {
+                    owner_identity_id: owner_identity_id.to_string(),
+                    owner_did: owner_did.to_string(),
+                    did: peer_did.to_string(),
+                    handle: "shared".to_string(),
+                    credential_name: owner_identity_id.to_string(),
+                    ..ContactRecord::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let alice_current =
+            get_current_contact_by_handle(&db, "alice-id", "did:owner:alice", "shared").unwrap();
+        let bob_current =
+            get_current_contact_by_handle(&db, "bob-id", "did:owner:bob", "shared").unwrap();
+
+        assert_eq!(alice_current.did, "did:peer:alice");
+        assert_eq!(bob_current.did, "did:peer:bob");
+        for owner_identity_id in ["alice-id", "bob-id"] {
+            let current_count: i64 = db
+                .query_row(
+                    r#"
+SELECT COUNT(*)
+FROM contact_handle_bindings
+WHERE owner_identity_id = ?1 AND handle = 'shared' AND is_current = 1"#,
+                    [owner_identity_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(current_count, 1);
+        }
+    }
+
+    #[test]
+    fn relationship_event_ids_are_owner_identity_scoped() {
+        let db = Connection::open_in_memory().unwrap();
+        ensure_schema(&db).unwrap();
+
+        for (owner_identity_id, owner_did, status) in [
+            ("alice-id", "did:owner:alice", "applied"),
+            ("bob-id", "did:owner:bob", "pending"),
+        ] {
+            append_relationship_event(
+                &db,
+                RelationshipEventRecord {
+                    event_id: "evt-shared".to_string(),
+                    owner_identity_id: owner_identity_id.to_string(),
+                    owner_did: owner_did.to_string(),
+                    target_did: "did:peer".to_string(),
+                    target_handle: "peer".to_string(),
+                    event_type: "followed".to_string(),
+                    status: status.to_string(),
+                    credential_name: owner_identity_id.to_string(),
+                    ..RelationshipEventRecord::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let total: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM relationship_events WHERE event_id = 'evt-shared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let alice_status: String = db
+            .query_row(
+                r#"
+SELECT status
+FROM relationship_events
+WHERE owner_identity_id = 'alice-id' AND event_id = 'evt-shared'"#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let bob_status: String = db
+            .query_row(
+                r#"
+SELECT status
+FROM relationship_events
+WHERE owner_identity_id = 'bob-id' AND event_id = 'evt-shared'"#,
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(total, 2);
+        assert_eq!(alice_status, "applied");
+        assert_eq!(bob_status, "pending");
     }
 
     #[test]

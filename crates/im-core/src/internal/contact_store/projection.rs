@@ -1,15 +1,17 @@
 use serde_json::Value;
 
 use super::records::ContactRecord;
+use crate::internal::local_state::owner_scope::OwnerScope;
 
 pub(crate) fn record_from_save_request(
     client: &crate::core::ImClient,
     request: &crate::directory::SaveContactRequest,
     did: crate::ids::Did,
-) -> ContactRecord {
-    ContactRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_string(),
-        owner_did: client.did().as_str().to_string(),
+) -> crate::ImResult<ContactRecord> {
+    let scope = OwnerScope::for_client(client)?;
+    Ok(ContactRecord {
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
         did: did.as_str().to_string(),
         name: request.display_name.clone().unwrap_or_default(),
         handle: request
@@ -26,19 +28,20 @@ pub(crate) fn record_from_save_request(
         relationship: request.relationship.clone().unwrap_or_default(),
         note: request.note.clone().unwrap_or_default(),
         source_type: "directory.save_contact".to_string(),
-        credential_name: client.current_identity().id.as_str().to_string(),
+        credential_name: credential_name(&scope),
         ..ContactRecord::default()
-    }
+    })
 }
 
 pub(crate) fn record_from_profile(
     client: &crate::core::ImClient,
     profile: &crate::identity::Profile,
     source_type: &str,
-) -> ContactRecord {
-    ContactRecord {
-        owner_identity_id: client.current_identity().id.as_str().to_string(),
-        owner_did: client.did().as_str().to_string(),
+) -> crate::ImResult<ContactRecord> {
+    let scope = OwnerScope::for_client(client)?;
+    Ok(ContactRecord {
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
         did: profile.subject.as_str().to_string(),
         name: profile.display_name.clone().unwrap_or_default(),
         handle: profile
@@ -52,9 +55,9 @@ pub(crate) fn record_from_profile(
         source_type: source_type.to_string(),
         last_seen_at: profile.updated_at.clone().unwrap_or_default(),
         metadata: metadata_json(&profile.metadata),
-        credential_name: client.current_identity().id.as_str().to_string(),
+        credential_name: credential_name(&scope),
         ..ContactRecord::default()
-    }
+    })
 }
 
 #[cfg(any(feature = "blocking", test))]
@@ -66,23 +69,10 @@ pub(crate) fn project_directory_resolution(
         Ok(connection) => connection,
         Err(_) => return,
     };
-    let record = resolution
-        .profile
-        .as_ref()
-        .map(|profile| record_from_profile(client, profile, "directory.profile_projection"))
-        .unwrap_or_else(|| ContactRecord {
-            owner_identity_id: client.current_identity().id.as_str().to_string(),
-            owner_did: client.did().as_str().to_string(),
-            did: resolution.did.as_str().to_string(),
-            handle: resolution
-                .handle
-                .as_ref()
-                .map(|handle| handle.as_str().to_string())
-                .unwrap_or_default(),
-            source_type: "directory.resolve_peer".to_string(),
-            credential_name: client.current_identity().id.as_str().to_string(),
-            ..ContactRecord::default()
-        });
+    let record = match record_from_directory_resolution(client, resolution) {
+        Ok(record) => record,
+        Err(_) => return,
+    };
     let _ = super::records::upsert_contact(&mut connection, record);
 }
 
@@ -97,7 +87,7 @@ pub(crate) async fn project_directory_resolution_async(
     client: &crate::core::ImClient,
     resolution: &crate::directory::DirectoryResolution,
 ) -> crate::ImResult<()> {
-    let record = record_from_directory_resolution(client, resolution);
+    let record = record_from_directory_resolution(client, resolution)?;
     let db = client.core_inner().local_state_db().await?;
     db.upsert_contact(record).await
 }
@@ -105,14 +95,17 @@ pub(crate) async fn project_directory_resolution_async(
 fn record_from_directory_resolution(
     client: &crate::core::ImClient,
     resolution: &crate::directory::DirectoryResolution,
-) -> ContactRecord {
-    resolution
+) -> crate::ImResult<ContactRecord> {
+    let scope = OwnerScope::for_client(client)?;
+    let credential_name = credential_name(&scope);
+    let record = resolution
         .profile
         .as_ref()
         .map(|profile| record_from_profile(client, profile, "directory.profile_projection"))
+        .transpose()?
         .unwrap_or_else(|| ContactRecord {
-            owner_identity_id: client.current_identity().id.as_str().to_string(),
-            owner_did: client.did().as_str().to_string(),
+            owner_identity_id: scope.owner_identity_id,
+            owner_did: scope.owner_did,
             did: resolution.did.as_str().to_string(),
             handle: resolution
                 .handle
@@ -120,9 +113,10 @@ fn record_from_directory_resolution(
                 .map(|handle| handle.as_str().to_string())
                 .unwrap_or_default(),
             source_type: "directory.resolve_peer".to_string(),
-            credential_name: client.current_identity().id.as_str().to_string(),
+            credential_name,
             ..ContactRecord::default()
-        })
+        });
+    Ok(record)
 }
 
 fn metadata_json(metadata: &[crate::identity::ProfileAttribute]) -> String {
@@ -141,6 +135,13 @@ fn metadata_json(metadata: &[crate::identity::ProfileAttribute]) -> String {
             .collect(),
     );
     value.to_string()
+}
+
+fn credential_name(scope: &OwnerScope) -> String {
+    scope
+        .credential_name
+        .clone()
+        .unwrap_or_else(|| scope.owner_identity_id.clone())
 }
 
 #[cfg(test)]
@@ -165,8 +166,10 @@ mod tests {
             }],
         };
 
-        let record = record_from_profile(&client, &profile, "directory.profile_projection");
+        let record = record_from_profile(&client, &profile, "directory.profile_projection")
+            .expect("profile projection record");
 
+        assert_eq!(record.owner_identity_id, "alice-id");
         assert_eq!(record.owner_did, "did:example:alice");
         assert_eq!(record.did, "did:example:bob");
         assert_eq!(record.handle, "bob.awiki.test");
@@ -175,6 +178,7 @@ mod tests {
         assert_eq!(record.profile_md, "## Bob");
         assert_eq!(record.last_seen_at, "2026-05-21T00:00:00Z");
         assert_eq!(record.metadata, r#"{"source":"profile"}"#);
+        assert_eq!(record.credential_name, "alice");
     }
 
     fn fixture_client() -> crate::core::ImClient {

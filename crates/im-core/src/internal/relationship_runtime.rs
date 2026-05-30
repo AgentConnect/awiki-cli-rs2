@@ -725,13 +725,12 @@ async fn record_relationship_projection_async(
     let handle = target_handle
         .map(|handle| handle.as_str().to_string())
         .unwrap_or_default();
-    let owner_identity_id = client.current_identity().id.as_str().to_string();
-    let owner_did = client.did().as_str().to_string();
-    let credential_name = client.current_identity().id.as_str().to_string();
+    let scope = crate::internal::local_state::owner_scope::OwnerScope::for_client(client)?;
+    let credential_name = owner_scope_credential_name(&scope);
     let db = client.core_inner().local_state_db().await?;
     db.upsert_contact(crate::internal::contact_store::records::ContactRecord {
-        owner_identity_id: owner_identity_id.clone(),
-        owner_did: owner_did.clone(),
+        owner_identity_id: scope.owner_identity_id.clone(),
+        owner_did: scope.owner_did.clone(),
         did: target_did.as_str().to_string(),
         handle: handle.clone(),
         relationship: relationship.to_string(),
@@ -743,8 +742,8 @@ async fn record_relationship_projection_async(
     .await?;
     db.append_relationship_event(
         crate::internal::contact_store::records::RelationshipEventRecord {
-            owner_identity_id,
-            owner_did,
+            owner_identity_id: scope.owner_identity_id,
+            owner_did: scope.owner_did,
             target_did: target_did.as_str().to_string(),
             target_handle: handle,
             event_type: event_type.to_string(),
@@ -756,6 +755,16 @@ async fn record_relationship_projection_async(
     )
     .await?;
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn owner_scope_credential_name(
+    scope: &crate::internal::local_state::owner_scope::OwnerScope,
+) -> String {
+    scope
+        .credential_name
+        .clone()
+        .unwrap_or_else(|| scope.owner_identity_id.clone())
 }
 
 #[cfg(feature = "sqlite")]
