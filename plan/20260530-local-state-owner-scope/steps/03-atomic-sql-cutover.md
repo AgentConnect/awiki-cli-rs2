@@ -12,7 +12,7 @@
 | 分支 | `feature/release-0526/db-refactor-in-async` |
 | 开始时间 | 2026-05-30T16:52:11Z |
 | 完成时间 | 2026-05-30T18:06:59Z |
-| 提交 | `600ac58`：`im-core: switch local state keys to owner identity` |
+| 提交 | 实现提交 `69d8d61`：`im-core: switch local state keys to owner identity` |
 | 审查证据 | 提交前审查已完成：确认 active v17 schema、messages、contacts、groups、conversations、mail、recover、replace-did 计数和 `e2ee_outbox` 均按 `owner_identity_id` 分区；修复 review 发现的 recover merge 曾把 `final_credential_name` 当作 `owner_identity_id` 的问题，改为用保存后的 `unique_id` 作为 `final_owner_identity_id`，`final_identity_name` 仅保留为 `credential_name` metadata；确认 DID-only wrapper fail closed；未新增 Secure public discovery 或 raw secure output。 |
 | 验证证据 | `CARGO_BUILD_JOBS=1 cargo test -p im-core --locked local_state` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked contact_store` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked e2ee_outbox` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked identity_recovery` 通过；`CARGO_BUILD_JOBS=1 cargo check -p im-core --locked` 通过；`cargo fmt --all --check` 通过；`git diff --check` 通过；SQL 搜索仅命中 legacy DDL、未进入 active v17 的 legacy helper 和测试夹具。默认并行 `cargo test -p im-core --locked local_state` 曾在链接阶段被系统 `SIGKILL`，随后用 `CARGO_BUILD_JOBS=1` 重跑通过，判定为资源问题而非测试失败。 |
 | 下一步 | 步骤 04：稳定消息会话。 |
