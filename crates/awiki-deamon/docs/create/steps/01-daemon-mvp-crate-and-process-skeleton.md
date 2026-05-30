@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)
 步骤编号：01
-状态：审查中
+状态：已完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 审查中 |
+| 状态 | 已完成 |
 | 分支 | `feature/release-0526/awiki-deamon` |
 | 开始时间 | 2026-05-30 23:35:16 CST |
 | 完成时间 | 2026-05-31 00:33:19 CST |
-| 提交 | 待提交 |
+| 提交 | `e8f4fd1` |
 | 审查证据 | 已审查 crate 边界、路径处理、SQLite schema、config defaults、错误处理、测试和文档；发现 state layout 目录未创建、manifest 有未使用依赖，均已修复。 |
 | 验证证据 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；`cargo run -p awiki-deamon -- init-state --state-root <tmp>` 通过；源码边界检查无结果；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；`cargo test -p im-core --locked` 通过；`cargo test -p awiki-cli --locked` 通过；`cargo test --workspace --locked` 在 `im-core-dart` 链接动态库时被系统 SIGKILL。 |
-| 下一步 | 提交步骤 01。 |
+| 下一步 | 开始步骤 02。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -93,7 +93,7 @@ crate 边界：
 - [x] 配置校验能拒绝不安全或缺失路径。
 - [x] 测试覆盖 config 和 DB 初始化。
 - [x] 审查发现已修复或明确记录。
-- [ ] 完成验证和审查后，为本步骤创建聚焦提交。
+- [x] 完成验证和审查后，为本步骤创建聚焦提交。
 
 ## 8. 代码验证
 
