@@ -32,9 +32,11 @@ pub(crate) struct DirectSecureStatusScope {
 #[cfg(feature = "sqlite")]
 impl DirectSecureStatusScope {
     pub(crate) fn for_client(client: &crate::core::ImClient) -> Self {
+        let scope = crate::internal::local_state::owner_scope::OwnerScope::for_client(client)
+            .expect("client identity must contain owner identity scope");
         Self {
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
+            owner_identity_id: scope.owner_identity_id,
+            owner_did: scope.owner_did,
         }
     }
 }
@@ -102,7 +104,7 @@ pub(crate) fn direct_status_for_scope(
     let resolved_peer = resolve_peer_did(connection, owner_identity_id, owner_did, &peer)?;
     let store = SqliteDirectSecureStateStore::new(connection)?;
     let pending_outbox_count =
-        pending_outbox_count(connection, owner_did, resolved_peer.as_ref(), &peer)?;
+        pending_outbox_count(connection, owner_identity_id, resolved_peer.as_ref(), &peer)?;
 
     let Some(peer_did) = resolved_peer.as_ref() else {
         return Ok(DirectSecureLocalStatus {
@@ -235,7 +237,8 @@ pub(crate) fn repair_direct_for_scope(
     if let Some(peer_did) = resolved_peer.as_ref() {
         let store = SqliteDirectSecureStateStore::new(connection)?;
         removed_session = store.delete_session_by_peer(owner_identity_id, peer_did.as_str())?;
-        requeued_outbox_count = requeue_failed_outbox(connection, owner_did, peer_did.as_str())?;
+        requeued_outbox_count =
+            requeue_failed_outbox(connection, owner_identity_id, peer_did.as_str())?;
     }
 
     let status = direct_status_for_scope(connection, scope, peer)?;
@@ -293,7 +296,7 @@ fn resolve_peer_did(
 #[cfg(feature = "sqlite")]
 fn pending_outbox_count(
     connection: &rusqlite::Connection,
-    owner_did: &str,
+    owner_identity_id: &str,
     resolved_peer: Option<&crate::ids::Did>,
     peer: &crate::ids::PeerRef,
 ) -> crate::ImResult<u32> {
@@ -305,10 +308,10 @@ fn pending_outbox_count(
             r#"
 SELECT COUNT(*)
 FROM e2ee_outbox
-WHERE owner_did = ?1
+WHERE owner_identity_id = ?1
   AND peer_did = ?2
   AND local_status IN ('queued', 'sending', 'failed')"#,
-            params![owner_did.trim(), peer_did.trim()],
+            params![owner_identity_id.trim(), peer_did.trim()],
             |row| row.get::<_, i64>(0),
         )
         .optional()
@@ -320,7 +323,7 @@ WHERE owner_did = ?1
 #[cfg(feature = "sqlite")]
 fn requeue_failed_outbox(
     connection: &rusqlite::Connection,
-    owner_did: &str,
+    owner_identity_id: &str,
     peer_did: &str,
 ) -> crate::ImResult<u32> {
     let changed = connection
@@ -330,10 +333,10 @@ UPDATE e2ee_outbox
 SET local_status = 'queued',
     retry_hint = NULL,
     updated_at = ?3
-WHERE owner_did = ?1
+WHERE owner_identity_id = ?1
   AND peer_did = ?2
   AND local_status = 'failed'"#,
-            params![owner_did.trim(), peer_did.trim(), now_utc_like()],
+            params![owner_identity_id.trim(), peer_did.trim(), now_utc_like()],
         )
         .map_err(crate::internal::local_state::local_state_unavailable)?;
     Ok(changed as u32)
@@ -419,8 +422,10 @@ mod tests {
         db.execute(
             r#"
 INSERT INTO e2ee_outbox
-    (outbox_id, owner_did, peer_did, plaintext, local_status, created_at, updated_at)
-VALUES ('outbox-1', 'did:example:alice', 'did:example:bob', 'redacted', 'failed', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z')"#,
+    (outbox_id, owner_identity_id, owner_did, peer_did, plaintext, local_status, created_at, updated_at, credential_name)
+VALUES
+    ('outbox-1', 'alice-id', 'did:example:alice', 'did:example:bob', 'redacted', 'failed', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z', 'alice'),
+    ('outbox-1', 'other-id', 'did:example:alice', 'did:example:bob', 'other secret', 'failed', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z', 'other')"#,
             [],
         )
         .unwrap();
@@ -444,12 +449,20 @@ VALUES ('outbox-1', 'did:example:alice', 'did:example:bob', 'redacted', 'failed'
             .is_none());
         let status = db
             .query_row(
-                "SELECT local_status FROM e2ee_outbox WHERE outbox_id = 'outbox-1'",
+                "SELECT local_status FROM e2ee_outbox WHERE owner_identity_id = 'alice-id' AND outbox_id = 'outbox-1'",
                 [],
                 |row| row.get::<_, String>(0),
             )
             .unwrap();
         assert_eq!(status, "queued");
+        let other_status = db
+            .query_row(
+                "SELECT local_status FROM e2ee_outbox WHERE owner_identity_id = 'other-id' AND outbox_id = 'outbox-1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_eq!(other_status, "failed");
     }
 
     fn test_client_and_db(prefix: &str) -> (crate::core::ImClient, Connection) {

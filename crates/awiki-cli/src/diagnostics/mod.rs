@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
@@ -345,8 +345,7 @@ fn anp_mls_check(resolved: &Resolved) -> Check {
     let data_dir = Path::new(&resolved.paths.workspace_home_dir).join("mls");
     let state = inspect_mls_state(resolved, &data_dir);
     let mut details = object(json!({
-        "binary": binary_result.as_ref().ok().cloned().unwrap_or_default(),
-        "data_dir": data_dir.to_string_lossy(),
+        "binary_available": binary_result.is_ok(),
         "env_override": ANP_MLS_BINARY_ENV,
         "plain_unaffected": true,
         "resolve_error": binary_result.as_ref().err().cloned().unwrap_or_default(),
@@ -354,13 +353,10 @@ fn anp_mls_check(resolved: &Resolved) -> Check {
         "data_dir_status": state.data_dir_status,
         "data_dir_exists": state.data_dir_exists,
         "data_dir_error": state.data_dir_error,
-        "state_db": state.state_db_path,
         "state_db_status": state.state_db_status,
         "state_db_error": state.state_db_error,
-        "state_lock": state.state_lock_path,
         "state_lock_status": state.state_lock_status,
         "state_lock_error": state.state_lock_error,
-        "scoped_states": state.scoped_states,
         "scoped_state_count": state.scoped_state_count,
         "scoped_state_db_count": state.scoped_state_db_count,
         "scoped_state_lock_count": state.scoped_state_lock_count,
@@ -384,7 +380,10 @@ fn anp_mls_check(resolved: &Resolved) -> Check {
         .as_ref()
         .and_then(anp_mls_compatibility_error)
         .unwrap_or_default();
-    details.insert("version".to_string(), probe.version.unwrap_or(Value::Null));
+    details.insert(
+        "version".to_string(),
+        sanitized_anp_mls_version(probe.version.as_ref()),
+    );
     details.insert("probe_error".to_string(), json!(probe.error));
     details.insert("compatibility_error".to_string(), json!(compat_error));
     details.insert(
@@ -519,15 +518,15 @@ fn legacy_paths_check(resolved: &Resolved) -> Check {
     )
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Default)]
 struct MlsStateInspection {
     data_dir_exists: bool,
     data_dir_status: String,
     data_dir_error: String,
-    state_db_path: String,
+    state_db_path: PathBuf,
     state_db_status: String,
     state_db_error: String,
-    state_lock_path: String,
+    state_lock_path: PathBuf,
     state_lock_status: String,
     state_lock_error: String,
     scoped_states: Vec<MlsScopedStateInspection>,
@@ -547,27 +546,18 @@ impl MlsStateInspection {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Default)]
 struct MlsScopedStateInspection {
-    agent_key: String,
-    device_id: String,
-    dir: String,
-    state_db: String,
     state_db_status: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    state_db_error: String,
-    state_lock: String,
     state_lock_status: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    state_lock_error: String,
 }
 
 fn inspect_mls_state(resolved: &Resolved, data_dir: &Path) -> MlsStateInspection {
     let mut state = MlsStateInspection {
         data_dir_status: "missing".to_string(),
-        state_db_path: path_string(&data_dir.join("state.db")),
+        state_db_path: data_dir.join("state.db"),
         state_db_status: "missing".to_string(),
-        state_lock_path: path_string(&data_dir.join("state.lock")),
+        state_lock_path: data_dir.join("state.lock"),
         state_lock_status: "missing".to_string(),
         e2ee_group_count: cached_group_e2ee_count(resolved),
         ..MlsStateInspection::default()
@@ -589,16 +579,16 @@ fn inspect_mls_state(resolved: &Resolved, data_dir: &Path) -> MlsStateInspection
         }
         Err(err) => {
             state.data_dir_status = "warn_stat_failed".to_string();
-            state.data_dir_error = err.to_string();
+            state.data_dir_error = io_error_kind(&err);
             return state;
         }
     }
     if let Err(err) = fs::read_dir(data_dir) {
         state.data_dir_status = "warn_not_readable".to_string();
-        state.data_dir_error = err.to_string();
+        state.data_dir_error = io_error_kind(&err);
     } else if let Err(err) = can_write_dir(data_dir) {
         state.data_dir_status = "warn_not_writable".to_string();
-        state.data_dir_error = err.to_string();
+        state.data_dir_error = io_error_kind(&err);
     }
 
     state.scoped_states = inspect_scoped_mls_states(data_dir);
@@ -617,7 +607,7 @@ fn inspect_mls_state(resolved: &Resolved, data_dir: &Path) -> MlsStateInspection
         }
     }
 
-    let (db_status, db_error) = inspect_mls_state_db(Path::new(&state.state_db_path));
+    let (db_status, db_error) = inspect_mls_state_db(&state.state_db_path);
     state.state_db_status = db_status;
     state.state_db_error = db_error;
     if state.state_db_status == "missing"
@@ -626,7 +616,7 @@ fn inspect_mls_state(resolved: &Resolved, data_dir: &Path) -> MlsStateInspection
     {
         state.state_db_status = "warn_missing_with_cached_groups".to_string();
     }
-    let (lock_status, lock_error) = inspect_mls_lock(Path::new(&state.state_lock_path));
+    let (lock_status, lock_error) = inspect_mls_lock(&state.state_lock_path);
     state.state_lock_status = lock_status;
     state.state_lock_error = lock_error;
     state
@@ -642,15 +632,11 @@ fn inspect_scoped_mls_states(data_dir: &Path) -> Vec<MlsScopedStateInspection> {
         if !agent_entry.path().is_dir() {
             continue;
         }
-        let agent_key = agent_entry.file_name().to_string_lossy().into_owned();
         let agent_dir = agent_entry.path();
         let Ok(device_entries) = fs::read_dir(&agent_dir) else {
             states.push(MlsScopedStateInspection {
-                agent_key,
-                dir: path_string(&agent_dir),
                 state_db_status: "warn_read_devices_failed".to_string(),
                 state_lock_status: "missing".to_string(),
-                ..MlsScopedStateInspection::default()
             });
             continue;
         };
@@ -658,22 +644,14 @@ fn inspect_scoped_mls_states(data_dir: &Path) -> Vec<MlsScopedStateInspection> {
             if !device_entry.path().is_dir() {
                 continue;
             }
-            let device_id = device_entry.file_name().to_string_lossy().into_owned();
             let dir = device_entry.path();
             let db_path = dir.join("state.db");
             let lock_path = dir.join("state.lock");
-            let (state_db_status, state_db_error) = inspect_mls_state_db(&db_path);
-            let (state_lock_status, state_lock_error) = inspect_mls_lock(&lock_path);
+            let (state_db_status, _) = inspect_mls_state_db(&db_path);
+            let (state_lock_status, _) = inspect_mls_lock(&lock_path);
             states.push(MlsScopedStateInspection {
-                agent_key: agent_key.clone(),
-                device_id,
-                dir: path_string(&dir),
-                state_db: path_string(&db_path),
                 state_db_status,
-                state_db_error,
-                state_lock: path_string(&lock_path),
                 state_lock_status,
-                state_lock_error,
             });
         }
     }
@@ -685,12 +663,12 @@ fn inspect_mls_state_db(path: &Path) -> (String, String) {
         Ok(metadata) if metadata.is_dir() => ("warn_not_file".to_string(), String::new()),
         Ok(_) => match fs::File::open(path) {
             Ok(_) => ("ok".to_string(), String::new()),
-            Err(err) => ("warn_not_readable".to_string(), err.to_string()),
+            Err(err) => ("warn_not_readable".to_string(), io_error_kind(&err)),
         },
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             ("missing".to_string(), String::new())
         }
-        Err(err) => ("warn_stat_failed".to_string(), err.to_string()),
+        Err(err) => ("warn_stat_failed".to_string(), io_error_kind(&err)),
     }
 }
 
@@ -699,7 +677,7 @@ fn inspect_mls_lock(path: &Path) -> (String, String) {
         Ok(metadata) if metadata.is_dir() => ("warn_not_file".to_string(), String::new()),
         Ok(metadata) => {
             if let Err(err) = fs::File::open(path) {
-                return ("warn_not_readable".to_string(), err.to_string());
+                return ("warn_not_readable".to_string(), io_error_kind(&err));
             }
             if metadata
                 .modified()
@@ -714,7 +692,7 @@ fn inspect_mls_lock(path: &Path) -> (String, String) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             ("missing".to_string(), String::new())
         }
-        Err(err) => ("warn_stat_failed".to_string(), err.to_string()),
+        Err(err) => ("warn_stat_failed".to_string(), io_error_kind(&err)),
     }
 }
 
@@ -802,7 +780,7 @@ fn probe_anp_mls_version(binary: &str) -> MlsProbe {
         Ok(child) => child,
         Err(err) => {
             return MlsProbe {
-                error: format!("anp-mls version probe failed: {err}"),
+                error: format!("anp-mls version probe failed to start: {}", err.kind()),
                 version: None,
             }
         }
@@ -814,17 +792,14 @@ fn probe_anp_mls_version(binary: &str) -> MlsProbe {
         Ok(output) => output,
         Err(err) => {
             return MlsProbe {
-                error: format!("anp-mls version probe failed: {err}"),
+                error: format!("anp-mls version probe did not complete: {}", err.kind()),
                 version: None,
             }
         }
     };
     if !output.status.success() && output.stdout.is_empty() {
         return MlsProbe {
-            error: format!(
-                "anp-mls version probe failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ),
+            error: "anp-mls version probe returned no JSON result".to_string(),
             version: None,
         };
     }
@@ -832,21 +807,14 @@ fn probe_anp_mls_version(binary: &str) -> MlsProbe {
         Ok(value) => value,
         Err(err) => {
             return MlsProbe {
-                error: format!(
-                    "decode anp-mls version response: {err}: stderr={}",
-                    String::from_utf8_lossy(&output.stderr)
-                ),
+                error: format!("decode anp-mls version response failed: {err}"),
                 version: None,
             }
         }
     };
     if !response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-        let error = response
-            .get("error")
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "ok=false".to_string());
         return MlsProbe {
-            error: format!("anp-mls version probe error {error}"),
+            error: "anp-mls version probe returned ok=false".to_string(),
             version: None,
         };
     }
@@ -876,9 +844,10 @@ fn anp_mls_compatibility_error(info: &Value) -> Option<String> {
         .get("binary_name")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if binary_name != "anp-mls" {
+    let sanitized_binary_name = sanitized_binary_name(binary_name);
+    if sanitized_binary_name != "anp-mls" {
         return Some(format!(
-            "binary_name {binary_name:?} is not supported; want anp-mls"
+            "binary_name {sanitized_binary_name:?} is not supported; want anp-mls"
         ));
     }
     let supported = info
@@ -895,6 +864,39 @@ fn anp_mls_compatibility_error(info: &Value) -> Option<String> {
         return Some("supported_commands does not include system version".to_string());
     }
     None
+}
+
+fn sanitized_anp_mls_version(info: Option<&Value>) -> Value {
+    let Some(info) = info else {
+        return Value::Null;
+    };
+    let supported_commands = info
+        .get("supported_commands")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "api_version": info.get("api_version").and_then(Value::as_str).unwrap_or_default(),
+        "binary_name": sanitized_binary_name(info.get("binary_name").and_then(Value::as_str).unwrap_or_default()),
+        "binary_version": info.get("binary_version").and_then(Value::as_str).unwrap_or_default(),
+        "supports_system_version": supported_commands
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|item| item.trim().eq_ignore_ascii_case("system version")),
+        "supported_command_count": supported_commands.len(),
+    })
+}
+
+fn io_error_kind(err: &std::io::Error) -> String {
+    format!("{:?}", err.kind())
+}
+
+fn sanitized_binary_name(value: &str) -> String {
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(value)
+        .to_string()
 }
 
 fn anp_mls_remediation(

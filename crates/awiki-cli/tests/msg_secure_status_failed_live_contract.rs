@@ -17,6 +17,7 @@ fn msg_secure_status_uses_im_core_while_failed_retry_and_drop_remain_unsupported
         workspace.path(),
         SecureOutboxSeed {
             outbox_id: "alice-failed",
+            owner_identity_id: "e1_alice_alice-secure",
             owner_did: &alice.did,
             peer_did,
             session_id: "session-alice",
@@ -33,6 +34,7 @@ fn msg_secure_status_uses_im_core_while_failed_retry_and_drop_remain_unsupported
         workspace.path(),
         SecureOutboxSeed {
             outbox_id: "bob-failed",
+            owner_identity_id: "e1_bob_bob-secure",
             owner_did: &bob.did,
             peer_did,
             session_id: "session-bob",
@@ -103,13 +105,15 @@ fn msg_secure_status_uses_im_core_while_failed_retry_and_drop_remain_unsupported
 
     let rows = query_rows(
         workspace.path(),
-        "SELECT outbox_id, local_status, credential_name FROM e2ee_outbox ORDER BY outbox_id",
+        "SELECT outbox_id, owner_identity_id, local_status, credential_name FROM e2ee_outbox ORDER BY outbox_id",
     );
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["outbox_id"], "alice-failed");
+    assert_eq!(rows[0]["owner_identity_id"], "e1_alice_alice-secure");
     assert_eq!(rows[0]["local_status"], "failed");
     assert_eq!(rows[0]["credential_name"], "alice-secure");
     assert_eq!(rows[1]["outbox_id"], "bob-failed");
+    assert_eq!(rows[1]["owner_identity_id"], "e1_bob_bob-secure");
     assert_eq!(rows[1]["local_status"], "failed");
     assert_eq!(rows[1]["credential_name"], "bob-secure");
 }
@@ -134,6 +138,7 @@ fn save_ready_identity(
 
 struct SecureOutboxSeed<'a> {
     outbox_id: &'a str,
+    owner_identity_id: &'a str,
     owner_did: &'a str,
     peer_did: &'a str,
     session_id: &'a str,
@@ -151,14 +156,15 @@ fn seed_secure_outbox(workspace: &Path, record: SecureOutboxSeed<'_>) {
     connection
         .execute(
             r#"
-INSERT INTO e2ee_outbox (
-    outbox_id, owner_did, peer_did, session_id, original_type, plaintext,
-    local_status, attempt_count, last_error_code, retry_hint, created_at,
-    updated_at, credential_name
-) VALUES (?1, ?2, ?3, ?4, 'text', ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11)
-"#,
+	INSERT INTO e2ee_outbox (
+	    outbox_id, owner_identity_id, owner_did, peer_did, session_id, original_type, plaintext,
+	    local_status, attempt_count, last_error_code, retry_hint, created_at,
+	    updated_at, credential_name
+	) VALUES (?1, ?2, ?3, ?4, ?5, 'text', ?6, ?7, 0, ?8, ?9, ?10, ?11, ?12)
+	"#,
             rusqlite::params![
                 record.outbox_id,
+                record.owner_identity_id,
                 record.owner_did,
                 record.peer_did,
                 record.session_id,

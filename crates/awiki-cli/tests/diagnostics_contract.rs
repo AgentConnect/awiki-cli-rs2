@@ -173,10 +173,28 @@ fn doctor_anp_mls_probe_and_state_details_match_go_contract() {
     let anp_mls = check_by_name(&envelope, "anp_mls");
     assert_eq!(anp_mls["status"], "ok");
     assert_eq!(anp_mls["details"]["version"]["api_version"], "anp-mls/v1");
+    assert_eq!(
+        anp_mls["details"]["version"]["supports_system_version"],
+        true
+    );
+    assert_eq!(anp_mls["details"]["binary_available"], true);
     assert_eq!(anp_mls["details"]["data_dir_status"], "ok");
     assert_eq!(anp_mls["details"]["state_db_status"], "ok");
     assert_eq!(anp_mls["details"]["scoped_state_count"], 1);
     assert_eq!(anp_mls["details"]["scoped_state_db_count"], 1);
+    let encoded = serde_json::to_string(anp_mls).expect("anp_mls json");
+    assert!(
+        !encoded.contains(bin_dir.path().to_string_lossy().as_ref()),
+        "doctor anp_mls details must not expose provider binary paths: {encoded}"
+    );
+    assert!(
+        !encoded.contains(workspace.path().to_string_lossy().as_ref()),
+        "doctor anp_mls details must not expose MLS state paths: {encoded}"
+    );
+    assert!(
+        !encoded.contains("state.db") && !encoded.contains("state.lock"),
+        "doctor anp_mls details must not expose MLS state file paths: {encoded}"
+    );
 }
 
 fn awiki_cmd_with_workspace(args: &[&str], workspace: &Path) -> Output {

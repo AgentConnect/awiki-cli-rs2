@@ -1147,6 +1147,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(publish_plan["recovery"], false);
     assert_eq!(publish_plan["device"], "bob-main");
     assert_eq!(publish_plan["contract_test_only"], true);
+    assert_group_e2ee_plan_is_redacted(publish_plan);
 
     let recovery_alias = success_json(&awiki_internal_cmd(
         &[
@@ -1178,8 +1179,9 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     ));
     assert_eq!(pending["summary"], "Dry run: group e2ee pending planned");
     assert_eq!(pending["data"]["plan"]["action"], "group.e2ee.pending");
-    assert_eq!(pending["data"]["plan"]["provider"], "exec");
+    assert_eq!(pending["data"]["plan"]["provider"], "internal");
     assert_eq!(pending["data"]["plan"]["group"], group);
+    assert_group_e2ee_plan_is_redacted(&pending["data"]["plan"]);
 
     let repair = success_json(&awiki_internal_cmd(
         &[
@@ -1234,6 +1236,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(process_plan["leave_request_id"], "lr-bob-1");
     assert_eq!(process_plan["request"]["LeaveRequestID"], "lr-bob-1");
     assert_eq!(process_plan["request"]["ReasonText"], "owner remove");
+    assert_group_e2ee_plan_is_redacted(process_plan);
 
     let recover = success_json(&awiki_internal_cmd(
         &[
@@ -1267,6 +1270,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
         .contains(&Value::String(
             "hidden group.e2ee.recover_member".to_string()
         )));
+    assert_group_e2ee_plan_is_redacted(&recover["data"]["plan"]);
 
     let update = success_json(&awiki_internal_cmd(
         &[
@@ -1290,6 +1294,7 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(update["data"]["plan"]["key_package_purpose"], "update");
     assert_eq!(update["data"]["plan"]["hidden_awiki_extension"], true);
     assert_eq!(update["data"]["plan"]["p4_membership_mutate"], false);
+    assert_group_e2ee_plan_is_redacted(&update["data"]["plan"]);
 
     let rejoin = success_json(&awiki_internal_cmd(
         &[
@@ -1316,6 +1321,19 @@ fn group_e2ee_dry_run_plans_match_go_contracts() {
     assert_eq!(rejoin["data"]["plan"]["key_package_purpose"], "normal");
     assert_eq!(rejoin["data"]["plan"]["external_commit"], false);
     assert_eq!(rejoin["data"]["plan"]["p4_membership_mutate"], true);
+}
+
+fn assert_group_e2ee_plan_is_redacted(plan: &Value) {
+    assert_eq!(plan["provider"], "internal");
+    let encoded = serde_json::to_string(plan).expect("plan json");
+    assert!(
+        !encoded.contains("mls_data_dir"),
+        "group E2EE dry-run plan must not expose MLS state paths: {encoded}"
+    );
+    assert!(
+        !encoded.contains("\"binary\""),
+        "group E2EE dry-run plan must not expose provider binary paths: {encoded}"
+    );
 }
 
 #[test]

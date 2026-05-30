@@ -3,7 +3,6 @@ use crate::cli_output::ExitError;
 use crate::cli_parser::ParsedCommand;
 use crate::workspace_config::Resolved;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
 
 const DEFAULT_DEVICE: &str = "default";
 
@@ -50,9 +49,7 @@ impl App {
             "action": "group.e2ee.publish_key_package",
             "identity": self.globals.identity,
             "runtime_mode": resolved.runtime_mode,
-            "provider": "exec",
-            "binary": provider_binary(),
-            "mls_data_dir": mls_data_dir(&resolved),
+            "provider": "internal",
             "device": device,
             "group": group,
             "recovery": purpose == "recovery",
@@ -119,8 +116,7 @@ impl App {
             "action": "group.e2ee.pending",
             "identity": self.globals.identity,
             "runtime_mode": resolved.runtime_mode,
-            "provider": "exec",
-            "mls_data_dir": mls_data_dir(&resolved),
+            "provider": "internal",
             "group": string_flag(command, "group"),
         });
         self.render_group_e2ee_plan(
@@ -159,8 +155,7 @@ impl App {
             "action": "group.e2ee.process_leave_request",
             "identity": self.globals.identity,
             "runtime_mode": resolved.runtime_mode,
-            "provider": "exec",
-            "mls_data_dir": mls_data_dir(&resolved),
+            "provider": "internal",
             "group": group,
             "member": member,
             "leave_request_id": leave_request_id,
@@ -252,8 +247,7 @@ impl App {
             "action": "group.e2ee.recover_member",
             "identity": self.globals.identity,
             "runtime_mode": resolved.runtime_mode,
-            "provider": "exec",
-            "mls_data_dir": mls_data_dir(&resolved),
+            "provider": "internal",
             "group": group,
             "member": member,
             "device": device,
@@ -344,8 +338,7 @@ impl App {
             "action": "group.e2ee.update_key",
             "identity": self.globals.identity,
             "runtime_mode": resolved.runtime_mode,
-            "provider": "exec",
-            "mls_data_dir": mls_data_dir(&resolved),
+            "provider": "internal",
             "group": group,
             "member": member,
             "device": device,
@@ -599,21 +592,4 @@ fn bool_flag(command: &ParsedCommand, name: &str) -> Result<bool, ExitError> {
             "Use true or false.",
         )),
     }
-}
-
-fn provider_binary() -> String {
-    String::new()
-}
-
-fn mls_data_dir(resolved: &Resolved) -> String {
-    default_mls_data_dir(resolved)
-        .to_string_lossy()
-        .into_owned()
-}
-
-fn default_mls_data_dir(resolved: &Resolved) -> PathBuf {
-    if resolved.paths.workspace_home_dir.trim().is_empty() {
-        return PathBuf::from(".awiki-cli").join("mls");
-    }
-    Path::new(&resolved.paths.workspace_home_dir).join("mls")
 }

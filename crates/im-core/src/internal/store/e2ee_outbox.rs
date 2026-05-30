@@ -129,7 +129,7 @@ SELECT *
 FROM e2ee_outbox
 WHERE outbox_id = ?1 AND {}
 LIMIT 1"#,
-                owner_scope_predicate("?2")
+                owner_identity_predicate("?2")
             ),
             params![
                 outbox_id,
@@ -156,7 +156,7 @@ SELECT *
 FROM e2ee_outbox
 WHERE {}
 ORDER BY updated_at DESC, outbox_id DESC"#,
-                owner_scope_predicate("?1")
+                owner_identity_predicate("?1")
             ),
             vec![&scope.owner_identity_id],
         )
@@ -168,7 +168,7 @@ SELECT *
 FROM e2ee_outbox
 WHERE {} AND local_status = ?2
 ORDER BY updated_at DESC, outbox_id DESC"#,
-                owner_scope_predicate("?1")
+                owner_identity_predicate("?1")
             ),
             vec![&scope.owner_identity_id, &status],
         )
@@ -268,7 +268,7 @@ UPDATE e2ee_outbox
 SET local_status = ?3,
     updated_at = ?4
 WHERE outbox_id = ?1 AND {}"#,
-                owner_scope_predicate("?2")
+                owner_identity_predicate("?2")
             ),
             params![
                 outbox_id,
@@ -329,7 +329,7 @@ fn update_sent_or_failure(
 UPDATE e2ee_outbox
 {set_clause}
 WHERE outbox_id = ?1 AND {}"#,
-        owner_scope_predicate("?2")
+        owner_identity_predicate("?2")
     );
     let owner_identity_id = required("owner_identity_id", &scope.owner_identity_id)?;
     let mut values: Vec<&dyn rusqlite::ToSql> = vec![&outbox_id, &owner_identity_id];
@@ -340,7 +340,7 @@ WHERE outbox_id = ?1 AND {}"#,
     Ok(())
 }
 
-fn owner_scope_predicate(owner_identity_id_param: &str) -> String {
+fn owner_identity_predicate(owner_identity_id_param: &str) -> String {
     format!("owner_identity_id = {owner_identity_id_param}")
 }
 
@@ -540,6 +540,47 @@ mod tests {
         assert_eq!(retried.local_status, "queued");
         let dropped = drop_e2ee_outbox(&db, &alice, "outbox-1").unwrap().unwrap();
         assert_eq!(dropped.local_status, "dropped");
+    }
+
+    #[test]
+    fn secure_outbox_same_outbox_id_can_exist_per_owner_identity() {
+        let db = Connection::open_in_memory().unwrap();
+        let alice = scope("alice-id", "did:example:shared", "alice");
+        let bob = scope("bob-id", "did:example:shared", "bob");
+
+        for (scope, peer, status) in [
+            (&alice, "did:example:peer-a", "failed"),
+            (&bob, "did:example:peer-b", "queued"),
+        ] {
+            queue_e2ee_outbox(
+                &db,
+                E2eeOutboxRecord {
+                    outbox_id: "outbox-shared".to_owned(),
+                    owner_identity_id: scope.owner_identity_id.clone(),
+                    owner_did: scope.owner_did.clone(),
+                    credential_name: scope.credential_name.clone(),
+                    peer_did: peer.to_owned(),
+                    plaintext: format!("secret for {peer}"),
+                    local_status: status.to_owned(),
+                    created_at: "2026-05-24T00:00:00Z".to_owned(),
+                    updated_at: "2026-05-24T00:00:00Z".to_owned(),
+                    ..E2eeOutboxRecord::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let alice_row = retry_e2ee_outbox(&db, &alice, "outbox-shared")
+            .unwrap()
+            .unwrap();
+        let bob_row = get_e2ee_outbox(&db, &bob, "outbox-shared")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(alice_row.peer_did, "did:example:peer-a");
+        assert_eq!(alice_row.local_status, "queued");
+        assert_eq!(bob_row.peer_did, "did:example:peer-b");
+        assert_eq!(bob_row.local_status, "queued");
     }
 
     fn scope(identity: &str, did: &str, credential: &str) -> E2eeOutboxOwnerScope {
