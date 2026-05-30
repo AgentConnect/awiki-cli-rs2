@@ -6,6 +6,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::{agent_data_paths, AgentDefinition, AgentIdentityRecord, AgentKind};
 use crate::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask};
 use crate::security::runtime_token::{
     current_time_millis, IssuedRuntimeToken, RpcMethod, RuntimeRpcToken, RuntimeTokenScope,
@@ -13,7 +14,7 @@ use crate::security::runtime_token::{
 use crate::workspace::WorkspaceBindingConfig;
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 3;
+const DAEMON_SCHEMA_VERSION: i64 = 4;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
@@ -112,29 +113,56 @@ INSERT INTO runtime_rpc_tokens (
     }
 
     pub fn upsert_runtime_agent_profile(&self, profile: &RuntimeAgentProfile) -> Result<()> {
+        self.upsert_runtime_agent_profile_with_handle(profile, &profile.agent_did)
+    }
+
+    pub fn upsert_runtime_agent_profile_with_handle(
+        &self,
+        profile: &RuntimeAgentProfile,
+        handle: &str,
+    ) -> Result<()> {
         profile.validate()?;
+        let (local_agent_db_path, message_db_path) = agent_data_paths(&profile.agent_did)?;
         let connection = self.connection()?;
         let now = current_time_millis()?.to_string();
         connection.execute(
             r#"
 INSERT INTO agent_definition (
     agent_did,
+    handle,
+    agent_kind,
     controller_did,
+    runtime_plugin_id,
     runtime_profile_id,
+    workspace_id,
+    policy_id,
+    local_agent_db_path,
+    message_db_path,
     status,
     created_at,
     updated_at
-) VALUES (?1, ?2, ?3, 'active', ?4, ?4)
+) VALUES (?1, ?2, 'runtime', ?3, ?4, ?5, ?6, 'default', ?7, ?8, 'active', ?9, ?9)
 ON CONFLICT(agent_did) DO UPDATE SET
     controller_did = excluded.controller_did,
+    handle = excluded.handle,
+    agent_kind = excluded.agent_kind,
+    runtime_plugin_id = excluded.runtime_plugin_id,
     runtime_profile_id = excluded.runtime_profile_id,
+    workspace_id = excluded.workspace_id,
+    local_agent_db_path = excluded.local_agent_db_path,
+    message_db_path = excluded.message_db_path,
     status = 'active',
     updated_at = excluded.updated_at
 "#,
             rusqlite::params![
                 profile.agent_did,
+                handle,
                 profile.controller_did,
+                profile.runtime_plugin_id,
                 profile.runtime_profile_id,
+                profile.workspace_id,
+                local_agent_db_path,
+                message_db_path,
                 now,
             ],
         )?;
@@ -180,6 +208,256 @@ ON CONFLICT(runtime_profile_id) DO UPDATE SET
             )?;
         }
         Ok(())
+    }
+
+    pub fn upsert_agent_definition(&self, definition: &AgentDefinition) -> Result<()> {
+        definition.validate()?;
+        let connection = self.connection()?;
+        let now = current_time_millis()?.to_string();
+        connection.execute(
+            r#"
+INSERT INTO agent_definition (
+    agent_did,
+    handle,
+    agent_kind,
+    controller_did,
+    runtime_plugin_id,
+    runtime_profile_id,
+    workspace_id,
+    policy_id,
+    local_agent_db_path,
+    message_db_path,
+    status,
+    created_at,
+    updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+ON CONFLICT(agent_did) DO UPDATE SET
+    handle = excluded.handle,
+    agent_kind = excluded.agent_kind,
+    controller_did = excluded.controller_did,
+    runtime_plugin_id = excluded.runtime_plugin_id,
+    runtime_profile_id = excluded.runtime_profile_id,
+    workspace_id = excluded.workspace_id,
+    policy_id = excluded.policy_id,
+    local_agent_db_path = excluded.local_agent_db_path,
+    message_db_path = excluded.message_db_path,
+    status = excluded.status,
+    updated_at = excluded.updated_at
+"#,
+            rusqlite::params![
+                definition.agent_did,
+                definition.handle,
+                definition.agent_kind.as_str(),
+                definition.controller_did,
+                definition.runtime_plugin_id,
+                definition.runtime_profile_id,
+                definition.workspace_id,
+                definition.policy_id,
+                definition.local_agent_db_path,
+                definition.message_db_path,
+                definition.status,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn store_agent_identity(&self, identity: &AgentIdentityRecord) -> Result<()> {
+        if identity.agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        if identity.handle.trim().is_empty() {
+            bail!("handle must not be empty");
+        }
+        let connection = self.connection()?;
+        let now = current_time_millis()?.to_string();
+        connection.execute(
+            r#"
+INSERT INTO agent_identity (
+    agent_did,
+    handle,
+    agent_kind,
+    did_document_json,
+    endpoint_url,
+    key_algorithm,
+    public_key,
+    auth_private_key_pem,
+    e2ee_signing_private_key_pem,
+    e2ee_agreement_private_key_pem,
+    created_at,
+    updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+ON CONFLICT(agent_did) DO UPDATE SET
+    handle = excluded.handle,
+    agent_kind = excluded.agent_kind,
+    did_document_json = excluded.did_document_json,
+    endpoint_url = excluded.endpoint_url,
+    key_algorithm = excluded.key_algorithm,
+    public_key = excluded.public_key,
+    auth_private_key_pem = excluded.auth_private_key_pem,
+    e2ee_signing_private_key_pem = excluded.e2ee_signing_private_key_pem,
+    e2ee_agreement_private_key_pem = excluded.e2ee_agreement_private_key_pem,
+    updated_at = excluded.updated_at
+"#,
+            rusqlite::params![
+                identity.agent_did,
+                identity.handle,
+                identity.agent_kind.as_str(),
+                identity.did_document.to_string(),
+                identity.endpoint_url,
+                identity.key_algorithm,
+                identity.public_key,
+                identity.auth_private_key_pem,
+                identity.e2ee_signing_private_key_pem,
+                identity.e2ee_agreement_private_key_pem,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_agent_identity(&self, agent_did: &str) -> Result<AgentIdentityRecord> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    agent_did,
+    handle,
+    agent_kind,
+    did_document_json,
+    endpoint_url,
+    key_algorithm,
+    public_key,
+    auth_private_key_pem,
+    e2ee_signing_private_key_pem,
+    e2ee_agreement_private_key_pem
+FROM agent_identity
+WHERE agent_did = ?1
+"#,
+                [agent_did],
+                agent_identity_from_row,
+            )
+            .with_context(|| format!("load agent identity {agent_did}"))
+    }
+
+    pub fn load_agent_definition(&self, agent_did: &str) -> Result<AgentDefinition> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                r#"
+SELECT
+    agent_did,
+    handle,
+    agent_kind,
+    controller_did,
+    runtime_plugin_id,
+    runtime_profile_id,
+    workspace_id,
+    policy_id,
+    local_agent_db_path,
+    message_db_path,
+    status
+FROM agent_definition
+WHERE agent_did = ?1
+"#,
+                [agent_did],
+                agent_definition_from_row,
+            )
+            .with_context(|| format!("load agent definition {agent_did}"))
+    }
+
+    pub fn load_daemon_agent_by_handle(&self, handle: &str) -> Result<Option<AgentDefinition>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    agent_did,
+    handle,
+    agent_kind,
+    controller_did,
+    runtime_plugin_id,
+    runtime_profile_id,
+    workspace_id,
+    policy_id,
+    local_agent_db_path,
+    message_db_path,
+    status
+FROM agent_definition
+WHERE agent_kind = 'daemon' AND handle = ?1
+ORDER BY updated_at DESC
+LIMIT 1
+"#,
+        )?;
+        let mut rows = statement.query([handle])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(agent_definition_from_row(row)?))
+    }
+
+    pub fn list_agent_definitions(&self) -> Result<Vec<AgentDefinition>> {
+        self.list_agent_definitions_by_kind(None)
+    }
+
+    pub fn list_runtime_agent_definitions(&self) -> Result<Vec<AgentDefinition>> {
+        self.list_agent_definitions_by_kind(Some(AgentKind::Runtime))
+    }
+
+    fn list_agent_definitions_by_kind(
+        &self,
+        kind: Option<AgentKind>,
+    ) -> Result<Vec<AgentDefinition>> {
+        let connection = self.connection()?;
+        let sql = match kind {
+            Some(_) => {
+                r#"
+SELECT
+    agent_did,
+    handle,
+    agent_kind,
+    controller_did,
+    runtime_plugin_id,
+    runtime_profile_id,
+    workspace_id,
+    policy_id,
+    local_agent_db_path,
+    message_db_path,
+    status
+FROM agent_definition
+WHERE agent_kind = ?1
+ORDER BY updated_at DESC, agent_did ASC
+"#
+            }
+            None => {
+                r#"
+SELECT
+    agent_did,
+    handle,
+    agent_kind,
+    controller_did,
+    runtime_plugin_id,
+    runtime_profile_id,
+    workspace_id,
+    policy_id,
+    local_agent_db_path,
+    message_db_path,
+    status
+FROM agent_definition
+ORDER BY updated_at DESC, agent_did ASC
+"#
+            }
+        };
+        let mut statement = connection.prepare(sql)?;
+        let rows = match kind {
+            Some(kind) => statement.query_map([kind.as_str()], agent_definition_from_row)?,
+            None => statement.query_map([], agent_definition_from_row)?,
+        };
+        let mut definitions = Vec::new();
+        for row in rows {
+            definitions.push(row?);
+        }
+        Ok(definitions)
     }
 
     pub fn upsert_workspace_binding(
@@ -468,6 +746,49 @@ INSERT INTO audit_log (
         )?;
         Ok(())
     }
+
+    pub fn insert_audit_event_json(
+        &self,
+        event_type: &str,
+        agent_did: Option<&str>,
+        runtime_profile_id: Option<&str>,
+        run_id: Option<&str>,
+        token_id: Option<&str>,
+        detail: serde_json::Value,
+    ) -> Result<()> {
+        let connection = self.connection()?;
+        let now = current_time_millis()?;
+        let sequence = AUDIT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let audit_id = format!(
+            "audit_{now}_{sequence}_{}",
+            token_id.unwrap_or("agent_management")
+        );
+        connection.execute(
+            r#"
+INSERT INTO audit_log (
+    audit_id,
+    event_type,
+    agent_did,
+    runtime_profile_id,
+    run_id,
+    token_id,
+    detail_json,
+    created_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+"#,
+            rusqlite::params![
+                audit_id,
+                event_type,
+                agent_did,
+                runtime_profile_id,
+                run_id,
+                token_id,
+                detail.to_string(),
+                now,
+            ],
+        )?;
+        Ok(())
+    }
 }
 
 pub fn current_schema_version(connection: &Connection) -> Result<i64> {
@@ -578,6 +899,21 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             created_at_ms INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS agent_identity (
+            agent_did TEXT PRIMARY KEY,
+            handle TEXT NOT NULL,
+            agent_kind TEXT NOT NULL,
+            did_document_json TEXT NOT NULL,
+            endpoint_url TEXT,
+            key_algorithm TEXT NOT NULL,
+            public_key TEXT NOT NULL,
+            auth_private_key_pem TEXT NOT NULL,
+            e2ee_signing_private_key_pem TEXT,
+            e2ee_agreement_private_key_pem TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -586,6 +922,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_audit_log_v2(connection)?;
     migrate_runtime_run_v3(connection)?;
     migrate_runtime_task_v3(connection)?;
+    migrate_agent_definition_v4(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -593,6 +930,54 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [DAEMON_SCHEMA_VERSION],
+    )?;
+    Ok(())
+}
+
+fn migrate_agent_definition_v4(connection: &Connection) -> Result<()> {
+    for (column, definition) in [
+        ("handle", "TEXT NOT NULL DEFAULT ''"),
+        ("agent_kind", "TEXT NOT NULL DEFAULT 'runtime'"),
+        ("runtime_plugin_id", "TEXT"),
+        ("workspace_id", "TEXT"),
+        ("policy_id", "TEXT NOT NULL DEFAULT 'default'"),
+        ("local_agent_db_path", "TEXT NOT NULL DEFAULT ''"),
+        ("message_db_path", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        add_column_if_missing(connection, "agent_definition", column, definition)?;
+    }
+    connection.execute_batch(
+        r#"
+        UPDATE agent_definition
+        SET handle = agent_did
+        WHERE handle = '';
+
+        UPDATE agent_definition
+        SET agent_kind = 'runtime'
+        WHERE agent_kind = '';
+
+        UPDATE agent_definition
+        SET policy_id = 'default'
+        WHERE policy_id = '';
+
+        UPDATE agent_definition
+        SET runtime_plugin_id = (
+            SELECT runtime_profile.runtime_plugin_id
+            FROM runtime_profile
+            WHERE runtime_profile.runtime_profile_id = agent_definition.runtime_profile_id
+            LIMIT 1
+        )
+        WHERE runtime_plugin_id IS NULL
+          AND runtime_profile_id IS NOT NULL;
+
+        UPDATE agent_definition
+        SET local_agent_db_path = 'agents/' || replace(replace(replace(agent_did, ':', '_'), '/', '_'), '#', '_') || '/agent.db'
+        WHERE local_agent_db_path = '';
+
+        UPDATE agent_definition
+        SET message_db_path = 'agents/' || replace(replace(replace(agent_did, ':', '_'), '/', '_'), '#', '_') || '/messages.db'
+        WHERE message_db_path = '';
+        "#,
     )?;
     Ok(())
 }
@@ -771,6 +1156,33 @@ WHERE token_id = ?1
     Ok(record)
 }
 
+fn agent_definition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentDefinition> {
+    let kind_raw: String = row.get(2)?;
+    let agent_kind = AgentKind::parse(&kind_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            kind_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                err.to_string(),
+            )),
+        )
+    })?;
+    Ok(AgentDefinition {
+        agent_did: row.get(0)?,
+        handle: row.get(1)?,
+        agent_kind,
+        controller_did: row.get(3)?,
+        runtime_plugin_id: row.get(4)?,
+        runtime_profile_id: row.get(5)?,
+        workspace_id: row.get(6)?,
+        policy_id: row.get(7)?,
+        local_agent_db_path: row.get(8)?,
+        message_db_path: row.get(9)?,
+        status: row.get(10)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,6 +1204,7 @@ mod tests {
             "runtime_run",
             "runtime_rpc_tokens",
             "audit_log",
+            "agent_identity",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -803,4 +1216,97 @@ mod tests {
             assert_eq!(count, 1, "missing table {table}");
         }
     }
+
+    #[test]
+    fn agent_definition_v4_roundtrips_daemon_and_runtime_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+
+        let definition = AgentDefinition {
+            agent_did: "did:agent:daemon".to_string(),
+            handle: "alice-daemon".to_string(),
+            agent_kind: AgentKind::Daemon,
+            controller_did: "did:human:alice".to_string(),
+            runtime_plugin_id: None,
+            runtime_profile_id: None,
+            workspace_id: None,
+            policy_id: "default".to_string(),
+            local_agent_db_path: "agents/daemon/agent.db".to_string(),
+            message_db_path: "agents/daemon/messages.db".to_string(),
+            status: "active".to_string(),
+        };
+        state.upsert_agent_definition(&definition).unwrap();
+
+        assert_eq!(
+            state.load_agent_definition("did:agent:daemon").unwrap(),
+            definition
+        );
+        assert_eq!(state.list_agent_definitions().unwrap().len(), 1);
+        assert_eq!(state.list_runtime_agent_definitions().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn agent_identity_record_roundtrips_without_debug_leaking_private_key() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let identity = AgentIdentityRecord {
+            agent_did: "did:agent:daemon".to_string(),
+            handle: "alice-daemon".to_string(),
+            agent_kind: AgentKind::Daemon,
+            did_document: serde_json::json!({ "id": "did:agent:daemon" }),
+            endpoint_url: Some("https://example.test/anp-im/rpc".to_string()),
+            key_algorithm: "JsonWebKey2020".to_string(),
+            public_key: "public".to_string(),
+            auth_private_key_pem: "private-secret".to_string(),
+            e2ee_signing_private_key_pem: "signing-secret".to_string(),
+            e2ee_agreement_private_key_pem: "agreement-secret".to_string(),
+        };
+        state.store_agent_identity(&identity).unwrap();
+
+        let loaded = state.load_agent_identity("did:agent:daemon").unwrap();
+        assert_eq!(loaded.agent_did, identity.agent_did);
+        assert_eq!(loaded.auth_private_key_pem, "private-secret");
+        let debug = format!("{loaded:?}");
+        assert!(!debug.contains("private-secret"));
+        assert!(!debug.contains("signing-secret"));
+        assert!(!debug.contains("agreement-secret"));
+    }
+}
+
+fn agent_identity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentIdentityRecord> {
+    let kind_raw: String = row.get(2)?;
+    let agent_kind = AgentKind::parse(&kind_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            kind_raw.len(),
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                err.to_string(),
+            )),
+        )
+    })?;
+    let did_document_json: String = row.get(3)?;
+    let did_document = serde_json::from_str(&did_document_json).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            did_document_json.len(),
+            rusqlite::types::Type::Text,
+            Box::new(err),
+        )
+    })?;
+    Ok(AgentIdentityRecord {
+        agent_did: row.get(0)?,
+        handle: row.get(1)?,
+        agent_kind,
+        did_document,
+        endpoint_url: row.get(4)?,
+        key_algorithm: row.get(5)?,
+        public_key: row.get(6)?,
+        auth_private_key_pem: row.get(7)?,
+        e2ee_signing_private_key_pem: row.get(8)?,
+        e2ee_agreement_private_key_pem: row.get(9)?,
+    })
 }

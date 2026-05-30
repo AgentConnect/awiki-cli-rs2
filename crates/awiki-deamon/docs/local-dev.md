@@ -2,13 +2,16 @@
 
 本目录实现 daemon 进程本身，daemon 与现有 `awiki-cli` 是平行入口，二者都复用 `im-core` SDK。daemon 代码固定放在 `crates/awiki-deamon`，不能依赖 `crates/awiki-cli` 内部模块。
 
-步骤 01 只提供最小进程骨架：
+当前提供的 daemon 管理命令：
 
 - `awiki-deamon foreground --state-root <path>`
 - `awiki-deamon init-state --state-root <path>`
 - `awiki-deamon status --state-root <path>`
+- `awiki-deamon agent-list --state-root <path>`
+- `awiki-deamon agent-status --state-root <path> --agent-did <did>`
+- `awiki-deamon runtime-list --state-root <path>`
 
-三个命令都会加载 daemon 配置、初始化 daemon 状态库，并通过 `im-core` 公开 API 初始化 IM 本地状态。后续步骤再补本地 RPC、runtime plugin、daemon agent 和注册能力。
+这些命令都会加载 daemon 配置、初始化 daemon 状态库，并通过 `im-core` 公开 API 初始化 IM 本地状态。`agent-*` 和 `runtime-list` 是 daemon 自己的最小管理入口，和现有 `awiki-cli` 命令系统保持平行，不依赖 `crates/awiki-cli` 内部模块。
 
 ## 状态目录
 
@@ -27,6 +30,15 @@
 ```
 
 `daemon.db` 是 daemon 自己的状态库，首版包含 agent、runtime profile、workspace binding、runtime run、runtime RPC token 占位表和 audit 表。`im-core/local-state.sqlite` 由 `im-core` 自己初始化和维护。
+
+步骤 07 后，`daemon.db` 的 agent 相关状态包括：
+
+- `agent_definition`：daemon agent 和 runtime agent 的本地定义，包含 `handle`、`agent_kind`、`controller_did`、runtime profile、workspace 和本地路径。
+- `agent_identity`：daemon 生成并通过 user-service registration token 兑换后的 agent DID 文档和本地私钥材料。私钥只保存在本地 daemon 状态库中，不进入 Debug 输出、日志或 audit。
+- `runtime_profile`：runtime agent 绑定的插件、展示名和状态。
+- `workspace_binding`：CLI 类 runtime 绑定的 workspace 和 workspace mode。
+
+首个版本仍使用单个 `daemon.db`。不同 agent / runtime plugin 通过表字段隔离，后续如有迁移、备份或插件规模需求，再考虑拆成 per-agent DB 或 plugin DB。
 
 ## 本地验证
 
@@ -94,3 +106,54 @@ workspace mode 只记录边界，不夸大安全性：
 | `sandbox` | 外部委托、高风险、自动写代码 | 是，依赖 sandbox profile |
 
 RuntimeEvent 当前不作为任务状态和结果的第二条权威通道。权威回传链路是 Skill / daemon CLI wrapper / local RPC。
+
+## Daemon Agent 与 Runtime Agent 管理
+
+daemon agent 和 runtime agent 都通过 user-service 的 registration token API 注册 DID。daemon 侧只消费 token，不签发 token；registration token 原文只用于调用 user-service `exchange_token`，不写入 `daemon.db`、日志或 audit。
+
+daemon setup 的最小流程：
+
+1. App 或安装入口从 user-service 获取 daemon registration token。
+2. daemon 生成 Daemon Agent DID 文档和本地密钥。
+3. daemon 使用 token、handle、DID document 调 user-service `exchange_token`。
+4. 兑换成功后，daemon 写入 `agent_identity` 和 `agent_definition`。
+5. 后续再次 setup 同一个 handle 时，优先恢复本地已有 Daemon Agent 定义。
+
+runtime agent 的最小创建流程：
+
+1. App/controller 获取 runtime agent registration token。
+2. controller 向 daemon agent 发送 `application/json + body.payload` 命令。
+3. daemon 校验 `sender_did == daemon agent.controller_did`。
+4. daemon 生成 Runtime Agent DID 文档，用 registration token 调 user-service `exchange_token`。
+5. daemon 写入 `agent_identity`、`agent_definition`、`runtime_profile` 和可选 `workspace_binding`。
+6. daemon 通过 `im-core` payload 消息出口回发 `awiki.agent.status.v1` ready/failed 状态；测试中使用 `MemoryRuntimeOutbox`。
+
+结构化命令固定使用普通 JSON payload：
+
+```json
+{
+  "schema": "awiki.agent.command.v1",
+  "command_id": "cmd_create_agent_001",
+  "command": "runtime.agent.create",
+  "target_agent_kind": "runtime",
+  "args": {
+    "handle": "@alice-awiki-coder",
+    "runtime": "claude-code",
+    "workspace": "~/work/awiki-me",
+    "controller_did": "did:human:alice",
+    "registration_token": "tok_runtime_agent_123"
+  },
+  "reply_policy": {
+    "progress": true,
+    "final": true
+  }
+}
+```
+
+承载规则：
+
+- `meta.content_type = "application/json"`。
+- JSON 对象放在 `body.payload`。
+- daemon 不使用历史结构化 JSON 同义字段。
+- daemon 不定义 command/status/result/task 专用 JSON content type。
+- `payload.schema`、`payload.command`、`payload.state`、`payload.result` 是 daemon 上层业务语义，不是 message-service 的传输语义。

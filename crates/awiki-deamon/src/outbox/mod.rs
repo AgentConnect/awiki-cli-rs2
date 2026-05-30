@@ -1,6 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use im_core::ids::PeerRef;
+use im_core::messages::{
+    MessageBody, MessageDeliveryOptions, MessageSecurityMode, MessageTarget, SendMessageRequest,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::state::AuthorizedRuntimeContext;
@@ -21,6 +25,29 @@ pub trait RuntimeOutbox {
         recipient: Option<&str>,
         text: Option<&str>,
     ) -> Result<()>;
+}
+
+pub trait AgentManagementOutbox {
+    fn send_agent_status(&self, response: &AgentStatusResponse) -> Result<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentStatusResponse {
+    pub conversation_id: Option<String>,
+    pub agent_did: String,
+    pub recipient_did: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone)]
+pub struct ImCoreAgentOutbox {
+    client: im_core::ImClient,
+}
+
+impl ImCoreAgentOutbox {
+    pub fn new(client: im_core::ImClient) -> Self {
+        Self { client }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +71,7 @@ pub enum OutboxRecordKind {
 #[derive(Debug, Clone, Default)]
 pub struct MemoryRuntimeOutbox {
     records: Arc<Mutex<Vec<OutboxRecord>>>,
+    agent_statuses: Arc<Mutex<Vec<AgentStatusResponse>>>,
 }
 
 impl MemoryRuntimeOutbox {
@@ -51,11 +79,43 @@ impl MemoryRuntimeOutbox {
         self.records.lock().expect("outbox lock poisoned").clone()
     }
 
+    pub fn agent_statuses(&self) -> Vec<AgentStatusResponse> {
+        self.agent_statuses
+            .lock()
+            .expect("outbox lock poisoned")
+            .clone()
+    }
+
     fn push(&self, record: OutboxRecord) {
         self.records
             .lock()
             .expect("outbox lock poisoned")
             .push(record);
+    }
+}
+
+impl AgentManagementOutbox for MemoryRuntimeOutbox {
+    fn send_agent_status(&self, response: &AgentStatusResponse) -> Result<()> {
+        self.agent_statuses
+            .lock()
+            .expect("outbox lock poisoned")
+            .push(response.clone());
+        Ok(())
+    }
+}
+
+impl AgentManagementOutbox for ImCoreAgentOutbox {
+    fn send_agent_status(&self, response: &AgentStatusResponse) -> Result<()> {
+        self.client.messages().send(SendMessageRequest {
+            target: MessageTarget::Direct(PeerRef::parse(&response.recipient_did, "")?),
+            body: MessageBody::Payload {
+                payload: response.payload.clone(),
+            },
+            security: MessageSecurityMode::DefaultPlain,
+            client_message_id: None,
+            delivery: MessageDeliveryOptions::default(),
+        })?;
+        Ok(())
     }
 }
 

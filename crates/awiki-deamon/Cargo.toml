@@ -11,11 +11,13 @@ name = "awiki-deamon"
 path = "src/main.rs"
 
 [dependencies]
+anp.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 im-core = { path = "../im-core" }
 libc.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -210,11 +210,13 @@ dependencies = [
 name = "awiki-deamon"
 version = "0.1.0"
 dependencies = [
+ "anp",
  "anyhow",
  "base64",
  "im-core",
  "libc",
  "rand 0.8.6",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
