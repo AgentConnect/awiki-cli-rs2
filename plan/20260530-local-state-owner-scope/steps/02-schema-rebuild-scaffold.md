@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)  
 步骤编号：02  
-状态：草案
+状态：完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | done |
 | 分支 | `feature/release-0526/db-refactor-in-async` |
-| 开始时间 | |
-| 完成时间 | |
-| 提交 | |
-| 审查证据 | |
-| 验证证据 | |
-| 下一步 | 增加 inactive identity-owned schema 和 rebuild helpers。 |
+| 开始时间 | 2026-05-30T16:34:45Z |
+| 完成时间 | 2026-05-30T16:45:37Z |
+| 提交 | 步骤 02 聚焦提交：`im-core: scaffold identity-owned local state schema` |
+| 审查证据 | 提交前审查：v17 schema helper 未被 `ensure_schema` 调用，活跃 `SCHEMA_VERSION` 保持 16；v17 主键使用 `owner_identity_id`；unresolved rebuild row 只返回 table/key/reason；未新增日志或 secure discovery/public DTO。 |
+| 验证证据 | `cargo fmt --all --check` 通过；`cargo test -p im-core --locked local_state_schema_v17` 通过；`cargo test -p im-core --locked owner_invariant` 通过；`cargo check -p im-core --locked` 通过；`rg "println!|eprintln!|tracing::|log::" crates/im-core/src/internal/local_state crates/im-core/src/internal/identity_recover_local_state` 无命中。 |
+| 下一步 | 步骤 03 开始前读取 `steps/03-atomic-sql-cutover.md` 和当前 `git status`。 |
 
 ## 2. 目标
 
@@ -78,14 +78,14 @@ Secure scaffold 要求：
 
 ## 7. 验收标准
 
-- [ ] v17 DDL 存在，并在测试中创建 identity-owned primary keys。
-- [ ] Rebuild helper API 可以表达 resolved 和 unresolved rows。
-- [ ] Invariant SQL helpers 有测试覆盖。
-- [ ] Invariant/rebuild diagnostics 已脱敏，不打印 secure payloads 或 private material。
-- [ ] 如果保留 legacy secure tables，代码注释/测试明确说明它们仅用于 migration。
-- [ ] 活跃运行时 `SCHEMA_VERSION` 在步骤 03 前保持不变。
-- [ ] 审查发现 已处理或明确记录。
-- [ ] 步骤 03 开始前已创建本步骤聚焦提交。
+- [x] v17 DDL 存在，并在测试中创建 identity-owned primary keys。
+- [x] Rebuild helper API 可以表达 resolved 和 unresolved rows。
+- [x] Invariant SQL helpers 有测试覆盖。
+- [x] Invariant/rebuild diagnostics 已脱敏，不打印 secure payloads 或 private material。
+- [x] 如果保留 legacy secure tables，代码注释/测试明确说明它们仅用于 migration。
+- [x] 活跃运行时 `SCHEMA_VERSION` 在步骤 03 前保持不变。
+- [x] 审查发现 已处理或明确记录。
+- [x] 步骤 03 开始前已创建本步骤聚焦提交。
 
 ## 8. 验证
 

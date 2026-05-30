@@ -4,7 +4,7 @@
 文档目录：`plan/20260530-local-state-owner-scope/`  
 Harness：`/home/ecs-user/awiki-space/awiki-harness`  
 创建日期：2026-05-30  
-恢复执行位置：步骤 02 尚未开始；恢复时先读取 [steps/02-schema-rebuild-scaffold.md](steps/02-schema-rebuild-scaffold.md) 和当前 `git status`
+恢复执行位置：步骤 03 尚未开始；恢复时先读取 [steps/03-atomic-sql-cutover.md](steps/03-atomic-sql-cutover.md) 和当前 `git status`
 
 ## 1. 目标
 
@@ -107,7 +107,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 | 步骤 | 标题 | 依赖 | 输出 | 步骤文档 | 提交 门禁 | 状态 |
 |---|---|---|---|---|---|---|
 | 01 | 所有者模型和不变量 | 无 | `OwnerScope`、校验 helper、registry invariant tests | [steps/01-owner-model.md](steps/01-owner-model.md) | 必须 | done |
-| 02 | v17 schema 和重建脚手架 | 01 | identity-owned schema builder、rebuild/migration helpers、invariant SQL | [steps/02-schema-rebuild-scaffold.md](steps/02-schema-rebuild-scaffold.md) | 必须 | pending |
+| 02 | v17 schema 和重建脚手架 | 01 | identity-owned schema builder、rebuild/migration helpers、invariant SQL | [steps/02-schema-rebuild-scaffold.md](steps/02-schema-rebuild-scaffold.md) | 必须 | done |
 | 03 | 原子 SQL key 切换 | 02 | 活跃表和运行时 SQL 使用 `owner_identity_id` keys | [steps/03-atomic-sql-cutover.md](steps/03-atomic-sql-cutover.md) | 必须 | pending |
 | 04 | 稳定消息会话 | 03 | 稳定 `conversation_id`，direct conversation key 不再包含本地 owner DID | [steps/04-message-conversations.md](steps/04-message-conversations.md) | 必须 | pending |
 | 05 | 联系人和关系事件 | 03 | identity-owned contact 和 relationship semantics | [steps/05-contacts-relationships.md](steps/05-contacts-relationships.md) | 必须 | pending |
@@ -124,8 +124,8 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 | 步骤 | 状态 | 分支 | 开始 | 完成 | 提交 | 审查证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
 | 01 | done | `feature/release-0526/db-refactor-in-async` | 2026-05-30T16:18:42Z | 2026-05-30T16:30:27Z | 步骤 01 聚焦提交：`im-core: add local owner scope invariants` | 提交前审查：修复 registry snapshot 在应用 `default_identity` 标志前校验可能误判重复默认身份的问题；复查未修改 schema、SQL conflict target、secure discovery 或 public secure DTO。 | `cargo fmt --all --check` 通过；`cargo test -p im-core --locked owner_scope` 通过；`cargo test -p im-core --locked identity_registry` 通过；`cargo check -p im-core --locked` 通过；Secure 搜索仅命中既有 internal/profile/docs。 | 步骤 02 开始前读取步骤 02 文档和 `git status` |
-| 02 | pending | `feature/release-0526/db-refactor-in-async` | | | | | | 开始步骤 02 |
-| 03 | pending | `feature/release-0526/db-refactor-in-async` | | | | | | 等待步骤 02 |
+| 02 | done | `feature/release-0526/db-refactor-in-async` | 2026-05-30T16:34:45Z | 2026-05-30T16:45:37Z | 步骤 02 聚焦提交：`im-core: scaffold identity-owned local state schema` | 提交前审查：v17 schema helper 未被 `ensure_schema` 调用，活跃 `SCHEMA_VERSION` 保持 16；v17 主键使用 `owner_identity_id`；unresolved rebuild row 只返回 table/key/reason；未新增日志或 secure discovery/public DTO。 | `cargo fmt --all --check` 通过；`cargo test -p im-core --locked local_state_schema_v17` 通过；`cargo test -p im-core --locked owner_invariant` 通过；`cargo check -p im-core --locked` 通过；`rg "println!|eprintln!|tracing::|log::" crates/im-core/src/internal/local_state crates/im-core/src/internal/identity_recover_local_state` 无命中。 | 步骤 03 开始前读取步骤 03 文档和 `git status` |
+| 03 | pending | `feature/release-0526/db-refactor-in-async` | | | | | | 开始步骤 03 |
 | 04 | pending | `feature/release-0526/db-refactor-in-async` | | | | | | 等待步骤 03 |
 | 05 | pending | `feature/release-0526/db-refactor-in-async` | | | | | | 等待步骤 03 |
 | 06 | pending | `feature/release-0526/db-refactor-in-async` | | | | | | 等待步骤 03 |
