@@ -745,10 +745,10 @@ runtime 执行任务
 核心设计原则：
 
 ```text
-ANP message 协议需要一等支持 text / attachment / structured_json；
+ANP message 协议需要一等支持 text / attachment / payload；
 普通文本使用 text body；
 附件使用 attachment body；
-结构化命令和状态使用 structured_json body；
+结构化命令和状态使用 body.payload；
 不要把 JSON 命令藏在普通文本里；
 不要把控制语义藏在 annotations 里。
 ```
@@ -760,10 +760,10 @@ ANP message 协议需要一等支持 text / attachment / structured_json；
 该独立工作项至少需要覆盖：
 
 1. ANP message body 增加结构化 JSON 类型，能够和 text、attachment 并列。
-2. wire 层明确 `content_type`、`body.kind`、`body.text`、`body.attachment`、`body.json` 或等价字段的关系。
+2. wire 层明确 `content_type`、`body.kind`、`body.text`、`body.attachment`、`body.payload` 或等价字段的关系。
 3. direct、direct-e2ee、group、未来 group-e2ee 都能表达业务内容类型。
 4. SDK public API 增加发送和接收结构化 JSON 的接口。
-5. im-core Interface / DTO 增加 structured JSON body，并保留 unsupported/raw 兼容路径。
+5. im-core Interface / DTO 增加 JSON payload body，并保留 unsupported/raw 兼容路径。
 6. 本地消息投影、history、inbox、realtime event 能保留结构化 JSON payload。
 7. App、daemon、CLI adapter 对结构化 JSON 的 schema version、错误码、兼容策略达成一致。
 
@@ -871,7 +871,7 @@ application/vnd.awiki.agent-command+json
     },
     "body": {
       "conversation_id": "conv_daemon_001",
-      "structured_json": {
+      "payload": {
         "schema": "awiki.agent.command.v1",
         "command_id": "cmd_001",
         "command": "runtime.agent.create",
@@ -896,8 +896,8 @@ application/vnd.awiki.agent-command+json
 解释：
 
 1. `content_type` 明确表示这是 Awiki agent command。
-2. `body.structured_json` 是 JSON 对象，字段名以最终 ANP / SDK 协议为准。
-3. `structured_json.schema` 用于版本识别。
+2. `body.payload` 是 JSON 对象。
+3. `payload.schema` 用于版本识别。
 4. `command` 用于路由到 daemon management / runtime task / message operation。
 5. `registration_token` 等敏感字段应优先使用 direct-e2ee 承载。
 
@@ -954,7 +954,7 @@ application/anp-direct-cipher+json
 ```json
 {
   "application_content_type": "application/vnd.awiki.agent-command+json",
-  "structured_json": {
+  "payload": {
     "schema": "awiki.agent.command.v1",
     "command": "runtime.agent.create",
     "args": { }
@@ -975,7 +975,7 @@ Direct E2EE：外层 content_type 表示 cipher envelope，内层 application_co
 收到 direct.incoming
   → 解密，如需要
   → 读取 application_content_type 或 meta.content_type
-  → 读取 text / attachment / structured_json body
+  → 读取 text / attachment / payload body
   → 判断 sender_did 是否为 controller_did
   → 根据 content type 分发
 ```
@@ -987,7 +987,7 @@ Direct E2EE：外层 content_type 表示 cipher envelope，内层 application_co
 | `text/plain` | 作为自然语言任务执行 | 进入 inbox |
 | `application/vnd.awiki.agent-command+json` | 作为结构化命令执行 | 进入 inbox 或拒绝执行 |
 | `application/vnd.awiki.agent-status+json` | 记录状态，可展示 | 记录状态，默认不触发执行 |
-| `application/json` | 按 structured_json.schema 或兼容 schema 识别 | 进入 inbox 或按兼容规则处理 |
+| `application/json` | 按 `payload.schema` 或兼容 schema 识别 | 进入 inbox 或按兼容规则处理 |
 | unsupported | 拒绝或进入 inbox | 拒绝或进入 inbox |
 
 ### 5.6 为什么不用 annotations 承载命令
@@ -998,8 +998,8 @@ Direct E2EE：外层 content_type 表示 cipher envelope，内层 application_co
 
 ```text
 普通文本就是 text/plain；
-命令就是明确的 JSON content_type + structured_json body；
-状态就是明确的 status content_type + structured_json body。
+命令就是明确的 JSON content_type + body.payload；
+状态就是明确的 status content_type + body.payload。
 ```
 
 ---
@@ -1441,7 +1441,7 @@ high risk task             → task-scoped + worktree/container
 
 ```text
 1. controller DID 向 daemon agent 或 runtime agent 发送 JSON command
-2. daemon 解密、验签、读取 structured_json.schema / command
+2. daemon 解密、验签、读取 payload.schema / command
 3. daemon 校验 sender_did == target agent 的 controller_did
 4. daemon 根据 command 路由：
    - daemon.install_runtime
@@ -2121,10 +2121,10 @@ flowchart TB
 
 交付：
 
-1. ANP message 协议支持 structured JSON body。
+1. ANP message 协议支持 JSON payload body。
 2. direct / direct-e2ee / group 的结构化 JSON 承载规则。
 3. SDK public API 支持发送和接收结构化 JSON。
-4. im-core Interface / DTO 支持 structured JSON body。
+4. im-core Interface / DTO 支持 JSON payload body。
 5. 本地投影、history、inbox、realtime event 保留结构化 JSON payload。
 6. `application/vnd.awiki.agent-command+json` 和 `application/vnd.awiki.agent-status+json` 的 schema version 规则。
 7. 兼容旧 `application/json` 或 unsupported/raw body 的策略。
