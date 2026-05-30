@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)  
 步骤编号：05  
-状态：审查中
+状态：完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/db-refactor-in-async` |
 | 开始时间 | 2026-05-30T18:56:15Z |
-| 完成时间 | |
-| 提交 | |
-| 审查证据 | 提交前审查完成：联系人保存/目录解析/关系投影都从 `OwnerScope` 派生 owner 信息；contact update、handle binding upsert 和旧 handle 清理都有 affected-row checks；新增测试覆盖 DID snapshot 变化后一行更新、handle current uniqueness 按 owner identity scoped、相同 relationship `event_id` 可跨 owner 存储；未发现 Secure discovery 或 public secure DTO 变化；secret 搜索仅命中测试 fixture 假 token。 |
+| 完成时间 | 2026-05-30T19:11:24Z |
+| 提交 | 实现提交 `e756516`：`im-core: key contacts and relationship events by owner identity` |
+| 审查证据 | 提交前审查完成：联系人保存/目录解析/关系投影都从 `OwnerScope` 派生 owner 信息；contact update、handle binding upsert 和旧 handle 清理都有 affected-row checks；新增测试覆盖 DID snapshot 变化后一行更新、handle current uniqueness 按 owner identity scoped、相同 relationship `event_id` 可跨 owner 存储；未发现 Secure discovery 或 public secure DTO 变化；secret 搜索仅命中测试 fixture 假 token。提交后状态：分支 ahead 7，工作区干净。 |
 | 验证证据 | `CARGO_BUILD_JOBS=1 cargo test -p im-core --locked contact` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked relationship` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked --test phase2_identity_directory` 通过；`CARGO_BUILD_JOBS=1 cargo test -p im-core --locked --test phase2_relationship_directory` 通过；`CARGO_BUILD_JOBS=1 cargo check -p im-core --locked` 通过；`cargo fmt --all --check` 通过；`git diff --check` 通过；legacy SQL 搜索无命中；secure secret 搜索仅命中测试 fixture 中的 `"jwt_token":"token"`。 |
-| 下一步 | 创建步骤 05 聚焦提交。 |
+| 下一步 | 步骤 06 开始前读取步骤 06 文档和 `git status`。 |
 
 ## 2. 目标
 
