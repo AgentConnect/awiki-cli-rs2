@@ -156,6 +156,9 @@ fn count_owner_rows_by_table(
 ) -> crate::ImResult<std::collections::BTreeMap<String, i64>> {
     let mut result = zero_counts(tables);
     for table in tables {
+        if !sqlite_table_exists(connection, table)? {
+            continue;
+        }
         let count = connection
             .query_row(
                 &format!("SELECT COUNT(*) FROM {table} WHERE owner_did = ?1"),
@@ -166,6 +169,18 @@ fn count_owner_rows_by_table(
         result.insert((*table).to_string(), count);
     }
     Ok(result)
+}
+
+#[cfg(feature = "sqlite")]
+fn sqlite_table_exists(connection: &rusqlite::Connection, table: &str) -> crate::ImResult<bool> {
+    Ok(connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            rusqlite::params![table],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(crate::internal::local_state::local_state_unavailable)?
+        != 0)
 }
 
 #[cfg(feature = "sqlite")]
@@ -341,28 +356,13 @@ mod tests {
         let connection = crate::internal::local_state::open_writable(sqlite_path).unwrap();
         connection
             .execute(
-                "INSERT INTO messages (msg_id, owner_did, thread_id, stored_at)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO messages (msg_id, owner_identity_id, owner_did, thread_id, stored_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![
                     "replace-did-msg-1",
+                    "alice-id",
                     "did:wba:awiki.test:alice:e1_old",
                     "dm:alice:bob",
-                    "2026-05-25T00:00:00Z",
-                ],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO e2ee_sessions
-                 (owner_did, peer_did, session_id, send_chain_key, recv_chain_key, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    "did:wba:awiki.test:alice:e1_old",
-                    "did:wba:example.test:bob",
-                    "session-1",
-                    "send",
-                    "recv",
-                    "2026-05-25T00:00:00Z",
                     "2026-05-25T00:00:00Z",
                 ],
             )
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(plan.affected_local_state.store_rebind_counts["messages"], 1);
         assert_eq!(
             plan.affected_local_state.e2ee_cleanup_counts["e2ee_sessions"],
-            1
+            0
         );
 
         request.planned_new_did = request.identity.did.clone();

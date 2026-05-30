@@ -76,6 +76,7 @@ enum LocalStateCommand {
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
     ReplaceGroupMembers {
+        owner_identity_id: String,
         owner_did: String,
         group_id: String,
         members: Vec<super::groups::GroupMemberRecord>,
@@ -83,6 +84,7 @@ enum LocalStateCommand {
         reply: oneshot::Sender<crate::ImResult<()>>,
     },
     MarkGroupLeft {
+        owner_identity_id: String,
         owner_did: String,
         group_id: String,
         group_did: String,
@@ -261,6 +263,7 @@ enum LocalStateCommand {
     MergeRecoveredHandleLocalState {
         old_owner_dids: Vec<String>,
         new_owner_did: String,
+        final_owner_identity_id: String,
         final_credential_name: String,
         reply: oneshot::Sender<
             crate::ImResult<(
@@ -455,6 +458,7 @@ impl LocalStateDb {
 
     pub(crate) async fn replace_group_members(
         &self,
+        owner_identity_id: impl Into<String>,
         owner_did: impl Into<String>,
         group_id: impl Into<String>,
         members: Vec<super::groups::GroupMemberRecord>,
@@ -462,6 +466,7 @@ impl LocalStateDb {
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::ReplaceGroupMembers {
+            owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             group_id: group_id.into(),
             members,
@@ -474,6 +479,7 @@ impl LocalStateDb {
 
     pub(crate) async fn mark_group_left(
         &self,
+        owner_identity_id: impl Into<String>,
         owner_did: impl Into<String>,
         group_id: impl Into<String>,
         group_did: impl Into<String>,
@@ -481,6 +487,7 @@ impl LocalStateDb {
     ) -> crate::ImResult<()> {
         let (reply, receiver) = oneshot::channel();
         self.send(LocalStateCommand::MarkGroupLeft {
+            owner_identity_id: owner_identity_id.into(),
             owner_did: owner_did.into(),
             group_id: group_id.into(),
             group_did: group_did.into(),
@@ -869,6 +876,7 @@ impl LocalStateDb {
         &self,
         old_owner_dids: Vec<String>,
         new_owner_did: impl Into<String>,
+        final_owner_identity_id: impl Into<String>,
         final_credential_name: impl Into<String>,
     ) -> crate::ImResult<(
         std::collections::BTreeMap<String, i64>,
@@ -878,6 +886,7 @@ impl LocalStateDb {
         self.send(LocalStateCommand::MergeRecoveredHandleLocalState {
             old_owner_dids,
             new_owner_did: new_owner_did.into(),
+            final_owner_identity_id: final_owner_identity_id.into(),
             final_credential_name: final_credential_name.into(),
             reply,
         })
@@ -1042,6 +1051,7 @@ fn run_actor(
                 let _ = reply.send(result);
             }
             LocalStateCommand::ReplaceGroupMembers {
+                owner_identity_id,
                 owner_did,
                 group_id,
                 members,
@@ -1050,6 +1060,7 @@ fn run_actor(
             } => {
                 let result = super::groups::replace_group_members(
                     &mut connection,
+                    &owner_identity_id,
                     &owner_did,
                     &group_id,
                     &members,
@@ -1058,6 +1069,7 @@ fn run_actor(
                 let _ = reply.send(result);
             }
             LocalStateCommand::MarkGroupLeft {
+                owner_identity_id,
                 owner_did,
                 group_id,
                 group_did,
@@ -1066,6 +1078,7 @@ fn run_actor(
             } => {
                 let result = super::groups::mark_group_left(
                     &mut connection,
+                    &owner_identity_id,
                     &owner_did,
                     &group_id,
                     &group_did,
@@ -1382,6 +1395,7 @@ fn run_actor(
             LocalStateCommand::MergeRecoveredHandleLocalState {
                 old_owner_dids,
                 new_owner_did,
+                final_owner_identity_id,
                 final_credential_name,
                 reply,
             } => {
@@ -1390,6 +1404,7 @@ fn run_actor(
                         &mut connection,
                         &old_owner_dids,
                         &new_owner_did,
+                        &final_owner_identity_id,
                         &final_credential_name,
                     );
                 let _ = reply.send(result);
@@ -1461,20 +1476,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn db_actor_backfills_owner_identity_ids() {
+    async fn db_actor_backfill_owner_identity_ids_is_noop_for_v17_schema() {
         let fixture = Fixture::new();
-        {
-            let connection = super::super::open_writable(&fixture.sqlite_path()).unwrap();
-            connection
-                .execute(
-                    r#"INSERT INTO messages
-                    (msg_id, owner_did, thread_id, direction, stored_at, credential_name)
-                    VALUES ('msg-1', 'did:example:alice', 'thread-1', 'incoming',
-                    '2026-05-21T00:00:00Z', 'alice')"#,
-                    [],
-                )
-                .unwrap();
-        }
         let db = LocalStateDb::open(fixture.sqlite_path()).await.unwrap();
 
         let updated = db
@@ -1486,17 +1489,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(updated, 1);
+        assert_eq!(updated, 0);
         db.shutdown().await.unwrap();
-        let connection = rusqlite::Connection::open(fixture.sqlite_path()).unwrap();
-        let owner_identity_id: String = connection
-            .query_row(
-                "SELECT owner_identity_id FROM messages WHERE msg_id = 'msg-1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(owner_identity_id, "alice-id");
     }
 
     #[tokio::test]
@@ -1606,6 +1600,7 @@ mod tests {
         .unwrap();
 
         db.replace_group_members(
+            "alice-id",
             "did:example:alice",
             "group-1",
             vec![
@@ -1697,6 +1692,7 @@ mod tests {
         assert_eq!(active_refs, vec!["did:example:group:1"]);
 
         db.mark_group_left(
+            "alice-id",
             "did:example:alice",
             "group-1",
             "did:example:group:1",
@@ -1862,6 +1858,7 @@ mod tests {
             .merge_recovered_handle_local_state(
                 vec![old_did.to_string()],
                 new_did,
+                "alice-recovered-id",
                 "alice-recovered",
             )
             .await
@@ -1871,7 +1868,7 @@ mod tests {
         assert_eq!(e2ee_cleanup.get("e2ee_outbox"), Some(&1));
         let messages = db
             .list_conversations(
-                "alice-recovered",
+                "alice-recovered-id",
                 new_did,
                 crate::messages::ConversationQuery {
                     limit: crate::ids::PageLimit(10),

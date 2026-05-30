@@ -13,7 +13,7 @@ use records::{
 use rusqlite::Transaction;
 use sql::{
     count_rows_for_owners, delete_rows_for_owners, normalize_recovered_current_handles,
-    query_maps_with_param, query_one_map1, query_one_map2, query_one_map3, store_file_exists,
+    query_maps_with_param, query_one_map2, query_one_map3, store_file_exists,
     upsert_recovered_contact, upsert_recovered_contact_handle_binding, upsert_recovered_group,
     upsert_recovered_group_member, upsert_recovered_message, upsert_recovered_relationship_event,
     zero_counts,
@@ -35,6 +35,7 @@ pub(crate) fn merge_recovered_handle_local_state<S: AsRef<str>>(
     sqlite_path: &Path,
     old_owner_dids: &[S],
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> StoreResult<(BTreeMap<String, i64>, BTreeMap<String, i64>)> {
     if !store_file_exists(sqlite_path) {
@@ -52,6 +53,7 @@ pub(crate) fn merge_recovered_handle_local_state<S: AsRef<str>>(
         &mut connection,
         old_owner_dids,
         new_owner_did,
+        final_owner_identity_id,
         final_credential_name,
     )
 }
@@ -60,6 +62,7 @@ pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
     connection: &mut rusqlite::Connection,
     old_owner_dids: &[S],
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> StoreResult<(BTreeMap<String, i64>, BTreeMap<String, i64>)> {
     let mut store_merge = zero_counts(STORE_MERGE_TABLES);
@@ -80,6 +83,7 @@ pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
             &owners,
             &owner_set,
             new_owner_did,
+            final_owner_identity_id,
             final_credential_name,
         )?,
     );
@@ -89,6 +93,7 @@ pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
             &transaction,
             &owners,
             new_owner_did,
+            final_owner_identity_id,
             final_credential_name,
             &mut affected_handles,
         )?,
@@ -99,6 +104,7 @@ pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
             &transaction,
             &owners,
             new_owner_did,
+            final_owner_identity_id,
             final_credential_name,
             &mut affected_handles,
         )?,
@@ -110,6 +116,7 @@ pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
             &transaction,
             &owners,
             new_owner_did,
+            final_owner_identity_id,
             final_credential_name,
         )?,
     );
@@ -120,6 +127,7 @@ pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
             &owners,
             &owner_set,
             new_owner_did,
+            final_owner_identity_id,
             final_credential_name,
         )?,
     );
@@ -130,6 +138,7 @@ pub(crate) fn merge_recovered_handle_local_state_for_connection<S: AsRef<str>>(
             &owners,
             &owner_set,
             new_owner_did,
+            final_owner_identity_id,
             final_credential_name,
         )?,
     );
@@ -143,6 +152,7 @@ fn merge_recovered_messages(
     old_owner_dids: &[String],
     old_owner_set: &BTreeSet<String>,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> StoreResult<i64> {
     let mut count = 0;
@@ -158,12 +168,13 @@ fn merge_recovered_messages(
                 &row,
                 old_owner_set,
                 new_owner_did,
+                final_owner_identity_id,
                 final_credential_name,
             );
             if let Some(existing) = query_one_map2(
                 transaction,
-                "SELECT * FROM messages WHERE owner_did = ?1 AND msg_id = ?2",
-                new_owner_did,
+                "SELECT * FROM messages WHERE owner_identity_id = ?1 AND msg_id = ?2",
+                final_owner_identity_id,
                 &record.msg_id,
             )? {
                 record = merge_recovered_message(&existing, record);
@@ -179,6 +190,7 @@ fn merge_recovered_contacts(
     transaction: &Transaction<'_>,
     old_owner_dids: &[String],
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
     affected_handles: &mut BTreeSet<String>,
 ) -> StoreResult<i64> {
@@ -191,15 +203,19 @@ fn merge_recovered_contacts(
         )?;
         count += rows.len() as i64;
         for row in rows {
-            let mut record =
-                normalize_recovered_contact_row(&row, new_owner_did, final_credential_name);
+            let mut record = normalize_recovered_contact_row(
+                &row,
+                new_owner_did,
+                final_owner_identity_id,
+                final_credential_name,
+            );
             if !record.handle.trim().is_empty() {
                 affected_handles.insert(record.handle.trim().to_string());
             }
             if let Some(existing) = query_one_map2(
                 transaction,
-                "SELECT * FROM contacts WHERE owner_did = ?1 AND did = ?2",
-                new_owner_did,
+                "SELECT * FROM contacts WHERE owner_identity_id = ?1 AND did = ?2",
+                final_owner_identity_id,
                 &record.did,
             )? {
                 record = merge_recovered_contact(&existing, record);
@@ -215,6 +231,7 @@ fn merge_recovered_contact_handle_bindings(
     transaction: &Transaction<'_>,
     old_owner_dids: &[String],
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
     affected_handles: &mut BTreeSet<String>,
 ) -> StoreResult<i64> {
@@ -230,6 +247,7 @@ fn merge_recovered_contact_handle_bindings(
             let mut record = normalize_recovered_contact_handle_binding_row(
                 &row,
                 new_owner_did,
+                final_owner_identity_id,
                 final_credential_name,
             );
             if !record.handle.trim().is_empty() {
@@ -237,8 +255,8 @@ fn merge_recovered_contact_handle_bindings(
             }
             if let Some(existing) = query_one_map3(
                 transaction,
-                "SELECT * FROM contact_handle_bindings WHERE owner_did = ?1 AND handle = ?2 AND did = ?3",
-                new_owner_did,
+                "SELECT * FROM contact_handle_bindings WHERE owner_identity_id = ?1 AND handle = ?2 AND did = ?3",
+                final_owner_identity_id,
                 &record.handle,
                 &record.did,
             )? {
@@ -255,6 +273,7 @@ fn merge_recovered_relationship_events(
     transaction: &Transaction<'_>,
     old_owner_dids: &[String],
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> StoreResult<i64> {
     let mut count = 0;
@@ -269,11 +288,13 @@ fn merge_recovered_relationship_events(
             let mut record = normalize_recovered_relationship_event_row(
                 &row,
                 new_owner_did,
+                final_owner_identity_id,
                 final_credential_name,
             );
-            if let Some(existing) = query_one_map1(
+            if let Some(existing) = query_one_map2(
                 transaction,
-                "SELECT * FROM relationship_events WHERE event_id = ?1",
+                "SELECT * FROM relationship_events WHERE owner_identity_id = ?1 AND event_id = ?2",
+                final_owner_identity_id,
                 &record.event_id,
             )? {
                 record = merge_recovered_relationship_event(&existing, record);
@@ -290,6 +311,7 @@ fn merge_recovered_groups(
     old_owner_dids: &[String],
     old_owner_set: &BTreeSet<String>,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> StoreResult<i64> {
     let mut count = 0;
@@ -305,12 +327,13 @@ fn merge_recovered_groups(
                 &row,
                 old_owner_set,
                 new_owner_did,
+                final_owner_identity_id,
                 final_credential_name,
             );
             if let Some(existing) = query_one_map2(
                 transaction,
-                "SELECT * FROM groups WHERE owner_did = ?1 AND group_id = ?2",
-                new_owner_did,
+                "SELECT * FROM groups WHERE owner_identity_id = ?1 AND group_id = ?2",
+                final_owner_identity_id,
                 &record.group_id,
             )? {
                 record = merge_recovered_group(&existing, record);
@@ -327,6 +350,7 @@ fn merge_recovered_group_members(
     old_owner_dids: &[String],
     old_owner_set: &BTreeSet<String>,
     new_owner_did: &str,
+    final_owner_identity_id: &str,
     final_credential_name: &str,
 ) -> StoreResult<i64> {
     let mut count = 0;
@@ -342,12 +366,13 @@ fn merge_recovered_group_members(
                 &row,
                 old_owner_set,
                 new_owner_did,
+                final_owner_identity_id,
                 final_credential_name,
             );
             if let Some(existing) = query_one_map3(
                 transaction,
-                "SELECT * FROM group_members WHERE owner_did = ?1 AND group_id = ?2 AND user_id = ?3",
-                new_owner_did,
+                "SELECT * FROM group_members WHERE owner_identity_id = ?1 AND group_id = ?2 AND user_id = ?3",
+                final_owner_identity_id,
                 &record.group_id,
                 &record.user_id,
             )? {
@@ -497,6 +522,7 @@ mod tests {
             &sqlite_path,
             &["did:old"],
             "did:new",
+            "final-owner-id",
             "final-credential",
         )
         .expect("missing database is a soft no-op");
@@ -520,6 +546,7 @@ mod tests {
             &sqlite_path,
             &["did:old"],
             "did:new",
+            "final-owner-id",
             "final-credential",
         )
         .expect("existing empty database should be migrated before merge");
@@ -533,7 +560,7 @@ mod tests {
                 .expect("schema version"),
             crate::internal::local_state::schema::SCHEMA_VERSION
         );
-        for table in STORE_KEYS.iter().chain(E2EE_KEYS.iter()) {
+        for table in STORE_KEYS.iter().chain(["e2ee_outbox"].iter()) {
             assert_table_exists(&verify, table);
         }
     }
@@ -556,6 +583,7 @@ mod tests {
                 "did:owner:old-1",
             ],
             "did:owner:new",
+            "final-owner-id",
             "final-credential",
         )
         .expect("merge recovered local state");
@@ -665,6 +693,7 @@ mod tests {
             &sqlite_path,
             &["did:owner:old"],
             "did:owner:new",
+            "final-owner-id",
             "final-credential",
         )
         .expect("merge recovered conflicts");
@@ -807,6 +836,7 @@ mod tests {
             &sqlite_path,
             &["did:owner:old-a", "did:owner:old-z", "did:owner:old-old"],
             "did:owner:new",
+            "final-owner-id",
             "final-credential",
         )
         .expect("merge contacts");
@@ -849,12 +879,13 @@ mod tests {
             .execute(
                 r#"
 INSERT INTO relationship_events (
-    event_id, owner_did, target_did, target_handle, event_type, source_type,
+    event_id, owner_identity_id, owner_did, target_did, target_handle, event_type, source_type,
     reason, score, status, created_at, updated_at, metadata, credential_name
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
 "#,
                 rusqlite::params![
                     "evt-global",
+                    owner_identity_id("did:owner:old"),
                     "did:owner:old",
                     "did:peer:target",
                     "target",
@@ -876,6 +907,7 @@ INSERT INTO relationship_events (
             &sqlite_path,
             &["did:owner:old"],
             "did:owner:new",
+            "final-owner-id",
             "final-credential",
         )
         .expect("merge relationship event");
@@ -918,12 +950,13 @@ INSERT INTO relationship_events (
         connection.execute(
             r#"
 INSERT INTO messages (
-    msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did,
     content_type, content, sent_at, stored_at, credential_name
-) VALUES (?1, ?2, ?3, 0, ?4, ?5, 'text', ?6, ?7, ?7, ?8)
+) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, 'text', ?7, ?8, ?8, ?9)
 "#,
             rusqlite::params![
                 "msg-old-1",
+                owner_identity_id("did:owner:old-1"),
                 "did:owner:old-1",
                 expected_thread_id("did:owner:old-1", "did:peer:bob", ""),
                 "did:peer:bob",
@@ -936,12 +969,13 @@ INSERT INTO messages (
         connection.execute(
             r#"
 INSERT INTO messages (
-    msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did,
     content_type, content, sent_at, stored_at, credential_name
-) VALUES (?1, ?2, ?3, 1, ?4, ?5, 'text', ?6, ?7, ?7, ?8)
+) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, 'text', ?7, ?8, ?8, ?9)
 "#,
             rusqlite::params![
                 "msg-old-2",
+                owner_identity_id("did:owner:old-2"),
                 "did:owner:old-2",
                 expected_thread_id("did:owner:old-2", "did:peer:bob", ""),
                 "did:owner:old-2",
@@ -954,12 +988,13 @@ INSERT INTO messages (
         connection.execute(
             r#"
 INSERT INTO messages (
-    msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did,
     content_type, content, sent_at, stored_at, credential_name
-) VALUES (?1, ?2, ?3, 0, ?4, ?5, 'text', ?6, ?7, ?7, ?8)
+) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, 'text', ?7, ?8, ?8, ?9)
 "#,
             rusqlite::params![
                 "msg-other",
+                owner_identity_id("did:owner:other"),
                 "did:owner:other",
                 expected_thread_id("did:owner:other", "did:peer:bob", ""),
                 "did:peer:bob",
@@ -998,12 +1033,13 @@ INSERT INTO messages (
         connection.execute(
             r#"
 INSERT INTO relationship_events (
-    event_id, owner_did, target_did, target_handle, event_type, status,
+    event_id, owner_identity_id, owner_did, target_did, target_handle, event_type, status,
     created_at, updated_at, credential_name
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)
 "#,
             rusqlite::params![
                 "evt-1",
+                owner_identity_id("did:owner:old-1"),
                 "did:owner:old-1",
                 "did:peer:old",
                 "alice",
@@ -1016,11 +1052,12 @@ INSERT INTO relationship_events (
         connection.execute(
             r#"
 INSERT INTO groups (
-    owner_did, group_id, group_did, name, group_mode, group_owner_did,
+    owner_identity_id, owner_did, group_id, group_did, name, group_mode, group_owner_did,
     membership_status, last_message_at, stored_at, credential_name
-) VALUES (?1, ?2, ?3, ?4, 'general', ?5, 'active', ?6, ?6, ?7)
+) VALUES (?1, ?2, ?3, ?4, ?5, 'general', ?6, 'active', ?7, ?7, ?8)
 "#,
             rusqlite::params![
+                owner_identity_id("did:owner:old-2"),
                 "did:owner:old-2",
                 "group:one",
                 "did:group:one",
@@ -1033,11 +1070,12 @@ INSERT INTO groups (
         connection.execute(
             r#"
 INSERT INTO group_members (
-    owner_did, group_id, user_id, member_did, member_handle, status,
+    owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, status,
     sent_message_count, last_synced_at, credential_name
-) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 3, ?6, ?7)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', 3, ?7, ?8)
 "#,
             rusqlite::params![
+                owner_identity_id("did:owner:old-2"),
                 "did:owner:old-2",
                 "group:one",
                 "user-z",
@@ -1054,6 +1092,7 @@ INSERT INTO group_members (
             "did:peer:bob",
             "old secret",
         )?;
+        ensure_legacy_e2ee_sessions_table(connection)?;
         seed_e2ee_session(connection, "did:owner:old-2", "did:peer:bob", "session-old")?;
         seed_e2ee_outbox(
             connection,
@@ -1133,9 +1172,9 @@ INSERT INTO group_members (
         connection.execute(
             r#"
 INSERT INTO relationship_events (
-    event_id, owner_did, target_did, target_handle, event_type, source_type,
+    event_id, owner_identity_id, owner_did, target_did, target_handle, event_type, source_type,
     reason, score, status, created_at, updated_at, credential_name
-) VALUES ('evt-conflict', 'did:owner:old', 'did:peer:conflict', 'alice', 'follow', 'contacts',
+) VALUES ('evt-conflict', 'old-id', 'did:owner:old', 'did:peer:conflict', 'alice', 'follow', 'contacts',
           'old reason', 2.5, 'pending', '2026-01-02T00:00:00Z', '2026-01-03T00:00:00Z', 'old-credential')
 "#,
             [],
@@ -1192,13 +1231,14 @@ INSERT INTO relationship_events (
         connection.execute(
             r#"
 INSERT INTO messages (
-    msg_id, owner_did, thread_id, direction, sender_did, receiver_did,
+    msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did,
     content_type, content, title, server_seq, sent_at, stored_at, is_e2ee,
     is_read, sender_name, metadata, credential_name
-) VALUES (?1, ?2, ?3, 0, ?4, ?5, 'text', ?6, 'incoming title', ?7, ?8, ?8, ?9, ?10, 'sender', '{"kind":"msg"}', ?11)
+) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, 'text', ?7, 'incoming title', ?8, ?9, ?9, ?10, ?11, 'sender', '{"kind":"msg"}', ?12)
 "#,
             rusqlite::params![
                 "msg-conflict",
+                owner_identity_id(owner_did),
                 owner_did,
                 expected_thread_id(owner_did, "did:peer:conflict", ""),
                 sender_did,
@@ -1226,10 +1266,11 @@ INSERT INTO messages (
         connection.execute(
             r#"
 INSERT INTO contacts (
-    owner_did, did, name, handle, followed, messaged, first_seen_at, last_seen_at, metadata
-) VALUES (?1, 'did:peer:conflict', ?2, 'alice', ?3, ?4, ?5, ?6, '{"kind":"contact"}')
+    owner_identity_id, owner_did, did, name, handle, followed, messaged, first_seen_at, last_seen_at, metadata
+) VALUES (?1, ?2, 'did:peer:conflict', ?3, 'alice', ?4, ?5, ?6, ?7, '{"kind":"contact"}')
 "#,
             rusqlite::params![
+                owner_identity_id(owner_did),
                 owner_did,
                 name,
                 if followed { 1 } else { 0 },
@@ -1251,10 +1292,16 @@ INSERT INTO contacts (
         connection.execute(
             r#"
 INSERT INTO contact_handle_bindings (
-    owner_did, handle, did, is_current, first_seen_at, last_seen_at, metadata, credential_name
-) VALUES (?1, 'alice', 'did:peer:conflict', 1, ?2, ?3, ?4, 'old-credential')
+    owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, metadata, credential_name
+) VALUES (?1, ?2, 'alice', 'did:peer:conflict', 1, ?3, ?4, ?5, 'old-credential')
 "#,
-            rusqlite::params![owner_did, first_seen_at, last_seen_at, metadata],
+            rusqlite::params![
+                owner_identity_id(owner_did),
+                owner_did,
+                first_seen_at,
+                last_seen_at,
+                metadata
+            ],
         )?;
         Ok(())
     }
@@ -1271,12 +1318,13 @@ INSERT INTO contact_handle_bindings (
         connection.execute(
             r#"
 INSERT INTO groups (
-    owner_did, group_id, group_did, name, group_mode, group_owner_did,
+    owner_identity_id, owner_did, group_id, group_did, name, group_mode, group_owner_did,
     membership_status, member_count, remote_created_at, remote_updated_at,
     stored_at, credential_name
-) VALUES (?1, 'group-conflict', 'did:group:conflict', ?2, 'general', ?3, 'active', ?4, ?5, ?6, ?6, 'old-credential')
+) VALUES (?1, ?2, 'group-conflict', 'did:group:conflict', ?3, 'general', ?4, 'active', ?5, ?6, ?7, ?7, 'old-credential')
 "#,
             rusqlite::params![
+                owner_identity_id(owner_did),
                 owner_did,
                 name,
                 group_owner_did,
@@ -1299,11 +1347,12 @@ INSERT INTO groups (
         connection.execute(
             r#"
 INSERT INTO group_members (
-    owner_did, group_id, user_id, member_did, member_handle, status,
+    owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, status,
     joined_at, sent_message_count, last_synced_at, credential_name
-) VALUES (?1, 'group-conflict', 'user-conflict', ?2, 'member', 'active', ?3, ?4, ?5, 'old-credential')
+) VALUES (?1, ?2, 'group-conflict', 'user-conflict', ?3, 'member', 'active', ?4, ?5, ?6, 'old-credential')
 "#,
             rusqlite::params![
+                owner_identity_id(owner_did),
                 owner_did,
                 member_did,
                 joined_at,
@@ -1325,18 +1374,32 @@ INSERT INTO group_members (
         connection.execute(
             r#"
 INSERT INTO contacts (
-    owner_did, did, handle, first_seen_at, last_seen_at
-) VALUES (?1, ?2, ?3, ?4, ?5)
+    owner_identity_id, owner_did, did, handle, first_seen_at, last_seen_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 "#,
-            rusqlite::params![owner_did, did, handle, first_seen_at, last_seen_at],
+            rusqlite::params![
+                owner_identity_id(owner_did),
+                owner_did,
+                did,
+                handle,
+                first_seen_at,
+                last_seen_at
+            ],
         )?;
         connection.execute(
             r#"
 INSERT INTO contact_handle_bindings (
-    owner_did, handle, did, is_current, first_seen_at, last_seen_at, credential_name
-) VALUES (?1, ?2, ?3, 1, ?4, ?5, 'old-credential')
+    owner_identity_id, owner_did, handle, did, is_current, first_seen_at, last_seen_at, credential_name
+) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, 'old-credential')
 "#,
-            rusqlite::params![owner_did, handle, did, first_seen_at, last_seen_at],
+            rusqlite::params![
+                owner_identity_id(owner_did),
+                owner_did,
+                handle,
+                did,
+                first_seen_at,
+                last_seen_at
+            ],
         )?;
         Ok(())
     }
@@ -1351,10 +1414,16 @@ INSERT INTO contact_handle_bindings (
         connection.execute(
             r#"
 INSERT INTO e2ee_outbox (
-    outbox_id, owner_did, peer_did, plaintext, created_at, updated_at, credential_name
-) VALUES (?1, ?2, ?3, ?4, '2026-04-20T10:00:00Z', '2026-04-20T10:00:00Z', 'old-credential')
+    outbox_id, owner_identity_id, owner_did, peer_did, plaintext, created_at, updated_at, credential_name
+) VALUES (?1, ?2, ?3, ?4, ?5, '2026-04-20T10:00:00Z', '2026-04-20T10:00:00Z', 'old-credential')
 "#,
-            rusqlite::params![outbox_id, owner_did, peer_did, plaintext],
+            rusqlite::params![
+                outbox_id,
+                owner_identity_id(owner_did),
+                owner_did,
+                peer_did,
+                plaintext
+            ],
         )?;
         Ok(())
     }
@@ -1378,8 +1447,47 @@ INSERT INTO e2ee_sessions (
         Ok(())
     }
 
+    fn ensure_legacy_e2ee_sessions_table(connection: &Connection) -> rusqlite::Result<()> {
+        connection.execute_batch(
+            r#"
+CREATE TABLE IF NOT EXISTS e2ee_sessions (
+    owner_did        TEXT NOT NULL DEFAULT '',
+    peer_did         TEXT NOT NULL,
+    session_id       TEXT NOT NULL,
+    is_initiator     INTEGER NOT NULL DEFAULT 0,
+    send_chain_key   TEXT NOT NULL,
+    recv_chain_key   TEXT NOT NULL,
+    send_seq         INTEGER NOT NULL DEFAULT 0,
+    recv_seq         INTEGER NOT NULL DEFAULT 0,
+    expires_at       REAL,
+    created_at       TEXT NOT NULL,
+    active_at        TEXT,
+    peer_confirmed   INTEGER NOT NULL DEFAULT 0,
+    credential_name  TEXT NOT NULL DEFAULT '',
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (owner_did, peer_did),
+    UNIQUE (owner_did, session_id)
+);
+"#,
+        )
+    }
+
     fn create_database(sqlite_path: &Path) -> Connection {
         crate::internal::local_state::open_writable(sqlite_path).expect("open database")
+    }
+
+    fn owner_identity_id(owner_did: &str) -> &'static str {
+        match owner_did {
+            "did:owner:new" => "final-owner-id",
+            "did:owner:old" => "old-id",
+            "did:owner:old-1" => "old-1-id",
+            "did:owner:old-2" => "old-2-id",
+            "did:owner:old-a" => "old-a-id",
+            "did:owner:old-z" => "old-z-id",
+            "did:owner:old-old" => "old-old-id",
+            "did:owner:other" => "other-id",
+            _ => "test-owner-id",
+        }
     }
 
     fn assert_zero_counts(counts: &BTreeMap<String, i64>, keys: &[&str]) {

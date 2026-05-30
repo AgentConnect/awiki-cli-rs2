@@ -56,21 +56,19 @@ SELECT
     m.credential_name
 FROM threads t
 LEFT JOIN messages m
-  ON COALESCE(m.owner_identity_id, '') = COALESCE(t.owner_identity_id, '')
- AND m.owner_did = t.owner_did
+  ON m.owner_identity_id = t.owner_identity_id
  AND m.thread_id = t.thread_id
  AND COALESCE(m.sent_at, m.stored_at) = t.last_message_at
  AND m.msg_id = (
      SELECT m2.msg_id
      FROM messages m2
-     WHERE COALESCE(m2.owner_identity_id, '') = COALESCE(t.owner_identity_id, '')
-       AND m2.owner_did = t.owner_did
+     WHERE m2.owner_identity_id = t.owner_identity_id
        AND m2.thread_id = t.thread_id
        AND COALESCE(m2.sent_at, m2.stored_at) = t.last_message_at
      ORDER BY m2.msg_id DESC
      LIMIT 1
  )
-WHERE (t.owner_identity_id = ?1 OR ((t.owner_identity_id IS NULL OR TRIM(t.owner_identity_id) = '') AND t.owner_did = ?2))"#,
+WHERE t.owner_identity_id = ?1"#,
     );
     if query.unread_only {
         statement.push_str(" AND t.unread_count > 0");
@@ -84,15 +82,15 @@ WHERE (t.owner_identity_id = ?1 OR ((t.owner_identity_id IS NULL OR TRIM(t.owner
     statement.push_str(
         r#"
 ORDER BY t.last_message_at DESC, t.thread_id ASC
-LIMIT ?3"#,
+LIMIT ?2"#,
     );
-    let owner_identity_id = normalize_owner_identity_id(owner_identity_id);
-    let owner = normalize_owner_did(owner_did);
+    let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
+    let _owner = normalize_owner_did(owner_did);
     let mut statement = connection
         .prepare(&statement)
         .map_err(super::local_state_unavailable)?;
     let rows = statement
-        .query_map((&owner_identity_id, &owner, limit), |row| {
+        .query_map((&owner_identity_id, limit), |row| {
             let msg_id = row.get::<_, Option<String>>("msg_id")?.unwrap_or_default();
             let last_message = if msg_id.trim().is_empty() {
                 None
@@ -196,6 +194,18 @@ fn normalize_owner_identity_id(value: &str) -> String {
     value.trim().to_string()
 }
 
+#[cfg(feature = "sqlite")]
+fn required_owner_identity_id(value: &str) -> crate::ImResult<String> {
+    let value = normalize_owner_identity_id(value);
+    if value.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("owner_identity_id".to_owned()),
+            "owner_identity_id is required",
+        ));
+    }
+    Ok(value)
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
@@ -207,6 +217,7 @@ mod tests {
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         seed_message(
             &db,
+            "alice-id",
             "did:example:alice",
             "direct-old",
             "dm:alice:bob",
@@ -220,6 +231,7 @@ mod tests {
         );
         seed_message(
             &db,
+            "alice-id",
             "did:example:alice",
             "direct-new",
             "dm:alice:bob",
@@ -233,6 +245,7 @@ mod tests {
         );
         seed_message(
             &db,
+            "alice-id",
             "did:example:alice",
             "group-new",
             "group:group-1",
@@ -246,6 +259,7 @@ mod tests {
         );
         seed_message(
             &db,
+            "other-id",
             "did:example:other",
             "other-msg",
             "dm:other:bob",
@@ -258,8 +272,9 @@ mod tests {
             0,
         );
 
-        let all = list_conversations(
+        let all = list_conversations_for_owner_identity(
             &db,
+            "alice-id",
             "did:example:alice",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
@@ -282,8 +297,9 @@ mod tests {
         assert_eq!(all[1].last_content, "new");
         assert_eq!(all[1].last_message.as_ref().unwrap().msg_id, "direct-new");
 
-        let direct_unread = list_conversations(
+        let direct_unread = list_conversations_for_owner_identity(
             &db,
+            "alice-id",
             "did:example:alice",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
@@ -296,8 +312,9 @@ mod tests {
         assert_eq!(direct_unread.len(), 1);
         assert_eq!(direct_unread[0].thread_id, "dm:alice:bob");
 
-        let none = list_conversations(
+        let none = list_conversations_for_owner_identity(
             &db,
+            "alice-id",
             "did:example:alice",
             &crate::messages::ConversationQuery {
                 limit: crate::ids::PageLimit(10),
@@ -312,6 +329,7 @@ mod tests {
 
     fn seed_message(
         db: &Connection,
+        owner_identity_id: &str,
         owner: &str,
         msg_id: &str,
         thread_id: &str,
@@ -326,11 +344,12 @@ mod tests {
         db.execute(
             r#"
 INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
+    (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, receiver_did, group_id, group_did,
      content_type, content, sent_at, stored_at, is_read)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, 'text/plain', ?9, ?10, ?10, ?11)"#,
             (
                 msg_id,
+                owner_identity_id,
                 owner,
                 thread_id,
                 direction,
@@ -346,7 +365,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
     }
 
     #[test]
-    fn local_state_owner_conversations_match_identity_and_legacy_fallback() {
+    fn local_state_owner_conversations_match_identity_without_legacy_fallback() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         seed_identity_message(
@@ -360,11 +379,11 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
         );
         seed_identity_message(
             &db,
-            "",
+            "mallory-id",
             "did:alice-new",
-            "legacy",
+            "same-did-other",
             "dm:alice:carol",
-            "legacy",
+            "same-did-other",
             "2026-05-21T00:00:03Z",
         );
         seed_identity_message(
@@ -395,7 +414,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 'text/plain', ?8, ?9, ?9, ?10)"#,
                 .iter()
                 .map(|record| record.thread_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["dm:alice:carol", "dm:alice:bob"]
+            vec!["dm:alice:bob"]
         );
     }
 
@@ -416,11 +435,7 @@ INSERT INTO messages
 VALUES (?1, ?2, ?3, ?4, 0, 'did:example:bob', ?3, 'text/plain', ?5, ?6, ?6, 0)"#,
             (
                 msg_id,
-                if owner_identity_id.is_empty() {
-                    None
-                } else {
-                    Some(owner_identity_id)
-                },
+                owner_identity_id,
                 owner_did,
                 thread_id,
                 content,

@@ -359,12 +359,18 @@ async fn finish_recover_with_local_finalize_async(
     })??;
     let old_dids = saved.plan.old_owner_dids_in_merge_order();
     let new_did = saved.stored.did.as_str().to_string();
+    let final_owner_identity_id = saved.stored.unique_id.clone();
     let final_identity_name = saved.plan.final_identity_name.clone();
     let (store_merge_counts, e2ee_cleanup_counts) = core
         .inner()
         .local_state_db()
         .await?
-        .merge_recovered_handle_local_state(old_dids, new_did, final_identity_name)
+        .merge_recovered_handle_local_state(
+            old_dids,
+            new_did,
+            final_owner_identity_id,
+            final_identity_name,
+        )
         .await?;
     crate::internal::runtime::worker::run_blocking(move || {
         finish_saved_recover_with_local_finalize(
@@ -396,6 +402,7 @@ fn finish_recover_with_local_finalize(
             &core.inner().sdk_paths().local_state.sqlite_path,
             &old_dids,
             &new_did,
+            &saved.stored.unique_id,
             &saved.plan.final_identity_name,
         )?;
     finish_saved_recover_with_local_finalize(

@@ -132,6 +132,7 @@ pub(crate) fn project_group_members(
     };
     let _ = crate::internal::local_state::groups::replace_group_members(
         &mut connection,
+        client.current_identity().id.as_str(),
         client.did().as_str(),
         &group_storage_key(group_did),
         &members,
@@ -174,6 +175,7 @@ pub(crate) async fn project_group_members_async(
         .local_state_db()
         .await?
         .replace_group_members(
+            client.current_identity().id.as_str(),
             client.did().as_str(),
             group_storage_key(group_did),
             members,
@@ -261,6 +263,7 @@ pub(crate) fn project_group_left(client: &crate::core::ImClient, group_did: &str
     };
     let _ = crate::internal::local_state::groups::mark_group_left(
         &mut connection,
+        client.current_identity().id.as_str(),
         client.did().as_str(),
         &group_storage_key(group_did),
         group_did,
@@ -284,6 +287,7 @@ pub(crate) async fn project_group_left_async(
         .local_state_db()
         .await?
         .mark_group_left(
+            client.current_identity().id.as_str(),
             client.did().as_str(),
             group_storage_key(group_did),
             group_did,

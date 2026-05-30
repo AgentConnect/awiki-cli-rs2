@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(crate) const SCHEMA_VERSION: i64 = 16;
+pub(crate) const SCHEMA_VERSION: i64 = 17;
 pub(crate) const IDENTITY_OWNED_SCHEMA_VERSION: i64 = 17;
 
 const V6_TABLES_SQL: &str = r#"
@@ -502,27 +502,24 @@ SELECT
     SUM(CASE WHEN is_read = 0 AND direction = 0 THEN 1 ELSE 0 END) AS unread_count,
     MAX(COALESCE(sent_at, stored_at)) AS last_message_at,
     (SELECT m2.content FROM messages m2
-     WHERE COALESCE(m2.owner_identity_id, '') = COALESCE(m.owner_identity_id, '')
-       AND m2.owner_did = m.owner_did
+     WHERE m2.owner_identity_id = m.owner_identity_id
        AND m2.thread_id = m.thread_id
      ORDER BY COALESCE(m2.sent_at, m2.stored_at) DESC
      LIMIT 1) AS last_content
 FROM messages m
-GROUP BY owner_identity_id, owner_did, thread_id"#,
+GROUP BY owner_identity_id, thread_id"#,
     r#"CREATE VIEW IF NOT EXISTS inbox AS
 SELECT * FROM messages WHERE direction = 0
-    ORDER BY owner_did, COALESCE(sent_at, stored_at) DESC"#,
+    ORDER BY owner_identity_id, COALESCE(sent_at, stored_at) DESC"#,
     r#"CREATE VIEW IF NOT EXISTS outbox AS
 SELECT * FROM messages WHERE direction = 1
-ORDER BY owner_did, COALESCE(sent_at, stored_at) DESC"#,
+ORDER BY owner_identity_id, COALESCE(sent_at, stored_at) DESC"#,
 ];
 
 pub(crate) fn create_identity_owned_schema(
     connection: &Connection,
     mode: IdentityOwnedSchemaTableMode,
 ) -> crate::ImResult<()> {
-    // This is an inactive v17 scaffold for rebuild/swap migrations. Do not call it from
-    // `ensure_schema` until the runtime SQL cutover is atomic.
     connection
         .execute_batch(&identity_owned_tables_sql(mode))
         .map_err(super::local_state_unavailable)?;
@@ -710,9 +707,11 @@ pub(crate) fn ensure_schema(connection: &Connection) -> crate::ImResult<()> {
             ),
         });
     }
-    if version < 6 {
+    if version < SCHEMA_VERSION {
         return Err(crate::ImError::LocalStateUnavailable {
-            detail: format!("sqlite schema version {version} is too old for in-place upgrade"),
+            detail: format!(
+                "sqlite schema version {version} requires owner-identity migration before schema {SCHEMA_VERSION}"
+            ),
         });
     }
     create_schema(connection)?;
@@ -726,26 +725,7 @@ pub(crate) fn current_schema_version(connection: &Connection) -> crate::ImResult
 }
 
 fn create_schema(connection: &Connection) -> crate::ImResult<()> {
-    for script in [
-        V6_TABLES_SQL,
-        V7_TABLES_SQL,
-        V8_TABLES_SQL,
-        V11_TABLES_SQL,
-        V12_TABLES_SQL,
-        V14_TABLES_SQL,
-    ] {
-        connection
-            .execute_batch(script)
-            .map_err(super::local_state_unavailable)?;
-    }
-    ensure_owner_identity_columns(connection)?;
-    ensure_direct_e2ee_session_columns(connection)?;
-    backfill_contact_handle_bindings(connection)?;
-    for statement in INDEX_STATEMENTS {
-        connection
-            .execute(statement, [])
-            .map_err(super::local_state_unavailable)?;
-    }
+    create_identity_owned_schema(connection, IdentityOwnedSchemaTableMode::Final)?;
     for view in ["threads", "inbox", "outbox"] {
         connection
             .execute(&format!("DROP VIEW IF EXISTS {view}"), [])
@@ -1221,7 +1201,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_state_schema_creates_legacy_tables_views_and_version() {
+    fn local_state_schema_creates_identity_owned_tables_views_and_version() {
         let db = Connection::open_in_memory().unwrap();
 
         ensure_schema(&db).unwrap();
@@ -1235,7 +1215,7 @@ mod tests {
             ("table", "group_members"),
             ("table", "relationship_events"),
             ("table", "e2ee_outbox"),
-            ("table", "e2ee_sessions"),
+            ("table", "identity_did_history"),
             ("table", "direct_e2ee_sessions"),
             ("table", "direct_e2ee_signed_prekeys"),
             ("table", "direct_e2ee_one_time_prekeys"),
@@ -1245,14 +1225,11 @@ mod tests {
         ] {
             assert_schema_object_exists(&db, object.0, object.1);
         }
-        assert_index_exists(
-            &db,
-            "idx_contact_handle_bindings_owner_handle_current_unique",
-        );
-        assert_index_exists(&db, "idx_messages_owner_thread");
         assert_index_exists(&db, "idx_messages_owner_identity_thread");
-        assert_index_exists(&db, "idx_groups_owner_status_last_message");
+        assert_index_exists(&db, "idx_messages_owner_identity_conversation");
         assert_index_exists(&db, "idx_groups_owner_identity_status_last_message");
+        assert_index_exists(&db, "idx_identity_did_history_current");
+        assert_index_exists(&db, "idx_identity_did_history_live_did_unique");
         assert_index_exists(&db, "idx_direct_e2ee_sessions_owner_updated");
         assert_index_exists(&db, "idx_direct_e2ee_signed_prekeys_owner_status");
         assert_index_exists(&db, "idx_direct_e2ee_one_time_prekeys_owner_status");
@@ -1264,6 +1241,7 @@ mod tests {
             "group_members",
             "relationship_events",
             "e2ee_outbox",
+            "identity_did_history",
             "direct_e2ee_sessions",
             "direct_e2ee_signed_prekeys",
             "direct_e2ee_one_time_prekeys",
@@ -1271,7 +1249,23 @@ mod tests {
             assert_column_exists(&db, table, "owner_identity_id");
         }
         assert_column_exists(&db, "direct_e2ee_sessions", "revision");
-        assert_column_missing(&db, "e2ee_sessions", "owner_identity_id");
+        for (table, key_columns) in [
+            ("contacts", vec!["owner_identity_id", "did"]),
+            (
+                "contact_handle_bindings",
+                vec!["owner_identity_id", "handle", "did"],
+            ),
+            ("messages", vec!["owner_identity_id", "msg_id"]),
+            ("groups", vec!["owner_identity_id", "group_id"]),
+            (
+                "group_members",
+                vec!["owner_identity_id", "group_id", "user_id"],
+            ),
+            ("relationship_events", vec!["owner_identity_id", "event_id"]),
+            ("e2ee_outbox", vec!["owner_identity_id", "outbox_id"]),
+        ] {
+            assert_primary_key_columns(&db, table, &key_columns);
+        }
     }
 
     #[test]
@@ -1462,7 +1456,7 @@ VALUES ('alice-id', 'did:example:alice-2', 'current', '2026-05-30T00:00:00Z', '2
     }
 
     #[test]
-    fn local_state_schema_adds_direct_session_revision_to_existing_tables() {
+    fn local_state_schema_rejects_pre_v17_without_workspace_migration() {
         let db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "user_version", 15).unwrap();
         db.execute_batch(
@@ -1482,10 +1476,11 @@ CREATE TABLE direct_e2ee_sessions (
         )
         .unwrap();
 
-        ensure_schema(&db).unwrap();
-
-        assert_column_exists(&db, "direct_e2ee_sessions", "revision");
-        assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+        assert!(matches!(
+            ensure_schema(&db),
+            Err(crate::ImError::LocalStateUnavailable { detail })
+                if detail.contains("requires owner-identity migration")
+        ));
     }
 
     #[test]
@@ -1495,7 +1490,7 @@ CREATE TABLE direct_e2ee_sessions (
         assert!(matches!(
             ensure_schema(&old),
             Err(crate::ImError::LocalStateUnavailable { detail })
-                if detail.contains("too old")
+                if detail.contains("requires owner-identity migration")
         ));
 
         let future = Connection::open_in_memory().unwrap();
@@ -1510,7 +1505,7 @@ CREATE TABLE direct_e2ee_sessions (
     }
 
     #[test]
-    fn local_state_schema_backfills_handle_bindings_for_legacy_contacts() {
+    fn local_state_schema_rejects_v6_handle_backfill_until_workspace_migration() {
         let db = Connection::open_in_memory().unwrap();
         db.pragma_update(None, "user_version", 6).unwrap();
         db.execute_batch(V6_TABLES_SQL).unwrap();
@@ -1530,47 +1525,17 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
         )
         .unwrap();
 
-        ensure_schema(&db).unwrap();
-
-        let did = db
-            .query_row(
-                "SELECT did FROM contact_handle_bindings WHERE owner_did = ?1 AND handle = ?2",
-                ("did:owner", "alice"),
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap();
-        assert_eq!(did, "did:peer");
-        assert_eq!(current_schema_version(&db).unwrap(), SCHEMA_VERSION);
+        assert!(matches!(
+            ensure_schema(&db),
+            Err(crate::ImError::LocalStateUnavailable { detail })
+                if detail.contains("requires owner-identity migration")
+        ));
     }
 
     #[test]
-    fn local_state_owner_backfills_identity_ids_from_credentials_then_owner_did() {
+    fn local_state_owner_backfill_is_legacy_only_after_v17_cutover() {
         let db = Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
-        db.execute(
-            r#"
-INSERT INTO messages
-    (msg_id, owner_did, thread_id, direction, stored_at, credential_name)
-VALUES ('by-credential', 'did:old', 'dm:old:bob', 0, '2026-05-21T00:00:00Z', 'alice')"#,
-            [],
-        )
-        .unwrap();
-        db.execute(
-            r#"
-INSERT INTO groups
-    (owner_did, group_id, group_mode, membership_status, stored_at, credential_name)
-VALUES ('did:alice', 'group-1', 'general', 'active', '2026-05-21T00:00:00Z', '')"#,
-            [],
-        )
-        .unwrap();
-        db.execute(
-            r#"
-INSERT INTO e2ee_outbox
-    (outbox_id, owner_did, peer_did, plaintext, created_at, updated_at)
-VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2026-05-21T00:00:00Z')"#,
-            [],
-        )
-        .unwrap();
 
         let updated = backfill_owner_identity_ids(
             &db,
@@ -1582,28 +1547,7 @@ VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2
         )
         .unwrap();
 
-        assert_eq!(updated, 3);
-        assert_eq!(
-            string_cell(
-                &db,
-                "SELECT owner_identity_id FROM messages WHERE msg_id = 'by-credential'"
-            ),
-            "alice-id"
-        );
-        assert_eq!(
-            string_cell(
-                &db,
-                "SELECT owner_identity_id FROM groups WHERE group_id = 'group-1'"
-            ),
-            "alice-id"
-        );
-        assert_eq!(
-            string_cell(
-                &db,
-                "SELECT owner_identity_id FROM e2ee_outbox WHERE outbox_id = 'outbox-1'"
-            ),
-            "alice-id"
-        );
+        assert_eq!(updated, 0);
     }
 
     fn assert_schema_object_exists(db: &Connection, object_type: &str, name: &str) {
@@ -1623,13 +1567,6 @@ VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2
 
     fn assert_column_exists(db: &Connection, table: &str, column: &str) {
         assert!(column_exists(db, table, column), "missing {table}.{column}");
-    }
-
-    fn assert_column_missing(db: &Connection, table: &str, column: &str) {
-        assert!(
-            !column_exists(db, table, column),
-            "unexpected {table}.{column}"
-        );
     }
 
     fn assert_primary_key_columns(db: &Connection, table: &str, expected: &[&str]) {
@@ -1654,11 +1591,5 @@ VALUES ('outbox-1', 'did:alice', 'did:bob', 'secret', '2026-05-21T00:00:00Z', '2
             .query_map([], |row| row.get::<_, String>(1))
             .unwrap();
         rows.any(|name| name.unwrap() == column)
-    }
-
-    fn string_cell(db: &Connection, sql: &str) -> String {
-        db.query_row(sql, [], |row| row.get::<_, Option<String>>(0))
-            .unwrap()
-            .unwrap_or_default()
     }
 }

@@ -65,10 +65,7 @@ pub(crate) fn upsert_group(
     record: GroupRecord,
 ) -> crate::ImResult<()> {
     let owner_did = normalize(&record.owner_did);
-    let owner_identity_id = normalize_owner_identity_id(&default_string(
-        record.owner_identity_id.clone(),
-        &record.credential_name,
-    ));
+    let owner_identity_id = required_owner_identity_id(&record.owner_identity_id)?;
     let group_id = normalize(&record.group_id);
     if owner_did.is_empty() || group_id.is_empty() {
         return Err(crate::ImError::invalid_input(
@@ -86,9 +83,9 @@ INSERT INTO groups
      join_code_expires_at, member_count, last_synced_seq, last_read_seq, last_message_at,
      remote_created_at, remote_updated_at, stored_at, metadata, credential_name)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
-ON CONFLICT(owner_did, group_id)
+ON CONFLICT(owner_identity_id, group_id)
 DO UPDATE SET
-    owner_identity_id = COALESCE(excluded.owner_identity_id, groups.owner_identity_id),
+    owner_did = excluded.owner_did,
     group_did = COALESCE(excluded.group_did, groups.group_did),
     name = COALESCE(excluded.name, groups.name),
     group_mode = excluded.group_mode,
@@ -115,7 +112,7 @@ DO UPDATE SET
     metadata = COALESCE(excluded.metadata, groups.metadata),
     credential_name = COALESCE(excluded.credential_name, groups.credential_name)"#,
             rusqlite::params![
-                optional_string(&owner_identity_id),
+                owner_identity_id,
                 owner_did,
                 group_id,
                 optional_string(&record.group_did),
@@ -155,10 +152,7 @@ pub(crate) fn upsert_group_e2ee_summary(
     summary: GroupE2eeSummaryRecord,
 ) -> crate::ImResult<()> {
     let owner_did = normalize(&summary.record.owner_did);
-    let owner_identity_id = normalize_owner_identity_id(&default_string(
-        summary.record.owner_identity_id.clone(),
-        &summary.record.credential_name,
-    ));
+    let owner_identity_id = required_owner_identity_id(&summary.record.owner_identity_id)?;
     let group_id = normalize(&summary.record.group_id);
     if owner_did.is_empty() || group_id.is_empty() {
         return Err(crate::ImError::invalid_input(
@@ -186,13 +180,14 @@ pub(crate) fn upsert_group_e2ee_summary(
 #[cfg(feature = "sqlite")]
 pub(crate) fn replace_group_members(
     connection: &mut rusqlite::Connection,
+    owner_identity_id: &str,
     owner_did: &str,
     group_id: &str,
     members: &[GroupMemberRecord],
     credential_name: &str,
 ) -> crate::ImResult<()> {
     let owner_did = normalize(owner_did);
-    let owner_identity_id = normalize_owner_identity_id(credential_name);
+    let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
     let group_id = normalize(group_id);
     if owner_did.is_empty() || group_id.is_empty() {
         return Err(crate::ImError::invalid_input(
@@ -205,8 +200,8 @@ pub(crate) fn replace_group_members(
         .map_err(super::local_state_unavailable)?;
     transaction
         .execute(
-            "DELETE FROM group_members WHERE owner_did = ?1 AND group_id = ?2",
-            rusqlite::params![owner_did.as_str(), group_id.as_str()],
+            "DELETE FROM group_members WHERE owner_identity_id = ?1 AND group_id = ?2",
+            rusqlite::params![owner_identity_id.as_str(), group_id.as_str()],
         )
         .map_err(super::local_state_unavailable)?;
     let now = now_utc();
@@ -228,7 +223,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
             let last_synced_at = default_string(member.last_synced_at.clone(), &now);
             statement
                 .execute(rusqlite::params![
-                    optional_string(&owner_identity_id),
+                    owner_identity_id.as_str(),
                     owner_did.as_str(),
                     group_id.as_str(),
                     user_id,
@@ -258,6 +253,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"#,
 #[cfg(feature = "sqlite")]
 pub(crate) fn mark_group_left(
     connection: &mut rusqlite::Connection,
+    owner_identity_id: &str,
     owner_did: &str,
     group_id: &str,
     group_did: &str,
@@ -273,7 +269,7 @@ pub(crate) fn mark_group_left(
     }
     let now = now_utc();
     let credential_name = normalize(credential_name);
-    let owner_identity_id = normalize_owner_identity_id(&credential_name);
+    let owner_identity_id = required_owner_identity_id(owner_identity_id)?;
     let transaction = connection
         .transaction()
         .map_err(super::local_state_unavailable)?;
@@ -284,16 +280,16 @@ INSERT INTO groups
     (owner_identity_id, owner_did, group_id, group_did, group_mode, my_role, membership_status, stored_at,
      credential_name)
 VALUES (?1, ?2, ?3, ?4, 'general', NULL, 'left', ?5, ?6)
-ON CONFLICT(owner_did, group_id)
+ON CONFLICT(owner_identity_id, group_id)
 DO UPDATE SET
-    owner_identity_id = COALESCE(excluded.owner_identity_id, groups.owner_identity_id),
+    owner_did = excluded.owner_did,
     group_did = COALESCE(excluded.group_did, groups.group_did),
     my_role = NULL,
     membership_status = 'left',
     stored_at = excluded.stored_at,
     credential_name = COALESCE(excluded.credential_name, groups.credential_name)"#,
             rusqlite::params![
-                optional_string(&owner_identity_id),
+                owner_identity_id.as_str(),
                 owner_did.as_str(),
                 group_id.as_str(),
                 optional_string(group_did),
@@ -304,8 +300,8 @@ DO UPDATE SET
         .map_err(super::local_state_unavailable)?;
     transaction
         .execute(
-            "DELETE FROM group_members WHERE owner_did = ?1 AND group_id = ?2",
-            rusqlite::params![owner_did.as_str(), group_id.as_str()],
+            "DELETE FROM group_members WHERE owner_identity_id = ?1 AND group_id = ?2",
+            rusqlite::params![owner_identity_id.as_str(), group_id.as_str()],
         )
         .map_err(super::local_state_unavailable)?;
     transaction
@@ -318,7 +314,7 @@ DO UPDATE SET
 pub(crate) fn get_group_snapshot_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
+    _owner_did: &str,
     group_id: &str,
 ) -> crate::ImResult<Option<serde_json::Value>> {
     let group_id = group_id.trim();
@@ -332,7 +328,7 @@ pub(crate) fn get_group_snapshot_for_owner_identity(
         r#"
 SELECT *
 FROM groups
-WHERE {} AND (group_id = ?3 OR group_did = ?3)
+WHERE {} AND (group_id = ?2 OR group_did = ?2)
 LIMIT 1"#,
         owner_predicate("groups")
     );
@@ -342,8 +338,7 @@ LIMIT 1"#,
     let names = column_names(&statement);
     let mut rows = statement
         .query(rusqlite::params![
-            normalize(owner_identity_id),
-            normalize(owner_did),
+            required_owner_identity_id(owner_identity_id)?,
             group_id,
         ])
         .map_err(super::local_state_unavailable)?;
@@ -357,7 +352,7 @@ LIMIT 1"#,
 pub(crate) fn list_cached_group_members_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
+    _owner_did: &str,
     group_id: &str,
     limit: i64,
 ) -> crate::ImResult<Vec<serde_json::Value>> {
@@ -374,14 +369,14 @@ pub(crate) fn list_cached_group_members_for_owner_identity(
 SELECT *
 FROM group_members
 WHERE {} AND group_id IN (
-    SELECT ?3
+    SELECT ?2
     UNION
     SELECT group_id
     FROM groups
-    WHERE {} AND (group_id = ?3 OR group_did = ?3)
+    WHERE {} AND (group_id = ?2 OR group_did = ?2)
 )
 ORDER BY role ASC, member_handle ASC, member_did ASC
-LIMIT ?4"#,
+LIMIT ?3"#,
         owner_predicate("group_members"),
         owner_predicate("groups")
     );
@@ -389,8 +384,7 @@ LIMIT ?4"#,
         connection,
         &statement,
         &[
-            &normalize(owner_identity_id),
-            &normalize(owner_did),
+            &required_owner_identity_id(owner_identity_id)?,
             &group_id,
             &limit,
         ],
@@ -401,7 +395,7 @@ LIMIT ?4"#,
 pub(crate) fn list_group_messages_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
+    _owner_did: &str,
     group_id: &str,
     limit: i64,
     since_seq: Option<i64>,
@@ -419,18 +413,17 @@ pub(crate) fn list_group_messages_for_owner_identity(
             r#"
 SELECT *
 FROM messages
-WHERE {} AND (group_did = ?3 OR group_id = ?3)
-  AND COALESCE(server_seq, 0) > ?4
+WHERE {} AND (group_did = ?2 OR group_id = ?2)
+  AND COALESCE(server_seq, 0) > ?3
 ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
-LIMIT ?5"#,
+LIMIT ?4"#,
             owner_predicate("messages")
         );
         return query_rows(
             connection,
             &statement,
             &[
-                &normalize(owner_identity_id),
-                &normalize(owner_did),
+                &required_owner_identity_id(owner_identity_id)?,
                 &group_id,
                 &since_seq,
                 &limit,
@@ -441,17 +434,16 @@ LIMIT ?5"#,
         r#"
 SELECT *
 FROM messages
-WHERE {} AND (group_did = ?3 OR group_id = ?3)
+WHERE {} AND (group_did = ?2 OR group_id = ?2)
 ORDER BY COALESCE(server_seq, 0) DESC, COALESCE(sent_at, stored_at) DESC
-LIMIT ?4"#,
+LIMIT ?3"#,
         owner_predicate("messages")
     );
     query_rows(
         connection,
         &statement,
         &[
-            &normalize(owner_identity_id),
-            &normalize(owner_did),
+            &required_owner_identity_id(owner_identity_id)?,
             &group_id,
             &limit,
         ],
@@ -462,7 +454,7 @@ LIMIT ?4"#,
 pub(crate) fn list_active_group_refs_for_owner_identity(
     connection: &rusqlite::Connection,
     owner_identity_id: &str,
-    owner_did: &str,
+    _owner_did: &str,
     limit: i64,
 ) -> crate::ImResult<Vec<String>> {
     let limit = if limit <= 0 { 50 } else { limit };
@@ -478,7 +470,7 @@ ORDER BY
   COALESCE(last_message_at, stored_at) DESC,
   stored_at DESC,
   group_id ASC
-LIMIT ?3"#,
+LIMIT ?2"#,
         owner_predicate("groups")
     );
     let mut statement = connection
@@ -486,11 +478,7 @@ LIMIT ?3"#,
         .map_err(super::local_state_unavailable)?;
     let rows = statement
         .query_map(
-            rusqlite::params![
-                normalize_owner_identity_id(owner_identity_id),
-                normalize(owner_did),
-                limit,
-            ],
+            rusqlite::params![required_owner_identity_id(owner_identity_id)?, limit],
             |row| row.get::<_, Option<String>>("group_ref"),
         )
         .map_err(super::local_state_unavailable)?;
@@ -566,9 +554,7 @@ fn value_ref_to_json(value: rusqlite::types::ValueRef<'_>) -> serde_json::Value 
 
 #[cfg(feature = "sqlite")]
 fn owner_predicate(alias: &str) -> String {
-    format!(
-        "({alias}.owner_identity_id = ?1 OR (({alias}.owner_identity_id IS NULL OR TRIM({alias}.owner_identity_id) = '') AND {alias}.owner_did = ?2))"
-    )
+    format!("{alias}.owner_identity_id = ?1")
 }
 
 #[cfg(feature = "sqlite")]
@@ -579,6 +565,18 @@ fn normalize(value: &str) -> String {
 #[cfg(feature = "sqlite")]
 fn normalize_owner_identity_id(value: &str) -> String {
     value.trim().to_string()
+}
+
+#[cfg(feature = "sqlite")]
+fn required_owner_identity_id(value: &str) -> crate::ImResult<String> {
+    let value = normalize_owner_identity_id(value);
+    if value.is_empty() {
+        return Err(crate::ImError::invalid_input(
+            Some("owner_identity_id".to_owned()),
+            "owner_identity_id is required",
+        ));
+    }
+    Ok(value)
 }
 
 #[cfg(feature = "sqlite")]
@@ -714,15 +712,16 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn local_state_groups_read_cache_with_owner_identity_fallback() {
+    fn local_state_groups_read_cache_with_owner_identity_scope() {
         let db = Connection::open_in_memory().unwrap();
         crate::internal::local_state::schema::ensure_schema(&db).unwrap();
         db.execute(
             r#"
 INSERT INTO groups
     (owner_identity_id, owner_did, group_id, group_did, name, stored_at, credential_name)
-VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
             (
+                "alice-identity",
                 "did:owner",
                 "group-key",
                 "did:group",
@@ -737,8 +736,9 @@ VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6)"#,
 INSERT INTO group_members
     (owner_identity_id, owner_did, group_id, user_id, member_did, member_handle, role, status,
      joined_at, sent_message_count, last_synced_at, credential_name)
-VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11)"#,
             (
+                "alice-identity",
                 "did:owner",
                 "group-key",
                 "did:member",
@@ -757,9 +757,10 @@ VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10)"#,
 INSERT INTO messages
     (msg_id, owner_identity_id, owner_did, thread_id, direction, sender_did, group_id, group_did,
      content_type, content, server_seq, sent_at, stored_at, credential_name)
-VALUES (?1, NULL, ?2, ?3, 0, ?4, ?5, ?6, 'text/plain', 'hello', 7, ?7, ?7, ?8)"#,
+VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, 'text/plain', 'hello', 7, ?8, ?8, ?9)"#,
             (
                 "msg-group-1",
+                "alice-identity",
                 "did:owner",
                 "thread:group-key",
                 "did:member",

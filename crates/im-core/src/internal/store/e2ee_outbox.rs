@@ -57,6 +57,8 @@ pub(crate) fn queue_e2ee_outbox(
 ) -> crate::ImResult<String> {
     crate::internal::local_state::schema::ensure_schema(connection)?;
     let outbox_id = default_string(&record.outbox_id, &generate_id());
+    let owner_identity_id = required("owner_identity_id", &record.owner_identity_id)?;
+    let owner_did = required("owner_did", &record.owner_did)?;
     let now = now_utc_like();
     connection
         .execute(
@@ -65,11 +67,30 @@ INSERT INTO e2ee_outbox
     (outbox_id, owner_identity_id, owner_did, peer_did, session_id, original_type, plaintext,
      local_status, attempt_count, sent_msg_id, sent_server_seq, last_error_code, retry_hint,
      failed_msg_id, failed_server_seq, metadata, last_attempt_at, created_at, updated_at, credential_name)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"#,
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+ON CONFLICT(owner_identity_id, outbox_id) DO UPDATE SET
+    owner_did = excluded.owner_did,
+    peer_did = excluded.peer_did,
+    session_id = excluded.session_id,
+    original_type = excluded.original_type,
+    plaintext = excluded.plaintext,
+    local_status = excluded.local_status,
+    attempt_count = excluded.attempt_count,
+    sent_msg_id = excluded.sent_msg_id,
+    sent_server_seq = excluded.sent_server_seq,
+    last_error_code = excluded.last_error_code,
+    retry_hint = excluded.retry_hint,
+    failed_msg_id = excluded.failed_msg_id,
+    failed_server_seq = excluded.failed_server_seq,
+    metadata = excluded.metadata,
+    last_attempt_at = excluded.last_attempt_at,
+    created_at = excluded.created_at,
+    updated_at = excluded.updated_at,
+    credential_name = excluded.credential_name"#,
             params![
                 outbox_id,
-                nullable_text(&record.owner_identity_id),
-                record.owner_did.trim(),
+                owner_identity_id,
+                owner_did,
                 required("peer_did", &record.peer_did)?,
                 nullable_text(&record.session_id),
                 default_string(&record.original_type, "text"),
@@ -108,13 +129,11 @@ SELECT *
 FROM e2ee_outbox
 WHERE outbox_id = ?1 AND {}
 LIMIT 1"#,
-                owner_scope_predicate("?2", "?3", "?4")
+                owner_scope_predicate("?2")
             ),
             params![
                 outbox_id,
-                scope.owner_identity_id.trim(),
-                scope.owner_did.trim(),
-                scope.credential_name.trim(),
+                required("owner_identity_id", &scope.owner_identity_id)?
             ],
             outbox_from_row,
         )
@@ -137,13 +156,9 @@ SELECT *
 FROM e2ee_outbox
 WHERE {}
 ORDER BY updated_at DESC, outbox_id DESC"#,
-                owner_scope_predicate("?1", "?2", "?3")
+                owner_scope_predicate("?1")
             ),
-            vec![
-                &scope.owner_identity_id,
-                &scope.owner_did,
-                &scope.credential_name,
-            ],
+            vec![&scope.owner_identity_id],
         )
     } else {
         (
@@ -151,18 +166,14 @@ ORDER BY updated_at DESC, outbox_id DESC"#,
                 r#"
 SELECT *
 FROM e2ee_outbox
-WHERE {} AND local_status = ?4
+WHERE {} AND local_status = ?2
 ORDER BY updated_at DESC, outbox_id DESC"#,
-                owner_scope_predicate("?1", "?2", "?3")
+                owner_scope_predicate("?1")
             ),
-            vec![
-                &scope.owner_identity_id,
-                &scope.owner_did,
-                &scope.credential_name,
-                &status,
-            ],
+            vec![&scope.owner_identity_id, &status],
         )
     };
+    required("owner_identity_id", &scope.owner_identity_id)?;
     let mut statement = connection
         .prepare(&sql)
         .map_err(crate::internal::local_state::local_state_unavailable)?;
@@ -190,14 +201,14 @@ pub(crate) fn mark_e2ee_outbox_sent(
         scope,
         outbox_id,
         r#"
-SET session_id = COALESCE(?5, session_id),
+SET session_id = COALESCE(?3, session_id),
     local_status = 'sent',
     attempt_count = attempt_count + 1,
-    sent_msg_id = COALESCE(?6, sent_msg_id),
-    sent_server_seq = COALESCE(?7, sent_server_seq),
-    metadata = COALESCE(?8, metadata),
-    last_attempt_at = ?9,
-    updated_at = ?9,
+    sent_msg_id = COALESCE(?4, sent_msg_id),
+    sent_server_seq = COALESCE(?5, sent_server_seq),
+    metadata = COALESCE(?6, metadata),
+    last_attempt_at = ?7,
+    updated_at = ?7,
     last_error_code = NULL,
     retry_hint = NULL,
     failed_msg_id = NULL,
@@ -226,10 +237,10 @@ pub(crate) fn set_e2ee_outbox_failure_by_id(
         outbox_id,
         r#"
 SET local_status = 'failed',
-    last_error_code = ?5,
-    retry_hint = COALESCE(?6, retry_hint),
-    metadata = COALESCE(?7, metadata),
-    updated_at = ?8"#,
+    last_error_code = ?3,
+    retry_hint = COALESCE(?4, retry_hint),
+    metadata = COALESCE(?5, metadata),
+    updated_at = ?6"#,
         &[
             &required("error_code", error_code)?,
             &nullable_text(retry_hint),
@@ -254,16 +265,14 @@ pub(crate) fn update_e2ee_outbox_status(
             &format!(
                 r#"
 UPDATE e2ee_outbox
-SET local_status = ?5,
-    updated_at = ?6
+SET local_status = ?3,
+    updated_at = ?4
 WHERE outbox_id = ?1 AND {}"#,
-                owner_scope_predicate("?2", "?3", "?4")
+                owner_scope_predicate("?2")
             ),
             params![
                 outbox_id,
-                scope.owner_identity_id.trim(),
-                scope.owner_did.trim(),
-                scope.credential_name.trim(),
+                required("owner_identity_id", &scope.owner_identity_id)?,
                 status,
                 updated_at,
             ],
@@ -320,14 +329,10 @@ fn update_sent_or_failure(
 UPDATE e2ee_outbox
 {set_clause}
 WHERE outbox_id = ?1 AND {}"#,
-        owner_scope_predicate("?2", "?3", "?4")
+        owner_scope_predicate("?2")
     );
-    let mut values: Vec<&dyn rusqlite::ToSql> = vec![
-        &outbox_id,
-        &scope.owner_identity_id,
-        &scope.owner_did,
-        &scope.credential_name,
-    ];
+    let owner_identity_id = required("owner_identity_id", &scope.owner_identity_id)?;
+    let mut values: Vec<&dyn rusqlite::ToSql> = vec![&outbox_id, &owner_identity_id];
     values.extend_from_slice(tail_params);
     connection
         .execute(&sql, values.as_slice())
@@ -335,16 +340,8 @@ WHERE outbox_id = ?1 AND {}"#,
     Ok(())
 }
 
-fn owner_scope_predicate(
-    owner_identity_id_param: &str,
-    owner_did_param: &str,
-    credential_name_param: &str,
-) -> String {
-    format!(
-        r#"(owner_identity_id = {owner_identity_id_param}
-    OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND owner_did = {owner_did_param})
-    OR ((owner_identity_id IS NULL OR TRIM(owner_identity_id) = '') AND TRIM(COALESCE(credential_name, '')) <> '' AND credential_name = {credential_name_param}))"#
-    )
+fn owner_scope_predicate(owner_identity_id_param: &str) -> String {
+    format!("owner_identity_id = {owner_identity_id_param}")
 }
 
 fn outbox_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<E2eeOutboxRecord> {
