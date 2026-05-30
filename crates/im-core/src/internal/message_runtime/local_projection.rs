@@ -439,8 +439,20 @@ pub(crate) fn direct_thread_id(owner_did: &str, peer_did: &str) -> String {
     format!("dm:{}:{}", pair[0], pair[1])
 }
 
+pub(crate) fn direct_conversation_id(peer_did: &str) -> String {
+    crate::internal::local_state::owner_scope::direct_conversation_id(peer_did)
+}
+
 pub(crate) fn group_thread_id(group_did: &str) -> String {
     format!("group:{}", group_did.trim())
+}
+
+pub(crate) fn group_conversation_id(group_id_or_did: &str) -> String {
+    crate::internal::local_state::owner_scope::group_conversation_id(group_id_or_did)
+}
+
+pub(crate) fn mail_conversation_id(source: &str) -> String {
+    crate::internal::local_state::owner_scope::mail_conversation_id(source)
 }
 
 fn group_storage_key(group_did: &str) -> String {
@@ -1104,6 +1116,19 @@ mod tests {
             direct_thread_id("did:example:b", "did:example:a"),
             "dm:did:example:a:did:example:b"
         );
+    }
+
+    #[test]
+    fn conversation_ids_do_not_include_local_owner_did() {
+        assert_eq!(
+            direct_conversation_id("did:example:bob"),
+            "dm:did:example:bob"
+        );
+        assert_eq!(
+            group_conversation_id("did:example:group"),
+            "group:did:example:group"
+        );
+        assert_eq!(mail_conversation_id("inbox"), "mail:inbox");
     }
 
     #[test]

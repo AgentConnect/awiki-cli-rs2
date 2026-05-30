@@ -35,14 +35,18 @@ pub(crate) struct E2eeOutboxOwnerScope {
 
 impl E2eeOutboxOwnerScope {
     pub(crate) fn for_client(client: &crate::core::ImClient) -> Self {
+        let owner_scope = crate::internal::local_state::owner_scope::OwnerScope::for_client(client)
+            .expect("client identity must contain owner identity scope");
+        Self::from_owner_scope(&owner_scope)
+    }
+
+    pub(crate) fn from_owner_scope(
+        scope: &crate::internal::local_state::owner_scope::OwnerScope,
+    ) -> Self {
         Self {
-            owner_identity_id: client.current_identity().id.as_str().to_owned(),
-            owner_did: client.did().as_str().to_owned(),
-            credential_name: client
-                .current_identity()
-                .local_alias
-                .clone()
-                .unwrap_or_default(),
+            owner_identity_id: scope.owner_identity_id.clone(),
+            owner_did: scope.owner_did.clone(),
+            credential_name: scope.credential_name.clone().unwrap_or_default(),
         }
     }
 }

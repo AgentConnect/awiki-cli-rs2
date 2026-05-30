@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -397,6 +397,7 @@ impl IdentityRegistry<'_> {
             snapshot.default_alias = Some(default_alias);
         }
         snapshot.apply_default_flags();
+        snapshot.validate()?;
         Ok(snapshot)
     }
 
@@ -422,6 +423,7 @@ impl IdentityRegistry<'_> {
             snapshot.default_alias = Some(default_alias);
         }
         snapshot.apply_default_flags();
+        snapshot.validate()?;
         Ok(snapshot)
     }
 }
@@ -473,6 +475,58 @@ impl RegistrySnapshot {
                 entry.summary.is_default = entry.local_alias.as_deref() == Some(alias);
             }
         }
+    }
+
+    fn validate(&self) -> crate::ImResult<()> {
+        let mut identity_ids = BTreeSet::new();
+        let mut live_dids = BTreeSet::new();
+        let mut aliases = BTreeSet::new();
+        let mut handles = BTreeSet::new();
+        let mut default_count = 0usize;
+
+        for entry in &self.entries {
+            validate_unique_registry_value(
+                &mut identity_ids,
+                "identity_id",
+                entry.summary.id.as_str(),
+            )?;
+            validate_unique_registry_value(&mut live_dids, "live DID", entry.summary.did.as_str())?;
+            if let Some(alias) = entry.local_alias.as_deref() {
+                validate_unique_registry_value(&mut aliases, "local alias", alias)?;
+            }
+            if let Some(handle) = entry.summary.handle.as_ref() {
+                validate_unique_registry_value(&mut handles, "handle", handle.as_str())?;
+            }
+            if entry.summary.is_default {
+                default_count += 1;
+            }
+        }
+
+        if default_count > 1 {
+            return Err(registry_invariant_error(
+                "registry must not contain more than one default identity",
+            ));
+        }
+
+        if let Some(default_alias) = self.default_alias.as_deref() {
+            let default_alias = default_alias.trim();
+            if !default_alias.is_empty()
+                && !self.entries.is_empty()
+                && !self.entries.iter().any(|entry| {
+                    entry
+                        .local_alias
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|alias| alias == default_alias)
+                })
+            {
+                return Err(registry_invariant_error(format!(
+                    "default identity alias `{default_alias}` does not match any registry identity"
+                )));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -635,10 +689,13 @@ fn sdk_registry_snapshot(file: SdkRegistryFile) -> crate::ImResult<RegistrySnaps
             },
         });
     }
-    Ok(RegistrySnapshot {
-        default_alias: file.default_identity,
+    let mut snapshot = RegistrySnapshot {
+        default_alias: optional_trimmed_string(file.default_identity),
         entries,
-    })
+    };
+    snapshot.apply_default_flags();
+    snapshot.validate()?;
+    Ok(snapshot)
 }
 
 fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<RegistrySnapshot> {
@@ -670,10 +727,13 @@ fn legacy_registry_snapshot(file: LegacyRegistryFile) -> crate::ImResult<Registr
             },
         });
     }
-    Ok(RegistrySnapshot {
-        default_alias: Some(file.default_credential_name).filter(|value| !value.trim().is_empty()),
+    let mut snapshot = RegistrySnapshot {
+        default_alias: optional_trimmed_string(Some(file.default_credential_name)),
         entries,
-    })
+    };
+    snapshot.apply_default_flags();
+    snapshot.validate()?;
+    Ok(snapshot)
 }
 
 fn default_alias_from_file(path: Option<&Path>) -> crate::ImResult<Option<String>> {
@@ -727,4 +787,127 @@ fn identity_missing_item(value: String) -> super::IdentityMissingItem {
 
 fn first_non_empty<const N: usize>(values: [&str; N]) -> Option<&str> {
     values.into_iter().find(|value| !value.trim().is_empty())
+}
+
+fn validate_unique_registry_value(
+    seen: &mut BTreeSet<String>,
+    label: &str,
+    value: &str,
+) -> crate::ImResult<()> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(());
+    }
+    if !seen.insert(value.to_owned()) {
+        return Err(registry_invariant_error(format!(
+            "duplicate {label} `{value}` in identity registry"
+        )));
+    }
+    Ok(())
+}
+
+fn registry_invariant_error(message: impl Into<String>) -> crate::ImError {
+    crate::ImError::invalid_input(Some("identity_registry".to_owned()), message.into())
+}
+
+fn optional_trimmed_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_registry_rejects_duplicate_live_did() {
+        let err = parse_registry(
+            br#"{
+              "identities": [
+                {"id":"alice-id","did":"did:example:shared","local_alias":"alice"},
+                {"id":"bob-id","did":"did:example:shared","local_alias":"bob"}
+              ]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert_registry_error_contains(err, "duplicate live DID");
+    }
+
+    #[test]
+    fn identity_registry_rejects_duplicate_identity_id() {
+        let err = parse_registry(
+            br#"{
+              "identities": [
+                {"id":"same-id","did":"did:example:alice","local_alias":"alice"},
+                {"id":"same-id","did":"did:example:bob","local_alias":"bob"}
+              ]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert_registry_error_contains(err, "duplicate identity_id");
+    }
+
+    #[test]
+    fn identity_registry_rejects_duplicate_alias() {
+        let err = parse_registry(
+            br#"{
+              "identities": [
+                {"id":"alice-id","did":"did:example:alice","local_alias":"shared"},
+                {"id":"bob-id","did":"did:example:bob","local_alias":"shared"}
+              ]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert_registry_error_contains(err, "duplicate local alias");
+    }
+
+    #[test]
+    fn identity_registry_rejects_duplicate_handle() {
+        let err = parse_registry(
+            br#"{
+              "identities": [
+                {"id":"alice-id","did":"did:example:alice","local_alias":"alice","handle":"shared.awiki.test"},
+                {"id":"bob-id","did":"did:example:bob","local_alias":"bob","handle":"shared.awiki.test"}
+              ]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert_registry_error_contains(err, "duplicate handle");
+    }
+
+    #[test]
+    fn identity_registry_rejects_missing_default_alias() {
+        let err = parse_registry(
+            br#"{
+              "default_identity": "missing",
+              "identities": [
+                {"id":"alice-id","did":"did:example:alice","local_alias":"alice"}
+              ]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert_registry_error_contains(err, "default identity alias");
+    }
+
+    fn assert_registry_error_contains(err: crate::ImError, expected: &str) {
+        match err {
+            crate::ImError::InvalidInput {
+                field: Some(field),
+                message,
+            } => {
+                assert_eq!(field, "identity_registry");
+                assert!(
+                    message.contains(expected),
+                    "expected `{message}` to contain `{expected}`"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }
