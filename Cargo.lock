@@ -207,6 +207,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awiki-deamon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "im-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"

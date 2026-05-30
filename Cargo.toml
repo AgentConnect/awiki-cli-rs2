@@ -3,6 +3,7 @@ members = [
     "crates/im-core",
     "crates/im-core-dart",
     "crates/awiki-cli",
+    "crates/awiki-deamon",
     "xtask",
 ]
 resolver = "2"

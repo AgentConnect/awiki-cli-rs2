@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)
 步骤编号：01
-状态：草稿
+状态：审查中
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 待开始 |
+| 状态 | 审查中 |
 | 分支 | `feature/release-0526/awiki-deamon` |
-| 开始时间 | 待定 |
-| 完成时间 | 待定 |
-| 提交 | 待定 |
-| 审查证据 | 待定 |
-| 验证证据 | 待定 |
-| 下一步 | 创建 daemon crate 骨架。 |
+| 开始时间 | 2026-05-30 23:35:16 CST |
+| 完成时间 | 2026-05-31 00:33:19 CST |
+| 提交 | 待提交 |
+| 审查证据 | 已审查 crate 边界、路径处理、SQLite schema、config defaults、错误处理、测试和文档；发现 state layout 目录未创建、manifest 有未使用依赖，均已修复。 |
+| 验证证据 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；`cargo run -p awiki-deamon -- init-state --state-root <tmp>` 通过；源码边界检查无结果；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；`cargo test -p im-core --locked` 通过；`cargo test -p awiki-cli --locked` 通过；`cargo test --workspace --locked` 在 `im-core-dart` 链接动态库时被系统 SIGKILL。 |
+| 下一步 | 提交步骤 01。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -86,13 +86,13 @@ crate 边界：
 
 ## 7. 验收标准
 
-- [ ] workspace 包含 `crates/awiki-deamon` 后能构建。
-- [ ] daemon crate 依赖 `im-core`，不依赖 `awiki-cli`。
-- [ ] foreground/init-state/status 命令能作用于临时状态根目录。
-- [ ] `daemon.db` 初始化预期表。
-- [ ] 配置校验能拒绝不安全或缺失路径。
-- [ ] 测试覆盖 config 和 DB 初始化。
-- [ ] 审查发现已修复或明确记录。
+- [x] workspace 包含 `crates/awiki-deamon` 后能构建。
+- [x] daemon crate 依赖 `im-core`，不依赖 `awiki-cli`。
+- [x] foreground/init-state/status 命令能作用于临时状态根目录。
+- [x] `daemon.db` 初始化预期表。
+- [x] 配置校验能拒绝不安全或缺失路径。
+- [x] 测试覆盖 config 和 DB 初始化。
+- [x] 审查发现已修复或明确记录。
 - [ ] 完成验证和审查后，为本步骤创建聚焦提交。
 
 ## 8. 代码验证
@@ -105,17 +105,28 @@ crate 边界：
 | 依赖边界 | `rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon` | daemon 不依赖 awiki-cli 内部。 |
 | 文档 | `git diff --check -- crates/awiki-deamon` | diff 干净。 |
 
+执行证据：
+
+- `cargo fmt --all --check`：通过。
+- `cargo test -p awiki-deamon --locked`：通过，6 个 lib 单测、2 个集成测试通过。
+- `cargo run -p awiki-deamon -- init-state --state-root <tmp>`：通过，创建 `daemon.db`、`im-core/local-state.sqlite`、`identity/`、`runtime/cache/`、`runtime/tmp/`、`rpc/`、`audit/`。
+- `rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests`：无结果。
+- `git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon`：通过。
+- `cargo test -p im-core --locked`：通过。
+- `cargo test -p awiki-cli --locked`：通过。
+- `cargo test --workspace --locked`：未通过，失败点为 `im-core-dart` 链接 `libawiki_im_core.so` 时 `cc` 被系统 `SIGKILL`，属于当前环境资源限制；daemon、im-core、awiki-cli 包级验证均通过。
+
 ## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查 crate 边界、路径处理、SQLite schema、config defaults、错误处理、测试和文档。
 
 | 审查项 | 结果 | 说明 |
 |---|---|---|
-| 发现 | 待定 | 待定 |
-| 已修复 | 待定 | 待定 |
-| 残余风险 | 待定 | 待定 |
-| 测试缺口 | 待定 | 待定 |
-| 文档缺口 | 待定 | 待定 |
+| 发现 | 已完成 | 1. `state_root` 布局文档列出 `identity/`、`runtime/`、`rpc/`、`audit/`，初版实现只保证 DB 父目录；2. daemon manifest 有步骤 01 未使用的 `time` 依赖。 |
+| 已修复 | 已完成 | 增加 `DaemonConfig::ensure_state_layout()` 并在命令执行时调用；补充目录创建测试；移除未使用的 `time` 依赖并刷新 `Cargo.lock`。 |
+| 残余风险 | 已记录 | `cargo test --workspace --locked` 在 `im-core-dart` 动态库链接阶段被系统 `SIGKILL`，当前只能以 `awiki-deamon`、`im-core`、`awiki-cli` 包级测试作为替代证据。 |
+| 测试缺口 | 已记录 | 步骤 01 未覆盖真实远端服务和 runtime 插件，这是本步骤非目标；`foreground` 当前等价执行初始化和状态报告，常驻循环留到后续步骤。 |
+| 文档缺口 | 已完成 | 新增 `crates/awiki-deamon/docs/local-dev.md`，记录本地命令、状态目录和验证方式。 |
 
 ## 10. 提交要求
 
