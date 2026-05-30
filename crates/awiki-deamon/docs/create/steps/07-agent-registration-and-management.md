@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)
 步骤编号：07
-状态：进行中
+状态：已完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 进行中 |
+| 状态 | 已完成 |
 | 分支 | `feature/release-0526/awiki-deamon` |
 | 开始时间 | 2026-05-31 04:35:30 CST |
-| 完成时间 | 待定 |
-| 提交 | 待定 |
-| 审查证据 | 待定 |
-| 验证证据 | 待定 |
-| 下一步 | 实现 daemon agent 与 runtime agent 管理，并完成验证、代码 Review 和聚焦提交。 |
+| 完成时间 | 2026-05-31 07:55:35 CST |
+| 提交 | `9ac7b4e` |
+| 审查证据 | Review 已完成：daemon agent/runtime agent DID 生成、registration token 兑换、`controller_did` MVP 校验、payload command parser、ready/failed status outbox、daemon 管理命令、schema v4 迁移、CLI JSON 兼容输出、secret 脱敏和 awiki-cli 边界均已审查；发现项已修复，残余风险记录在第 9 节。 |
+| 验证证据 | `CARGO_BUILD_JOBS=1 cargo fmt --all --check` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-deamon --locked` 通过；`CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；边界、旧字段、日志和 diff 检查通过。 |
+| 下一步 | 开始步骤 08：集成、系统测试与发布门禁。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -93,17 +93,17 @@ daemon CLI 命令应比 awiki-cli 小，聚焦管理和诊断：
 
 ## 7. 验收标准
 
-- [ ] Daemon Agent DID setup 或 restore path 已实现。
-- [ ] Runtime Agent DID 创建使用 user-service registration token API。
-- [ ] `controller_did` 简单模型已强制执行并文档化。
-- [ ] `runtime.agent.create` 使用 `application/json + body.payload`。
-- [ ] command/status/result 路由使用 payload 字段，不使用专用 JSON 内容类型。
-- [ ] daemon 管理命令与 awiki-cli 命令分离。
-- [ ] agent/runtime/profile/workspace 记录持久化到 `daemon.db`。
-- [ ] daemon 通过 `im-core` 发送 ready/status response。
-- [ ] 测试覆盖成功和授权失败。
-- [ ] 审查发现已修复或明确记录。
-- [ ] 完成验证和审查后，为本步骤创建聚焦提交。
+- [x] Daemon Agent DID setup 或 restore path 已实现。
+- [x] Runtime Agent DID 创建使用 user-service registration token API。
+- [x] `controller_did` 简单模型已强制执行并文档化。
+- [x] `runtime.agent.create` 使用 `application/json + body.payload`。
+- [x] command/status/result 路由使用 payload 字段，不使用专用 JSON 内容类型。
+- [x] daemon 管理命令与 awiki-cli 命令分离。
+- [x] agent/runtime/profile/workspace 记录持久化到 `daemon.db`。
+- [x] daemon 通过 `im-core` 发送 ready/status response。
+- [x] 测试覆盖成功和授权失败。
+- [x] 审查发现已修复或明确记录。
+- [x] 完成验证和审查后，为本步骤创建聚焦提交。
 
 ## 8. 代码验证
 
@@ -116,25 +116,36 @@ daemon CLI 命令应比 awiki-cli 小，聚焦管理和诊断：
 | 边界检查 | `rg -n "crates/awiki-cli|awiki_cli" crates/awiki-deamon` | daemon 不依赖 awiki-cli 内部。 |
 | 字段检查 | 搜索旧字段名和旧内容类型 | 没有旧字段或旧 command/status 内容类型。 |
 
+实际执行：
+
+- `CARGO_BUILD_JOBS=1 cargo fmt --all --check` 通过。
+- `CARGO_BUILD_JOBS=1 cargo test -p awiki-deamon --locked` 通过。
+- `CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过。
+- `git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过。
+- `rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无结果。
+- `rg -n "structured_json|application/vnd\\.awiki\\.agent-(command|status|result|task)\\+json" crates/awiki-deamon crates/im-core crates/im-core-dart` 无结果。
+- `rg -n "println!|eprintln!|dbg!|log::|tracing::" crates/awiki-deamon/src` 仅命中 `src/main.rs` 的 CLI stdout/stderr 输出。
+- `rg -n "registration_token|private_key|token_secret|auth_private_key|e2ee_.*private" crates/awiki-deamon/src crates/awiki-deamon/tests` 命中字段定义、数据库存储、测试用例和脱敏断言；未发现生产代码打印 token/private key。
+
 ## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查 registration token 消费、`controller_did` 假设、payload parsing、daemon CLI 边界、持久化、测试和文档。
 
 | 审查项 | 结果 | 说明 |
 |---|---|---|
-| 发现 | 待定 | 待定 |
-| 已修复 | 待定 | 待定 |
-| 残余风险 | 待定 | 待定 |
-| 测试缺口 | 待定 | 待定 |
-| 文档缺口 | 待定 | 待定 |
+| 发现 | 已处理 | secret-bearing request/identity 类型可 serde 序列化；同步 registration client 在已有 Tokio runtime 内直接创建 runtime 并 `block_on`；新增 `run_command_json` 初版改变了 `status` 输出形状；恢复已有 daemon handle 时未校验 requested `controller_did`；schema v4 对旧 `agent_definition` 行缺少回填；文档中仍出现旧结构化 JSON 字段字面量。 |
+| 已修复 | 已完成 | 移除 secret-bearing 类型的 serde 派生；已有 Tokio runtime 内改用独立线程 current-thread runtime 执行 registration RPC；`run_command_json` 对 `status`、`agent-list`、`agent-status`、`runtime-list` 输出原始对象；恢复 daemon handle 时校验 controller mismatch；v4 migration 回填 handle、agent_kind、policy、runtime plugin 和本地 DB 路径；文档改为不出现旧字段名。 |
+| 残余风险 | 已记录 | daemon 侧使用 mocked user-service/message-service 测试完成本地闭环；真实跨服务 registration token 兑换、真实 message-service 投递和系统级 E2E 留到步骤 08。`controller_did` 仍是 MVP 简单边界，高风险自动执行需要后续 approval 或 sandbox 策略。 |
+| 测试缺口 | 可接受 | 已覆盖成功创建、非 controller 拒绝、registration token 失败不持久化 runtime agent、daemon 管理命令、schema v4、Debug 脱敏和 workspace 全量测试；缺口是跨仓真实服务 E2E，归入步骤 08。 |
+| 文档缺口 | 已修复 | 更新 `docs/local-dev.md` 的 agent 管理、DB 状态、daemon CLI 和 `application/json + body.payload` 规则；本步骤文档和主计划台账记录提交、审查、验证和残余风险。 |
 
 ## 10. 提交要求
 
 - 提交时机：实现、验证和审查完成后。
 - 提交范围：agent registration/management 实现、测试和文档。
-- 提交前记录：`git status` 和纳入文件。
-- 提交后记录：commit hash 和提交后的 `git status`。
-- 建议提交信息：`daemon: add agent registration management`
+- 提交前记录：`git status --short --branch` 显示分支 ahead 1，包含 `Cargo.lock`、`crates/awiki-deamon/Cargo.toml`、`docs/local-dev.md`、agent/commands/daemon_cli/registration/outbox/state/main/lib 和测试文件改动。
+- 提交后记录：实现提交 `9ac7b4e`；提交后 `git status --short --branch` 显示分支 ahead 2，工作区无未提交代码改动。
+- 提交信息：`daemon: add agent registration management`
 
 ## 11. 阻塞处理
 
@@ -150,6 +161,6 @@ daemon CLI 命令应比 awiki-cli 小，聚焦管理和诊断：
 
 ## 13. 风险、回滚与后续
 
-- 风险：user-service token API 未就绪；daemon 命令面过宽；`controller_did` 对高风险 runtime 仍偏弱。
-- 回滚：保留手工 runtime profile 创建作为 MVP 回退路径，禁用 payload management command。
-- 后续：步骤 08 增加跨仓 E2E 和发布门禁。
+- 风险：真实跨服务 registration token 兑换和 message-service 投递尚未在系统测试中闭环；daemon 命令面仍是最小管理命令；`controller_did` 对高风险 runtime 仍偏弱。
+- 回滚：保留手工 runtime profile 创建作为 MVP 回退路径，禁用 payload management command，或回退实现提交 `9ac7b4e`。
+- 后续：步骤 08 增加跨仓 E2E、真实服务集成验证、发布门禁和阶段 C Review。
