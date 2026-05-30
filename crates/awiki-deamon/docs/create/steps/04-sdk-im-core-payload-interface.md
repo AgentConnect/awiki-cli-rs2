@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)
 步骤编号：04
-状态：草稿
+状态：已完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 待开始 |
+| 状态 | 已完成 |
 | 分支 | `feature/release-0526/awiki-deamon` |
-| 开始时间 | 待定 |
-| 完成时间 | 待定 |
-| 提交 | 待定 |
-| 审查证据 | 待定 |
-| 验证证据 | 待定 |
-| 下一步 | 基于已完成的协议仓库契约，为 `im-core` 增加 payload body。 |
+| 开始时间 | 2026-05-31 02:09:13 CST |
+| 完成时间 | 2026-05-31 02:56:44 CST |
+| 提交 | `defc907` |
+| 审查证据 | Review 已完成：公开 DTO、direct/group 线协议、local projection、history/inbox/realtime payload 解析、Dart bridge、生成文件同步、CLI 兼容展示分支和文档已审查；发现 SDK 文档行尾空格、旧字段字面量验证会命中测试和历史记录、普通 workspace 测试首次在 `im-core-dart` 链接阶段被系统 SIGKILL，均已处理或用低并发重跑验证。 |
+| 验证证据 | `cargo fmt --all --check` 通过；`cargo test -p im-core --locked` 通过；`cargo test -p im-core-dart --locked` 通过；`cargo test -p awiki-deamon --locked` 通过；`scripts/flutter/codegen-check.sh` 通过；`CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；`git diff --check -- crates/awiki-cli crates/awiki-deamon/docs/create crates/im-core crates/im-core-dart docs/sdk-refactor packages/awiki_im_core` 通过；旧字段和旧 content type 搜索无结果；daemon 源码/测试 awiki-cli 边界搜索无结果。 |
+| 下一步 | 开始步骤 05：message-service payload 支持。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -87,15 +87,15 @@ SDK 不应暴露底层 `params`、`auth.origin_proof`、RPC method name 或 daem
 
 ## 7. 验收标准
 
-- [ ] `MessageBody` 能表达 text、attachment 和 payload。
-- [ ] `MessageBodyView` 能从 inbox/history/realtime 返回 payload。
-- [ ] direct 和 group send 能构造 `application/json + body.payload`。
-- [ ] 本地投影保留 payload JSON 和内容类型，不做字符串化。
-- [ ] Dart DTO/映射能携带 payload。
-- [ ] SDK 文档明确 `im-core` 不解释 daemon-specific schema。
-- [ ] 既有 text 测试继续通过。
-- [ ] 审查发现已修复或明确记录。
-- [ ] 完成验证和审查后，为本步骤创建聚焦提交。
+- [x] `MessageBody` 能表达 text、attachment 和 payload。
+- [x] `MessageBodyView` 能从 inbox/history/realtime 返回 payload。
+- [x] direct 和 group send 能构造 `application/json + body.payload`。
+- [x] 本地投影保留 payload JSON 和内容类型，不做字符串化。
+- [x] Dart DTO/映射能携带 payload。
+- [x] SDK 文档明确 `im-core` 不解释 daemon-specific schema。
+- [x] 既有 text 测试继续通过。
+- [x] 审查发现已修复或明确记录。
+- [x] 完成验证和审查后，为本步骤创建聚焦提交。
 
 ## 8. 代码验证
 
@@ -113,11 +113,11 @@ SDK 不应暴露底层 `params`、`auth.origin_proof`、RPC method name 或 daem
 
 | 审查项 | 结果 | 说明 |
 |---|---|---|
-| 发现 | 待定 | 待定 |
-| 已修复 | 待定 | 待定 |
-| 残余风险 | 待定 | 待定 |
-| 测试缺口 | 待定 | 待定 |
-| 文档缺口 | 待定 | 待定 |
+| 发现 | 已记录 | SDK 文档有一处行尾空格；旧字段字面量会让禁用字段搜索命中测试和阶段 A 历史记录；普通 `cargo test --workspace --locked` 首次在 `im-core-dart` 测试二进制链接阶段被系统 SIGKILL。 |
+| 已修复 | 已完成 | 去掉文档行尾空格；删除测试和计划历史记录中的旧字段字面量；使用 `CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 低并发重跑并通过。 |
+| 残余风险 | 已明确 | direct-e2ee 和 group-e2ee payload 第一版保持 unsupported；message-service 真实 payload 存储和投递兼容性留到步骤 05 验证。 |
+| 测试缺口 | 无阻塞缺口 | 已覆盖 direct/group payload sender、read/history payload 解析、local projection、realtime payload projection、Dart payload DTO 映射和 workspace 回归。 |
+| 文档缺口 | 无阻塞缺口 | 已更新 `docs/sdk-refactor/modules/07-messages.md` 和 `docs/sdk-refactor/public-api.md`。 |
 
 ## 10. 提交要求
 
