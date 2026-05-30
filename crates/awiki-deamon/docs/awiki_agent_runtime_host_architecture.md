@@ -845,10 +845,10 @@ ANP message 协议需要一等支持 text / attachment / json；
 
 #### 5.3.3 结构化 JSON 命令
 
-推荐自定义业务内容类型：
+统一使用普通 JSON 内容类型：
 
 ```text
-application/vnd.awiki.agent-command+json
+application/json
 ```
 
 承载方式：
@@ -867,7 +867,7 @@ application/vnd.awiki.agent-command+json
       },
       "operation_id": "cmd_001",
       "message_id": "msg_002",
-      "content_type": "application/vnd.awiki.agent-command+json"
+      "content_type": "application/json"
     },
     "body": {
       "conversation_id": "conv_daemon_001",
@@ -895,18 +895,18 @@ application/vnd.awiki.agent-command+json
 
 解释：
 
-1. `content_type` 明确表示这是 Awiki agent command。
+1. `content_type` 只表示这是结构化 JSON，不再区分 command/status 等业务类型。
 2. `body.payload` 是 JSON 对象。
-3. `payload.schema` 用于版本识别。
+3. `payload.schema` 用于版本识别和上层业务解释。
 4. `command` 用于路由到 daemon management / runtime task / message operation。
 5. `registration_token` 等敏感字段应优先使用 direct-e2ee 承载。
 
 #### 5.3.4 结构化 JSON 状态 / 结果
 
-推荐内容类型：
+状态和结果同样使用普通 JSON 内容类型：
 
 ```text
-application/vnd.awiki.agent-status+json
+application/json
 ```
 
 示例：
@@ -953,7 +953,7 @@ application/anp-direct-cipher+json
 
 ```json
 {
-  "application_content_type": "application/vnd.awiki.agent-command+json",
+  "application_content_type": "application/json",
   "payload": {
     "schema": "awiki.agent.command.v1",
     "command": "runtime.agent.create",
@@ -965,7 +965,7 @@ application/anp-direct-cipher+json
 也就是说：
 
 ```text
-Base Direct：meta.content_type 直接表示 text/plain 或 awiki command JSON。
+Base Direct：meta.content_type 直接表示 text/plain 或 application/json。
 Direct E2EE：外层 content_type 表示 cipher envelope，内层 application_content_type 表示原始业务类型。
 ```
 
@@ -977,7 +977,7 @@ Direct E2EE：外层 content_type 表示 cipher envelope，内层 application_co
   → 读取 application_content_type 或 meta.content_type
   → 读取 text / attachment / json body
   → 判断 sender_did 是否为 controller_did
-  → 根据 content type 分发
+  → 根据 content type + payload 分发
 ```
 
 规则表：
@@ -985,9 +985,9 @@ Direct E2EE：外层 content_type 表示 cipher envelope，内层 application_co
 | content type | sender = controller_did | sender ≠ controller_did |
 |---|---|---|
 | `text/plain` | 作为自然语言任务执行 | 进入 inbox |
-| `application/vnd.awiki.agent-command+json` | 作为结构化命令执行 | 进入 inbox 或拒绝执行 |
-| `application/vnd.awiki.agent-status+json` | 记录状态，可展示 | 记录状态，默认不触发执行 |
-| `application/json` | 按 `payload.schema` 或兼容 schema 识别 | 进入 inbox 或按兼容规则处理 |
+| `application/json` 且 payload 是 command | 作为结构化命令执行 | 进入 inbox 或拒绝执行 |
+| `application/json` 且 payload 是 status/result | 记录状态，可展示 | 记录状态，默认不触发执行 |
+| `application/json` 其他 payload | 按 `payload.schema` 或兼容 schema 识别 | 进入 inbox 或按兼容规则处理 |
 | unsupported | 拒绝或进入 inbox | 拒绝或进入 inbox |
 
 ### 5.6 为什么不用 annotations 承载命令
@@ -998,8 +998,8 @@ Direct E2EE：外层 content_type 表示 cipher envelope，内层 application_co
 
 ```text
 普通文本就是 text/plain；
-命令就是明确的 JSON content_type + body.payload；
-状态就是明确的 status content_type + body.payload。
+结构化内容就是 application/json + body.payload；
+命令、状态、结果等业务语义由 payload.schema / command / state 等上层字段识别。
 ```
 
 ---
@@ -1714,7 +1714,7 @@ sender_did == agent_definition.controller_did
 通过后：
 
 1. `text/plain` 可转成自然语言任务。
-2. `application/vnd.awiki.agent-command+json` 可转成结构化命令。
+2. `application/json` 且 payload 是 command 时，可转成结构化命令。
 
 不通过：
 
@@ -1977,8 +1977,8 @@ flowchart TD
   E -->|是| G{content_type}
 
   G -->|text/plain| H[转为自然语言 RuntimeTask]
-  G -->|application/vnd.awiki.agent-command+json| I[解析 JSON command]
-  G -->|application/vnd.awiki.agent-status+json| J[记录状态 / 展示]
+  G -->|application/json + command payload| I[解析 JSON command]
+  G -->|application/json + status/result payload| J[记录状态 / 展示]
   G -->|其他| K[兼容处理或拒绝]
 
   H --> L[选择 runtime plugin]
@@ -2126,8 +2126,8 @@ flowchart TB
 3. SDK public API 支持发送和接收结构化 JSON。
 4. im-core Interface / DTO 支持 JSON payload body。
 5. 本地投影、history、inbox、realtime event 保留结构化 JSON payload。
-6. `application/vnd.awiki.agent-command+json` 和 `application/vnd.awiki.agent-status+json` 的 schema version 规则。
-7. 兼容旧 `application/json` 或 unsupported/raw body 的策略。
+6. 统一使用 `application/json`；command、status、result 等业务语义由 payload schema / 字段识别。
+7. unsupported/raw body 的兼容策略。
 
 ### Phase 3：Token 方案整体设计
 
