@@ -697,6 +697,9 @@ fn group_thread_id(group_did: &str) -> String {
 fn message_content(message: &crate::messages::Message) -> String {
     match &message.body {
         crate::messages::MessageBodyView::Text { text, .. } => text.clone(),
+        crate::messages::MessageBodyView::Payload { payload } => {
+            serde_json::to_string(payload).unwrap_or_default()
+        }
         crate::messages::MessageBodyView::Unsupported { .. } => String::new(),
     }
 }
@@ -713,6 +716,7 @@ fn message_content_type(message: &crate::messages::Message) -> String {
                 ..
             } => "text/markdown".to_string(),
             crate::messages::MessageBodyView::Text { .. } => "text/plain".to_string(),
+            crate::messages::MessageBodyView::Payload { .. } => "application/json".to_string(),
             crate::messages::MessageBodyView::Unsupported { content_type } => content_type
                 .clone()
                 .unwrap_or_else(|| "application/octet-stream".to_string()),

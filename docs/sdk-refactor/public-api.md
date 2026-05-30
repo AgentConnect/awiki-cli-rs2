@@ -400,6 +400,24 @@ client.messages().send(SendMessageRequest {
 })
 ```
 
+daemon 初始化步骤 04 之后，普通结构化 JSON 也走同一个 messages API：
+
+```rust
+client.messages().send(SendMessageRequest {
+    target: MessageTarget::Direct(peer_ref),
+    body: MessageBody::Payload {
+        payload: serde_json::json!({
+            "schema": "awiki.agent.command.v1",
+            "command": "runtime.agent.create",
+        }),
+    },
+    security: MessageSecurityPolicy::DefaultPlain,
+    ..
+})
+```
+
+SDK 内部必须把该 body 发送为 `meta.content_type = "application/json"` 和 `body.payload`。`im-core` 不解释 payload 内部的 command/status/result 语义，也不新增 daemon 业务专用 content type。
+
 完整 group service 在 P3 下沉：
 
 ```rust

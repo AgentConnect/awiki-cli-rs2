@@ -384,11 +384,19 @@ impl From<im_core::messages::MessageBodyView> for DartMessageBodyView {
             im_core::messages::MessageBodyView::Text { text, kind } => Self {
                 text: Some(text),
                 kind: Some(message_kind_to_string(kind)),
+                payload_json: None,
+                unsupported_content_type: None,
+            },
+            im_core::messages::MessageBodyView::Payload { payload } => Self {
+                text: None,
+                kind: Some("payload".to_string()),
+                payload_json: Some(payload.to_string()),
                 unsupported_content_type: None,
             },
             im_core::messages::MessageBodyView::Unsupported { content_type } => Self {
                 text: None,
                 kind: None,
+                payload_json: None,
                 unsupported_content_type: content_type,
             },
         }
@@ -435,6 +443,12 @@ fn message_retry_action_to_string(value: im_core::messages::MessageRetryAction) 
         im_core::messages::MessageRetryAction::None => "none".to_string(),
         im_core::messages::MessageRetryAction::RetryDirectText => "retry_direct_text".to_string(),
         im_core::messages::MessageRetryAction::RetryGroupText => "retry_group_text".to_string(),
+        im_core::messages::MessageRetryAction::RetryDirectPayload => {
+            "retry_direct_payload".to_string()
+        }
+        im_core::messages::MessageRetryAction::RetryGroupPayload => {
+            "retry_group_payload".to_string()
+        }
     }
 }
 

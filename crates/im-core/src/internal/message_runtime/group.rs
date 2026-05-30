@@ -29,6 +29,7 @@ pub(crate) struct GroupTextSendResult {
     pub group_did: String,
     pub message_type: &'static str,
     pub text: String,
+    pub payload: Option<Value>,
     pub raw: Value,
 }
 
@@ -51,21 +52,14 @@ where
 
     pub(crate) fn send(mut self, input: GroupTextSend) -> crate::ImResult<GroupTextSendResult> {
         let group = group_target(&input.request.target)?;
-        let (text, kind) = text_body(&input.request.body)?;
+        let body = outgoing_body(&input.request.body)?;
         validate_plain_security(&input.request.security)?;
 
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)?;
 
-        let message_type = message_type(&kind);
-        let content_type =
-            crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
-        let payload = crate::internal::wire::group::build_group_send_payload(
-            self.client.did().as_str(),
-            group.as_str(),
-            text,
-            content_type,
-        )?;
+        let message_type = body.message_type();
+        let payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
         let credentials = match input.credentials {
             Some(credentials) => credentials,
             None => load_credentials(self.client)?,
@@ -90,18 +84,14 @@ where
         )?;
         let mut result = group_result_from_value(raw.clone())?;
         fill_group_result_defaults(&mut result, &payload.meta, group.as_str());
-        let sdk_result = sdk_result_from_group_result(
-            &result,
-            self.client.did().clone(),
-            group.clone(),
-            text,
-            kind,
-        )?;
+        let sdk_result =
+            sdk_result_from_group_result(&result, self.client.did().clone(), group.clone(), &body)?;
         Ok(GroupTextSendResult {
             sdk_result,
             group_did: group.as_str().to_string(),
             message_type,
-            text: text.to_string(),
+            text: body.text_for_legacy(),
+            payload: body.payload_for_result(),
             raw,
         })
     }
@@ -117,22 +107,15 @@ where
         input: GroupTextSend,
     ) -> crate::ImResult<GroupTextSendResult> {
         let group = group_target(&input.request.target)?;
-        let (text, kind) = text_body(&input.request.body)?;
+        let body = outgoing_body(&input.request.body)?;
         validate_plain_security(&input.request.security)?;
 
         self.session_provider
             .ensure_session(crate::auth::AuthScope::GroupMessaging)
             .await?;
 
-        let message_type = message_type(&kind);
-        let content_type =
-            crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
-        let payload = crate::internal::wire::group::build_group_send_payload(
-            self.client.did().as_str(),
-            group.as_str(),
-            text,
-            content_type,
-        )?;
+        let message_type = body.message_type();
+        let payload = build_group_payload(self.client.did().as_str(), group.as_str(), &body)?;
         let credentials = match input.credentials {
             Some(credentials) => credentials,
             None => load_credentials_async(self.client).await?,
@@ -156,18 +139,14 @@ where
             .await?;
         let mut result = group_result_from_value(raw.clone())?;
         fill_group_result_defaults(&mut result, &payload.meta, group.as_str());
-        let sdk_result = sdk_result_from_group_result(
-            &result,
-            self.client.did().clone(),
-            group.clone(),
-            text,
-            kind,
-        )?;
+        let sdk_result =
+            sdk_result_from_group_result(&result, self.client.did().clone(), group.clone(), &body)?;
         Ok(GroupTextSendResult {
             sdk_result,
             group_did: group.as_str().to_string(),
             message_type,
-            text: text.to_string(),
+            text: body.text_for_legacy(),
+            payload: body.payload_for_result(),
             raw,
         })
     }
@@ -260,6 +239,97 @@ pub(crate) fn group_target(
     Ok(group.clone())
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum OutgoingGroupBody {
+    Text {
+        text: String,
+        kind: crate::messages::MessageKind,
+    },
+    Payload {
+        payload: Value,
+    },
+}
+
+impl OutgoingGroupBody {
+    fn message_type(&self) -> &'static str {
+        match self {
+            Self::Text { kind, .. } => message_type(kind),
+            Self::Payload { .. } => "payload",
+        }
+    }
+
+    fn content_type(&self) -> &'static str {
+        match self {
+            Self::Text { kind, .. } => content_type_for_message_type(message_type(kind)),
+            Self::Payload { .. } => "application/json",
+        }
+    }
+
+    fn retry_target(&self) -> crate::internal::message_runtime::state::MessageRetryTarget {
+        match self {
+            Self::Text { .. } => {
+                crate::internal::message_runtime::state::MessageRetryTarget::GroupText
+            }
+            Self::Payload { .. } => {
+                crate::internal::message_runtime::state::MessageRetryTarget::GroupPayload
+            }
+        }
+    }
+
+    fn body_view(&self) -> crate::messages::MessageBodyView {
+        match self {
+            Self::Text { text, kind } => crate::messages::MessageBodyView::Text {
+                text: text.clone(),
+                kind: kind.clone(),
+            },
+            Self::Payload { payload } => crate::messages::MessageBodyView::Payload {
+                payload: payload.clone(),
+            },
+        }
+    }
+
+    fn text_for_legacy(&self) -> String {
+        match self {
+            Self::Text { text, .. } => text.clone(),
+            Self::Payload { .. } => String::new(),
+        }
+    }
+
+    fn payload_for_result(&self) -> Option<Value> {
+        match self {
+            Self::Text { .. } => None,
+            Self::Payload { payload } => Some(payload.clone()),
+        }
+    }
+}
+
+fn outgoing_body(body: &crate::messages::MessageBody) -> crate::ImResult<OutgoingGroupBody> {
+    match body {
+        crate::messages::MessageBody::Text { text, kind: _ } if text.trim().is_empty() => {
+            Err(crate::ImError::invalid_input(
+                Some("text".to_string()),
+                "text message must not be empty",
+            ))
+        }
+        crate::messages::MessageBody::Text { text, kind } => Ok(OutgoingGroupBody::Text {
+            text: text.clone(),
+            kind: kind.clone(),
+        }),
+        crate::messages::MessageBody::Payload { payload } if !payload.is_object() => {
+            Err(crate::ImError::invalid_input(
+                Some("payload".to_string()),
+                "message payload must be a JSON object",
+            ))
+        }
+        crate::messages::MessageBody::Payload { payload } => Ok(OutgoingGroupBody::Payload {
+            payload: payload.clone(),
+        }),
+        crate::messages::MessageBody::Attachment { .. } => {
+            Err(crate::ImError::unsupported("attachments"))
+        }
+    }
+}
+
 pub(crate) fn text_body(
     body: &crate::messages::MessageBody,
 ) -> crate::ImResult<(&str, crate::messages::MessageKind)> {
@@ -271,8 +341,37 @@ pub(crate) fn text_body(
             ))
         }
         crate::messages::MessageBody::Text { text, kind } => Ok((text.as_str(), kind.clone())),
+        crate::messages::MessageBody::Payload { .. } => {
+            Err(crate::ImError::unsupported("group-e2ee-payload"))
+        }
         crate::messages::MessageBody::Attachment { .. } => {
             Err(crate::ImError::unsupported("attachments"))
+        }
+    }
+}
+
+fn build_group_payload(
+    sender_did: &str,
+    group_did: &str,
+    body: &OutgoingGroupBody,
+) -> crate::ImResult<crate::internal::wire::direct::DirectPayload> {
+    match body {
+        OutgoingGroupBody::Text { text, kind } => {
+            let content_type =
+                crate::internal::wire::common::content_type_for_message_kind(kind.clone(), None);
+            crate::internal::wire::group::build_group_send_payload(
+                sender_did,
+                group_did,
+                text,
+                content_type,
+            )
+        }
+        OutgoingGroupBody::Payload { payload } => {
+            crate::internal::wire::group::build_group_json_send_payload(
+                sender_did,
+                group_did,
+                payload.clone(),
+            )
         }
     }
 }
@@ -315,8 +414,7 @@ pub(crate) fn sdk_result_from_group_result(
     result: &GroupRpcResult,
     sender: crate::ids::Did,
     group: crate::ids::GroupRef,
-    text: &str,
-    kind: crate::messages::MessageKind,
+    body: &OutgoingGroupBody,
 ) -> crate::ImResult<crate::messages::SendMessageResult> {
     let message_id = message_id_from_group_result(group.as_str(), result)?;
     let delivery = delivery_state(result);
@@ -326,7 +424,7 @@ pub(crate) fn sdk_result_from_group_result(
             Some(result.operation_id.clone()).filter(|value| !value.trim().is_empty()),
             Some(message_id.clone()),
             Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
-            Some(crate::internal::message_runtime::state::MessageRetryTarget::GroupText),
+            Some(body.retry_target()),
         );
     Ok(crate::messages::SendMessageResult {
         message: crate::messages::Message {
@@ -336,10 +434,7 @@ pub(crate) fn sdk_result_from_group_result(
             sender: crate::ids::PeerRef::parse(sender.as_str(), "")?,
             receiver: None,
             group: Some(group),
-            body: crate::messages::MessageBodyView::Text {
-                text: text.to_string(),
-                kind: kind.clone(),
-            },
+            body: body.body_view(),
             sent_at: Some(result.accepted_at.clone()).filter(|value| !value.trim().is_empty()),
             received_at: None,
             metadata: crate::messages::MessageMetadata {
@@ -352,13 +447,27 @@ pub(crate) fn sdk_result_from_group_result(
                 send_state: Some(send_state),
                 retry_plan,
                 server_sequence: result.group_event_seq.trim().parse().ok(),
-                content_type: Some(content_type_for_message_type(message_type(&kind)).to_string()),
+                content_type: Some(body.content_type().to_string()),
                 attributes: metadata_attributes(result),
             },
         },
         delivery,
         warnings: Vec::new(),
     })
+}
+
+pub(crate) fn sdk_text_result_from_group_result(
+    result: &GroupRpcResult,
+    sender: crate::ids::Did,
+    group: crate::ids::GroupRef,
+    text: &str,
+    kind: crate::messages::MessageKind,
+) -> crate::ImResult<crate::messages::SendMessageResult> {
+    let body = OutgoingGroupBody::Text {
+        text: text.to_owned(),
+        kind,
+    };
+    sdk_result_from_group_result(result, sender, group, &body)
 }
 
 fn message_id_from_group_result(
@@ -590,6 +699,64 @@ mod tests {
             result,
             Err(crate::ImError::UnsupportedCapability { capability }) if capability == "direct-send"
         ));
+    }
+
+    #[test]
+    fn messages_group_payload_sender_builds_body_payload_and_maps_result() {
+        let fixture = Fixture::new();
+        let client = fixture.client();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let group_did = "did:example:groups:payload";
+        let sender = GroupTextSender::new(
+            &client,
+            ReadySessionProvider,
+            RecordingTransport {
+                calls: Rc::clone(&calls),
+                response: json!({
+                    "accepted": true,
+                    "final_acceptance": true,
+                    "group_did": group_did,
+                    "message_id": "server-message-id",
+                    "operation_id": "op-group-payload",
+                    "group_event_seq": "44",
+                    "group_state_version": "v44",
+                    "accepted_at": "2026-05-21T00:00:00Z"
+                }),
+            },
+        );
+        let payload = json!({
+            "schema": "awiki.agent.status.v1",
+            "state": "running"
+        });
+
+        let result = sender
+            .send(GroupTextSend {
+                request: group_payload_request(group_did, payload.clone()),
+                credentials: Some(fixture.credentials()),
+            })
+            .unwrap();
+
+        assert_eq!(result.group_did, group_did);
+        assert_eq!(result.message_type, "payload");
+        assert!(result.text.is_empty());
+        assert_eq!(result.payload, Some(payload.clone()));
+        assert_eq!(
+            result.sdk_result.message.body,
+            crate::messages::MessageBodyView::Payload {
+                payload: payload.clone()
+            }
+        );
+        assert_eq!(
+            result.sdk_result.message.metadata.content_type.as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(result.sdk_result.message.metadata.server_sequence, Some(44));
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, "group.send");
+        assert_eq!(calls[0].params["meta"]["content_type"], "application/json");
+        assert_eq!(calls[0].params["body"], json!({ "payload": payload }));
     }
 
     #[tokio::test]
@@ -830,6 +997,18 @@ mod tests {
                 text: text.to_string(),
                 kind,
             },
+            security: crate::messages::MessageSecurityMode::Plain,
+            client_message_id: None,
+            delivery: crate::messages::MessageDeliveryOptions::default(),
+        }
+    }
+
+    fn group_payload_request(group: &str, payload: Value) -> crate::messages::SendMessageRequest {
+        crate::messages::SendMessageRequest {
+            target: crate::messages::MessageTarget::Group(
+                crate::ids::GroupRef::parse(group).unwrap(),
+            ),
+            body: crate::messages::MessageBody::Payload { payload },
             security: crate::messages::MessageSecurityMode::Plain,
             client_message_id: None,
             delivery: crate::messages::MessageDeliveryOptions::default(),

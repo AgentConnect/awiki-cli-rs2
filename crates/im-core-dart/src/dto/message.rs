@@ -31,6 +31,16 @@ pub struct DartSendTextRequest {
     pub wait_for_final_acceptance: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DartSendPayloadRequest {
+    pub target: DartMessageTarget,
+    pub payload_json: String,
+    pub security: DartMessageSecurityMode,
+    pub client_message_id: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub wait_for_final_acceptance: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DartMessageDirection {
     Outgoing,
@@ -42,6 +52,7 @@ pub enum DartMessageDirection {
 pub struct DartMessageBodyView {
     pub text: Option<String>,
     pub kind: Option<String>,
+    pub payload_json: Option<String>,
     pub unsupported_content_type: Option<String>,
 }
 

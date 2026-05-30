@@ -1022,6 +1022,12 @@ fn send_text_plan_fields(
 ) -> Result<(String, &'static str), ExitError> {
     match &request.body {
         MessageBody::Text { text, kind } => Ok((text.clone(), message_type_for_kind(kind))),
+        MessageBody::Payload { .. } => Err(ExitError::new(
+            "unsupported_capability",
+            2,
+            "payload messages are not supported by this CLI dry-run renderer.",
+            "Use im-core payload APIs from SDK callers until the CLI message command adds payload input.",
+        )),
         MessageBody::Attachment { .. } => Err(ExitError::new(
             "unsupported_capability",
             2,

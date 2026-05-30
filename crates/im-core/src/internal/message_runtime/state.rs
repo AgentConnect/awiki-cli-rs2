@@ -4,6 +4,8 @@ use serde_json::Value;
 pub(crate) enum MessageRetryTarget {
     DirectText,
     GroupText,
+    DirectPayload,
+    GroupPayload,
 }
 
 pub(crate) fn send_state_from_delivery(
@@ -173,6 +175,10 @@ pub(crate) fn retry_plan_for_state(
     let action = match retry_target? {
         MessageRetryTarget::DirectText => crate::messages::MessageRetryAction::RetryDirectText,
         MessageRetryTarget::GroupText => crate::messages::MessageRetryAction::RetryGroupText,
+        MessageRetryTarget::DirectPayload => {
+            crate::messages::MessageRetryAction::RetryDirectPayload
+        }
+        MessageRetryTarget::GroupPayload => crate::messages::MessageRetryAction::RetryGroupPayload,
     };
     Some(crate::messages::MessageRetryPlan {
         retryable: true,
@@ -224,6 +230,12 @@ fn retry_action_from_str(value: &str) -> Option<crate::messages::MessageRetryAct
         }
         "retry_group_text" | "group_text" => {
             Some(crate::messages::MessageRetryAction::RetryGroupText)
+        }
+        "retry_direct_payload" | "direct_payload" => {
+            Some(crate::messages::MessageRetryAction::RetryDirectPayload)
+        }
+        "retry_group_payload" | "group_payload" => {
+            Some(crate::messages::MessageRetryAction::RetryGroupPayload)
         }
         _ => None,
     }

@@ -12,7 +12,10 @@ use crate::dto::{
     error::DartImError,
     group::DartCreateGroupRequest,
     identity::DartIdentitySelector,
-    message::{DartMessageSecurityMode, DartMessageTarget, DartSendTextRequest, DartThreadRef},
+    message::{
+        DartMessageSecurityMode, DartMessageTarget, DartSendPayloadRequest, DartSendTextRequest,
+        DartThreadRef,
+    },
     profile::DartProfilePatch,
     realtime::DartRealtimeOptions,
 };
@@ -313,6 +316,40 @@ impl TryFrom<DartSendTextRequest> for im_core::messages::SendMessageRequest {
                     im_core::messages::MessageKind::Text
                 },
             },
+            security: value.security.into(),
+            client_message_id: value
+                .client_message_id
+                .map(im_core::ids::MessageId::parse)
+                .transpose()
+                .map_err(DartImError::from)?,
+            delivery: im_core::messages::MessageDeliveryOptions {
+                idempotency_key: value.idempotency_key,
+                wait_for_final_acceptance: value.wait_for_final_acceptance,
+            },
+        })
+    }
+}
+
+impl TryFrom<DartSendPayloadRequest> for im_core::messages::SendMessageRequest {
+    type Error = DartImError;
+
+    fn try_from(value: DartSendPayloadRequest) -> Result<Self, Self::Error> {
+        let payload: serde_json::Value =
+            serde_json::from_str(&value.payload_json).map_err(|err| {
+                DartImError::invalid_input(
+                    Some("payload_json".to_string()),
+                    format!("payload_json must be a JSON object: {err}"),
+                )
+            })?;
+        if !payload.is_object() {
+            return Err(DartImError::invalid_input(
+                Some("payload_json".to_string()),
+                "payload_json must be a JSON object",
+            ));
+        }
+        Ok(Self {
+            target: value.target.try_into()?,
+            body: im_core::messages::MessageBody::Payload { payload },
             security: value.security.into(),
             client_message_id: value
                 .client_message_id

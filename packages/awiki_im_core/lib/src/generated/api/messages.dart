@@ -19,6 +19,14 @@ Future<DartSendMessageResult> sendText({
   request: request,
 );
 
+Future<DartSendMessageResult> sendPayload({
+  required ArcDartImClient client,
+  required DartSendPayloadRequest request,
+}) => RustLib.instance.api.crateApiMessagesSendPayload(
+  client: client,
+  request: request,
+);
+
 Future<DartMessagePage> inbox({
   required ArcDartImClient client,
   required int limit,
