@@ -122,8 +122,8 @@
 
 | 步骤 | 标题 | 依赖 | 输出 | 步骤文档 | 提交门禁 | 状态 |
 |---|---|---|---|---|---|---|
-| 01 | daemon MVP crate 与进程骨架 | 无 | `crates/awiki-deamon` crate、配置、状态根目录、`daemon.db`、`im-core` 初始化 | [steps/01-daemon-mvp-crate-and-process-skeleton.md](steps/01-daemon-mvp-crate-and-process-skeleton.md) | 必须 | 待开始 |
-| 02 | 本地 RPC 安全与 CLI 封装器 | 01 | UDS 本地 RPC、`runtime_rpc_token`、方法分级、封装器命令 | [steps/02-local-rpc-security-and-cli-wrapper.md](steps/02-local-rpc-security-and-cli-wrapper.md) | 必须 | 待开始 |
+| 01 | daemon MVP crate 与进程骨架 | 无 | `crates/awiki-deamon` crate、配置、状态根目录、`daemon.db`、`im-core` 初始化 | [steps/01-daemon-mvp-crate-and-process-skeleton.md](steps/01-daemon-mvp-crate-and-process-skeleton.md) | 必须 | 已完成 |
+| 02 | 本地 RPC 安全与 CLI 封装器 | 01 | UDS 本地 RPC、`runtime_rpc_token`、方法分级、封装器命令 | [steps/02-local-rpc-security-and-cli-wrapper.md](steps/02-local-rpc-security-and-cli-wrapper.md) | 必须 | 已完成 |
 | 03 | 通用 CLI 运行时插件 MVP | 01, 02 | 手工 runtime agent 配置、无界面 CLI driver、Skill callback 闭环 | [steps/03-generic-cli-runtime-plugin-mvp.md](steps/03-generic-cli-runtime-plugin-mvp.md) | 必须 | 待开始 |
 | 04 | `im-core` payload 接口 | 协议仓库已完成 | `im-core`、Dart DTO、local projection、realtime 支持 payload | [steps/04-sdk-im-core-payload-interface.md](steps/04-sdk-im-core-payload-interface.md) | 必须 | 待开始 |
 | 05 | message-service payload 支持 | 04，协议仓库已完成 | direct/group payload send、存储、history、realtime 支持 | [steps/05-message-service-payload-support.md](steps/05-message-service-payload-support.md) | 必须 | 待开始 |
@@ -138,7 +138,7 @@
 | 步骤 | 状态 | 分支 | 开始时间 | 完成时间 | 提交 | 审查证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
 | 01 | 已完成 | `feature/release-0526/awiki-deamon` | 2026-05-30 23:35:16 CST | 2026-05-31 00:33:19 CST | `e8f4fd1` | Review 已完成：crate 边界、路径处理、SQLite schema、config defaults、错误处理、测试和文档已审查；发现 state layout 目录未创建、manifest 有未使用依赖，均已修复。提交后 `git status --short --branch` 显示分支 ahead 1，工作区无未提交代码改动。 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；`cargo run -p awiki-deamon -- init-state --state-root <tmp>` 通过；源码边界 `rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无结果；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；`cargo test -p im-core --locked` 通过；`cargo test -p awiki-cli --locked` 通过；`cargo test --workspace --locked` 在 `im-core-dart` 链接动态库时被系统 SIGKILL。 | 开始步骤 02 |
-| 02 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 01 |
+| 02 | 已完成 | `feature/release-0526/awiki-deamon` | 2026-05-31 00:38:20 CST | 2026-05-31 01:08:54 CST | `395c815` | Review 已完成：token scope、hash 存储、过期/撤销/一次性使用、method/recipient 授权、UDS 权限、Linux `SO_PEERCRED`、macOS `getpeereid`、请求体身份字段不参与授权、audit 不记录 token 原文、CLI wrapper 边界和测试覆盖已审查；发现 macOS peer credential 分支缺失，已补齐。提交后 `git status --short --branch` 显示分支 ahead 3，仅剩计划台账更新待提交。 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；源码边界 `rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无结果；secret 搜索确认生产代码无 token 原文日志，audit 测试确认只记录 `token_id`。 | 开始步骤 03 |
 | 03 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 02 |
 | 阶段 A Review | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 步骤 01-03 完成后执行 |
 | 04 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 阶段 A Review 通过后开始 |

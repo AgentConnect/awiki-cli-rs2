@@ -2,20 +2,20 @@
 
 主计划：[../plan.md](../plan.md)
 步骤编号：02
-状态：草稿
+状态：已完成
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 待开始 |
+| 状态 | 已完成 |
 | 分支 | `feature/release-0526/awiki-deamon` |
-| 开始时间 | 待定 |
-| 完成时间 | 待定 |
-| 提交 | 待定 |
-| 审查证据 | 待定 |
-| 验证证据 | 待定 |
-| 下一步 | 在 daemon 骨架之后实现 runtime 本地 RPC 安全。 |
+| 开始时间 | 2026-05-31 00:38:20 CST |
+| 完成时间 | 2026-05-31 01:08:54 CST |
+| 提交 | `395c815` |
+| 审查证据 | Review 已完成：token scope、hash 存储、过期/撤销/一次性使用、method/recipient 授权、UDS 权限、Linux `SO_PEERCRED`、macOS `getpeereid`、请求体身份字段不参与授权、audit 不记录 token 原文、CLI wrapper 边界和测试覆盖已审查；发现 macOS peer credential 分支缺失，已补齐。 |
+| 验证证据 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked` 通过；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；源码边界 `rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无结果；secret 搜索确认生产代码无 token 原文日志，audit 测试确认只记录 `token_id`。 |
+| 下一步 | 开始步骤 03：通用 CLI 运行时插件 MVP。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -94,17 +94,17 @@
 
 ## 7. 验收标准
 
-- [ ] 本地 RPC 使用 UDS 且文件权限受限。
-- [ ] peer credential check 已实现，或平台 gated 原因已明确记录。
-- [ ] `runtime_rpc_token` scope 包含必需字段。
-- [ ] CLI 封装器只把 token 作为授权材料。
-- [ ] daemon 从 token storage 反查可信上下文。
-- [ ] token 原文不进入日志或 audit。
-- [ ] audit 只记录 `token_id`。
-- [ ] method level authorization 被强制执行。
-- [ ] 测试覆盖成功和失败路径。
-- [ ] 审查发现已修复或明确记录。
-- [ ] 完成验证和审查后，为本步骤创建聚焦提交。
+- [x] 本地 RPC 使用 UDS 且文件权限受限。
+- [x] peer credential check 已实现，或平台 gated 原因已明确记录。
+- [x] `runtime_rpc_token` scope 包含必需字段。
+- [x] CLI 封装器只把 token 作为授权材料。
+- [x] daemon 从 token storage 反查可信上下文。
+- [x] token 原文不进入日志或 audit。
+- [x] audit 只记录 `token_id`。
+- [x] method level authorization 被强制执行。
+- [x] 测试覆盖成功和失败路径。
+- [x] 审查发现已修复或明确记录。
+- [x] 完成验证和审查后，为本步骤创建聚焦提交。
 
 ## 8. 代码验证
 
@@ -123,11 +123,11 @@
 
 | 审查项 | 结果 | 说明 |
 |---|---|---|
-| 发现 | 待定 | 待定 |
-| 已修复 | 待定 | 待定 |
-| 残余风险 | 待定 | 待定 |
-| 测试缺口 | 待定 | 待定 |
-| 文档缺口 | 待定 | 待定 |
+| 发现 | 1 项 | macOS peer credential 分支缺失，与 macOS/Linux peer credential 要求不完全一致。 |
+| 已修复 | 已修复 | 补充 macOS `getpeereid` 分支；Linux 继续使用 `SO_PEERCRED`；其他 Unix 平台保留明确 gated 错误。 |
+| 残余风险 | 已记录 | 当前 UDS server 只提供测试可用的单请求处理；真实长驻 listener、Windows named pipe、runtime 调 im-core 发送消息在后续步骤实现。 |
+| 测试缺口 | 可接受 | Linux 环境已覆盖 UDS 权限、同 UID peer credential、token 生命周期、scope 和 audit；macOS 分支依赖目标平台后续验证。 |
+| 文档缺口 | 已补充 | `docs/local-dev.md` 已记录 token scope、UDS 权限、peer credential、audit 规则和平台边界。 |
 
 ## 10. 提交要求
 
