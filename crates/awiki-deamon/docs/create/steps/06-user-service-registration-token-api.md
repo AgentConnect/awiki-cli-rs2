@@ -1,7 +1,7 @@
-# 步骤 03：user-service registration token API
+# 步骤 06：user-service registration token API
 
 主计划：[../plan.md](../plan.md)
-步骤编号：03
+步骤编号：06
 状态：草稿
 
 ## 1. 执行状态
@@ -91,7 +91,7 @@ Registration token 是服务端签发的 DID/Handle 创建授权凭证：
 - [ ] 审查发现已修复或明确记录。
 - [ ] 完成验证和审查后，为本步骤创建聚焦提交。
 
-## 8. 验证
+## 8. 代码验证
 
 | 检查 | 命令或方法 | 预期证据 |
 |---|---|---|
@@ -101,7 +101,7 @@ Registration token 是服务端签发的 DID/Handle 创建授权凭证：
 | DB migration | 按 user-service 文档运行 migration/test setup | token 表或 schema 正确应用。 |
 | 安全审查 | 手工审查 token hashing、过期、撤销和 audit | 发现已记录并处理。 |
 
-## 9. 审查过程
+## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查 API 契约、授权、随机数、hash、过期、撤销、audit、日志、测试和文档。
 

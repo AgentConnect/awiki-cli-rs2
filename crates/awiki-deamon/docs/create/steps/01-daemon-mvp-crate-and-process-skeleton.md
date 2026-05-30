@@ -1,7 +1,7 @@
-# 步骤 04：daemon MVP crate 与进程骨架
+# 步骤 01：daemon MVP crate 与进程骨架
 
 主计划：[../plan.md](../plan.md)
-步骤编号：04
+步骤编号：01
 状态：草稿
 
 ## 1. 执行状态
@@ -15,7 +15,7 @@
 | 提交 | 待定 |
 | 审查证据 | 待定 |
 | 验证证据 | 待定 |
-| 下一步 | 在步骤 01 后创建 daemon crate 骨架。 |
+| 下一步 | 创建 daemon crate 骨架。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -40,7 +40,7 @@
 
 ## 4. 依赖
 
-- 前置步骤：步骤 01。
+- 前置步骤：无。
 - 外部文档：daemon 架构文档、SDK refactor 文档。
 - 环境前提：Rust workspace 能构建。
 
@@ -60,7 +60,7 @@ crate 边界：
 - `runtime_profile`
 - `workspace_binding`
 - `runtime_run`
-- `runtime_rpc_tokens` 占位表，步骤 05 填充行为。
+- `runtime_rpc_tokens` 占位表，步骤 02 填充行为。
 - `audit_log`
 - `schema_migrations`
 
@@ -95,7 +95,7 @@ crate 边界：
 - [ ] 审查发现已修复或明确记录。
 - [ ] 完成验证和审查后，为本步骤创建聚焦提交。
 
-## 8. 验证
+## 8. 代码验证
 
 | 检查 | 命令或方法 | 预期证据 |
 |---|---|---|
@@ -105,7 +105,7 @@ crate 边界：
 | 依赖边界 | `rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon` | daemon 不依赖 awiki-cli 内部。 |
 | 文档 | `git diff --check -- crates/awiki-deamon` | diff 干净。 |
 
-## 9. 审查过程
+## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查 crate 边界、路径处理、SQLite schema、config defaults、错误处理、测试和文档。
 
@@ -141,4 +141,4 @@ crate 边界：
 
 - 风险：crate 名称拼写可能成为公开 API；state layout 可能与 `im-core` 路径冲突。
 - 回滚：crate 保持私有，发布前如需改名再由用户确认。
-- 后续：步骤 05 填充本地 RPC 安全和 token 表行为。
+- 后续：步骤 02 填充本地 RPC 安全和 token 表行为。

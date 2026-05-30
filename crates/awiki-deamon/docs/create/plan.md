@@ -9,8 +9,8 @@
 ## 1. 目标
 
 - 目标：基于 [awiki_agent_runtime_host_architecture.md](../awiki_agent_runtime_host_architecture.md) 和当前代码结构，形成一份后续 Codex Goal 可以直接执行的 daemon 工程初始化创建计划。
-- 预期结果：`im-core`、message-service、user-service 和 daemon 的落地顺序清晰；首个版本先以 MVP 跑通 controller 到 runtime 的任务闭环，再逐步补齐注册、安全、管理和系统测试。
-- 完成标准：所有步骤完成后，SDK、服务端和 daemon 均有实现、测试、文档、审查记录和聚焦提交；系统测试覆盖 `application/json + body.payload`、registration token、`runtime_rpc_token` 和 daemon MVP 闭环。
+- 预期结果：先在 `crates/awiki-deamon` 搭起 daemon 工程和本地 MVP 闭环，再补齐 SDK、服务端、注册和系统测试能力。
+- 完成标准：所有步骤完成后，daemon、SDK 和服务端均有实现、测试、文档、代码 review 记录和聚焦提交；系统测试覆盖 `application/json + body.payload`、registration token、`runtime_rpc_token` 和 daemon MVP 闭环。
 - 非目标：本计划不实现代码；不再规划协议仓库改动；不设计 AVIC / AMP proof；不把 `shared-root` 或 `worktree-per-task` 宣称为强安全边界；不一次性接入 Hermes、OpenClaw、Claude Code、Codex、Gemini CLI 的完整能力；不展开 App UI 细节。
 
 ## 2. 已完成的前置条件
@@ -25,6 +25,7 @@
 
 执行本计划时必须遵守：
 
+- daemon 工程实现主目录固定为 `crates/awiki-deamon`；除根 `Cargo.toml` workspace member、明确列出的 SDK/service 跨仓步骤和系统测试外，daemon 进程、配置、DB、本地 RPC、runtime 插件、agent 管理和 daemon CLI 均应在该目录下实现。
 - 不新增 command/status/result 专用 JSON 内容类型。
 - 不新增旧版结构化 JSON 字段名，也不引入 `body.payload` 之外的同义字段。
 - 结构化 JSON 的消息字段固定为 `body.payload`。
@@ -94,39 +95,40 @@
 
 ### 开放问题
 
-- user-service registration token 的具体路由命名、表结构和幂等 key 需要在步骤 03 中冻结。
+- user-service registration token 的具体路由命名、表结构和幂等 key 需要在步骤 06 中冻结。
 - App 或 Mac 端如何请求 daemon/runtime registration token，需要另行对齐产品入口。
 - payload 是否需要第一版就支持 direct-e2ee 和 group-e2ee 的明文 inner body，还是先支持 transport-protected direct/group，再补 E2EE 兼容策略。
 - daemon CLI 封装器最终二进制和命令命名是否使用 `awiki-daemon`，本计划先按架构文档命名，执行时可通过计划变更调整。
-- daemon 是否应在步骤 04 先用模拟 transport 跑流程，还是必须依赖 message-service payload 完成后再做完整闭环。当前建议是文本 MVP 可先跑，payload command 闭环必须等步骤 01 到步骤 03 完成。
+- daemon 本地 MVP 的消息出口第一版使用 testable adapter / mock transport，还是直接接真实 `im-core` 文本发送。当前约束：步骤 03 可以用 testable adapter 跑本地闭环，真实 payload command 闭环等步骤 04 到步骤 06 完成后再产品化。
 
 ## 7. 阶段策略
 
-| 阶段 | 覆盖步骤 | 原因 |
-|---|---|---|
-| 阶段 A：SDK 与服务端承接 | 01, 02, 03 | 协议已完成，先让 `im-core`、message-service、user-service 具备 daemon 所需的消息和身份能力。 |
-| 阶段 B：daemon MVP 宿主 | 04, 05, 06 | 新增 daemon crate，先完成进程、DB、本地 RPC 安全、CLI 封装器和通用 CLI 插件的最小闭环。 |
-| 阶段 C：agent 管理与集成 | 07, 08 | 补 daemon agent/runtime agent 注册与命令管理，再做跨仓系统测试、文档同步和安全复核。 |
+| 阶段 | 覆盖步骤 | 原因 | 阶段完成门禁 |
+|---|---|---|---|
+| 阶段 A：daemon 工程骨架与本地 MVP | 01, 02, 03 | 先把 `crates/awiki-deamon` 工程搭起来，跑通本地 runtime 闭环，避免执行入口先跑到服务端。 | 阶段代码 review、`cargo test -p awiki-deamon --locked` 或 workspace 等价测试、边界检查、阶段提交记录。 |
+| 阶段 B：SDK 与服务端承接 | 04, 05, 06 | 协议已完成，再让 `im-core`、message-service、user-service 具备 daemon 产品化需要的消息和身份能力。 | 阶段代码 review、SDK/service/token 聚焦测试、契约检查、跨仓提交记录。 |
+| 阶段 C：agent 管理与集成 | 07, 08 | 补 daemon agent/runtime agent 注册与命令管理，再做跨仓系统测试、文档同步和安全复核。 | 阶段代码 review、E2E 或替代验证、安全 review、发布门禁记录。 |
 
 关键顺序判断：
 
 - 协议仓库已经完成，执行时直接参考协议和 SDK 现状。
-- `im-core` 公开 DTO 先于 daemon 使用，daemon 不能长期直接拼原始 JSON RPC。
+- daemon 主线先落到 `crates/awiki-deamon`；步骤 01 到步骤 03 不应被 SDK/service/token 工作阻塞。
+- `im-core` 公开 DTO 是产品化 payload 闭环的前提，但 daemon 本地 MVP 可以先用 testable adapter / mock transport 跑通。
 - user-service 的 registration token 与 daemon 内部 `runtime_rpc_token` 分开落地：前者是服务端身份注册授权，后者是本机 runtime 调 daemon 的短期授权。
-- daemon MVP 可以先以文本任务跑通流程，但 JSON command/status 的产品化闭环要等 payload 和服务端契约完成。
-- 本地 RPC 安全是 MVP 必须门禁，不能作为后续优化。
+- 本地 RPC 安全是 daemon MVP 必须门禁，不能作为后续优化。
+- 每个阶段完成后必须做阶段级代码 review；阶段 review 未通过时，不能进入下一阶段。
 
 ## 8. 任务拆分
 
 | 步骤 | 标题 | 依赖 | 输出 | 步骤文档 | 提交门禁 | 状态 |
 |---|---|---|---|---|---|---|
-| 01 | `im-core` payload 接口 | 协议仓库已完成 | `im-core`、Dart DTO、local projection、realtime 支持 payload | [steps/01-sdk-im-core-payload-interface.md](steps/01-sdk-im-core-payload-interface.md) | 必须 | 待开始 |
-| 02 | message-service payload 支持 | 01，协议仓库已完成 | direct/group payload send、存储、history、realtime 支持 | [steps/02-message-service-payload-support.md](steps/02-message-service-payload-support.md) | 必须 | 待开始 |
-| 03 | user-service registration token API | 无强依赖 | daemon/runtime registration token 契约与实现 | [steps/03-user-service-registration-token-api.md](steps/03-user-service-registration-token-api.md) | 必须 | 待开始 |
-| 04 | daemon MVP crate 与进程骨架 | 01 | `crates/awiki-deamon` crate、配置、状态根目录、`daemon.db`、`im-core` 初始化 | [steps/04-daemon-mvp-crate-and-process-skeleton.md](steps/04-daemon-mvp-crate-and-process-skeleton.md) | 必须 | 待开始 |
-| 05 | 本地 RPC 安全与 CLI 封装器 | 04 | UDS 本地 RPC、`runtime_rpc_token`、方法分级、封装器命令 | [steps/05-local-rpc-security-and-cli-wrapper.md](steps/05-local-rpc-security-and-cli-wrapper.md) | 必须 | 待开始 |
-| 06 | 通用 CLI 运行时插件 MVP | 04, 05 | 手工 runtime agent 配置、无界面 CLI 驱动、Skill callback 闭环 | [steps/06-generic-cli-runtime-plugin-mvp.md](steps/06-generic-cli-runtime-plugin-mvp.md) | 必须 | 待开始 |
-| 07 | daemon agent 与 runtime agent 管理 | 02, 03, 04, 05, 06 | daemon DID 注册、runtime agent create/status、daemon 命令设计 | [steps/07-agent-registration-and-management.md](steps/07-agent-registration-and-management.md) | 必须 | 待开始 |
+| 01 | daemon MVP crate 与进程骨架 | 无 | `crates/awiki-deamon` crate、配置、状态根目录、`daemon.db`、`im-core` 初始化 | [steps/01-daemon-mvp-crate-and-process-skeleton.md](steps/01-daemon-mvp-crate-and-process-skeleton.md) | 必须 | 待开始 |
+| 02 | 本地 RPC 安全与 CLI 封装器 | 01 | UDS 本地 RPC、`runtime_rpc_token`、方法分级、封装器命令 | [steps/02-local-rpc-security-and-cli-wrapper.md](steps/02-local-rpc-security-and-cli-wrapper.md) | 必须 | 待开始 |
+| 03 | 通用 CLI 运行时插件 MVP | 01, 02 | 手工 runtime agent 配置、无界面 CLI driver、Skill callback 闭环 | [steps/03-generic-cli-runtime-plugin-mvp.md](steps/03-generic-cli-runtime-plugin-mvp.md) | 必须 | 待开始 |
+| 04 | `im-core` payload 接口 | 协议仓库已完成 | `im-core`、Dart DTO、local projection、realtime 支持 payload | [steps/04-sdk-im-core-payload-interface.md](steps/04-sdk-im-core-payload-interface.md) | 必须 | 待开始 |
+| 05 | message-service payload 支持 | 04，协议仓库已完成 | direct/group payload send、存储、history、realtime 支持 | [steps/05-message-service-payload-support.md](steps/05-message-service-payload-support.md) | 必须 | 待开始 |
+| 06 | user-service registration token API | 无强依赖；阶段 B 内可并行 | daemon/runtime registration token 契约与实现 | [steps/06-user-service-registration-token-api.md](steps/06-user-service-registration-token-api.md) | 必须 | 待开始 |
+| 07 | daemon agent 与 runtime agent 管理 | 01-06 | daemon DID 注册、runtime agent create/status、daemon 命令设计 | [steps/07-agent-registration-and-management.md](steps/07-agent-registration-and-management.md) | 必须 | 待开始 |
 | 08 | 集成、系统测试与发布门禁 | 01-07 | 跨仓 E2E、安全审查、文档和发布检查清单 | [steps/08-integration-system-tests-and-rollout.md](steps/08-integration-system-tests-and-rollout.md) | 如有文件变更则必须 | 待开始 |
 
 ## 9. 执行账本
@@ -135,14 +137,17 @@
 
 | 步骤 | 状态 | 分支 | 开始时间 | 完成时间 | 提交 | 审查证据 | 验证证据 | 下一步 |
 |---|---|---|---|---|---|---|---|---|
-| 01 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 开始步骤 01 |
-| 02 | 待开始 | message-service 分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 01 |
-| 03 | 待开始 | user-service 分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 可独立开始 |
-| 04 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 01 |
-| 05 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 04 |
-| 06 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 05 |
-| 07 | 待开始 | 当前仓库和服务端相关分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 02、03、06 |
+| 01 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 创建 daemon crate 骨架 |
+| 02 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 01 |
+| 03 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 02 |
+| 阶段 A Review | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 步骤 01-03 完成后执行 |
+| 04 | 待开始 | `feature/release-0526/awiki-deamon` | 待定 | 待定 | 待定 | 待定 | 待定 | 阶段 A Review 通过后开始 |
+| 05 | 待开始 | message-service 分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 04 |
+| 06 | 待开始 | user-service 分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 阶段 B 内可与步骤 04/05 并行评估 |
+| 阶段 B Review | 待开始 | 相关仓库分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 步骤 04-06 完成后执行 |
+| 07 | 待开始 | 当前仓库和服务端相关分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 等待阶段 B Review |
 | 08 | 待开始 | 集成分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 01-07 |
+| 阶段 C Review | 待开始 | 集成分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 步骤 07-08 完成后执行 |
 
 ## 10. Codex Goal 执行协议
 
@@ -151,18 +156,32 @@
 - 除非本计划明确标记步骤可并行，否则一次只执行一个步骤。
 - 恢复执行时，从第一个状态不是 `已完成` 的步骤继续。
 - 每个步骤都按顺序执行：标记 `进行中`、实现、验证、审查、修复审查发现、提交、记录证据、标记 `已完成`。
+- daemon 工程实现主目录固定为 `crates/awiki-deamon`；除根 `Cargo.toml` workspace member、明确列出的 SDK/service 跨仓步骤和系统测试外，不得在其他目录实现 daemon 逻辑。
 - 不能带着上一依赖步骤的未提交完成工作进入下一步骤。
 - 每步提交前记录 `git status` 和纳入文件；提交后记录 commit hash 和提交后的 `git status`。
 - 如果需要改变范围、顺序、验收标准、公开契约、数据模型、安全假设或验证策略，必须先更新本计划。
 - 本地 RPC 授权不能信任请求体中的 `agent_did` 等字段；可信上下文必须来自 daemon 根据 token 的反查。
 - 结构化 JSON 只能使用 `application/json + body.payload`；不能新增 command/status/result 专用 JSON 内容类型。
+- 阶段完成后必须执行阶段级代码 review，记录阶段审查证据和验证证据；阶段 review 未通过时，不得进入下一阶段。
 
 ## 11. 审查策略
 
 - 每步实现后、提交前都必须做审查，优先检查正确性、回归风险、公开契约、数据安全、测试和文档漂移。
-- 步骤 01 和步骤 02 重点审查 `application/json + body.payload` 在 SDK 与服务端之间是否一致。
-- 步骤 03 和步骤 05 需要安全审查，重点是 token 存储、日志脱敏、审计字段、过期、撤销和可信上下文。
+- 步骤 01 到步骤 03 重点审查 daemon 是否只在 `crates/awiki-deamon` 实现、是否没有依赖 awiki-cli 内部模块、本地 MVP 是否有可运行验证。
+- 步骤 04 和步骤 05 重点审查 `application/json + body.payload` 在 SDK 与服务端之间是否一致。
+- 步骤 02、步骤 05 和步骤 06 需要安全审查，重点是 token 存储、日志脱敏、审计字段、过期、撤销、UDS 权限和可信上下文。
 - 步骤 08 做集成审查，确认 direct/group payload、registration token、daemon 本地 RPC 和 MVP runtime 闭环没有契约漂移。
+- 阶段 A Review：检查 daemon crate 边界、DB/配置、本地 RPC、runtime 插件、测试和提交记录。
+- 阶段 B Review：检查 SDK/service/token 契约、跨仓兼容性、安全设计、迁移和提交记录。
+- 阶段 C Review：检查 agent 管理、系统测试、发布文档、安全/隐私和残余风险。
+
+阶段 Review 记录模板：
+
+| 阶段 | 状态 | 代码 Review 结论 | 发现 | 已修复 | 残余风险 | 验证证据 | 下一步 |
+|---|---|---|---|---|---|---|---|
+| 阶段 A | 待定 | 待定 | 待定 | 待定 | 待定 | 待定 | 待定 |
+| 阶段 B | 待定 | 待定 | 待定 | 待定 | 待定 | 待定 | 待定 |
+| 阶段 C | 待定 | 待定 | 待定 | 待定 | 待定 | 待定 | 待定 |
 
 ## 12. 验证策略
 
@@ -170,6 +189,8 @@
 |---|---|---|
 | 文档 | `git diff --check -- <changed-docs>` | 没有空白或补丁格式错误。 |
 | 文档 | 搜索计划和架构文档中的旧字段名和旧 command/status 内容类型 | 没有旧字段名或旧 command/status 内容类型。 |
+| daemon 主目录 | `rg -n "crates/awiki-cli|awiki_cli" crates/awiki-deamon` | daemon 不依赖 awiki-cli 内部模块。 |
+| daemon 边界 | `rg -n "awiki-deamon" Cargo.toml crates/awiki-deamon` | daemon crate、源码、测试和文档均落在预期目录。 |
 | 当前仓库 Rust | `cargo test --workspace --locked` | `im-core`、`im-core-dart`、`awiki-cli`、daemon crate 测试通过。 |
 | 当前仓库格式 | `cargo fmt --all --check` | 格式检查通过。 |
 | Dart/Flutter 桥接 | 仓库已有 codegen/check 脚本，或针对性 compile/test | DTO/API 桥接同步。 |
@@ -177,6 +198,7 @@
 | user-service | `cd ../user-service && uv run pytest tests -v` | registration token API、过期、撤销、审计测试通过。 |
 | 系统测试 | `cd ../awiki-system-test && <focused message-v2 / daemon E2E command>` | 跨服务 payload 和 daemon MVP 闭环通过。 |
 | 安全审查 | 手工审查并记录到步骤文档 | token 原文不落日志，audit 只记录 `token_id`，UDS 和 peer credential 检查已验证。 |
+| 阶段 Review | 阶段完成后手工代码 review 并记录到执行账本 | 阶段发现、修复、残余风险和验证证据完整。 |
 
 命令可根据子仓库实际工具调整。不能运行的命令必须记录原因、替代验证和残余风险。
 
@@ -217,15 +239,16 @@
 | 2026-05-30 | 根据架构文档更新，统一为 `application/json + body.payload`。 | 架构文档已取消 command/status/result 专用 JSON 内容类型。 | 01, 02, 07, 08 | 是 |
 | 2026-05-30 | 删除协议仓库待执行阶段，将协议仓库修改作为已完成前置条件。 | 用户反馈协议仓库代码已经更新。 | 全部重新编号 | 是 |
 | 2026-05-30 | 计划正文改为中文，保留必要代码标识、路径和命令名。 | 用户要求以后所有计划全部使用中文。 | 全部 | 是 |
+| 2026-05-30 | 调整阶段顺序：daemon 工程骨架和本地 MVP 先于 SDK/service/token 产品化能力；补充阶段级代码 review 门禁。 | Review 发现原计划执行入口会先跑到 SDK/service，偏离 `crates/awiki-deamon` 初始化主线；用户要求每个阶段完成后做代码 review。 | 全部 | 是 |
 
 ## 17. 风险与回滚
 
 | 风险 | 缓解 | 回滚或替代 |
 |---|---|---|
-| SDK 或服务端实现与协议仓库的 payload 契约漂移。 | 步骤 01 和步骤 02 增加契约测试，执行时参考协议仓库当前代码。 | 停止依赖步骤，先修正 SDK/service 契约。 |
+| SDK 或服务端实现与协议仓库的 payload 契约漂移。 | 步骤 04 和步骤 05 增加契约测试，执行时参考协议仓库当前代码。 | 停止依赖步骤，先修正 SDK/service 契约。 |
 | daemon 依赖 awiki-cli 内部模块。 | 固定依赖方向：daemon 和 awiki-cli 都依赖 `im-core`，daemon 只能参考 CLI 实现模式。 | 移除依赖，把可复用逻辑移到 `im-core` 或 daemon 自有模块。 |
 | `controller_did` 对高风险自动执行偏弱。 | 文档明确为 MVP 取舍；高风险任务需要人工审批或 container/sandbox。 | 高风险 runtime profile 默认禁用自动写操作。 |
-| 本地 RPC token 泄露。 | 步骤 05 要求 token 不写日志、audit 只记录 `token_id`、增加脱敏测试和安全审查。 | 撤销 token，轮换 daemon 本地 secret，修复日志与测试后再启用 runtime。 |
+| 本地 RPC token 泄露。 | 步骤 02 要求 token 不写日志、audit 只记录 `token_id`、增加脱敏测试和安全审查。 | 撤销 token，轮换 daemon 本地 secret，修复日志与测试后再启用 runtime。 |
 | workspace 安全被过度声明。 | `shared-root` 和 `worktree-per-task` 明确不是硬隔离；只有 container/sandbox 可作为安全边界。 | 高风险自动写代码只允许 container/sandbox。 |
-| user-service token API 阻塞 daemon 注册。 | 步骤 04 可先支持手工本地 identity 配置；步骤 07 等待步骤 03 后再产品化注册。 | 暂时保留手工配置 MVP。 |
+| user-service token API 阻塞 daemon 注册。 | 步骤 01 可先支持手工本地 identity 配置；步骤 07 等待步骤 06 后再产品化注册。 | 暂时保留手工配置 MVP。 |
 | 跨仓验证成本高。 | 每步使用聚焦单测/契约测试，步骤 08 做完整 E2E。 | 记录未运行测试和残余风险；没有 E2E 证据不能标记发布完成。 |

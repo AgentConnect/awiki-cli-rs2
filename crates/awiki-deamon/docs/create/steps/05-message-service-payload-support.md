@@ -1,7 +1,7 @@
-# 步骤 02：message-service payload 支持
+# 步骤 05：message-service payload 支持
 
 主计划：[../plan.md](../plan.md)
-步骤编号：02
+步骤编号：05
 状态：草稿
 
 ## 1. 执行状态
@@ -15,7 +15,7 @@
 | 提交 | 待定 |
 | 审查证据 | 待定 |
 | 验证证据 | 待定 |
-| 下一步 | 在步骤 01 和协议前置条件基础上，实现服务端 payload 传输。 |
+| 下一步 | 在步骤 04 和协议前置条件基础上，实现服务端 payload 传输。 |
 
 状态值：`待开始`、`进行中`、`审查中`、`阻塞`、`已提交`、`已完成`。
 
@@ -41,7 +41,7 @@
 ## 4. 依赖
 
 - 前置条件：协议仓库的 JSON payload 改动已经完成。
-- 前置步骤：步骤 01 提供 SDK 侧 DTO 和测试夹具。
+- 前置步骤：步骤 04 提供 SDK 侧 DTO 和测试夹具。
 - 环境前提：message-service 仓库、数据库和测试依赖可用。
 
 ## 5. 核心设计
@@ -82,7 +82,7 @@ message-service 把 payload 当作消息内容，而不是命令：
 - [ ] 审查发现已修复或明确记录。
 - [ ] 完成验证和审查后，为本步骤创建聚焦提交。
 
-## 8. 验证
+## 8. 代码验证
 
 | 检查 | 命令或方法 | 预期证据 |
 |---|---|---|
@@ -92,7 +92,7 @@ message-service 把 payload 当作消息内容，而不是命令：
 | payload 搜索 | `rg -n "body\\.payload|\"payload\"" ../message-service/docs ../message-service/crates` | 文档和代码有预期支持。 |
 | 回归测试 | 既有 direct/group/attachment 测试 | 既有路径继续通过。 |
 
-## 9. 审查过程
+## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查协议兼容、proof 边界、存储 migration、安全语义、realtime 行为、测试和文档。
 

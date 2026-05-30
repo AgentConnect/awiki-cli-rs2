@@ -1,7 +1,7 @@
-# 步骤 01：`im-core` payload 接口
+# 步骤 04：`im-core` payload 接口
 
 主计划：[../plan.md](../plan.md)
-步骤编号：01
+步骤编号：04
 状态：草稿
 
 ## 1. 执行状态
@@ -97,7 +97,7 @@ SDK 不应暴露底层 `params`、`auth.origin_proof`、RPC method name 或 daem
 - [ ] 审查发现已修复或明确记录。
 - [ ] 完成验证和审查后，为本步骤创建聚焦提交。
 
-## 8. 验证
+## 8. 代码验证
 
 | 检查 | 命令或方法 | 预期证据 |
 |---|---|---|
@@ -107,7 +107,7 @@ SDK 不应暴露底层 `params`、`auth.origin_proof`、RPC method name 或 daem
 | 禁用旧字段 | 搜索旧字段名和 command/status 专用 JSON 内容类型 | 没有旧字段或旧内容类型。 |
 | Dart 桥接 | 仓库已有 codegen/check 脚本，或针对性 compile/test | DTO 和映射同步。 |
 
-## 9. 审查过程
+## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查公开接口、线协议兼容、本地持久化、realtime 解析、数据丢失风险、测试和文档。
 
@@ -143,4 +143,4 @@ SDK 不应暴露底层 `params`、`auth.origin_proof`、RPC method name 或 daem
 
 - 风险：local SQLite schema 可能需要迁移；Dart 桥接可能需要生成文件；API 命名可能过早暴露 daemon 语义。
 - 回滚：在完整 projection 未完成前，对未知 payload 保留 unsupported/原始 view。
-- 后续：步骤 02 必须验证 message-service 返回的 payload shape 能被本步骤 SDK 解析。
+- 后续：步骤 05 必须验证 message-service 返回的 payload shape 能被本步骤 SDK 解析。

@@ -31,17 +31,17 @@
 |---|---|---|
 | `crates/awiki-deamon/src/agent/` | Daemon agent 和 runtime agent definition。 | 包含 `controller_did` 模型。 |
 | `crates/awiki-deamon/src/commands/` | payload command 解析器和处理器。 | 使用 `application/json + body.payload`。 |
-| `crates/awiki-deamon/src/registration/` | user-service registration token client。 | 使用步骤 03 API。 |
+| `crates/awiki-deamon/src/registration/` | user-service registration token client。 | 使用步骤 06 API。 |
 | `crates/awiki-deamon/src/daemon_cli/` | 最小管理命令。 | 与 awiki-cli 分离。 |
 | `crates/awiki-deamon/src/state/` | agent/runtime/profile/workspace 持久化。 | 单个 `daemon.db`。 |
 | `crates/im-core/src/identity/` | 如适合，增加 token-based agent registration client API。 | 避免 daemon 长期原始调用 user-service。 |
-| user-service | 如果步骤 03 发现缺口，做小范围修正。 | 范围扩大需先更新计划。 |
-| message-service | 如果步骤 02 发现互操作缺口，做小范围修正。 | 范围扩大需先更新计划。 |
+| user-service | 如果步骤 06 发现缺口，做小范围修正。 | 范围扩大需先更新计划。 |
+| message-service | 如果步骤 05 发现互操作缺口，做小范围修正。 | 范围扩大需先更新计划。 |
 | `crates/awiki-deamon/docs/` | daemon 命令设计和 agent lifecycle 文档。 | 必须澄清 awiki-cli 边界。 |
 
 ## 4. 依赖
 
-- 前置步骤：步骤 02、03、04、05、06。
+- 前置步骤：步骤 01、02、03、04、05、06。
 - 外部决策：registration token API、payload 契约、daemon 架构文档。
 - 环境前提：可访问 user-service 和 message-service 测试端点。
 
@@ -72,7 +72,7 @@ daemon CLI 命令应比 awiki-cli 小，聚焦管理和诊断：
 - `runtime start`
 - `runtime stop`
 
-步骤 05 的 runtime Skill CLI 封装器是本地 RPC client，不应扩展成完整用户 CLI。
+步骤 02 的 runtime Skill CLI 封装器是本地 RPC client，不应扩展成完整用户 CLI。
 
 ## 6. 实施指引
 
@@ -105,7 +105,7 @@ daemon CLI 命令应比 awiki-cli 小，聚焦管理和诊断：
 - [ ] 审查发现已修复或明确记录。
 - [ ] 完成验证和审查后，为本步骤创建聚焦提交。
 
-## 8. 验证
+## 8. 代码验证
 
 | 检查 | 命令或方法 | 预期证据 |
 |---|---|---|
@@ -116,7 +116,7 @@ daemon CLI 命令应比 awiki-cli 小，聚焦管理和诊断：
 | 边界检查 | `rg -n "crates/awiki-cli|awiki_cli" crates/awiki-deamon` | daemon 不依赖 awiki-cli 内部。 |
 | 字段检查 | 搜索旧字段名和旧内容类型 | 没有旧字段或旧 command/status 内容类型。 |
 
-## 9. 审查过程
+## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查 registration token 消费、`controller_did` 假设、payload parsing、daemon CLI 边界、持久化、测试和文档。
 

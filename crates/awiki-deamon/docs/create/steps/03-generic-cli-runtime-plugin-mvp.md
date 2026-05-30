@@ -1,7 +1,7 @@
-# 步骤 06：通用 CLI 运行时插件 MVP
+# 步骤 03：通用 CLI 运行时插件 MVP
 
 主计划：[../plan.md](../plan.md)
-步骤编号：06
+步骤编号：03
 状态：草稿
 
 ## 1. 执行状态
@@ -22,7 +22,7 @@
 ## 2. 目标
 
 - 结果：daemon 能把手工配置的 runtime agent 文本任务路由到无界面 CLI runtime，并通过 CLI 封装器和本地 RPC 收到状态和最终输出。
-- 可见行为：controller 文本消息创建 runtime run；runtime 执行一次；Skill/封装器上报 status 和 final；daemon 通过 `im-core` 发送状态/结果并记录 run/audit。
+- 可见行为：controller 文本消息创建 runtime run；runtime 执行一次；Skill/封装器上报 status 和 final；daemon 通过 testable adapter 或 `im-core` 发送状态/结果并记录 run/audit。
 - 非目标：不实现完整 Claude Code/Codex/Gemini driver；不实现 workspace 强隔离；不引入 RuntimeEvent 作为第二条权威状态通道。
 
 ## 3. 范围
@@ -39,7 +39,7 @@
 
 ## 4. 依赖
 
-- 前置步骤：步骤 04 和步骤 05。
+- 前置步骤：步骤 01 和步骤 02。
 - 外部文档：架构文档中的 RuntimeTask、workspace-bound 模型和 callback chain。
 - 环境前提：测试中可在临时目录生成测试 CLI binary/script。
 
@@ -55,7 +55,7 @@ controller 文本消息
   -> daemon 签发 runtime_rpc_token
   -> 插件启动无界面 CLI，并注入封装器环境/config
   -> runtime 调封装器 task.status/task.finish/msg.send
-  -> daemon 校验 token，通过 im-core 发消息
+  -> daemon 校验 token，通过 testable adapter 或 im-core 发消息
   -> daemon 记录 run/audit
 ```
 
@@ -68,6 +68,8 @@ workspace mode：
 | `container / sandbox` | 后续或可选模式，才可作为安全边界。 |
 
 RuntimeEvent 在本步骤只做观察/日志。权威状态和结果通道是 Skill / daemon CLI 封装器 / 本地 RPC。
+
+本步骤属于 daemon 本地 MVP，不等待步骤 04 到步骤 06。真实 payload command/status 的产品化闭环在步骤 07 和步骤 08 中完成；本步骤允许使用 testable adapter / mock transport 验证状态和结果发送行为。
 
 ## 6. 实施指引
 
@@ -90,15 +92,15 @@ RuntimeEvent 在本步骤只做观察/日志。权威状态和结果通道是 Sk
 - [ ] 能加载手工 runtime agent config。
 - [ ] controller 文本任务能创建 RuntimeTask 和 RuntimeRun。
 - [ ] 通用 CLI 插件能启动测试替身/无界面 runtime。
-- [ ] runtime callback 使用步骤 05 的本地 RPC 和 token 校验。
-- [ ] daemon 通过 `im-core` 或 testable adapter 发送 status/final message。
+- [ ] runtime callback 使用步骤 02 的本地 RPC 和 token 校验。
+- [ ] daemon 通过 testable adapter 或 `im-core` 发送 status/final message。
 - [ ] run 和 audit 记录被持久化。
 - [ ] RuntimeEvent 不作为第二条状态权威来源。
 - [ ] workspace mode 限制已文档化。
 - [ ] 审查发现已修复或明确记录。
 - [ ] 完成验证和审查后，为本步骤创建聚焦提交。
 
-## 8. 验证
+## 8. 代码验证
 
 | 检查 | 命令或方法 | 预期证据 |
 |---|---|---|
@@ -109,7 +111,7 @@ RuntimeEvent 在本步骤只做观察/日志。权威状态和结果通道是 Sk
 | 状态源检查 | `rg -n "RuntimeEvent" crates/awiki-deamon/src` | 如存在，仅用于观察/日志。 |
 | 文档 | `git diff --check -- crates/awiki-deamon/docs` | 文档 diff 干净。 |
 
-## 9. 审查过程
+## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查 task routing、`controller_did` 假设、runtime launch 隔离、token 注入、状态通道、持久化、测试和文档。
 

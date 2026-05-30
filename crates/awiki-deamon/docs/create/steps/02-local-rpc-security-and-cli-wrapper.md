@@ -1,7 +1,7 @@
-# 步骤 05：本地 RPC 安全与 CLI 封装器
+# 步骤 02：本地 RPC 安全与 CLI 封装器
 
 主计划：[../plan.md](../plan.md)
-步骤编号：05
+步骤编号：02
 状态：草稿
 
 ## 1. 执行状态
@@ -39,7 +39,7 @@
 
 ## 4. 依赖
 
-- 前置步骤：步骤 04。
+- 前置步骤：步骤 01。
 - 外部文档：架构文档中的本地 RPC 安全模型。
 - 环境前提：macOS/Linux 环境可测试 UDS；Windows 可先文档化延期。
 
@@ -106,7 +106,7 @@
 - [ ] 审查发现已修复或明确记录。
 - [ ] 完成验证和审查后，为本步骤创建聚焦提交。
 
-## 8. 验证
+## 8. 代码验证
 
 | 检查 | 命令或方法 | 预期证据 |
 |---|---|---|
@@ -117,7 +117,7 @@
 | socket 权限 | temp 状态根目录集成测试或手工冒烟验证 | socket mode 和父目录权限受限。 |
 | 安全审查 | 手工审查 token、peer credential、method scope | 发现已记录。 |
 
-## 9. 审查过程
+## 9. 代码 Review
 
 实现后、提交前进行审查，重点检查本地权限假设、token 生命周期、日志、audit、method scope、recipient scope、重放风险和测试。
 
@@ -153,4 +153,4 @@
 
 - 风险：不同平台 peer credential 检查差异大；token 原文误打日志；封装器 UX 膨胀成完整 CLI。
 - 回滚：禁用本地 RPC listener 和 runtime callback path，直到 token 校验修复。
-- 后续：步骤 06 runtime 插件必须使用该封装器，不能直连 message-service。
+- 后续：步骤 03 runtime 插件必须使用该封装器，不能直连 message-service。
