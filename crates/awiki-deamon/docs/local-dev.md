@@ -37,3 +37,35 @@ cargo test -p awiki-deamon --locked
 ```
 
 步骤 01 不启动真实 runtime，也不连接远端 message-service。
+
+## 本地 RPC 安全模型
+
+runtime Skill 不直接调用 message-service，也不携带可信身份字段。Skill 调用 daemon CLI wrapper，wrapper 通过 Unix domain socket 调 daemon local RPC，请求体只使用 `runtime_rpc_token` 作为授权材料。
+
+token scope 由 daemon 生成并持久化，绑定这些字段：
+
+- `agent_did`
+- `runtime_profile_id`
+- `run_id`
+- `allowed_methods`
+- `allowed_recipients`
+- `expires_at_ms`
+- `single_use`
+
+daemon 收到 RPC 后按顺序执行：
+
+1. 校验 Unix domain socket 文件权限和同机 peer credential。
+2. 解析 `runtime_rpc_token`，用 token hash 查本地 `runtime_rpc_tokens`。
+3. 从 token 记录反查 `agent_did`、`runtime_profile_id` 和 `run_id`。
+4. 校验过期、撤销、一次性使用、method scope 和 recipient scope。
+5. 写 audit。audit 只记录 `token_id`、上下文、method、授权结果和原因，不记录 token 原文。
+
+当前实现的 RPC method：
+
+- `rpc.ping`
+- `task.status`
+- `task.finish`
+- `msg.send`
+- `artifact.created`
+
+Linux 使用 `SO_PEERCRED` 校验连接方 UID 必须等于 daemon UID。其他 Unix 平台已经 gated，后续需要补等价 peer credential 机制。Windows named pipe 不在当前步骤实现范围内。

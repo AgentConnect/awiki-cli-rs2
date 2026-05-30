@@ -1,5 +1,8 @@
+pub mod cli_wrapper;
 pub mod config;
 pub mod im_core_adapter;
+pub mod local_rpc;
+pub mod security;
 pub mod state;
 
 use std::path::PathBuf;

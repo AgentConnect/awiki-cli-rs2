@@ -211,10 +211,14 @@ name = "awiki-deamon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "im-core",
+ "libc",
+ "rand 0.8.6",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
 ]
