@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 04  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-05-31 23:43:53 +0800 |
-| 完成时间 | 未完成 |
-| 提交 | 未提交 |
+| 完成时间 | 2026-05-31 23:59:07 +0800 |
+| 提交 | 实现提交 `9d3c57cd020cd72fcec4814852266449ffb145bf`；账本收尾提交待回填 |
 | 审查证据 | 2026-05-31 23:56:13 +0800 完成提交前 review：controller 校验、prompt wrapper、安全边界、fake callback token 替换和 final 主事实源均已检查；发现并修复 Hermes plugin 直接 launch 时 task/run/profile 不一致校验缺口。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_message` 通过，4 个测试；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，6 个匹配测试、1 个 ignored real smoke 被过滤；`cargo test -p awiki-deamon --test local_rpc_security --locked` 通过，6 个测试；`cargo test -p awiki-deamon --locked` 通过，52 个测试、1 ignored；secret/plugin 搜索仅命中预期测试、文档和生产 token 替换点；`git diff --check -- crates/awiki-deamon` 通过。 |
-| 下一步 | 提交 Step 04 实现提交 |
+| 下一步 | 启动 Step 05 真实 `msg.send` 外发消息 |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -256,9 +256,24 @@ MVP 规则：
 
 ### 提交后状态
 
-- 实现提交：待回填。
-- 实现提交后 `git status --short --branch`：待回填。
-- 遗留未提交变更：待回填。
+- 实现提交：`9d3c57cd020cd72fcec4814852266449ffb145bf`
+- 实现提交纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/03-tui-gateway-runner.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/04-message-execution.md`
+  - `crates/awiki-deamon/src/plugins/hermes/gateway.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/prompt.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/runner.rs`
+  - `crates/awiki-deamon/tests/hermes_gateway.rs`
+  - `crates/awiki-deamon/tests/hermes_message.rs`
+- 实现提交后 `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 7]
+```
+
+- 遗留未提交变更：无。
 - 账本收尾提交：待回填。
 
 ## 13. 风险、回滚与后续
