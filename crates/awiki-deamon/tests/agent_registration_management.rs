@@ -6,6 +6,7 @@ use awiki_deamon::commands::{
     IncomingAgentPayloadMessage,
 };
 use awiki_deamon::outbox::MemoryRuntimeOutbox;
+use awiki_deamon::plugins::hermes::{AWIKI_SKILLS_VERSION, HERMES_RUNTIME_PLUGIN_ID};
 use awiki_deamon::registration::{
     AgentRegistrationClient, AgentRegistrationExchangeRequest, AgentRegistrationExchangeResult,
     RegistrationToken,
@@ -303,6 +304,103 @@ fn daemon_management_commands_list_agents_without_cli_crate_dependency() {
     .unwrap();
 
     assert_eq!(output["agents"][0]["handle"], "alice-mac-daemon");
+}
+
+#[test]
+fn hermes_status_reports_profile_installation_and_sessions_without_secrets() {
+    let (root, config, state) = fixture();
+    let registration = MockRegistrationClient::default();
+    let daemon = setup_daemon_agent(
+        &config,
+        &state,
+        &registration,
+        "alice-mac-daemon",
+        "did:human:alice",
+        RegistrationToken::new("tok_daemon_secret_value").unwrap(),
+    )
+    .unwrap();
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let outcome = handle_agent_payload_message(
+        &config,
+        &state,
+        &registration,
+        &outbox,
+        IncomingAgentPayloadMessage {
+            message_id: "msg_create_hermes_status".to_string(),
+            conversation_id: Some("conv_daemon_hermes_status".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: daemon.agent_did,
+            content_type: "application/json".to_string(),
+            payload: json!({
+                "schema": "awiki.agent.command.v1",
+                "command_id": "cmd_create_hermes_status",
+                "command": "runtime.agent.create",
+                "target_agent_kind": "runtime",
+                "args": {
+                    "handle": "@alice-hermes-status",
+                    "runtime": "hermes",
+                    "controller_did": "did:human:alice",
+                    "registration_token": "tok_runtime_secret_value"
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let AgentCommandOutcome::RuntimeAgentCreated(created) = outcome;
+    assert_eq!(created.runtime_plugin_id, HERMES_RUNTIME_PLUGIN_ID);
+    let route = awiki_deamon::state::HermesSessionRoute::new(
+        created.agent_did.clone(),
+        created.runtime_profile_id.clone(),
+        "did:human:alice",
+        Some("direct:did:human:alice".to_string()),
+        "conversation",
+    );
+    let session = awiki_deamon::state::HermesNativeSessionRecord::active(
+        &route,
+        "awiki_alice_hermes_status",
+        "hermes-session-status",
+    )
+    .unwrap();
+    state.store_hermes_native_session(&session).unwrap();
+    state
+        .insert_audit_event_json(
+            "hermes.error",
+            Some(&created.agent_did),
+            Some(&created.runtime_profile_id),
+            Some("run_hermes_status"),
+            None,
+            json!({
+                "error": "gateway failed with rtok_secret_value jwt_token auth_private_key",
+            }),
+        )
+        .unwrap();
+
+    let output = run_command_json(DaemonCommand::AgentStatus {
+        state_root: root.path().to_path_buf(),
+        agent_did: created.agent_did.clone(),
+    })
+    .unwrap();
+
+    assert_eq!(
+        output["agent"]["runtime_plugin_id"],
+        HERMES_RUNTIME_PLUGIN_ID
+    );
+    assert_eq!(output["hermes"]["agent_did"], created.agent_did);
+    assert_eq!(
+        output["hermes"]["awiki_skills_version"],
+        AWIKI_SKILLS_VERSION
+    );
+    assert_eq!(output["hermes"]["active_session_count"], 1);
+    assert_eq!(output["hermes"]["runner_status"], "lazy");
+    assert!(output["hermes"]["installation"]["detail"].is_string());
+    assert_eq!(output["hermes"]["last_error"], "hermes.error");
+    let dump = output.to_string();
+    assert!(!dump.contains("tok_runtime_secret_value"));
+    assert!(!dump.contains("tok_daemon_secret_value"));
+    assert!(!dump.contains("rtok_"));
+    assert!(!dump.contains("jwt_token"));
+    assert!(!dump.contains("auth_private_key"));
 }
 
 #[test]

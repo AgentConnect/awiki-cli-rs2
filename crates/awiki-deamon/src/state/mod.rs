@@ -780,6 +780,24 @@ WHERE route_key = ?2
         Ok(updated)
     }
 
+    pub fn count_active_hermes_sessions_for_agent(&self, agent_did: &str) -> Result<usize> {
+        if agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        let connection = self.connection()?;
+        let count: i64 = connection.query_row(
+            r#"
+SELECT COUNT(*)
+FROM hermes_native_sessions
+WHERE agent_did = ?1
+  AND status = 'active'
+"#,
+            [agent_did],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as usize)
+    }
+
     pub fn load_agent_definition(&self, agent_did: &str) -> Result<AgentDefinition> {
         let connection = self.connection()?;
         connection

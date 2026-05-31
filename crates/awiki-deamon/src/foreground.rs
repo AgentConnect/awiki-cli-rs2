@@ -21,6 +21,9 @@ use crate::local_rpc::{
     bind_uds_listener, handle_uds_stream_with_outbox, verify_socket_permissions,
 };
 use crate::outbox::{ImCoreAgentOutbox, RuntimeMessageSend, RuntimeOutbox};
+use crate::plugins::hermes::{
+    HermesGateway, HermesRuntimePlugin, StdioHermesGateway, HERMES_RUNTIME_PLUGIN_ID,
+};
 use crate::registration::UserServiceAgentRegistrationClient;
 use crate::runtime::host::run_controller_text_task;
 use crate::runtime::{
@@ -235,7 +238,6 @@ fn route_message(
             Ok(true)
         }
         MessageBodyView::Text { text, .. } => {
-            let profile = state.load_runtime_agent_profile(target_agent_did)?;
             let runtime_outbox = ControllerRuntimeOutbox::new(
                 ControllerOutboxSender::ImCore(outbox.clone()),
                 sender_did.clone(),
@@ -244,11 +246,9 @@ fn route_message(
                 Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 Arc::new(Mutex::new(Vec::new())),
             );
-            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
-            run_controller_text_task(
+            run_runtime_text_message_with_gateway(
+                config,
                 state,
-                &profile,
-                &plugin,
                 &runtime_outbox,
                 ControllerTextMessage {
                     message_id: message.id.as_str().to_string(),
@@ -257,10 +257,40 @@ fn route_message(
                     target_agent_did: target_agent_did.to_string(),
                     text: text.clone(),
                 },
+                StdioHermesGateway::from_env,
             )?;
             Ok(true)
         }
         MessageBodyView::Unsupported { .. } => Ok(false),
+    }
+}
+
+fn run_runtime_text_message_with_gateway<G, F>(
+    config: &DaemonConfig,
+    state: &DaemonState,
+    outbox: &impl RuntimeOutbox,
+    message: ControllerTextMessage,
+    hermes_gateway_factory: F,
+) -> Result<crate::runtime::host::RuntimeTaskRunResult>
+where
+    G: HermesGateway + Clone,
+    F: Fn() -> G,
+{
+    let profile = state.load_runtime_agent_profile(&message.target_agent_did)?;
+    match profile.runtime_plugin_id.as_str() {
+        HERMES_RUNTIME_PLUGIN_ID => {
+            let hermes_profile = state.load_hermes_profile(&profile.agent_did)?;
+            let plugin = HermesRuntimePlugin::with_state(
+                hermes_gateway_factory(),
+                hermes_profile,
+                state.clone(),
+            );
+            run_controller_text_task(state, &profile, &plugin, outbox, message)
+        }
+        _ => {
+            let plugin = UdsTestRuntimePlugin::new(config.local_socket_path.clone());
+            run_controller_text_task(state, &profile, &plugin, outbox, message)
+        }
     }
 }
 
@@ -792,4 +822,147 @@ fn write_ready_file(path: &Path, status: &crate::DaemonStatus) -> Result<()> {
         }))?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use im_core::ids::PeerRef;
+
+    use super::*;
+    use crate::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
+    use crate::plugins::hermes::{FakeHermesGateway, AWIKI_SKILLS_VERSION};
+    use crate::runtime::RuntimeAgentProfile;
+    use crate::state::HermesProfileRecord;
+    use crate::workspace::WorkspaceMode;
+
+    fn fixture() -> (tempfile::TempDir, DaemonConfig, DaemonState) {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        config.ensure_state_layout().unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        (root, config, state)
+    }
+
+    fn profile(root: &Path) -> RuntimeAgentProfile {
+        RuntimeAgentProfile {
+            agent_did: "did:agent:hermes".to_string(),
+            controller_did: "did:human:alice".to_string(),
+            runtime_profile_id: "profile_hermes_alice".to_string(),
+            runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+            display_name: Some("Alice Hermes".to_string()),
+            workspace_id: Some("workspace_hermes".to_string()),
+            workspace_root: Some(root.join("workspace")),
+            workspace_mode: Some(WorkspaceMode::SharedRoot),
+        }
+    }
+
+    fn hermes_record(root: &Path) -> HermesProfileRecord {
+        HermesProfileRecord {
+            agent_did: "did:agent:hermes".to_string(),
+            runtime_profile_id: "profile_hermes_alice".to_string(),
+            hermes_profile: "awiki_alice_hermes".to_string(),
+            hermes_home: root.join("runtime/hermes/profile"),
+            hermes_version: None,
+            awiki_skills_version: AWIKI_SKILLS_VERSION.to_string(),
+            status: "ready".to_string(),
+        }
+    }
+
+    #[test]
+    fn hermes_foreground_runtime_route_uses_hermes_plugin_and_persists_session() {
+        let (root, config, state) = fixture();
+        let profile = profile(root.path());
+        state.upsert_runtime_agent_profile(&profile).unwrap();
+        state
+            .upsert_hermes_profile(&hermes_record(root.path()))
+            .unwrap();
+        let outbox = MemoryRuntimeOutbox::default();
+        let gateway = FakeHermesGateway::default();
+
+        let result = run_runtime_text_message_with_gateway(
+            &config,
+            &state,
+            &outbox,
+            ControllerTextMessage {
+                message_id: "msg_foreground_hermes".to_string(),
+                conversation_id: Some("direct:did:human:alice".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: "did:agent:hermes".to_string(),
+                text: "foreground route to Hermes".to_string(),
+            },
+            || gateway.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
+        assert_eq!(gateway.created_sessions().len(), 1);
+        assert_eq!(gateway.submitted_prompts().len(), 1);
+        assert!(
+            state
+                .count_active_hermes_sessions_for_agent("did:agent:hermes")
+                .unwrap()
+                >= 1
+        );
+        let records = outbox.records();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].kind, OutboxRecordKind::Status);
+        assert_eq!(records[1].kind, OutboxRecordKind::Final);
+    }
+
+    #[test]
+    fn hermes_foreground_non_controller_text_is_rejected_before_gateway() {
+        let (root, config, state) = fixture();
+        let profile = profile(root.path());
+        state.upsert_runtime_agent_profile(&profile).unwrap();
+        state
+            .upsert_hermes_profile(&hermes_record(root.path()))
+            .unwrap();
+        let outbox = MemoryRuntimeOutbox::default();
+        let gateway = FakeHermesGateway::default();
+
+        let error = run_runtime_text_message_with_gateway(
+            &config,
+            &state,
+            &outbox,
+            ControllerTextMessage {
+                message_id: "msg_foreground_unauthorized".to_string(),
+                conversation_id: Some("direct:did:human:bob".to_string()),
+                sender_did: "did:human:bob".to_string(),
+                target_agent_did: "did:agent:hermes".to_string(),
+                text: "unauthorized foreground route".to_string(),
+            },
+            || gateway.clone(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("controller_did"));
+        assert!(gateway.created_sessions().is_empty());
+        assert!(gateway.submitted_prompts().is_empty());
+        assert!(outbox.records().is_empty());
+    }
+
+    #[test]
+    fn conversation_id_projects_direct_peer_without_message_content() {
+        let message = Message {
+            id: im_core::ids::MessageId::parse("msg_foreground").unwrap(),
+            thread: ThreadRef::Direct(PeerRef::parse("did:human:alice", "").unwrap()),
+            direction: MessageDirection::Incoming,
+            sender: PeerRef::parse("did:human:alice", "").unwrap(),
+            receiver: Some(PeerRef::parse("did:agent:hermes", "").unwrap()),
+            group: None,
+            body: MessageBodyView::Text {
+                text: "secret prompt text".to_string(),
+                kind: im_core::messages::MessageKind::Text,
+            },
+            sent_at: None,
+            received_at: None,
+            metadata: im_core::messages::MessageMetadata::default(),
+        };
+
+        assert_eq!(
+            conversation_id(&message).as_deref(),
+            Some("direct:did:human:alice")
+        );
+    }
 }
