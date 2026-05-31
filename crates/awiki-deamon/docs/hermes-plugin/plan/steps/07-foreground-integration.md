@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 07  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-06-01 00:55:12 +0800 |
-| 完成时间 | 未完成 |
-| 提交 | 未提交 |
+| 完成时间 | 2026-06-01 01:13:45 +0800 |
+| 提交 | 实现提交 `e9984bca6d57154d539c90182fa4faae89ec61aa` |
 | 审查证据 | 2026-06-01 01:10:41 +0800 完成提交前 review：确认 foreground text route 已按 `runtime_plugin_id` 选择 Hermes 或 legacy test runtime；确认非 controller text 在进入 gateway 前被拒绝；确认 `agent-status` Hermes 诊断不输出 token/JWT/private key/prompt，并修复 `last_error` 可能透传敏感 audit detail 的风险；残余风险为真实 `StdioHermesGateway` 的 `session.create`/`prompt.submit` 仍是 Step 03 skeleton，需 Step 08/后续真实 adapter 验证。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_foreground` 通过，2 个 focused tests；`cargo test -p awiki-deamon --locked hermes_status` 通过，1 个 focused test；`cargo test -p awiki-deamon --locked` 通过，58 个测试、1 ignored；`cargo test --workspace --locked` 通过，所有 workspace crate 和 doc-tests 无失败；`git diff --check -- crates/awiki-deamon` 通过；awiki-cli 边界搜索无命中；secret 搜索仅命中测试脱敏样例、既有密钥/JWT 状态字段、诊断敏感标记列表和 prompt wrapper 相关代码。 |
-| 下一步 | 提交 Step 07 实现后回填提交 hash，并启动 Step 08 整体验证 |
+| 下一步 | 启动 Step 08 整体验证、系统测试与发布门禁 |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -149,7 +149,7 @@ audit 不记录 prompt 全文、token secret、private key、JWT。可记录 mes
 - [x] 诊断输出不泄露 token、JWT、private key、prompt 全文；`last_error` 已做敏感片段保守脱敏。
 - [x] daemon 不依赖 `crates/awiki-cli` 内部模块。
 - [x] 审查发现 已修复或明确记录。
-- [ ] 本步骤创建一个聚焦提交后才进入 Step 08。
+- [x] 本步骤创建一个聚焦提交后才进入 Step 08。
 
 ## 8. 验证方式
 
@@ -268,5 +268,9 @@ audit 不记录 prompt 全文、token secret、private key、JWT。可记录 mes
 
 ### 提交后状态
 
-- 实现提交：待回填。
-- 提交后 `git status --short --branch`：待回填。
+- 实现提交：`e9984bca6d57154d539c90182fa4faae89ec61aa`。
+- 提交后 `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 14]
+```
