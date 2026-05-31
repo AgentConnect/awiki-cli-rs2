@@ -1,10 +1,10 @@
 # 计划：AWiki Daemon 运行时宿主初始化创建
 
-状态：执行中（步骤 08 待开始）
+状态：执行中（步骤 08 进行中）
 文档目录：`crates/awiki-deamon/docs/create/`
 创建日期：2026-05-30
 当前分支：`feature/release-0526/awiki-deamon`
-恢复位置：步骤 08 待开始，继续执行集成、系统测试与发布门禁
+恢复位置：步骤 08 进行中，继续执行集成、系统测试与发布门禁
 
 ## 1. 目标
 
@@ -129,7 +129,7 @@
 | 05 | message-service payload 支持 | 04，协议仓库已完成 | direct/group payload send、存储、history、realtime 支持 | [steps/05-message-service-payload-support.md](steps/05-message-service-payload-support.md) | 必须 | 已完成 |
 | 06 | user-service registration token API | 无强依赖；阶段 B 内可并行 | daemon/runtime registration token 契约与实现 | [steps/06-user-service-registration-token-api.md](steps/06-user-service-registration-token-api.md) | 必须 | 已完成 |
 | 07 | daemon agent 与 runtime agent 管理 | 01-06 | daemon DID 注册、runtime agent create/status、daemon 命令设计 | [steps/07-agent-registration-and-management.md](steps/07-agent-registration-and-management.md) | 必须 | 已完成 |
-| 08 | 集成、系统测试与发布门禁 | 01-07 | 跨仓 E2E、安全审查、文档和发布检查清单 | [steps/08-integration-system-tests-and-rollout.md](steps/08-integration-system-tests-and-rollout.md) | 如有文件变更则必须 | 待开始 |
+| 08 | 集成、系统测试与发布门禁 | 01-07 | 跨仓 E2E、安全审查、文档和发布检查清单 | [steps/08-integration-system-tests-and-rollout.md](steps/08-integration-system-tests-and-rollout.md) | 如有文件变更则必须 | 进行中 |
 
 ## 9. 执行账本
 
@@ -146,7 +146,7 @@
 | 06 | 已完成 | `feature/release-0526/daemon-registration-token-user-service` | 2026-05-31 03:33:21 CST | 2026-05-31 04:22:36 CST | `4087e51`（user-service） | Review 已完成：API 契约、token hash 存储、一次性兑换、过期/撤销、scope mismatch、audit 隐私、DID/User 原子创建、文档一致性和测试覆盖已审查；发现 `one_time=false` 暴露了首版不支持的复用语义、过期 token 可被撤销为 revoked、测试文件名会加重仓库既有 pytest 顶层模块名冲突，均已修复。提交后 user-service `git status --short --branch` 显示工作区干净，分支已推送到 origin。 | `uv run ruff format src/user_service/app/agent_registration src/user_service/storage/sqlmodel/models/agent_registration.py tests/app/agent_registration` 通过；`uv run ruff check src/user_service/app/agent_registration src/user_service/app/app.py src/user_service/app/container.py src/user_service/storage/interfaces.py src/user_service/storage/types.py src/user_service/storage/sqlmodel/storage.py src/user_service/storage/sqlmodel/models/__init__.py src/user_service/storage/sqlmodel/models/agent_registration.py tests/app/agent_registration tests/conftest.py` 通过；`uv run python -m py_compile src/user_service/app/agent_registration/*.py src/user_service/storage/sqlmodel/models/agent_registration.py` 通过；`uv run python -m pytest tests/app/agent_registration -v` 通过，9 passed；`git diff --check -- SPEC.md docs src tests` 通过；secret/audit 搜索确认生产代码无 registration token 原文日志，audit 上下文只写 `token_id` 和 scope 元数据。`uv run python -m pytest tests -v` 仍因仓库既有同名测试文件收集冲突失败，新增 Step 06 测试改名后冲突从 5 个降到 3 个且不再来自 agent_registration；`uv run python -m pytest tests --import-mode=importlib -q` 结果为 635 passed、10 skipped、10 failed，失败集中在既有 DID profile / DID relationship 缺少 `did_auth_service` 注入和 Telegram bot-bound ticket，不在 Step 06 改动路径。 | 执行阶段 B Review |
 | 阶段 B Review | 已完成 | `feature/release-0526/awiki-deamon`、`feature/release-0526/daemon-payload-message-service`、`feature/release-0526/daemon-registration-token-user-service` | 2026-05-31 04:22:36 CST | 2026-05-31 04:29:22 CST | 无新增代码提交；本次为阶段 Review 台账更新 | 阶段 B Review 通过：步骤 04-06 的 SDK payload DTO / Dart bridge、message-service direct/group payload、user-service registration token 契约、提交记录、文档和安全边界已复核；未发现阻止进入步骤 07 的问题。重点确认结构化 JSON 仍统一为 `application/json + body.payload`，没有旧结构化 JSON 字段或 command/status/result 专用 JSON content type；message-service 不解释 daemon command/status/result；registration token 原文不入库、不进日志、不进 audit。 | 当前补充验证：三个相关仓库 `git status --short --branch` 均干净；旧字段和旧专用 content type 搜索在当前仓库、message-service、user-service 均无结果；`cargo test -p im-core --locked payload` 通过，payload 相关 20 个测试通过；`cargo test -p im-core-dart --locked payload_request_and_body_view_preserve_json_for_dart` 通过；message-service `cargo test -p im-direct --locked json_payload` 通过，2 passed；message-service `cargo test -p im-group --locked group_incoming_notification_preserves_json_payload_body` 通过；user-service `uv run python -m pytest tests/app/agent_registration -q` 通过，9 passed。沿用步骤 04-06 的完整验证记录：步骤 04 `CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；步骤 05 `cargo test --workspace --locked` 和 `cargo clippy --workspace --all-targets -- -D warnings` 通过；步骤 06 targeted registration token 测试通过。 | 开始步骤 07 |
 | 07 | 已完成 | `feature/release-0526/awiki-deamon` | 2026-05-31 04:35:30 CST | 2026-05-31 07:55:35 CST | `9ac7b4e` | Review 已完成：daemon agent/runtime agent DID 生成与本地私钥持久化、registration token 兑换、`controller_did` MVP 校验、`application/json + body.payload` command parser、ready/failed status outbox、daemon 管理命令、schema v4 迁移、CLI JSON 兼容输出、secret Debug 脱敏和 daemon/awiki-cli 边界已审查。发现并修复：secret-bearing request/identity 类型不再派生 serde；同步 registration client 在已有 Tokio runtime 内转入独立线程 runtime；`run_command_json` 保持 `status` 等命令原始 JSON 输出形状；恢复已有 daemon handle 时校验 controller mismatch；v3 `agent_definition` 升级到 v4 时回填 handle、policy、runtime plugin 和本地路径；文档中移除旧结构化 JSON 字段字面量。提交后 `git status --short --branch` 显示分支 ahead 2，工作区无未提交代码改动。 | `CARGO_BUILD_JOBS=1 cargo fmt --all --check` 通过；`CARGO_BUILD_JOBS=1 cargo test -p awiki-deamon --locked` 通过；`CARGO_BUILD_JOBS=1 cargo test --workspace --locked` 通过；`git diff --check -- Cargo.toml Cargo.lock crates/awiki-deamon` 通过；`rg -n "awiki_cli|awiki-cli|crates/awiki-cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无结果；`rg -n "structured_json|application/vnd\\.awiki\\.agent-(command|status|result|task)\\+json" crates/awiki-deamon crates/im-core crates/im-core-dart` 无结果；生产代码日志搜索仅命中 `main.rs` 的 CLI stdout/stderr 输出；新增测试覆盖成功创建、非 controller 拒绝、registration token 失败不持久化 runtime agent、daemon 管理命令列表、identity Debug 脱敏。 | 开始步骤 08 |
-| 08 | 待开始 | 集成分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 等待步骤 01-07 |
+| 08 | 进行中 | `feature/release-0526/awiki-deamon` | 2026-05-31 08:00:16 CST | 待定 | 待定 | 待定 | 待定 | 执行集成、系统测试与发布门禁 |
 | 阶段 C Review | 待开始 | 集成分支 | 待定 | 待定 | 待定 | 待定 | 待定 | 步骤 07-08 完成后执行 |
 
 ## 10. Codex Goal 执行协议
