@@ -10,6 +10,7 @@ use super::gateway::{
     HermesGateway, HermesPromptOutcome, HermesPromptSubmitRequest, HermesRunnerRef,
     HermesSessionCreateRequest, HermesSessionRef,
 };
+use super::prompt::HermesPromptWrapper;
 use super::HERMES_RUNTIME_PLUGIN_ID;
 
 #[derive(Debug, Clone)]
@@ -72,6 +73,9 @@ where
         if context.run.agent_did != self.profile.agent_did
             || context.run.runtime_profile_id != self.profile.runtime_profile_id
             || context.run.runtime_plugin_id != HERMES_RUNTIME_PLUGIN_ID
+            || context.run.task_id != context.task.task_id
+            || context.task.agent_did != self.profile.agent_did
+            || context.task.sender_did != context.task.controller_did
         {
             bail!("Hermes launch context does not match profile binding");
         }
@@ -87,22 +91,31 @@ where
                 conversation_id: context.task.conversation_id.clone(),
             })
             .context("create Hermes session")?;
-        runner
+        let prompt = HermesPromptWrapper::new(&self.profile, &context.run, &context.task);
+        let outcome = runner
             .submit_prompt(
                 &session,
                 HermesPromptSubmitRequest {
                     run_id: context.run.run_id.clone(),
-                    message_id: context.task.task_id,
-                    prompt: context.task.text,
+                    message_id: context.task.task_id.clone(),
+                    prompt: prompt.to_prompt_text(),
                 },
             )
             .context("submit Hermes prompt")?;
+        let callbacks = outcome
+            .callbacks
+            .into_iter()
+            .map(|mut callback| {
+                callback.runtime_rpc_token = context.runtime_rpc_token.as_str().to_string();
+                callback
+            })
+            .collect();
 
         Ok(RuntimeLaunchOutcome {
             run_id: context.run.run_id,
             status: RuntimeRunStatus::Running,
             exit_code: None,
-            callbacks: Vec::new(),
+            callbacks,
         })
     }
 }

@@ -8,13 +8,15 @@ use crate::runtime::RuntimeAgentProfile;
 use crate::state::{DaemonState, HermesProfileRecord};
 
 pub mod gateway;
+pub mod prompt;
 pub mod runner;
 
 pub use gateway::{
-    FakeHermesGateway, HermesGateway, HermesPromptOutcome, HermesPromptSubmitRequest,
-    HermesRunnerRef, HermesRuntimeEvent, HermesRuntimeEventKind, HermesSessionCreateRequest,
-    HermesSessionRef, StdioHermesGateway,
+    FakeHermesBehavior, FakeHermesGateway, HermesGateway, HermesPromptOutcome,
+    HermesPromptSubmitRequest, HermesRunnerRef, HermesRuntimeEvent, HermesRuntimeEventKind,
+    HermesSessionCreateRequest, HermesSessionRef, StdioHermesGateway,
 };
+pub use prompt::HermesPromptWrapper;
 pub use runner::{HermesRunner, HermesRuntimePlugin};
 
 pub const HERMES_RUNTIME_NAME: &str = "hermes";

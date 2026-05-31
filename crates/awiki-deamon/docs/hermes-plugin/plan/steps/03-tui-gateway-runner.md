@@ -12,7 +12,7 @@
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-05-31 23:34:15 +0800 |
 | 完成时间 | 2026-05-31 23:42:25 +0800 |
-| 提交 | 实现提交 `fa4668a206404e61beda09db1d5675548ff30731`；账本收尾提交待回填 |
+| 提交 | 实现提交 `fa4668a206404e61beda09db1d5675548ff30731`；账本收尾提交 `d9eea0b9b57fb694ed7cd05fd6b309437626efad` |
 | 审查证据 | 2026-05-31 23:41:03 +0800 完成提交前 review：Gateway trait 隔离协议字段；fake gateway deterministic；`StdioHermesGateway` 只做 installation check，未虚假实现未知 `session.create` / `prompt.submit` 协议；发现 `launch_run` 缺少 run/profile binding 校验，已修复并补测试。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，5 个默认测试、1 个 ignored；`cargo test -p awiki-deamon --locked` 通过，47 个测试、1 ignored；`cargo test -p awiki-deamon --locked hermes_real_smoke -- --ignored --nocapture` 通过并记录 `skipped: AWIKI_HERMES_BIN is not set`；secret/debug 搜索仅命中测试 fixture/脱敏断言和安全说明；`git diff --check -- crates/awiki-deamon` 通过。 |
 | 下一步 | 启动 Step 04 Controller 消息执行链与 Prompt Wrapper |
@@ -255,7 +255,7 @@ runner.exited
 ```
 
 - 遗留未提交变更：无。
-- 账本收尾提交：待回填。
+- 账本收尾提交：`d9eea0b9b57fb694ed7cd05fd6b309437626efad`
 
 ## 13. 风险、回滚与后续
 

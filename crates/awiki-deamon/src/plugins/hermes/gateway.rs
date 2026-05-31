@@ -5,6 +5,8 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::cli_wrapper::CliWrapperRequest;
+use crate::local_rpc::RuntimeRpcRequest;
 use crate::runtime::RuntimeInstallStatus;
 use crate::state::HermesProfileRecord;
 
@@ -56,6 +58,8 @@ pub struct HermesPromptSubmitRequest {
 pub struct HermesPromptOutcome {
     pub session: HermesSessionRef,
     pub events: Vec<HermesRuntimeEvent>,
+    #[serde(default)]
+    pub callbacks: Vec<RuntimeRpcRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +202,33 @@ impl HermesGateway for StdioHermesGateway {
 #[derive(Debug, Clone, Default)]
 pub struct FakeHermesGateway {
     observed_events: Arc<Mutex<Vec<HermesRuntimeEvent>>>,
+    submitted_prompts: Arc<Mutex<Vec<HermesPromptSubmitRequest>>>,
+    behavior: FakeHermesBehavior,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FakeHermesBehavior {
+    #[default]
+    FinishSuccessfully,
+    FailWithStatus,
+    ObserveOnly,
+}
+
+impl FakeHermesGateway {
+    pub fn with_behavior(behavior: FakeHermesBehavior) -> Self {
+        Self {
+            observed_events: Arc::new(Mutex::new(Vec::new())),
+            submitted_prompts: Arc::new(Mutex::new(Vec::new())),
+            behavior,
+        }
+    }
+
+    pub fn submitted_prompts(&self) -> Vec<HermesPromptSubmitRequest> {
+        self.submitted_prompts
+            .lock()
+            .expect("fake Hermes gateway prompts lock poisoned")
+            .clone()
+    }
 }
 
 impl FakeHermesGateway {
@@ -261,6 +292,13 @@ impl HermesGateway for FakeHermesGateway {
         session: &HermesSessionRef,
         request: HermesPromptSubmitRequest,
     ) -> Result<HermesPromptOutcome> {
+        self.submitted_prompts
+            .lock()
+            .expect("fake Hermes gateway prompts lock poisoned")
+            .push(request.clone());
+        let run_id = request.run_id.clone();
+        let message_id = request.message_id.clone();
+        let fake_token = "rtok_fake_hermes_runtime_token_placeholder_123456789".to_string();
         let events = vec![
             HermesRuntimeEvent::new(HermesRuntimeEventKind::PromptSubmitted)
                 .with_session(session.hermes_session_id.clone())
@@ -280,6 +318,36 @@ impl HermesGateway for FakeHermesGateway {
         Ok(HermesPromptOutcome {
             session: session.clone(),
             events,
+            callbacks: fake_callbacks(self.behavior, fake_token, message_id, run_id),
         })
+    }
+}
+
+fn fake_callbacks(
+    behavior: FakeHermesBehavior,
+    runtime_rpc_token: String,
+    task_id: String,
+    _run_id: String,
+) -> Vec<RuntimeRpcRequest> {
+    match behavior {
+        FakeHermesBehavior::FinishSuccessfully => vec![
+            CliWrapperRequest::task_status(
+                runtime_rpc_token.clone(),
+                task_id.clone(),
+                "running",
+                "Hermes runtime started",
+            )
+            .into_rpc_request(),
+            CliWrapperRequest::task_finish(runtime_rpc_token, task_id, "Hermes runtime finished")
+                .into_rpc_request(),
+        ],
+        FakeHermesBehavior::FailWithStatus => vec![CliWrapperRequest::task_status(
+            runtime_rpc_token,
+            task_id,
+            "failed",
+            "Hermes runtime failed",
+        )
+        .into_rpc_request()],
+        FakeHermesBehavior::ObserveOnly => Vec::new(),
     }
 }

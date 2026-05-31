@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 04  
-状态：draft
+状态：review
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | review |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
-| 开始时间 | 未开始 |
+| 开始时间 | 2026-05-31 23:43:53 +0800 |
 | 完成时间 | 未完成 |
 | 提交 | 未提交 |
-| 审查证据 | 待记录 |
-| 验证证据 | 待记录 |
-| 下一步 | 等 Step 03 完成后，把 controller text/plain 消息投递到 Hermes |
+| 审查证据 | 2026-05-31 23:56:13 +0800 完成提交前 review：controller 校验、prompt wrapper、安全边界、fake callback token 替换和 final 主事实源均已检查；发现并修复 Hermes plugin 直接 launch 时 task/run/profile 不一致校验缺口。 |
+| 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_message` 通过，4 个测试；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，6 个匹配测试、1 个 ignored real smoke 被过滤；`cargo test -p awiki-deamon --test local_rpc_security --locked` 通过，6 个测试；`cargo test -p awiki-deamon --locked` 通过，52 个测试、1 ignored；secret/plugin 搜索仅命中预期测试、文档和生产 token 替换点；`git diff --check -- crates/awiki-deamon` 通过。 |
+| 下一步 | 提交 Step 04 实现提交 |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -165,11 +165,11 @@ MVP 规则：
 
 | 审查项 | 结果 | 备注 |
 |---|---|---|
-| 发现 | 待记录 |  |
-| 已修复 | 待记录 |  |
-| 残余风险 | 待记录 |  |
-| 测试新增或缺失 | 待记录 |  |
-| 文档更新或缺失 | 待记录 |  |
+| 发现 | `HermesRuntimePlugin::launch_run` 直接调用时，已校验 run/profile binding，但还缺少 task 与 run/profile/controller 的一致性校验。 | host 正常路径已有 `route_controller_text_task`，但 plugin 边界仍应自守。 |
+| 已修复 | 增加 `context.run.task_id == context.task.task_id`、`context.task.agent_did == HermesProfileRecord.agent_did`、`context.task.sender_did == context.task.controller_did` 校验；补 `hermes_gateway_plugin_rejects_mismatched_task_context` 测试。 | 已重跑 focused 和全量测试。 |
+| 残余风险 | 长驻 daemon foreground 按 `runtime_plugin_id == "runtime.hermes"` 路由尚未接入；真实 Hermes TUI Gateway callback 协议仍未实现。 | 按计划分别留给 Step 07 和真实 smoke/adapter 后续收敛；本步骤仅证明 host helper + fake Hermes 消息执行闭环。 |
+| 测试新增或缺失 | 新增 `hermes_message` focused tests 4 个，并扩展 `hermes_gateway` 到 6 个默认匹配测试和 1 个 ignored smoke。 | 覆盖 success final、failed status 无 final、非 controller 拒绝、prompt debug redaction、observation 不自动 final、binding 校验。 |
+| 文档更新或缺失 | 本步骤执行记录已回填；主计划明确 Step 04 review 状态和验证证据。 | 未新增 prompt wrapper 独立规范，当前由测试锁定。 |
 
 ## 10. 提交要求
 
@@ -194,8 +194,75 @@ MVP 规则：
 |---|---|---|---|
 | 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
 
+## 14. Step 04 执行记录
+
+### 已实现
+
+- 新增 `plugins/hermes/prompt.rs`，定义 `HermesPromptWrapper`，由 daemon 构造包含 agent、controller、message、run、allowed actions 和安全规则的 prompt wrapper；`Debug` redacted `user_message`。
+- 扩展 `HermesPromptOutcome`，允许 fake gateway 返回 local RPC callback；`FakeHermesGateway` 新增 `FinishSuccessfully`、`FailWithStatus`、`ObserveOnly` 三种行为，并记录 submitted prompts 供测试断言。
+- `HermesRuntimePlugin::launch_run` 校验 run/profile/task/controller 绑定，创建 session，提交 wrapped prompt，并把 fake callback 中的占位 token 替换为 daemon 为本 run 签发的 runtime RPC token。
+- 新增 `tests/hermes_message.rs`，验证 controller text -> Hermes prompt -> `task.status` / `task.finish` -> outbox/status/final 闭环、failed status 不发送 success final、非 controller 不进入 gateway、prompt/debug 不泄露 token/private key/JWT。
+- 扩展 `tests/hermes_gateway.rs`，显式用 `ObserveOnly` 覆盖 `message.complete` observation 不自动产生 final，并补直接 launch 的 task context mismatch 拒绝测试。
+
+### Review 记录
+
+| 审查项 | 结果 | 备注 |
+|---|---|---|
+| 发现 | `HermesRuntimePlugin::launch_run` 直接调用时缺少 task/run/profile/controller 一致性校验。 | host 正常路径已经验证 controller，但 plugin 边界需要防止被错误 context 直接调用。 |
+| 已修复 | 增加 task_id、task agent、sender/controller 校验；补 `hermes_gateway_plugin_rejects_mismatched_task_context` 测试。 | 已重跑 Step 04 验证。 |
+| 残余风险 | foreground 长驻 daemon 的 `runtime_plugin_id` 路由尚未接入；真实 Hermes callback 协议仍未启用。 | 按计划留给 Step 07；Step 04 不声明完整 long-running foreground 集成。 |
+| 测试新增或缺失 | 新增 `hermes_message` 4 个测试，扩展 `hermes_gateway` 到 6 个匹配测试和 1 个 ignored smoke。 | 本步骤没有真实 `msg.send` direct/direct-e2ee 测试，留 Step 05。 |
+| 文档更新或缺失 | 主计划和本步骤记录已同步 Step 04 review/验证证据。 | 未新增用户文档；prompt wrapper 当前属于内部实现。 |
+
+### 验证记录
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | 通过。 |
+| `cargo test -p awiki-deamon --locked hermes_message` | 通过：4 个 focused tests。 |
+| `cargo test -p awiki-deamon --locked hermes_gateway` | 通过：6 个匹配测试，1 个 ignored real smoke 被过滤。 |
+| `cargo test -p awiki-deamon --test local_rpc_security --locked` | 通过：6 个 local RPC security tests。 |
+| `cargo test -p awiki-deamon --locked` | 通过：52 个测试，1 ignored，doc tests 0 个。 |
+| `rg -n "auth_private_key\|jwt_token\|runtime_rpc_token\|plugin.yaml\|Awiki Hermes Plugin\|plugins/awiki-runtime" crates/awiki-deamon/src/plugins/hermes crates/awiki-deamon/tests crates/awiki-deamon/docs/hermes-plugin/plan` | 通过但有预期命中：生产代码只有 runner token 替换点和 fake callback 参数名；测试 fixture/断言、local RPC security tests、文档非目标说明和 profile plugin 禁止断言可保留。 |
+| `git diff --check -- crates/awiki-deamon` | 通过。 |
+
+### 提交前状态
+
+- `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 6]
+ M crates/awiki-deamon/docs/hermes-plugin/plan/plan.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/03-tui-gateway-runner.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/04-message-execution.md
+ M crates/awiki-deamon/src/plugins/hermes/gateway.rs
+ M crates/awiki-deamon/src/plugins/hermes/mod.rs
+ M crates/awiki-deamon/src/plugins/hermes/runner.rs
+ M crates/awiki-deamon/tests/hermes_gateway.rs
+?? crates/awiki-deamon/src/plugins/hermes/prompt.rs
+?? crates/awiki-deamon/tests/hermes_message.rs
+```
+
+- 纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/03-tui-gateway-runner.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/04-message-execution.md`
+  - `crates/awiki-deamon/src/plugins/hermes/gateway.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/prompt.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/runner.rs`
+  - `crates/awiki-deamon/tests/hermes_gateway.rs`
+  - `crates/awiki-deamon/tests/hermes_message.rs`
+
+### 提交后状态
+
+- 实现提交：待回填。
+- 实现提交后 `git status --short --branch`：待回填。
+- 遗留未提交变更：待回填。
+- 账本收尾提交：待回填。
+
 ## 13. 风险、回滚与后续
 
-- 风险：prompt wrapper 文本过长或泄露上下文；fake gateway 不能代表真实 Hermes 行为。
-- 回滚/fallback：回滚后 Hermes profile 仍存在，但 controller 消息不会执行。
-- 后续文档：若新增 prompt wrapper 格式文档，后续 Step 07/08 的系统测试需引用。
+- 风险：prompt wrapper 文本过长或泄露上下文；fake gateway 不能代表真实 Hermes 行为；foreground 长驻路由仍待 Step 07。
+- 回滚/fallback：回滚后 Hermes profile 仍存在，但 controller 消息不会通过 Hermes prompt wrapper 执行。
+- 后续文档：若新增 prompt wrapper 格式文档，后续 Step 07/08 的系统测试需引用；真实 `msg.send` 外发语义在 Step 05 实现。

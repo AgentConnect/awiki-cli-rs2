@@ -1,5 +1,5 @@
 use awiki_deamon::plugins::hermes::{
-    FakeHermesGateway, HermesGateway, HermesPromptSubmitRequest, HermesRunner,
+    FakeHermesBehavior, FakeHermesGateway, HermesGateway, HermesPromptSubmitRequest, HermesRunner,
     HermesRuntimeEventKind, HermesRuntimePlugin, HermesSessionCreateRequest, StdioHermesGateway,
     HERMES_RUNTIME_PLUGIN_ID,
 };
@@ -64,7 +64,7 @@ fn hermes_gateway_fake_runner_session_prompt_events_are_deterministic() {
 
 #[test]
 fn hermes_gateway_plugin_launch_observes_complete_without_final_callback() {
-    let gateway = FakeHermesGateway::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ObserveOnly);
     let plugin = HermesRuntimePlugin::new(gateway.clone(), hermes_record());
     let token = issue_runtime_token(
         RuntimeTokenScope::new(
@@ -144,6 +144,48 @@ fn hermes_gateway_plugin_rejects_mismatched_profile_binding() {
                 sender_did: "did:human:alice".to_string(),
                 conversation_id: None,
                 text: "wrong binding".to_string(),
+            },
+            workspace_root: None,
+            runtime_rpc_token: token.token,
+        })
+        .unwrap_err();
+
+    assert!(error.to_string().contains("profile binding"));
+}
+
+#[test]
+fn hermes_gateway_plugin_rejects_mismatched_task_context() {
+    let plugin = HermesRuntimePlugin::new(FakeHermesGateway::default(), hermes_record());
+    let token = issue_runtime_token(
+        RuntimeTokenScope::new(
+            "did:agent:hermes",
+            "profile_hermes_alice",
+            "run_task_msg_001",
+            vec![RpcMethod::TaskStatus],
+            None,
+            std::time::Duration::from_secs(60),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let error = plugin
+        .launch_run(RuntimeLaunchContext {
+            run: RuntimeRun {
+                run_id: "run_task_msg_001".to_string(),
+                task_id: "task_msg_001".to_string(),
+                agent_did: "did:agent:hermes".to_string(),
+                runtime_profile_id: "profile_hermes_alice".to_string(),
+                runtime_plugin_id: HERMES_RUNTIME_PLUGIN_ID.to_string(),
+                workspace_id: None,
+                status: RuntimeRunStatus::Pending,
+            },
+            task: RuntimeTask {
+                task_id: "task_msg_other".to_string(),
+                agent_did: "did:agent:hermes".to_string(),
+                controller_did: "did:human:alice".to_string(),
+                sender_did: "did:human:bob".to_string(),
+                conversation_id: None,
+                text: "wrong task binding".to_string(),
             },
             workspace_root: None,
             runtime_rpc_token: token.token,
