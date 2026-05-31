@@ -1,5 +1,5 @@
 use awiki_deamon::inbox::ControllerTextMessage;
-use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind};
+use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind, RuntimeMessageSecurity};
 use awiki_deamon::plugins::hermes::{
     FakeHermesBehavior, FakeHermesGateway, HermesPromptWrapper, HermesRuntimePlugin,
     HERMES_RUNTIME_PLUGIN_ID,
@@ -125,6 +125,82 @@ fn hermes_message_failed_status_does_not_send_success_final() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, OutboxRecordKind::Status);
     assert_eq!(records[0].state.as_deref(), Some("failed"));
+}
+
+#[test]
+fn hermes_message_send_message_callback_records_direct_message() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::SendMessage);
+    let plugin = HermesRuntimePlugin::new(
+        gateway,
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let profile = profile(root.path().join("workspace"));
+
+    let result = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_send".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "请给 controller 发消息".to_string(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.launch_outcome.status, RuntimeRunStatus::Running);
+    assert_eq!(result.run.status, RuntimeRunStatus::Pending);
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[0].text.as_deref(), Some("Hermes says hello"));
+    assert_eq!(
+        records[0].security,
+        Some(RuntimeMessageSecurity::DefaultPlain)
+    );
+}
+
+#[test]
+fn hermes_message_send_message_callback_respects_controller_recipient_scope() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::SendMessage);
+    let plugin = HermesRuntimePlugin::new(
+        gateway,
+        hermes_record(root.path().join("runtime/hermes/profile")),
+    );
+    let mut profile = profile(root.path().join("workspace"));
+    profile.controller_did = "did:human:charlie".to_string();
+
+    let error = run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_send_blocked".to_string(),
+            conversation_id: Some("direct:did:human:charlie".to_string()),
+            sender_did: "did:human:charlie".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "尝试给非 controller 发消息".to_string(),
+        },
+    )
+    .unwrap_err();
+    let error_chain = error
+        .chain()
+        .map(|cause| cause.to_string())
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    assert!(error_chain.contains("runtime callback"));
+    assert!(error_chain.contains("recipient not allowed"));
+    assert!(outbox.records().is_empty());
 }
 
 #[test]

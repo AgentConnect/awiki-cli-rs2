@@ -1,7 +1,11 @@
 use std::time::Duration;
 
 use awiki_deamon::cli_wrapper::CliWrapperRequest;
-use awiki_deamon::local_rpc::{execute_runtime_rpc_request, RuntimeRpcDebug, RuntimeRpcRequest};
+use awiki_deamon::local_rpc::{
+    execute_runtime_rpc_request, execute_runtime_rpc_request_with_outbox, RuntimeRpcDebug,
+    RuntimeRpcRequest,
+};
+use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind, RuntimeMessageSecurity};
 use awiki_deamon::security::runtime_token::{
     current_time_millis, issue_runtime_token, RpcMethod, RuntimeTokenScope,
 };
@@ -96,6 +100,104 @@ fn method_and_recipient_scope_are_enforced() {
     assert!(recipient_error
         .to_string()
         .contains("recipient not allowed"));
+}
+
+#[test]
+fn msg_send_requires_recipient_text_and_supported_security() {
+    let (_root, state) = fixture();
+    let issued = issue(&state, vec![RpcMethod::MsgSend], None);
+    let outbox = MemoryRuntimeOutbox::default();
+
+    let missing_recipient = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({ "text": "hello" }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+    assert!(missing_recipient.to_string().contains("recipient"));
+
+    let missing_text = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({ "to": "did:human:alice", "text": "   " }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+    assert!(missing_text.to_string().contains("text"));
+
+    let unsupported_security = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({
+                "to": "did:human:alice",
+                "text": "hello",
+                "security": "group_e2ee"
+            }),
+            debug: None,
+        },
+    )
+    .unwrap_err();
+    assert!(unsupported_security.to_string().contains("unsupported"));
+    assert!(outbox.records().is_empty());
+}
+
+#[test]
+fn msg_send_records_direct_message_side_effect_with_security_mode() {
+    let (_root, state) = fixture();
+    let issued = issue(
+        &state,
+        vec![RpcMethod::MsgSend],
+        Some(vec!["did:human:alice".to_string()]),
+    );
+    let outbox = MemoryRuntimeOutbox::default();
+    let response = execute_runtime_rpc_request_with_outbox(
+        &state,
+        &outbox,
+        RuntimeRpcRequest {
+            runtime_rpc_token: issued.token.as_str().to_string(),
+            method: "msg.send".to_string(),
+            params: json!({
+                "to": "did:human:alice",
+                "text": "hello from Hermes",
+                "security": "direct_e2ee",
+                "agent_did": "did:agent:spoofed",
+                "run_id": "run_spoofed"
+            }),
+            debug: Some(RuntimeRpcDebug {
+                agent_did: Some("did:agent:spoofed".to_string()),
+                run_id: Some("run_spoofed".to_string()),
+            }),
+        },
+    )
+    .unwrap();
+
+    assert!(response.ok);
+    let result = response.result.unwrap();
+    assert_eq!(result["agent_did"], "did:agent:test");
+    assert_eq!(result["run_id"], "run_1");
+    assert_eq!(result["method"], "msg.send");
+
+    let records = outbox.records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, OutboxRecordKind::Message);
+    assert_eq!(records[0].recipient.as_deref(), Some("did:human:alice"));
+    assert_eq!(records[0].text.as_deref(), Some("hello from Hermes"));
+    assert_eq!(
+        records[0].security,
+        Some(RuntimeMessageSecurity::DirectE2ee)
+    );
 }
 
 #[test]

@@ -246,6 +246,7 @@ fn messaging_skill() -> &'static str {
 - 不直接连接 message-service。
 - 不伪造 DID，不读取 DID 私钥。
 - `msg.send` 的目标语义是真实 ANP direct/direct-e2ee 外发消息，不是状态消息。
+- `send-message` 必须提供目标 DID、非空文本；`security` 可为 `default_plain` 或 `direct_e2ee`。
 "#
 }
 

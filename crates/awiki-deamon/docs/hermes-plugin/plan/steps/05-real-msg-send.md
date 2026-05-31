@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 05  
-状态：draft
+状态：review
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | review |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
-| 开始时间 | 未开始 |
+| 开始时间 | 2026-06-01 00:02:56 +0800 |
 | 完成时间 | 未完成 |
 | 提交 | 未提交 |
-| 审查证据 | 待记录 |
-| 验证证据 | 待记录 |
-| 下一步 | 等 Step 04 完成后，把 `msg.send` 改为真实 ANP direct/direct-e2ee 外发 |
+| 审查证据 | 2026-06-01 00:34:49 +0800 完成提交前 review：确认 `msg.send` 经 `im-core` direct/direct-e2ee send path，不再伪装成 status payload；recipient/text/security 校验和 token recipient scope 生效；controller text run 默认只能发给 controller DID；direct-e2ee 只做 SDK mode 映射，daemon 不处理 E2EE key。 |
+| 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked runtime_message_send_params_validate_and_map_security` 通过，1 个测试；`cargo test -p awiki-deamon --locked msg_send` 通过，3 个匹配测试；`cargo test -p awiki-deamon --locked hermes_message` 通过，6 个测试；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，54 个测试、1 ignored；`cargo test --workspace --locked` 通过；`git diff --check -- crates/awiki-deamon` 通过；边界/secret/plugin 搜索结果已记录在执行记录。 |
+| 下一步 | 创建 Step 05 实现提交，随后回填 hash 并标记 done |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -132,13 +132,13 @@ trait RuntimeMessageSender {
 
 ## 7. 验收标准
 
-- [ ] `msg.send` side effect 是真实 direct/direct-e2ee send path，不是 status payload 模拟。
-- [ ] `msg.send` recipient 和 text 参数有明确校验。
-- [ ] recipient scope 越权被拒绝并有 audit。
-- [ ] status/final 回 controller 的行为保持不回归。
-- [ ] direct-e2ee 仅通过 `im-core` 能力调用，daemon 不持有 E2EE 私钥或明文密钥。
-- [ ] `awiki-messaging` Skill 与真实发送语义一致。
-- [ ] 审查发现 已修复或明确记录。
+- [x] `msg.send` side effect 是真实 direct/direct-e2ee send path，不是 status payload 模拟。
+- [x] `msg.send` recipient 和 text 参数有明确校验。
+- [x] recipient scope 越权被拒绝并有 audit。
+- [x] status/final 回 controller 的行为保持不回归。
+- [x] direct-e2ee 仅通过 `im-core` 能力调用，daemon 不持有 E2EE 私钥或明文密钥。
+- [x] `awiki-messaging` Skill 与真实发送语义一致。
+- [x] 审查发现 已修复或明确记录。
 - [ ] 本步骤创建一个聚焦提交后才进入 Step 06 或 Step 07。
 
 ## 8. 验证方式
@@ -162,11 +162,11 @@ trait RuntimeMessageSender {
 
 | 审查项 | 结果 | 备注 |
 |---|---|---|
-| 发现 | 待记录 |  |
-| 已修复 | 待记录 |  |
-| 残余风险 | 待记录 |  |
-| 测试新增或缺失 | 待记录 |  |
-| 文档更新或缺失 | 待记录 |  |
+| 发现 | 初始实现风险是 `msg.send` 可能继续被 foreground status 诊断计数为 controller status message；另一个安全决策点是 Hermes run token 若默认 `allowed_recipients = None` 会等价于任意 DID 外发。 | 两者都会扩大 Step 05 行为面：前者混淆 status/final 与 direct send 观测，后者扩大 Hermes callback 的外发权限。 |
+| 已修复 | `ControllerRuntimeOutbox::send_message` 改为只调用 `ControllerOutboxSender::send_runtime_message`，不递增 `sent_status_messages` / `status_message_ids`；`run_controller_text_task` 签发 token 时使用 `Some(vec![profile.controller_did.clone()])`，controller text run 默认只能向 controller DID `msg.send`。 | 更宽 recipient policy 留后续显式配置，不由 prompt 文本决定。 |
+| 残余风险 | 未执行真实网络 `hermes_real_msg_send` smoke；仓库当前没有该 ignored test 入口，且本步骤不引入外部服务依赖。direct-e2ee 已通过 `MessageSecurityMode::SecureDirect` 映射和 workspace tests 覆盖 SDK 能力，但没有真实 prekey/session 远端验证。 | Step 08 必须在 `../awiki-system-test` remote 模式和 `awiki.info` 域名执行完整系统测试并记录 direct/direct-e2ee 真实环境结果；若 E2EE 前置状态不足，不能记为通过。 |
+| 测试新增或缺失 | 新增/扩展 `msg_send` focused tests、`hermes_message` fake callback tests、`local_rpc_security` 参数校验和 spoof 字段测试、`outbox` security 映射单测、`hermes_profile` Skill 文案断言。 | 未新增 live message-service smoke，避免 unit tests 默认打真实网络。 |
+| 文档更新或缺失 | 已更新 Hermes messaging Skill 文案；主计划变更日志记录 controller-only recipient scope 默认策略；本步骤执行记录回填实现、验证和风险。 | 未更新独立 local RPC 用户文档，因为该接口仍是 daemon wrapper 内部能力。 |
 
 ## 10. 提交要求
 
@@ -190,6 +190,84 @@ trait RuntimeMessageSender {
 | 日期 | 变更 | 原因 | 主计划变更日志链接 |
 |---|---|---|---|
 | 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+| 2026-06-01 | Hermes controller text 触发的 run token 默认只允许 `msg.send` 到 controller DID | 收敛 recipient scope 安全假设，避免默认开放任意 DID 外发 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+
+## 14. Step 05 执行记录
+
+### 已实现
+
+- 新增 `RuntimeMessageSend` 和 `RuntimeMessageSecurity`，统一解析 `msg.send` 参数：`to`/`recipient` 必填且非空，`text` 必填且非空，`security` 支持 `default_plain`/`plain` 和 `direct_e2ee`/`secure_direct`。
+- `local_rpc` 的 `RpcMethod::MsgSend` side effect 改为先构造 `RuntimeMessageSend`，再调用 `RuntimeOutbox::send_message`；授权仍由 runtime token 的 method scope 和 recipient scope 在 side effect 前完成，不信任请求体中的 spoof 字段。
+- `ImCoreAgentOutbox` 新增 `send_text_async` / `send_text`，生产路径通过 `im-core` `messages().send_async` 发送 `MessageBody::Text`，`default_plain` 映射到 `MessageSecurityMode::DefaultPlain`，`direct_e2ee` 映射到 `MessageSecurityMode::SecureDirect`。
+- `ControllerRuntimeOutbox::send_message` 不再构造 `awiki.agent.status.v1` payload；status/final 仍回 controller，`msg.send` 只走 direct message path，且不计入 foreground status 发送计数。
+- `run_controller_text_task` 为 Hermes controller message run 签发 `allowed_recipients = Some(vec![controller_did])` 的 runtime token，默认只允许 Hermes 回发 controller DID。
+- fake Hermes 新增 `SendMessage` 行为，覆盖 Hermes callback 发起 `msg.send`；`MemoryRuntimeOutbox` 记录 recipient、text 和 security mode，供 focused tests 验证 side effect。
+- 更新 `awiki-messaging` Skill 文案，明确 `send-message` 必须提供目标 DID、非空文本，`security` 可为 `default_plain` 或 `direct_e2ee`。
+
+### Review 记录
+
+| 审查项 | 结果 | 备注 |
+|---|---|---|
+| 发现 | `msg.send` 若复用 status payload 计数会让 foreground 诊断误把 direct send 当作 controller status；recipient scope 默认开放会扩大 Hermes 外发权限。 | 已按真实 direct send 和 controller-only 默认策略修正。 |
+| 已修复 | `send_message` 生产路径只调用 `ImCoreAgentOutbox::send_text`；status/final 继续用 `send_status_payload`；run token 默认 recipient scope 为 controller DID；补参数校验、security 映射和越权测试。 | prompt 仍不是安全边界，local RPC token 才是授权边界。 |
+| 残余风险 | 没有真实网络 `hermes_real_msg_send` smoke；direct-e2ee 未在远端真实 prekey/session 环境下验证。 | Step 08 远端完整系统测试必须记录真实结果；若跳过或失败必须写明原因。 |
+| 测试新增或缺失 | 新增 `runtime_message_send_params_validate_and_map_security`、`msg_send_requires_recipient_text_and_supported_security`、`msg_send_records_direct_message_side_effect_with_security_mode`、Hermes fake send-message tests，并扩展 Skill 文案断言。 | 没有新增 live smoke 测试入口。 |
+| 文档更新或缺失 | 主计划假设和变更日志已记录 controller-only recipient scope 默认策略；本步骤记录真实 send path 和验证证据。 | 未修改 Harness 文档，未发生跨仓控制面规则变化。 |
+
+### 验证记录
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | 通过。 |
+| `cargo test -p awiki-deamon --locked runtime_message_send_params_validate_and_map_security` | 通过：1 个测试。 |
+| `cargo test -p awiki-deamon --locked msg_send` | 通过：3 个匹配测试。 |
+| `cargo test -p awiki-deamon --locked hermes_message` | 通过：6 个测试。 |
+| `cargo test -p awiki-deamon --locked hermes_profile` | 通过：3 个测试。 |
+| `cargo test -p awiki-deamon --locked` | 通过：54 个测试，1 ignored，doc tests 0 个。 |
+| `cargo test --workspace --locked` | 通过：workspace 各 crate 单元、集成和 doc tests 均通过。 |
+| `git diff --check -- crates/awiki-deamon` | 通过。 |
+| `rg -n "crates/awiki-cli\|awiki_cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` | 通过：无命中，daemon 未依赖 awiki-cli 内部模块。 |
+| `rg -n "rtok_\|runtime_rpc_token.*println\|auth_private_key\|jwt_token" crates/awiki-deamon/src crates/awiki-deamon/tests` | 通过但有预期命中：测试假 token/脱敏断言、生产字段名、状态存储、`Debug` 脱敏实现、fake callback placeholder；未发现 token 原文日志。 |
+| `rg -n "plugin.yaml\|Awiki Hermes Plugin\|plugins/awiki-runtime" crates/awiki-deamon/src crates/awiki-deamon/tests crates/awiki-deamon/docs/hermes-plugin` | 通过但有预期命中：文档非目标说明和测试禁止断言；生产代码无 Hermes Python plugin 安装逻辑。 |
+| `rg -n "hermes_real_msg_send\|real_msg_send" crates/awiki-deamon/src crates/awiki-deamon/tests` | 无命中；真实网络 smoke 未运行，因为当前仓库没有该 ignored test 入口，真实 remote 验证留 Step 08。 |
+
+### 提交前状态
+
+- `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 9]
+ M crates/awiki-deamon/docs/hermes-plugin/plan/plan.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/05-real-msg-send.md
+ M crates/awiki-deamon/src/foreground.rs
+ M crates/awiki-deamon/src/local_rpc/mod.rs
+ M crates/awiki-deamon/src/outbox/mod.rs
+ M crates/awiki-deamon/src/plugins/hermes/gateway.rs
+ M crates/awiki-deamon/src/plugins/hermes/mod.rs
+ M crates/awiki-deamon/src/runtime/host.rs
+ M crates/awiki-deamon/tests/hermes_message.rs
+ M crates/awiki-deamon/tests/hermes_profile.rs
+ M crates/awiki-deamon/tests/local_rpc_security.rs
+```
+
+- 纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/05-real-msg-send.md`
+  - `crates/awiki-deamon/src/foreground.rs`
+  - `crates/awiki-deamon/src/local_rpc/mod.rs`
+  - `crates/awiki-deamon/src/outbox/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/gateway.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/src/runtime/host.rs`
+  - `crates/awiki-deamon/tests/hermes_message.rs`
+  - `crates/awiki-deamon/tests/hermes_profile.rs`
+  - `crates/awiki-deamon/tests/local_rpc_security.rs`
+
+### 提交后状态
+
+- 实现提交：待回填。
+- 实现提交后 `git status --short --branch`：待回填。
+- 遗留未提交变更：待回填。
 
 ## 13. 风险、回滚与后续
 

@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::outbox::RuntimeOutbox;
+use crate::outbox::{RuntimeMessageSend, RuntimeOutbox};
 use crate::runtime::RuntimeRunStatus;
 use crate::security::runtime_token::{RpcMethod, RuntimeRpcToken};
 use crate::state::{AuthorizedRuntimeContext, DaemonState};
@@ -229,11 +229,8 @@ fn apply_runtime_rpc_side_effects(
             outbox.send_final(context, params.get("text").and_then(Value::as_str))?;
         }
         RpcMethod::MsgSend => {
-            outbox.send_message(
-                context,
-                rpc_recipient(method, params),
-                params.get("text").and_then(Value::as_str),
-            )?;
+            let message = RuntimeMessageSend::from_params(params)?;
+            outbox.send_message(context, &message)?;
         }
         RpcMethod::RpcPing | RpcMethod::ArtifactCreated => {}
     }

@@ -5,7 +5,7 @@ DOC：`crates/awiki-deamon/docs/hermes-plugin/plan/`
 Harness：`/home/ecs-user/awiki-space/awiki-harness`  
 创建日期：2026-05-31  
 当前分支：`feature/release-0526/hermes-plugin-cli-rs2`  
-恢复位置：Step 05，等待启动真实 `msg.send` 外发消息
+恢复位置：Step 05，状态 `review`，已完成真实 `msg.send` 实现和验证，准备提交
 
 ## 1. 目标
 
@@ -80,7 +80,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 - Hermes TUI Gateway 真实命令、stdio JSON-RPC frame 和 event schema 在实现时可能需要以本机 Hermes 安装为准；计划要求先以 trait/adapter 隔离，并用 fake gateway 做 deterministic 测试。
 - 如果真实 Hermes binary 不存在，单元/集成测试必须使用 fake gateway；真实 Hermes smoke test 通过显式环境变量启用并记录 skip 原因。
 - profile token 若后续出现，只能用于低风险 health/ping，不授权 `msg.send`、`task.finish` 或 future `message.finish`。
-- `msg.send` recipient scope 继续由 `runtime_rpc_tokens.allowed_recipients_json` 限制；缺省是否允许任意 recipient 必须在 Step 05 收敛为明确策略。
+- `msg.send` recipient scope 继续由 `runtime_rpc_tokens.allowed_recipients_json` 限制；Step 05 已收敛为保守策略：controller text 触发的 Hermes run token 默认 `allowed_recipients = Some(controller_did)`，不默认开放任意 recipient；更宽协作目标需要后续显式 policy/config。
 - E2EE 明文和密钥状态仍由客户端 SDK/`im-core` 持有；daemon 不接触私聊/群聊明文密钥。
 
 ### 开放问题
@@ -112,7 +112,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 | 02 | Hermes profile 与 Awiki Skills 安装 | 01 | `hermes_profiles`、profile home、SOUL.md、Awiki Skills、无副作用 smoke test | [steps/02-profile-skills.md](steps/02-profile-skills.md) | 必须 | done |
 | 03 | TUI Gateway runner 与 plugin 骨架 | 02 | `runtime.hermes` plugin、TUI Gateway adapter、fake gateway 测试、stream observation | [steps/03-tui-gateway-runner.md](steps/03-tui-gateway-runner.md) | 必须 | done |
 | 04 | Controller 消息执行链与 Prompt Wrapper | 03 | controller text/plain 到 Hermes，run token，prompt wrapper，status/final 回调 | [steps/04-message-execution.md](steps/04-message-execution.md) | 必须 | done |
-| 05 | 真实 `msg.send` 外发消息 | 04 | `msg.send` 真实 ANP direct/direct-e2ee send，recipient scope，audit 和测试 | [steps/05-real-msg-send.md](steps/05-real-msg-send.md) | 必须 | pending |
+| 05 | 真实 `msg.send` 外发消息 | 04 | `msg.send` 真实 ANP direct/direct-e2ee send，recipient scope，audit 和测试 | [steps/05-real-msg-send.md](steps/05-real-msg-send.md) | 必须 | review |
 | 06 | Hermes session 持久化与 resume/reset | 03, 04 | `hermes_native_sessions`、可选通用 session mapping、resume/reset/cleanup | [steps/06-session-persistence.md](steps/06-session-persistence.md) | 必须 | pending |
 | 07 | 长驻 daemon 集成与诊断 | 02-06 | foreground Hermes 路由、runner 生命周期、诊断命令、observability | [steps/07-foreground-integration.md](steps/07-foreground-integration.md) | 必须 | pending |
 | 08 | 整体验证、系统测试与发布门禁 | 01-07 | repo 验证、system-test、remote `awiki.info` 完整系统测试、发布记录 | [steps/08-integration-verification.md](steps/08-integration-verification.md) | 如有文件变更则必须 | pending |
@@ -127,7 +127,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 | 02 | done | `feature/release-0526/hermes-plugin-cli-rs2` | 2026-05-31 23:19:11 +0800 | 2026-05-31 23:32:43 +0800 | 实现提交 `f8a0ae9b9994ebb7ebbee2aef48364a9d5fc6261`；账本收尾提交 `56b4c7ea50f498777bbe42d34e0f3a706f7f1f8f` | 2026-05-31 23:31:00 +0800 完成提交前 review：修复 profile 敏感字段名泄露风险、wrapper 配置夸大真实能力和 schema version 测试漂移；残余风险为真实 Hermes profile layout 仍待 Step 03 smoke 校验 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，42 个测试；secret 搜索仅命中测试断言和安全说明；禁止 plugin 搜索仅命中测试断言；`git diff --check -- crates/awiki-deamon` 通过；提交后 `git status --short --branch`：`## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 4]`，无未提交变更 | Step 03 已启动 |
 | 03 | done | `feature/release-0526/hermes-plugin-cli-rs2` | 2026-05-31 23:34:15 +0800 | 2026-05-31 23:42:25 +0800 | 实现提交 `fa4668a206404e61beda09db1d5675548ff30731`；账本收尾提交 `d9eea0b9b57fb694ed7cd05fd6b309437626efad` | 2026-05-31 23:41:03 +0800 完成提交前 review：修复 launch context 与 Hermes profile binding 校验缺口；确认 `message.complete` 仅 observation、不产生 final callback；真实 stdio adapter 未虚假实现未知协议 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，5 个默认测试、1 个 ignored；`cargo test -p awiki-deamon --locked` 通过，47 个测试、1 ignored；`cargo test -p awiki-deamon --locked hermes_real_smoke -- --ignored --nocapture` 通过并记录 `AWIKI_HERMES_BIN is not set`；secret/debug 搜索仅命中测试 fixture/脱敏断言和安全说明；`git diff --check -- crates/awiki-deamon` 通过；提交后 `git status --short --branch`：`## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 6]`，无未提交变更 | Step 04 已启动 |
 | 04 | done | `feature/release-0526/hermes-plugin-cli-rs2` | 2026-05-31 23:43:53 +0800 | 2026-05-31 23:59:07 +0800 | 实现提交 `9d3c57cd020cd72fcec4814852266449ffb145bf`；账本收尾提交 `c097098d74f76e3412b422b00da82e07649b0aaa` | 2026-05-31 23:56:13 +0800 完成提交前 review：确认 controller 校验仍在 host/inbox；prompt wrapper 不含 token/private key/JWT；fake gateway callback token 会被 daemon run token 替换；`message.complete` 仍只作 observation；补充修复 launch context 中 task/run/profile 不一致校验；长驻 foreground 按 runtime_plugin_id 路由明确留 Step 07 | `cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_message` 通过，4 个测试；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，6 个匹配测试、1 个 ignored real smoke 被过滤；`cargo test -p awiki-deamon --test local_rpc_security --locked` 通过，6 个测试；`cargo test -p awiki-deamon --locked` 通过，52 个测试、1 ignored；secret/plugin 搜索仅命中预期测试、文档和生产 token 替换点；`git diff --check -- crates/awiki-deamon` 通过；实现提交后 `git status --short --branch`：`## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 7]`，无未提交变更 | 启动 Step 05 |
-| 05 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 05 启动 |
+| 05 | review | `feature/release-0526/hermes-plugin-cli-rs2` | 2026-06-01 00:02:56 +0800 | 未完成 | 未提交 | 2026-06-01 00:34:49 +0800 完成提交前 review：确认 `msg.send` 不再包装为 status payload，而是经 `ImCoreAgentOutbox::send_text` 调用 `im-core` direct send；确认 `to`/`recipient`、非空 text 和 `security` 校验；确认 controller text run token 默认只允许发给 controller DID；确认 direct-e2ee 只映射到 `MessageSecurityMode::SecureDirect`，daemon 不处理 E2EE key；发现并规避 foreground 诊断把 direct send 计入 status 消息计数的风险；真实网络 smoke 未运行，留 Step 08 remote 系统测试。 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked runtime_message_send_params_validate_and_map_security` 通过，1 个测试；`cargo test -p awiki-deamon --locked msg_send` 通过，3 个匹配测试；`cargo test -p awiki-deamon --locked hermes_message` 通过，6 个测试；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，54 个测试、1 ignored；`cargo test --workspace --locked` 通过；`git diff --check -- crates/awiki-deamon` 通过；边界搜索 `rg -n "crates/awiki-cli|awiki_cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` 无命中；secret/plugin 搜索仅命中预期测试、字段名、脱敏实现和文档非目标说明。 | 创建 Step 05 实现提交，随后回填 hash 并标记 done |
 | 06 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 03 和 Step 04 完成 |
 | 07 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 02-06 完成 |
 | 08 | pending | `feature/release-0526/hermes-plugin-cli-rs2` | 未开始 | 未完成 | 未提交 | 待记录 | 待记录 | 等待 Step 01-07 完成 |
@@ -216,6 +216,7 @@ Harness：`/home/ecs-user/awiki-space/awiki-harness`
 |---|---|---|---|---|
 | 2026-05-31 | 创建 Hermes Runtime Plugin 落地总计划和 8 个阶段文档 | 用户要求把 Hermes 设计拆成可执行小任务并放入指定 plan 目录 | 01-08 | 是 |
 | 2026-05-31 | 明确每步提交 hash 的回填策略：步骤实现提交后可追加同一步账本收尾提交，专门记录实现提交 hash、提交后状态和 `done` 状态；进入下一步骤前必须保持工作树干净 | Git 提交无法在同一个提交中记录自己的最终 hash，需要避免自引用账本不可能完成，同时保持逐步提交和可审计证据 | 01-08 | 是 |
+| 2026-06-01 | 明确 Hermes controller text 触发的 run token 默认 `msg.send` recipient scope 为 controller DID only，不再把 `allowed_recipients = None` 作为默认开放策略；更宽 recipient 需要后续显式 policy/config | Step 05 实现阶段收敛安全假设，避免 Hermes prompt 或本地 RPC token 默认具备任意 DID 外发能力 | 05、08 | 是 |
 
 ## 15. 风险与回滚
 

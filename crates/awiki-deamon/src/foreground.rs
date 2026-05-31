@@ -20,7 +20,7 @@ use crate::local_rpc::call_uds_once;
 use crate::local_rpc::{
     bind_uds_listener, handle_uds_stream_with_outbox, verify_socket_permissions,
 };
-use crate::outbox::{ImCoreAgentOutbox, RuntimeOutbox};
+use crate::outbox::{ImCoreAgentOutbox, RuntimeMessageSend, RuntimeOutbox};
 use crate::registration::UserServiceAgentRegistrationClient;
 use crate::runtime::host::run_controller_text_task;
 use crate::runtime::{
@@ -430,6 +430,18 @@ impl ControllerOutboxSender {
             )),
         }
     }
+
+    fn send_runtime_message(&self, message: &RuntimeMessageSend) -> Result<String> {
+        match self {
+            Self::ImCore(outbox) => Ok(outbox
+                .send_text(&message.recipient, &message.text, message.security)?
+                .message
+                .id
+                .as_str()
+                .to_string()),
+            Self::Mock => Ok(format!("mock-message-{}", message.security.as_str())),
+        }
+    }
 }
 
 impl RuntimeOutbox for ControllerRuntimeOutbox {
@@ -474,20 +486,11 @@ impl RuntimeOutbox for ControllerRuntimeOutbox {
 
     fn send_message(
         &self,
-        context: &crate::state::AuthorizedRuntimeContext,
-        recipient: Option<&str>,
-        text: Option<&str>,
+        _context: &crate::state::AuthorizedRuntimeContext,
+        message: &RuntimeMessageSend,
     ) -> Result<()> {
-        self.send_status_payload(
-            recipient.unwrap_or(&self.recipient_did),
-            json!({
-                "schema": "awiki.agent.status.v1",
-                "task_id": self.task_id.clone(),
-                "run_id": context.run_id.clone(),
-                "state": "message",
-                "message": text,
-            }),
-        )
+        let _message_id = self.inner.send_runtime_message(message)?;
+        Ok(())
     }
 }
 
@@ -579,11 +582,10 @@ impl RuntimeOutbox for RuntimeCallbackOutbox {
     fn send_message(
         &self,
         context: &crate::state::AuthorizedRuntimeContext,
-        recipient: Option<&str>,
-        text: Option<&str>,
+        message: &RuntimeMessageSend,
     ) -> Result<()> {
         self.controller_outbox(context)?
-            .send_message(context, recipient, text)
+            .send_message(context, message)
     }
 }
 

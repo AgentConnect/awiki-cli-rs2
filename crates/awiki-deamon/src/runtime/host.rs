@@ -58,7 +58,7 @@ where
             RpcMethod::MsgSend,
             RpcMethod::ArtifactCreated,
         ],
-        None,
+        Some(vec![profile.controller_did.clone()]),
         Duration::from_secs(5 * 60),
     )?;
     let issued = issue_runtime_token(scope)?;

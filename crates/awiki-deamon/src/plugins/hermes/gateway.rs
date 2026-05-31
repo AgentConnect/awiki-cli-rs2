@@ -212,6 +212,7 @@ pub enum FakeHermesBehavior {
     FinishSuccessfully,
     FailWithStatus,
     ObserveOnly,
+    SendMessage,
 }
 
 impl FakeHermesGateway {
@@ -349,5 +350,11 @@ fn fake_callbacks(
         )
         .into_rpc_request()],
         FakeHermesBehavior::ObserveOnly => Vec::new(),
+        FakeHermesBehavior::SendMessage => vec![CliWrapperRequest::msg_send(
+            runtime_rpc_token,
+            "did:human:alice",
+            "Hermes says hello",
+        )
+        .into_rpc_request()],
     }
 }

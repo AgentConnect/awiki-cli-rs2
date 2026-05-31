@@ -198,6 +198,8 @@ fn hermes_profile_runtime_agent_create_installs_profile_and_skills() {
     assert!(profile_json.contains("process wrapper wired in Step 07"));
     assert!(runtime_skill.contains("finish-message"));
     assert!(messaging_skill.contains("send-message"));
+    assert!(messaging_skill.contains("default_plain"));
+    assert!(messaging_skill.contains("direct_e2ee"));
     assert!(collaboration_skill.contains("非 controller 消息不自动进入执行链"));
 
     let profile_dump = format!(
