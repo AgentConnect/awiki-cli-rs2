@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::agent::{agent_data_paths, AgentDefinition, AgentIdentityRecord, AgentKind};
 use crate::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask};
@@ -14,7 +15,7 @@ use crate::security::runtime_token::{
 use crate::workspace::{WorkspaceBindingConfig, WorkspaceMode};
 use crate::DaemonConfig;
 
-const DAEMON_SCHEMA_VERSION: i64 = 6;
+const DAEMON_SCHEMA_VERSION: i64 = 7;
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,148 @@ impl HermesProfileRecord {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HermesSessionRoute {
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub controller_did: String,
+    pub conversation_id: Option<String>,
+    pub session_kind: String,
+}
+
+impl HermesSessionRoute {
+    pub fn new(
+        agent_did: impl Into<String>,
+        runtime_profile_id: impl Into<String>,
+        controller_did: impl Into<String>,
+        conversation_id: Option<String>,
+        session_kind: impl Into<String>,
+    ) -> Self {
+        Self {
+            agent_did: agent_did.into(),
+            runtime_profile_id: runtime_profile_id.into(),
+            controller_did: controller_did.into(),
+            conversation_id,
+            session_kind: session_kind.into(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        if self.runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        if self.controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        if self.session_kind.trim().is_empty() {
+            bail!("session_kind must not be empty");
+        }
+        Ok(())
+    }
+
+    pub fn route_key(&self) -> String {
+        format!(
+            "hermes:{}:{}:{}:{}",
+            self.agent_did,
+            self.controller_did,
+            self.conversation_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("no-conversation"),
+            self.session_kind
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HermesNativeSessionRecord {
+    pub id: String,
+    pub runtime_session_id: String,
+    pub agent_did: String,
+    pub runtime_profile_id: String,
+    pub controller_did: String,
+    pub conversation_id: Option<String>,
+    pub route_key: String,
+    pub hermes_profile: String,
+    pub hermes_session_id: String,
+    pub session_kind: String,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+impl HermesNativeSessionRecord {
+    pub fn active(
+        route: &HermesSessionRoute,
+        hermes_profile: impl Into<String>,
+        hermes_session_id: impl Into<String>,
+    ) -> Result<Self> {
+        route.validate()?;
+        let route_key = route.route_key();
+        let hermes_session_id = hermes_session_id.into();
+        let id = stable_hermes_session_record_id(&route_key, &hermes_session_id);
+        let now = current_time_millis()?;
+        Ok(Self {
+            runtime_session_id: format!("rs_{id}"),
+            id,
+            agent_did: route.agent_did.clone(),
+            runtime_profile_id: route.runtime_profile_id.clone(),
+            controller_did: route.controller_did.clone(),
+            conversation_id: route.conversation_id.clone(),
+            route_key,
+            hermes_profile: hermes_profile.into(),
+            hermes_session_id,
+            session_kind: route.session_kind.clone(),
+            status: "active".to_string(),
+            created_at_ms: now,
+            updated_at_ms: now,
+        })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.id.trim().is_empty() {
+            bail!("hermes native session id must not be empty");
+        }
+        if self.runtime_session_id.trim().is_empty() {
+            bail!("runtime_session_id must not be empty");
+        }
+        if self.agent_did.trim().is_empty() {
+            bail!("agent_did must not be empty");
+        }
+        if self.runtime_profile_id.trim().is_empty() {
+            bail!("runtime_profile_id must not be empty");
+        }
+        if self.controller_did.trim().is_empty() {
+            bail!("controller_did must not be empty");
+        }
+        if self.route_key.trim().is_empty() {
+            bail!("route_key must not be empty");
+        }
+        if self.hermes_profile.trim().is_empty() {
+            bail!("hermes_profile must not be empty");
+        }
+        if self.hermes_session_id.trim().is_empty() {
+            bail!("hermes_session_id must not be empty");
+        }
+        if self.session_kind.trim().is_empty() {
+            bail!("session_kind must not be empty");
+        }
+        if self.status.trim().is_empty() {
+            bail!("session status must not be empty");
+        }
+        Ok(())
+    }
+}
+
+fn stable_hermes_session_record_id(route_key: &str, hermes_session_id: &str) -> String {
+    let digest = Sha256::digest(route_key.as_bytes());
+    let digest = Sha256::digest([digest.as_slice(), hermes_session_id.as_bytes()].concat());
+    format!("hns_{:x}", digest)
 }
 
 impl DaemonState {
@@ -501,6 +644,140 @@ WHERE agent_did = ?1
                 },
             )
             .with_context(|| format!("load Hermes profile for agent {agent_did}"))
+    }
+
+    pub fn store_hermes_native_session(&self, session: &HermesNativeSessionRecord) -> Result<()> {
+        session.validate()?;
+        let connection = self.connection()?;
+        connection
+            .execute(
+                r#"
+INSERT INTO hermes_native_sessions (
+    id,
+    runtime_session_id,
+    agent_did,
+    runtime_profile_id,
+    controller_did,
+    conversation_id,
+    route_key,
+    hermes_profile,
+    hermes_session_id,
+    session_kind,
+    status,
+    created_at_ms,
+    updated_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+ON CONFLICT(id) DO UPDATE SET
+    runtime_session_id = excluded.runtime_session_id,
+    agent_did = excluded.agent_did,
+    runtime_profile_id = excluded.runtime_profile_id,
+    controller_did = excluded.controller_did,
+    conversation_id = excluded.conversation_id,
+    route_key = excluded.route_key,
+    hermes_profile = excluded.hermes_profile,
+    hermes_session_id = excluded.hermes_session_id,
+    session_kind = excluded.session_kind,
+    status = excluded.status,
+    updated_at_ms = excluded.updated_at_ms
+"#,
+                rusqlite::params![
+                    session.id,
+                    session.runtime_session_id,
+                    session.agent_did,
+                    session.runtime_profile_id,
+                    session.controller_did,
+                    session.conversation_id,
+                    session.route_key,
+                    session.hermes_profile,
+                    session.hermes_session_id,
+                    session.session_kind,
+                    session.status,
+                    session.created_at_ms,
+                    session.updated_at_ms,
+                ],
+            )
+            .with_context(|| format!("store Hermes native session {}", session.route_key))?;
+        Ok(())
+    }
+
+    pub fn load_active_hermes_session_by_route(
+        &self,
+        route: &HermesSessionRoute,
+    ) -> Result<Option<HermesNativeSessionRecord>> {
+        route.validate()?;
+        let route_key = route.route_key();
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+SELECT
+    id,
+    runtime_session_id,
+    agent_did,
+    runtime_profile_id,
+    controller_did,
+    conversation_id,
+    route_key,
+    hermes_profile,
+    hermes_session_id,
+    session_kind,
+    status,
+    created_at_ms,
+    updated_at_ms
+FROM hermes_native_sessions
+WHERE route_key = ?1
+  AND status = 'active'
+ORDER BY updated_at_ms DESC
+LIMIT 1
+"#,
+        )?;
+        let mut rows = statement.query([route_key])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(hermes_native_session_from_row(row)?))
+    }
+
+    pub fn mark_hermes_session_status(&self, id: &str, status: &str) -> Result<()> {
+        if id.trim().is_empty() {
+            bail!("hermes native session id must not be empty");
+        }
+        if status.trim().is_empty() {
+            bail!("hermes native session status must not be empty");
+        }
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE hermes_native_sessions
+SET status = ?1,
+    updated_at_ms = ?2
+WHERE id = ?3
+"#,
+            rusqlite::params![status, current_time_millis()?, id],
+        )?;
+        if updated == 0 {
+            bail!("Hermes native session does not exist: {id}");
+        }
+        Ok(())
+    }
+
+    pub fn reset_active_hermes_session_by_route(
+        &self,
+        route: &HermesSessionRoute,
+    ) -> Result<usize> {
+        route.validate()?;
+        let route_key = route.route_key();
+        let connection = self.connection()?;
+        let updated = connection.execute(
+            r#"
+UPDATE hermes_native_sessions
+SET status = 'reset',
+    updated_at_ms = ?1
+WHERE route_key = ?2
+  AND status = 'active'
+"#,
+            rusqlite::params![current_time_millis()?, route_key],
+        )?;
+        Ok(updated)
     }
 
     pub fn load_agent_definition(&self, agent_did: &str) -> Result<AgentDefinition> {
@@ -1197,6 +1474,26 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             updated_at_ms INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS hermes_native_sessions (
+            id TEXT PRIMARY KEY,
+            runtime_session_id TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT,
+            route_key TEXT NOT NULL,
+            hermes_profile TEXT NOT NULL,
+            hermes_session_id TEXT NOT NULL,
+            session_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_native_sessions_active_route
+        ON hermes_native_sessions(route_key)
+        WHERE status = 'active';
+
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
         "#,
@@ -1208,6 +1505,7 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
     migrate_agent_definition_v4(connection)?;
     migrate_agent_auth_state_v5(connection)?;
     migrate_hermes_profiles_v6(connection)?;
+    migrate_hermes_native_sessions_v7(connection)?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
         [],
@@ -1259,6 +1557,49 @@ fn migrate_hermes_profiles_v6(connection: &Connection) -> Result<()> {
         ("updated_at_ms", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         add_column_if_missing(connection, "hermes_profiles", column, definition)?;
+    }
+    Ok(())
+}
+
+fn migrate_hermes_native_sessions_v7(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS hermes_native_sessions (
+            id TEXT PRIMARY KEY,
+            runtime_session_id TEXT NOT NULL,
+            agent_did TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            controller_did TEXT NOT NULL,
+            conversation_id TEXT,
+            route_key TEXT NOT NULL,
+            hermes_profile TEXT NOT NULL,
+            hermes_session_id TEXT NOT NULL,
+            session_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_native_sessions_active_route
+        ON hermes_native_sessions(route_key)
+        WHERE status = 'active';
+        "#,
+    )?;
+    for (column, definition) in [
+        ("runtime_session_id", "TEXT NOT NULL DEFAULT ''"),
+        ("agent_did", "TEXT NOT NULL DEFAULT ''"),
+        ("runtime_profile_id", "TEXT NOT NULL DEFAULT ''"),
+        ("controller_did", "TEXT NOT NULL DEFAULT ''"),
+        ("conversation_id", "TEXT"),
+        ("route_key", "TEXT NOT NULL DEFAULT ''"),
+        ("hermes_profile", "TEXT NOT NULL DEFAULT ''"),
+        ("hermes_session_id", "TEXT NOT NULL DEFAULT ''"),
+        ("session_kind", "TEXT NOT NULL DEFAULT 'conversation'"),
+        ("status", "TEXT NOT NULL DEFAULT 'active'"),
+        ("created_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("updated_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        add_column_if_missing(connection, "hermes_native_sessions", column, definition)?;
     }
     Ok(())
 }
@@ -1512,6 +1853,26 @@ fn agent_definition_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentD
     })
 }
 
+fn hermes_native_session_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<HermesNativeSessionRecord> {
+    Ok(HermesNativeSessionRecord {
+        id: row.get(0)?,
+        runtime_session_id: row.get(1)?,
+        agent_did: row.get(2)?,
+        runtime_profile_id: row.get(3)?,
+        controller_did: row.get(4)?,
+        conversation_id: row.get(5)?,
+        route_key: row.get(6)?,
+        hermes_profile: row.get(7)?,
+        hermes_session_id: row.get(8)?,
+        session_kind: row.get(9)?,
+        status: row.get(10)?,
+        created_at_ms: row.get(11)?,
+        updated_at_ms: row.get(12)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1536,6 +1897,7 @@ mod tests {
             "agent_identity",
             "agent_auth_state",
             "hermes_profiles",
+            "hermes_native_sessions",
         ] {
             let count: i64 = connection
                 .query_row(
@@ -1639,6 +2001,76 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
             .unwrap();
         assert_eq!(audit_count, 0);
+    }
+
+    #[test]
+    fn hermes_native_session_roundtrips_and_resets_active_route() {
+        let root = tempfile::tempdir().unwrap();
+        let config = DaemonConfig::for_state_root(root.path()).unwrap();
+        let state = DaemonState::open(&config).unwrap();
+        state.initialize().unwrap();
+        let route = HermesSessionRoute::new(
+            "did:agent:hermes",
+            "profile_hermes_alice",
+            "did:human:alice",
+            Some("direct:did:human:alice".to_string()),
+            "conversation",
+        );
+        let session =
+            HermesNativeSessionRecord::active(&route, "awiki_alice_hermes", "hermes-session-1")
+                .unwrap();
+
+        state.store_hermes_native_session(&session).unwrap();
+        assert_eq!(
+            state
+                .load_active_hermes_session_by_route(&route)
+                .unwrap()
+                .unwrap(),
+            session
+        );
+
+        let connection = state.connection().unwrap();
+        let unique_index_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_hermes_native_sessions_active_route'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unique_index_count, 1);
+        drop(connection);
+
+        assert_eq!(
+            state.reset_active_hermes_session_by_route(&route).unwrap(),
+            1
+        );
+        assert!(state
+            .load_active_hermes_session_by_route(&route)
+            .unwrap()
+            .is_none());
+
+        let replacement =
+            HermesNativeSessionRecord::active(&route, "awiki_alice_hermes", "hermes-session-2")
+                .unwrap();
+        state.store_hermes_native_session(&replacement).unwrap();
+        assert_eq!(
+            state
+                .load_active_hermes_session_by_route(&route)
+                .unwrap()
+                .unwrap()
+                .hermes_session_id,
+            "hermes-session-2"
+        );
+
+        let reopened = DaemonState::open(&config).unwrap();
+        assert_eq!(
+            reopened
+                .load_active_hermes_session_by_route(&route)
+                .unwrap()
+                .unwrap()
+                .hermes_session_id,
+            "hermes-session-2"
+        );
     }
 }
 

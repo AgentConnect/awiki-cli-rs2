@@ -4,7 +4,9 @@ use crate::runtime::{
     RuntimeInstallStatus, RuntimeLaunchContext, RuntimeLaunchOutcome, RuntimePlugin,
     RuntimeRunStatus,
 };
-use crate::state::HermesProfileRecord;
+use crate::state::{
+    DaemonState, HermesNativeSessionRecord, HermesProfileRecord, HermesSessionRoute,
+};
 
 use super::gateway::{
     HermesGateway, HermesPromptOutcome, HermesPromptSubmitRequest, HermesRunnerRef,
@@ -17,6 +19,7 @@ use super::HERMES_RUNTIME_PLUGIN_ID;
 pub struct HermesRuntimePlugin<G> {
     gateway: G,
     profile: HermesProfileRecord,
+    state: Option<DaemonState>,
 }
 
 #[derive(Debug, Clone)]
@@ -27,7 +30,19 @@ pub struct HermesRunner<G> {
 
 impl<G> HermesRuntimePlugin<G> {
     pub fn new(gateway: G, profile: HermesProfileRecord) -> Self {
-        Self { gateway, profile }
+        Self {
+            gateway,
+            profile,
+            state: None,
+        }
+    }
+
+    pub fn with_state(gateway: G, profile: HermesProfileRecord, state: DaemonState) -> Self {
+        Self {
+            gateway,
+            profile,
+            state: Some(state),
+        }
     }
 }
 
@@ -81,16 +96,23 @@ where
         }
         let runner = HermesRunner::start(self.gateway.clone(), &self.profile)
             .context("start Hermes runner")?;
-        let session = runner
-            .create_session(HermesSessionCreateRequest {
-                route_key: context
-                    .task
-                    .conversation_id
-                    .clone()
-                    .unwrap_or_else(|| context.task.task_id.clone()),
-                conversation_id: context.task.conversation_id.clone(),
-            })
-            .context("create Hermes session")?;
+        let route = HermesSessionRoute::new(
+            self.profile.agent_did.clone(),
+            self.profile.runtime_profile_id.clone(),
+            context.task.controller_did.clone(),
+            context.task.conversation_id.clone(),
+            "conversation",
+        );
+        let session = if let Some(state) = self.state.as_ref() {
+            load_or_create_persisted_session(state, &runner, &self.profile, &route)?
+        } else {
+            runner
+                .create_session(HermesSessionCreateRequest {
+                    route_key: route.route_key(),
+                    conversation_id: context.task.conversation_id.clone(),
+                })
+                .context("create Hermes session")?
+        };
         let prompt = HermesPromptWrapper::new(&self.profile, &context.run, &context.task);
         let outcome = runner
             .submit_prompt(
@@ -118,4 +140,42 @@ where
             callbacks,
         })
     }
+}
+
+fn load_or_create_persisted_session<G>(
+    state: &DaemonState,
+    runner: &HermesRunner<G>,
+    profile: &HermesProfileRecord,
+    route: &HermesSessionRoute,
+) -> Result<super::gateway::HermesSessionRef>
+where
+    G: HermesGateway,
+{
+    if let Some(record) = state.load_active_hermes_session_by_route(route)? {
+        return Ok(super::gateway::HermesSessionRef {
+            runner_id: runner.runner_ref().runner_id.clone(),
+            hermes_session_id: record.hermes_session_id,
+            route_key: record.route_key,
+        });
+    }
+    let session = runner
+        .create_session(HermesSessionCreateRequest {
+            route_key: route.route_key(),
+            conversation_id: route.conversation_id.clone(),
+        })
+        .context("create Hermes session")?;
+    let record = HermesNativeSessionRecord::active(
+        route,
+        profile.hermes_profile.clone(),
+        session.hermes_session_id.clone(),
+    )?;
+    state.store_hermes_native_session(&record)?;
+    Ok(session)
+}
+
+pub fn reset_hermes_session_by_route(
+    state: &DaemonState,
+    route: &HermesSessionRoute,
+) -> Result<usize> {
+    state.reset_active_hermes_session_by_route(route)
 }

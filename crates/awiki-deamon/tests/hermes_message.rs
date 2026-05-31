@@ -1,12 +1,12 @@
 use awiki_deamon::inbox::ControllerTextMessage;
 use awiki_deamon::outbox::{MemoryRuntimeOutbox, OutboxRecordKind, RuntimeMessageSecurity};
 use awiki_deamon::plugins::hermes::{
-    FakeHermesBehavior, FakeHermesGateway, HermesPromptWrapper, HermesRuntimePlugin,
-    HERMES_RUNTIME_PLUGIN_ID,
+    reset_hermes_session_by_route, FakeHermesBehavior, FakeHermesGateway, HermesPromptWrapper,
+    HermesRuntimePlugin, HERMES_RUNTIME_PLUGIN_ID,
 };
 use awiki_deamon::runtime::host::run_controller_text_task;
 use awiki_deamon::runtime::{RuntimeAgentProfile, RuntimeRun, RuntimeRunStatus, RuntimeTask};
-use awiki_deamon::state::HermesProfileRecord;
+use awiki_deamon::state::{HermesProfileRecord, HermesSessionRoute};
 use awiki_deamon::workspace::WorkspaceMode;
 use awiki_deamon::{DaemonConfig, DaemonState};
 
@@ -261,4 +261,147 @@ fn hermes_message_prompt_wrapper_debug_redacts_user_message() {
     assert!(!debug.contains("rtok_debug_secret_value_123456789"));
     assert!(!debug.contains("jwt_token"));
     assert!(!debug.contains("auth_private_key"));
+}
+
+#[test]
+fn hermes_session_mapping_reuses_session_for_same_conversation_after_restart() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ObserveOnly);
+    let hermes = hermes_record(root.path().join("runtime/hermes/profile"));
+    let plugin = HermesRuntimePlugin::with_state(gateway.clone(), hermes.clone(), state.clone());
+    let profile = profile(root.path().join("workspace"));
+
+    for message_id in ["msg_session_1", "msg_session_2"] {
+        run_controller_text_task(
+            &state,
+            &profile,
+            &plugin,
+            &outbox,
+            ControllerTextMessage {
+                message_id: message_id.to_string(),
+                conversation_id: Some("direct:did:human:alice".to_string()),
+                sender_did: "did:human:alice".to_string(),
+                target_agent_did: "did:agent:hermes".to_string(),
+                text: "继续同一个 Hermes session".to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    assert_eq!(gateway.created_sessions().len(), 1);
+    assert_eq!(gateway.submitted_prompts().len(), 2);
+
+    run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_session_other_conversation".to_string(),
+            conversation_id: Some("direct:did:human:bob".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "另一个 conversation 应创建独立 session".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(gateway.created_sessions().len(), 2);
+
+    let route = HermesSessionRoute::new(
+        "did:agent:hermes",
+        "profile_hermes_alice",
+        "did:human:alice",
+        Some("direct:did:human:alice".to_string()),
+        "conversation",
+    );
+    let active = state
+        .load_active_hermes_session_by_route(&route)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        active.hermes_session_id,
+        "fake-session-hermes:did:agent:hermes:did:human:alice:direct:did:human:alice:conversation"
+    );
+
+    let reopened_state =
+        DaemonState::open(&DaemonConfig::for_state_root(root.path()).unwrap()).unwrap();
+    let restarted_gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ObserveOnly);
+    let restarted_plugin =
+        HermesRuntimePlugin::with_state(restarted_gateway.clone(), hermes, reopened_state.clone());
+    run_controller_text_task(
+        &reopened_state,
+        &profile,
+        &restarted_plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_session_3".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "daemon restart 后继续同一个 session".to_string(),
+        },
+    )
+    .unwrap();
+    assert!(restarted_gateway.created_sessions().is_empty());
+    assert_eq!(restarted_gateway.submitted_prompts().len(), 1);
+}
+
+#[test]
+fn hermes_session_mapping_reset_archives_old_session_and_creates_replacement() {
+    let (root, state) = fixture();
+    let outbox = MemoryRuntimeOutbox::default();
+    let gateway = FakeHermesGateway::with_behavior(FakeHermesBehavior::ObserveOnly);
+    let hermes = hermes_record(root.path().join("runtime/hermes/profile"));
+    let plugin = HermesRuntimePlugin::with_state(gateway.clone(), hermes, state.clone());
+    let profile = profile(root.path().join("workspace"));
+    let route = HermesSessionRoute::new(
+        "did:agent:hermes",
+        "profile_hermes_alice",
+        "did:human:alice",
+        Some("direct:did:human:alice".to_string()),
+        "conversation",
+    );
+
+    run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_session_reset_1".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "创建 session".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(gateway.created_sessions().len(), 1);
+
+    assert_eq!(reset_hermes_session_by_route(&state, &route).unwrap(), 1);
+    assert!(state
+        .load_active_hermes_session_by_route(&route)
+        .unwrap()
+        .is_none());
+
+    run_controller_text_task(
+        &state,
+        &profile,
+        &plugin,
+        &outbox,
+        ControllerTextMessage {
+            message_id: "msg_session_reset_2".to_string(),
+            conversation_id: Some("direct:did:human:alice".to_string()),
+            sender_did: "did:human:alice".to_string(),
+            target_agent_did: "did:agent:hermes".to_string(),
+            text: "reset 后创建新 session".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(gateway.created_sessions().len(), 2);
+    assert!(state
+        .load_active_hermes_session_by_route(&route)
+        .unwrap()
+        .is_some());
 }

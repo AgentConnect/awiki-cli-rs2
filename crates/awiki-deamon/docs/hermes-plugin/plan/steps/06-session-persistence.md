@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 06  
-状态：draft
+状态：review
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | pending |
+| 状态 | review |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
-| 开始时间 | 未开始 |
+| 开始时间 | 2026-06-01 00:40:24 +0800 |
 | 完成时间 | 未完成 |
 | 提交 | 未提交 |
-| 审查证据 | 待记录 |
-| 验证证据 | 待记录 |
-| 下一步 | 等 Step 03/04 完成后，持久化 Hermes native session 映射 |
+| 审查证据 | 2026-06-01 00:51:13 +0800 完成提交前 review：确认 session 表只保存 route/session metadata，不保存 prompt 原文、runtime token、private key 或 JWT；确认 active route 唯一约束、resume/reset 和 schema migration；残余风险为首次同 route 并发创建缺少事务重试。 |
+| 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked hermes_session` 通过，2 个 focused tests；`cargo test -p awiki-deamon --locked state` 通过，12 个匹配测试；`cargo test -p awiki-deamon --locked hermes_message` 通过，6 个匹配测试；`cargo test -p awiki-deamon --locked hermes_gateway` 通过，6 个匹配测试、1 个 ignored real smoke 被过滤；`cargo test -p awiki-deamon --locked` 通过，56 个测试、1 ignored；`git diff --check -- crates/awiki-deamon` 通过；边界/secret 搜索结果已记录在执行记录。 |
+| 下一步 | 创建 Step 06 实现提交，随后回填 hash 并标记 done |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -192,11 +192,81 @@ debug
 
 | 审查项 | 结果 | 备注 |
 |---|---|---|
-| 发现 | 待记录 |  |
-| 已修复 | 待记录 |  |
-| 残余风险 | 待记录 |  |
-| 测试新增或缺失 | 待记录 |  |
-| 文档更新或缺失 | 待记录 |  |
+| 发现 | 若按推荐一次性新增通用 `runtime_session_mapping`，会把 Step 06 扩展到其他 runtime；首次同 route 并发创建时当前实现是查库、创建、插入，未做事务级 get-or-create 重试。 | 本步骤按计划允许降级为 Hermes 私有表；并发首次创建风险由 active route unique index fail-closed，后续长驻并发化时可补事务或 retry。 |
+| 已修复 | 选择仅实现 `hermes_native_sessions` 并保留 `runtime_session_id`；新增 active route partial unique index；runner 有 state 时优先复用 active session，reset 后创建 replacement；fake gateway 记录 create_session 次数，测试覆盖同 route 复用、不同 conversation 分离、daemon restart 后复用和 reset。 | 未新增通用表，主计划变更日志已记录范围决策。 |
+| 残余风险 | 首次同 route 并发创建仍可能有一个写入因 unique index 失败，而不是自动重试加载 winner；真实 Hermes reset API 未接入，只做 daemon mapping reset。 | Step 07/后续如果 foreground 并发执行同 conversation，需要补事务/retry；真实 Hermes transcript cleanup 不在 MVP。 |
+| 测试新增或缺失 | 新增 `hermes_session_mapping_reuses_session_for_same_conversation_after_restart`、`hermes_session_mapping_reset_archives_old_session_and_creates_replacement`、`hermes_native_session_roundtrips_and_resets_active_route`；更新 schema version 相关测试。 | 没有真实 Hermes native session resume smoke，仍由 fake gateway 锁定 daemon 行为。 |
+| 文档更新或缺失 | 主计划和本步骤记录已同步私有表决策、验证证据和残余风险。 | 未更新通用 runtime host 架构文档，因为通用表未落地。 |
+
+## 14. Step 06 执行记录
+
+### 已实现
+
+- `DaemonState` schema version 升到 7，新增 `hermes_native_sessions` 表，字段包含 `runtime_session_id`、`agent_did`、`runtime_profile_id`、`controller_did`、`conversation_id`、`route_key`、`hermes_profile`、`hermes_session_id`、`session_kind`、`status`、时间戳。
+- 新增 `idx_hermes_native_sessions_active_route` partial unique index，仅约束 `status = 'active'` 的 route；reset 后旧记录可保留为 `reset`，新 active session 可创建。
+- 新增 `HermesSessionRoute` 和 `HermesNativeSessionRecord`，route key 形如 `hermes:<agent_did>:<controller_did>:<conversation-or-no-conversation>:<session_kind>`，不包含 token 或 prompt 原文。
+- 新增 state CRUD：`store_hermes_native_session`、`load_active_hermes_session_by_route`、`mark_hermes_session_status`、`reset_active_hermes_session_by_route`。
+- `HermesRuntimePlugin::with_state` 在有 state 时优先加载 active session；没有 active mapping 时调用 gateway `create_session` 并持久化；`HermesRuntimePlugin::new` 保持原无 state 行为，降低 Step 07 之前的接入风险。
+- 新增 `reset_hermes_session_by_route` helper；fake gateway 记录 `created_sessions`，同 route 首次创建保持原确定性 session id，后续创建追加序号供 reset 测试区分。
+- 更新 schema version 相关测试到 7，并覆盖 v6 旧库初始化迁移到 v7。
+
+### Review 记录
+
+| 审查项 | 结果 | 备注 |
+|---|---|---|
+| 发现 | 通用 `runtime_session_mapping` 暂不落地；首次并发同 route 创建缺少事务重试；真实 Hermes reset API 未接入。 | 已写入主计划变更日志和残余风险。 |
+| 已修复 | 私有表保留 `runtime_session_id`，active route unique index，runner stateful resume/reset，fake gateway deterministic session instrumentation，focused tests 覆盖 restart/不同 conversation/reset。 | 满足 Step 06 MVP 验收。 |
+| 残余风险 | 并发首次创建可能 fail-closed；reset 只归档 daemon mapping，不删除 Hermes transcript。 | Step 07/后续并发化和真实 Hermes adapter 收敛时处理。 |
+| 测试新增或缺失 | 新增 3 个 session/state tests，更新 schema version tests。 | 未跑真实 Hermes smoke。 |
+| 文档更新或缺失 | 主计划和本步骤已记录执行状态、范围变更和 review 证据。 | Harness 文档无需更新。 |
+
+### 验证记录
+
+| 命令 | 结果 |
+|---|---|
+| `cargo fmt --all --check` | 通过。 |
+| `cargo test -p awiki-deamon --locked hermes_session` | 通过：2 个 focused tests。 |
+| `cargo test -p awiki-deamon --locked state` | 通过：12 个匹配测试。 |
+| `cargo test -p awiki-deamon --locked hermes_message` | 通过：6 个匹配测试。 |
+| `cargo test -p awiki-deamon --locked hermes_gateway` | 通过：6 个匹配测试，1 个 ignored real smoke 被过滤。 |
+| `cargo test -p awiki-deamon --locked` | 通过：56 个测试，1 ignored，doc tests 0 个。 |
+| `git diff --check -- crates/awiki-deamon` | 通过。 |
+| `rg -n "crates/awiki-cli\|awiki_cli" crates/awiki-deamon/Cargo.toml crates/awiki-deamon/src crates/awiki-deamon/tests` | 通过：无命中。 |
+| `rg -n "rtok_\|runtime_rpc_token.*println\|auth_private_key\|jwt_token\|prompt\|task_text" crates/awiki-deamon/src/state/mod.rs crates/awiki-deamon/src/plugins/hermes crates/awiki-deamon/tests/hermes_message.rs` | 通过但有预期命中：prompt wrapper 生产代码和测试、测试假 token/脱敏断言、既有 agent auth/private key 状态字段、runtime task 文本字段；`hermes_native_sessions` 未新增 prompt/token/private key/JWT 字段。 |
+
+### 提交前状态
+
+- `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 11]
+ M crates/awiki-deamon/docs/hermes-plugin/plan/plan.md
+ M crates/awiki-deamon/docs/hermes-plugin/plan/steps/06-session-persistence.md
+ M crates/awiki-deamon/src/plugins/hermes/gateway.rs
+ M crates/awiki-deamon/src/plugins/hermes/mod.rs
+ M crates/awiki-deamon/src/plugins/hermes/runner.rs
+ M crates/awiki-deamon/src/state/mod.rs
+ M crates/awiki-deamon/tests/hermes_message.rs
+ M crates/awiki-deamon/tests/hermes_profile.rs
+ M crates/awiki-deamon/tests/state_bootstrap.rs
+```
+
+- 纳入文件：
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/plan.md`
+  - `crates/awiki-deamon/docs/hermes-plugin/plan/steps/06-session-persistence.md`
+  - `crates/awiki-deamon/src/plugins/hermes/gateway.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/mod.rs`
+  - `crates/awiki-deamon/src/plugins/hermes/runner.rs`
+  - `crates/awiki-deamon/src/state/mod.rs`
+  - `crates/awiki-deamon/tests/hermes_message.rs`
+  - `crates/awiki-deamon/tests/hermes_profile.rs`
+  - `crates/awiki-deamon/tests/state_bootstrap.rs`
+
+### 提交后状态
+
+- 实现提交：待回填。
+- 实现提交后 `git status --short --branch`：待回填。
+- 遗留未提交变更：待回填。
 
 ## 10. 提交要求
 
@@ -220,6 +290,7 @@ debug
 | 日期 | 变更 | 原因 | 主计划变更日志链接 |
 |---|---|---|---|
 | 2026-05-31 | 创建步骤文档 | 初始计划拆分 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
+| 2026-06-01 | 本步骤先实现 Hermes 私有 `hermes_native_sessions`，保留 `runtime_session_id` 和 route 字段；通用 `runtime_session_mapping` 延后 | 控制跨 runtime 影响面，同时满足 Hermes resume/reset 验收 | [../plan.md#14-计划变更日志](../plan.md#14-计划变更日志) |
 
 ## 13. 风险、回滚与后续
 

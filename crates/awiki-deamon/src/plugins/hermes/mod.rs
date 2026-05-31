@@ -17,7 +17,7 @@ pub use gateway::{
     HermesSessionCreateRequest, HermesSessionRef, StdioHermesGateway,
 };
 pub use prompt::HermesPromptWrapper;
-pub use runner::{HermesRunner, HermesRuntimePlugin};
+pub use runner::{reset_hermes_session_by_route, HermesRunner, HermesRuntimePlugin};
 
 pub const HERMES_RUNTIME_NAME: &str = "hermes";
 pub const HERMES_RUNTIME_PLUGIN_ID: &str = "runtime.hermes";

@@ -203,6 +203,7 @@ impl HermesGateway for StdioHermesGateway {
 pub struct FakeHermesGateway {
     observed_events: Arc<Mutex<Vec<HermesRuntimeEvent>>>,
     submitted_prompts: Arc<Mutex<Vec<HermesPromptSubmitRequest>>>,
+    created_sessions: Arc<Mutex<Vec<HermesSessionCreateRequest>>>,
     behavior: FakeHermesBehavior,
 }
 
@@ -220,6 +221,7 @@ impl FakeHermesGateway {
         Self {
             observed_events: Arc::new(Mutex::new(Vec::new())),
             submitted_prompts: Arc::new(Mutex::new(Vec::new())),
+            created_sessions: Arc::new(Mutex::new(Vec::new())),
             behavior,
         }
     }
@@ -228,6 +230,13 @@ impl FakeHermesGateway {
         self.submitted_prompts
             .lock()
             .expect("fake Hermes gateway prompts lock poisoned")
+            .clone()
+    }
+
+    pub fn created_sessions(&self) -> Vec<HermesSessionCreateRequest> {
+        self.created_sessions
+            .lock()
+            .expect("fake Hermes gateway sessions lock poisoned")
             .clone()
     }
 }
@@ -276,9 +285,22 @@ impl HermesGateway for FakeHermesGateway {
         runner: &HermesRunnerRef,
         request: HermesSessionCreateRequest,
     ) -> Result<HermesSessionRef> {
+        let create_count = {
+            let mut sessions = self
+                .created_sessions
+                .lock()
+                .expect("fake Hermes gateway sessions lock poisoned");
+            sessions.push(request.clone());
+            sessions.len()
+        };
+        let suffix = if create_count == 1 {
+            String::new()
+        } else {
+            format!("-{create_count}")
+        };
         let session = HermesSessionRef {
             runner_id: runner.runner_id.clone(),
-            hermes_session_id: format!("fake-session-{}", request.route_key),
+            hermes_session_id: format!("fake-session-{}{}", request.route_key, suffix),
             route_key: request.route_key,
         };
         self.push_event(
