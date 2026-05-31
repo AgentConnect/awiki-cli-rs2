@@ -2,20 +2,20 @@
 
 主计划: [../plan.md](../plan.md)  
 步骤编号: 05  
-状态：review
+状态：done
 
 ## 1. 执行状态
 
 | 字段 | 值 |
 |---|---|
-| 状态 | review |
+| 状态 | done |
 | 分支 | `feature/release-0526/hermes-plugin-cli-rs2` |
 | 开始时间 | 2026-06-01 00:02:56 +0800 |
-| 完成时间 | 未完成 |
-| 提交 | 未提交 |
+| 完成时间 | 2026-06-01 00:38:29 +0800 |
+| 提交 | 实现提交 `9ee0ac805f897d132a4b4127eed56bf8b4c68ed4` |
 | 审查证据 | 2026-06-01 00:34:49 +0800 完成提交前 review：确认 `msg.send` 经 `im-core` direct/direct-e2ee send path，不再伪装成 status payload；recipient/text/security 校验和 token recipient scope 生效；controller text run 默认只能发给 controller DID；direct-e2ee 只做 SDK mode 映射，daemon 不处理 E2EE key。 |
 | 验证证据 | 启动前 `git status --short --branch` 无未提交变更；`cargo fmt --all --check` 通过；`cargo test -p awiki-deamon --locked runtime_message_send_params_validate_and_map_security` 通过，1 个测试；`cargo test -p awiki-deamon --locked msg_send` 通过，3 个匹配测试；`cargo test -p awiki-deamon --locked hermes_message` 通过，6 个测试；`cargo test -p awiki-deamon --locked hermes_profile` 通过，3 个测试；`cargo test -p awiki-deamon --locked` 通过，54 个测试、1 ignored；`cargo test --workspace --locked` 通过；`git diff --check -- crates/awiki-deamon` 通过；边界/secret/plugin 搜索结果已记录在执行记录。 |
-| 下一步 | 创建 Step 05 实现提交，随后回填 hash 并标记 done |
+| 下一步 | 启动 Step 06 Hermes session 持久化与 resume/reset |
 
 允许状态：`pending`、`in_progress`、`review`、`blocked`、`committed`、`done`。
 
@@ -139,7 +139,7 @@ trait RuntimeMessageSender {
 - [x] direct-e2ee 仅通过 `im-core` 能力调用，daemon 不持有 E2EE 私钥或明文密钥。
 - [x] `awiki-messaging` Skill 与真实发送语义一致。
 - [x] 审查发现 已修复或明确记录。
-- [ ] 本步骤创建一个聚焦提交后才进入 Step 06 或 Step 07。
+- [x] 本步骤创建一个聚焦提交后才进入 Step 06 或 Step 07。
 
 ## 8. 验证方式
 
@@ -265,9 +265,14 @@ trait RuntimeMessageSender {
 
 ### 提交后状态
 
-- 实现提交：待回填。
-- 实现提交后 `git status --short --branch`：待回填。
-- 遗留未提交变更：待回填。
+- 实现提交：`9ee0ac805f897d132a4b4127eed56bf8b4c68ed4`
+- 实现提交后 `git status --short --branch`：
+
+```text
+## feature/release-0526/hermes-plugin-cli-rs2...origin/feature/release-0526/hermes-plugin-cli-rs2 [ahead 10]
+```
+
+- 遗留未提交变更：无。
 
 ## 13. 风险、回滚与后续
 
